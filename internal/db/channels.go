@@ -109,6 +109,98 @@ func scanChannel(row *sql.Row) (*Channel, error) {
 	return &ch, nil
 }
 
+// ChannelListItem extends Channel with message count and last activity info.
+type ChannelListItem struct {
+	Channel
+	MessageCount int
+	LastActivity sql.NullFloat64 // ts_unix of most recent message
+	IsWatched    bool
+}
+
+// ChannelListSort specifies how to sort the channel list.
+type ChannelListSort string
+
+const (
+	ChannelSortName     ChannelListSort = "name"
+	ChannelSortMessages ChannelListSort = "messages"
+	ChannelSortRecent   ChannelListSort = "recent"
+)
+
+// GetChannelList returns channels with message counts, last activity, and watched status.
+func (db *DB) GetChannelList(filter ChannelFilter, sort ChannelListSort) ([]ChannelListItem, error) {
+	query := `
+		SELECT c.id, c.name, c.type, c.topic, c.purpose, c.is_archived, c.is_member,
+		       c.dm_user_id, c.num_members, c.updated_at,
+		       COALESCE(m.msg_count, 0),
+		       m.last_ts_unix,
+		       CASE WHEN w.entity_id IS NOT NULL THEN 1 ELSE 0 END
+		FROM channels c
+		LEFT JOIN (
+			SELECT channel_id, COUNT(*) as msg_count, MAX(ts_unix) as last_ts_unix
+			FROM messages
+			GROUP BY channel_id
+		) m ON m.channel_id = c.id
+		LEFT JOIN watch_list w ON w.entity_type = 'channel' AND w.entity_id = c.id`
+
+	var conditions []string
+	var args []interface{}
+
+	if filter.Type != "" {
+		conditions = append(conditions, "c.type = ?")
+		args = append(args, filter.Type)
+	}
+	if filter.IsArchived != nil {
+		conditions = append(conditions, "c.is_archived = ?")
+		if *filter.IsArchived {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
+		}
+	}
+	if filter.IsMember != nil {
+		conditions = append(conditions, "c.is_member = ?")
+		if *filter.IsMember {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
+		}
+	}
+
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	switch sort {
+	case ChannelSortMessages:
+		query += " ORDER BY COALESCE(m.msg_count, 0) DESC, c.name"
+	case ChannelSortRecent:
+		query += " ORDER BY m.last_ts_unix DESC NULLS LAST, c.name"
+	default:
+		query += " ORDER BY c.name"
+	}
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying channel list: %w", err)
+	}
+	defer rows.Close()
+
+	var items []ChannelListItem
+	for rows.Next() {
+		var item ChannelListItem
+		err := rows.Scan(
+			&item.ID, &item.Name, &item.Type, &item.Topic, &item.Purpose,
+			&item.IsArchived, &item.IsMember, &item.DMUserID, &item.NumMembers, &item.UpdatedAt,
+			&item.MessageCount, &item.LastActivity, &item.IsWatched,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scanning channel list row: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func scanChannels(rows *sql.Rows) ([]Channel, error) {
 	var channels []Channel
 	for rows.Next() {
