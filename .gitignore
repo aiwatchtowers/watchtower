@@ -1,0 +1,9 @@
+# Build output
+watchtower
+
+# IDE
+.idea/
+*.iml
+
+# ralphex progress logs
+.ralphex/progress/
