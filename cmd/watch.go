@@ -103,8 +103,8 @@ func openDBFromConfig() (*db.DB, error) {
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
-	if cfg.ActiveWorkspace == "" {
-		return nil, fmt.Errorf("no active workspace set; run 'watchtower config init' first")
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return nil, err
 	}
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
