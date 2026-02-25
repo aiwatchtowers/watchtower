@@ -20,9 +20,9 @@ Watchtower is an open-source Go CLI tool that syncs a Slack workspace into a loc
 
 ### Task 1: Project setup and go.mod initialization
 - [x] Initialize `go.mod` with module name `watchtower` and Go 1.25
-- [ ] Add all dependencies to `go.mod`: cobra, viper, modernc.org/sqlite, slack-go/slack, anthropic-sdk-go, golang.org/x/time, bubbletea, lipgloss, glamour, go-humanize, testify
-- [ ] Create `main.go` entry point that calls `cmd.Execute()`
-- [ ] Create `Makefile` with targets: `build`, `test`, `lint`, `install`
+- [x] Add all dependencies to `go.mod`: cobra, viper, modernc.org/sqlite, slack-go/slack, anthropic-sdk-go, golang.org/x/time, bubbletea, lipgloss, glamour, go-humanize, testify
+- [x] Create `main.go` entry point that calls `cmd.Execute()`
+- [x] Create `Makefile` with targets: `build`, `test`, `lint`, `install`
 
 **Files:** `go.mod`, `go.sum`, `main.go`, `Makefile`
 
