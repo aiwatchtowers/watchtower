@@ -21,6 +21,12 @@ import (
 	"watchtower/internal/sync"
 )
 
+func TestMain(m *testing.M) {
+	// Allow sub-second poll intervals in tests for fast execution.
+	minPollInterval = 1 * time.Millisecond
+	os.Exit(m.Run())
+}
+
 func testMux() *http.ServeMux {
 	mux := http.NewServeMux()
 

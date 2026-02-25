@@ -111,13 +111,24 @@ func Load(configPath string) (*Config, error) {
 	return cfg, nil
 }
 
-// Validate checks that required fields are present.
-func (c *Config) Validate() error {
+// ValidateWorkspace checks that a workspace name is set and safe for use in
+// file paths. It does NOT require a Slack token or workspace config entry,
+// making it suitable for commands that only need database access.
+func (c *Config) ValidateWorkspace() error {
 	if c.ActiveWorkspace == "" {
-		return fmt.Errorf("active_workspace is required")
+		return fmt.Errorf("active_workspace is required; run 'watchtower config init' first")
 	}
 	if strings.ContainsAny(c.ActiveWorkspace, "/\\") || strings.Contains(c.ActiveWorkspace, "..") {
 		return fmt.Errorf("active_workspace %q contains invalid characters", c.ActiveWorkspace)
+	}
+	return nil
+}
+
+// Validate checks that required fields are present, including Slack token.
+// Use ValidateWorkspace for commands that only need database access.
+func (c *Config) Validate() error {
+	if err := c.ValidateWorkspace(); err != nil {
+		return err
 	}
 	ws, err := c.GetActiveWorkspace()
 	if err != nil {
