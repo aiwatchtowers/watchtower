@@ -314,11 +314,11 @@ watch:
 **Files:** `cmd/watch.go`
 
 ### Task 20: Channels and users CLI commands
-- [ ] Create `cmd/channels.go`:
+- [x] Create `cmd/channels.go`:
   - `watchtower channels` command
   - Flags: `--type` (public/private/dm/group_dm), `--sort` (messages/name/recent)
   - Lists all synced channels with: name, type, member count, message count, last activity, watched status
-- [ ] Create `cmd/users.go`:
+- [x] Create `cmd/users.go`:
   - `watchtower users` command
   - Flags: `--active` (exclude deleted/bot users)
   - Lists all synced users with: name, display_name, email, is_bot status
