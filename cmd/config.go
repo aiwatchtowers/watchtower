@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"watchtower/internal/config"
 
@@ -136,12 +137,15 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("reading config: %w", err)
 	}
 
-	// Parse integers so YAML stores them as numbers; all other values are
-	// stored as strings and viper handles type coercion on read. Avoid
-	// ParseBool/ParseFloat which can misinterpret string values like "t"
-	// or "f" as booleans.
+	// Type-aware parsing: durations first (so "15m" or "900s" are stored
+	// correctly), then integers, then fall back to string. Avoid
+	// ParseBool/ParseFloat which can misinterpret values like "t" or "f".
 	var typedValue interface{} = value
-	if i, err := strconv.Atoi(value); err == nil {
+	if _, err := time.ParseDuration(value); err == nil {
+		// Store duration strings as-is (e.g., "15m", "900s") so viper
+		// can parse them correctly into time.Duration on read.
+		typedValue = value
+	} else if i, err := strconv.Atoi(value); err == nil {
 		typedValue = i
 	}
 	v.Set(key, typedValue)
