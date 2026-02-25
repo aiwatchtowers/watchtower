@@ -189,3 +189,120 @@ func TestGetChannelsCombinedFilter(t *testing.T) {
 	assert.Len(t, channels, 1)
 	assert.Equal(t, "pub-member", channels[0].Name)
 }
+
+func TestGetChannelListBasic(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C001", Name: "general", Type: "public", NumMembers: 50}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C002", Name: "random", Type: "public", NumMembers: 30}))
+
+	items, err := db.GetChannelList(ChannelFilter{}, ChannelSortName)
+	require.NoError(t, err)
+	assert.Len(t, items, 2)
+	assert.Equal(t, "general", items[0].Name)
+	assert.Equal(t, "random", items[1].Name)
+	// No messages, so counts should be 0
+	assert.Equal(t, 0, items[0].MessageCount)
+	assert.False(t, items[0].LastActivity.Valid)
+	assert.False(t, items[0].IsWatched)
+}
+
+func TestGetChannelListWithMessages(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C001", Name: "general", Type: "public"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C002", Name: "random", Type: "public"}))
+
+	// Add messages to general
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", Text: "hello"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000100.000001", Text: "world"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000200.000001", Text: "!"}))
+
+	// Add 1 message to random
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000050.000001", Text: "hi"}))
+
+	items, err := db.GetChannelList(ChannelFilter{}, ChannelSortName)
+	require.NoError(t, err)
+	assert.Len(t, items, 2)
+	assert.Equal(t, 3, items[0].MessageCount) // general
+	assert.Equal(t, 1, items[1].MessageCount) // random
+	assert.True(t, items[0].LastActivity.Valid)
+	assert.InDelta(t, 1700000200.0, items[0].LastActivity.Float64, 1.0)
+}
+
+func TestGetChannelListSortByMessages(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C001", Name: "few-msgs", Type: "public"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C002", Name: "many-msgs", Type: "public"}))
+
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", Text: "one"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000000.000001", Text: "one"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000001.000001", Text: "two"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700000002.000001", Text: "three"}))
+
+	items, err := db.GetChannelList(ChannelFilter{}, ChannelSortMessages)
+	require.NoError(t, err)
+	assert.Len(t, items, 2)
+	assert.Equal(t, "many-msgs", items[0].Name)
+	assert.Equal(t, 3, items[0].MessageCount)
+}
+
+func TestGetChannelListSortByRecent(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C001", Name: "old-activity", Type: "public"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C002", Name: "new-activity", Type: "public"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C003", Name: "no-activity", Type: "public"}))
+
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", Text: "old"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C002", TS: "1700099999.000001", Text: "new"}))
+
+	items, err := db.GetChannelList(ChannelFilter{}, ChannelSortRecent)
+	require.NoError(t, err)
+	assert.Len(t, items, 3)
+	assert.Equal(t, "new-activity", items[0].Name)
+	assert.Equal(t, "old-activity", items[1].Name)
+	assert.Equal(t, "no-activity", items[2].Name) // null last, sorted by name
+}
+
+func TestGetChannelListWithFilter(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C001", Name: "general", Type: "public"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C002", Name: "secret", Type: "private"}))
+
+	items, err := db.GetChannelList(ChannelFilter{Type: "private"}, ChannelSortName)
+	require.NoError(t, err)
+	assert.Len(t, items, 1)
+	assert.Equal(t, "secret", items[0].Name)
+}
+
+func TestGetChannelListWatchedStatus(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C001", Name: "watched-ch", Type: "public"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C002", Name: "unwatched-ch", Type: "public"}))
+	require.NoError(t, db.AddWatch("channel", "C001", "watched-ch", "high"))
+
+	items, err := db.GetChannelList(ChannelFilter{}, ChannelSortName)
+	require.NoError(t, err)
+	assert.Len(t, items, 2)
+	// Alphabetical: unwatched-ch before watched-ch
+	assert.Equal(t, "unwatched-ch", items[0].Name)
+	assert.False(t, items[0].IsWatched)
+	assert.Equal(t, "watched-ch", items[1].Name)
+	assert.True(t, items[1].IsWatched)
+}
