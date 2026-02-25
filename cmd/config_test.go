@@ -110,6 +110,9 @@ ai:
 	// Non-sensitive values should appear
 	assert.Contains(t, output, "claude-sonnet-4-20250514")
 	assert.Contains(t, output, "demo")
+	// Defaults should be shown
+	assert.Contains(t, output, "sync.workers:")
+	assert.Contains(t, output, "sync.poll_interval:")
 }
 
 func TestConfigShow_NoFile(t *testing.T) {

@@ -40,17 +40,22 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	pollInterval := d.config.Sync.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = config.DefaultPollInterval
+	}
+
 	if d.config.Sync.SyncOnWake {
-		d.wakeCh = WatchWake(ctx, d.config.Sync.PollInterval)
+		d.wakeCh = WatchWake(ctx, pollInterval)
 	}
 
 	// Run an initial sync immediately on startup.
 	d.runSync(ctx)
 
-	ticker := time.NewTicker(d.config.Sync.PollInterval)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	d.logger.Printf("daemon started, polling every %s", d.config.Sync.PollInterval)
+	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
 	for {
 		select {
@@ -63,7 +68,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.logger.Println("wake event detected, syncing")
 			d.runSync(ctx)
 			// Reset the ticker so the next poll is a full interval from now.
-			ticker.Reset(d.config.Sync.PollInterval)
+			ticker.Reset(pollInterval)
 		}
 	}
 }
