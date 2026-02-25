@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"watchtower/internal/config"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -157,24 +159,34 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 }
 
 func runConfigShow(cmd *cobra.Command, args []string) error {
-	configPath := flagConfig
-
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	if err := v.ReadInConfig(); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintln(cmd.OutOrStdout(), "No config file found. Run 'watchtower config init' to create one.")
-			return nil
-		}
-		return fmt.Errorf("reading config: %w", err)
+	// Check if config file exists before loading
+	if _, err := os.Stat(flagConfig); os.IsNotExist(err) {
+		fmt.Fprintln(cmd.OutOrStdout(), "No config file found. Run 'watchtower config init' to create one.")
+		return nil
 	}
 
-	for _, key := range v.AllKeys() {
-		val := fmt.Sprintf("%v", v.Get(key))
-		if isSensitiveKey(key) {
-			val = maskValue(val)
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "active_workspace: %s\n", cfg.ActiveWorkspace)
+	fmt.Fprintf(out, "ai.model: %s\n", cfg.AI.Model)
+	fmt.Fprintf(out, "ai.max_tokens: %d\n", cfg.AI.MaxTokens)
+	fmt.Fprintf(out, "ai.context_budget: %d\n", cfg.AI.ContextBudget)
+	if cfg.AI.ApiKey != "" {
+		fmt.Fprintf(out, "ai.api_key: %s\n", maskValue(cfg.AI.ApiKey))
+	}
+	fmt.Fprintf(out, "sync.workers: %d\n", cfg.Sync.Workers)
+	fmt.Fprintf(out, "sync.initial_history_days: %d\n", cfg.Sync.InitialHistoryDays)
+	fmt.Fprintf(out, "sync.poll_interval: %s\n", cfg.Sync.PollInterval)
+	fmt.Fprintf(out, "sync.sync_threads: %t\n", cfg.Sync.SyncThreads)
+	fmt.Fprintf(out, "sync.sync_on_wake: %t\n", cfg.Sync.SyncOnWake)
+	for name, ws := range cfg.Workspaces {
+		if ws.SlackToken != "" {
+			fmt.Fprintf(out, "workspaces.%s.slack_token: %s\n", name, maskValue(ws.SlackToken))
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", key, val)
 	}
 	return nil
 }
