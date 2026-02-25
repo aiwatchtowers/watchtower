@@ -12,6 +12,11 @@ import (
 	"watchtower/internal/sync"
 )
 
+// minPollInterval is the minimum allowed poll interval. Values below this
+// (e.g. nanosecond-scale durations from misconfigured integer values) are
+// replaced with DefaultPollInterval. Tests may lower this for fast execution.
+var minPollInterval = 1 * time.Second
+
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
 	orchestrator *sync.Orchestrator
@@ -41,7 +46,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer cancel()
 
 	pollInterval := d.config.Sync.PollInterval
-	if pollInterval <= 0 {
+	if pollInterval < minPollInterval {
 		pollInterval = config.DefaultPollInterval
 	}
 
