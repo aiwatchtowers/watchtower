@@ -9,6 +9,11 @@ struct DigestListView: View {
     @State private var showAllDigests = false
     @State private var showAllDecisions = false
     @State private var activeTab: DigestTab = .digests
+    @State private var expandedDigestIDs: Set<Int> = []
+    @State private var expandedDecisionIDs: Set<String> = []
+    @State private var isSelectMode = false
+    @State private var checkedDigestIDs: Set<Int> = []
+    @State private var checkedDecisionIDs: Set<String> = []
 
     enum DigestTab: String, CaseIterable {
         case digests = "Digests"
@@ -126,6 +131,9 @@ struct DigestListView: View {
                 selectedDigestID = nil
                 selectedDecisionEntryID = nil
                 searchText = ""
+                isSelectMode = false
+                checkedDigestIDs.removeAll()
+                checkedDecisionIDs.removeAll()
             }
 
             // Search field + read filter
@@ -151,6 +159,9 @@ struct DigestListView: View {
 
             Divider()
 
+            // Selection toolbar
+            selectionToolbar(vm)
+
             // List content based on active tab
             switch activeTab {
             case .digests:
@@ -159,40 +170,215 @@ struct DigestListView: View {
                 DecisionsListView(
                     viewModel: vm,
                     selectedEntryID: $selectedDecisionEntryID,
+                    expandedEntryIDs: $expandedDecisionIDs,
                     searchText: $searchText,
-                    showAll: $showAllDecisions
+                    showAll: $showAllDecisions,
+                    isSelectMode: $isSelectMode,
+                    checkedIDs: $checkedDecisionIDs
                 )
             }
         }
         .frame(minWidth: 300, idealWidth: 360)
     }
 
+    @ViewBuilder
+    private func selectionToolbar(_ vm: DigestViewModel) -> some View {
+        if isSelectMode {
+            let count = activeTab == .digests ? checkedDigestIDs.count : checkedDecisionIDs.count
+            HStack(spacing: 8) {
+                Button {
+                    toggleSelectAll()
+                } label: {
+                    let allSelected = activeTab == .digests
+                        ? checkedDigestIDs.count == filteredDigests.count && !filteredDigests.isEmpty
+                        : checkedDecisionIDs.count == (viewModel?.decisionEntries.count ?? 0)
+                    Label(
+                        allSelected ? "Deselect All" : "Select All",
+                        systemImage: allSelected ? "checkmark.circle.fill" : "circle"
+                    )
+                    .font(.caption)
+                }
+                .buttonStyle(.borderless)
+
+                if count > 0 {
+                    Text("\(count) selected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    Button {
+                        markSelectedRead(vm)
+                    } label: {
+                        Label("Read", systemImage: "eye")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Mark selected as read")
+
+                    Button {
+                        submitSelectedFeedback(vm, rating: 1)
+                    } label: {
+                        Image(systemName: "hand.thumbsup")
+                            .foregroundStyle(.green)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Rate selected as good")
+
+                    Button {
+                        submitSelectedFeedback(vm, rating: -1)
+                    } label: {
+                        Image(systemName: "hand.thumbsdown")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Rate selected as bad")
+                } else {
+                    Spacer()
+                }
+
+                Button {
+                    isSelectMode = false
+                    checkedDigestIDs.removeAll()
+                    checkedDecisionIDs.removeAll()
+                } label: {
+                    Text("Cancel")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.accentColor.opacity(0.06))
+        } else {
+            HStack {
+                Spacer()
+                Button {
+                    isSelectMode = true
+                } label: {
+                    Label("Select", systemImage: "checkmark.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func toggleSelectAll() {
+        switch activeTab {
+        case .digests:
+            if checkedDigestIDs.count == filteredDigests.count {
+                checkedDigestIDs.removeAll()
+            } else {
+                checkedDigestIDs = Set(filteredDigests.map(\.id))
+            }
+        case .decisions:
+            guard let vm = viewModel else { return }
+            if checkedDecisionIDs.count == vm.decisionEntries.count {
+                checkedDecisionIDs.removeAll()
+            } else {
+                checkedDecisionIDs = Set(vm.decisionEntries.map(\.id))
+            }
+        }
+    }
+
+    private func markSelectedRead(_ vm: DigestViewModel) {
+        switch activeTab {
+        case .digests:
+            vm.markDigestsRead(checkedDigestIDs)
+            checkedDigestIDs.removeAll()
+        case .decisions:
+            let entries = vm.decisionEntries.filter { checkedDecisionIDs.contains($0.id) }
+            vm.markDecisionsRead(entries)
+            checkedDecisionIDs.removeAll()
+        }
+    }
+
+    private func submitSelectedFeedback(_ vm: DigestViewModel, rating: Int) {
+        switch activeTab {
+        case .digests:
+            let ids = checkedDigestIDs.map { String($0) }
+            vm.submitBatchFeedback(entityType: "digest", entityIDs: ids, rating: rating)
+            checkedDigestIDs.removeAll()
+        case .decisions:
+            let entries = vm.decisionEntries.filter { checkedDecisionIDs.contains($0.id) }
+            let ids = entries.map { "\($0.digestID):\($0.decisionIdx)" }
+            vm.submitBatchFeedback(entityType: "decision", entityIDs: ids, rating: rating)
+            checkedDecisionIDs.removeAll()
+        }
+        isSelectMode = false
+    }
+
     private func digestsList(_ vm: DigestViewModel) -> some View {
         ScrollView {
             LazyVStack(spacing: 1) {
                 ForEach(filteredDigests) { digest in
-                    digestRow(digest, vm: vm)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            selectedDigestID = digest.id
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            selectedDigestID == digest.id
-                                ? Color.accentColor.opacity(0.15)
-                                : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 6)
-                        )
-                        .padding(.horizontal, 4)
+                    digestListItem(digest, vm: vm)
                 }
             }
             .padding(.vertical, 4)
         }
     }
 
+    private func digestListItem(_ digest: Digest, vm: DigestViewModel) -> some View {
+        let isChecked = checkedDigestIDs.contains(digest.id)
+        let isSelected = selectedDigestID == digest.id && !isSelectMode
+        let bgColor: Color = isSelected
+            ? Color.accentColor.opacity(0.15)
+            : isChecked ? Color.accentColor.opacity(0.08) : Color.clear
+
+        return HStack(spacing: 0) {
+            if isSelectMode {
+                Button {
+                    toggleDigestChecked(digest.id)
+                } label: {
+                    Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isChecked ? Color.accentColor : Color.secondary)
+                        .font(.body)
+                }
+                .buttonStyle(.borderless)
+                .padding(.leading, 8)
+            }
+
+            digestRow(digest, vm: vm)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if isSelectMode {
+                        toggleDigestChecked(digest.id)
+                    } else {
+                        selectedDigestID = digest.id
+                    }
+                }
+        }
+        .padding(.horizontal, isSelectMode ? 4 : 10)
+        .padding(.vertical, 6)
+        .background(bgColor, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 4)
+    }
+
+    private func toggleDigestChecked(_ id: Int) {
+        if checkedDigestIDs.contains(id) {
+            checkedDigestIDs.remove(id)
+        } else {
+            checkedDigestIDs.insert(id)
+        }
+    }
+
+    private func toggleDigestExpanded(_ id: Int) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if expandedDigestIDs.contains(id) {
+                expandedDigestIDs.remove(id)
+            } else {
+                expandedDigestIDs.insert(id)
+            }
+        }
+    }
+
     private func digestRow(_ digest: Digest, vm: DigestViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let expanded = expandedDigestIDs.contains(digest.id)
+        return VStack(alignment: .leading, spacing: 6) {
             // Top: type badge + channel + date
             HStack(alignment: .center, spacing: 6) {
                 // Unread indicator
@@ -217,9 +403,20 @@ struct DigestListView: View {
 
                 Spacer()
 
-                Text(TimeFormatting.shortDateTime(fromUnix: digest.periodTo))
+                Text(TimeFormatting.parseISO(digest.createdAt).map { TimeFormatting.shortDateTime(from: $0) } ?? digest.createdAt)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+
+                // Expand/collapse chevron
+                Button {
+                    toggleDigestExpanded(digest.id)
+                } label: {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.borderless)
             }
 
             // Summary preview
@@ -227,7 +424,7 @@ struct DigestListView: View {
                 Text(digest.summary)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(expanded ? nil : 2)
             }
 
             // Bottom: stats row
@@ -261,8 +458,106 @@ struct DigestListView: View {
                         .foregroundStyle(.green)
                 }
             }
+
+            // Expanded inline content
+            if expanded {
+                digestExpandedContent(digest, vm: vm)
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func digestExpandedContent(_ digest: Digest, vm: DigestViewModel) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+
+            // Topics
+            let topics = digest.parsedTopics
+            if !topics.isEmpty {
+                FlowLayout(spacing: 4) {
+                    ForEach(topics, id: \.self) { topic in
+                        Text(topic)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.1), in: Capsule())
+                    }
+                }
+            }
+
+            // Decisions
+            let decisions = digest.parsedDecisions
+            if !decisions.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Decisions", systemImage: "arrow.triangle.branch")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.orange)
+
+                    ForEach(decisions) { decision in
+                        HStack(alignment: .top, spacing: 6) {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(decisionImportanceColor(decision.resolvedImportance))
+                                .frame(width: 2, height: 14)
+                                .padding(.top, 2)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(decision.text)
+                                    .font(.caption)
+                                    .lineLimit(2)
+                                if let by = decision.by, !by.isEmpty {
+                                    Text(by)
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Action items
+            let actions = digest.parsedActionItems
+            if !actions.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Action Items", systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.green)
+
+                    ForEach(actions) { item in
+                        HStack(alignment: .top, spacing: 4) {
+                            Image(systemName: item.status == "done" ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(item.status == "done" ? .green : .secondary)
+                                .font(.caption2)
+                                .padding(.top, 1)
+                            Text(item.text)
+                                .font(.caption)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+            }
+
+            // Open in detail button
+            Button {
+                selectedDigestID = digest.id
+            } label: {
+                Label("Open details", systemImage: "arrow.right.circle")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.top, 2)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    private func decisionImportanceColor(_ importance: String) -> Color {
+        switch importance {
+        case "high": .red
+        case "low": .gray
+        default: .orange
+        }
     }
 
     private func digestTypeLabel(_ type: String) -> String {

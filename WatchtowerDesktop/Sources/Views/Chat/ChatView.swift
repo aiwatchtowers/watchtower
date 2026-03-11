@@ -2,46 +2,34 @@ import SwiftUI
 
 struct ChatView: View {
     @Environment(AppState.self) private var appState
-    @State private var chatVM: ChatViewModel?
-    @State private var historyVM: ChatHistoryViewModel?
-    @State private var showHistory = true
-    @State private var historyWidth: CGFloat = 240
 
     var body: some View {
         Group {
-            if let chatVM, let historyVM {
-                chatSplitView(chatVM: chatVM, historyVM: historyVM)
+            if let chatVM = appState.chatViewModel, let historyVM = appState.chatHistoryViewModel {
+                ChatSplitView(chatVM: chatVM, historyVM: historyVM)
             } else {
                 ProgressView()
             }
         }
-        .onAppear { setup() }
+        .onAppear { appState.ensureChatViewModels() }
     }
+}
 
-    private func setup() {
-        guard let db = appState.databaseManager, chatVM == nil else { return }
-        let cvm = ChatViewModel(claudeService: ClaudeService(), dbManager: db)
-        let hvm = ChatHistoryViewModel(dbManager: db)
-        hvm.load()
+/// Extracted so that @State (historyWidth, showHistory) lives here — survives tab switches
+/// because AppState keeps the VMs alive and this view just re-renders around them.
+private struct ChatSplitView: View {
+    @Bindable var chatVM: ChatViewModel
+    let historyVM: ChatHistoryViewModel
+    @State private var showHistory = true
+    @State private var historyWidth: CGFloat = 240
 
-        cvm.onConversationUpdated = { [weak hvm] convID, title, sessionID in
-            guard let hvm else { return }
-            if let title { hvm.updateTitle(convID, title: title) }
-            if let sessionID { hvm.updateSessionID(convID, sessionID: sessionID) }
-            if title == nil && sessionID == nil { hvm.touch(convID) }
-        }
-
-        chatVM = cvm
-        historyVM = hvm
-    }
-
-    private func chatSplitView(chatVM: ChatViewModel, historyVM: ChatHistoryViewModel) -> some View {
+    var body: some View {
         HStack(spacing: 0) {
             // Main chat area (left)
             VStack(spacing: 0) {
                 // Toolbar row
                 HStack(spacing: 8) {
-                    Picker("Model", selection: Bindable(chatVM).selectedModel) {
+                    Picker("Model", selection: $chatVM.selectedModel) {
                         ForEach(ChatModel.allCases) { model in
                             Text(model.displayName).tag(model)
                         }
@@ -51,7 +39,7 @@ struct ChatView: View {
                     .disabled(chatVM.isStreaming)
 
                     Button {
-                        createNewChat(chatVM: chatVM, historyVM: historyVM)
+                        createNewChat()
                     } label: {
                         Image(systemName: "plus.message")
                     }
@@ -76,13 +64,12 @@ struct ChatView: View {
 
                 Divider()
 
-                chatContent(chatVM)
+                chatContent
             }
             .frame(maxWidth: .infinity)
 
             // Right panel: chat history
             if showHistory {
-                // Resize handle
                 ResizeHandle { delta in
                     historyWidth = min(max(historyWidth - delta, 160), 400)
                 }
@@ -90,48 +77,42 @@ struct ChatView: View {
                 Divider()
 
                 ChatHistoryView(historyVM: historyVM) {
-                    createNewChat(chatVM: chatVM, historyVM: historyVM)
+                    createNewChat()
                 }
                 .frame(width: historyWidth)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .onChange(of: historyVM.selectedConversationID) { oldID, newID in
-            switchConversation(chatVM: chatVM, historyVM: historyVM, from: oldID, to: newID)
+        .onChange(of: historyVM.selectedConversationID) { _, newID in
+            if let newID, let conv = historyVM.conversations.first(where: { $0.id == newID }) {
+                chatVM.bind(to: conv)
+            }
         }
     }
 
-    private func switchConversation(chatVM: ChatViewModel, historyVM: ChatHistoryViewModel, from oldID: Int64?, to newID: Int64?) {
-        guard let newID, let conv = historyVM.conversations.first(where: { $0.id == newID }) else {
-            return
-        }
-        chatVM.bind(to: conv)
-    }
-
-    private func createNewChat(chatVM: ChatViewModel, historyVM: ChatHistoryViewModel) {
+    private func createNewChat() {
         guard let conv = historyVM.createConversation() else { return }
         chatVM.newChat()
         chatVM.bind(to: conv)
     }
 
-    private func chatContent(_ vm: ChatViewModel) -> some View {
-        @Bindable var vm = vm
-        return VStack(spacing: 0) {
+    private var chatContent: some View {
+        VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        if vm.messages.isEmpty && vm.conversationID != nil {
-                            quickPrompts(vm)
-                        } else if vm.messages.isEmpty {
+                        if chatVM.messages.isEmpty && chatVM.conversationID != nil {
+                            quickPrompts
+                        } else if chatVM.messages.isEmpty {
                             emptyState
                         }
 
-                        ForEach(vm.messages) { msg in
+                        ForEach(chatVM.messages) { msg in
                             MessageBubble(message: msg)
                                 .id(msg.id)
                         }
 
-                        if let error = vm.errorMessage {
+                        if let error = chatVM.errorMessage {
                             Text(error)
                                 .font(.callout)
                                 .foregroundStyle(.red)
@@ -142,23 +123,22 @@ struct ChatView: View {
                     }
                     .padding()
                 }
-                .onChange(of: vm.messages.count) {
-                    if let last = vm.messages.last {
+                .onChange(of: chatVM.messages.count) {
+                    if let last = chatVM.messages.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
             }
 
             Divider()
-            ChatInput(text: $vm.inputText, isStreaming: vm.isStreaming) {
-                if vm.conversationID == nil {
-                    if let historyVM, let conv = historyVM.createConversation() {
-                        vm.bind(to: conv)
+            ChatInput(text: $chatVM.inputText, isStreaming: chatVM.isStreaming) {
+                if chatVM.conversationID == nil {
+                    if let conv = historyVM.createConversation() {
+                        chatVM.bind(to: conv)
                     }
                 }
-                vm.send()
+                chatVM.send()
             }
-            .disabled(vm.conversationID == nil && historyVM == nil)
         }
     }
 
@@ -177,7 +157,7 @@ struct ChatView: View {
         .padding(.top, 60)
     }
 
-    private func quickPrompts(_ vm: ChatViewModel) -> some View {
+    private var quickPrompts: some View {
         VStack(spacing: 8) {
             Text("Ask about your workspace")
                 .font(.title2)
@@ -185,18 +165,18 @@ struct ChatView: View {
                 .padding(.top, 40)
 
             HStack(spacing: 8) {
-                quickPromptButton("What happened today?", vm: vm)
-                quickPromptButton("Any decisions?", vm: vm)
-                quickPromptButton("Summarize activity", vm: vm)
+                quickPromptButton("What happened today?")
+                quickPromptButton("Any decisions?")
+                quickPromptButton("Summarize activity")
             }
             .padding(.bottom, 20)
         }
     }
 
-    private func quickPromptButton(_ text: String, vm: ChatViewModel) -> some View {
+    private func quickPromptButton(_ text: String) -> some View {
         Button(text) {
-            vm.inputText = text
-            vm.send()
+            chatVM.inputText = text
+            chatVM.send()
         }
         .buttonStyle(.bordered)
     }

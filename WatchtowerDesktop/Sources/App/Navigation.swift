@@ -5,8 +5,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case actions
     case digests
     case people
-    case channels
     case search
+    case training
 
     var id: String { rawValue }
 
@@ -16,8 +16,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .actions: "Actions"
         case .digests: "Digests"
         case .people: "People"
-        case .channels: "Channels"
         case .search: "Search"
+        case .training: "Training"
         }
     }
 
@@ -27,9 +27,19 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .actions: "checklist"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
-        case .channels: "number"
         case .search: "magnifyingglass"
+        case .training: "brain.head.profile"
         }
+    }
+
+    /// Main navigation items (shown above the separator).
+    static var mainItems: [SidebarDestination] {
+        [.chat, .actions, .digests, .people, .search]
+    }
+
+    /// Tool items (shown below the separator).
+    static var toolItems: [SidebarDestination] {
+        [.training]
     }
 }
 
@@ -103,10 +113,10 @@ struct MainNavigationView: View {
             DigestListView()
         case .people:
             PeopleListView()
-        case .channels:
-            ChannelListView()
         case .search:
             SearchView()
+        case .training:
+            TrainingView()
         }
     }
 }
@@ -114,20 +124,32 @@ struct MainNavigationView: View {
 // MARK: - Onboarding
 
 enum OnboardingStep: Int, CaseIterable {
-    case connect = 0
-    case settings = 1
-    case sync = 2
-    case generate = 3
-    case ready = 4
+    case claudeSetup = 0
+    case connect = 1
+    case settings = 2
+    case claudeCheck = 3
+    case sync = 4
+    case generate = 5
+    case ready = 6
 
     var title: String {
         switch self {
+        case .claudeSetup: "Setup"
         case .connect: "Connect"
         case .settings: "Settings"
+        case .claudeCheck: "AI Check"
         case .sync: "Sync"
         case .generate: "Insights"
         case .ready: "Ready"
         }
+    }
+
+    /// Steps shown in the progress indicator (claudeSetup is only shown when needed).
+    static func visibleSteps(includingClaudeSetup: Bool) -> [OnboardingStep] {
+        if includingClaudeSetup {
+            return allCases
+        }
+        return allCases.filter { $0 != .claudeSetup }
     }
 }
 
@@ -135,14 +157,13 @@ struct OnboardingView: View {
     let errorMessage: String?
     let onRetry: () -> Void
 
-    @State private var step: OnboardingStep = .connect
+    @State private var step: OnboardingStep = Constants.findClaudePath() == nil ? .claudeSetup : .connect
     @State private var isRunning = false
     @State private var output = ""
     @State private var cliError: String?
     @State private var syncProgress: SyncProgressData?
     @State private var digestProgress: InsightProgressData?
     @State private var actionsProgress: InsightProgressData?
-    @State private var peopleProgress: InsightProgressData?
     @State private var totalTokensIn = 0
     @State private var totalTokensOut = 0
     @State private var totalCost = 0.0
@@ -154,6 +175,15 @@ struct OnboardingView: View {
     @State private var settingsModelPreset = ModelPreset.balanced
     @State private var settingsPollPreset = PollPreset.normal
     @State private var settingsNotifications = true
+
+    // Claude setup
+    @State private var manualClaudePath = ""
+    @State private var claudeCheckResult: String?
+    @State private var showedClaudeSetup = Constants.findClaudePath() == nil
+
+    // Claude health check (AI Check step)
+    @State private var claudeHealthPassed = false
+    @State private var claudeHealthError: String?
 
     private var cliPath: String? { Constants.findCLIPath() }
     private var claudePath: String? { Constants.findClaudePath() }
@@ -176,10 +206,14 @@ struct OnboardingView: View {
 
             // Current step content
             switch step {
+            case .claudeSetup:
+                claudeSetupStep
             case .connect:
                 connectStep
             case .settings:
                 settingsStep
+            case .claudeCheck:
+                claudeCheckStepView
             case .sync:
                 syncStep
             case .generate:
@@ -204,8 +238,8 @@ struct OnboardingView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            // If config already exists, skip to settings
-            if FileManager.default.fileExists(atPath: Constants.configPath) {
+            // If Claude was found and config exists, skip connect → settings
+            if step == .connect && FileManager.default.fileExists(atPath: Constants.configPath) {
                 step = .settings
             }
         }
@@ -214,8 +248,9 @@ struct OnboardingView: View {
     // MARK: - Steps Indicator
 
     private var stepsIndicator: some View {
-        HStack(spacing: 4) {
-            ForEach(OnboardingStep.allCases, id: \.rawValue) { s in
+        let visible = OnboardingStep.visibleSteps(includingClaudeSetup: showedClaudeSetup)
+        return HStack(spacing: 4) {
+            ForEach(visible, id: \.rawValue) { s in
                 HStack(spacing: 4) {
                     Circle()
                         .fill(s.rawValue <= step.rawValue ? Color.accentColor : Color.secondary.opacity(0.3))
@@ -224,12 +259,206 @@ struct OnboardingView: View {
                         .font(.caption)
                         .foregroundStyle(s.rawValue <= step.rawValue ? .primary : .secondary)
                 }
-                if s != OnboardingStep.allCases.last {
+                if s != visible.last {
                     Rectangle()
                         .fill(s.rawValue < step.rawValue ? Color.accentColor : Color.secondary.opacity(0.3))
                         .frame(width: 30, height: 1)
                 }
             }
+        }
+    }
+
+    // MARK: - Claude Setup Step
+
+    private var claudeSetupStep: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "terminal")
+                .font(.system(size: 36))
+                .foregroundStyle(.orange)
+
+            Text("Claude Code CLI Required")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            Text("Watchtower uses Claude Code for AI-powered digests,\npeople analytics, and action items.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            // Installation instructions
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Install Claude Code")
+                        .font(.headline)
+
+                    installStep(number: 1, text: "Open **Terminal** app")
+
+                    installStep(number: 2, text: "Run this command:")
+                    codeBlock("npm install -g @anthropic-ai/claude-code")
+
+                    installStep(number: 3, text: "Verify installation:")
+                    codeBlock("which claude")
+
+                    Divider()
+
+                    Text("Don't have npm?")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Text("Install Node.js first from **nodejs.org**, then run the command above.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(8)
+            }
+            .frame(maxWidth: 480)
+
+            // Manual path override
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Or specify the path manually")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    HStack {
+                        TextField("e.g. /usr/local/bin/claude", text: $manualClaudePath)
+                            .textFieldStyle(.roundedBorder)
+
+                        Button("Browse...") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseFiles = true
+                            panel.canChooseDirectories = false
+                            panel.allowsMultipleSelection = false
+                            panel.message = "Select the 'claude' executable"
+                            if panel.runModal() == .OK, let url = panel.url {
+                                manualClaudePath = url.path
+                            }
+                        }
+                    }
+
+                    if let result = claudeCheckResult {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundStyle(result.contains("Found") ? .green : .red)
+                    }
+                }
+                .padding(8)
+            }
+            .frame(maxWidth: 480)
+
+            // Action buttons
+            HStack(spacing: 16) {
+                Button("Skip for now") {
+                    step = .connect
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+
+                Button {
+                    checkAndContinue()
+                } label: {
+                    HStack {
+                        if isRunning {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text("Check & Continue")
+                    }
+                    .frame(minWidth: 160)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isRunning)
+            }
+        }
+    }
+
+    private func installStep(number: Int, text: LocalizedStringKey) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("\(number).")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .frame(width: 20, alignment: .trailing)
+            Text(text)
+                .font(.subheadline)
+        }
+    }
+
+    private func codeBlock(_ code: String) -> some View {
+        HStack {
+            Text(code)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+            Spacer()
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(code, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .help("Copy to clipboard")
+        }
+        .padding(8)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .padding(.leading, 28)
+    }
+
+    private func checkAndContinue() {
+        isRunning = true
+        claudeCheckResult = nil
+
+        // If user provided a manual path, save it to config
+        if !manualClaudePath.isEmpty {
+            let path = manualClaudePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if FileManager.default.isExecutableFile(atPath: path) {
+                // Save to config via simple file write
+                saveClaudePathToConfig(path)
+                claudeCheckResult = "Found: \(path)"
+                isRunning = false
+                step = .connect
+                return
+            } else {
+                claudeCheckResult = "File not found or not executable: \(path)"
+                isRunning = false
+                return
+            }
+        }
+
+        // Re-check auto-detection
+        if let found = Constants.findClaudePath() {
+            claudeCheckResult = "Found: \(found)"
+            isRunning = false
+            step = .connect
+        } else {
+            claudeCheckResult = "Claude CLI not found. Install it and try again."
+            isRunning = false
+        }
+    }
+
+    /// Quote a YAML value safely: wrap in single quotes, escaping internal single quotes.
+    private func yamlQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "''") + "'"
+    }
+
+    private func saveClaudePathToConfig(_ path: String) {
+        let configDir = (Constants.configPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+
+        // C3 fix: YAML-safe quoting to prevent injection via path value
+        let safeLine = "claude_path: \(yamlQuote(path))\n"
+
+        if var content = try? String(contentsOfFile: Constants.configPath, encoding: .utf8) {
+            // Remove existing claude_path line if present
+            let lines = content.components(separatedBy: "\n").filter { !$0.hasPrefix("claude_path:") }
+            content = lines.joined(separator: "\n")
+            if !content.hasSuffix("\n") { content += "\n" }
+            content += safeLine
+            try? content.write(toFile: Constants.configPath, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Constants.configPath)
+        } else {
+            try? safeLine.write(toFile: Constants.configPath, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Constants.configPath)
         }
     }
 
@@ -244,36 +473,6 @@ struct OnboardingView: View {
                 Text("watchtower CLI not found. Reinstall the app or place the binary in your PATH.")
                     .foregroundStyle(.red)
                     .font(.caption)
-            } else if !hasClaudeCLI {
-                VStack(spacing: 8) {
-                    Label("Claude Code CLI not found", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .font(.subheadline)
-                    Text("AI features (chat, digests, action items) require Claude Code.\nInstall it: **npm install -g @anthropic-ai/claude-code**")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-
-                    Button {
-                        runAuthLogin()
-                    } label: {
-                        Text("Continue without AI")
-                            .frame(minWidth: 200)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(isRunning)
-
-                    Button {
-                        runAuthLogin()
-                    } label: {
-                        Text("I've installed it, Connect to Slack")
-                            .frame(minWidth: 200)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(isRunning)
-                }
             } else {
                 Button {
                     runAuthLogin()
@@ -296,6 +495,12 @@ struct OnboardingView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                }
+
+                if !hasClaudeCLI {
+                    Label("Claude Code not detected — AI features will be unavailable", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
         }
@@ -523,6 +728,224 @@ struct OnboardingView: View {
         }
     }
 
+    // MARK: - Claude Check Step
+
+    private var claudeCheckStepView: some View {
+        VStack(spacing: 20) {
+            if claudeHealthPassed {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.green)
+
+                Text("AI Connection Verified")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+
+                Text("Claude is ready with **\(settingsModelPreset.title)** model.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                ProgressView()
+                    .controlSize(.small)
+                Text("Starting sync...")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+
+            } else if isRunning {
+                ProgressView()
+                    .controlSize(.regular)
+
+                Text("Testing AI Connection")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+
+                Text("Sending a test request to Claude (**\(settingsModelPreset.aiModel)**)...")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                Text("This may take 10–30 seconds")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+
+            } else if let error = claudeHealthError {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.red)
+
+                Text("AI Connection Failed")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+
+                GroupBox {
+                    Text(error)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(4)
+                }
+                .frame(maxWidth: 480)
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Quick fix — open Terminal and run:")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+
+                        codeBlock("claude")
+
+                        Text("Complete the authentication, then press Retry.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(4)
+                }
+                .frame(maxWidth: 480)
+
+                HStack(spacing: 16) {
+                    if Constants.findClaudePath() == nil {
+                        Button("Back to Setup") {
+                            claudeHealthError = nil
+                            step = .claudeSetup
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    } else {
+                        Button("Back to Settings") {
+                            claudeHealthError = nil
+                            step = .settings
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    }
+
+                    Button {
+                        runClaudeHealthCheck()
+                    } label: {
+                        Text("Retry")
+                            .frame(minWidth: 100)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .onAppear {
+            if !claudeHealthPassed && !isRunning && claudeHealthError == nil {
+                runClaudeHealthCheck()
+            }
+        }
+    }
+
+    private func runClaudeHealthCheck() {
+        guard let claudePath = Constants.findClaudePath() else {
+            claudeHealthError = "Claude CLI not found.\nInstall Claude Code or go back to Setup."
+            return
+        }
+
+        isRunning = true
+        claudeHealthError = nil
+        claudeHealthPassed = false
+
+        let model = settingsModelPreset.aiModel
+
+        Task.detached {
+            let result = await Self.runClaudeCLICheck(claudePath: claudePath, model: model)
+            await MainActor.run {
+                self.isRunning = false
+                let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if result.exitCode == 0 && !stdout.isEmpty {
+                    self.claudeHealthPassed = true
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(1.5))
+                        if self.step == .claudeCheck {
+                            self.step = .sync
+                            self.runSync()
+                        }
+                    }
+                } else {
+                    self.claudeHealthError = Self.diagnoseClaudeError(
+                        stderr: stderr, exitCode: result.exitCode
+                    )
+                }
+            }
+        }
+    }
+
+    private static func runClaudeCLICheck(claudePath: String, model: String) async -> CLIResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: claudePath)
+        process.arguments = [
+            "-p", "respond with: OK",
+            "--output-format", "text",
+            "--model", model,
+        ]
+
+        // Use shared resolved environment (caches login shell PATH)
+        process.environment = Constants.resolvedEnvironment()
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return CLIResult(exitCode: -1, stdout: "", stderr: error.localizedDescription)
+        }
+
+        process.waitUntilExit()
+
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+
+        return CLIResult(
+            exitCode: process.terminationStatus,
+            stdout: String(data: stdoutData, encoding: .utf8) ?? "",
+            stderr: String(data: stderrData, encoding: .utf8) ?? ""
+        )
+    }
+
+    private static func diagnoseClaudeError(stderr: String, exitCode: Int32) -> String {
+        let lower = stderr.lowercased()
+
+        if lower.contains("not authenticated") || lower.contains("unauthorized")
+            || lower.contains("api key") || lower.contains("log in") || lower.contains("login")
+        {
+            return "Claude is not authenticated.\n\nOpen Terminal and run: claude\nComplete the login, then press Retry."
+        }
+
+        if lower.contains("model")
+            && (lower.contains("access") || lower.contains("available")
+                || lower.contains("permission") || lower.contains("not found"))
+        {
+            return "The selected model is not available for your account.\n\nGo back to Settings and try a different AI model (e.g. \"Fast\" for Haiku)."
+        }
+
+        if lower.contains("rate limit") || lower.contains("overloaded") || lower.contains("529") {
+            return "Claude API is temporarily overloaded.\nWait a moment and press Retry."
+        }
+
+        if lower.contains("network") || lower.contains("connection")
+            || lower.contains("timed out") || lower.contains("resolve")
+        {
+            return "Network error.\nCheck your internet connection and press Retry."
+        }
+
+        if !stderr.isEmpty {
+            let truncated = stderr.count > 500 ? String(stderr.prefix(500)) + "..." : stderr
+            return "Claude error (exit code \(exitCode)):\n\(truncated)"
+        }
+
+        return "Claude failed (exit code \(exitCode)).\nMake sure Claude Code is installed and authenticated."
+    }
+
     // MARK: - Sync Step
 
     private var syncStep: some View {
@@ -622,11 +1045,6 @@ struct OnboardingView: View {
                         label: "Digests",
                         icon: "doc.text.magnifyingglass",
                         progress: digestProgress
-                    )
-                    insightRow(
-                        label: "People",
-                        icon: "person.2",
-                        progress: peopleProgress
                     )
                     insightRow(
                         label: "Action Items",
@@ -797,8 +1215,7 @@ struct OnboardingView: View {
 
             await MainActor.run {
                 isRunning = false
-                step = .sync
-                runSync()
+                step = .claudeCheck
             }
         }
     }
@@ -874,33 +1291,17 @@ struct OnboardingView: View {
         cliError = nil
         digestProgress = nil
         actionsProgress = nil
-        peopleProgress = nil
         totalTokensIn = 0
         totalTokensOut = 0
         totalCost = 0.0
 
         Task {
-            // Phase 1: Digests + People in parallel (independent)
-            await withTaskGroup(of: (String, InsightProgressData?).self) { group in
-                let pipelines: [(String, [String])] = [
-                    ("digest", ["digest", "generate", "--progress-json"]),
-                    ("people", ["people", "generate", "--progress-json"]),
-                ]
-
-                for (name, args) in pipelines {
-                    group.addTask { [path] in
-                        let final = await self.runPipelineWithProgress(path: path, arguments: args, pipeline: name)
-                        return (name, final)
-                    }
-                }
-
-                for await (_, final) in group {
-                    if let f = final {
-                        totalTokensIn += f.inputTokens
-                        totalTokensOut += f.outputTokens
-                        totalCost += f.costUsd
-                    }
-                }
+            // Phase 1: Digests
+            let digestFinal = await runPipelineWithProgress(path: path, arguments: ["digest", "generate", "--progress-json"], pipeline: "digest")
+            if let f = digestFinal {
+                totalTokensIn += f.inputTokens
+                totalTokensOut += f.outputTokens
+                totalCost += f.costUsd
             }
 
             // Phase 2: Action items (depend on digests for related_digest_ids)
@@ -911,7 +1312,7 @@ struct OnboardingView: View {
                 totalCost += f.costUsd
             }
 
-            // Start daemon
+            // Start daemon (will run People analysis in background)
             _ = await Self.runCLI(path: path, arguments: ["sync", "--daemon", "--detach"])
 
             isRunning = false
@@ -948,7 +1349,6 @@ struct OnboardingView: View {
                             switch pipeline {
                             case "digest": self.digestProgress = json
                             case "actions": self.actionsProgress = json
-                            case "people": self.peopleProgress = json
                             default: break
                             }
                         }

@@ -274,6 +274,10 @@ final class ChatViewModel {
                 Permalink format: https://\(domain).slack.com/archives/{channel_id}/p{ts_without_dots}
                   Example: ts "1740577800.000100" → p1740577800000100
 
+                === IMPORTANT RESTRICTIONS ===
+                - You have NO internet access. Do NOT call any Slack API, WebFetch, or WebSearch tools.
+                - Your ONLY data source is the local SQLite database. Query it, do not try to fetch from Slack.
+
                 === WORKFLOW ===
                 1. Run a SQL query using the read_query MCP tool
                 2. If results are empty or insufficient, broaden the query (wider time range, different search terms)

@@ -7,7 +7,9 @@ DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
 BUILD_DIR="$PROJECT_ROOT/build"
 APP_NAME="Watchtower"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
-VERSION="${1:-1.0.0}"
+ENTITLEMENTS="$SCRIPT_DIR/Watchtower.entitlements"
+VERSION="${1:-0.2.0}"
+SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 
 echo "==> Building Watchtower v$VERSION (arm64)"
 echo ""
@@ -79,7 +81,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
-        <true/>
+        <false/>
     </dict>
 </dict>
 </plist>
@@ -91,13 +93,16 @@ if [ -f "$DESKTOP_DIR/Resources/AppIcon.icns" ]; then
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
-# Ad-hoc code sign (sign CLI first, then the whole bundle)
-echo "==> Code signing (ad-hoc)..."
-codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/watchtower"
-codesign --force --deep --sign - "$APP_BUNDLE"
-
-# Verify
-codesign --verify --verbose "$APP_BUNDLE" 2>&1
+# Code sign (ad-hoc for local use, developer cert for distribution)
+if [ "$SIGN_IDENTITY" != "-" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+    echo "==> Code signing with: $SIGN_IDENTITY"
+    codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+else
+    echo "==> Ad-hoc code signing..."
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
+fi
 
 # Create ZIP
 echo "==> Packaging..."

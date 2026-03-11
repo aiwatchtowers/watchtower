@@ -192,6 +192,71 @@ final class DigestViewModel {
         }
     }
 
+    // MARK: - Batch operations
+
+    func markDigestsRead(_ ids: Set<Int>) {
+        do {
+            try dbManager.dbPool.write { db in
+                for id in ids {
+                    try DigestQueries.markDigestRead(db, id: id)
+                }
+            }
+            for id in ids {
+                if let idx = digests.firstIndex(where: { $0.id == id && !$0.isRead }) {
+                    if let updated = digestByID(id) {
+                        digests[idx] = updated
+                    }
+                    unreadDigestCount = max(0, unreadDigestCount - 1)
+                }
+            }
+        } catch {
+            print("Failed to mark digests read: \(error)")
+        }
+    }
+
+    func markDecisionsRead(_ entries: [DecisionEntry]) {
+        do {
+            try dbManager.dbPool.write { db in
+                for entry in entries {
+                    try DigestQueries.markDecisionRead(db, digestID: entry.digestID, decisionIdx: entry.decisionIdx)
+                }
+            }
+            for entry in entries {
+                if let idx = decisionEntries.firstIndex(where: {
+                    $0.digestID == entry.digestID && $0.decisionIdx == entry.decisionIdx && !$0.isRead
+                }) {
+                    decisionEntries[idx] = DecisionEntry(
+                        decision: decisionEntries[idx].decision,
+                        digestID: decisionEntries[idx].digestID,
+                        decisionIdx: decisionEntries[idx].decisionIdx,
+                        channelID: decisionEntries[idx].channelID,
+                        channelName: decisionEntries[idx].channelName,
+                        digestSummary: decisionEntries[idx].digestSummary,
+                        digestType: decisionEntries[idx].digestType,
+                        date: decisionEntries[idx].date,
+                        messageTS: decisionEntries[idx].messageTS,
+                        isRead: true
+                    )
+                    unreadDecisionCount = max(0, unreadDecisionCount - 1)
+                }
+            }
+        } catch {
+            print("Failed to mark decisions read: \(error)")
+        }
+    }
+
+    func submitBatchFeedback(entityType: String, entityIDs: [String], rating: Int) {
+        do {
+            try dbManager.dbPool.write { db in
+                for entityID in entityIDs {
+                    try FeedbackQueries.addFeedback(db, entityType: entityType, entityID: entityID, rating: rating)
+                }
+            }
+        } catch {
+            print("Failed to submit batch feedback: \(error)")
+        }
+    }
+
     func digestByID(_ id: Int) -> Digest? {
         do {
             return try dbManager.dbPool.read { db in

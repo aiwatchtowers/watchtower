@@ -45,6 +45,7 @@ type Config struct {
 	AI              AIConfig                    `mapstructure:"ai"`
 	Sync            SyncConfig                  `mapstructure:"sync"`
 	Digest          DigestConfig                `mapstructure:"digest"`
+	ClaudePath      string                      `mapstructure:"claude_path"`
 }
 
 // Load reads config from the given path, binds env vars, and returns the config.

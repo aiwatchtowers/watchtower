@@ -61,12 +61,12 @@ Permalink format: https://%s.slack.com/archives/{channel_id}/p{ts_without_dots}
 ALWAYS include Slack links as descriptive markdown — never bare URLs.
 
 Channel link: [#channel-name](https://%s.slack.com/archives/{channel_id})
-  Example: [#wb-convert-dev](https://%s.slack.com/archives/C0A7H5RJHPC)
+  Example: [#engineering](https://%s.slack.com/archives/C0123EXAMPLE)
 
 Message link: [описательный текст](https://%s.slack.com/archives/{channel_id}/p{ts_no_dots})
   To convert ts to permalink: remove the dot. "1740577800.000100" → "p1740577800000100"
   Examples:
-    [сообщение Алексея про деплой](https://...slack.com/archives/C123/p1740577800000100)
+    [сообщение про деплой](https://...slack.com/archives/C123/p1740577800000100)
     [тред про отмену вывода](https://...slack.com/archives/C456/p1700000001000000)
     [обсуждение в #general](https://...slack.com/archives/C789/p1740577800000100)
 

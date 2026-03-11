@@ -5,6 +5,10 @@ struct DigestDetailView: View {
     let channelName: String?
     let viewModel: DigestViewModel
     @Environment(AppState.self) private var appState
+    @State private var showCreateAction = false
+    @State private var markingRead = false
+    @State private var markedRead = false
+    @State private var markReadError: String?
 
     var body: some View {
         ScrollView {
@@ -35,6 +39,9 @@ struct DigestDetailView: View {
                 // Action Items
                 actionItemsSection
 
+                // Create Action button
+                createActionButton
+
                 Divider()
 
                 // Stats footer
@@ -43,6 +50,15 @@ struct DigestDetailView: View {
             .padding()
         }
         .navigationTitle(channelName.map { "#\($0)" } ?? "Digest")
+        .sheet(isPresented: $showCreateAction) {
+            if let dbManager = appState.databaseManager {
+                CreateActionFromDigestSheet(
+                    digest: digest,
+                    channelName: channelName,
+                    dbManager: dbManager
+                )
+            }
+        }
     }
 
     private var header: some View {
@@ -73,7 +89,7 @@ struct DigestDetailView: View {
             // Date range + message count
             HStack(spacing: 12) {
                 Label(
-                    "\(TimeFormatting.shortDateTime(fromUnix: digest.periodFrom)) — \(TimeFormatting.shortDateTime(fromUnix: digest.periodTo))",
+                    "\(TimeFormatting.shortDateTime(fromUnix: digest.periodFrom)) — \(TimeFormatting.parseISO(digest.createdAt).map { TimeFormatting.shortDateTime(from: $0) } ?? TimeFormatting.shortDateTime(fromUnix: digest.periodTo))",
                     systemImage: "calendar"
                 )
                 .font(.caption)
@@ -90,16 +106,6 @@ struct DigestDetailView: View {
 
             // Action buttons
             HStack(spacing: 12) {
-                if !digest.channelID.isEmpty {
-                    Button {
-                        appState.navigateToChannel(digest.channelID)
-                    } label: {
-                        Label("View channel", systemImage: "text.bubble")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderless)
-                }
-
                 if !digest.channelID.isEmpty,
                    let url = viewModel.slackChannelURL(channelID: digest.channelID) {
                     Link(destination: url) {
@@ -107,6 +113,50 @@ struct DigestDetailView: View {
                             .font(.caption)
                     }
                     .buttonStyle(.borderless)
+                }
+
+                Button {
+                    showCreateAction = true
+                } label: {
+                    Label("Create Action", systemImage: "plus.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+
+                if !digest.channelID.isEmpty {
+                    Button {
+                        markChannelRead()
+                    } label: {
+                        if markingRead {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Label(
+                                markedRead ? "Marked read" : "Mark read in Slack",
+                                systemImage: markedRead ? "checkmark.circle.fill" : "eye"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(markedRead ? .green : .accentColor)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(markingRead || markedRead)
+                }
+
+                if let err = markReadError {
+                    Text(err)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+
+                Spacer()
+
+                if let dbManager = appState.databaseManager {
+                    FeedbackButtons(
+                        entityType: "digest",
+                        entityID: String(digest.id),
+                        dbManager: dbManager
+                    )
                 }
             }
         }
@@ -170,12 +220,14 @@ struct DigestDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Decisions")
                     .font(.headline)
-                ForEach(decisions) { decision in
+                ForEach(Array(decisions.enumerated()), id: \.element.id) { idx, decision in
                     DecisionCard(
                         decision: decision,
                         slackURL: decision.messageTS.flatMap { ts in
                             viewModel.slackMessageURL(channelID: digest.channelID, messageTS: ts)
-                        }
+                        },
+                        feedbackEntityID: "\(digest.id):\(idx)",
+                        dbManager: appState.databaseManager
                     )
                 }
             }
@@ -209,6 +261,19 @@ struct DigestDetailView: View {
         }
     }
 
+    private var createActionButton: some View {
+        Button {
+            showCreateAction = true
+        } label: {
+            Label("Create Action", systemImage: "plus.circle.fill")
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+    }
+
     private var statsFooter: some View {
         HStack {
             if !digest.model.isEmpty {
@@ -224,6 +289,20 @@ struct DigestDetailView: View {
         }
         .font(.caption)
         .foregroundStyle(.tertiary)
+    }
+
+    private func markChannelRead() {
+        markingRead = true
+        markReadError = nil
+        Task {
+            do {
+                try await SlackService.markRead(channelID: digest.channelID)
+                markedRead = true
+            } catch {
+                markReadError = error.localizedDescription
+            }
+            markingRead = false
+        }
     }
 
     private var typeColor: Color {

@@ -10,7 +10,7 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(SidebarDestination.allCases) { item in
+            ForEach(SidebarDestination.mainItems) { item in
                 sidebarButton(item)
 
                 // Action status sub-items
@@ -19,7 +19,41 @@ struct SidebarView: View {
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
+
             Spacer()
+
+            // Tools section
+            VStack(alignment: .leading, spacing: 2) {
+                Text("TOOLS")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 2)
+
+                ForEach(SidebarDestination.toolItems) { item in
+                    sidebarButton(item)
+                }
+            }
+
+            // Update available indicator
+            if appState.updateService.isUpdateAvailable {
+                Button {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .foregroundStyle(.blue)
+                        Text("Update Available")
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 8)

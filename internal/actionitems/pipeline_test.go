@@ -415,7 +415,7 @@ func TestCheckForUpdates(t *testing.T) {
 	// Add a thread reply (new update)
 	require.NoError(t, database.UpsertMessage(db.Message{
 		ChannelID: "C1", TS: "1000000005.000000", UserID: "U002",
-		Text: "actually this is now urgent, we need it by EOD",
+		Text:     "actually this is now urgent, we need it by EOD",
 		ThreadTS: nullString("1000000001.000000"),
 	}))
 

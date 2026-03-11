@@ -34,7 +34,12 @@ enum SlackService {
         let (data, _) = try await URLSession.shared.data(for: request)
         let resp = try JSONDecoder().decode(SlackResponse.self, from: data)
         if !resp.ok {
-            throw SlackError.apiError(resp.error ?? "unknown")
+            // M14: conversations.mark requires channels:write/groups:write/im:write/mpim:write scopes
+            let error = resp.error ?? "unknown"
+            if error == "missing_scope" {
+                throw SlackError.apiError("missing_scope — conversations.mark requires write scopes (channels:write, etc.) which may not be granted to this token")
+            }
+            throw SlackError.apiError(error)
         }
     }
 

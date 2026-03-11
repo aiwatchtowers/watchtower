@@ -19,9 +19,9 @@ import (
 )
 
 var (
-	digestFlagChannel        string
-	digestFlagDays           int
-	digestGenFlagSince       int
+	digestFlagChannel         string
+	digestFlagDays            int
+	digestGenFlagSince        int
 	digestGenFlagProgressJSON bool
 )
 
@@ -250,7 +250,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen := digest.NewClaudeGenerator(cfg.Digest.Model)
+	gen := digest.NewClaudeGenerator(cfg.Digest.Model, cfg.ClaudePath)
 	pipe := digest.New(database, cfg, gen, logger)
 	pipe.SinceOverride = sinceUnix
 
@@ -450,7 +450,7 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen := digest.NewClaudeGenerator(cfg.Digest.Model)
+	gen := digest.NewClaudeGenerator(cfg.Digest.Model, cfg.ClaudePath)
 	pipe := digest.New(database, cfg, gen, logger)
 
 	result, usage, err := pipe.RunPeriodSummary(cmd.Context(), from, to)

@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 const (
@@ -51,10 +52,11 @@ type ProgressFunc func(completed, totalUsers int, status string)
 
 // Pipeline generates and stores user communication analyses.
 type Pipeline struct {
-	db        *db.DB
-	cfg       *config.Config
-	generator digest.Generator
-	logger    *log.Logger
+	db          *db.DB
+	cfg         *config.Config
+	generator   digest.Generator
+	logger      *log.Logger
+	promptStore *prompts.Store
 
 	// OnProgress is called to report progress during analysis.
 	OnProgress ProgressFunc
@@ -85,6 +87,21 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 	}
 }
 
+// SetPromptStore sets an optional prompt store for loading customized prompts.
+func (p *Pipeline) SetPromptStore(store *prompts.Store) {
+	p.promptStore = store
+}
+
+func (p *Pipeline) getPrompt(id, fallback string) (string, int) {
+	if p.promptStore != nil {
+		tmpl, version, err := p.promptStore.Get(id)
+		if err == nil {
+			return tmpl, version
+		}
+	}
+	return fallback, 0
+}
+
 // AccumulatedUsage returns the total token usage accumulated across all Generate calls.
 func (p *Pipeline) AccumulatedUsage() (int, int, float64) {
 	return int(p.totalInputTokens.Load()), int(p.totalOutputTokens.Load()), float64(p.totalCostMicro.Load()) / 1e6
@@ -100,7 +117,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 
 	// loadCaches is called inside RunForWindow, no need to call it here.
 
-	now := time.Now().UTC()
+	now := time.Now()
 	to := float64(now.Unix())
 	from := float64(now.AddDate(0, 0, -DefaultWindowDays).Unix())
 
@@ -227,15 +244,16 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 	// Format user block
 	userBlock := p.formatUser(stats, msgs)
 
-	fromStr := time.Unix(int64(from), 0).UTC().Format("2006-01-02")
-	toStr := time.Unix(int64(to), 0).UTC().Format("2006-01-02")
+	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
+	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
 
 	langInstr := p.languageInstruction()
 	if !hasThreadData {
 		langInstr += "\n- IMPORTANT: Thread data (threads started / threads replied) is NOT available in this dataset. Do NOT penalize users for lack of thread participation. Do NOT mention threads in red flags or concerns."
 	}
 
-	prompt := fmt.Sprintf(singleUserPrompt, p.userName(stats.UserID), fromStr, toStr, langInstr, userBlock)
+	tmpl, _ := p.getPrompt(prompts.AnalysisUser, singleUserPrompt)
+	prompt := fmt.Sprintf(tmpl, p.userName(stats.UserID), fromStr, toStr, langInstr, userBlock)
 
 	raw, usage, err := p.generator.Generate(ctx, "", prompt)
 	if err != nil {
@@ -310,7 +328,7 @@ func (p *Pipeline) formatUser(stats db.UserStats, msgs []db.Message) string {
 			continue
 		}
 		channelName := p.channelName(m.ChannelID)
-		ts := time.Unix(int64(m.TSUnix), 0).UTC().Format("2006-01-02 15:04")
+		ts := time.Unix(int64(m.TSUnix), 0).Local().Format("2006-01-02 15:04")
 		text := sanitize(m.Text)
 		threadMarker := ""
 		if m.ThreadTS.Valid {
@@ -418,9 +436,10 @@ func (p *Pipeline) generatePeriodSummary(ctx context.Context, from, to float64) 
 		fmt.Fprintln(&sb)
 	}
 
-	fromStr := time.Unix(int64(from), 0).UTC().Format("2006-01-02")
-	toStr := time.Unix(int64(to), 0).UTC().Format("2006-01-02")
-	prompt := fmt.Sprintf(periodSummaryPrompt, fromStr, toStr, p.languageInstruction(), sb.String())
+	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
+	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
+	tmpl, _ := p.getPrompt(prompts.AnalysisPeriod, periodSummaryPrompt)
+	prompt := fmt.Sprintf(tmpl, fromStr, toStr, p.languageInstruction(), sb.String())
 
 	raw, usage, err := p.generator.Generate(ctx, "", prompt)
 	if err != nil {

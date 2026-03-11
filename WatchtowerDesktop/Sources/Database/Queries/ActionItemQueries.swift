@@ -149,4 +149,67 @@ enum ActionItemQueries {
     static func fetchCurrentUserID(_ db: Database) throws -> String? {
         try String.fetchOne(db, sql: "SELECT current_user_id FROM workspace LIMIT 1")
     }
+
+    /// Insert a manually-created action item (e.g. from a digest) and log history.
+    @discardableResult
+    static func insertActionItem(
+        _ db: Database,
+        channelID: String,
+        assigneeUserID: String,
+        assigneeRaw: String,
+        text: String,
+        context: String,
+        sourceMessageTS: String,
+        sourceChannelName: String,
+        priority: String,
+        dueDate: Double?,
+        periodFrom: Double,
+        periodTo: Double,
+        model: String,
+        inputTokens: Int,
+        outputTokens: Int,
+        costUSD: Double,
+        participants: String,
+        sourceRefs: String,
+        requesterName: String,
+        requesterUserID: String,
+        category: String,
+        blocking: String,
+        tags: String,
+        decisionSummary: String,
+        decisionOptions: String,
+        relatedDigestIDs: String,
+        subItems: String
+    ) throws -> Int {
+        try db.execute(sql: """
+            INSERT INTO action_items (
+                channel_id, assignee_user_id, assignee_raw, text, context,
+                source_message_ts, source_channel_name, status, priority,
+                due_date, period_from, period_to, model, input_tokens,
+                output_tokens, cost_usd, participants, source_refs,
+                requester_name, requester_user_id, category, blocking,
+                tags, decision_summary, decision_options, related_digest_ids, sub_items
+            ) VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, 'inbox', ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?, ?
+            )
+            """, arguments: [
+                channelID, assigneeUserID, assigneeRaw, text, context,
+                sourceMessageTS, sourceChannelName, priority,
+                dueDate, periodFrom, periodTo, model, inputTokens,
+                outputTokens, costUSD, participants, sourceRefs,
+                requesterName, requesterUserID, category, blocking,
+                tags, decisionSummary, decisionOptions, relatedDigestIDs, subItems
+            ])
+        let rowID = Int(db.lastInsertedRowID)
+        try db.execute(sql: """
+            INSERT INTO action_item_history (action_item_id, event, field, old_value, new_value)
+            VALUES (?, 'created', 'source', '', 'from_digest')
+            """, arguments: [rowID])
+        return rowID
+    }
 }

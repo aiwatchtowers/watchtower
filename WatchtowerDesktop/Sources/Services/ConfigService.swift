@@ -15,6 +15,7 @@ final class ConfigService {
     var digestMinMessages: Int?
     var digestLanguage: String?
     var aiModel: String?
+    var claudePath: String?
     var parseError: String?
 
     private let configPath: String
@@ -57,6 +58,8 @@ final class ConfigService {
                 aiModel = ai["model"] as? String
             }
 
+            claudePath = yaml["claude_path"] as? String
+
             parseError = nil
         } catch {
             parseError = error.localizedDescription
@@ -89,11 +92,16 @@ final class ConfigService {
         if let v = aiModel, !v.isEmpty { ai["model"] = v } else { ai.removeValue(forKey: "model") }
         if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
 
+        // Claude path override
+        if let v = claudePath, !v.isEmpty { yaml["claude_path"] = v } else { yaml.removeValue(forKey: "claude_path") }
+
         let output = try Yams.dump(object: yaml, allowUnicode: true)
 
         let dir = (configPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try output.write(toFile: configPath, atomically: true, encoding: .utf8)
+        // Restrict permissions to owner-only (config contains Slack token)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
 
         rawYAML = yaml
     }

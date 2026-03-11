@@ -8,9 +8,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"watchtower/internal/claude"
 )
 
 // limitedWriter wraps a writer and stops writing after limit bytes.
@@ -38,100 +39,16 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	return total, nil
 }
 
-// findClaude looks up the Claude CLI binary, checking well-known paths
-// first (needed when launched from a macOS app with minimal PATH).
-func findClaude() string {
-	// If it's in PATH already, use that.
-	if p, err := exec.LookPath("claude"); err == nil {
-		return p
-	}
-
-	home, _ := os.UserHomeDir()
-
-	// Well-known install locations
-	candidates := []string{
-		"/usr/local/bin/claude",
-		"/opt/homebrew/bin/claude",
-	}
-	if home != "" {
-		candidates = append(candidates,
-			filepath.Join(home, ".claude", "bin", "claude"),
-		)
-		// nvm node versions
-		nvmDir := filepath.Join(home, ".nvm", "versions", "node")
-		if entries, err := os.ReadDir(nvmDir); err == nil {
-			// Check newest versions first
-			for i := len(entries) - 1; i >= 0; i-- {
-				p := filepath.Join(nvmDir, entries[i].Name(), "bin", "claude")
-				candidates = append(candidates, p)
-			}
-		}
-	}
-
-	for _, p := range candidates {
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			return p
-		}
-	}
-
-	return "claude" // fallback — let exec report the error
-}
-
-// richPATH builds a PATH that includes well-known Node.js locations so that
-// `#!/usr/bin/env node` in the Claude CLI shebang can resolve `node`.
-// This is needed when launched from a macOS .app bundle where PATH is minimal.
-func richPATH() string {
-	existing := os.Getenv("PATH")
-	home, _ := os.UserHomeDir()
-
-	extra := []string{
-		"/usr/local/bin",
-		"/opt/homebrew/bin",
-	}
-
-	if home != "" {
-		// nvm — find all installed node versions
-		nvmDir := filepath.Join(home, ".nvm", "versions", "node")
-		if entries, err := os.ReadDir(nvmDir); err == nil {
-			for i := len(entries) - 1; i >= 0; i-- {
-				extra = append(extra, filepath.Join(nvmDir, entries[i].Name(), "bin"))
-			}
-		}
-		// fnm, volta, other common managers
-		extra = append(extra,
-			filepath.Join(home, ".local", "bin"),
-			filepath.Join(home, ".volta", "bin"),
-			filepath.Join(home, ".fnm", "current", "bin"),
-			filepath.Join(home, ".claude", "bin"),
-		)
-	}
-
-	// Prepend extras (deduplicated) to existing PATH
-	seen := make(map[string]bool)
-	for _, p := range strings.Split(existing, ":") {
-		seen[p] = true
-	}
-	var parts []string
-	for _, p := range extra {
-		if !seen[p] {
-			seen[p] = true
-			parts = append(parts, p)
-		}
-	}
-	if existing != "" {
-		parts = append(parts, existing)
-	}
-	return strings.Join(parts, ":")
-}
-
 // ClaudeGenerator implements Generator by calling the Claude Code CLI.
 type ClaudeGenerator struct {
-	model string
+	model      string
+	claudePath string // optional override from config (claude_path)
 }
 
 // NewClaudeGenerator creates a generator that uses the Claude CLI.
-func NewClaudeGenerator(model string) *ClaudeGenerator {
-	return &ClaudeGenerator{model: model}
+// claudePath is an optional explicit path to the claude binary; pass "" for auto-detection.
+func NewClaudeGenerator(model, claudePath string) *ClaudeGenerator {
+	return &ClaudeGenerator{model: model, claudePath: claudePath}
 }
 
 // cliUsage is the nested usage object in the Claude CLI response.
@@ -197,7 +114,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 		args = append(args, "--system-prompt", systemPrompt)
 	}
 
-	claudeBin := findClaude()
+	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 	cmd.Cancel = func() error {
@@ -208,7 +125,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	cmd.Dir = os.TempDir()
 	// Enrich PATH so `#!/usr/bin/env node` resolves when launched from a
 	// macOS .app bundle with minimal PATH (e.g. nvm-managed node).
-	cmd.Env = append(os.Environ(), "PATH="+richPATH())
+	cmd.Env = append(os.Environ(), "PATH="+claude.RichPATH())
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}

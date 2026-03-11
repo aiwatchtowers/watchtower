@@ -143,7 +143,7 @@ func runSyncDetach(cfg *config.Config) error {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening log file: %w", err)
 	}
@@ -234,7 +234,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(filepath.Dir(syncLog), 0o755); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
-	logFile, err := os.OpenFile(syncLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := os.OpenFile(syncLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening log file: %w", err)
 	}
@@ -257,7 +257,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		d.SetLogger(logger)
 		d.SetPIDPath(pidFilePath(cfg))
 		if cfg.Digest.Enabled {
-			gen := digest.NewClaudeGenerator(cfg.Digest.Model)
+			gen := digest.NewClaudeGenerator(cfg.Digest.Model, cfg.ClaudePath)
 			pipe := digest.New(database, cfg, gen, logger)
 			d.SetDigestPipeline(pipe)
 			d.SetAnalysisPipeline(analysis.New(database, cfg, gen, logger))
@@ -390,7 +390,7 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	}
 
 	out := os.Stdout
-	gen := digest.NewClaudeGenerator(cfg.Digest.Model)
+	gen := digest.NewClaudeGenerator(cfg.Digest.Model, cfg.ClaudePath)
 
 	// Digests
 	fmt.Fprintln(out)

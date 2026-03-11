@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"watchtower/internal/claude"
 )
 
 // Client wraps the Claude Code CLI for AI queries.
@@ -22,11 +24,12 @@ type Client struct {
 // NewClient creates a new AI client that invokes the Claude Code CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
 // server is attached so the AI can query the database directly.
-func NewClient(model, dbPath string) *Client {
+// claudePath is an optional explicit path to the claude binary; pass "" for default PATH lookup.
+func NewClient(model, dbPath, claudePath string) *Client {
 	return &Client{
 		model:     model,
 		dbPath:    dbPath,
-		claudeCmd: "claude",
+		claudeCmd: claude.FindBinary(claudePath),
 	}
 }
 
@@ -91,6 +94,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			return cmd.Process.Signal(os.Interrupt)
 		}
 		cmd.WaitDelay = 5 * time.Second
+		cmd.Env = append(os.Environ(), "PATH="+claude.RichPATH())
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -165,6 +169,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 5 * time.Second
+	cmd.Env = append(os.Environ(), "PATH="+claude.RichPATH())
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}

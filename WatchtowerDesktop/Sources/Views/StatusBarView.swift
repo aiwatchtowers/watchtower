@@ -6,6 +6,7 @@ struct StatusBarView: View {
     @State private var daemonManager = DaemonManager()
     @State private var lastSync: String?
     @State private var stats: WorkspaceStats?
+    @State private var refreshTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 16) {
@@ -36,6 +37,11 @@ struct StatusBarView: View {
                     Label(formatNumber(stats.messageCount), systemImage: "message")
                 }
             }
+
+            Divider().frame(height: 12)
+
+            Text("v\(Constants.appVersion)")
+                .foregroundStyle(.tertiary)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -46,9 +52,17 @@ struct StatusBarView: View {
             daemonManager.resolvePathIfNeeded()
             daemonManager.startPolling()
             loadStats()
+            refreshTask = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(30))
+                    loadStats()
+                }
+            }
         }
         .onDisappear {
             daemonManager.stopPolling()
+            refreshTask?.cancel()
+            refreshTask = nil
         }
     }
 

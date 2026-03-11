@@ -345,7 +345,7 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen := digest.NewClaudeGenerator(cfg.Digest.Model)
+	gen := digest.NewClaudeGenerator(cfg.Digest.Model, cfg.ClaudePath)
 	pipe := analysis.New(database, cfg, gen, logger)
 	pipe.ForceRegenerate = true
 	pipe.Workers = peopleFlagWorkers

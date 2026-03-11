@@ -127,6 +127,7 @@ type UserAnalysis struct {
 	InputTokens        int
 	OutputTokens       int
 	CostUSD            float64
+	PromptVersion      int // version of prompt used for generation
 	CreatedAt          string
 }
 
@@ -187,24 +188,55 @@ type ActionItem struct {
 	DecisionOptions   string  // JSON array of options if decision pending
 	RelatedDigestIDs  string  // JSON array of related digest IDs
 	SubItems          string  // JSON array of sub-tasks with statuses
+	PromptVersion     int     // version of prompt used for generation
 }
 
 // Digest represents an AI-generated summary of channel activity.
 type Digest struct {
-	ID           int
-	ChannelID    string  // "" for cross-channel digests
-	PeriodFrom   float64 // Unix timestamp
-	PeriodTo     float64 // Unix timestamp
-	Type         string  // "channel", "daily", "weekly"
-	Summary      string
-	Topics       string // JSON array
-	Decisions    string // JSON array
-	ActionItems  string // JSON array
-	MessageCount int
-	Model        string
-	InputTokens  int
-	OutputTokens int
-	CostUSD      float64
-	CreatedAt    string
-	ReadAt       sql.NullString // NULL = unread, ISO8601 = when read
+	ID            int
+	ChannelID     string  // "" for cross-channel digests
+	PeriodFrom    float64 // Unix timestamp
+	PeriodTo      float64 // Unix timestamp
+	Type          string  // "channel", "daily", "weekly"
+	Summary       string
+	Topics        string // JSON array
+	Decisions     string // JSON array
+	ActionItems   string // JSON array
+	MessageCount  int
+	Model         string
+	InputTokens   int
+	OutputTokens  int
+	CostUSD       float64
+	CreatedAt     string
+	ReadAt        sql.NullString // NULL = unread, ISO8601 = when read
+	PromptVersion int            // version of prompt used for generation
+}
+
+// Feedback represents a user rating on AI-generated content.
+type Feedback struct {
+	ID         int
+	EntityType string // "digest", "action_item", "decision"
+	EntityID   string // entity-specific ID
+	Rating     int    // +1 = good, -1 = bad
+	Comment    string
+	CreatedAt  string
+}
+
+// Prompt represents an editable AI prompt template.
+type Prompt struct {
+	ID        string // "digest.channel", "actionitems.extract", "analysis.user", etc.
+	Template  string
+	Version   int
+	Language  string // "" = auto-detect, "en", "ru", etc.
+	UpdatedAt string
+}
+
+// PromptHistory records a snapshot of a prompt at a specific version.
+type PromptHistory struct {
+	ID        int
+	PromptID  string
+	Version   int
+	Template  string
+	Reason    string // "tuned: 12 negative feedbacks", "manual edit", "rollback to v3"
+	CreatedAt string
 }

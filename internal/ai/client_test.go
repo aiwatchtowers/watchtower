@@ -24,13 +24,13 @@ func writeMockClaude(t *testing.T, script string) string {
 }
 
 func TestNewClient_DefaultClaudeCmd(t *testing.T) {
-	c := NewClient("model", "")
-	assert.Equal(t, "claude", c.claudeCmd)
+	c := NewClient("model", "", "")
+	assert.Contains(t, c.claudeCmd, "claude")
 	assert.Equal(t, "model", c.model)
 }
 
 func TestBuildArgs(t *testing.T) {
-	c := NewClient("claude-sonnet-4-6", "")
+	c := NewClient("claude-sonnet-4-6", "", "")
 	args := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.Contains(t, args, "-p")
@@ -49,7 +49,7 @@ func TestBuildArgs(t *testing.T) {
 }
 
 func TestBuildArgs_WithDBPath(t *testing.T) {
-	c := NewClient("claude-sonnet-4-6", "/tmp/test.db")
+	c := NewClient("claude-sonnet-4-6", "/tmp/test.db", "")
 	args := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.Contains(t, args, "--mcp-config")
@@ -64,14 +64,14 @@ func TestBuildArgs_WithDBPath(t *testing.T) {
 }
 
 func TestBuildArgs_WithoutDBPath(t *testing.T) {
-	c := NewClient("claude-sonnet-4-6", "")
+	c := NewClient("claude-sonnet-4-6", "", "")
 	args := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.NotContains(t, args, "--mcp-config")
 }
 
 func TestBuildArgs_WithSessionID(t *testing.T) {
-	c := NewClient("claude-sonnet-4-6", "")
+	c := NewClient("claude-sonnet-4-6", "", "")
 	args := c.buildArgs("system prompt", "user message", "stream-json", "session-123")
 
 	assert.Contains(t, args, "--resume")
@@ -82,7 +82,7 @@ func TestBuildArgs_WithSessionID(t *testing.T) {
 func TestQuerySync_Success(t *testing.T) {
 	mockPath := writeMockClaude(t, `echo "Hello from Claude"`)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	result, err := c.QuerySync(context.Background(), "system", "hello", "")
@@ -93,7 +93,7 @@ func TestQuerySync_Success(t *testing.T) {
 func TestQuerySync_TrimsTrailingNewlines(t *testing.T) {
 	mockPath := writeMockClaude(t, `printf "response\n\n"`)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	result, err := c.QuerySync(context.Background(), "system", "hello", "")
@@ -104,7 +104,7 @@ func TestQuerySync_TrimsTrailingNewlines(t *testing.T) {
 func TestQuerySync_ExitError(t *testing.T) {
 	mockPath := writeMockClaude(t, `echo "something went wrong" >&2; exit 1`)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	_, err := c.QuerySync(context.Background(), "system", "hello", "")
@@ -116,7 +116,7 @@ func TestQuerySync_ExitError(t *testing.T) {
 func TestQuerySync_ContextCancellation(t *testing.T) {
 	mockPath := writeMockClaude(t, `sleep 10; echo "too late"`)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -135,7 +135,7 @@ printf '{"type":"result","subtype":"success","result":"Hello world!","session_id
 `
 	mockPath := writeMockClaude(t, script)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	textCh, errCh, sidCh := c.Query(context.Background(), "system", "hello", "")
@@ -161,7 +161,7 @@ printf '{"type":"result","subtype":"success","result":"response","session_id":"s
 `
 	mockPath := writeMockClaude(t, script)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
@@ -179,7 +179,7 @@ printf '{"type":"result","subtype":"success","result":"response","session_id":"s
 func TestQuery_StreamingError(t *testing.T) {
 	mockPath := writeMockClaude(t, `echo "error occurred" >&2; exit 1`)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
@@ -195,7 +195,7 @@ func TestQuery_StreamingError(t *testing.T) {
 func TestQuery_ContextCancellation(t *testing.T) {
 	mockPath := writeMockClaude(t, `sleep 10`)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -223,7 +223,7 @@ printf '{"type":"result","subtype":"success","result":"hi","session_id":"new-ses
 `
 	mockPath := writeMockClaude(t, script)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	textCh, errCh, sidCh := c.Query(context.Background(), "system", "hello", "")
@@ -243,7 +243,7 @@ printf '{"type":"result","subtype":"success","result":"hi"}\n'
 `
 	mockPath := writeMockClaude(t, script)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	textCh, errCh, sidCh := c.Query(context.Background(), "system", "hello", "")
@@ -297,7 +297,7 @@ printf '{broken json\n'
 `
 	mockPath := writeMockClaude(t, script)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
@@ -320,7 +320,7 @@ printf '\n'
 `
 	mockPath := writeMockClaude(t, script)
 
-	c := NewClient("test-model", "")
+	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath
 
 	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")

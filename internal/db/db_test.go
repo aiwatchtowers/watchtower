@@ -10,6 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// openTestDB is a test helper that opens an in-memory DB and registers cleanup.
+func openTestDB(t *testing.T) *DB {
+	t.Helper()
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
 func TestOpenMemory(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
@@ -72,7 +81,7 @@ func TestMigrationSetsUserVersion(t *testing.T) {
 
 	v, err := db.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 16, v)
+	assert.Equal(t, 17, v)
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -109,6 +118,7 @@ func TestAllTablesExist(t *testing.T) {
 		"reactions", "files", "sync_state", "watch_list", "user_checkpoints",
 		"digests", "decision_reads", "user_analyses", "period_summaries",
 		"custom_emojis", "action_items", "action_item_history",
+		"feedback", "prompts", "prompt_history",
 	}
 
 	for _, table := range expectedTables {

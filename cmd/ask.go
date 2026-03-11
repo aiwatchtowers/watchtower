@@ -100,7 +100,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create AI client
-	aiClient := ai.NewClient(model, dbPath)
+	aiClient := ai.NewClient(model, dbPath, cfg.ClaudePath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()

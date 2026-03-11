@@ -164,7 +164,8 @@ CREATE TABLE IF NOT EXISTS digests (
     output_tokens INTEGER NOT NULL DEFAULT 0,
     cost_usd      REAL NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    read_at       TEXT,  -- NULL = unread, ISO8601 = when read (local-only)
+    read_at         TEXT,  -- NULL = unread, ISO8601 = when read (local-only)
+    prompt_version  INTEGER NOT NULL DEFAULT 0,  -- version of prompt used for generation
     UNIQUE(channel_id, type, period_from, period_to)
 );
 CREATE INDEX IF NOT EXISTS idx_digests_channel ON digests(channel_id);
@@ -208,6 +209,7 @@ CREATE TABLE IF NOT EXISTS user_analyses (
     input_tokens        INTEGER NOT NULL DEFAULT 0,
     output_tokens       INTEGER NOT NULL DEFAULT 0,
     cost_usd            REAL NOT NULL DEFAULT 0,
+    prompt_version      INTEGER NOT NULL DEFAULT 0,  -- version of prompt used for generation
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     UNIQUE(user_id, period_from, period_to)
 );
@@ -273,12 +275,46 @@ CREATE TABLE IF NOT EXISTS action_items (
     decision_summary    TEXT NOT NULL DEFAULT '',     -- how the group arrived at the decision
     decision_options    TEXT NOT NULL DEFAULT '',     -- JSON array of options if decision pending
     related_digest_ids  TEXT NOT NULL DEFAULT '',     -- JSON array of related digest IDs
-    sub_items           TEXT NOT NULL DEFAULT ''      -- JSON array of sub-tasks with statuses
+    sub_items           TEXT NOT NULL DEFAULT '',     -- JSON array of sub-tasks with statuses
+    prompt_version      INTEGER NOT NULL DEFAULT 0   -- version of prompt used for generation
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_action_items_dedup ON action_items(channel_id, assignee_user_id, source_message_ts, text);
 CREATE INDEX IF NOT EXISTS idx_action_items_assignee ON action_items(assignee_user_id);
 CREATE INDEX IF NOT EXISTS idx_action_items_status ON action_items(status);
 CREATE INDEX IF NOT EXISTS idx_action_items_period ON action_items(period_from, period_to);
+
+-- Feedback on AI-generated content (thumbs up/down)
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'action_item', 'decision')),
+    entity_id   TEXT NOT NULL,       -- digest.id, action_items.id, or "digest_id:decision_idx"
+    rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),  -- -1 = bad, +1 = good
+    comment     TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_entity ON feedback(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(entity_type, rating);
+
+-- Editable AI prompt templates with versioning
+CREATE TABLE IF NOT EXISTS prompts (
+    id         TEXT PRIMARY KEY,  -- 'digest.channel', 'digest.daily', 'actionitems.extract', etc.
+    template   TEXT NOT NULL,
+    version    INTEGER NOT NULL DEFAULT 1,
+    language   TEXT NOT NULL DEFAULT '',  -- '' = auto-detect, 'en', 'ru', etc.
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Prompt version history for rollback and audit
+CREATE TABLE IF NOT EXISTS prompt_history (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    prompt_id  TEXT NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+    version    INTEGER NOT NULL,
+    template   TEXT NOT NULL,
+    reason     TEXT NOT NULL DEFAULT '',  -- "tuned: 12 negative feedbacks on decisions", "manual edit", "rollback to v3"
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_history_prompt ON prompt_history(prompt_id);
+CREATE INDEX IF NOT EXISTS idx_prompt_history_version ON prompt_history(prompt_id, version);
 
 -- Action item change history
 CREATE TABLE IF NOT EXISTS action_item_history (

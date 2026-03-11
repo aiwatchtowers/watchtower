@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 )
 
 // Usage holds token and cost metrics from an AI generation call.
@@ -57,10 +58,11 @@ type ActionItem struct {
 type ProgressFunc func(done, total int, status string)
 
 type Pipeline struct {
-	db        *db.DB
-	cfg       *config.Config
-	generator Generator
-	logger    *log.Logger
+	db          *db.DB
+	cfg         *config.Config
+	generator   Generator
+	logger      *log.Logger
+	promptStore *prompts.Store
 
 	// SinceOverride, if non-zero, overrides the automatic "since last digest"
 	// window. Used by `digest generate --since` to force a custom time range.
@@ -82,6 +84,24 @@ func New(database *db.DB, cfg *config.Config, gen Generator, logger *log.Logger)
 		generator: gen,
 		logger:    logger,
 	}
+}
+
+// SetPromptStore sets an optional prompt store for loading customized prompts.
+// If not set, built-in defaults are used.
+func (p *Pipeline) SetPromptStore(store *prompts.Store) {
+	p.promptStore = store
+}
+
+// getPrompt loads a prompt template from the store (if set), falling back to the
+// built-in const. Returns the template string and its version (0 = built-in).
+func (p *Pipeline) getPrompt(id, fallback string) (string, int) {
+	if p.promptStore != nil {
+		tmpl, version, err := p.promptStore.Get(id)
+		if err == nil {
+			return tmpl, version
+		}
+	}
+	return fallback, 0
 }
 
 // Run executes the full digest pipeline: channel digests, then daily rollup.
@@ -120,6 +140,10 @@ func (p *Pipeline) Run(ctx context.Context) (int, *Usage, error) {
 // since the last digest run. Returns the count and accumulated token usage.
 // Channels are processed in parallel using digest.workers (default 5).
 func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
+	if p.OnProgress != nil {
+		p.OnProgress(0, 0, "Finding channels with new messages...")
+	}
+
 	sinceUnix := p.SinceOverride
 	if sinceUnix == 0 {
 		sinceUnix = p.lastDigestTime()
@@ -179,6 +203,10 @@ func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 
 	p.logger.Printf("digest: processing %d channels with %d workers", total, workers)
 
+	if p.OnProgress != nil {
+		p.OnProgress(0, total, fmt.Sprintf("Processing %d channels (%d workers)...", total, workers))
+	}
+
 	taskCh := make(chan channelTask, total)
 	for _, t := range tasks {
 		taskCh <- t
@@ -186,15 +214,15 @@ func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 	close(taskCh)
 
 	var (
-		completed    atomic.Int32
-		generated    atomic.Int32
-		errCount     atomic.Int32
-		totalInput   atomic.Int64
-		totalOutput  atomic.Int64
-		totalCostU   atomic.Int64 // cost * 1e6
-		lastErrMu    sync.Mutex
-		lastErr      error
-		wg           sync.WaitGroup
+		completed   atomic.Int32
+		generated   atomic.Int32
+		errCount    atomic.Int32
+		totalInput  atomic.Int64
+		totalOutput atomic.Int64
+		totalCostU  atomic.Int64 // cost * 1e6
+		lastErrMu   sync.Mutex
+		lastErr     error
+		wg          sync.WaitGroup
 	)
 
 	for range workers {
@@ -211,7 +239,7 @@ func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 					p.OnProgress(c, total, fmt.Sprintf("#%s (%d msgs)", t.channelName, len(t.msgs)))
 				}
 
-				result, usage, err := p.generateChannelDigest(ctx, t.channelName, t.msgs, sinceUnix, nowUnix)
+				result, usage, pv, err := p.generateChannelDigest(ctx, t.channelName, t.msgs, sinceUnix, nowUnix)
 				if err != nil {
 					p.logger.Printf("digest: error generating digest for #%s: %v", t.channelName, err)
 					errCount.Add(1)
@@ -222,7 +250,7 @@ func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 					continue
 				}
 
-				if err := p.storeDigest(t.channelID, "channel", sinceUnix, nowUnix, result, len(t.msgs), usage); err != nil {
+				if err := p.storeDigest(t.channelID, "channel", sinceUnix, nowUnix, result, len(t.msgs), usage, pv); err != nil {
 					p.logger.Printf("digest: error storing digest for #%s: %v", t.channelName, err)
 					errCount.Add(1)
 					lastErrMu.Lock()
@@ -271,6 +299,7 @@ func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 }
 
 // RunDailyRollup generates a cross-channel daily digest from today's channel digests.
+// M12 fix: use UTC for consistent timezone-independent digest deduplication.
 func (p *Pipeline) RunDailyRollup(ctx context.Context) error {
 	now := time.Now().UTC()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
@@ -301,7 +330,8 @@ func (p *Pipeline) RunDailyRollup(ctx context.Context) error {
 	}
 
 	dateStr := dayStart.Format("2006-01-02")
-	prompt := fmt.Sprintf(dailyRollupPrompt, dateStr, p.languageInstruction(), sb.String())
+	tmpl, pv := p.getPrompt(prompts.DigestDaily, dailyRollupPrompt)
+	prompt := fmt.Sprintf(tmpl, dateStr, p.languageInstruction(), sb.String())
 
 	raw, usage, err := p.generator.Generate(ctx, "", prompt)
 	if err != nil {
@@ -323,12 +353,12 @@ func (p *Pipeline) RunDailyRollup(ctx context.Context) error {
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage)
+	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv)
 }
 
 // RunWeeklyTrends generates a weekly trends digest from daily rollups.
 func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
-	now := time.Now().UTC()
+	now := time.Now()
 	weekStart := now.AddDate(0, 0, -7)
 
 	dailies, err := p.db.GetDigests(db.DigestFilter{
@@ -345,7 +375,7 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 
 	var sb strings.Builder
 	for _, d := range dailies {
-		date := time.Unix(int64(d.PeriodFrom), 0).UTC().Format("2006-01-02")
+		date := time.Unix(int64(d.PeriodFrom), 0).Local().Format("2006-01-02")
 		summary := sanitizePromptValue(d.Summary)
 		fmt.Fprintf(&sb, "### %s (%d messages)\nSummary: %s\n", date, d.MessageCount, summary)
 		if d.Decisions != "" && d.Decisions != "[]" {
@@ -356,7 +386,8 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 
 	fromStr := weekStart.Format("2006-01-02")
 	toStr := now.Format("2006-01-02")
-	prompt := fmt.Sprintf(weeklyTrendsPrompt, now.Format("2006-01-02"), fromStr, toStr, p.languageInstruction(), sb.String())
+	tmpl, pv := p.getPrompt(prompts.DigestWeekly, weeklyTrendsPrompt)
+	prompt := fmt.Sprintf(tmpl, now.Format("2006-01-02"), fromStr, toStr, p.languageInstruction(), sb.String())
 
 	raw, usage, err := p.generator.Generate(ctx, "", prompt)
 	if err != nil {
@@ -378,7 +409,7 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage)
+	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv)
 }
 
 // RunPeriodSummary generates a summary across all digests in the given time range.
@@ -413,13 +444,14 @@ func (p *Pipeline) RunPeriodSummary(ctx context.Context, from, to time.Time) (*D
 		case "weekly":
 			label = "Weekly trends"
 		}
-		date := time.Unix(int64(d.PeriodFrom), 0).UTC().Format("2006-01-02")
+		date := time.Unix(int64(d.PeriodFrom), 0).Local().Format("2006-01-02")
 		fmt.Fprintf(&sb, "### %s — %s (%d messages)\n%s\n\n", date, label, d.MessageCount, sanitizePromptValue(d.Summary))
 	}
 
 	fromStr := from.Format("2006-01-02")
 	toStr := to.Format("2006-01-02")
-	prompt := fmt.Sprintf(periodSummaryPrompt, fromStr, toStr, p.languageInstruction(), sb.String())
+	tmpl, _ := p.getPrompt(prompts.DigestPeriod, periodSummaryPrompt)
+	prompt := fmt.Sprintf(tmpl, fromStr, toStr, p.languageInstruction(), sb.String())
 
 	raw, usage, err := p.generator.Generate(ctx, "", prompt)
 	if err != nil {
@@ -434,45 +466,48 @@ func (p *Pipeline) RunPeriodSummary(ctx context.Context, from, to time.Time) (*D
 	return result, usage, nil
 }
 
-func (p *Pipeline) generateChannelDigest(ctx context.Context, channelName string, msgs []db.Message, from, to float64) (*DigestResult, *Usage, error) {
+// generateChannelDigest returns the parsed result, usage, prompt version, and error.
+func (p *Pipeline) generateChannelDigest(ctx context.Context, channelName string, msgs []db.Message, from, to float64) (*DigestResult, *Usage, int, error) {
 	// Sort messages chronologically (oldest first) for natural reading
 	sort.Slice(msgs, func(i, j int) bool { return msgs[i].TSUnix < msgs[j].TSUnix })
 
 	formatted := p.formatMessages(msgs)
 	if strings.TrimSpace(formatted) == "" {
-		return nil, nil, fmt.Errorf("no visible messages after filtering (all empty or deleted)")
+		return nil, nil, 0, fmt.Errorf("no visible messages after filtering (all empty or deleted)")
 	}
 
-	fromStr := time.Unix(int64(from), 0).UTC().Format("2006-01-02 15:04")
-	toStr := time.Unix(int64(to), 0).UTC().Format("2006-01-02 15:04")
+	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02 15:04")
+	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02 15:04")
 
-	prompt := fmt.Sprintf(channelDigestPrompt, channelName, fromStr, toStr, p.languageInstruction(), formatted)
+	tmpl, pv := p.getPrompt(prompts.DigestChannel, channelDigestPrompt)
+	prompt := fmt.Sprintf(tmpl, channelName, fromStr, toStr, p.languageInstruction(), formatted)
 
 	raw, usage, err := p.generator.Generate(ctx, "", prompt)
 	if err != nil {
-		return nil, nil, fmt.Errorf("claude call failed: %w", err)
+		return nil, nil, 0, fmt.Errorf("claude call failed: %w", err)
 	}
 
 	result, err := parseDigestResult(raw)
-	return result, usage, err
+	return result, usage, pv, err
 }
 
-func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage) error {
+func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int) error {
 	topics, _ := json.Marshal(result.Topics)
 	decisions, _ := json.Marshal(result.Decisions)
 	actionItems, _ := json.Marshal(result.ActionItems)
 
 	d := db.Digest{
-		ChannelID:    channelID,
-		Type:         digestType,
-		PeriodFrom:   from,
-		PeriodTo:     to,
-		Summary:      result.Summary,
-		Topics:       string(topics),
-		Decisions:    string(decisions),
-		ActionItems:  string(actionItems),
-		MessageCount: msgCount,
-		Model:        p.cfg.Digest.Model,
+		ChannelID:     channelID,
+		Type:          digestType,
+		PeriodFrom:    from,
+		PeriodTo:      to,
+		Summary:       result.Summary,
+		Topics:        string(topics),
+		Decisions:     string(decisions),
+		ActionItems:   string(actionItems),
+		MessageCount:  msgCount,
+		Model:         p.cfg.Digest.Model,
+		PromptVersion: promptVersion,
 	}
 	if usage != nil {
 		d.InputTokens = usage.InputTokens
@@ -501,7 +536,7 @@ func (p *Pipeline) formatMessages(msgs []db.Message) string {
 			continue
 		}
 		userName := p.userName(m.UserID)
-		ts := time.Unix(int64(m.TSUnix), 0).UTC().Format("15:04")
+		ts := time.Unix(int64(m.TSUnix), 0).Local().Format("15:04")
 		// Sanitize message text to prevent prompt injection via delimiter spoofing.
 		text := m.Text
 		if strings.Contains(text, "===") || strings.Contains(text, "---") {

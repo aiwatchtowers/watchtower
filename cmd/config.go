@@ -190,6 +190,8 @@ var knownConfigKeys = map[string]bool{
 	"digest.model":              true,
 	"digest.min_messages":       true,
 	"digest.language":           true,
+	"digest.workers":            true,
+	"claude_path":               true,
 }
 
 func runConfigSet(cmd *cobra.Command, args []string) error {

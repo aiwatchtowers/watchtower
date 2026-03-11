@@ -81,7 +81,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 16"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 17"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -597,6 +597,80 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v16: %w", err)
 		}
 		version = 16
+	}
+
+	if version < 17 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v17 tx: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Feedback table for thumbs up/down on AI-generated content.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS feedback (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'action_item', 'decision')),
+			entity_id   TEXT NOT NULL,
+			rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
+			comment     TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v17 create feedback: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_feedback_entity ON feedback(entity_type, entity_id)`); err != nil {
+			return fmt.Errorf("migration v17 feedback entity index: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(entity_type, rating)`); err != nil {
+			return fmt.Errorf("migration v17 feedback rating index: %w", err)
+		}
+
+		// Editable AI prompt templates.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS prompts (
+			id         TEXT PRIMARY KEY,
+			template   TEXT NOT NULL,
+			version    INTEGER NOT NULL DEFAULT 1,
+			language   TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v17 create prompts: %w", err)
+		}
+
+		// Prompt version history.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS prompt_history (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			prompt_id  TEXT NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+			version    INTEGER NOT NULL,
+			template   TEXT NOT NULL,
+			reason     TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v17 create prompt_history: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_prompt_history_prompt ON prompt_history(prompt_id)`); err != nil {
+			return fmt.Errorf("migration v17 prompt_history prompt index: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_prompt_history_version ON prompt_history(prompt_id, version)`); err != nil {
+			return fmt.Errorf("migration v17 prompt_history version index: %w", err)
+		}
+
+		// Add prompt_version column to existing tables.
+		for _, col := range []string{
+			`ALTER TABLE digests ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE action_items ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE user_analyses ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
+		} {
+			if _, err := tx.Exec(col); err != nil {
+				return fmt.Errorf("migration v17 alter: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 17"); err != nil {
+			return fmt.Errorf("setting schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v17: %w", err)
+		}
+		version = 17
 	}
 
 	_ = version // silence unused variable if this is the last migration
