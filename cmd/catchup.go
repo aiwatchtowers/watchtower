@@ -123,7 +123,7 @@ func runCatchup(cmd *cobra.Command, args []string) error {
 	userMessage := ai.AssembleUserMessage(question, timeHints)
 
 	// Create AI client and query
-	aiClient := ai.NewClient(cfg.AI.Model, dbPath)
+	aiClient := ai.NewClient(cfg.AI.Model, dbPath, cfg.ClaudePath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()

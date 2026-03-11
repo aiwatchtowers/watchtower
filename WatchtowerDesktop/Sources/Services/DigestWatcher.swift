@@ -45,6 +45,14 @@ final class DigestWatcher {
     }
 
     private func poll() {
+        let notifyDecisions = UserDefaults.standard.bool(forKey: "notifyDecisions")
+        // notifyDecisions defaults to true — AppStorage default is true, but UserDefaults returns false
+        // if the key was never set. Check if key exists; if not, treat as enabled.
+        let decisionsEnabled = UserDefaults.standard.object(forKey: "notifyDecisions") == nil || notifyDecisions
+        let quietHours = UserDefaults.standard.bool(forKey: "quietHoursEnabled")
+
+        guard !quietHours else { return }
+
         do {
             let newDigests = try dbPool.read { db in
                 try DigestQueries.fetchNewSince(db, afterID: lastCheckedDigestID)
@@ -52,15 +60,17 @@ final class DigestWatcher {
 
             var notificationCount = 0
             for digest in newDigests {
-                let channelName = resolveChannelName(for: digest)
-                for decision in digest.parsedDecisions {
-                    guard notificationCount < 5 else { break }
-                    notificationService.sendDecisionNotification(
-                        decision: decision,
-                        channelName: channelName,
-                        digestID: digest.id
-                    )
-                    notificationCount += 1
+                if decisionsEnabled {
+                    let channelName = resolveChannelName(for: digest)
+                    for decision in digest.parsedDecisions {
+                        guard notificationCount < 5 else { break }
+                        notificationService.sendDecisionNotification(
+                            decision: decision,
+                            channelName: channelName,
+                            digestID: digest.id
+                        )
+                        notificationCount += 1
+                    }
                 }
                 lastCheckedDigestID = digest.id
             }

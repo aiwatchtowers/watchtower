@@ -8,8 +8,13 @@ struct MessageBubble: View {
             if message.role == .user { Spacer(minLength: 60) }
 
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
-                if message.role == .assistant {
+                if message.role == .assistant && !message.isStreaming {
+                    // Finished response — full markdown rendering
                     MarkdownText(text: message.text)
+                } else if message.role == .assistant {
+                    // Streaming — plain text (fast, preserves \n naturally)
+                    Text(message.text)
+                        .textSelection(.enabled)
                 } else {
                     Text(message.text)
                 }

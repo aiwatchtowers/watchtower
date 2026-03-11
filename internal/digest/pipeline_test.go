@@ -368,7 +368,7 @@ func TestStoreDigest(t *testing.T) {
 		ActionItems: []ActionItem{{Text: "do Y", Assignee: "@bob", Status: "open"}},
 	}
 
-	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 42, &Usage{InputTokens: 500, OutputTokens: 200, CostUSD: 0.005})
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 42, &Usage{InputTokens: 500, OutputTokens: 200, CostUSD: 0.005}, 0)
 	require.NoError(t, err)
 
 	d, err := database.GetLatestDigest("C1", "channel")

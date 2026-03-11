@@ -1,13 +1,65 @@
 import SwiftUI
 import AppKit
+import UserNotifications
+
+/// Allows notifications to display as banners even when the app is in the foreground,
+/// and handles notification click actions to navigate within the running app.
+/// H5 fix: uses a static shared reference to AppState that is set once the SwiftUI-managed
+/// state is available (in .onAppear), avoiding the stale-copy problem with @State in init().
+class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    /// Set from the SwiftUI body once the real managed AppState is live.
+    static var sharedAppState: AppState?
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        let type = userInfo["type"] as? String
+
+        // Bring the running app to front
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        Task { @MainActor in
+            let appState = NotificationDelegate.sharedAppState
+            switch type {
+            case "decision":
+                if let digestID = userInfo["digestId"] as? Int {
+                    appState?.navigateToDigest(digestID)
+                } else {
+                    appState?.selectedDestination = .digests
+                }
+            case "action_item", "action_item_update":
+                appState?.selectedDestination = .actions
+            case "daily_summary":
+                appState?.selectedDestination = .digests
+            default:
+                break
+            }
+        }
+
+        completionHandler()
+    }
+}
 
 @main
 struct WatchtowerApp: App {
     @State private var appState = AppState()
+    private let notificationDelegate = NotificationDelegate()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        UNUserNotificationCenter.current().delegate = notificationDelegate
     }
 
     var body: some Scene {
@@ -17,6 +69,8 @@ struct WatchtowerApp: App {
                 .frame(minWidth: 800, minHeight: 600)
                 .background(OpaqueWindowBackground())
                 .onAppear {
+                    // H5 fix: connect the live SwiftUI-managed appState to the notification delegate
+                    NotificationDelegate.sharedAppState = appState
                     appState.initialize()
                 }
         }

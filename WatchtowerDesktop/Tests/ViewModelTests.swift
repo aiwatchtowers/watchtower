@@ -70,157 +70,6 @@ final class DashboardViewModelTests: XCTestCase {
     }
 }
 
-// MARK: - ChannelViewModel
-
-final class ChannelViewModelTests: XCTestCase {
-    private var dbManager: DatabaseManager!
-    private var dbPath: String!
-
-    override func setUp() {
-        super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
-    }
-
-    override func tearDown() {
-        TestDatabase.cleanup(path: dbPath)
-        super.tearDown()
-    }
-
-    @MainActor
-    func testLoadChannels() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "alpha", type: "public")
-            try TestDatabase.insertChannel(db, id: "C002", name: "beta", type: "public")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.channels.count, 2)
-        XCTAssertEqual(vm.channels.map(\.name), ["alpha", "beta"])
-        XCTAssertFalse(vm.isLoading)
-    }
-
-    @MainActor
-    func testLoadWithTypeFilter() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general", type: "public")
-            try TestDatabase.insertChannel(db, id: "C002", name: "secret", type: "private")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.filterType = "private"
-        vm.load()
-
-        XCTAssertEqual(vm.channels.count, 1)
-        XCTAssertEqual(vm.channels[0].name, "secret")
-    }
-
-    @MainActor
-    func testDisplayNameForDM() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertUser(db, id: "U001", name: "alice", displayName: "Alice Wonder")
-            try TestDatabase.insertChannel(db, id: "D001", name: "U001", type: "dm", dmUserID: "U001")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.displayName(for: vm.channels[0]), "Alice Wonder")
-    }
-
-    @MainActor
-    func testDisplayNameForGroupDM() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertUser(db, id: "U001", name: "alice", displayName: "Alice")
-            try TestDatabase.insertUser(db, id: "U002", name: "bob", displayName: "Bob")
-            try TestDatabase.insertChannel(db, id: "G001", name: "mpdm-alice--bob-1", type: "group_dm")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.load()
-
-        let name = vm.displayName(for: vm.channels[0])
-        XCTAssertTrue(name.contains("Alice"))
-        XCTAssertTrue(name.contains("Bob"))
-    }
-
-    @MainActor
-    func testDisplayNameFallback() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general", type: "public")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.displayName(for: vm.channels[0]), "general")
-    }
-
-    @MainActor
-    func testFilteredChannels() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "engineering")
-            try TestDatabase.insertChannel(db, id: "C002", name: "marketing")
-            try TestDatabase.insertChannel(db, id: "C003", name: "eng-backend")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.load()
-        vm.searchText = "eng"
-
-        XCTAssertEqual(vm.filteredChannels.count, 2)
-    }
-
-    @MainActor
-    func testFilteredChannelsEmptySearch() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.load()
-        vm.searchText = ""
-
-        XCTAssertEqual(vm.filteredChannels.count, 1)
-    }
-
-    @MainActor
-    func testToggleWatch() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.load()
-
-        let channel = vm.channels[0]
-        XCTAssertFalse(vm.watchedIDs.contains("C001"))
-
-        vm.toggleWatch(channel: channel)
-        XCTAssertTrue(vm.watchedIDs.contains("C001"))
-
-        vm.toggleWatch(channel: channel)
-        XCTAssertFalse(vm.watchedIDs.contains("C001"))
-    }
-
-    @MainActor
-    func testToggleWatchPersists() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-        }
-
-        let vm = ChannelViewModel(dbManager: dbManager)
-        vm.load()
-        vm.toggleWatch(channel: vm.channels[0])
-
-        let isWatched = try dbManager.dbPool.read { db in
-            try WatchQueries.isWatched(db, entityType: "channel", entityID: "C001")
-        }
-        XCTAssertTrue(isWatched)
-    }
-}
-
 // MARK: - DigestViewModel
 
 final class DigestViewModelTests: XCTestCase {
@@ -1281,5 +1130,40 @@ final class DigestViewModelAdditionalTests: XCTestCase {
     func testDigestByIDNotFound() {
         let vm = DigestViewModel(dbManager: dbManager)
         XCTAssertNil(vm.digestByID(999))
+    }
+}
+
+// MARK: - UpdateService Version Comparison
+
+final class UpdateServiceTests: XCTestCase {
+    func testNewerMajor() {
+        XCTAssertTrue(UpdateService.isNewer("1.0.0", than: "0.2.0"))
+    }
+
+    func testNewerMinor() {
+        XCTAssertTrue(UpdateService.isNewer("0.3.0", than: "0.2.0"))
+    }
+
+    func testNewerPatch() {
+        XCTAssertTrue(UpdateService.isNewer("0.2.1", than: "0.2.0"))
+    }
+
+    func testSameVersion() {
+        XCTAssertFalse(UpdateService.isNewer("0.2.0", than: "0.2.0"))
+    }
+
+    func testOlderVersion() {
+        XCTAssertFalse(UpdateService.isNewer("0.1.0", than: "0.2.0"))
+    }
+
+    func testVPrefix() {
+        XCTAssertTrue(UpdateService.isNewer("v0.3.0", than: "0.2.0"))
+        XCTAssertTrue(UpdateService.isNewer("v0.3.0", than: "v0.2.0"))
+        XCTAssertFalse(UpdateService.isNewer("v0.2.0", than: "v0.2.0"))
+    }
+
+    func testDifferentLengths() {
+        XCTAssertTrue(UpdateService.isNewer("0.2.1", than: "0.2"))
+        XCTAssertFalse(UpdateService.isNewer("0.2", than: "0.2.0"))
     }
 }

@@ -155,7 +155,7 @@ func (r *REPL) runAIQuery(question string) {
 		fmt.Print(dimStyle.Render("Thinking..."))
 	}
 
-	aiClient := ai.NewClient(cfg.AI.Model, r.deps.DBPath)
+	aiClient := ai.NewClient(cfg.AI.Model, r.deps.DBPath, cfg.ClaudePath)
 	textCh, errCh, sidCh := aiClient.Query(streamCtx, systemPrompt, userMessage, r.sessionID)
 
 	var fullResponse strings.Builder

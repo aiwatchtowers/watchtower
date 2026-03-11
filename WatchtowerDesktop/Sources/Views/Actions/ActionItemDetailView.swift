@@ -422,6 +422,14 @@ struct ActionItemDetailView: View {
                 }
                 .buttonStyle(.borderless)
             }
+
+            if let dbManager = appState.databaseManager {
+                FeedbackButtons(
+                    entityType: "action_item",
+                    entityID: String(item.id),
+                    dbManager: dbManager
+                )
+            }
         }
     }
 

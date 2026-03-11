@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 // DefaultWindowHours is the default lookback period for action item extraction.
@@ -57,10 +58,11 @@ type aiItem struct {
 
 // Pipeline extracts and stores action items for the current user.
 type Pipeline struct {
-	db        *db.DB
-	cfg       *config.Config
-	generator digest.Generator
-	logger    *log.Logger
+	db          *db.DB
+	cfg         *config.Config
+	generator   digest.Generator
+	logger      *log.Logger
+	promptStore *prompts.Store
 
 	OnProgress ProgressFunc
 
@@ -82,6 +84,21 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		generator: gen,
 		logger:    logger,
 	}
+}
+
+// SetPromptStore sets an optional prompt store for loading customized prompts.
+func (p *Pipeline) SetPromptStore(store *prompts.Store) {
+	p.promptStore = store
+}
+
+func (p *Pipeline) getPrompt(id, fallback string) (string, int) {
+	if p.promptStore != nil {
+		tmpl, version, err := p.promptStore.Get(id)
+		if err == nil {
+			return tmpl, version
+		}
+	}
+	return fallback, 0
 }
 
 // AccumulatedUsage returns the total token usage accumulated across all Generate calls.
@@ -110,7 +127,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	now := time.Now().UTC()
+	now := time.Now()
 	to := float64(now.Unix())
 	from := float64(now.Add(-time.Duration(DefaultWindowHours) * time.Hour).Unix())
 
@@ -302,7 +319,8 @@ func (p *Pipeline) checkItemForUpdates(ctx context.Context, item db.ActionItem) 
 	}
 
 	channelName := p.channelName(item.ChannelID)
-	prompt := fmt.Sprintf(updateCheckPrompt,
+	tmpl, _ := p.getPrompt(prompts.ActionItemsUpdate, updateCheckPrompt)
+	prompt := fmt.Sprintf(tmpl,
 		sanitize(item.Text),
 		sanitize(item.Context),
 		channelName,
@@ -386,10 +404,11 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 		return 0, nil
 	}
 
-	fromStr := time.Unix(int64(from), 0).UTC().Format("2006-01-02")
-	toStr := time.Unix(int64(to), 0).UTC().Format("2006-01-02")
+	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
+	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
 
-	prompt := fmt.Sprintf(actionItemsPrompt, userName, userID, channelName, channelID, fromStr, toStr, p.languageInstruction(), formatted)
+	tmpl, _ := p.getPrompt(prompts.ActionItemsExtract, actionItemsPrompt)
+	prompt := fmt.Sprintf(tmpl, userName, userID, channelName, channelID, fromStr, toStr, p.languageInstruction(), formatted)
 
 	raw, usage, err := p.generator.Generate(ctx, "", prompt)
 	if err != nil {
@@ -556,7 +575,7 @@ func (p *Pipeline) formatMessages(msgs []db.Message) string {
 			continue
 		}
 		userName := p.userName(m.UserID)
-		ts := time.Unix(int64(m.TSUnix), 0).UTC().Format("15:04")
+		ts := time.Unix(int64(m.TSUnix), 0).Local().Format("15:04")
 		text := sanitize(m.Text)
 		threadMarker := ""
 		if m.ThreadTS.Valid {

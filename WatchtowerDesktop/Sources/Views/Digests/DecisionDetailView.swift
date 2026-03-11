@@ -4,6 +4,9 @@ import SwiftUI
 struct DecisionDetailView: View {
     let entry: DecisionEntry
     let viewModel: DigestViewModel
+    @State private var markingRead = false
+    @State private var markedRead = false
+    @State private var markReadError: String?
 
     var body: some View {
         ScrollView {
@@ -92,17 +95,58 @@ struct DecisionDetailView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                // Open channel in Slack
-                if !entry.channelID.isEmpty,
-                   let url = viewModel.slackChannelURL(channelID: entry.channelID) {
-                    Link(destination: url) {
-                        Label("Open channel in Slack", systemImage: "number")
-                            .font(.caption)
+                // Open channel in Slack + mark read
+                if !entry.channelID.isEmpty {
+                    HStack(spacing: 12) {
+                        if let url = viewModel.slackChannelURL(channelID: entry.channelID) {
+                            Link(destination: url) {
+                                Label("Open channel in Slack", systemImage: "number")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+
+                        Button {
+                            markChannelRead()
+                        } label: {
+                            if markingRead {
+                                ProgressView()
+                                    .controlSize(.mini)
+                            } else {
+                                Label(
+                                    markedRead ? "Marked read" : "Mark read in Slack",
+                                    systemImage: markedRead ? "checkmark.circle.fill" : "eye"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(markedRead ? .green : .accentColor)
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(markingRead || markedRead)
+
+                        if let err = markReadError {
+                            Text(err)
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                        }
                     }
-                    .buttonStyle(.borderless)
                 }
             }
             .padding()
+        }
+    }
+
+    private func markChannelRead() {
+        markingRead = true
+        markReadError = nil
+        Task {
+            do {
+                try await SlackService.markRead(channelID: entry.channelID)
+                markedRead = true
+            } catch {
+                markReadError = error.localizedDescription
+            }
+            markingRead = false
         }
     }
 

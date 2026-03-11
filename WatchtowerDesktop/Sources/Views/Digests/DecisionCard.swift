@@ -3,6 +3,8 @@ import SwiftUI
 struct DecisionCard: View {
     let decision: Decision
     var slackURL: URL? = nil
+    var feedbackEntityID: String? = nil  // "digestID:decisionIdx"
+    var dbManager: DatabaseManager? = nil
 
     private var accentColor: Color {
         switch decision.resolvedImportance {
@@ -40,6 +42,14 @@ struct DecisionCard: View {
                                 .font(.caption)
                         }
                         .buttonStyle(.borderless)
+                    }
+
+                    if let entityID = feedbackEntityID, let dbManager {
+                        FeedbackButtons(
+                            entityType: "decision",
+                            entityID: entityID,
+                            dbManager: dbManager
+                        )
                     }
                 }
             }

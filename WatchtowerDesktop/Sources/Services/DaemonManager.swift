@@ -91,6 +91,11 @@ final class DaemonManager {
         }.value
     }
 
+    /// Public entry point for external callers (e.g. DataSettings reset).
+    nonisolated static func checkDaemonRunning() -> Bool {
+        isDaemonRunning()
+    }
+
     private nonisolated static func isDaemonRunning() -> Bool {
         let dataPath = Constants.databasePath
         let fm = FileManager.default

@@ -497,7 +497,7 @@ func runActionsGenerate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	gen := digest.NewClaudeGenerator(cfg.Digest.Model)
+	gen := digest.NewClaudeGenerator(cfg.Digest.Model, cfg.ClaudePath)
 	pipe := actionitems.New(database, cfg, gen, logger)
 
 	if days > 3650 {

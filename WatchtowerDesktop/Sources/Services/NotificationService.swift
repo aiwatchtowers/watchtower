@@ -62,6 +62,21 @@ final class NotificationService: Sendable {
         UNUserNotificationCenter.current().add(request)
     }
 
+    func sendTestNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "Watchtower"
+        content.body = "Notifications are working!"
+        content.sound = .default
+        content.userInfo = ["type": "test"]
+
+        let request = UNNotificationRequest(
+            identifier: "test-\(Int(Date().timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     func sendDailySummaryNotification(summary: String) {
         let content = UNMutableNotificationContent()
         content.title = "Daily summary ready"
