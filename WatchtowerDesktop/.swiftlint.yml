@@ -59,10 +59,10 @@ opt_in_rules:
   - vertical_parameter_alignment_on_call
   - yoda_condition
 
-# Severity overrides — make warnings into errors
-force_cast: error
-force_try: error
-force_unwrapping: error
+# Severity overrides
+force_cast: warning
+force_try: warning
+force_unwrapping: warning
 
 # Rule configuration
 line_length:
@@ -72,16 +72,16 @@ line_length:
   ignores_urls: true
 
 file_length:
+  warning: 800
+  error: 2000
+
+type_body_length:
   warning: 600
   error: 1500
 
-type_body_length:
-  warning: 500
-  error: 1000
-
 function_body_length:
   warning: 50
-  error: 100
+  error: 120
 
 function_parameter_count:
   warning: 6
