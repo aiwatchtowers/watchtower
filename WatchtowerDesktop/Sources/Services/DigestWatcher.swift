@@ -88,7 +88,18 @@ final class DigestWatcher {
         guard !digest.channelID.isEmpty else { return "cross-channel" }
         do {
             return try dbPool.read { db in
-                try ChannelQueries.fetchByID(db, id: digest.channelID)?.name ?? digest.channelID
+                guard let ch = try ChannelQueries.fetchByID(db, id: digest.channelID) else {
+                    return digest.channelID
+                }
+                if ch.type == "dm" || ch.type == "im" {
+                    let uid = ch.dmUserID ?? (ch.name.hasPrefix("U") ? ch.name : nil)
+                    if let uid,
+                       let user = try UserQueries.fetchByID(db, id: uid) {
+                        let displayName = user.displayName.isEmpty ? user.name : user.displayName
+                        return "DM: \(displayName)"
+                    }
+                }
+                return ch.name
             }
         } catch {
             return digest.channelID

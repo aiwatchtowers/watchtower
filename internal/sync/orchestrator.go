@@ -185,7 +185,7 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	return o.finishSync()
 }
 
-// finishSync logs API stats and marks sync as done.
+// finishSync logs API stats, updates the sync timestamp, and marks sync as done.
 func (o *Orchestrator) finishSync() error {
 	o.progress.SetPhase(PhaseDone)
 	counts, retries := o.slackClient.APIStats()
@@ -196,6 +196,11 @@ func (o *Orchestrator) finishSync() error {
 	o.logger.Printf("sync complete: %d API calls (tier2: %d, tier3: %d, tier4: %d), %d retries",
 		total, counts[watchtowerslack.Tier2], counts[watchtowerslack.Tier3], counts[watchtowerslack.Tier4], retries)
 	o.slackClient.ResetAPIStats()
+
+	// Update workspace synced_at so the desktop app shows accurate "last synced" time.
+	if err := o.db.TouchSyncedAt(); err != nil {
+		o.logger.Printf("warning: failed to update synced_at: %v", err)
+	}
 	return nil
 }
 

@@ -123,9 +123,22 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	cmd.WaitDelay = 5 * time.Second
 	// Run from a temp dir so the CLI doesn't load project-specific settings.
 	cmd.Dir = os.TempDir()
-	// Enrich PATH so `#!/usr/bin/env node` resolves when launched from a
-	// macOS .app bundle with minimal PATH (e.g. nvm-managed node).
-	cmd.Env = append(os.Environ(), "PATH="+claude.RichPATH())
+	// Build a clean environment:
+	// - Enrich PATH so `#!/usr/bin/env node` resolves from macOS .app bundles.
+	// - Remove CLAUDECODE to avoid "nested session" detection when launched
+	//   from a parent process that is itself a Claude Code session.
+	richPATH := "PATH=" + claude.RichPATH()
+	var env []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue
+		}
+		if strings.HasPrefix(e, "PATH=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = append(env, richPATH)
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
@@ -134,7 +147,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	if err != nil {
 		if execErr, ok := err.(*exec.Error); ok {
 			if execErr.Err == exec.ErrNotFound {
-				return "", nil, fmt.Errorf("claude CLI not found — install Claude Code first")
+				return "", nil, fmt.Errorf("claude CLI not found at %q (PATH=%s) — install Claude Code first", claudeBin, os.Getenv("PATH"))
 			}
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {

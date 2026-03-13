@@ -120,13 +120,12 @@ struct DecisionsListView: View {
 
                     Spacer()
 
-                    Text(importanceLabel(entry.effectiveImportance))
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(importanceColor(entry.effectiveImportance))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(importanceColor(entry.effectiveImportance).opacity(0.12), in: Capsule())
+                    EditableImportanceBadge(
+                        importance: entry.effectiveImportance,
+                        isCorrected: entry.correctedImportance != nil
+                    ) { newImportance in
+                        viewModel.setDecisionImportance(entry, newImportance: newImportance)
+                    }
 
                     Button {
                         toggleExpanded(entry.id)
@@ -235,11 +234,4 @@ struct DecisionsListView: View {
         }
     }
 
-    private func importanceLabel(_ importance: String) -> String {
-        switch importance {
-        case "high": "High"
-        case "low": "Low"
-        default: "Medium"
-        }
-    }
 }

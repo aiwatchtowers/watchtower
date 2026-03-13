@@ -121,6 +121,28 @@ enum Constants {
                     env["PATH"] = fullPath
                 }
                 env.removeValue(forKey: "CLAUDECODE")
+                // Ensure claude's nvm/fnm dir is in PATH (login-only shell may miss .zshrc).
+                // Inline search: can't call Constants methods from nested Cache struct.
+                let nvmDirs = [
+                    NSHomeDirectory() + "/.nvm/versions/node",
+                    NSHomeDirectory() + "/.local/share/fnm/node-versions",
+                    NSHomeDirectory() + "/.fnm/node-versions",
+                ]
+                outer: for nvmDir in nvmDirs {
+                    guard let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmDir) else { continue }
+                    for v in versions.sorted().reversed() {
+                        for sub in ["bin", "installation/bin"] {
+                            let candidate = "\(nvmDir)/\(v)/\(sub)/claude"
+                            if FileManager.default.isExecutableFile(atPath: candidate) {
+                                let claudeDir = (candidate as NSString).deletingLastPathComponent
+                                if let path = env["PATH"], !path.contains(claudeDir) {
+                                    env["PATH"] = claudeDir + ":" + path
+                                }
+                                break outer
+                            }
+                        }
+                    }
+                }
                 return env
             }()
         }

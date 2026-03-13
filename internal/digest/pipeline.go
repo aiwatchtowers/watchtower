@@ -250,7 +250,17 @@ func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 					continue
 				}
 
-				if err := p.storeDigest(t.channelID, "channel", sinceUnix, nowUnix, result, len(t.msgs), usage, pv); err != nil {
+				// Use the actual last message timestamp as periodTo
+				// instead of time.Now(), so the UI shows when the last
+				// source message was posted, not when the digest was generated.
+				lastMsgTS := sinceUnix
+				for _, m := range t.msgs {
+					if m.TSUnix > lastMsgTS {
+						lastMsgTS = m.TSUnix
+					}
+				}
+
+				if err := p.storeDigest(t.channelID, "channel", sinceUnix, lastMsgTS, result, len(t.msgs), usage, pv); err != nil {
 					p.logger.Printf("digest: error storing digest for #%s: %v", t.channelName, err)
 					errCount.Add(1)
 					lastErrMu.Lock()

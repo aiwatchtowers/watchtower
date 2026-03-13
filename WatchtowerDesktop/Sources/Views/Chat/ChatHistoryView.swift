@@ -35,6 +35,14 @@ struct ChatHistoryView: View {
                         }
                     }
             }
+            .onDelete { offsets in
+                // M4: snapshot IDs before deletion to avoid stale indices
+                let conversations = historyVM.filteredConversations
+                let idsToDelete = offsets.map { conversations[$0].id }
+                for id in idsToDelete {
+                    historyVM.deleteConversation(id)
+                }
+            }
         }
         .listStyle(.plain)
     }

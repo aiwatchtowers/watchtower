@@ -17,23 +17,35 @@ CLI tool that syncs your Slack workspace into a local SQLite database and lets y
 ## Quick Start
 
 ```bash
-# 1. Install
-go install github.com/vadimtrunov/watchtower@latest
+# Install and run
+curl -fsSL https://raw.githubusercontent.com/vadimtrunov/watchtower/main/scripts/install.sh | bash
 
-# 2. Login via Slack OAuth (opens browser)
+# Login via Slack OAuth (opens browser)
 watchtower auth login
 
-# 3. Sync your workspace (first sync may take a while — see below)
+# Sync your workspace
 watchtower sync
 
-# 4. Ask questions
+# Ask questions
 watchtower ask "what did the team discuss today?"
-
-# 5. Or get a catchup summary
-watchtower catchup --since 8h
 ```
 
 ## Installation
+
+### One-liner (recommended)
+
+Downloads the latest release, installs the desktop app to `/Applications`, and sets up the `watchtower` CLI.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vadimtrunov/watchtower/main/scripts/install.sh | bash
+```
+
+### Homebrew
+
+```bash
+brew tap vadimtrunov/tap
+brew install watchtower
+```
 
 ### From source (Go 1.25+)
 
@@ -49,16 +61,9 @@ cd watchtower
 make install
 ```
 
-### Homebrew (after release)
-
-```bash
-brew tap vadimtrunov/tap
-brew install watchtower
-```
-
 ### Pre-built binaries
 
-Download from [Releases](https://github.com/vadimtrunov/watchtower/releases). Available for macOS (Intel/Apple Silicon) and Linux (amd64/arm64).
+Download from [Releases](https://github.com/vadimtrunov/watchtower/releases). Available for macOS (Apple Silicon).
 
 ## Prerequisites
 

@@ -130,6 +130,7 @@ final class BackgroundTaskManager {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = kind.cliArguments
+        process.environment = Constants.resolvedEnvironment()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
@@ -215,6 +216,7 @@ final class BackgroundTaskManager {
             process.executableURL = URL(fileURLWithPath: path)
             process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
             process.arguments = arguments
+            process.environment = Constants.resolvedEnvironment()
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             process.terminationHandler = { _ in

@@ -52,10 +52,14 @@ final class DigestViewModel {
                 var nameMap: [String: String] = [:]
                 for cid in allChannelIDs {
                     if let ch = try ChannelQueries.fetchByID(db, id: cid) {
-                        if (ch.type == "dm" || ch.type == "im"),
-                           let dmUID = ch.dmUserID,
-                           let userName = userNames[dmUID] {
-                            nameMap[cid] = "DM: \(userName)"
+                        if (ch.type == "dm" || ch.type == "im") {
+                            // Try dm_user_id first, then fall back to name if it looks like a user ID
+                            let resolvedUID = ch.dmUserID ?? (ch.name.hasPrefix("U") ? ch.name : nil)
+                            if let uid = resolvedUID, let userName = userNames[uid] {
+                                nameMap[cid] = "DM: \(userName)"
+                            } else {
+                                nameMap[cid] = ch.name
+                            }
                         } else {
                             nameMap[cid] = ch.name
                         }
@@ -127,7 +131,18 @@ final class DigestViewModel {
         func addDecision(_ decision: Decision, idx: Int, from digest: Digest) {
             guard !isDuplicate(decision.text) else { return }
             seenStems.append(wordStems(decision.text))
-            let date = Date(timeIntervalSince1970: digest.periodTo)
+            // Use the decision's source message timestamp when available,
+            // falling back to the digest's periodTo.
+            let date: Date
+            if let ts = decision.messageTS,
+               let dot = ts.firstIndex(of: "."),
+               let unix = Double(ts[ts.startIndex..<dot]) {
+                date = Date(timeIntervalSince1970: unix)
+            } else if let ts = decision.messageTS, let unix = Double(ts) {
+                date = Date(timeIntervalSince1970: unix)
+            } else {
+                date = Date(timeIntervalSince1970: digest.periodTo)
+            }
             let chName = digest.channelID.isEmpty ? nil : channelNameCache[digest.channelID]
             let isRead = readIndices[digest.id]?.contains(idx) ?? false
             let correctionKey = "\(digest.id):\(idx)"

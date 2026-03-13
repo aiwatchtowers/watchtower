@@ -6,11 +6,17 @@ Your task: identify actions, requests, tasks, and expectations directed at this 
 
 CRITICAL: Group related requests into a SINGLE action item. If multiple messages discuss the same topic/task (e.g., "reserve equipment", "assess datacenter", "list critical components" all about the same infrastructure project), combine them into ONE comprehensive action item — do NOT create separate items for each message about the same topic.
 
+DEDUPLICATION: Review the EXISTING ACTION ITEMS section below. If a message relates to an existing item, UPDATE it (set "existing_id" to the item's ID) instead of creating a new one. Only create new items for genuinely new topics not covered by existing items.
+
+COMPLETION DETECTION: If you see messages confirming that an existing action item has been COMPLETED (e.g., "done", "deployed", "opened access", "fixed", "released", status updates showing the task is finished), return the item with "existing_id" set to that item's ID and "status_hint": "done". This is critical — do NOT ignore completion signals just because they are not new action items.
+
 Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
   "items": [
     {
+      "existing_id": null,
+      "status_hint": "",
       "text": "clear, actionable description of what needs to be done",
       "context": "detailed context (3-5 sentences): what was discussed, what decisions were made, what is the background, why this matters. Include enough detail so the reader does NOT need to read the original thread.",
       "source_message_ts": "1234567890.123456",
@@ -78,11 +84,19 @@ Rules:
 - participants: list ALL people involved in the discussion about this topic. For each person, summarize their stance/opinion/role. Include people who made decisions, raised concerns, proposed alternatives, or were assigned tasks. Omit participants only if they added nothing meaningful (e.g., just emoji reactions).
 - source_refs: list the 2-5 most important messages related to this action item. For each, include the Slack timestamp, author, and a 1-sentence summary of what was said. These serve as "footnotes" so the reader can jump to key messages.
 - sub_items: break down the action item into concrete sub-tasks or checklist items. Each sub-item has "text" (what to do) and "status" ("open" or "done"). If a sub-task was clearly completed in the conversation, set status to "done". Aim for 2-5 sub-items per action item. Leave empty array [] if the action item is atomic and doesn't need breakdown.
+- existing_id: if the action item matches an existing item from the EXISTING ACTION ITEMS section below, set this to the item's numeric ID. The AI should UPDATE the existing item (merge new info into context, update priority/due_date if changed). Set to null for genuinely new items not covered by any existing item. Prefer updating over creating duplicates.
+- status_hint: set to "done" if messages clearly confirm the existing item has been completed (someone did the work, deployed, confirmed, etc.). Set to "active" or leave empty ("") for items still in progress. This field is ONLY used with existing_id — for new items, leave it empty.
 - If no action items are found, return {"items": []}
 - Return valid JSON only, no other text
 
+%[8]s
+
+%[9]s
+
+%[10]s
+
 === MESSAGES ===
-%[8]s`
+%[11]s`
 
 // updateCheckPrompt is the prompt template for checking if thread replies
 // contain meaningful updates related to an existing action item.
@@ -96,7 +110,7 @@ Channel: #%[3]s
 
 %[4]s
 
-New thread messages since last check:
+New messages since last check (thread replies and channel messages):
 %[5]s
 
 Analyze the new messages and determine:

@@ -2,9 +2,11 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
+	"time"
 )
 
 // UpsertActionItem inserts or updates an action item with change history logging.
@@ -232,6 +234,16 @@ func (db *DB) UpdateActionItemStatus(id int, status string) error {
 	return nil
 }
 
+// GetActionItemAssignee returns the assignee_user_id for an action item.
+func (db *DB) GetActionItemAssignee(id int) (string, error) {
+	var assignee string
+	err := db.QueryRow(`SELECT assignee_user_id FROM action_items WHERE id = ?`, id).Scan(&assignee)
+	if err != nil {
+		return "", fmt.Errorf("getting action item assignee: %w", err)
+	}
+	return assignee, nil
+}
+
 // CountOpenActionItems returns the number of active action items (inbox + active) for a user.
 func (db *DB) CountOpenActionItems(assigneeUserID string) (int, error) {
 	var count int
@@ -242,10 +254,12 @@ func (db *DB) CountOpenActionItems(assigneeUserID string) (int, error) {
 	return count, nil
 }
 
-// DeleteActionItemsForWindow removes inbox action items in a specific analysis window.
+// DeleteActionItemsForWindow removes inbox action items whose period falls within
+// or overlaps the given window. Uses range overlap instead of exact match so that
+// day-aligned windows correctly clean up items from prior runs.
 // Active/done/dismissed items are preserved since the user has interacted with them.
 func (db *DB) DeleteActionItemsForWindow(assigneeUserID string, periodFrom, periodTo float64) (int64, error) {
-	res, err := db.Exec(`DELETE FROM action_items WHERE assignee_user_id = ? AND period_from = ? AND period_to = ? AND status = 'inbox'`,
+	res, err := db.Exec(`DELETE FROM action_items WHERE assignee_user_id = ? AND period_from >= ? AND period_to <= ? AND status = 'inbox'`,
 		assigneeUserID, periodFrom, periodTo)
 	if err != nil {
 		return 0, fmt.Errorf("deleting action items for window: %w", err)
@@ -323,7 +337,11 @@ func (db *DB) SnoozeActionItem(id int, until float64) error {
 		until, status, id); err != nil {
 		return fmt.Errorf("snoozing action item: %w", err)
 	}
-	db.logActionItemEvent(int64(id), "snoozed", "status", status, "snoozed")
+	snoozeLabel := formatSnoozeUntil(until)
+	if snoozeLabel != "" {
+		snoozeLabel = "until " + snoozeLabel
+	}
+	db.logActionItemEvent(int64(id), "snoozed", "status", status, snoozeLabel)
 	return nil
 }
 
@@ -516,6 +534,181 @@ func (db *DB) FindRelatedDigestIDs(channelID string, periodFrom, periodTo float6
 	return ids, rows.Err()
 }
 
+// UpdateActionItemFromExtraction updates an existing action item with new data from
+// a re-extraction pass. Only updates fields that changed, logging history for each change.
+// Preserves user-set status. Returns true if any field was actually changed.
+func (db *DB) UpdateActionItemFromExtraction(id int, update ActionItem) (bool, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("beginning update tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Load current state.
+	var existing struct {
+		context         string
+		priority        string
+		dueDate         sql.NullFloat64
+		decisionSummary string
+		decisionOptions string
+		relatedDigests  string
+		subItems        string
+		tags            string
+		blocking        string
+		category        string
+	}
+	err = tx.QueryRow(`SELECT context, priority, due_date, decision_summary, decision_options,
+		related_digest_ids, sub_items, tags, blocking, category FROM action_items WHERE id = ?`, id).
+		Scan(&existing.context, &existing.priority, &existing.dueDate, &existing.decisionSummary,
+			&existing.decisionOptions, &existing.relatedDigests, &existing.subItems,
+			&existing.tags, &existing.blocking, &existing.category)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, fmt.Errorf("action item %d not found", id)
+		}
+		return false, fmt.Errorf("loading existing action item: %w", err)
+	}
+
+	changed := false
+
+	// Update context if changed.
+	if update.Context != "" && update.Context != existing.context {
+		logActionItemEventTx(tx, int64(id), "re_extracted", "context",
+			"", truncate(update.Context, 200))
+		changed = true
+	}
+
+	// Update priority if changed.
+	if update.Priority != "" && update.Priority != existing.priority {
+		logActionItemEventTx(tx, int64(id), "priority_changed", "priority", existing.priority, update.Priority)
+		changed = true
+	}
+
+	// Update due_date if changed.
+	oldDue := ""
+	if existing.dueDate.Valid {
+		oldDue = fmt.Sprintf("%.0f", existing.dueDate.Float64)
+	}
+	newDue := ""
+	if update.DueDate > 0 {
+		newDue = fmt.Sprintf("%.0f", update.DueDate)
+	}
+	if oldDue != newDue && newDue != "" {
+		logActionItemEventTx(tx, int64(id), "due_date_changed", "due_date", oldDue, newDue)
+		changed = true
+	}
+
+	// Update decision_summary if changed.
+	if update.DecisionSummary != "" && update.DecisionSummary != existing.decisionSummary {
+		logActionItemEventTx(tx, int64(id), "decision_evolved", "decision_summary",
+			"", truncate(update.DecisionSummary, 200))
+		changed = true
+	}
+
+	// Update related_digest_ids if changed.
+	if update.RelatedDigestIDs != "" && update.RelatedDigestIDs != existing.relatedDigests {
+		summary := summarizeDigestLinked(existing.relatedDigests, update.RelatedDigestIDs)
+		logActionItemEventTx(tx, int64(id), "digest_linked", "related_digest_ids", "", summary)
+		changed = true
+	}
+
+	// Update sub_items if changed.
+	if update.SubItems != "" && update.SubItems != existing.subItems {
+		summary := summarizeSubItemsChange(existing.subItems, update.SubItems)
+		logActionItemEventTx(tx, int64(id), "sub_items_updated", "sub_items", "", summary)
+		changed = true
+	}
+
+	if !changed {
+		return false, nil
+	}
+
+	// Apply all updates.
+	var dueDate any
+	if update.DueDate > 0 {
+		dueDate = update.DueDate
+	}
+
+	_, err = tx.Exec(`UPDATE action_items SET
+		context = CASE WHEN ? != '' THEN ? ELSE context END,
+		priority = CASE WHEN ? != '' THEN ? ELSE priority END,
+		due_date = CASE WHEN ? IS NOT NULL THEN ? ELSE due_date END,
+		decision_summary = CASE WHEN ? != '' THEN ? ELSE decision_summary END,
+		decision_options = CASE WHEN ? != '' THEN ? ELSE decision_options END,
+		related_digest_ids = CASE WHEN ? != '' THEN ? ELSE related_digest_ids END,
+		sub_items = CASE WHEN ? != '' THEN ? ELSE sub_items END,
+		tags = CASE WHEN ? != '' THEN ? ELSE tags END,
+		blocking = CASE WHEN ? != '' THEN ? ELSE blocking END,
+		category = CASE WHEN ? != '' THEN ? ELSE category END,
+		participants = CASE WHEN ? != '' THEN ? ELSE participants END,
+		source_refs = CASE WHEN ? != '' THEN ? ELSE source_refs END
+		WHERE id = ?`,
+		update.Context, update.Context,
+		update.Priority, update.Priority,
+		dueDate, dueDate,
+		update.DecisionSummary, update.DecisionSummary,
+		update.DecisionOptions, update.DecisionOptions,
+		update.RelatedDigestIDs, update.RelatedDigestIDs,
+		update.SubItems, update.SubItems,
+		update.Tags, update.Tags,
+		update.Blocking, update.Blocking,
+		update.Category, update.Category,
+		update.Participants, update.Participants,
+		update.SourceRefs, update.SourceRefs,
+		id)
+	if err != nil {
+		return false, fmt.Errorf("updating action item %d: %w", id, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("committing action item update: %w", err)
+	}
+	return true, nil
+}
+
+// GetExistingActionItemsForChannel returns active/inbox items for a specific channel and user.
+// Used by the extraction pipeline to pass existing items into the AI prompt for deduplication.
+func (db *DB) GetExistingActionItemsForChannel(channelID, assigneeUserID string) ([]ActionItem, error) {
+	rows, err := db.Query(`SELECT id, channel_id, assignee_user_id, assignee_raw, text, context,
+		source_message_ts, source_channel_name, status, priority, due_date,
+		period_from, period_to, model, input_tokens, output_tokens, cost_usd,
+		created_at, completed_at,
+		has_updates, last_checked_ts, snooze_until, pre_snooze_status,
+		participants, source_refs,
+		requester_name, requester_user_id, category, blocking, tags,
+		decision_summary, decision_options, related_digest_ids, sub_items
+		FROM action_items
+		WHERE channel_id = ? AND assignee_user_id = ? AND status IN ('inbox', 'active')
+		ORDER BY created_at DESC`, channelID, assigneeUserID)
+	if err != nil {
+		return nil, fmt.Errorf("querying existing action items for channel: %w", err)
+	}
+	defer rows.Close()
+	return scanActionItems(rows)
+}
+
+// GetExistingActionItemsExcludingChannel returns active/inbox items for a user
+// from all channels EXCEPT the specified one. Used for cross-channel completion detection.
+func (db *DB) GetExistingActionItemsExcludingChannel(excludeChannelID, assigneeUserID string) ([]ActionItem, error) {
+	rows, err := db.Query(`SELECT id, channel_id, assignee_user_id, assignee_raw, text, context,
+		source_message_ts, source_channel_name, status, priority, due_date,
+		period_from, period_to, model, input_tokens, output_tokens, cost_usd,
+		created_at, completed_at,
+		has_updates, last_checked_ts, snooze_until, pre_snooze_status,
+		participants, source_refs,
+		requester_name, requester_user_id, category, blocking, tags,
+		decision_summary, decision_options, related_digest_ids, sub_items
+		FROM action_items
+		WHERE channel_id != ? AND assignee_user_id = ? AND status IN ('inbox', 'active')
+		ORDER BY created_at DESC
+		LIMIT 20`, excludeChannelID, assigneeUserID)
+	if err != nil {
+		return nil, fmt.Errorf("querying cross-channel action items: %w", err)
+	}
+	defer rows.Close()
+	return scanActionItems(rows)
+}
+
 // UpdateActionItemSubItems updates the sub_items JSON for an action item.
 func (db *DB) UpdateActionItemSubItems(id int, subItems string) error {
 	res, err := db.Exec(`UPDATE action_items SET sub_items = ? WHERE id = ?`, subItems, id)
@@ -535,6 +728,118 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen]) + "..."
+}
+
+// summarizeSubItemsChange computes a human-readable diff between old and new sub-items JSON.
+func summarizeSubItemsChange(oldJSON, newJSON string) string {
+	type subItem struct {
+		Text   string `json:"text"`
+		IsDone bool   `json:"isDone"`
+	}
+	var oldItems, newItems []subItem
+	_ = json.Unmarshal([]byte(oldJSON), &oldItems)
+	_ = json.Unmarshal([]byte(newJSON), &newItems)
+
+	oldMap := make(map[string]bool, len(oldItems))
+	for _, it := range oldItems {
+		oldMap[it.Text] = it.IsDone
+	}
+	newMap := make(map[string]bool, len(newItems))
+	for _, it := range newItems {
+		newMap[it.Text] = it.IsDone
+	}
+
+	var parts []string
+
+	// Items completed
+	var completed []string
+	for _, it := range newItems {
+		if it.IsDone {
+			if wasDone, exists := oldMap[it.Text]; exists && !wasDone {
+				completed = append(completed, it.Text)
+			}
+		}
+	}
+	if len(completed) > 0 {
+		parts = append(parts, fmt.Sprintf("completed: %s", truncate(strings.Join(completed, ", "), 80)))
+	}
+
+	// Items added
+	var added []string
+	for _, it := range newItems {
+		if _, exists := oldMap[it.Text]; !exists {
+			added = append(added, it.Text)
+		}
+	}
+	if len(added) > 0 {
+		parts = append(parts, fmt.Sprintf("added: %s", truncate(strings.Join(added, ", "), 80)))
+	}
+
+	// Items removed
+	var removed []string
+	for _, it := range oldItems {
+		if _, exists := newMap[it.Text]; !exists {
+			removed = append(removed, it.Text)
+		}
+	}
+	if len(removed) > 0 {
+		parts = append(parts, fmt.Sprintf("removed: %s", truncate(strings.Join(removed, ", "), 80)))
+	}
+
+	// Items uncompleted
+	var uncompleted []string
+	for _, it := range newItems {
+		if !it.IsDone {
+			if wasDone, exists := oldMap[it.Text]; exists && wasDone {
+				uncompleted = append(uncompleted, it.Text)
+			}
+		}
+	}
+	if len(uncompleted) > 0 {
+		parts = append(parts, fmt.Sprintf("reopened: %s", truncate(strings.Join(uncompleted, ", "), 80)))
+	}
+
+	if len(parts) == 0 {
+		return fmt.Sprintf("%d items → %d items", len(oldItems), len(newItems))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// summarizeDigestLinked computes which digest IDs were added.
+func summarizeDigestLinked(oldJSON, newJSON string) string {
+	var oldIDs, newIDs []int
+	_ = json.Unmarshal([]byte(oldJSON), &oldIDs)
+	_ = json.Unmarshal([]byte(newJSON), &newIDs)
+
+	oldSet := make(map[int]bool, len(oldIDs))
+	for _, id := range oldIDs {
+		oldSet[id] = true
+	}
+
+	var added []string
+	for _, id := range newIDs {
+		if !oldSet[id] {
+			added = append(added, fmt.Sprintf("#%d", id))
+		}
+	}
+
+	if len(added) > 0 {
+		return "linked " + strings.Join(added, ", ")
+	}
+	return fmt.Sprintf("%d digests", len(newIDs))
+}
+
+// formatSnoozeUntil converts a Unix timestamp to a human-readable date string.
+func formatSnoozeUntil(until float64) string {
+	if until <= 0 {
+		return ""
+	}
+	t := time.Unix(int64(until), 0)
+	now := time.Now()
+	if t.Year() == now.Year() {
+		return t.Format("Jan 2, 15:04")
+	}
+	return t.Format("Jan 2 2006, 15:04")
 }
 
 func scanActionItems(rows *sql.Rows) ([]ActionItem, error) {

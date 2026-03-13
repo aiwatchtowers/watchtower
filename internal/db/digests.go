@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -223,4 +224,73 @@ func (db *DB) ChannelsWithNewMessages(sinceUnix float64) ([]string, error) {
 		channels = append(channels, ch)
 	}
 	return channels, rows.Err()
+}
+
+// GetDigestDecisionsForChannel returns individual decisions from digests
+// that overlap with the given channel and time window.
+// Decisions are parsed from the JSON decisions field of each digest.
+func (db *DB) GetDigestDecisionsForChannel(channelID string, periodFrom, periodTo float64) ([]DigestDecisionRow, error) {
+	// Look up channel name BEFORE opening the query cursor to avoid
+	// deadlock on single-connection (in-memory) databases.
+	channelName := channelID
+	if name, err := db.channelNameByID(channelID); err == nil && name != "" {
+		channelName = name
+	}
+
+	rows, err := db.Query(`SELECT id, channel_id, period_to, decisions
+		FROM digests
+		WHERE (channel_id = ? OR channel_id = '')
+		  AND period_from <= ? AND period_to >= ?
+		  AND decisions != '[]' AND decisions != ''
+		ORDER BY period_to DESC LIMIT 10`,
+		channelID, periodTo, periodFrom)
+	if err != nil {
+		return nil, fmt.Errorf("querying digest decisions: %w", err)
+	}
+	defer rows.Close()
+
+	var result []DigestDecisionRow
+	for rows.Next() {
+		var dID int
+		var chID, decisionsJSON string
+		var pTo float64
+		if err := rows.Scan(&dID, &chID, &pTo, &decisionsJSON); err != nil {
+			return nil, fmt.Errorf("scanning digest decision row: %w", err)
+		}
+
+		// Parse JSON array of decisions.
+		type decisionEntry struct {
+			Text       string `json:"text"`
+			By         string `json:"by"`
+			Importance string `json:"importance"`
+		}
+		var decisions []decisionEntry
+		if err := json.Unmarshal([]byte(decisionsJSON), &decisions); err != nil {
+			continue // skip malformed JSON
+		}
+
+		for _, d := range decisions {
+			entry := d.Text
+			if d.By != "" {
+				entry += " (by " + d.By + ")"
+			}
+			if d.Importance != "" {
+				entry += " [" + d.Importance + "]"
+			}
+			result = append(result, DigestDecisionRow{
+				DigestID:    dID,
+				ChannelName: channelName,
+				PeriodTo:    pTo,
+				Decision:    entry,
+			})
+		}
+	}
+	return result, rows.Err()
+}
+
+// channelNameByID is a helper to get a channel name by ID.
+func (db *DB) channelNameByID(channelID string) (string, error) {
+	var name string
+	err := db.QueryRow(`SELECT name FROM channels WHERE id = ?`, channelID).Scan(&name)
+	return name, err
 }

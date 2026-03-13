@@ -60,6 +60,8 @@ final class AppState {
         Task {
             do {
                 let manager = try await Task.detached {
+                    // Run Go CLI to apply any pending DB migrations before opening
+                    DatabaseManager.runCLIMigrations()
                     let dbPath = try DatabaseManager.resolveDBPath()
                     return try DatabaseManager(path: dbPath)
                 }.value

@@ -79,7 +79,8 @@ struct DigestListView: View {
                 DigestDetailView(
                     digest: digest,
                     channelName: vm.channelName(for: digest),
-                    viewModel: vm
+                    viewModel: vm,
+                    onClose: { selectedDigestID = nil }
                 )
                 .id(id)
                 .frame(minWidth: 400, idealWidth: 500)
@@ -89,7 +90,7 @@ struct DigestListView: View {
             if let entryID = selectedDecisionEntryID,
                let entry = vm.decisionEntries.first(where: { $0.id == entryID }) {
                 Divider()
-                DecisionDetailView(entry: entry, viewModel: vm)
+                DecisionDetailView(entry: entry, viewModel: vm, onClose: { selectedDecisionEntryID = nil })
                     .id(entryID)
                     .frame(minWidth: 400, idealWidth: 500)
                     .transition(.move(edge: .trailing).combined(with: .opacity))

@@ -5,6 +5,7 @@ struct PersonDetailView: View {
     let userName: String
     let history: [UserAnalysis]
     let userNameResolver: (String) -> String
+    var onClose: (() -> Void)? = nil
 
     var body: some View {
         ScrollView {
@@ -39,6 +40,17 @@ struct PersonDetailView: View {
                     Text("\(analysis.periodFromDate.formatted(.dateTime.month().day())) – \(analysis.periodToDate.formatted(.dateTime.month().day()))")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if let onClose {
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
                 }
             }
 

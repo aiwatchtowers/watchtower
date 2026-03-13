@@ -32,11 +32,12 @@ type SyncConfig struct {
 }
 
 type DigestConfig struct {
-	Enabled     bool   `mapstructure:"enabled"`
-	Model       string `mapstructure:"model"`
-	MinMessages int    `mapstructure:"min_messages"`
-	Language    string `mapstructure:"language"`
-	Workers     int    `mapstructure:"workers"`
+	Enabled              bool          `mapstructure:"enabled"`
+	Model                string        `mapstructure:"model"`
+	MinMessages          int           `mapstructure:"min_messages"`
+	Language             string        `mapstructure:"language"`
+	Workers              int           `mapstructure:"workers"`
+	ActionItemsInterval  time.Duration `mapstructure:"action_items_interval"`
 }
 
 type Config struct {
@@ -66,6 +67,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("digest.min_messages", DefaultDigestMinMsgs)
 	v.SetDefault("digest.language", DefaultDigestLang)
 	v.SetDefault("digest.workers", DefaultDigestWorkers)
+	v.SetDefault("digest.action_items_interval", DefaultActionItemsInterval)
 
 	// Config file
 	v.SetConfigFile(configPath)

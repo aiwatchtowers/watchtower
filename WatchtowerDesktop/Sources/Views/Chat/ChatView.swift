@@ -22,6 +22,7 @@ private struct ChatSplitView: View {
     let historyVM: ChatHistoryViewModel
     @State private var showHistory = true
     @State private var historyWidth: CGFloat = 240
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -45,6 +46,18 @@ private struct ChatSplitView: View {
                     }
                     .keyboardShortcut("n", modifiers: .command)
                     .help("New Chat")
+
+                    if chatVM.conversationID != nil {
+                        Button(role: .destructive) {
+                            showDeleteConfirmation = true
+                        } label: {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .keyboardShortcut(.delete, modifiers: .command)
+                        .help("Delete Chat")
+                    }
 
                     Spacer()
 
@@ -88,12 +101,30 @@ private struct ChatSplitView: View {
                 chatVM.bind(to: conv)
             }
         }
+        // L6: confirmation dialog before deleting chat
+        .alert("Delete Chat?", isPresented: $showDeleteConfirmation) {
+            Button("Delete", role: .destructive) { deleteCurrentChat() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This conversation will be permanently deleted.")
+        }
     }
 
     private func createNewChat() {
         guard let conv = historyVM.createConversation() else { return }
         chatVM.newChat()
         chatVM.bind(to: conv)
+    }
+
+    private func deleteCurrentChat() {
+        guard let id = chatVM.conversationID else { return }
+        chatVM.cancelStream()
+        historyVM.deleteConversation(id)
+        chatVM.newChat()
+        // Switch to the next available conversation, or leave empty
+        if let next = historyVM.conversations.first {
+            chatVM.bind(to: next)
+        }
     }
 
     private var chatContent: some View {

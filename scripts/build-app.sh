@@ -3,6 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Source .env if present (for OAuth credentials etc.)
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    set -a
+    . "$PROJECT_ROOT/.env"
+    set +a
+fi
 DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
 BUILD_DIR="$PROJECT_ROOT/build"
 APP_NAME="Watchtower"
@@ -85,6 +92,17 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
         <key>NSAllowsArbitraryLoads</key>
         <false/>
     </dict>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Watchtower OAuth Callback</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>watchtower-auth</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

@@ -92,6 +92,31 @@ final class DatabaseManager: Sendable {
         return total
     }
 
+    // MARK: - CLI Migrations
+
+    /// Run the bundled Go CLI to apply all pending DB migrations before opening the pool.
+    /// The CLI owns all schema migrations — desktop app never writes migrations itself.
+    static func runCLIMigrations() {
+        guard let cliPath = Constants.findCLIPath() else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.arguments = ["db", "migrate"]
+        process.environment = Constants.resolvedEnvironment()
+        process.standardOutput = nil
+        process.standardError = Pipe() // capture for debugging
+        guard (try? process.run()) != nil else { return }
+        // C2: timeout to prevent indefinite hang on DB lock or broken CLI
+        let timer = DispatchSource.makeTimerSource()
+        timer.schedule(deadline: .now() + 30)
+        timer.setEventHandler { process.terminate() }
+        timer.resume()
+        process.waitUntilExit()
+        timer.cancel()
+        if process.terminationStatus != 0 {
+            NSLog("[Watchtower] CLI migration failed with exit code \(process.terminationStatus)")
+        }
+    }
+
     /// C2: only allow safe workspace names (alphanumeric, hyphens, underscores, dots)
     static func isValidWorkspaceName(_ name: String) -> Bool {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))

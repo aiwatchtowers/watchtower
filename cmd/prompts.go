@@ -64,6 +64,7 @@ With a prompt-id, suggests improvements for that specific prompt.`,
 }
 
 var tuneFlagApply bool
+var tuneFlagInstructions string
 
 func init() {
 	rootCmd.AddCommand(promptsCmd)
@@ -75,6 +76,7 @@ func init() {
 
 	rootCmd.AddCommand(tuneCmd)
 	tuneCmd.Flags().BoolVar(&tuneFlagApply, "apply", false, "apply the suggested changes (default: dry-run showing diff)")
+	tuneCmd.Flags().StringVar(&tuneFlagInstructions, "instructions", "", "manual instructions describing what to change in the prompt")
 }
 
 func runPromptsList(cmd *cobra.Command, args []string) error {
@@ -236,9 +238,15 @@ func runTune(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, id := range targetIDs {
-		fmt.Fprintf(out, "Analyzing feedback for %s...\n", id)
+		var result *prompts.TuneResult
 
-		result, err := tuner.Suggest(cmd.Context(), id)
+		if tuneFlagInstructions != "" {
+			fmt.Fprintf(out, "Manual tuning %s with custom instructions...\n", id)
+			result, err = tuner.SuggestManual(cmd.Context(), id, tuneFlagInstructions)
+		} else {
+			fmt.Fprintf(out, "Analyzing feedback for %s...\n", id)
+			result, err = tuner.Suggest(cmd.Context(), id)
+		}
 		if err != nil {
 			fmt.Fprintf(out, "  Skipped: %v\n\n", err)
 			continue

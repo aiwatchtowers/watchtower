@@ -24,6 +24,11 @@ import (
 	"github.com/slack-go/slack"
 )
 
+// defaultRedirectPort is the fixed port used for the in-app OAuth redirect URI.
+// The desktop app intercepts this redirect in WKWebView before it loads,
+// so no server needs to be running.
+const defaultRedirectPort = 18491
+
 const (
 	slackAuthorizeURL = "https://slack.com/oauth/v2/authorize"
 	callbackPath      = "/callback"
@@ -77,6 +82,70 @@ type OAuthResult struct {
 	ExpiresIn   int
 }
 
+// PrepareResult holds the data needed by the desktop app to start the OAuth flow.
+type PrepareResult struct {
+	AuthorizeURL string `json:"authorize_url"`
+	RedirectURI  string `json:"redirect_uri"`
+	State        string `json:"state"`
+}
+
+// Prepare generates an OAuth authorization URL for the desktop app.
+// If customRedirectURI is non-empty it is used instead of the default localhost HTTPS redirect.
+// The desktop app uses a custom scheme (e.g. watchtower-auth://callback) so that
+// ASWebAuthenticationSession can intercept the redirect automatically.
+func Prepare(cfg OAuthConfig, customRedirectURI string) (*PrepareResult, error) {
+	state, err := randomState()
+	if err != nil {
+		return nil, fmt.Errorf("generating state: %w", err)
+	}
+
+	redirectURI := customRedirectURI
+	if redirectURI == "" {
+		redirectURI = fmt.Sprintf("https://127.0.0.1:%d%s", defaultRedirectPort, callbackPath)
+	}
+
+	params := url.Values{
+		"client_id":    {cfg.ClientID},
+		"user_scope":   {strings.Join(UserScopes, ",")},
+		"redirect_uri": {redirectURI},
+		"state":        {state},
+	}
+	authorizeURL := slackAuthorizeURL + "?" + params.Encode()
+
+	return &PrepareResult{
+		AuthorizeURL: authorizeURL,
+		RedirectURI:  redirectURI,
+		State:        state,
+	}, nil
+}
+
+// Complete exchanges an OAuth authorization code for a user token.
+// Used by the desktop app after intercepting the redirect callback.
+func Complete(ctx context.Context, cfg OAuthConfig, code, redirectURI string) (*OAuthResult, error) {
+	if code == "" {
+		return nil, fmt.Errorf("no authorization code provided")
+	}
+
+	resp, err := exchangeToken(ctx, cfg.ClientID, cfg.ClientSecret, code, redirectURI)
+	if err != nil {
+		return nil, fmt.Errorf("exchanging code for token: %w", err)
+	}
+
+	result := &OAuthResult{
+		AccessToken: resp.AuthedUser.AccessToken,
+		TeamID:      resp.Team.ID,
+		TeamName:    resp.Team.Name,
+		UserID:      resp.AuthedUser.ID,
+		ExpiresIn:   resp.AuthedUser.ExpiresIn,
+	}
+
+	if result.AccessToken == "" {
+		return nil, fmt.Errorf("no user access token in response (did you configure user_scope in your Slack app?)")
+	}
+
+	return result, nil
+}
+
 // callbackResult is sent from the HTTP callback handler to the Login goroutine.
 type callbackResult struct {
 	code  string
@@ -90,10 +159,10 @@ type callbackResult struct {
 //  3. Waits for the callback with an authorization code
 //  4. Exchanges the code for a user token
 func Login(ctx context.Context, cfg OAuthConfig, out io.Writer) (*OAuthResult, error) {
-	// Generate self-signed TLS cert for 127.0.0.1
-	tlsCert, err := generateSelfSignedCert()
+	// Use persistent TLS cert (generated once, can be trusted via `auth trust-cert`)
+	tlsCert, err := EnsureCert()
 	if err != nil {
-		return nil, fmt.Errorf("generating TLS certificate: %w", err)
+		return nil, fmt.Errorf("loading TLS certificate: %w", err)
 	}
 
 	// Find an available port

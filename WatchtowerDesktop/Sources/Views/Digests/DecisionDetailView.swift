@@ -4,6 +4,8 @@ import SwiftUI
 struct DecisionDetailView: View {
     let entry: DecisionEntry
     let viewModel: DigestViewModel
+    var onClose: (() -> Void)? = nil
+    @Environment(AppState.self) private var appState
     @State private var markingRead = false
     @State private var markedRead = false
     @State private var markReadError: String?
@@ -35,6 +37,15 @@ struct DecisionDetailView: View {
                     Text(TimeFormatting.shortDateTime(from: entry.date))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if let onClose {
+                        Button { onClose() } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 }
 
                 // Decision text with left bar
@@ -134,6 +145,16 @@ struct DecisionDetailView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.red)
                         }
+
+                        Spacer()
+
+                        if let dbManager = appState.databaseManager {
+                            FeedbackButtons(
+                                entityType: "decision",
+                                entityID: "\(entry.digestID):\(entry.decisionIdx)",
+                                dbManager: dbManager
+                            )
+                        }
                     }
                 }
             }
@@ -208,27 +229,20 @@ struct ImportanceBadge: View {
     }
 }
 
-/// Clickable importance badge with a picker menu to change importance.
+/// Clickable importance badge — single styled control with a popover picker.
 struct EditableImportanceBadge: View {
     let importance: String
     let isCorrected: Bool
     let onChange: (String) -> Void
 
     private static let levels = ["high", "medium", "low"]
+    @State private var showPicker = false
 
-    private var color: Color {
-        switch importance {
+    private func colorFor(_ level: String) -> Color {
+        switch level {
         case "high": .red
         case "low": .gray
         default: .orange
-        }
-    }
-
-    private var label: String {
-        switch importance {
-        case "high": "High"
-        case "low": "Low"
-        default: "Medium"
         }
     }
 
@@ -240,43 +254,21 @@ struct EditableImportanceBadge: View {
         }
     }
 
-    private func colorFor(_ level: String) -> Color {
-        switch level {
-        case "high": .red
-        case "low": .gray
-        default: .orange
-        }
-    }
-
     var body: some View {
-        Menu {
-            ForEach(Self.levels, id: \.self) { level in
-                Button {
-                    onChange(level)
-                } label: {
-                    HStack {
-                        Circle()
-                            .fill(colorFor(level))
-                            .frame(width: 8, height: 8)
-                        Text(labelFor(level))
-                        if level == importance {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
+        Button {
+            showPicker.toggle()
         } label: {
             HStack(spacing: 4) {
                 Circle()
-                    .fill(color)
+                    .fill(colorFor(importance))
                     .frame(width: 8, height: 8)
-                Text(label)
+                Text(labelFor(importance))
                     .font(.caption)
-                    .foregroundStyle(color)
+                    .foregroundStyle(colorFor(importance))
                 if isCorrected {
                     Image(systemName: "pencil.circle.fill")
                         .font(.caption2)
-                        .foregroundStyle(color)
+                        .foregroundStyle(colorFor(importance))
                 }
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8))
@@ -284,9 +276,42 @@ struct EditableImportanceBadge: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(color.opacity(0.1), in: Capsule())
+            .background(colorFor(importance).opacity(0.1), in: Capsule())
         }
         .buttonStyle(.plain)
+        .popover(isPresented: $showPicker, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Self.levels, id: \.self) { level in
+                    Button {
+                        onChange(level)
+                        showPicker = false
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(colorFor(level))
+                                .frame(width: 8, height: 8)
+                            Text(labelFor(level))
+                                .font(.callout)
+                            Spacer()
+                            if level == importance {
+                                Image(systemName: "checkmark")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if level != Self.levels.last {
+                        Divider().padding(.horizontal, 6)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+            .frame(width: 140)
+        }
         .help(isCorrected ? "Importance changed (click to adjust)" : "Click to change importance")
     }
 }

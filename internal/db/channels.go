@@ -96,11 +96,17 @@ func (db *DB) GetChannelByID(id string) (*Channel, error) {
 
 // EnsureChannel inserts a minimal channel record if not already present.
 // Does NOT update existing records (INSERT ON CONFLICT DO NOTHING).
-func (db *DB) EnsureChannel(id, name, chType string) error {
+// dmUserID is optional — pass "" if not applicable.
+func (db *DB) EnsureChannel(id, name, chType, dmUserID string) error {
+	var dmUID sql.NullString
+	if dmUserID != "" {
+		dmUID = sql.NullString{String: dmUserID, Valid: true}
+	}
 	_, err := db.Exec(`
-		INSERT INTO channels (id, name, type, is_member) VALUES (?, ?, ?, 1)
-		ON CONFLICT(id) DO NOTHING`,
-		id, name, chType,
+		INSERT INTO channels (id, name, type, is_member, dm_user_id) VALUES (?, ?, ?, 1, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			dm_user_id = COALESCE(channels.dm_user_id, excluded.dm_user_id)`,
+		id, name, chType, dmUID,
 	)
 	if err != nil {
 		return fmt.Errorf("ensuring channel %s: %w", id, err)

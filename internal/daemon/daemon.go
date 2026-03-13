@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	gosync "sync"
 	"time"
 
@@ -33,6 +34,7 @@ type Daemon struct {
 	analysisPipe    *analysis.Pipeline
 	actionItemsPipe *actionitems.Pipeline
 	lastAnalysis    time.Time // tracks when analysis last ran (once per day)
+	lastActionItems time.Time // tracks when action items last ran (throttled)
 }
 
 // New creates a Daemon that runs incremental syncs via the given orchestrator.
@@ -90,8 +92,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.wakeCh = WatchWake(ctx, pollInterval)
 	}
 
-	// Restore last analysis time from disk so the 24h guard survives restarts.
+	// Restore last pipeline times from disk so throttle guards survive restarts.
 	d.loadLastAnalysis()
+	d.loadLastActionItems()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -206,16 +209,28 @@ func (d *Daemon) runSync(ctx context.Context) {
 	wg.Wait()
 
 	// Phase 2: Action items (depend on digests for related_digest_ids).
+	// Throttled to run at most once per action_items_interval (default 1h).
 	if d.actionItemsPipe != nil {
-		n, err := d.actionItemsPipe.Run(ctx)
-		if err != nil {
-			d.logger.Printf("action-items error: %v", err)
-		} else if n > 0 {
-			d.logger.Printf("extracted %d action item(s)", n)
+		interval := d.config.Digest.ActionItemsInterval
+		if interval <= 0 {
+			interval = config.DefaultActionItemsInterval
+		}
+		now := time.Now()
+		if d.lastActionItems.IsZero() || now.Sub(d.lastActionItems) >= interval {
+			n, err := d.actionItemsPipe.Run(ctx)
+			if err != nil {
+				d.logger.Printf("action-items error: %v", err)
+			} else {
+				if n > 0 {
+					d.logger.Printf("extracted %d action item(s)", n)
+				}
+				d.lastActionItems = now
+				d.saveLastActionItems()
+			}
 		}
 	}
 
-	// After action items extraction, check for updates on existing items.
+	// Check for updates on existing items (lightweight, runs every sync).
 	if d.actionItemsPipe != nil {
 		n, err := d.actionItemsPipe.CheckForUpdates(ctx)
 		if err != nil {
@@ -237,7 +252,7 @@ func (d *Daemon) loadLastAnalysis() {
 	if err != nil {
 		return
 	}
-	unix, err := strconv.ParseInt(string(data), 10, 64)
+	unix, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
 	if err != nil {
 		return
 	}
@@ -250,5 +265,32 @@ func (d *Daemon) saveLastAnalysis() {
 	data := strconv.FormatInt(d.lastAnalysis.Unix(), 10)
 	if err := os.WriteFile(d.lastAnalysisPath(), []byte(data), 0o600); err != nil {
 		d.logger.Printf("failed to save last analysis time: %v", err)
+	}
+}
+
+// lastActionItemsPath returns the file path for persisting the last action items time.
+func (d *Daemon) lastActionItemsPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "last_action_items.txt")
+}
+
+// loadLastActionItems restores lastActionItems from disk so the throttle survives restarts.
+func (d *Daemon) loadLastActionItems() {
+	data, err := os.ReadFile(d.lastActionItemsPath())
+	if err != nil {
+		return
+	}
+	unix, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return
+	}
+	d.lastActionItems = time.Unix(unix, 0)
+	d.logger.Printf("restored last action items time: %s", d.lastActionItems.Format(time.RFC3339))
+}
+
+// saveLastActionItems persists lastActionItems to disk.
+func (d *Daemon) saveLastActionItems() {
+	data := strconv.FormatInt(d.lastActionItems.Unix(), 10)
+	if err := os.WriteFile(d.lastActionItemsPath(), []byte(data), 0o600); err != nil {
+		d.logger.Printf("failed to save last action items time: %v", err)
 	}
 }

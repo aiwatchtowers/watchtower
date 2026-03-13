@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,12 +30,146 @@ WATCHTOWER_OAUTH_CLIENT_ID and WATCHTOWER_OAUTH_CLIENT_SECRET env vars.`,
 	RunE: runAuthLogin,
 }
 
+var authPrepareCmd = &cobra.Command{
+	Use:   "prepare",
+	Short: "Generate OAuth authorization URL for in-app login",
+	Long:  `Outputs a JSON object with authorize_url, redirect_uri, and state for the desktop app to use in a WKWebView-based OAuth flow.`,
+	RunE:  runAuthPrepare,
+}
+
+var authCompleteCmd = &cobra.Command{
+	Use:   "complete",
+	Short: "Exchange OAuth authorization code for token",
+	Long:  `Exchanges an OAuth code (obtained from the in-app WKWebView callback) for a Slack user token and saves it to config.`,
+	RunE:  runAuthComplete,
+}
+
+var authTrustCertCmd = &cobra.Command{
+	Use:   "trust-cert",
+	Short: "Trust the localhost HTTPS certificate (one-time macOS setup)",
+	Long: `Generates a persistent localhost TLS certificate (if needed) and adds it
+to the macOS user trust store. This triggers a system authorization dialog
+(Touch ID or password). After this, localhost HTTPS works without browser warnings.`,
+	RunE: runAuthTrustCert,
+}
+
+var authCheckCertCmd = &cobra.Command{
+	Use:   "check-cert",
+	Short: "Check if the localhost certificate is trusted",
+	RunE:  runAuthCheckCert,
+}
+
 func init() {
 	rootCmd.AddCommand(authCmd)
 	authCmd.AddCommand(authLoginCmd)
+	authCmd.AddCommand(authPrepareCmd)
+	authCmd.AddCommand(authCompleteCmd)
+	authCmd.AddCommand(authTrustCertCmd)
+	authCmd.AddCommand(authCheckCertCmd)
+
+	authCompleteCmd.Flags().String("code", "", "OAuth authorization code from Slack callback")
+	authCompleteCmd.Flags().String("redirect-uri", "", "Redirect URI used in the authorize request")
+	_ = authCompleteCmd.MarkFlagRequired("code")
+	_ = authCompleteCmd.MarkFlagRequired("redirect-uri")
+
+	authPrepareCmd.Flags().String("redirect-uri", "", "Custom redirect URI (e.g. watchtower-auth://callback for desktop app)")
 }
 
-func runAuthLogin(cmd *cobra.Command, args []string) error {
+func runAuthLogin(cmd *cobra.Command, _ []string) error {
+	cfg, err := resolveOAuthConfig()
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	result, err := auth.Login(cmd.Context(), cfg, out)
+	if err != nil {
+		return fmt.Errorf("oauth login: %w", err)
+	}
+
+	info, err := saveAuthResult(result)
+	if err != nil {
+		return err
+	}
+
+	// H1: auth login prints human-readable text only (no JSON)
+	fmt.Fprintf(out, "\nLogged in to workspace %q (team: %s, user: %s)\n", info.Workspace, info.TeamID, info.UserID)
+	fmt.Fprintf(out, "Config written to: %s\n", flagConfig)
+	fmt.Fprintf(out, "Run 'watchtower sync' to start syncing.\n")
+
+	return nil
+}
+
+func runAuthPrepare(cmd *cobra.Command, _ []string) error {
+	cfg, err := resolveOAuthConfig()
+	if err != nil {
+		return err
+	}
+
+	redirectURI, _ := cmd.Flags().GetString("redirect-uri")
+	result, err := auth.Prepare(cfg, redirectURI)
+	if err != nil {
+		return fmt.Errorf("auth prepare: %w", err)
+	}
+
+	return json.NewEncoder(os.Stdout).Encode(result)
+}
+
+func runAuthTrustCert(_ *cobra.Command, _ []string) error {
+	// Ensure cert exists (generates if needed)
+	if _, err := auth.EnsureCert(); err != nil {
+		return fmt.Errorf("generating certificate: %w", err)
+	}
+
+	if auth.IsCertTrusted() {
+		fmt.Println("Certificate is already trusted.")
+		return nil
+	}
+
+	fmt.Println("Adding localhost certificate to macOS trust store...")
+	fmt.Println("You may be prompted for your password or Touch ID.")
+	if err := auth.TrustCert(); err != nil {
+		return err
+	}
+	fmt.Println("Done! Localhost HTTPS will now work without browser warnings.")
+	return nil
+}
+
+func runAuthCheckCert(_ *cobra.Command, _ []string) error {
+	if _, err := auth.EnsureCert(); err != nil {
+		return fmt.Errorf("generating certificate: %w", err)
+	}
+	if auth.IsCertTrusted() {
+		fmt.Println("trusted")
+	} else {
+		fmt.Println("untrusted")
+	}
+	return nil
+}
+
+func runAuthComplete(cmd *cobra.Command, _ []string) error {
+	cfg, err := resolveOAuthConfig()
+	if err != nil {
+		return err
+	}
+
+	code, _ := cmd.Flags().GetString("code")
+	redirectURI, _ := cmd.Flags().GetString("redirect-uri")
+	result, err := auth.Complete(cmd.Context(), cfg, code, redirectURI)
+	if err != nil {
+		return fmt.Errorf("auth complete: %w", err)
+	}
+
+	// H1: auth complete outputs JSON for the desktop app to parse
+	info, err := saveAuthResult(result)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(info)
+}
+
+// resolveOAuthConfig reads OAuth credentials from env or build-time defaults.
+func resolveOAuthConfig() (auth.OAuthConfig, error) {
 	clientID := os.Getenv("WATCHTOWER_OAUTH_CLIENT_ID")
 	clientSecret := os.Getenv("WATCHTOWER_OAUTH_CLIENT_SECRET")
 	if clientID == "" {
@@ -44,22 +179,22 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		clientSecret = auth.DefaultClientSecret
 	}
 	if clientID == "" || clientSecret == "" {
-		return fmt.Errorf("OAuth credentials not configured. Set WATCHTOWER_OAUTH_CLIENT_ID and WATCHTOWER_OAUTH_CLIENT_SECRET environment variables, or use an official release build")
+		return auth.OAuthConfig{}, fmt.Errorf("OAuth credentials not configured. Set WATCHTOWER_OAUTH_CLIENT_ID and WATCHTOWER_OAUTH_CLIENT_SECRET environment variables, or use an official release build")
 	}
+	return auth.OAuthConfig{ClientID: clientID, ClientSecret: clientSecret}, nil
+}
 
-	cfg := auth.OAuthConfig{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-	}
+// authResultInfo holds the workspace info after saving config.
+type authResultInfo struct {
+	Workspace string `json:"workspace"`
+	TeamID    string `json:"team_id"`
+	UserID    string `json:"user_id"`
+}
 
-	out := cmd.OutOrStdout()
-	result, err := auth.Login(cmd.Context(), cfg, out)
-	if err != nil {
-		return fmt.Errorf("oauth login: %w", err)
-	}
-
+// saveAuthResult writes the OAuth result to config and creates the DB directory.
+func saveAuthResult(result *auth.OAuthResult) (*authResultInfo, error) {
 	if result.ExpiresIn > 0 {
-		fmt.Fprintf(out, "\nWarning: token expires in %d seconds. Token rotation is not yet supported.\n", result.ExpiresIn)
+		fmt.Fprintf(os.Stderr, "Warning: token expires in %d seconds. Token rotation is not yet supported.\n", result.ExpiresIn)
 	}
 
 	workspace := sanitizeWorkspaceName(result.TeamName)
@@ -67,21 +202,19 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		workspace = result.TeamID
 	}
 
-	// Save token to config, merging with existing config if present
 	configPath := flagConfig
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return fmt.Errorf("creating config directory: %w", err)
+		return nil, fmt.Errorf("creating config directory: %w", err)
 	}
 
 	v := viper.New()
 	v.SetConfigFile(configPath)
-	_ = v.ReadInConfig() // ignore error if file doesn't exist yet
+	_ = v.ReadInConfig()
 
 	v.Set("active_workspace", workspace)
 	v.Set("workspaces."+workspace+".slack_token", result.AccessToken)
 
-	// Set defaults only if not already configured (use constants from config/defaults.go)
 	defaults := map[string]any{
 		"ai.model":                  config.DefaultAIModel,
 		"ai.context_budget":         config.DefaultAIContextBudget,
@@ -100,26 +233,20 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Atomic write to avoid a race window where secrets could be world-readable
 	if err := writeConfigAtomic(v, configPath); err != nil {
-		return err
+		return nil, err
 	}
 
-	// Create DB directory
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
+		return nil, fmt.Errorf("getting home directory: %w", err)
 	}
 	dbDir := filepath.Join(home, ".local", "share", "watchtower", workspace)
 	if err := os.MkdirAll(dbDir, 0o700); err != nil {
-		return fmt.Errorf("creating database directory: %w", err)
+		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
 
-	fmt.Fprintf(out, "\nLogged in to workspace %q (team: %s, user: %s)\n", workspace, result.TeamID, result.UserID)
-	fmt.Fprintf(out, "Config written to: %s\n", configPath)
-	fmt.Fprintf(out, "Run 'watchtower sync' to start syncing.\n")
-
-	return nil
+	return &authResultInfo{workspace, result.TeamID, result.UserID}, nil
 }
 
 var sanitizeRe = regexp.MustCompile(`[^a-z0-9_-]+`)

@@ -18,7 +18,8 @@ struct PeopleListView: View {
                         analysis: analysis,
                         userName: vm.userName(for: userID),
                         history: vm.userHistory(userID: userID),
-                        userNameResolver: { vm.userName(for: $0) }
+                        userNameResolver: { vm.userName(for: $0) },
+                        onClose: { selectedUserID = nil }
                     )
                     .id(userID)
                     .frame(minWidth: 400, idealWidth: 500)

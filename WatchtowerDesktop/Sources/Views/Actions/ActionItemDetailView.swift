@@ -3,6 +3,7 @@ import SwiftUI
 struct ActionItemDetailView: View {
     let item: ActionItem
     let viewModel: ActionItemsViewModel
+    var onClose: (() -> Void)? = nil
     @Environment(AppState.self) private var appState
     @State private var history: [ActionItemHistoryEntry] = []
     @State private var chatVM: ActionItemChatViewModel?
@@ -85,6 +86,15 @@ struct ActionItemDetailView: View {
                 Text(item.createdDate, style: .relative)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if let onClose {
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
 
             Text(item.text)
@@ -492,6 +502,12 @@ struct ActionItemDetailView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.displayText)
                                 .font(.caption)
+                            if let detail = entry.detailText {
+                                Text(detail)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
                             Text(TimeFormatting.shortDateTime(from: entry.createdDate))
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
@@ -583,7 +599,13 @@ struct ActionItemDetailView: View {
         case "update_detected": .yellow
         case "update_read": .gray
         case "reopened": .orange
-        case "priority_changed": .purple
+        case "priority_changed": .pink
+        case "re_extracted": .cyan
+        case "decision_evolved": .indigo
+        case "digest_linked": .blue
+        case "sub_items_updated": .mint
+        case "context_updated": .teal
+        case "due_date_changed": .orange
         default: .secondary
         }
     }

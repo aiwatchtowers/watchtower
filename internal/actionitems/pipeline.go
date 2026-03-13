@@ -38,6 +38,8 @@ type aiRequester struct {
 }
 
 type aiItem struct {
+	ExistingID      *int            `json:"existing_id"`      // non-nil → update existing item
+	StatusHint      string          `json:"status_hint"`      // "done", "active", or empty
 	Text            string          `json:"text"`
 	Context         string          `json:"context"`
 	ChannelID       string          `json:"channel_id"`
@@ -111,6 +113,17 @@ func (p *Pipeline) ReactivateSnoozed(ctx context.Context) (int, error) {
 	return p.db.ReactivateSnoozedItems()
 }
 
+// DayWindow returns day-aligned boundaries for the given time.
+// from = start of today (midnight local), to = start of tomorrow.
+// Using fixed boundaries prevents duplicate extraction when the daemon
+// runs repeatedly within the same day — all runs share the same window.
+func DayWindow(now time.Time) (from, to float64) {
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// M1: use time.Date for next day instead of Add(24h) to handle DST correctly
+	dayEnd := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	return float64(dayStart.Unix()), float64(dayEnd.Unix())
+}
+
 // Run executes the action items pipeline for the current user.
 // Returns the number of new action items found.
 func (p *Pipeline) Run(ctx context.Context) (int, error) {
@@ -127,9 +140,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	now := time.Now()
-	to := float64(now.Unix())
-	from := float64(now.Add(-time.Duration(DefaultWindowHours) * time.Hour).Unix())
+	from, to := DayWindow(time.Now())
 
 	return p.RunForWindow(ctx, currentUserID, from, to)
 }
@@ -308,12 +319,34 @@ func (p *Pipeline) checkItemForUpdates(ctx context.Context, item db.ActionItem) 
 		return false, fmt.Errorf("getting thread replies: %w", err)
 	}
 
-	if len(replies) == 0 {
+	// Get new channel-level messages after the cutoff (completion signals, status updates).
+	channelMsgs, err := p.db.GetChannelMessagesAfterTS(item.ChannelID, afterTS, 100)
+	if err != nil {
+		p.logger.Printf("action-items: warning: failed to get channel messages for item %d: %v", item.ID, err)
+		// Non-fatal: continue with thread replies only.
+	}
+
+	// Merge and deduplicate (thread replies + channel messages).
+	allMessages := replies
+	seenTS := make(map[string]bool, len(replies))
+	for _, r := range replies {
+		seenTS[r.TS] = true
+	}
+	for _, m := range channelMsgs {
+		if !seenTS[m.TS] {
+			allMessages = append(allMessages, m)
+		}
+	}
+
+	if len(allMessages) == 0 {
 		return false, nil
 	}
 
+	// Sort by timestamp.
+	sort.Slice(allMessages, func(i, j int) bool { return allMessages[i].TSUnix < allMessages[j].TSUnix })
+
 	// Format the new messages for the AI prompt.
-	formatted := p.formatMessages(replies)
+	formatted := p.formatMessages(allMessages)
 	if strings.TrimSpace(formatted) == "" {
 		return false, nil
 	}
@@ -338,8 +371,8 @@ func (p *Pipeline) checkItemForUpdates(ctx context.Context, item db.ActionItem) 
 		return false, fmt.Errorf("parsing update check result: %w", err)
 	}
 
-	// Find the latest message TS from replies to update last_checked_ts.
-	latestTS := replies[len(replies)-1].TS
+	// Find the latest message TS to update last_checked_ts.
+	latestTS := allMessages[len(allMessages)-1].TS
 
 	// Update last_checked_ts regardless of whether there's an update.
 	if err := p.db.UpdateLastCheckedTS(item.ID, latestTS); err != nil {
@@ -358,7 +391,11 @@ func (p *Pipeline) checkItemForUpdates(ctx context.Context, item db.ActionItem) 
 		}
 
 		if result.StatusHint == "done" {
-			p.logger.Printf("action-items: item %d appears done per thread activity (user must confirm)", item.ID)
+			if err := p.db.UpdateActionItemStatus(item.ID, "done"); err != nil {
+				p.logger.Printf("action-items: warning: failed to mark item %d as done: %v", item.ID, err)
+			} else {
+				p.logger.Printf("action-items: item %d auto-completed based on channel activity", item.ID)
+			}
 		}
 
 		return true, nil
@@ -407,8 +444,17 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
 	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
 
+	// Load existing action items for this channel to help AI deduplicate.
+	existingSection := p.formatExistingItems(channelID, userID)
+
+	// Load related digest decisions for context.
+	decisionsSection := p.formatDigestDecisions(channelID, from, to)
+
+	// Load existing action items from OTHER channels for cross-channel completion detection.
+	crossChannelSection := p.formatCrossChannelItems(channelID, userID)
+
 	tmpl, _ := p.getPrompt(prompts.ActionItemsExtract, actionItemsPrompt)
-	prompt := fmt.Sprintf(tmpl, userName, userID, channelName, channelID, fromStr, toStr, p.languageInstruction(), formatted)
+	prompt := fmt.Sprintf(tmpl, userName, userID, channelName, channelID, fromStr, toStr, p.languageInstruction(), existingSection, decisionsSection, crossChannelSection, formatted)
 
 	raw, usage, err := p.generator.Generate(ctx, "", prompt)
 	if err != nil {
@@ -529,6 +575,35 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 			SubItems:          subItems,
 		}
 
+		// If AI identified this as an update to an existing item, update it.
+		// M2: validate that existing_id belongs to the current user before updating.
+		if item.ExistingID != nil && *item.ExistingID > 0 {
+			if owner, err := p.db.GetActionItemAssignee(*item.ExistingID); err != nil || owner != userID {
+				p.logger.Printf("action-items: ignoring existing_id %d (owner mismatch or not found)", *item.ExistingID)
+				item.ExistingID = nil
+			}
+		}
+		if item.ExistingID != nil && *item.ExistingID > 0 {
+			if _, err := p.db.UpdateActionItemFromExtraction(*item.ExistingID, ai); err != nil {
+				p.logger.Printf("action-items: error updating item #%d: %v", *item.ExistingID, err)
+			} else {
+				stored++
+			}
+
+			// Handle status_hint: if AI detected that the item is done, mark it.
+			if item.StatusHint == "done" {
+				if err := p.db.SetActionItemHasUpdates(*item.ExistingID, true); err != nil {
+					p.logger.Printf("action-items: warning: failed to set has_updates for item %d: %v", *item.ExistingID, err)
+				}
+				if err := p.db.UpdateActionItemStatus(*item.ExistingID, "done"); err != nil {
+					p.logger.Printf("action-items: warning: failed to mark item %d as done: %v", *item.ExistingID, err)
+				} else {
+					p.logger.Printf("action-items: item #%d auto-completed based on channel activity", *item.ExistingID)
+				}
+			}
+			continue
+		}
+
 		if _, err := p.db.UpsertActionItem(ai); err != nil {
 			p.logger.Printf("action-items: error storing item: %v", err)
 			continue
@@ -566,6 +641,92 @@ func (p *Pipeline) getMessagesByChannel(from, to float64) (map[string][]db.Messa
 		byChannel[m.ChannelID] = append(byChannel[m.ChannelID], m)
 	}
 	return byChannel, nil
+}
+
+// formatExistingItems loads active/inbox items for a channel and formats them
+// as a prompt section for AI deduplication.
+func (p *Pipeline) formatExistingItems(channelID, userID string) string {
+	items, err := p.db.GetExistingActionItemsForChannel(channelID, userID)
+	if err != nil {
+		p.logger.Printf("action-items: warning: failed to load existing items for %s: %v", channelID, err)
+		return ""
+	}
+	if len(items) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("=== EXISTING ACTION ITEMS FOR THIS CHANNEL ===\n")
+	for _, item := range items {
+		fmt.Fprintf(&sb, "#%d [%s] %q\n", item.ID, item.Status, sanitize(item.Text))
+		if item.DecisionSummary != "" {
+			fmt.Fprintf(&sb, "    decision: %q\n", sanitize(item.DecisionSummary))
+		}
+		if item.Tags != "" {
+			fmt.Fprintf(&sb, "    tags: %s\n", item.Tags)
+		}
+		if item.RelatedDigestIDs != "" {
+			fmt.Fprintf(&sb, "    digests: %s\n", item.RelatedDigestIDs)
+		}
+		if item.Context != "" {
+			fmt.Fprintf(&sb, "    context: %s\n", sanitize(truncateStr(item.Context, 200)))
+		}
+	}
+	return sb.String()
+}
+
+// formatCrossChannelItems loads active/inbox items from OTHER channels
+// so the AI can detect cross-channel completion signals.
+func (p *Pipeline) formatCrossChannelItems(excludeChannelID, userID string) string {
+	items, err := p.db.GetExistingActionItemsExcludingChannel(excludeChannelID, userID)
+	if err != nil {
+		p.logger.Printf("action-items: warning: failed to load cross-channel items: %v", err)
+		return ""
+	}
+	if len(items) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("=== EXISTING ACTION ITEMS FROM OTHER CHANNELS ===\n")
+	sb.WriteString("If a message in this channel confirms completion of any of these items, return it with existing_id and status_hint.\n")
+	for _, item := range items {
+		chName := p.channelName(item.ChannelID)
+		fmt.Fprintf(&sb, "#%d [%s] #%s: %q\n", item.ID, item.Status, chName, sanitize(item.Text))
+		if item.Context != "" {
+			fmt.Fprintf(&sb, "    context: %s\n", sanitize(truncateStr(item.Context, 150)))
+		}
+	}
+	return sb.String()
+}
+
+// formatDigestDecisions loads recent decisions from related digests.
+func (p *Pipeline) formatDigestDecisions(channelID string, from, to float64) string {
+	decisions, err := p.db.GetDigestDecisionsForChannel(channelID, from, to)
+	if err != nil {
+		p.logger.Printf("action-items: warning: failed to load digest decisions for %s: %v", channelID, err)
+		return ""
+	}
+	if len(decisions) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("=== RECENT DECISIONS FROM DIGESTS ===\n")
+	for _, d := range decisions {
+		dateStr := time.Unix(int64(d.PeriodTo), 0).Local().Format("Jan 2")
+		fmt.Fprintf(&sb, "Digest #%d (%s, #%s):\n", d.DigestID, dateStr, sanitize(d.ChannelName))
+		fmt.Fprintf(&sb, "  - %s\n", sanitize(d.Decision))
+	}
+	return sb.String()
+}
+
+func truncateStr(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
 }
 
 func (p *Pipeline) formatMessages(msgs []db.Message) string {

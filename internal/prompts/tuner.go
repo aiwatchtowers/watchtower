@@ -38,6 +38,7 @@ type TuneResult struct {
 	Suggestion     string   // the improved prompt text
 	Explanation    string   // why these changes were made
 	Changes        []string // bullet points of what changed
+	Manual         bool     // true if generated from manual instructions
 }
 
 // Tuner generates prompt improvement suggestions based on user feedback.
@@ -311,6 +312,101 @@ func (t *Tuner) HasImportanceCorrections() bool {
 	return exists
 }
 
+const tuneManualMetaPrompt = `You are a prompt engineering expert. Your task is to improve an AI prompt template based on the user's specific instructions.
+
+Current prompt template (version %d):
+---
+%s
+---
+
+The user wants the following changes:
+---
+%s
+---
+
+Rewrite the prompt to incorporate the user's instructions. Rules:
+1. Apply the requested changes while keeping the prompt coherent and effective
+2. Preserve the output JSON format exactly (same fields, same structure)
+3. Keep all format placeholders (%%s, %%[1]s, etc.) in their original positions
+4. Only change what the user asked for — don't restructure unrelated parts
+
+Return ONLY a JSON object (no markdown fences):
+{
+  "improved_prompt": "the full improved prompt text with all placeholders preserved",
+  "explanation": "2-3 sentences explaining what was changed and why",
+  "changes": ["bullet point 1", "bullet point 2"]
+}`
+
+// SuggestManual generates an improvement suggestion based on user-provided instructions.
+func (t *Tuner) SuggestManual(ctx context.Context, promptID, instructions string) (*TuneResult, error) {
+	current, version, err := t.store.Get(promptID)
+	if err != nil {
+		return nil, fmt.Errorf("loading prompt %q: %w", promptID, err)
+	}
+
+	if strings.TrimSpace(instructions) == "" {
+		return nil, fmt.Errorf("instructions cannot be empty")
+	}
+
+	escaped := strings.ReplaceAll(current, "%", "%%")
+	sanitized := strings.ReplaceAll(instructions, "---", "- - -")
+	sanitized = strings.ReplaceAll(sanitized, "===", "= = =")
+	sanitized = strings.ReplaceAll(sanitized, "%", "%%")
+
+	prompt := fmt.Sprintf(tuneManualMetaPrompt, version, escaped, sanitized)
+
+	raw, err := t.generator.GenerateText(ctx, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("AI generation failed: %w", err)
+	}
+
+	var result struct {
+		ImprovedPrompt string   `json:"improved_prompt"`
+		Explanation    string   `json:"explanation"`
+		Changes        []string `json:"changes"`
+	}
+
+	cleaned := strings.TrimSpace(raw)
+	var parseErr error
+	parsed := false
+	for i := 0; i < len(cleaned); i++ {
+		if cleaned[i] == '{' {
+			candidate := cleaned[i:]
+			if err := json.Unmarshal([]byte(candidate), &result); err == nil {
+				parsed = true
+				break
+			}
+			if last := strings.LastIndex(candidate, "}"); last >= 0 {
+				if err := json.Unmarshal([]byte(candidate[:last+1]), &result); err == nil {
+					parsed = true
+					break
+				}
+				parseErr = err
+			}
+		}
+	}
+
+	if !parsed {
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing tune result: %w", parseErr)
+		}
+		return nil, fmt.Errorf("parsing tune result: no JSON object found in response")
+	}
+
+	if result.ImprovedPrompt == "" {
+		return nil, fmt.Errorf("AI returned empty improved prompt")
+	}
+
+	return &TuneResult{
+		PromptID:       promptID,
+		CurrentVersion: version,
+		Suggestion:     result.ImprovedPrompt,
+		Explanation:    result.Explanation,
+		Changes:        result.Changes,
+		Manual:         true,
+	}, nil
+}
+
 // Apply saves the tuning suggestion as a new prompt version.
 // Returns an error if the prompt has been modified since the suggestion was generated.
 func (t *Tuner) Apply(result *TuneResult) error {
@@ -324,7 +420,11 @@ func (t *Tuner) Apply(result *TuneResult) error {
 			result.PromptID, result.CurrentVersion, currentVersion)
 	}
 
-	reason := fmt.Sprintf("auto-tune from v%d: %s", result.CurrentVersion, result.Explanation)
+	prefix := "auto-tune"
+	if result.Manual {
+		prefix = "manual-tune"
+	}
+	reason := fmt.Sprintf("%s from v%d: %s", prefix, result.CurrentVersion, result.Explanation)
 	// M6 fix: rune-safe truncation to avoid splitting multi-byte UTF-8 characters
 	if runes := []rune(reason); len(runes) > 200 {
 		reason = string(runes[:200])

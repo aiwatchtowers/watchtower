@@ -374,6 +374,31 @@ func (db *DB) GetThreadRepliesAfterTS(channelID, threadTS, afterTS string) ([]Me
 	return scanMessages(rows)
 }
 
+// GetChannelMessagesAfterTS returns non-thread channel messages after the given
+// timestamp. Used to detect completion signals and status updates for action items
+// that appear as standalone messages rather than thread replies.
+// Results are ordered oldest-first, capped at the given limit.
+func (db *DB) GetChannelMessagesAfterTS(channelID, afterTS string, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.Query(`
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		FROM messages
+		WHERE channel_id = ? AND ts > ? AND (thread_ts IS NULL OR thread_ts = '' OR thread_ts = ts)
+		  AND text != '' AND is_deleted = 0
+		ORDER BY ts_unix ASC
+		LIMIT ?`,
+		channelID, afterTS, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying channel messages after ts: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessages(rows)
+}
+
 func scanMessages(rows *sql.Rows) ([]Message, error) {
 	var messages []Message
 	for rows.Next() {

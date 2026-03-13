@@ -77,6 +77,12 @@ func (db *DB) GetCurrentUserID() (string, error) {
 	return userID, nil
 }
 
+// TouchSyncedAt updates the workspace synced_at timestamp to now.
+func (db *DB) TouchSyncedAt() error {
+	_, err := db.Exec(`UPDATE workspace SET synced_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`)
+	return err
+}
+
 // SetSearchLastDate updates the search_last_date for the workspace.
 func (db *DB) SetSearchLastDate(date string) error {
 	res, err := db.Exec(`UPDATE workspace SET search_last_date = ? WHERE id = (SELECT id FROM workspace LIMIT 1)`, date)

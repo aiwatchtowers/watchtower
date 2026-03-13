@@ -4,6 +4,7 @@ struct DigestDetailView: View {
     let digest: Digest
     let channelName: String?
     let viewModel: DigestViewModel
+    var onClose: (() -> Void)? = nil
     @Environment(AppState.self) private var appState
     @State private var showCreateAction = false
     @State private var markingRead = false
@@ -84,12 +85,21 @@ struct DigestDetailView: View {
                 }
 
                 Spacer()
+
+                if let onClose {
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
 
             // Date range + message count
             HStack(spacing: 12) {
                 Label(
-                    "\(TimeFormatting.shortDateTime(fromUnix: digest.periodFrom)) — \(TimeFormatting.parseISO(digest.createdAt).map { TimeFormatting.shortDateTime(from: $0) } ?? TimeFormatting.shortDateTime(fromUnix: digest.periodTo))",
+                    "\(TimeFormatting.shortDateTime(fromUnix: digest.periodFrom)) — \(TimeFormatting.shortDateTime(fromUnix: digest.periodTo))",
                     systemImage: "calendar"
                 )
                 .font(.caption)

@@ -108,7 +108,13 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 				if name == "" {
 					name = msg.Channel.ID
 				}
-				if err := o.db.EnsureChannel(msg.Channel.ID, name, chType); err != nil {
+				// For DMs, Slack search returns the user ID as the channel name.
+				// Extract it so we can resolve to a display name later.
+				var dmUserID string
+				if chType == "dm" && strings.HasPrefix(name, "U") {
+					dmUserID = name
+				}
+				if err := o.db.EnsureChannel(msg.Channel.ID, name, chType, dmUserID); err != nil {
 					return fmt.Errorf("ensuring channel %s: %w", msg.Channel.ID, err)
 				}
 			}

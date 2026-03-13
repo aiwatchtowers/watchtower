@@ -12,7 +12,7 @@ struct ActionItemsListView: View {
 
                 if let id = selectedItemID, let item = vm.itemByID(id) {
                     Divider()
-                    ActionItemDetailView(item: item, viewModel: vm)
+                    ActionItemDetailView(item: item, viewModel: vm, onClose: { selectedItemID = nil })
                         .id(id)
                         .frame(minWidth: 400, idealWidth: 500)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -89,12 +89,13 @@ struct ActionItemsListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 1) {
+                    LazyVStack(spacing: 8) {
                         ForEach(vm.items) { item in
                             itemRow(item, vm: vm)
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 8)
                 }
             }
         }
@@ -118,15 +119,27 @@ struct ActionItemsListView: View {
         ActionItemRow(item: item, viewModel: vm)
             .contentShape(Rectangle())
             .onTapGesture { selectedItemID = item.id }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .background(
                 selectedItemID == item.id
-                    ? Color.accentColor.opacity(0.15)
-                    : Color.clear,
-                in: RoundedRectangle(cornerRadius: 6)
+                    ? Color.accentColor.opacity(0.12)
+                    : item.hasUpdates
+                        ? Color.orange.opacity(0.06)
+                        : Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 8)
             )
-            .padding(.horizontal, 4)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(
+                        selectedItemID == item.id
+                            ? Color.accentColor.opacity(0.3)
+                            : item.hasUpdates
+                                ? Color.orange.opacity(0.25)
+                                : Color.primary.opacity(0.06),
+                        lineWidth: 1
+                    )
+            )
     }
 }
 

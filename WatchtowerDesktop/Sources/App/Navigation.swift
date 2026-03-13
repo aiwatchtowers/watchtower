@@ -1,3 +1,4 @@
+import AuthenticationServices
 import SwiftUI
 
 enum SidebarDestination: String, CaseIterable, Identifiable {
@@ -165,6 +166,9 @@ struct OnboardingView: View {
     @State private var output = ""
     @State private var cliError: String?
     @State private var syncProgress: SyncProgressData?
+    @State private var syncPhaseStartedAt: Date?
+    @State private var syncLastPhase: String?
+    @State private var syncEtaSeconds: Double?
 
     // Settings
     @State private var settingsLanguage = "English"
@@ -173,6 +177,11 @@ struct OnboardingView: View {
     @State private var settingsModelPreset = ModelPreset.balanced
     @State private var settingsPollPreset = PollPreset.normal
     @State private var settingsNotifications = true
+
+    // OAuth
+    @State private var oauthState = ""
+    @State private var authSession: ASWebAuthenticationSession?
+    @State private var oauthStatus = ""
 
     // Claude setup
     @State private var manualClaudePath = ""
@@ -584,15 +593,16 @@ struct OnboardingView: View {
                     .foregroundStyle(.red)
                     .font(.caption)
             } else {
+                // Primary: open in default browser (Chrome, Firefox, Safari — uses existing cookies)
                 Button {
-                    runAuthLogin()
+                    startBrowserOAuthFlow()
                 } label: {
                     HStack {
                         if isRunning {
                             ProgressView()
                                 .controlSize(.small)
                         }
-                        Text(isRunning ? "Waiting for browser..." : "Connect to Slack")
+                        Text(isRunning ? "Authenticating..." : "Connect to Slack")
                     }
                     .frame(minWidth: 200)
                 }
@@ -600,13 +610,23 @@ struct OnboardingView: View {
                 .controlSize(.large)
                 .disabled(isRunning)
 
-                if isRunning {
-                    Text("A browser window should have opened.\nComplete the Slack authorization and return here.")
+                if isRunning, !oauthStatus.isEmpty {
+                    Text(oauthStatus)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
 
+                // Fallback: Safari popup
+                Button {
+                    startOAuthFlow()
+                } label: {
+                    Text("Use Safari popup instead")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(isRunning)
             }
         }
     }
@@ -965,6 +985,10 @@ struct OnboardingView: View {
             HStack {
                 Text("Syncing workspace...").font(.subheadline).fontWeight(.medium)
                 Spacer()
+                if let eta = syncEtaSeconds, eta > 0 {
+                    Text("\(formatETA(eta)) left").font(.caption).foregroundStyle(.secondary)
+                    Text("·").font(.caption).foregroundStyle(.secondary.opacity(0.5))
+                }
                 Text(formatElapsed(p.elapsedSec)).font(.caption).foregroundStyle(.secondary)
             }
             syncPhaseRow(label: "Discovery", icon: "magnifyingglass", phase: "Discovery", cur: p.phase,
@@ -1025,18 +1049,217 @@ struct OnboardingView: View {
         return "\(n)"
     }
 
+    private func updateSyncETA(_ p: SyncProgressData) {
+        // Reset timer when phase changes
+        if p.phase != syncLastPhase {
+            syncLastPhase = p.phase
+            syncPhaseStartedAt = Date()
+            syncEtaSeconds = nil
+            return
+        }
+
+        guard let phaseStart = syncPhaseStartedAt else {
+            syncEtaSeconds = nil
+            return
+        }
+
+        // Get done/total for current phase
+        let (done, total) = syncPhaseCounts(p)
+        guard done > 0, total > 0 else {
+            syncEtaSeconds = nil
+            return
+        }
+
+        let elapsed = Date().timeIntervalSince(phaseStart)
+        guard elapsed > 2 else {
+            syncEtaSeconds = nil
+            return
+        }
+
+        let rate = Double(done) / elapsed
+        let remaining = Double(total - done) / rate
+        syncEtaSeconds = remaining
+    }
+
+    private func syncPhaseCounts(_ p: SyncProgressData) -> (done: Int, total: Int) {
+        switch p.phase {
+        case "Discovery": return (p.discoveryPages, p.discoveryTotalPages)
+        case "Messages": return (p.msgChannelsDone, p.msgChannelsTotal)
+        case "Users": return (p.userProfilesDone, p.userProfilesTotal)
+        case "Threads": return (p.threadsDone, p.threadsTotal)
+        default: return (0, 0)
+        }
+    }
+
+    private func formatETA(_ seconds: Double) -> String {
+        let s = Int(seconds)
+        if s < 5 { return "< 5s" }
+        if s < 60 { return "~\(s)s" }
+        let m = s / 60, rem = s % 60
+        if rem == 0 { return "~\(m)m" }
+        return "~\(m)m \(rem)s"
+    }
+
     // MARK: - CLI Execution
 
-    private func runAuthLogin() {
+    /// Step 1: Call `watchtower auth prepare` to get the OAuth URL, then open ASWebAuthenticationSession popup.
+    private func startOAuthFlow() {
         guard let path = cliPath else { return }
         isRunning = true
         cliError = nil
         output = ""
 
         Task.detached {
+            let result = await Self.runCLI(path: path, arguments: [
+                "auth", "prepare",
+                "--redirect-uri", OAuthConstants.redirectURI,
+            ])
+            await MainActor.run {
+                guard result.exitCode == 0,
+                      let data = result.stdout.data(using: .utf8),
+                      let json = try? JSONDecoder().decode(OAuthPrepareResponse.self, from: data),
+                      let url = URL(string: json.authorizeURL) else {
+                    isRunning = false
+                    cliError = result.stderr.isEmpty
+                        ? "Failed to prepare OAuth (exit code \(result.exitCode))"
+                        : result.stderr
+                    return
+                }
+                oauthState = json.state
+                openAuthSession(url: url)
+            }
+        }
+    }
+
+    /// Step 2: Open system OAuth popup via ASWebAuthenticationSession.
+    private func openAuthSession(url: URL) {
+        let expectedState = oauthState
+
+        let session = ASWebAuthenticationSession(
+            url: url,
+            callbackURLScheme: OAuthConstants.callbackScheme
+        ) { callbackURL, error in
+            if let error = error {
+                let nsError = error as NSError
+                if nsError.domain == ASWebAuthenticationSessionErrorDomain,
+                   nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                    isRunning = false
+                    return
+                }
+                cliError = error.localizedDescription
+                isRunning = false
+                return
+            }
+
+            guard let callbackURL = callbackURL,
+                  let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false) else {
+                cliError = "No callback URL received"
+                isRunning = false
+                return
+            }
+
+            let queryItems = components.queryItems ?? []
+
+            if let errorParam = queryItems.first(where: { $0.name == "error" })?.value {
+                cliError = "Slack authorization denied: \(errorParam)"
+                isRunning = false
+                return
+            }
+
+            guard let code = queryItems.first(where: { $0.name == "code" })?.value, !code.isEmpty else {
+                cliError = "No authorization code in callback"
+                isRunning = false
+                return
+            }
+
+            guard let state = queryItems.first(where: { $0.name == "state" })?.value,
+                  state == expectedState else {
+                cliError = "State mismatch — possible CSRF attack"
+                isRunning = false
+                return
+            }
+
+            completeOAuthFlow(code: code)
+        }
+
+        session.presentationContextProvider = OAuthPresentationContext.shared
+        session.prefersEphemeralWebBrowserSession = false
+
+        if session.start() {
+            authSession = session
+        } else {
+            cliError = "Failed to start authentication session"
+            isRunning = false
+        }
+    }
+
+    /// Step 3: Call `watchtower auth complete` to exchange code for token.
+    private func completeOAuthFlow(code: String) {
+        guard let path = cliPath else { return }
+        isRunning = true
+        cliError = nil
+
+        Task.detached {
+            let result = await Self.runCLI(path: path, arguments: [
+                "auth", "complete",
+                "--code", code,
+                "--redirect-uri", OAuthConstants.redirectURI,
+            ])
+            await MainActor.run {
+                isRunning = false
+                oauthState = ""
+                authSession = nil
+                if result.exitCode == 0 {
+                    step = .settings
+                } else {
+                    cliError = result.stderr.isEmpty
+                        ? "Token exchange failed (exit code \(result.exitCode))"
+                        : result.stderr
+                }
+            }
+        }
+    }
+
+    /// Open OAuth in the default browser (Chrome, Firefox, Safari).
+    /// First ensures the localhost TLS cert is trusted (one-time macOS prompt),
+    /// then runs `watchtower auth login` which opens the browser with no cert warnings.
+    private func startBrowserOAuthFlow() {
+        guard let path = cliPath else { return }
+        isRunning = true
+        cliError = nil
+        oauthStatus = "Preparing..."
+
+        Task.detached {
+            // Step 1: Check if cert is already trusted
+            let checkResult = await Self.runCLI(path: path, arguments: ["auth", "check-cert"])
+            let isTrusted = checkResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "trusted"
+
+            if !isTrusted {
+                await MainActor.run {
+                    oauthStatus = "Setting up secure connection (one-time)..."
+                }
+
+                // Step 2: Trust cert — macOS shows system dialog with password / Touch ID
+                let trustResult = await Self.runCLI(path: path, arguments: ["auth", "trust-cert"])
+                if trustResult.exitCode != 0 {
+                    await MainActor.run {
+                        isRunning = false
+                        oauthStatus = ""
+                        cliError = "Certificate trust was cancelled. Click again to retry."
+                    }
+                    return
+                }
+            }
+
+            await MainActor.run {
+                oauthStatus = "Complete the Slack authorization in your browser."
+            }
+
+            // Step 3: Run auth login (opens default browser, trusted HTTPS callback)
             let result = await Self.runCLI(path: path, arguments: ["auth", "login"])
             await MainActor.run {
                 isRunning = false
+                oauthStatus = ""
                 if result.exitCode == 0 {
                     step = .settings
                 } else {
@@ -1045,6 +1268,18 @@ struct OnboardingView: View {
                         : result.stderr
                 }
             }
+        }
+    }
+
+    private struct OAuthPrepareResponse: Decodable {
+        let authorizeURL: String
+        let redirectURI: String
+        let state: String
+
+        enum CodingKeys: String, CodingKey {
+            case authorizeURL = "authorize_url"
+            case redirectURI = "redirect_uri"
+            case state
         }
     }
 
@@ -1091,11 +1326,15 @@ struct OnboardingView: View {
         isRunning = true
         cliError = nil
         syncProgress = nil
+        syncPhaseStartedAt = nil
+        syncLastPhase = nil
+        syncEtaSeconds = nil
 
         Task {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: path)
             process.arguments = ["sync", "--progress-json"]
+            process.environment = Constants.resolvedEnvironment()
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             process.standardOutput = stdoutPipe
@@ -1118,6 +1357,7 @@ struct OnboardingView: View {
                         if let data = line.data(using: .utf8),
                            let json = try? decoder.decode(SyncProgressData.self, from: data) {
                             self.syncProgress = json
+                            self.updateSyncETA(json)
                         }
                     }
                 } catch {
@@ -1217,6 +1457,7 @@ struct OnboardingView: View {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
+        process.environment = Constants.resolvedEnvironment()
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

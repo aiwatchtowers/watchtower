@@ -212,6 +212,15 @@ type Digest struct {
 	PromptVersion int            // version of prompt used for generation
 }
 
+// DigestDecisionRow represents a single decision extracted from a digest,
+// used by the action items pipeline to provide decision context.
+type DigestDecisionRow struct {
+	DigestID    int
+	ChannelName string
+	PeriodTo    float64
+	Decision    string
+}
+
 // Feedback represents a user rating on AI-generated content.
 type Feedback struct {
 	ID         int

@@ -12,6 +12,8 @@ struct TrainingView: View {
     @State private var tuneOutput: String = ""
     @State private var tuneError: String?
     @State private var showTuneOutput = false
+    @State private var importanceCorrectionCount: Int = 0
+    @State private var showManualTune = false
 
     private var totalFeedback: Int { feedbackStats.reduce(0) { $0 + $1.total } }
     private var totalPositive: Int { feedbackStats.reduce(0) { $0 + $1.positive } }
@@ -58,6 +60,13 @@ struct TrainingView: View {
         .sheet(isPresented: $showTuneOutput) {
             TuneOutputSheet(output: tuneOutput)
         }
+        .sheet(isPresented: $showManualTune) {
+            ManualTuneSheet(prompts: prompts) { output in
+                tuneOutput = output
+                showTuneOutput = true
+                reload()
+            }
+        }
         .sheet(item: $selectedPromptID) { item in
             if let prompt = prompts.first(where: { $0.id == item.id }) {
                 PromptEditorSheet(prompt: prompt, dbManager: appState.databaseManager) {
@@ -95,105 +104,71 @@ struct TrainingView: View {
     // MARK: - Dashboard Cards
 
     private var dashboardCards: some View {
-        HStack(spacing: 16) {
-            // Quality score card
-            DashboardCard(
-                title: "Quality Score",
-                gradient: qualityGradient
-            ) {
-                VStack(spacing: 4) {
-                    Text(totalFeedback > 0 ? "\(qualityPercent)%" : "—")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                    Text(qualityLabel)
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.white.opacity(0.85))
-                }
+        HStack(spacing: 12) {
+            // Quality score
+            TrainingStatCard(title: "Quality", icon: "chart.bar.fill", accent: qualityColor) {
+                Text(totalFeedback > 0 ? "\(qualityPercent)%" : "—")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(qualityColor)
+                Text(qualityLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
-            // Total feedback card
-            DashboardCard(
-                title: "Total Feedback",
-                gradient: Gradient(colors: [Color.blue, Color.cyan])
-            ) {
-                VStack(spacing: 4) {
-                    Text("\(totalFeedback)")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                    HStack(spacing: 12) {
-                        Label("\(totalPositive)", systemImage: "hand.thumbsup.fill")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.9))
-                        Label("\(totalNegative)", systemImage: "hand.thumbsdown.fill")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.9))
+            // Total feedback
+            TrainingStatCard(title: "Feedback", icon: "hand.thumbsup", accent: .blue) {
+                Text("\(totalFeedback)")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                HStack(spacing: 8) {
+                    HStack(spacing: 2) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 8))
+                        Text("\(totalPositive)")
                     }
-                }
-            }
-
-            // Feedback breakdown card
-            DashboardCard(
-                title: "By Category",
-                gradient: Gradient(colors: [Color.purple, Color.pink])
-            ) {
-                if feedbackStats.isEmpty {
-                    Text("No data yet")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.7))
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(feedbackStats, id: \.entityType) { stat in
-                            HStack {
-                                Text(feedbackTypeLabel(stat.entityType))
-                                    .font(.caption)
-                                    .foregroundStyle(.white)
-                                Spacer()
-                                CategoryBar(positive: stat.positive, negative: stat.negative)
-                                Text("\(stat.positivePercent)%")
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .frame(width: 30, alignment: .trailing)
-                            }
-                        }
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                    HStack(spacing: 2) {
+                        Image(systemName: "minus")
+                            .font(.system(size: 8))
+                        Text("\(totalNegative)")
                     }
+                    .font(.caption2)
+                    .foregroundStyle(.red)
                 }
             }
 
-            // Prompts card
-            DashboardCard(
-                title: "Active Prompts",
-                gradient: Gradient(colors: [Color.orange, Color.yellow])
-            ) {
-                VStack(spacing: 4) {
-                    Text("\(prompts.count)")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                    let totalVersions = prompts.reduce(0) { $0 + $1.version }
-                    Text("\(totalVersions) total versions")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.85))
-                }
+            // Importance corrections
+            TrainingStatCard(title: "Corrections", icon: "arrow.up.arrow.down", accent: .orange) {
+                Text("\(importanceCorrectionCount)")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(importanceCorrectionCount > 0 ? .orange : .secondary)
+                Text(importanceCorrectionCount > 0 ? "pending" : "none")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Active prompts
+            TrainingStatCard(title: "Prompts", icon: "doc.text", accent: .purple) {
+                Text("\(prompts.count)")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                let totalVersions = prompts.reduce(0) { $0 + $1.version }
+                Text("\(totalVersions) versions")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
-        .frame(maxHeight: 140)
+        .frame(maxHeight: 110)
     }
 
-    private var qualityGradient: Gradient {
-        if totalFeedback == 0 {
-            return Gradient(colors: [Color.gray, Color.gray.opacity(0.7)])
-        }
-        if qualityPercent >= 80 {
-            return Gradient(colors: [Color.green, Color.mint])
-        }
-        if qualityPercent >= 60 {
-            return Gradient(colors: [Color.yellow, Color.orange])
-        }
-        return Gradient(colors: [Color.red, Color.orange])
+    private var qualityColor: Color {
+        if totalFeedback == 0 { return .gray }
+        if qualityPercent >= 80 { return .green }
+        if qualityPercent >= 60 { return .orange }
+        return .red
     }
 
     private var qualityLabel: String {
-        if totalFeedback == 0 { return "No feedback" }
+        if totalFeedback == 0 { return "No data" }
         if qualityPercent >= 80 { return "Excellent" }
         if qualityPercent >= 60 { return "Good" }
         if qualityPercent >= 40 { return "Needs work" }
@@ -248,7 +223,21 @@ struct TrainingView: View {
                 .controlSize(.small)
             }
 
-            // Tune button
+            // Manual tune button
+            Button {
+                showManualTune = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "pencil.and.outline")
+                    Text("Manual Tune")
+                }
+                .frame(minWidth: 110)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(isTuning || prompts.isEmpty)
+
+            // Auto tune button
             Button {
                 runTune()
             } label: {
@@ -257,7 +246,7 @@ struct TrainingView: View {
                         ProgressView()
                             .controlSize(.small)
                     }
-                    Text(isTuning ? "Tuning..." : "Run Tuning")
+                    Text(isTuning ? "Tuning..." : "Auto Tune")
                 }
                 .frame(minWidth: 100)
             }
@@ -330,7 +319,16 @@ struct TrainingView: View {
             process.executableURL = URL(fileURLWithPath: cliPath)
             process.arguments = ["tune", "--apply"]
 
-            process.environment = ProcessInfo.processInfo.environment
+            var env = Constants.resolvedEnvironment()
+            // Ensure claude's directory is in PATH (nvm may not be in login-only shell)
+            if let claudePath = Constants.findClaudePath() {
+                let claudeDir = (claudePath as NSString).deletingLastPathComponent
+                let currentPath = env["PATH"] ?? ""
+                if !currentPath.contains(claudeDir) {
+                    env["PATH"] = claudeDir + ":" + currentPath
+                }
+            }
+            process.environment = env
 
             let stdout = Pipe()
             let stderr = Pipe()
@@ -383,10 +381,14 @@ struct TrainingView: View {
             let loadedRecent = (try? await db.dbPool.read { db in
                 try FeedbackQueries.getAllFeedback(db, limit: 20)
             }) ?? []
+            let corrections = (try? await db.dbPool.read { db in
+                try ImportanceCorrectionQueries.allCorrections(db)
+            }) ?? [:]
             await MainActor.run {
                 prompts = loadedPrompts
                 feedbackStats = loadedStats
                 recentFeedback = loadedRecent
+                importanceCorrectionCount = corrections.count
                 isLoading = false
             }
         }
@@ -407,66 +409,54 @@ struct PromptID: Identifiable {
     let id: String
 }
 
-// MARK: - Dashboard Card
+// L4: shared prompt label mapping — single source of truth
+let sharedPromptLabels: [String: String] = [
+    "digest.channel": "Channel Digest",
+    "digest.daily": "Daily Rollup",
+    "digest.weekly": "Weekly Summary",
+    "digest.period": "Period Summary",
+    "actionitems.extract": "Action Items Extract",
+    "actionitems.update": "Action Items Update",
+    "analysis.user": "User Analysis",
+    "analysis.period": "Period Analysis",
+]
 
-struct DashboardCard<Content: View>: View {
+// MARK: - Stat Card
+
+struct TrainingStatCard<Content: View>: View {
     let title: String
-    let gradient: Gradient
+    let icon: String
+    let accent: Color
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(spacing: 0) {
-            VStack {
-                Spacer()
-                content()
-                Spacer()
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            // Footer
+        VStack(spacing: 8) {
             HStack {
+                Image(systemName: icon)
+                    .font(.caption)
+                    .foregroundStyle(accent)
                 Text(title)
                     .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white.opacity(0.9))
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.black.opacity(0.15))
-        }
-        .background(
-            LinearGradient(
-                gradient: gradient,
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
-    }
-}
 
-// MARK: - Category Bar
+            Spacer()
 
-struct CategoryBar: View {
-    let positive: Int
-    let negative: Int
-
-    var body: some View {
-        let total = positive + negative
-        GeometryReader { geo in
-            HStack(spacing: 1) {
-                if total > 0 {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(.white.opacity(0.7))
-                        .frame(width: geo.size.width * CGFloat(positive) / CGFloat(total))
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(.white.opacity(0.25))
-                }
+            VStack(spacing: 2) {
+                content()
             }
+
+            Spacer()
         }
-        .frame(width: 50, height: 6)
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(accent.opacity(0.15), lineWidth: 1)
+        )
     }
 }
 
@@ -491,17 +481,7 @@ struct PromptCard: View {
     }
 
     private var promptLabel: String {
-        let labels: [String: String] = [
-            "digest.channel": "Channel Digest",
-            "digest.daily": "Daily Rollup",
-            "digest.weekly": "Weekly Summary",
-            "digest.period": "Period Summary",
-            "actionitems.extract": "Action Items Extract",
-            "actionitems.update": "Action Items Update",
-            "analysis.user": "User Analysis",
-            "analysis.period": "Period Analysis",
-        ]
-        return labels[prompt.id] ?? prompt.id
+        sharedPromptLabels[prompt.id] ?? prompt.id
     }
 
     var body: some View {
@@ -570,6 +550,183 @@ struct PromptCard: View {
     }
 }
 
+// MARK: - Manual Tune Sheet
+
+struct ManualTuneSheet: View {
+    let prompts: [PromptTemplate]
+    let onComplete: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedPromptID: String = ""
+    @State private var instructions: String = ""
+    @State private var isRunning = false
+    @State private var error: String?
+
+    private var promptLabels: [String: String] { sharedPromptLabels }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Manual Tune")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    Text("Describe what to change and AI will rewrite the prompt")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding()
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 16) {
+                // Prompt picker
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Prompt")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Picker("", selection: $selectedPromptID) {
+                        Text("Select a prompt...").tag("")
+                        ForEach(prompts) { prompt in
+                            Text(promptLabels[prompt.id] ?? prompt.id).tag(prompt.id)
+                        }
+                    }
+                    .labelsHidden()
+                }
+
+                // Instructions
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Instructions")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Text("Describe what you don't like and what to fix")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $instructions)
+                        .font(.system(.body, design: .default))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(nsColor: .textBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1)
+                        )
+                        .frame(minHeight: 120)
+                }
+
+                if let error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                // Run button
+                HStack {
+                    Spacer()
+                    Button {
+                        runManualTune()
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isRunning {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "wand.and.stars")
+                            }
+                            Text(isRunning ? "Tuning..." : "Run Tune")
+                        }
+                        .frame(minWidth: 120)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.purple)
+                    .controlSize(.regular)
+                    .disabled(isRunning || selectedPromptID.isEmpty || instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding()
+
+            Spacer()
+        }
+        .frame(width: 550, height: 420)
+        .onAppear {
+            if selectedPromptID.isEmpty, let first = prompts.first {
+                selectedPromptID = first.id
+            }
+        }
+    }
+
+    private func runManualTune() {
+        guard let cliPath = Constants.findCLIPath() else {
+            error = "watchtower binary not found"
+            return
+        }
+
+        isRunning = true
+        error = nil
+
+        let promptID = selectedPromptID
+        // C1: validate and length-limit user instructions before passing to CLI
+        let userInstructions = String(instructions.prefix(2000))
+
+        Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: cliPath)
+            process.arguments = ["tune", promptID, "--instructions", userInstructions, "--apply"]
+
+            var env = Constants.resolvedEnvironment()
+            if let claudePath = Constants.findClaudePath() {
+                let claudeDir = (claudePath as NSString).deletingLastPathComponent
+                let currentPath = env["PATH"] ?? ""
+                if !currentPath.contains(claudeDir) {
+                    env["PATH"] = claudeDir + ":" + currentPath
+                }
+            }
+            process.environment = env
+
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                let outStr = String(data: outData, encoding: .utf8) ?? ""
+                let errStr = String(data: errData, encoding: .utf8) ?? ""
+
+                await MainActor.run {
+                    isRunning = false
+                    if process.terminationStatus == 0 {
+                        // M5: call onComplete before dismiss to avoid sheet animation conflict
+                        onComplete(outStr)
+                        dismiss()
+                    } else {
+                        error = errStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "Tuning failed (exit code \(process.terminationStatus))"
+                            : String(errStr.prefix(300))
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = error.localizedDescription
+                    isRunning = false
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Prompt Editor Sheet
 
 struct PromptEditorSheet: View {
@@ -585,17 +742,7 @@ struct PromptEditorSheet: View {
     @State private var showHistory = false
 
     private var promptLabel: String {
-        let labels: [String: String] = [
-            "digest.channel": "Channel Digest",
-            "digest.daily": "Daily Rollup",
-            "digest.weekly": "Weekly Summary",
-            "digest.period": "Period Summary",
-            "actionitems.extract": "Action Items Extract",
-            "actionitems.update": "Action Items Update",
-            "analysis.user": "User Analysis",
-            "analysis.period": "Period Analysis",
-        ]
-        return labels[prompt.id] ?? prompt.id
+        sharedPromptLabels[prompt.id] ?? prompt.id
     }
 
     var body: some View {
