@@ -147,11 +147,13 @@ struct OnboardingChatView: View {
         }
     }
 
-    /// Show "Continue" after at least 1 user message to AI (not counting questionnaire answers)
+    /// Show "Continue" after at least 1 free-form user message (after questionnaire)
     /// and no active stream.
     private var canSkip: Bool {
-        viewModel.isRoleDetermined && !viewModel.isStreaming &&
-        viewModel.messages.filter({ $0.role == .user }).count > questionAnswerCount
+        let freeFormMessages = viewModel.messages
+            .filter({ $0.role == .user })
+            .count - questionAnswerCount
+        return viewModel.isRoleDetermined && !viewModel.isStreaming && freeFormMessages > 0
     }
 
     /// Number of user messages that are questionnaire answers (not free-form chat).
