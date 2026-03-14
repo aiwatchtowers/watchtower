@@ -631,7 +631,7 @@ struct OnboardingView: View {
                 .frame(maxWidth: 420)
 
                 Button {
-                    startBrowserOAuthFlow()
+                    startOAuthFlow()
                 } label: {
                     HStack {
                         if isRunning {
@@ -1082,8 +1082,14 @@ struct OnboardingView: View {
                 Text("Syncing: \(p.phase)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Spacer()
+                if p.elapsedSec > 0 {
+                    Text("·").font(.caption).foregroundStyle(.secondary.opacity(0.5))
+                    Text(formatElapsed(p.elapsedSec))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let eta = syncEtaSeconds, eta > 0 {
+                    Text("·").font(.caption).foregroundStyle(.secondary.opacity(0.5))
                     Text("\(formatETA(eta)) left")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1092,8 +1098,8 @@ struct OnboardingView: View {
                 Text("Starting sync...")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Spacer()
             }
+            Spacer()
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -1222,44 +1228,27 @@ private func syncProgressView(_ p: SyncProgressData) -> some View {
 
     // MARK: - CLI Execution
 
-    /// Open OAuth in the default browser (Chrome, Firefox, Safari).
-    /// Ensures the localhost TLS cert is trusted (silent, no admin prompt needed),
-    /// then runs `watchtower auth login` which opens the browser.
-    private func startBrowserOAuthFlow() {
+    /// Open OAuth in a separate window (not the browser).
+    /// Uses ASWebAuthenticationSession to open auth window that automatically closes.
+    /// By completion, the window closes and focus returns to the app.
+    private func startOAuthFlow() {
         guard let path = cliPath else { return }
         isRunning = true
         cliError = nil
         oauthStatus = "Preparing secure connection..."
 
-        Task.detached {
-            // Ensure cert is trusted (silent — adds to user trust store, no password needed)
-            let trustResult = await Self.runCLI(path: path, arguments: ["auth", "trust-cert"])
-            if trustResult.exitCode != 0 {
-                await MainActor.run {
-                    isRunning = false
-                    oauthStatus = ""
-                    cliError = trustResult.stderr.isEmpty
-                        ? "Failed to set up secure connection"
-                        : trustResult.stderr
-                }
-                return
-            }
+        SlackOAuthManager.shared.authenticate(cliPath: path) { result in
+            DispatchQueue.main.async {
+                self.isRunning = false
+                self.oauthStatus = ""
 
-            await MainActor.run {
-                oauthStatus = "Complete the Slack authorization in your browser."
-            }
-
-            // Run auth login (opens default browser, trusted HTTPS callback)
-            let result = await Self.runCLI(path: path, arguments: ["auth", "login"])
-            await MainActor.run {
-                isRunning = false
-                oauthStatus = ""
-                if result.exitCode == 0 {
-                    step = .settings
-                } else {
-                    cliError = result.stderr.isEmpty
-                        ? "Authentication failed (exit code \(result.exitCode))"
-                        : result.stderr
+                switch result {
+                case .success:
+                    // Authorization successful, move to next step
+                    self.step = .settings
+                case .failure(let error):
+                    // Show error
+                    self.cliError = error.localizedDescription
                 }
             }
         }
