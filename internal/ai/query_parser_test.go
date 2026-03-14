@@ -238,7 +238,7 @@ func TestParse_Topics_FiltersStopWords(t *testing.T) {
 }
 
 func TestParse_Topics_NoDuplicates(t *testing.T) {
-	pq := Parse("deployment deployment deployment")
+	pq := Parse("deployment deployment deployment") //nolint:dupword
 	count := 0
 	for _, topic := range pq.Topics {
 		if topic == "deployment" {

@@ -1,3 +1,4 @@
+// Package analysis provides people analytics and qualitative analysis of workspace communication patterns.
 package analysis
 
 import (

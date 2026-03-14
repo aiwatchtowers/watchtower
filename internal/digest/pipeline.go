@@ -1,3 +1,4 @@
+// Package digest provides digest generation and pipeline for summarizing workspace conversations.
 package digest
 
 import (
@@ -53,10 +54,10 @@ type ActionItem struct {
 	Status   string `json:"status"`
 }
 
-// Pipeline generates and stores AI digests for Slack channels.
 // ProgressFunc is called during digest generation to report progress.
 type ProgressFunc func(done, total int, status string)
 
+// Pipeline generates and stores AI digests for Slack channels.
 type Pipeline struct {
 	db          *db.DB
 	cfg         *config.Config

@@ -1,18 +1,19 @@
+// Package prompts provides prompt management, storage, and tuning for AI-powered features.
 package prompts
 
 // Defaults maps prompt IDs to their built-in template strings.
 // These are the same prompts that were previously hardcoded as consts
-// in digest, actionitems, and analysis packages. They serve as the
+// in digest, tracks, and analysis packages. They serve as the
 // initial seed and fallback when no DB version exists.
 var Defaults = map[string]string{
-	DigestChannel:      defaultDigestChannel,
-	DigestDaily:        defaultDigestDaily,
-	DigestWeekly:       defaultDigestWeekly,
-	DigestPeriod:       defaultDigestPeriod,
-	ActionItemsExtract: defaultActionItemsExtract,
-	ActionItemsUpdate:  defaultActionItemsUpdate,
-	AnalysisUser:       defaultAnalysisUser,
-	AnalysisPeriod:     defaultAnalysisPeriod,
+	DigestChannel:  defaultDigestChannel,
+	DigestDaily:    defaultDigestDaily,
+	DigestWeekly:   defaultDigestWeekly,
+	DigestPeriod:   defaultDigestPeriod,
+	TracksExtract:  defaultTracksExtract,
+	TracksUpdate:   defaultTracksUpdate,
+	AnalysisUser:   defaultAnalysisUser,
+	AnalysisPeriod: defaultAnalysisPeriod,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -21,22 +22,22 @@ var AllIDs = []string{
 	DigestDaily,
 	DigestWeekly,
 	DigestPeriod,
-	ActionItemsExtract,
-	ActionItemsUpdate,
+	TracksExtract,
+	TracksUpdate,
 	AnalysisUser,
 	AnalysisPeriod,
 }
 
 // Descriptions maps prompt IDs to human-readable descriptions.
 var Descriptions = map[string]string{
-	DigestChannel:      "Channel digest — per-channel message analysis",
-	DigestDaily:        "Daily rollup — cross-channel daily summary",
-	DigestWeekly:       "Weekly trends — week-over-week analysis",
-	DigestPeriod:       "Period summary — comprehensive period overview",
-	ActionItemsExtract: "Action items — extract tasks from messages",
-	ActionItemsUpdate:  "Action item update check — detect progress in threads",
-	AnalysisUser:       "User analysis — communication pattern analysis",
-	AnalysisPeriod:     "Team summary — cross-user team dynamics",
+	DigestChannel:  "Channel digest — per-channel message analysis",
+	DigestDaily:    "Daily rollup — cross-channel daily summary",
+	DigestWeekly:   "Weekly trends — week-over-week analysis",
+	DigestPeriod:   "Period summary — comprehensive period overview",
+	TracksExtract:  "Tracks — extract tasks from messages",
+	TracksUpdate:   "Track update check — detect progress in threads",
+	AnalysisUser:   "User analysis — communication pattern analysis",
+	AnalysisPeriod: "Team summary — cross-user team dynamics",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -157,17 +158,23 @@ Rules:
 === DIGESTS ===
 %s`
 
-const defaultActionItemsExtract = `You are analyzing Slack messages from channel #%[3]s (%[4]s) to find action items directed at user @%[1]s (user_id: %[2]s) for the period %[5]s to %[6]s.
+const defaultTracksExtract = `You are analyzing Slack messages from channel #%[3]s (%[4]s) to find tracks directed at user @%[1]s (user_id: %[2]s) for the period %[5]s to %[6]s.
 
 Your task: identify actions, requests, tasks, and expectations directed at this specific user in this channel.
 
-CRITICAL: Group related requests into a SINGLE action item. If multiple messages discuss the same topic/task (e.g., "reserve equipment", "assess datacenter", "list critical components" all about the same infrastructure project), combine them into ONE comprehensive action item — do NOT create separate items for each message about the same topic.
+CRITICAL: Group related requests into a SINGLE track. If multiple messages discuss the same topic/task (e.g., "reserve equipment", "assess datacenter", "list critical components" all about the same infrastructure project), combine them into ONE comprehensive track — do NOT create separate items for each message about the same topic.
+
+DEDUPLICATION: Review the EXISTING TRACKS section below. If a message relates to an existing track, UPDATE it (set "existing_id" to the track's ID) instead of creating a new one. Only create new tracks for genuinely new topics not covered by existing tracks.
+
+COMPLETION DETECTION: If you see messages confirming that an existing track has been COMPLETED (e.g., "done", "deployed", "opened access", "fixed", "released", status updates showing the task is finished), return the track with "existing_id" set to that track's ID and "status_hint": "done". This is critical — do NOT ignore completion signals just because they are not new tracks.
 
 Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
   "items": [
     {
+      "existing_id": null,
+      "status_hint": "",
       "text": "clear, actionable description of what needs to be done",
       "context": "detailed context (3-5 sentences): what was discussed, what decisions were made, what is the background, why this matters. Include enough detail so the reader does NOT need to read the original thread.",
       "source_message_ts": "1234567890.123456",
@@ -197,9 +204,9 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 %[7]s
 
 Rules:
-- GROUPING: This is the most important rule. Multiple messages about the same topic/project/task MUST be merged into ONE item. Look at the broader topic, not individual messages.
-- Only extract items with a CLEAR actionable request. Skip vague mentions.
-- Look for BOTH explicit and implicit action items:
+- GROUPING: This is the most important rule. Multiple messages about the same topic/project/task MUST be merged into ONE track. Look at the broader topic, not individual messages.
+- Only extract tracks with a CLEAR actionable request. Skip vague mentions.
+- Look for BOTH explicit and implicit tracks:
   * Direct requests: "@user, can you...", "@user please do X"
   * Assignments: "user will handle X", "assigned to @user"
   * Questions expecting action: "@user, what about X?", "can you check X?"
@@ -219,7 +226,7 @@ Rules:
 - source_message_ts: the Slack timestamp of the MOST important message (the original request or assignment)
 - context: detailed explanation (3-5 sentences) of the situation, decisions made, and why this action is needed. The reader should understand the full picture without reading the original thread.
 - requester: the SPECIFIC person who made the request or assigned the task. Must include name and user_id. If the user committed to doing something themselves, the requester is themselves.
-- category: classify the action item type. MUST be one of:
+- category: classify the track type. MUST be one of:
   * "code_review" — PR review, code feedback
   * "decision_needed" — a decision must be made
   * "info_request" — someone asked for information/answer
@@ -228,34 +235,42 @@ Rules:
   * "follow_up" — check back, provide update, follow up on something
   * "bug_fix" — fix a bug or issue
   * "discussion" — participate in a discussion or give opinion
-- blocking: describe who or what is blocked if this action item is NOT done. E.g., "Release v2.1 is blocked", "Backend team is waiting", "@designer can't proceed". Leave empty string "" if nothing is explicitly blocked.
+- blocking: describe who or what is blocked if this track is NOT done. E.g., "Release v2.1 is blocked", "Backend team is waiting", "@designer can't proceed". Leave empty string "" if nothing is explicitly blocked.
 - tags: 1-3 short lowercase tags for the project, topic, or area (e.g., ["infrastructure", "security", "q1-planning"]). Extract from context — channel name, project mentions, etc.
 - decision_summary: if a decision was discussed or made, describe HOW the group arrived at it — what arguments were raised, who advocated for what, and what the outcome was. This tells the story of the decision process. Leave empty string "" if no decision context.
 - decision_options: if a decision is PENDING (not yet made), list the options being considered. Each option should have: description, who supports it, pros and cons. Leave empty array [] if the decision is already made or there are no options.
 - participants: list ALL people involved in the discussion about this topic. For each person, summarize their stance/opinion/role. Include people who made decisions, raised concerns, proposed alternatives, or were assigned tasks. Omit participants only if they added nothing meaningful (e.g., just emoji reactions).
-- source_refs: list the 2-5 most important messages related to this action item. For each, include the Slack timestamp, author, and a 1-sentence summary of what was said. These serve as "footnotes" so the reader can jump to key messages.
-- sub_items: break down the action item into concrete sub-tasks or checklist items. Each sub-item has "text" (what to do) and "status" ("open" or "done"). If a sub-task was clearly completed in the conversation, set status to "done". Aim for 2-5 sub-items per action item. Leave empty array [] if the action item is atomic and doesn't need breakdown.
-- If no action items are found, return {"items": []}
+- source_refs: list the 2-5 most important messages related to this track. For each, include the Slack timestamp, author, and a 1-sentence summary of what was said. These serve as "footnotes" so the reader can jump to key messages.
+- sub_items: break down the track into concrete sub-tasks or checklist items. Each sub-item has "text" (what to do) and "status" ("open" or "done"). If a sub-task was clearly completed in the conversation, set status to "done". Aim for 2-5 sub-items per track. Leave empty array [] if the track is atomic and doesn't need breakdown.
+- existing_id: if the track matches an existing track from the EXISTING TRACKS section below, set this to the track's numeric ID. The AI should UPDATE the existing track (merge new info into context, update priority/due_date if changed). Set to null for genuinely new tracks not covered by any existing track. Prefer updating over creating duplicates.
+- status_hint: set to "done" if messages clearly confirm the existing track has been completed (someone did the work, deployed, confirmed, etc.). Set to "active" or leave empty ("") for tracks still in progress. This field is ONLY used with existing_id — for new tracks, leave it empty.
+- If no tracks are found, return {"items": []}
 - Return valid JSON only, no other text
 
+%[8]s
+
+%[9]s
+
+%[10]s
+
 === MESSAGES ===
-%[8]s`
+%[11]s`
 
-const defaultActionItemsUpdate = `You are checking whether new Slack thread messages contain a meaningful update for an existing action item.
+const defaultTracksUpdate = `You are checking whether new Slack thread messages contain a meaningful update for an existing track.
 
-Action item: %[1]s
+Track: %[1]s
 Previous context: %[2]s
 Channel: #%[3]s
 
 %[4]s
 
-New thread messages since last check:
+New messages since last check (thread replies and channel messages):
 %[5]s
 
 Analyze the new messages and determine:
-1. Is there a meaningful update related to this action item? (progress, completion, blocker, change in scope, deadline change, etc.)
+1. Is there a meaningful update related to this track? (progress, completion, blocker, change in scope, deadline change, etc.)
 2. If yes, provide a brief updated context summarizing what changed.
-3. Does the update suggest the action item is now done?
+3. Does the update suggest the track is now done?
 
 Return ONLY a JSON object (no markdown fences, no explanation):
 
@@ -266,12 +281,12 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 }
 
 Rules:
-- has_update: true only if the messages contain genuine progress, completion, or a meaningful change related to the action item
+- has_update: true only if the messages contain genuine progress, completion, or a meaningful change related to the track
 - has_update: false for unrelated chatter, bot messages, emoji-only reactions, or off-topic replies in the same thread
 - updated_context: 1-2 sentences summarizing the update. Only provided when has_update is true. Omit or leave empty when has_update is false.
 - status_hint: one of "done", "active", or "unchanged"
-  * "done" — the action item appears to be completed based on the messages
-  * "active" — there is progress but the item is not yet done
+  * "done" — the track appears to be completed based on the messages
+  * "active" — there is progress but the track is not yet done
   * "unchanged" — use when has_update is false
 - Return valid JSON only, no other text`
 

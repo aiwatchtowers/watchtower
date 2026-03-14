@@ -1,3 +1,4 @@
+// Package slack provides Slack API client and utilities with rate limiting support.
 package slack
 
 import (

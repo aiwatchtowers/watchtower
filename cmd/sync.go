@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"encoding/json"
-	"watchtower/internal/actionitems"
 	"watchtower/internal/analysis"
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
@@ -24,6 +23,7 @@ import (
 	"watchtower/internal/digest"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
+	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
 
 	"github.com/spf13/cobra"
@@ -261,7 +261,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 			pipe := digest.New(database, cfg, gen, logger)
 			d.SetDigestPipeline(pipe)
 			d.SetAnalysisPipeline(analysis.New(database, cfg, gen, logger))
-			d.SetActionItemsPipeline(actionitems.New(database, cfg, gen, logger))
+			d.SetTracksPipeline(tracks.New(database, cfg, gen, logger))
 		}
 		return d.Run(ctx)
 	}
@@ -413,7 +413,7 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 		digestSpinner.Stop("No new digests needed")
 	}
 
-	// People analysis (independent, runs before action items)
+	// People analysis (independent, runs before tracks)
 	analysisSpinner := ui.NewSpinner(out, "Running people analysis...")
 	analysisPipe := analysis.New(database, cfg, gen, logger)
 	analysisPipe.OnProgress = func(done, total int, status string) {
@@ -428,19 +428,19 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 		analysisSpinner.Stop("No new analyses needed")
 	}
 
-	// Action items (depends on digests for related_digest_ids)
-	actionSpinner := ui.NewSpinner(out, "Extracting action items...")
-	actionPipe := actionitems.New(database, cfg, gen, logger)
-	actionPipe.OnProgress = func(done, total int, status string) {
-		actionSpinner.UpdateProgress(done, total, status)
+	// Tracks (depends on digests for related_digest_ids)
+	trackSpinner := ui.NewSpinner(out, "Extracting tracks...")
+	trackPipe := tracks.New(database, cfg, gen, logger)
+	trackPipe.OnProgress = func(done, total int, status string) {
+		trackSpinner.UpdateProgress(done, total, status)
 	}
-	an, err := actionPipe.Run(ctx)
+	an, err := trackPipe.Run(ctx)
 	if err != nil {
-		actionSpinner.Stop(fmt.Sprintf("Action items error: %v", err))
+		trackSpinner.Stop(fmt.Sprintf("Tracks error: %v", err))
 	} else if an > 0 {
-		actionSpinner.Stop(fmt.Sprintf("Extracted %d action item(s)", an))
+		trackSpinner.Stop(fmt.Sprintf("Extracted %d track(s)", an))
 	} else {
-		actionSpinner.Stop("No new action items")
+		trackSpinner.Stop("No new tracks")
 	}
 }
 

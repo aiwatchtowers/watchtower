@@ -42,7 +42,7 @@ func TestReadPID_MissingFile(t *testing.T) {
 
 func TestReadPID_InvalidContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
-	require.NoError(t, os.WriteFile(path, []byte("not-a-number"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("not-a-number"), 0o600))
 
 	_, err := ReadPID(path)
 	assert.Error(t, err)
@@ -53,7 +53,7 @@ func TestFindProcess_LiveProcess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
 
 	// Write our own PID — we know this process is alive.
-	require.NoError(t, os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600))
 
 	pid, err := FindProcess(path)
 	require.NoError(t, err)
@@ -64,7 +64,7 @@ func TestFindProcess_StalePID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
 
 	// Use a PID that almost certainly doesn't exist.
-	require.NoError(t, os.WriteFile(path, []byte("999999999"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("999999999"), 0o600))
 
 	pid, err := FindProcess(path)
 	require.NoError(t, err)
@@ -85,7 +85,7 @@ func TestFindProcess_MissingFile(t *testing.T) {
 
 func TestRemovePID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
-	require.NoError(t, os.WriteFile(path, []byte("12345"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("12345"), 0o600))
 
 	RemovePID(path)
 

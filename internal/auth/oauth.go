@@ -1,3 +1,4 @@
+// Package auth provides OAuth and authentication handling for Slack integration.
 package auth
 
 import (
@@ -153,18 +154,17 @@ type callbackResult struct {
 	err   string
 }
 
-// Login performs the Slack OAuth V2 flow:
-//  1. Starts a temporary HTTPS server on localhost (self-signed cert)
-//  2. Opens the Slack authorize URL in the user's browser
-//  3. Waits for the callback with an authorization code
-//  4. Exchanges the code for a user token
-//
 // LoginOptions configures the Login flow behaviour.
 type LoginOptions struct {
 	// SkipBrowserOpen disables automatic browser launch; the authorize URL is still printed.
 	SkipBrowserOpen bool
 }
 
+// Login performs the Slack OAuth V2 flow:
+// - Starts a temporary HTTPS server on localhost (self-signed cert)
+// - Opens the Slack authorize URL in the user's browser
+// - Waits for the callback with an authorization code
+// - Exchanges the code for a user token
 func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOptions) (*OAuthResult, error) {
 	var opt LoginOptions
 	if len(opts) > 0 {

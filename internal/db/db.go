@@ -1,8 +1,10 @@
+// Package db provides database operations and schema management for watchtower's SQLite database.
 package db
 
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -81,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 18"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 19"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -705,6 +707,127 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v18: %w", err)
 		}
 		version = 18
+	}
+
+	if version < 19 {
+		// Rename action_items → tracks, action_item_history → track_history.
+		if _, err := db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("migration v19 disable FK: %w", err)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v19 tx: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Rename tables.
+		if _, err := tx.Exec(`ALTER TABLE action_items RENAME TO tracks`); err != nil {
+			return fmt.Errorf("migration v19 rename action_items: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE action_item_history RENAME TO track_history`); err != nil {
+			return fmt.Errorf("migration v19 rename action_item_history: %w", err)
+		}
+
+		// Rename column action_item_id → track_id in track_history.
+		if _, err := tx.Exec(`ALTER TABLE track_history RENAME COLUMN action_item_id TO track_id`); err != nil {
+			return fmt.Errorf("migration v19 rename column: %w", err)
+		}
+
+		// Recreate indexes with new names.
+		for _, stmt := range []string{
+			`DROP INDEX IF EXISTS idx_action_items_dedup`,
+			`DROP INDEX IF EXISTS idx_action_items_assignee`,
+			`DROP INDEX IF EXISTS idx_action_items_status`,
+			`DROP INDEX IF EXISTS idx_action_items_period`,
+			`DROP INDEX IF EXISTS idx_action_item_history_item`,
+			`CREATE UNIQUE INDEX idx_tracks_dedup ON tracks(channel_id, assignee_user_id, source_message_ts, text)`,
+			`CREATE INDEX idx_tracks_assignee ON tracks(assignee_user_id)`,
+			`CREATE INDEX idx_tracks_status ON tracks(status)`,
+			`CREATE INDEX idx_tracks_period ON tracks(period_from, period_to)`,
+			`CREATE INDEX idx_track_history_track ON track_history(track_id)`,
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration v19 index %q: %w", stmt[:40], err)
+			}
+		}
+
+		// Recreate feedback table with updated CHECK constraint ('action_item' → 'track', add 'user_analysis').
+		if _, err := tx.Exec(`CREATE TABLE feedback_new (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis')),
+			entity_id   TEXT NOT NULL,
+			rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
+			comment     TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v19 create feedback_new: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO feedback_new (id, entity_type, entity_id, rating, comment, created_at)
+			SELECT id, CASE WHEN entity_type = 'action_item' THEN 'track' ELSE entity_type END,
+			entity_id, rating, comment, created_at FROM feedback`); err != nil {
+			return fmt.Errorf("migration v19 copy feedback: %w", err)
+		}
+		if _, err := tx.Exec(`DROP TABLE feedback`); err != nil {
+			return fmt.Errorf("migration v19 drop feedback: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE feedback_new RENAME TO feedback`); err != nil {
+			return fmt.Errorf("migration v19 rename feedback: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX idx_feedback_entity ON feedback(entity_type, entity_id)`); err != nil {
+			return fmt.Errorf("migration v19 feedback entity index: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX idx_feedback_rating ON feedback(entity_type, rating)`); err != nil {
+			return fmt.Errorf("migration v19 feedback rating index: %w", err)
+		}
+
+		// Fix JSON column defaults for existing rows ('' → '[]').
+		for _, col := range []string{"participants", "source_refs", "tags", "decision_options", "related_digest_ids", "sub_items"} {
+			if _, err := tx.Exec(fmt.Sprintf(`UPDATE tracks SET %s = '[]' WHERE %s = ''`, col, col)); err != nil {
+				return fmt.Errorf("migration v19 fix JSON default %s: %w", col, err)
+			}
+		}
+
+		// Update prompt IDs.  Reset template text so arity matches the new pipeline.
+		if _, err := tx.Exec(`UPDATE prompts SET id = 'tracks.extract', template = '' WHERE id = 'actionitems.extract'`); err != nil {
+			return fmt.Errorf("migration v19 update prompt extract: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE prompts SET id = 'tracks.update', template = '' WHERE id = 'actionitems.update'`); err != nil {
+			return fmt.Errorf("migration v19 update prompt update: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE prompt_history SET prompt_id = 'tracks.extract' WHERE prompt_id = 'actionitems.extract'`); err != nil {
+			return fmt.Errorf("migration v19 update prompt_history extract: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE prompt_history SET prompt_id = 'tracks.update' WHERE prompt_id = 'actionitems.update'`); err != nil {
+			return fmt.Errorf("migration v19 update prompt_history update: %w", err)
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 19"); err != nil {
+			return fmt.Errorf("setting schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v19: %w", err)
+		}
+		if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+			return fmt.Errorf("migration v19 re-enable FK: %w", err)
+		}
+		// Verify referential integrity after table renames.
+		func() {
+			rows, fkErr := db.Query("PRAGMA foreign_key_check")
+			if fkErr != nil {
+				return
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var table, parent string
+				var rowid, fkidx int64
+				if err := rows.Scan(&table, &rowid, &parent, &fkidx); err != nil {
+					log.Printf("warning: failed to scan FK check row: %v", err)
+					continue
+				}
+				log.Printf("warning: foreign key violation after migration v19: table=%s rowid=%d parent=%s fkidx=%d", table, rowid, parent, fkidx)
+			}
+		}()
+		version = 19
 	}
 
 	_ = version // silence unused variable if this is the last migration

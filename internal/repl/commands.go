@@ -1,3 +1,4 @@
+// Package repl provides an interactive REPL for Claude interaction with workspace data.
 package repl
 
 import (

@@ -1,3 +1,4 @@
+// Package daemon provides background daemon and service management capabilities.
 package daemon
 
 import (
@@ -11,11 +12,11 @@ import (
 	gosync "sync"
 	"time"
 
-	"watchtower/internal/actionitems"
 	"watchtower/internal/analysis"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
 	"watchtower/internal/sync"
+	"watchtower/internal/tracks"
 )
 
 // minPollInterval is the minimum allowed poll interval. Values below this
@@ -25,16 +26,16 @@ var minPollInterval = 1 * time.Second
 
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
-	orchestrator    *sync.Orchestrator
-	config          *config.Config
-	logger          *log.Logger
-	wakeCh          <-chan struct{}
-	pidPath         string
-	digestPipe      *digest.Pipeline
-	analysisPipe    *analysis.Pipeline
-	actionItemsPipe *actionitems.Pipeline
-	lastAnalysis    time.Time // tracks when analysis last ran (once per day)
-	lastActionItems time.Time // tracks when action items last ran (throttled)
+	orchestrator *sync.Orchestrator
+	config       *config.Config
+	logger       *log.Logger
+	wakeCh       <-chan struct{}
+	pidPath      string
+	digestPipe   *digest.Pipeline
+	analysisPipe *analysis.Pipeline
+	tracksPipe   *tracks.Pipeline
+	lastAnalysis time.Time // when analysis last ran (once per day)
+	lastTracks   time.Time // when tracks last ran (throttled)
 }
 
 // New creates a Daemon that runs incremental syncs via the given orchestrator.
@@ -61,9 +62,9 @@ func (d *Daemon) SetAnalysisPipeline(p *analysis.Pipeline) {
 	d.analysisPipe = p
 }
 
-// SetActionItemsPipeline sets the action items pipeline for post-digest extraction.
-func (d *Daemon) SetActionItemsPipeline(p *actionitems.Pipeline) {
-	d.actionItemsPipe = p
+// SetTracksPipeline sets the tracks pipeline for post-digest extraction.
+func (d *Daemon) SetTracksPipeline(p *tracks.Pipeline) {
+	d.tracksPipe = p
 }
 
 // SetPIDPath sets the path where the daemon will write its PID file.
@@ -93,7 +94,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Restore last pipeline times from disk so throttle guards survive restarts.
 	d.loadLastAnalysis()
-	d.loadLastActionItems()
+	d.loadLastTracks()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -129,12 +130,12 @@ func (d *Daemon) wakeChannel() <-chan struct{} {
 }
 
 func (d *Daemon) runSync(ctx context.Context) {
-	// Pre-sync: reactivate snoozed action items whose snooze_until has passed.
-	if d.actionItemsPipe != nil {
-		if n, err := d.actionItemsPipe.ReactivateSnoozed(ctx); err != nil {
+	// Pre-sync: reactivate snoozed tracks whose snooze_until has passed.
+	if d.tracksPipe != nil {
+		if n, err := d.tracksPipe.ReactivateSnoozed(ctx); err != nil {
 			d.logger.Printf("snooze reactivation error: %v", err)
 		} else if n > 0 {
-			d.logger.Printf("reactivated %d snoozed action item(s)", n)
+			d.logger.Printf("reactivated %d snoozed track(s)", n)
 		}
 	}
 
@@ -207,35 +208,35 @@ func (d *Daemon) runSync(ctx context.Context) {
 
 	wg.Wait()
 
-	// Phase 2: Action items (depend on digests for related_digest_ids).
-	// Throttled to run at most once per action_items_interval (default 1h).
-	if d.actionItemsPipe != nil {
-		interval := d.config.Digest.ActionItemsInterval
+	// Phase 2: Tracks (depend on digests for related_digest_ids).
+	// Throttled to run at most once per tracks interval (default 1h).
+	if d.tracksPipe != nil {
+		interval := d.config.Digest.TracksInterval
 		if interval <= 0 {
-			interval = config.DefaultActionItemsInterval
+			interval = config.DefaultTracksInterval
 		}
 		now := time.Now()
-		if d.lastActionItems.IsZero() || now.Sub(d.lastActionItems) >= interval {
-			n, err := d.actionItemsPipe.Run(ctx)
+		if d.lastTracks.IsZero() || now.Sub(d.lastTracks) >= interval {
+			n, err := d.tracksPipe.Run(ctx)
 			if err != nil {
-				d.logger.Printf("action-items error: %v", err)
+				d.logger.Printf("tracks error: %v", err)
 			} else {
 				if n > 0 {
-					d.logger.Printf("extracted %d action item(s)", n)
+					d.logger.Printf("extracted %d track(s)", n)
 				}
-				d.lastActionItems = now
-				d.saveLastActionItems()
+				d.lastTracks = now
+				d.saveLastTracks()
 			}
 		}
 	}
 
 	// Check for updates on existing items (lightweight, runs every sync).
-	if d.actionItemsPipe != nil {
-		n, err := d.actionItemsPipe.CheckForUpdates(ctx)
+	if d.tracksPipe != nil {
+		n, err := d.tracksPipe.CheckForUpdates(ctx)
 		if err != nil {
-			d.logger.Printf("action-items update check error: %v", err)
+			d.logger.Printf("tracks update check error: %v", err)
 		} else if n > 0 {
-			d.logger.Printf("detected updates on %d action item(s)", n)
+			d.logger.Printf("detected updates on %d track(s)", n)
 		}
 	}
 }
@@ -267,14 +268,16 @@ func (d *Daemon) saveLastAnalysis() {
 	}
 }
 
-// lastActionItemsPath returns the file path for persisting the last action items time.
-func (d *Daemon) lastActionItemsPath() string {
+// lastTracksPath returns the file path for persisting the last tracks time.
+// Keeps the old filename "last_action_items.txt" for backward compatibility
+// with existing daemon installations.
+func (d *Daemon) lastTracksPath() string {
 	return filepath.Join(d.config.WorkspaceDir(), "last_action_items.txt")
 }
 
-// loadLastActionItems restores lastActionItems from disk so the throttle survives restarts.
-func (d *Daemon) loadLastActionItems() {
-	data, err := os.ReadFile(d.lastActionItemsPath())
+// loadLastTracks restores lastTracks from disk so the throttle survives restarts.
+func (d *Daemon) loadLastTracks() {
+	data, err := os.ReadFile(d.lastTracksPath())
 	if err != nil {
 		return
 	}
@@ -282,14 +285,14 @@ func (d *Daemon) loadLastActionItems() {
 	if err != nil {
 		return
 	}
-	d.lastActionItems = time.Unix(unix, 0)
-	d.logger.Printf("restored last action items time: %s", d.lastActionItems.Format(time.RFC3339))
+	d.lastTracks = time.Unix(unix, 0)
+	d.logger.Printf("restored last tracks time: %s", d.lastTracks.Format(time.RFC3339))
 }
 
-// saveLastActionItems persists lastActionItems to disk.
-func (d *Daemon) saveLastActionItems() {
-	data := strconv.FormatInt(d.lastActionItems.Unix(), 10)
-	if err := os.WriteFile(d.lastActionItemsPath(), []byte(data), 0o600); err != nil {
-		d.logger.Printf("failed to save last action items time: %v", err)
+// saveLastTracks persists lastTracks to disk.
+func (d *Daemon) saveLastTracks() {
+	data := strconv.FormatInt(d.lastTracks.Unix(), 10)
+	if err := os.WriteFile(d.lastTracksPath(), []byte(data), 0o600); err != nil {
+		d.logger.Printf("failed to save last tracks time: %v", err)
 	}
 }

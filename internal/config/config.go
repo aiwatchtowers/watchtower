@@ -1,3 +1,4 @@
+// Package config manages watchtower configuration loading and management.
 package config
 
 import (
@@ -32,12 +33,12 @@ type SyncConfig struct {
 }
 
 type DigestConfig struct {
-	Enabled             bool          `mapstructure:"enabled"`
-	Model               string        `mapstructure:"model"`
-	MinMessages         int           `mapstructure:"min_messages"`
-	Language            string        `mapstructure:"language"`
-	Workers             int           `mapstructure:"workers"`
-	ActionItemsInterval time.Duration `mapstructure:"action_items_interval"`
+	Enabled        bool          `mapstructure:"enabled"`
+	Model          string        `mapstructure:"model"`
+	MinMessages    int           `mapstructure:"min_messages"`
+	Language       string        `mapstructure:"language"`
+	Workers        int           `mapstructure:"workers"`
+	TracksInterval time.Duration `mapstructure:"action_items_interval"` // YAML key kept for backward compat
 }
 
 type Config struct {
@@ -67,7 +68,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("digest.min_messages", DefaultDigestMinMsgs)
 	v.SetDefault("digest.language", DefaultDigestLang)
 	v.SetDefault("digest.workers", DefaultDigestWorkers)
-	v.SetDefault("digest.action_items_interval", DefaultActionItemsInterval)
+	v.SetDefault("digest.action_items_interval", DefaultTracksInterval)
+	v.RegisterAlias("digest.tracks_interval", "digest.action_items_interval")
 
 	// Config file
 	v.SetConfigFile(configPath)

@@ -24,7 +24,7 @@ workspaces:
   test-ws:
     slack_token: "xoxp-test-token"
 `
-	require.NoError(t, os.WriteFile(configPath, []byte(configYAML), 0o644))
+	require.NoError(t, os.WriteFile(configPath, []byte(configYAML), 0o600))
 
 	homeDir := tmpDir
 	wsDBDir := filepath.Join(homeDir, ".local", "share", "watchtower", "test-ws")

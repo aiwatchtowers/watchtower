@@ -44,7 +44,7 @@ workspaces:
   test-ws:
     slack_token: "xoxp-test-token"
 `
-	require.NoError(t, os.WriteFile(configPath, []byte(configYAML), 0o644))
+	require.NoError(t, os.WriteFile(configPath, []byte(configYAML), 0o600))
 
 	// Manually open the DB and populate it with some data
 	database, err := db.Open(dbPath)
@@ -138,7 +138,7 @@ workspaces:
   fresh-ws:
     slack_token: "xoxp-test"
 `
-	require.NoError(t, os.WriteFile(configPath, []byte(configYAML), 0o644))
+	require.NoError(t, os.WriteFile(configPath, []byte(configYAML), 0o600))
 
 	// Create empty DB
 	homeDir := tmpDir
@@ -176,6 +176,6 @@ func TestDbFileSize(t *testing.T) {
 	assert.Equal(t, int64(0), dbFileSize("/nonexistent/file"))
 
 	tmpFile := filepath.Join(t.TempDir(), "test.db")
-	require.NoError(t, os.WriteFile(tmpFile, []byte("test data"), 0o644))
+	require.NoError(t, os.WriteFile(tmpFile, []byte("test data"), 0o600))
 	assert.Greater(t, dbFileSize(tmpFile), int64(0))
 }
