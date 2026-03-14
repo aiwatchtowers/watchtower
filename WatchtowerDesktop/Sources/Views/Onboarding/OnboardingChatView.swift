@@ -88,21 +88,116 @@ struct OnboardingChatView: View {
 
     private var welcomePrompts: some View {
         VStack(spacing: 12) {
-            Text("Start by telling the AI about your role")
+            Text("Let's understand your role")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .fontWeight(.semibold)
+                .foregroundStyle(.primary)
                 .padding(.top, 20)
 
-            HStack(spacing: 8) {
-                quickButton("I'm an Engineering Manager")
-                quickButton("I'm a Software Engineer")
-                quickButton("I'm a Tech Lead")
-            }
-            HStack(spacing: 8) {
-                quickButton("I'm a Product Manager")
-                quickButton("I'm a Designer")
+            if !viewModel.hasAnsweredRoleQ1 {
+                // Q1: Do people report to you?
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Do people report to you?")
+                        .font(.callout)
+                        .fontWeight(.medium)
+
+                    HStack(spacing: 8) {
+                        quickButton("Yes") {
+                            viewModel.recordRoleAnswer(reportsToThem: true)
+                        }
+                        quickButton("No") {
+                            viewModel.recordRoleAnswer(reportsToThem: false)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            } else if !viewModel.hasAnsweredRoleQ2 {
+                // Q2: Branch based on Q1 answer
+                if viewModel.roleDetermination?.reportsToThem ?? false {
+                    // Q2a: Do you set strategy?
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Do you determine strategy/vision for your area?")
+                            .font(.callout)
+                            .fontWeight(.medium)
+
+                        HStack(spacing: 8) {
+                            quickButton("Yes") {
+                                viewModel.recordRoleAnswer(setStrategy: true)
+                            }
+                            quickButton("No") {
+                                viewModel.recordRoleAnswer(setStrategy: false)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    // Q2b: Influence type
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Your influence in the organization comes mainly through...")
+                            .font(.callout)
+                            .fontWeight(.medium)
+
+                        HStack(spacing: 8) {
+                            quickButton("Expertise & authority") {
+                                viewModel.recordRoleAnswer(influenceType: "expertise")
+                            }
+                            quickButton("Solving tasks") {
+                                viewModel.recordRoleAnswer(influenceType: "tasks")
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                }
+            } else if viewModel.shouldShowRoleQ3 && !viewModel.hasAnsweredRoleQ3 {
+                // Q3: Do you manage other managers? (only if Q1=yes AND Q2a=yes)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Do you manage other managers?")
+                        .font(.callout)
+                        .fontWeight(.medium)
+
+                    HStack(spacing: 8) {
+                        quickButton("Yes") {
+                            viewModel.recordRoleAnswer(manageManagers: true)
+                        }
+                        quickButton("No") {
+                            viewModel.recordRoleAnswer(manageManagers: false)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                // Role determined, show it
+                VStack(spacing: 8) {
+                    Text("Your role: \(viewModel.determinedRole?.displayName ?? "Unknown")")
+                        .font(.callout)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.primary)
+
+                    if let desc = viewModel.determinedRole?.shortDescription {
+                        Text(desc)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("Now let's continue with your profile...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
+                .padding(12)
+                .background(.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
             }
         }
+    }
+
+    private func quickButton(_ label: String, action: @escaping () -> Void) -> some View {
+        Button(label, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
     }
 
     private func quickButton(_ text: String) -> some View {

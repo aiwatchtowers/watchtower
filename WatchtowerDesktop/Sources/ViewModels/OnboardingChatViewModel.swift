@@ -20,6 +20,24 @@ final class OnboardingChatViewModel {
     var painPoints: [String] = []
     var trackFocus: [String] = []
 
+    // MARK: - Role Determination
+
+    var hasAnsweredRoleQ1 = false
+    var hasAnsweredRoleQ2 = false
+    var hasAnsweredRoleQ3 = false
+    var roleDetermination: RoleDetermination?
+
+    var determinedRole: RoleLevel? {
+        roleDetermination?.roleLevel
+    }
+
+    /// Check if Q3 (manage managers) should be shown
+    var shouldShowRoleQ3: Bool {
+        hasAnsweredRoleQ1 && hasAnsweredRoleQ2 &&
+        (roleDetermination?.reportsToThem ?? false) &&
+        (roleDetermination?.setStrategy ?? false)
+    }
+
     // MARK: - Team Form State
 
     var reportIDs: [String] = []
@@ -31,13 +49,19 @@ final class OnboardingChatViewModel {
 
     private var sessionID: String?
     private let claudeService: any ClaudeServiceProtocol
-    private let dbManager: DatabaseManager
+    private var dbManager: DatabaseManager?
     private var streamTask: Task<Void, Never>?
     private var chatCompleted = false
 
-    init(claudeService: any ClaudeServiceProtocol, dbManager: DatabaseManager) {
+    init(claudeService: any ClaudeServiceProtocol, dbManager: DatabaseManager? = nil) {
         self.claudeService = claudeService
         self.dbManager = dbManager
+        if dbManager != nil { loadUsers() }
+    }
+
+    /// Set database after initialization (e.g. when sync completes and DB becomes available).
+    func setDatabase(_ db: DatabaseManager) {
+        self.dbManager = db
         loadUsers()
     }
 
@@ -120,6 +144,54 @@ final class OnboardingChatViewModel {
         parseProfileFromChat()
     }
 
+    /// Record role determination answer from UI questions.
+    func recordRoleAnswer(reportsToThem: Bool? = nil, setStrategy: Bool? = nil, manageManagers: Bool? = nil, influenceType: String? = nil) {
+        if let reportsToThem {
+            roleDetermination = RoleDetermination(
+                reportsToThem: reportsToThem,
+                setStrategy: roleDetermination?.setStrategy ?? false,
+                manageManagers: roleDetermination?.manageManagers,
+                influenceType: roleDetermination?.influenceType
+            )
+            hasAnsweredRoleQ1 = true
+        }
+
+        if let setStrategy {
+            roleDetermination = RoleDetermination(
+                reportsToThem: roleDetermination?.reportsToThem ?? false,
+                setStrategy: setStrategy,
+                manageManagers: roleDetermination?.manageManagers,
+                influenceType: roleDetermination?.influenceType
+            )
+            hasAnsweredRoleQ2 = true
+        }
+
+        if let manageManagers {
+            roleDetermination = RoleDetermination(
+                reportsToThem: roleDetermination?.reportsToThem ?? false,
+                setStrategy: roleDetermination?.setStrategy ?? false,
+                manageManagers: manageManagers,
+                influenceType: roleDetermination?.influenceType
+            )
+            hasAnsweredRoleQ3 = true
+        }
+
+        if let influenceType {
+            roleDetermination = RoleDetermination(
+                reportsToThem: roleDetermination?.reportsToThem ?? false,
+                setStrategy: roleDetermination?.setStrategy ?? false,
+                manageManagers: roleDetermination?.manageManagers,
+                influenceType: influenceType
+            )
+            hasAnsweredRoleQ2 = true
+        }
+
+        // Update role string from determined role
+        if let determined = determinedRole {
+            role = determined.rawValue
+        }
+    }
+
     // MARK: - Profile Generation
 
     /// Generate custom_prompt_context via LLM based on collected profile data.
@@ -161,6 +233,10 @@ final class OnboardingChatViewModel {
         // Save profile
         let currentUserID = getCurrentUserID()
         guard !currentUserID.isEmpty else { return }
+        guard let dbManager else {
+            errorMessage = "Database not available"
+            return
+        }
 
         // Read existing profile to preserve onboardingDone state.
         let existingProfile: UserProfile? = try? await dbManager.dbPool.read { db in
@@ -193,6 +269,7 @@ final class OnboardingChatViewModel {
     func markOnboardingDone() async {
         let currentUserID = getCurrentUserID()
         guard !currentUserID.isEmpty else { return }
+        guard let dbManager else { return }
 
         do {
             try await dbManager.dbPool.write { db in
@@ -210,6 +287,7 @@ final class OnboardingChatViewModel {
     // MARK: - Private Helpers
 
     private func loadUsers() {
+        guard let dbManager else { allUsers = []; return }
         do {
             allUsers = try dbManager.dbPool.read { db in
                 try UserQueries.fetchAll(db, activeOnly: true)
@@ -220,7 +298,8 @@ final class OnboardingChatViewModel {
     }
 
     private func getCurrentUserID() -> String {
-        (try? dbManager.dbPool.read { db in
+        guard let dbManager else { return "" }
+        return (try? dbManager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT current_user_id FROM workspace LIMIT 1")
         }) ?? ""
     }

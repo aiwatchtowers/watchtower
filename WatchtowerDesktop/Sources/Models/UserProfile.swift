@@ -128,3 +128,68 @@ extension UserProfile: Equatable {
         lhs.customPromptContext == rhs.customPromptContext
     }
 }
+
+// MARK: - Role Level Enum
+
+enum RoleLevel: String, Codable {
+    case topManagement = "top_management"
+    case directionOwner = "direction_owner"
+    case middleManagement = "middle_management"
+    case seniorIC = "senior_ic"
+    case ic = "ic"
+
+    var displayName: String {
+        switch self {
+        case .topManagement: "Top Management"
+        case .directionOwner: "Direction Owner"
+        case .middleManagement: "Middle Management"
+        case .seniorIC: "Senior IC"
+        case .ic: "Individual Contributor"
+        }
+    }
+
+    var shortDescription: String {
+        switch self {
+        case .topManagement: "Sets organizational strategy"
+        case .directionOwner: "Owns and executes strategy in an area"
+        case .middleManagement: "Manages team and coordinates execution"
+        case .seniorIC: "High technical influence, no direct reports"
+        case .ic: "Solves tasks in their domain"
+        }
+    }
+}
+
+// Helper to determine role from onboarding answers
+struct RoleDetermination {
+    let reportsToThem: Bool      // Q1: "People report to you?"
+    let setStrategy: Bool        // Q2: "You set strategy?" (only if Q1=true)
+    let manageManagers: Bool?    // Q3: "Do you manage other managers?" (only if Q1=true AND Q2=true)
+    let influenceType: String?   // Q2b: "expertise" or "tasks" (only if Q1=false)
+
+    var roleLevel: RoleLevel {
+        if reportsToThem {
+            if setStrategy {
+                // Q1=true, Q2=true → need Q3
+                if let manageManagers = manageManagers {
+                    return manageManagers ? .topManagement : .directionOwner
+                }
+                // Q3 not answered yet, default to direction owner
+                return .directionOwner
+            } else {
+                // Q1=true, Q2=false
+                return .middleManagement
+            }
+        } else {
+            // Q1=false → check Q2b influence type
+            if let influenceType = influenceType {
+                return influenceType == "expertise" ? .seniorIC : .ic
+            }
+            // Q2b not answered yet, default to IC
+            return .ic
+        }
+    }
+
+    static func forIC() -> RoleDetermination {
+        RoleDetermination(reportsToThem: false, setStrategy: false, manageManagers: nil, influenceType: "tasks")
+    }
+}
