@@ -631,7 +631,7 @@ struct OnboardingView: View {
                 .frame(maxWidth: 420)
 
                 Button {
-                    startOAuthFlow()
+                    startBrowserOAuthFlow()
                 } label: {
                     HStack {
                         if isRunning {
@@ -1228,27 +1228,44 @@ private func syncProgressView(_ p: SyncProgressData) -> some View {
 
     // MARK: - CLI Execution
 
-    /// Open OAuth in a separate window (not the browser).
-    /// Uses ASWebAuthenticationSession to open auth window that automatically closes.
-    /// By completion, the window closes and focus returns to the app.
-    private func startOAuthFlow() {
+    /// Open OAuth in the default browser.
+    /// Ensures the localhost TLS cert is trusted (silent, no admin prompt needed),
+    /// then runs `watchtower auth login` which opens the browser.
+    private func startBrowserOAuthFlow() {
         guard let path = cliPath else { return }
         isRunning = true
         cliError = nil
         oauthStatus = "Preparing secure connection..."
 
-        SlackOAuthManager.shared.authenticate(cliPath: path) { result in
-            DispatchQueue.main.async {
-                self.isRunning = false
-                self.oauthStatus = ""
+        Task.detached {
+            // Ensure cert is trusted (silent — adds to user trust store, no password needed)
+            let trustResult = await Self.runCLI(path: path, arguments: ["auth", "trust-cert"])
+            if trustResult.exitCode != 0 {
+                await MainActor.run {
+                    isRunning = false
+                    oauthStatus = ""
+                    cliError = trustResult.stderr.isEmpty
+                        ? "Failed to set up secure connection"
+                        : trustResult.stderr
+                }
+                return
+            }
 
-                switch result {
-                case .success:
-                    // Authorization successful, move to next step
-                    self.step = .settings
-                case .failure(let error):
-                    // Show error
-                    self.cliError = error.localizedDescription
+            await MainActor.run {
+                oauthStatus = "Complete the Slack authorization in your browser."
+            }
+
+            // Run auth login (opens default browser, trusted HTTPS callback)
+            let result = await Self.runCLI(path: path, arguments: ["auth", "login"])
+            await MainActor.run {
+                isRunning = false
+                oauthStatus = ""
+                if result.exitCode == 0 {
+                    step = .settings
+                } else {
+                    cliError = result.stderr.isEmpty
+                        ? "Authentication failed (exit code \(result.exitCode))"
+                        : result.stderr
                 }
             }
         }
