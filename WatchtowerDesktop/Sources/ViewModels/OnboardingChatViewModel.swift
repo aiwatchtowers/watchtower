@@ -223,6 +223,7 @@ final class OnboardingChatViewModel {
 
             if let idx = self.messages.indices.last {
                 self.messages[idx].isStreaming = false
+                self.stripReadyMarker(at: idx)
             }
             self.isStreaming = false
         }
@@ -451,11 +452,17 @@ final class OnboardingChatViewModel {
     /// Check for [READY] marker in the last assistant message, strip it, and set chatReady.
     private func stripReadyMarker(at idx: Int) {
         let text = messages[idx].text
-        if text.contains(Self.readyMarker) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Check if text ends with [READY] or contains it anywhere
+        if trimmedText.contains(Self.readyMarker) || text.contains(Self.readyMarker) {
             messages[idx].text = text
                 .replacingOccurrences(of: Self.readyMarker, with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             chatReady = true
+            print("[DEBUG] ✅ Ready marker found and processed")
+        } else {
+            print("[DEBUG] ⚠️ No ready marker found. Text: \(text.prefix(100))...")
         }
     }
 
