@@ -492,23 +492,48 @@ final class OnboardingChatViewModel {
         // The AI will have asked about role, pain points, etc. — the user's answers contain the data.
         // We keep it simple: store raw text, the LLM will generate proper context in generatePromptContext.
 
-        // Try to detect role keywords (multi-word first, then abbreviations with word boundary check).
-        let roleKeywords = ["engineering manager", "tech lead", "product manager",
-                           "software engineer", "data scientist", "staff engineer",
-                           "designer", "devops", "director", "principal",
-                           "cto", "vp", "em", "tl", "pm", "swe", "ic"]
-        let lowerUser = userMessages.lowercased()
-        for keyword in roleKeywords {
-            // For short keywords (≤3 chars), require word boundaries to avoid false positives.
-            if keyword.count <= 3 {
-                let pattern = "\\b\(NSRegularExpression.escapedPattern(for: keyword))\\b"
-                if lowerUser.range(of: pattern, options: .regularExpression) != nil {
-                    role = keyword.uppercased()
+        // Try to detect role keywords only if the questionnaire didn't already determine a role.
+        // Otherwise keyword matching can overwrite the structured questionnaire result
+        // (e.g. user mentions "devops" when describing their team, not their role).
+        if roleDetermination == nil {
+            let roleKeywords = ["engineering manager", "tech lead", "product manager",
+                               "software engineer", "data scientist", "staff engineer",
+                               "designer", "devops", "director", "principal",
+                               "cto", "vp", "em", "tl", "pm", "swe", "ic"]
+            let lowerUser = userMessages.lowercased()
+            for keyword in roleKeywords {
+                // For short keywords (≤3 chars), require word boundaries to avoid false positives.
+                if keyword.count <= 3 {
+                    let pattern = "\\b\(NSRegularExpression.escapedPattern(for: keyword))\\b"
+                    if lowerUser.range(of: pattern, options: .regularExpression) != nil {
+                        role = keyword.uppercased()
+                        break
+                    }
+                } else if lowerUser.contains(keyword) {
+                    role = keyword.capitalized
                     break
                 }
-            } else if lowerUser.contains(keyword) {
-                role = keyword.capitalized
-                break
+            }
+        }
+
+        // Try to extract team name from user messages.
+        // Look for patterns like "my team is X", "I'm on the X team", "team: X", etc.
+        if team.isEmpty {
+            let teamPatterns = [
+                "(?:my team is|i'm on the|i am on the|team:|our team is|work on the|work in the)\\s+([\\w\\s&/-]+?)(?:\\s*[.,!?]|\\s+team|$)",
+                "([\\w\\s&/-]+?)\\s+team\\b"
+            ]
+            for pattern in teamPatterns {
+                if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                   let match = regex.firstMatch(in: userMessages, range: NSRange(userMessages.startIndex..., in: userMessages)),
+                   match.numberOfRanges > 1,
+                   let range = Range(match.range(at: 1), in: userMessages) {
+                    let extracted = String(userMessages[range]).trimmingCharacters(in: .whitespaces)
+                    if !extracted.isEmpty && extracted.count <= 40 {
+                        team = extracted.capitalized
+                        break
+                    }
+                }
             }
         }
 
@@ -610,37 +635,25 @@ final class OnboardingChatViewModel {
         }
 
         return """
-        You are Watchtower's onboarding assistant. Your goal is to learn about the user so \
-        Watchtower can personalize their Slack monitoring experience.
+        You are Watchtower's onboarding assistant. Your ONLY goal is to help the user get started \
+        with Watchtower for Slack workspace monitoring and team coordination.
 
-        Have a brief, friendly conversation (3-5 exchanges) to learn:
+        You must gather exactly 3 pieces of information through a brief, focused conversation:
 
-        1. **Role & Team**: What's their position? (Engineering Manager, IC, Tech Lead, PM, etc.) \
-        What team are they on?
+        1. **Their Role in the organization** (Manager, Tech Lead, Engineer, Product Manager, etc.)
+        2. **What's their main pain point with Slack?** (e.g., missing important decisions, losing track of deadlines, hard to know team status)
+        3. **What should Watchtower focus on for them?** (based on their role)
 
-        2. **Pain Points**: What problems do they face with Slack? Examples:
-           - Missing important messages while away
-           - Decisions getting lost in threads
-           - Losing track of who owes what to whom
-           - Can't tell what the team is busy with
-           - Deadlines discussed in chat get forgotten
-           - Hard to tell what's urgent vs what can wait
-
-        3. **Track Focus**: What would they like Watchtower to track? (depends on their role)
-           - For managers: team blockers, decisions, who's overloaded, deadlines
-           - For ICs: code reviews, questions directed at them, architectural decisions
-           - For tech leads: technical decisions, tech debt, team activity
-           - For PMs: decisions, approvals, follow-ups, deadlines
-
-        RULES:
-        - Be concise — 2-3 sentences per message
-        - Ask ONE question at a time, don't overwhelm
-        - Adapt follow-up questions based on their answers
-        - After gathering enough info (2-4 exchanges), write a brief summary of what you learned, \
-        tell the user you'll now set up their team, and append the exact marker [READY] at the very \
-        end of your message (on its own line). This marker signals the app to advance to the next step.
+        CRITICAL RULES:
+        - Stay 100% focused on Slack workspace management and team coordination
+        - Ask ONLY work-related questions about their role and Slack usage
+        - Be concise (1-2 sentences per message)
+        - Ask ONE question at a time
+        - After getting clear answers to all 3 questions, immediately write: "Got it! I'll set this up for you now." \
+        and append [READY] on a new line.
+        - DO NOT ask personal questions, chit-chat, or anything unrelated to work/Slack
+        - DO NOT use tools — pure conversation only
         \(langRule)
-        - Do NOT use any tools — this is a pure conversation
         """
     }
 }
