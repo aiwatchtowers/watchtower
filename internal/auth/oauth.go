@@ -263,6 +263,13 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 		return nil, fmt.Errorf("no authorization code received")
 	}
 
+	// Authorization successful — close the browser window after a brief delay
+	// to let the success page display
+	go func() {
+		time.Sleep(2 * time.Second)
+		closeBrowserFunc()
+	}()
+
 	// Exchange code for token
 	resp, err := exchangeToken(ctx, cfg.ClientID, cfg.ClientSecret, cb.code, redirectURI)
 	if err != nil {
@@ -402,7 +409,8 @@ func openBrowser(rawURL string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", rawURL)
+		// -n: open in a new window (not existing Safari/Chrome tab)
+		cmd = exec.Command("open", "-n", rawURL)
 	case "linux":
 		cmd = exec.Command("xdg-open", rawURL)
 	default:
@@ -412,3 +420,38 @@ func openBrowser(rawURL string) {
 		go cmd.Wait() // reap child process to avoid zombie
 	}
 }
+
+// closeBrowserWindow closes the currently active browser window via AppleScript.
+// This is called after successful OAuth callback to auto-close the auth window.
+func closeBrowserWindow() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+
+	// AppleScript to close the front window of the active browser
+	// Tries Safari first, then Chrome, then Firefox
+	script := `
+tell application "System Events"
+	set activeApp to name of first application process whose frontmost is true
+end tell
+
+if activeApp contains "Safari" then
+	tell application "Safari"
+		close (first window whose title contains "Slack")
+	end tell
+else if activeApp contains "Chrome" or activeApp contains "Chromium" then
+	tell application "Google Chrome"
+		close (first window whose title contains "Slack")
+	end tell
+else if activeApp contains "Firefox" then
+	tell application "Firefox"
+		close (first window whose title contains "Slack")
+	end tell
+end if
+`
+
+	cmd := exec.Command("osascript", "-e", script)
+	_ = cmd.Start() // fire-and-forget
+}
+
+var closeBrowserFunc = closeBrowserWindow
