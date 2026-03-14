@@ -173,6 +173,18 @@ struct OnboardingView: View {
     @State private var syncLastPhase: String?
     @State private var syncEtaSeconds: Double?
 
+    // Onboarding chat (runs in parallel with sync)
+    @State private var onboardingVM: OnboardingChatViewModel?
+    @State private var chatPhase: OnboardingChatPhase = .chat
+    @State private var syncCompleted = false
+
+    enum OnboardingChatPhase {
+        case chat
+        case waitingForSync
+        case teamForm
+        case generating
+    }
+
     // Settings
     @State private var settingsLanguage = "English"
     @State private var settingsHistoryDays = 3
@@ -975,24 +987,120 @@ struct OnboardingView: View {
 
     private var syncStep: some View {
         VStack(spacing: 16) {
-            Text("Syncing your Slack data for the first time.")
-                .foregroundStyle(.secondary)
-
-            if isRunning {
-                if let p = syncProgress {
-                    syncProgressView(p).frame(maxWidth: 450)
+            switch chatPhase {
+            case .chat:
+                // AI chat conversation (runs parallel with sync)
+                if let vm = onboardingVM {
+                    OnboardingChatView(viewModel: vm) {
+                        if syncCompleted {
+                            chatPhase = .teamForm
+                        } else {
+                            chatPhase = .waitingForSync
+                        }
+                    }
                 } else {
-                    ProgressView().controlSize(.regular)
-                    Text("Starting sync...").font(.caption).foregroundStyle(.secondary)
+                    ProgressView("Preparing...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
-                Button("Start Sync") { runSync() }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
+
+                // Sync progress banner at bottom during chat
+                if isRunning {
+                    Divider()
+                    syncProgressCompactBanner
+                } else if syncCompleted {
+                    Divider()
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Sync complete!")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+
+            case .waitingForSync:
+                VStack(spacing: 20) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.green)
+                    Text("Great! Waiting for sync to finish...")
+                        .font(.title3)
+                        .fontWeight(.medium)
+                    if let p = syncProgress {
+                        syncProgressView(p).frame(maxWidth: 450)
+                    } else {
+                        ProgressView()
+                    }
+                }
+
+            case .teamForm:
+                if let vm = onboardingVM {
+                    OnboardingTeamFormView(viewModel: vm) {
+                        chatPhase = .generating
+                        Task {
+                            await vm.generatePromptContext()
+                            await vm.markOnboardingDone()
+                            if vm.errorMessage == nil {
+                                appState.backgroundTaskManager.startPipelines()
+                                onRetry()
+                            } else {
+                                chatPhase = .teamForm
+                            }
+                        }
+                    }
+                }
+
+            case .generating:
+                VStack(spacing: 16) {
+                    ProgressView()
+                    Text("Setting up your personalized experience...")
+                        .foregroundStyle(.secondary)
+                    if let error = onboardingVM?.errorMessage {
+                        Text(error)
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                    }
+                }
+            }
+        }
+        .task {
+            guard onboardingVM == nil else { return }
+            onboardingVM = OnboardingChatViewModel(claudeService: ClaudeService(), language: settingsLanguage)
+            if !isRunning && !syncCompleted {
+                runSync()
             }
         }
     }
 
-    private func syncProgressView(_ p: SyncProgressData) -> some View {
+    private var syncProgressCompactBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            if let p = syncProgress {
+                Text("Syncing: \(p.phase)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let eta = syncEtaSeconds, eta > 0 {
+                    Text("\(formatETA(eta)) left")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Starting sync...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+private func syncProgressView(_ p: SyncProgressData) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Syncing workspace...").font(.subheadline).fontWeight(.medium)
@@ -1255,9 +1363,22 @@ struct OnboardingView: View {
             isRunning = false
             if exitCode == 0 {
                 syncProgress = nil
-                // Transition to main app immediately — pipelines run in background
-                appState.backgroundTaskManager.startPipelines()
-                onRetry()
+                syncCompleted = true
+
+                // Open DB and pass to onboarding ViewModel for team form
+                do {
+                    DatabaseManager.runCLIMigrations()
+                    let dbPath = try DatabaseManager.resolveDBPath()
+                    let manager = try DatabaseManager(path: dbPath)
+                    onboardingVM?.setDatabase(manager)
+
+                    // If chat already finished, move to team form
+                    if chatPhase == .waitingForSync {
+                        chatPhase = .teamForm
+                    }
+                } catch {
+                    cliError = "Failed to open database: \(error.localizedDescription)"
+                }
             } else {
                 cliError = stderrText.isEmpty
                     ? "Sync failed (exit code \(exitCode))"

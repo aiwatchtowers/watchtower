@@ -210,14 +210,16 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 		q := r.URL.Query()
 		if errMsg := q.Get("error"); errMsg != "" {
 			resultCh <- callbackResult{err: errMsg}
-			fmt.Fprintf(w, "<html><body><h2>Authorization failed: %s</h2><p>You can close this tab.</p></body></html>", html.EscapeString(errMsg))
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(errMsg), 1))
 			return
 		}
 		resultCh <- callbackResult{
 			code:  q.Get("code"),
 			state: q.Get("state"),
 		}
-		fmt.Fprint(w, "<html><body><h2>Authorization successful!</h2><p>You can close this tab and return to the terminal.</p></body></html>")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, callbackSuccessPage)
 	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -281,6 +283,52 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 
 	return result, nil
 }
+
+const callbackStyle = `
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+background:#0f0f0f;color:#e5e5e5;display:flex;align-items:center;justify-content:center;
+min-height:100vh;padding:20px}
+.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;
+max-width:440px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.4)}
+.icon{width:64px;height:64px;margin:0 auto 24px;border-radius:50%;display:flex;
+align-items:center;justify-content:center;font-size:32px}
+.icon-ok{background:#0d2818;border:2px solid #16a34a}
+.icon-err{background:#2d0f0f;border:2px solid #dc2626}
+h1{font-size:20px;font-weight:600;margin-bottom:8px}
+p{font-size:14px;color:#888;line-height:1.5;margin-bottom:24px}
+.btn{display:inline-block;background:#fff;color:#0f0f0f;font-size:14px;font-weight:600;
+padding:12px 32px;border-radius:10px;text-decoration:none;cursor:pointer;border:none;
+transition:opacity .15s}
+.btn:hover{opacity:.85}
+.hint{font-size:12px;color:#555;margin-top:16px}
+</style>`
+
+const callbackSuccessPage = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watchtower — Authorized</title>` + callbackStyle + `</head><body>
+<div class="card">
+<div class="icon icon-ok">✓</div>
+<h1>Authorization Successful</h1>
+<p>Watchtower has been connected to your Slack workspace.</p>
+<div class="hint">You can close this tab and return to Watchtower.</div>
+</div>
+<script>
+setTimeout(function(){try{window.close()}catch(e){}},2000);
+</script>
+</body></html>`
+
+const callbackErrorPage = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watchtower — Error</title>` + callbackStyle + `</head><body>
+<div class="card">
+<div class="icon icon-err">✕</div>
+<h1>Authorization Failed</h1>
+<p>{{ERROR}}</p>
+<div class="hint">Close this tab and try again in Watchtower.</div>
+</div>
+</body></html>`
 
 // generateSelfSignedCert creates a short-lived self-signed TLS certificate for 127.0.0.1.
 func generateSelfSignedCert() (tls.Certificate, error) {

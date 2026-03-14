@@ -184,6 +184,11 @@ struct PeopleListView: View {
                 Text(analysis.styleEmoji)
                 Text("@\(vm.userName(for: analysis.userID))")
                     .fontWeight(.medium)
+
+                StarToggleButton(isStarred: vm.isPersonStarred(analysis.userID)) {
+                    vm.toggleStarredPerson(analysis.userID)
+                }
+
                 Spacer()
 
                 if analysis.hasConcerns {

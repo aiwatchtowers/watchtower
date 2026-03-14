@@ -257,7 +257,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		d.SetLogger(logger)
 		d.SetPIDPath(pidFilePath(cfg))
 		if cfg.Digest.Enabled {
-			gen := digest.NewClaudeGenerator(cfg.Digest.Model, cfg.ClaudePath)
+			gen := digest.NewClaudeGeneratorWithPool(cfg.Digest.Model, cfg.ClaudePath, d.SessionPool())
 			pipe := digest.New(database, cfg, gen, logger)
 			d.SetDigestPipeline(pipe)
 			d.SetAnalysisPipeline(analysis.New(database, cfg, gen, logger))

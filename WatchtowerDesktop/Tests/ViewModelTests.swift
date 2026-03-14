@@ -1352,9 +1352,41 @@ final class OnboardingChatViewModelTests: XCTestCase {
 
     @MainActor
     func testOnboardingSystemPromptContent() {
-        let prompt = OnboardingChatViewModel.onboardingSystemPrompt
+        let prompt = OnboardingChatViewModel.onboardingSystemPrompt(language: "English")
         XCTAssertTrue(prompt.contains("onboarding"))
         XCTAssertTrue(prompt.contains("Role"))
         XCTAssertTrue(prompt.contains("Pain Points"))
+        XCTAssertTrue(prompt.contains("Respond in English"))
+    }
+
+    @MainActor
+    func testOnboardingSystemPromptRussian() {
+        let prompt = OnboardingChatViewModel.onboardingSystemPrompt(language: "Russian")
+        XCTAssertTrue(prompt.contains("Respond in Russian"))
+    }
+
+    @MainActor
+    func testOnboardingSystemPromptUkrainian() {
+        let prompt = OnboardingChatViewModel.onboardingSystemPrompt(language: "Ukrainian")
+        XCTAssertTrue(prompt.contains("Respond in Ukrainian"))
+    }
+
+    @MainActor
+    func testQuestionnaireLocalizationRussian() {
+        let vm = OnboardingChatViewModel(claudeService: MockClaudeService(), language: "Russian", dbManager: dbManager)
+        vm.startQuestionnaire()
+        XCTAssertEqual(vm.messages.count, 1)
+        XCTAssertTrue(vm.messages[0].text.contains("роль"))
+        XCTAssertEqual(vm.quickReplies.count, 2)
+        XCTAssertEqual(vm.quickReplies[0].label, "Да")
+        XCTAssertEqual(vm.quickReplies[1].label, "Нет")
+    }
+
+    @MainActor
+    func testQuestionnaireLocalizationEnglish() {
+        let vm = OnboardingChatViewModel(claudeService: MockClaudeService(), language: "English", dbManager: dbManager)
+        vm.startQuestionnaire()
+        XCTAssertEqual(vm.messages[0].text, "Let's understand your role. Do people report to you?")
+        XCTAssertEqual(vm.quickReplies[0].label, "Yes")
     }
 }

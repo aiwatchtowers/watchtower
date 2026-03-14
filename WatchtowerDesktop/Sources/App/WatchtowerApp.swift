@@ -73,6 +73,12 @@ struct WatchtowerApp: App {
                     NotificationDelegate.sharedAppState = appState
                     appState.initialize()
                 }
+                .onOpenURL { url in
+                    // Handle watchtower-auth:// callback — just bring app to front
+                    if url.scheme == "watchtower-auth" {
+                        NSApplication.shared.activate(ignoringOtherApps: true)
+                    }
+                }
         }
         .defaultSize(width: 1200, height: 800)
 

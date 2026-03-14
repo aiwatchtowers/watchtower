@@ -356,15 +356,15 @@ Pure refactoring, no new features.
 
 ### Phase 5: Stars UI ✅
 
-Core backend complete, UI partially implemented:
+All star functionality implemented:
 - [x] Go API: AddStarredChannel, RemoveStarredChannel, AddStarredPerson, RemoveStarredPerson
 - [x] Swift DatabaseManager methods for Add/Remove
 - [x] StarToggleButton reusable component created
 - [x] ProfileSettings UI for full management (already implemented)
 - [x] Tests: 6 Go tests passing, all CRUD operations verified
-- [ ] Quick toggles in DigestListView (requires state management refactoring)
-- [ ] Quick toggles in People list (requires state management refactoring)
-- [ ] Starred filter in tracks view (can be added later)
+- [x] Quick toggles in DigestListView (star per channel, optimistic updates)
+- [x] Quick toggles in People list (star per person, optimistic updates)
+- [x] Starred filter in tracks view (toggle button in toolbar)
 
 ---
 

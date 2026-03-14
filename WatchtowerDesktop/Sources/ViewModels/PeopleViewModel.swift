@@ -13,6 +13,8 @@ final class PeopleViewModel {
     var availableWindows: [(from: Double, to: Double)] = []
 
     private(set) var userNameCache: [String: String] = [:]
+    private(set) var starredPeopleIDs: Set<String> = []
+    private(set) var currentUserID: String?
     private let dbManager: DatabaseManager
 
     init(dbManager: DatabaseManager) {
@@ -45,12 +47,17 @@ final class PeopleViewModel {
                     analyses = []
                     ps = nil
                 }
-                return (analyses, windows, nameMap, ps)
+                let profile = try ProfileQueries.fetchCurrentProfile(db)
+                let starred = Set(profile?.decodedStarredPeople ?? [])
+                let uid = profile?.slackUserID
+                return (analyses, windows, nameMap, ps, starred, uid)
             }
             analyses = result.0
             availableWindows = result.1
             userNameCache = result.2
             periodSummary = result.3
+            starredPeopleIDs = result.4
+            currentUserID = result.5
             errorMessage = nil
         } catch {
             analyses = []
@@ -108,5 +115,37 @@ final class PeopleViewModel {
 
     var redFlagCount: Int {
         analyses.filter { $0.hasRedFlags }.count
+    }
+
+    // MARK: - Starred People Management
+
+    func isPersonStarred(_ userID: String) -> Bool {
+        starredPeopleIDs.contains(userID)
+    }
+
+    func toggleStarredPerson(_ personUserID: String) {
+        guard let userID = currentUserID else { return }
+        let wasStarred = starredPeopleIDs.contains(personUserID)
+        // Optimistic update
+        if wasStarred {
+            starredPeopleIDs.remove(personUserID)
+        } else {
+            starredPeopleIDs.insert(personUserID)
+        }
+        do {
+            if wasStarred {
+                try dbManager.removeStarredPerson(personUserID, for: userID)
+            } else {
+                try dbManager.addStarredPerson(personUserID, for: userID)
+            }
+        } catch {
+            // Revert on failure
+            if wasStarred {
+                starredPeopleIDs.insert(personUserID)
+            } else {
+                starredPeopleIDs.remove(personUserID)
+            }
+            errorMessage = "Failed to update starred person: \(error.localizedDescription)"
+        }
     }
 }

@@ -107,13 +107,30 @@ func (p *Pipeline) SetPromptStore(store *prompts.Store) {
 }
 
 func (p *Pipeline) getPrompt(id string) (string, int) {
+	role := ""
+	if p.profile != nil {
+		role = p.profile.Role
+	}
+
 	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.Get(id)
+		tmpl, version, err := p.promptStore.GetForRole(id, role)
 		if err == nil {
+			// Prepend role instruction if available
+			roleInstr := prompts.GetRoleInstruction(role)
+			if roleInstr != "" {
+				tmpl = roleInstr + "\n\n" + tmpl
+			}
 			return tmpl, version
 		}
 	}
-	return prompts.Defaults[id], 0
+
+	// Fallback to default
+	tmpl := prompts.Defaults[id]
+	roleInstr := prompts.GetRoleInstruction(role)
+	if roleInstr != "" {
+		tmpl = roleInstr + "\n\n" + tmpl
+	}
+	return tmpl, 0
 }
 
 // AccumulatedUsage returns the total token usage accumulated across all Generate calls.

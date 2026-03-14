@@ -1,6 +1,8 @@
 import SwiftUI
 
 /// Chat view for the onboarding flow — AI learns about the user.
+/// Role questions appear as chat bubbles with quick-reply buttons,
+/// then transitions to free-form LLM conversation.
 struct OnboardingChatView: View {
     @Bindable var viewModel: OnboardingChatViewModel
     let onComplete: () -> Void
@@ -13,11 +15,11 @@ struct OnboardingChatView: View {
                     .font(.system(size: 36))
                     .foregroundStyle(.secondary)
 
-                Text("Tell us about yourself")
+                Text(viewModel.loc("header"))
                     .font(.title2)
                     .fontWeight(.semibold)
 
-                Text("Watchtower will personalize your experience based on your role and needs.")
+                Text(viewModel.loc("subtitle"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -28,17 +30,29 @@ struct OnboardingChatView: View {
 
             Divider()
 
-            // Chat messages
+            // Chat messages + inline quick-reply buttons
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        if viewModel.messages.isEmpty {
-                            welcomePrompts
-                        }
-
                         ForEach(viewModel.messages) { msg in
                             MessageBubble(message: msg)
                                 .id(msg.id)
+                        }
+
+                        // Quick-reply buttons inline, right after last message
+                        if !viewModel.quickReplies.isEmpty {
+                            HStack(spacing: 8) {
+                                ForEach(viewModel.quickReplies) { reply in
+                                    Button(reply.label) {
+                                        reply.action()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.regular)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 12)
+                            .id("quick-replies")
                         }
 
                         if let error = viewModel.errorMessage {
@@ -57,155 +71,57 @@ struct OnboardingChatView: View {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
+                .onChange(of: viewModel.quickReplies.isEmpty) {
+                    if !viewModel.quickReplies.isEmpty {
+                        proxy.scrollTo("quick-replies", anchor: .bottom)
+                    }
+                }
             }
 
             Divider()
 
-            // Input area
-            HStack(spacing: 8) {
-                ChatInput(text: $viewModel.inputText, isStreaming: viewModel.isStreaming) {
-                    viewModel.send()
-                }
-
-                if canSkip {
-                    Button("Continue") {
-                        viewModel.finishChat()
-                        onComplete()
+            // Text input (only after questionnaire is done)
+            if viewModel.quickReplies.isEmpty {
+                HStack(spacing: 8) {
+                    ChatInput(text: $viewModel.inputText, isStreaming: viewModel.isStreaming) {
+                        viewModel.send()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .padding(.trailing, 12)
-                    .padding(.bottom, 8)
+
+                    if canSkip {
+                        Button(viewModel.loc("continue")) {
+                            viewModel.finishChat()
+                            onComplete()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .padding(.trailing, 12)
+                        .padding(.bottom, 8)
+                    }
                 }
+            }
+        }
+        .task {
+            viewModel.startQuestionnaire()
+        }
+        .onChange(of: viewModel.chatReady) {
+            if viewModel.chatReady {
+                viewModel.finishChat()
+                onComplete()
             }
         }
     }
 
-    /// Show "Continue" after at least 2 user messages and no active stream.
+    /// Show "Continue" after at least 1 user message to AI (not counting questionnaire answers)
+    /// and no active stream.
     private var canSkip: Bool {
-        let userCount = viewModel.messages.filter { $0.role == .user }.count
-        return userCount >= 2 && !viewModel.isStreaming
+        viewModel.isRoleDetermined && !viewModel.isStreaming &&
+        viewModel.messages.filter({ $0.role == .user }).count > questionAnswerCount
     }
 
-    private var welcomePrompts: some View {
-        VStack(spacing: 12) {
-            Text("Let's understand your role")
-                .font(.callout)
-                .fontWeight(.semibold)
-                .foregroundStyle(.primary)
-                .padding(.top, 20)
-
-            if !viewModel.hasAnsweredRoleQ1 {
-                // Q1: Do people report to you?
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Do people report to you?")
-                        .font(.callout)
-                        .fontWeight(.medium)
-
-                    HStack(spacing: 8) {
-                        quickButton("Yes") {
-                            viewModel.recordRoleAnswer(reportsToThem: true)
-                        }
-                        quickButton("No") {
-                            viewModel.recordRoleAnswer(reportsToThem: false)
-                        }
-                    }
-                }
-                .padding(12)
-                .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-            } else if !viewModel.hasAnsweredRoleQ2 {
-                // Q2: Branch based on Q1 answer
-                if viewModel.roleDetermination?.reportsToThem ?? false {
-                    // Q2a: Do you set strategy?
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Do you determine strategy/vision for your area?")
-                            .font(.callout)
-                            .fontWeight(.medium)
-
-                        HStack(spacing: 8) {
-                            quickButton("Yes") {
-                                viewModel.recordRoleAnswer(setStrategy: true)
-                            }
-                            quickButton("No") {
-                                viewModel.recordRoleAnswer(setStrategy: false)
-                            }
-                        }
-                    }
-                    .padding(12)
-                    .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-                } else {
-                    // Q2b: Influence type
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Your influence in the organization comes mainly through...")
-                            .font(.callout)
-                            .fontWeight(.medium)
-
-                        HStack(spacing: 8) {
-                            quickButton("Expertise & authority") {
-                                viewModel.recordRoleAnswer(influenceType: "expertise")
-                            }
-                            quickButton("Solving tasks") {
-                                viewModel.recordRoleAnswer(influenceType: "tasks")
-                            }
-                        }
-                    }
-                    .padding(12)
-                    .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-                }
-            } else if viewModel.shouldShowRoleQ3 && !viewModel.hasAnsweredRoleQ3 {
-                // Q3: Do you manage other managers? (only if Q1=yes AND Q2a=yes)
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Do you manage other managers?")
-                        .font(.callout)
-                        .fontWeight(.medium)
-
-                    HStack(spacing: 8) {
-                        quickButton("Yes") {
-                            viewModel.recordRoleAnswer(manageManagers: true)
-                        }
-                        quickButton("No") {
-                            viewModel.recordRoleAnswer(manageManagers: false)
-                        }
-                    }
-                }
-                .padding(12)
-                .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-            } else {
-                // Role determined, show it
-                VStack(spacing: 8) {
-                    Text("Your role: \(viewModel.determinedRole?.displayName ?? "Unknown")")
-                        .font(.callout)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-
-                    if let desc = viewModel.determinedRole?.shortDescription {
-                        Text(desc)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text("Now let's continue with your profile...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 4)
-                }
-                .padding(12)
-                .background(.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-            }
-        }
-    }
-
-    private func quickButton(_ label: String, action: @escaping () -> Void) -> some View {
-        Button(label, action: action)
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
-    }
-
-    private func quickButton(_ text: String) -> some View {
-        Button(text) {
-            viewModel.inputText = text
-            viewModel.send()
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+    /// Number of user messages that are questionnaire answers (not free-form chat).
+    private var questionAnswerCount: Int {
+        if !viewModel.hasAnsweredRoleQ1 { return 0 }
+        if !viewModel.hasAnsweredRoleQ2 { return 1 }
+        if viewModel.shouldShowRoleQ3 && !viewModel.hasAnsweredRoleQ3 { return 2 }
+        return viewModel.shouldShowRoleQ3 ? 3 : 2
     }
 }

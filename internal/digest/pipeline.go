@@ -96,14 +96,32 @@ func (p *Pipeline) SetPromptStore(store *prompts.Store) {
 
 // getPrompt loads a prompt template from the store (if set), falling back to the
 // built-in const. Returns the template string and its version (0 = built-in).
+// Includes role-specific instructions if available.
 func (p *Pipeline) getPrompt(id, fallback string) (string, int) {
+	role := ""
+	if p.profile != nil {
+		role = p.profile.Role
+	}
+
 	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.Get(id)
+		tmpl, version, err := p.promptStore.GetForRole(id, role)
 		if err == nil {
+			// Prepend role instruction if available
+			roleInstr := prompts.GetRoleInstruction(role)
+			if roleInstr != "" {
+				tmpl = roleInstr + "\n\n" + tmpl
+			}
 			return tmpl, version
 		}
 	}
-	return fallback, 0
+
+	// Fallback to default
+	tmpl := fallback
+	roleInstr := prompts.GetRoleInstruction(role)
+	if roleInstr != "" {
+		tmpl = roleInstr + "\n\n" + tmpl
+	}
+	return tmpl, 0
 }
 
 // Run executes the full digest pipeline: channel digests, then daily rollup.

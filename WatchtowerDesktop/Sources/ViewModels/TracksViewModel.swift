@@ -18,6 +18,8 @@ final class TracksViewModel {
     var ownershipFilter: String?
     var ownershipCounts: [String: Int] = [:]
     var availableChannels: [(id: String, name: String)] = []
+    var starredOnly: Bool = false
+    private(set) var starredChannelIDs: Set<String> = []
 
     private(set) var workspaceDomain: String?
     private let dbManager: DatabaseManager
@@ -58,11 +60,19 @@ final class TracksViewModel {
                 let sCounts = try uid.map { try TrackQueries.fetchStatusCounts(db, assigneeUserID: $0) } ?? [:]
                 let total = try uid.map { try TrackQueries.fetchTotalCount(db, assigneeUserID: $0) } ?? 0
                 let oCounts = try uid.map { try TrackQueries.fetchOwnershipCounts(db, assigneeUserID: $0) } ?? [:]
-                return (uid, ws?.domain, all, count, inbox, updated, sCounts, total, oCounts)
+                let profile = try ProfileQueries.fetchCurrentProfile(db)
+                let starred = Set(profile?.decodedStarredChannels ?? [])
+                return (uid, ws?.domain, all, count, inbox, updated, sCounts, total, oCounts, starred)
             }
             currentUserID = result.0
             workspaceDomain = result.1
-            items = result.2
+            var loadedItems = result.2
+            let starredCh = result.9
+            starredChannelIDs = starredCh
+            if starredOnly && !starredCh.isEmpty {
+                loadedItems = loadedItems.filter { starredCh.contains($0.channelID) }
+            }
+            items = loadedItems
             openCount = result.3
             inboxCount = result.4
             updatedCount = result.5

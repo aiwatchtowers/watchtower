@@ -84,6 +84,15 @@ struct TracksListView: View {
                     Label("Low", systemImage: "arrow.down.circle").tag(String?.some("low"))
                 }
                 .frame(maxWidth: 140)
+
+                // Starred channels filter
+                Toggle(isOn: Bindable(vm).starredOnly) {
+                    Image(systemName: vm.starredOnly ? "star.fill" : "star")
+                        .foregroundStyle(vm.starredOnly ? .yellow : .secondary)
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.borderless)
+                .help(vm.starredOnly ? "Show all channels" : "Show starred channels only")
             }
             .padding()
             .onChange(of: vm.ownershipFilter) {
@@ -91,6 +100,7 @@ struct TracksListView: View {
                 vm.load()
             }
             .onChange(of: vm.priorityFilter) { vm.load() }
+            .onChange(of: vm.starredOnly) { vm.load() }
 
             Divider()
 

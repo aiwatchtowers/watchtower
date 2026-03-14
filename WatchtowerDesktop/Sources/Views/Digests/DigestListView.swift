@@ -402,6 +402,12 @@ struct DigestListView: View {
                     .fontWeight(digest.isRead ? .regular : .medium)
                     .lineLimit(1)
 
+                if !digest.channelID.isEmpty {
+                    StarToggleButton(isStarred: vm.isChannelStarred(digest.channelID)) {
+                        vm.toggleStarredChannel(digest.channelID)
+                    }
+                }
+
                 Spacer()
 
                 Text(TimeFormatting.parseISO(digest.createdAt).map { TimeFormatting.shortDateTime(from: $0) } ?? digest.createdAt)

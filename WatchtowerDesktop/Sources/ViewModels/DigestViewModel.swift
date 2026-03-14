@@ -15,6 +15,8 @@ final class DigestViewModel {
     // M9: pre-fetched caches (avoids DB read per row in view body)
     private var channelNameCache: [String: String] = [:]
     private(set) var workspaceDomain: String?
+    private(set) var starredChannelIDs: Set<String> = []
+    private(set) var currentUserID: String?
     private let dbManager: DatabaseManager
 
     init(dbManager: DatabaseManager) {
@@ -29,6 +31,8 @@ final class DigestViewModel {
         let readIndices: [Int: Set<Int>]
         let unreadDigests: Int
         let importanceCorrections: [String: String]
+        let starredChannels: Set<String>
+        let currentUserID: String?
     }
 
     func load() {
@@ -73,6 +77,10 @@ final class DigestViewModel {
                 let unreadDigests = try DigestQueries.unreadDigestCount(db)
                 let importanceCorrections = try ImportanceCorrectionQueries.allCorrections(db)
 
+                let profile = try ProfileQueries.fetchCurrentProfile(db)
+                let starred = Set(profile?.decodedStarredChannels ?? [])
+                let uid = profile?.slackUserID
+
                 return LoadResult(
                     digests: d,
                     withDecisions: withDecisions,
@@ -80,12 +88,16 @@ final class DigestViewModel {
                     domain: ws?.domain,
                     readIndices: readIndices,
                     unreadDigests: unreadDigests,
-                    importanceCorrections: importanceCorrections
+                    importanceCorrections: importanceCorrections,
+                    starredChannels: starred,
+                    currentUserID: uid
                 )
             }
             digests = result.digests
             channelNameCache = result.channelNames
             workspaceDomain = result.domain
+            starredChannelIDs = result.starredChannels
+            currentUserID = result.currentUserID
             decisionEntries = buildDecisionEntries(from: result.withDecisions, readIndices: result.readIndices, importanceCorrections: result.importanceCorrections)
             unreadDigestCount = result.unreadDigests
             unreadDecisionCount = decisionEntries.filter { !$0.isRead }.count
@@ -364,30 +376,34 @@ final class DigestViewModel {
     // MARK: - Starred Channels Management
 
     /// Toggle a channel's starred status
-    func toggleStarredChannel(_ channelID: String, for userID: String) {
-        Task {
-            do {
-                // Check if already starred
-                let isStarred = try await dbManager.dbPool.read { db in
-                    let profile = try ProfileQueries.fetchProfile(db, slackUserID: userID)
-                    return profile?.decodedStarredChannels.contains(channelID) ?? false
-                }
-
-                if isStarred {
-                    try dbManager.removeStarredChannel(channelID, for: userID)
-                } else {
-                    try dbManager.addStarredChannel(channelID, for: userID)
-                }
-            } catch {
-                errorMessage = "Failed to update starred channel: \(error.localizedDescription)"
+    func toggleStarredChannel(_ channelID: String) {
+        guard let userID = currentUserID else { return }
+        let wasStarred = starredChannelIDs.contains(channelID)
+        // Optimistic update
+        if wasStarred {
+            starredChannelIDs.remove(channelID)
+        } else {
+            starredChannelIDs.insert(channelID)
+        }
+        do {
+            if wasStarred {
+                try dbManager.removeStarredChannel(channelID, for: userID)
+            } else {
+                try dbManager.addStarredChannel(channelID, for: userID)
             }
+        } catch {
+            // Revert on failure
+            if wasStarred {
+                starredChannelIDs.insert(channelID)
+            } else {
+                starredChannelIDs.remove(channelID)
+            }
+            errorMessage = "Failed to update starred channel: \(error.localizedDescription)"
         }
     }
 
     /// Check if a channel is starred
-    func isChannelStarred(_ channelID: String, for userID: String) -> Bool {
-        // This would need profile to be loaded in this view model
-        // For now, return false as a placeholder
-        return false
+    func isChannelStarred(_ channelID: String) -> Bool {
+        starredChannelIDs.contains(channelID)
     }
 }

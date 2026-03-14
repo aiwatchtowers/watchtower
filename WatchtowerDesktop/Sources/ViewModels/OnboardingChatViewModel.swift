@@ -1,6 +1,19 @@
 import Foundation
 import GRDB
 
+/// Quick reply option with associated action.
+struct QuickReply: Identifiable {
+    let id: UUID
+    let label: String
+    let action: () -> Void
+
+    init(label: String, action: @escaping () -> Void) {
+        self.id = UUID()
+        self.label = label
+        self.action = action
+    }
+}
+
 /// ViewModel for the onboarding chat flow.
 /// Manages: AI conversation, chat result parsing, team form state, profile generation.
 @MainActor
@@ -38,6 +51,13 @@ final class OnboardingChatViewModel {
         (roleDetermination?.setStrategy ?? false)
     }
 
+    /// Whether the role questionnaire is fully complete.
+    var isRoleDetermined: Bool {
+        guard hasAnsweredRoleQ1, hasAnsweredRoleQ2 else { return false }
+        if shouldShowRoleQ3 { return hasAnsweredRoleQ3 }
+        return true
+    }
+
     // MARK: - Team Form State
 
     var reportIDs: [String] = []
@@ -45,16 +65,24 @@ final class OnboardingChatViewModel {
     var peerIDs: [String] = []
     var allUsers: [User] = []
 
+    /// Set to true when AI signals it has gathered enough info (via [READY] marker).
+    var chatReady = false
+
     // MARK: - Private
 
+    private static let readyMarker = "[READY]"
     private var sessionID: String?
     private let claudeService: any ClaudeServiceProtocol
     private var dbManager: DatabaseManager?
     private var streamTask: Task<Void, Never>?
     private var chatCompleted = false
 
-    init(claudeService: any ClaudeServiceProtocol, dbManager: DatabaseManager? = nil) {
+    /// The UI language selected during onboarding settings step.
+    let language: String
+
+    init(claudeService: any ClaudeServiceProtocol, language: String = "English", dbManager: DatabaseManager? = nil) {
         self.claudeService = claudeService
+        self.language = language
         self.dbManager = dbManager
         if dbManager != nil { loadUsers() }
     }
@@ -65,7 +93,140 @@ final class OnboardingChatViewModel {
         loadUsers()
     }
 
+    // MARK: - Questionnaire in Chat
+
+    /// The current quick-reply options shown below the chat. Empty = show text input.
+    var quickReplies: [QuickReply] = []
+
+    /// Insert the first role question as a chat bubble.
+    func startQuestionnaire() {
+        guard messages.isEmpty else { return }
+        addAssistantBubble(loc("q1"))
+        quickReplies = [
+            QuickReply(label: loc("yes"), action: { [weak self] in self?.answerRoleQ1(reportsToThem: true) }),
+            QuickReply(label: loc("no"), action: { [weak self] in self?.answerRoleQ1(reportsToThem: false) }),
+        ]
+    }
+
+    private func answerRoleQ1(reportsToThem: Bool) {
+        addUserBubble(reportsToThem ? loc("yes") : loc("no"))
+        recordRoleAnswer(reportsToThem: reportsToThem)
+
+        if reportsToThem {
+            addAssistantBubble(loc("q2a"))
+            quickReplies = [
+                QuickReply(label: loc("yes"), action: { [weak self] in self?.answerRoleQ2a(setStrategy: true) }),
+                QuickReply(label: loc("no"), action: { [weak self] in self?.answerRoleQ2a(setStrategy: false) }),
+            ]
+        } else {
+            addAssistantBubble(loc("q2b"))
+            quickReplies = [
+                QuickReply(label: loc("expertise"), action: { [weak self] in self?.answerRoleQ2b(influenceType: "expertise") }),
+                QuickReply(label: loc("tasks"), action: { [weak self] in self?.answerRoleQ2b(influenceType: "tasks") }),
+            ]
+        }
+    }
+
+    private func answerRoleQ2a(setStrategy: Bool) {
+        addUserBubble(setStrategy ? loc("yes") : loc("no"))
+        recordRoleAnswer(setStrategy: setStrategy)
+
+        if setStrategy {
+            // Need Q3
+            addAssistantBubble(loc("q3"))
+            quickReplies = [
+                QuickReply(label: loc("yes"), action: { [weak self] in self?.answerRoleQ3(manageManagers: true) }),
+                QuickReply(label: loc("no"), action: { [weak self] in self?.answerRoleQ3(manageManagers: false) }),
+            ]
+        } else {
+            finishQuestionnaire()
+        }
+    }
+
+    private func answerRoleQ2b(influenceType: String) {
+        addUserBubble(influenceType == "expertise" ? loc("expertise") : loc("tasks"))
+        recordRoleAnswer(influenceType: influenceType)
+        finishQuestionnaire()
+    }
+
+    private func answerRoleQ3(manageManagers: Bool) {
+        addUserBubble(manageManagers ? loc("yes") : loc("no"))
+        recordRoleAnswer(manageManagers: manageManagers)
+        finishQuestionnaire()
+    }
+
+    private func finishQuestionnaire() {
+        quickReplies = []
+        initiateChat()
+    }
+
+    private func addAssistantBubble(_ text: String) {
+        messages.append(ChatMessage(id: UUID(), role: .assistant, text: text, timestamp: Date(), isStreaming: false))
+    }
+
+    private func addUserBubble(_ text: String) {
+        messages.append(ChatMessage(id: UUID(), role: .user, text: text, timestamp: Date(), isStreaming: false))
+    }
+
     // MARK: - Chat
+
+    /// AI sends the first message after role is determined — greets the user and asks the first question.
+    func initiateChat() {
+        guard !isStreaming else { return }
+
+        let roleName = determinedRole?.displayName ?? "your role"
+        let langInstruction = language != "English" ? " Respond in \(language)." : ""
+        let hiddenPrompt = "The user just completed the role questionnaire and was identified as: \(roleName). " +
+            "Greet them briefly, acknowledge the role, and ask your first question." + langInstruction
+
+        let assistantMsg = ChatMessage(id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true)
+        messages.append(assistantMsg)
+        isStreaming = true
+
+        streamTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let stream = claudeService.stream(
+                    prompt: hiddenPrompt,
+                    systemPrompt: Self.onboardingSystemPrompt(language: self.language),
+                    sessionID: nil,
+                    dbPath: nil
+                )
+                var sawTurnComplete = false
+                for try await event in stream {
+                    switch event {
+                    case .text(let chunk):
+                        if let idx = self.messages.indices.last {
+                            if sawTurnComplete {
+                                self.messages[idx].text = chunk
+                                sawTurnComplete = false
+                            } else {
+                                self.messages[idx].text += chunk
+                            }
+                        }
+                    case .turnComplete(let fullText):
+                        if let idx = self.messages.indices.last {
+                            self.messages[idx].text = fullText
+                        }
+                        sawTurnComplete = true
+                    case .sessionID(let sid):
+                        self.sessionID = sid
+                    case .done:
+                        break
+                    }
+                }
+            } catch {
+                if !Task.isCancelled {
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+
+            if let idx = self.messages.indices.last {
+                self.messages[idx].isStreaming = false
+            }
+            self.isStreaming = false
+        }
+    }
 
     func send() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,7 +248,7 @@ final class OnboardingChatViewModel {
             guard let self else { return }
 
             let systemPrompt: String? = if currentSessionID == nil {
-                Self.onboardingSystemPrompt
+                Self.onboardingSystemPrompt(language: self.language)
             } else {
                 nil
             }
@@ -130,6 +291,7 @@ final class OnboardingChatViewModel {
 
             if let idx = self.messages.indices.last {
                 self.messages[idx].isStreaming = false
+                self.stripReadyMarker(at: idx)
             }
             self.isStreaming = false
         }
@@ -286,6 +448,17 @@ final class OnboardingChatViewModel {
 
     // MARK: - Private Helpers
 
+    /// Check for [READY] marker in the last assistant message, strip it, and set chatReady.
+    private func stripReadyMarker(at idx: Int) {
+        let text = messages[idx].text
+        if text.contains(Self.readyMarker) {
+            messages[idx].text = text
+                .replacingOccurrences(of: Self.readyMarker, with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            chatReady = true
+        }
+    }
+
     private func loadUsers() {
         guard let dbManager else { allUsers = []; return }
         do {
@@ -373,38 +546,101 @@ final class OnboardingChatViewModel {
         return str
     }
 
+    // MARK: - Localized Strings
+
+    /// Localized question and button texts keyed by language.
+    private static let strings: [String: [String: String]] = [
+        "English": [
+            "q1": "Let's understand your role. Do people report to you?",
+            "q2a": "Do you determine strategy or vision for your area?",
+            "q2b": "Your influence in the organization comes mainly through...",
+            "q3": "Do you manage other managers?",
+            "yes": "Yes",
+            "no": "No",
+            "expertise": "Expertise & authority",
+            "tasks": "Solving tasks",
+            "header": "Tell us about yourself",
+            "subtitle": "Watchtower will personalize your experience based on your role and needs.",
+            "continue": "Continue",
+        ],
+        "Russian": [
+            "q1": "Давайте определим вашу роль. Вам кто-то подчиняется?",
+            "q2a": "Вы определяете стратегию или видение для вашего направления?",
+            "q2b": "Ваше влияние в организации основано главным образом на...",
+            "q3": "Вы управляете другими руководителями?",
+            "yes": "Да",
+            "no": "Нет",
+            "expertise": "Экспертизе и авторитете",
+            "tasks": "Решении задач",
+            "header": "Расскажите о себе",
+            "subtitle": "Watchtower персонализирует ваш опыт на основе вашей роли и потребностей.",
+            "continue": "Продолжить",
+        ],
+        "Ukrainian": [
+            "q1": "Давайте визначимо вашу роль. Вам хтось підпорядковується?",
+            "q2a": "Ви визначаєте стратегію або бачення для вашого напрямку?",
+            "q2b": "Ваш вплив в організації базується переважно на...",
+            "q3": "Ви керуєте іншими керівниками?",
+            "yes": "Так",
+            "no": "Ні",
+            "expertise": "Експертизі та авторитеті",
+            "tasks": "Вирішенні завдань",
+            "header": "Розкажіть про себе",
+            "subtitle": "Watchtower персоналізує ваш досвід на основі вашої ролі та потреб.",
+            "continue": "Продовжити",
+        ],
+    ]
+
+    /// Look up a localized string, falling back to English.
+    func loc(_ key: String) -> String {
+        Self.strings[language]?[key] ?? Self.strings["English"]![key]!
+    }
+
     // MARK: - System Prompt
 
-    static let onboardingSystemPrompt = """
-    You are Watchtower's onboarding assistant. Your goal is to learn about the user so \
-    Watchtower can personalize their Slack monitoring experience.
+    static func onboardingSystemPrompt(language: String) -> String {
+        let langRule: String
+        switch language {
+        case "Russian":
+            langRule = "- IMPORTANT: Respond in Russian (Русский). All your messages must be in Russian."
+        case "Ukrainian":
+            langRule = "- IMPORTANT: Respond in Ukrainian (Українська). All your messages must be in Ukrainian."
+        default:
+            langRule = "- Respond in English."
+        }
 
-    Have a brief, friendly conversation (3-5 exchanges) to learn:
+        return """
+        You are Watchtower's onboarding assistant. Your goal is to learn about the user so \
+        Watchtower can personalize their Slack monitoring experience.
 
-    1. **Role & Team**: What's their position? (Engineering Manager, IC, Tech Lead, PM, etc.) \
-    What team are they on?
+        Have a brief, friendly conversation (3-5 exchanges) to learn:
 
-    2. **Pain Points**: What problems do they face with Slack? Examples:
-       - Missing important messages while away
-       - Decisions getting lost in threads
-       - Losing track of who owes what to whom
-       - Can't tell what the team is busy with
-       - Deadlines discussed in chat get forgotten
-       - Hard to tell what's urgent vs what can wait
+        1. **Role & Team**: What's their position? (Engineering Manager, IC, Tech Lead, PM, etc.) \
+        What team are they on?
 
-    3. **Track Focus**: What would they like Watchtower to track? (depends on their role)
-       - For managers: team blockers, decisions, who's overloaded, deadlines
-       - For ICs: code reviews, questions directed at them, architectural decisions
-       - For tech leads: technical decisions, tech debt, team activity
-       - For PMs: decisions, approvals, follow-ups, deadlines
+        2. **Pain Points**: What problems do they face with Slack? Examples:
+           - Missing important messages while away
+           - Decisions getting lost in threads
+           - Losing track of who owes what to whom
+           - Can't tell what the team is busy with
+           - Deadlines discussed in chat get forgotten
+           - Hard to tell what's urgent vs what can wait
 
-    RULES:
-    - Be concise — 2-3 sentences per message
-    - Ask ONE question at a time, don't overwhelm
-    - Adapt follow-up questions based on their answers
-    - After gathering enough info (3-5 exchanges), end with a brief summary of what you learned \
-    and say "Let's set up your team next!"
-    - Match the user's language (if they write in Russian, respond in Russian)
-    - Do NOT use any tools — this is a pure conversation
-    """
+        3. **Track Focus**: What would they like Watchtower to track? (depends on their role)
+           - For managers: team blockers, decisions, who's overloaded, deadlines
+           - For ICs: code reviews, questions directed at them, architectural decisions
+           - For tech leads: technical decisions, tech debt, team activity
+           - For PMs: decisions, approvals, follow-ups, deadlines
+
+        RULES:
+        - Be concise — 2-3 sentences per message
+        - Ask ONE question at a time, don't overwhelm
+        - Adapt follow-up questions based on their answers
+        - After gathering enough info (2-4 exchanges), write a brief summary of what you learned, \
+        tell the user you'll now set up their team, and append the exact marker [READY] at the very \
+        end of your message (on its own line). This marker signals the app to advance to the next step.
+        \(langRule)
+        - Do NOT use any tools — this is a pure conversation
+        """
+    }
 }

@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/analysis"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
+	"watchtower/internal/sessions"
 	"watchtower/internal/sync"
 	"watchtower/internal/tracks"
 )
@@ -31,6 +32,7 @@ type Daemon struct {
 	logger       *log.Logger
 	wakeCh       <-chan struct{}
 	pidPath      string
+	pool         *sessions.SessionPool // session pool for reusable Claude sessions
 	digestPipe   *digest.Pipeline
 	analysisPipe *analysis.Pipeline
 	tracksPipe   *tracks.Pipeline
@@ -39,11 +41,18 @@ type Daemon struct {
 }
 
 // New creates a Daemon that runs incremental syncs via the given orchestrator.
+// The session pool is created immediately and should be closed after Run() completes.
+// Pool size is determined by cfg.Digest.Workers (number of concurrent digest operations).
 func New(orchestrator *sync.Orchestrator, cfg *config.Config) *Daemon {
+	poolSize := cfg.Digest.Workers
+	if poolSize <= 0 {
+		poolSize = 1
+	}
 	return &Daemon{
 		orchestrator: orchestrator,
 		config:       cfg,
 		logger:       log.New(os.Stderr, "[daemon] ", log.LstdFlags),
+		pool:         sessions.NewSessionPool(poolSize),
 	}
 }
 
@@ -72,6 +81,11 @@ func (d *Daemon) SetPIDPath(path string) {
 	d.pidPath = path
 }
 
+// SessionPool returns the daemon's session pool for use with generators.
+func (d *Daemon) SessionPool() *sessions.SessionPool {
+	return d.pool
+}
+
 // Run starts the daemon poll loop. It blocks until ctx is cancelled.
 // The caller is responsible for wiring signal handling into the context.
 // Each tick or wake event triggers an incremental sync.
@@ -96,7 +110,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadLastAnalysis()
 	d.loadLastTracks()
 
-	d.logger.Printf("daemon started, polling every %s", pollInterval)
+	// Close session pool on shutdown
+	defer d.pool.Close()
+
+	d.logger.Printf("daemon started, polling every %s, session pool size: %d", pollInterval, d.pool.Size())
 
 	// Run an initial sync immediately on startup.
 	d.runSync(ctx)
