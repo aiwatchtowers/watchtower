@@ -123,12 +123,6 @@ struct OnboardingChatView: View {
         .task {
             viewModel.startQuestionnaire()
         }
-        .onChange(of: viewModel.chatReady) {
-            if viewModel.chatReady {
-                viewModel.finishChat()
-                onComplete()
-            }
-        }
     }
 
 }
