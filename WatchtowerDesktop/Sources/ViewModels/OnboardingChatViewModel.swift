@@ -223,7 +223,6 @@ final class OnboardingChatViewModel {
 
             if let idx = self.messages.indices.last {
                 self.messages[idx].isStreaming = false
-                self.stripReadyMarker(at: idx)
             }
             self.isStreaming = false
         }
