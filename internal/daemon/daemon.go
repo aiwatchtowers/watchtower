@@ -80,12 +80,10 @@ func (d *Daemon) SetPeoplePipeline(p *guide.Pipeline) {
 	d.peoplePipe = p
 }
 
-
 // SetPIDPath sets the path where the daemon will write its PID file.
 func (d *Daemon) SetPIDPath(path string) {
 	d.pidPath = path
 }
-
 
 // Run starts the daemon poll loop. It blocks until ctx is cancelled.
 // The caller is responsible for wiring signal handling into the context.
@@ -281,7 +279,6 @@ func (d *Daemon) runSync(ctx context.Context) {
 			d.logger.Printf("detected updates on %d track(s)", n)
 		}
 	}
-
 }
 
 // autoMarkRead marks digests as read based on Slack read cursors.
@@ -350,4 +347,3 @@ func (d *Daemon) saveLastTracks() {
 		d.logger.Printf("failed to save last tracks time: %v", err)
 	}
 }
-

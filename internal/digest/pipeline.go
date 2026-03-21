@@ -239,7 +239,7 @@ func (p *Pipeline) runChainLinker(ctx context.Context) {
 	}
 }
 
-// Used by daemon after chains pipeline has linked decisions.
+// RunRollups generates daily/weekly rollups. Used by daemon after chains pipeline has linked decisions.
 func (p *Pipeline) RunRollups(ctx context.Context) error {
 	if !p.cfg.Digest.Enabled {
 		return nil

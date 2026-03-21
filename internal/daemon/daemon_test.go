@@ -15,11 +15,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"watchtower/internal/guide"
 	"watchtower/internal/chains"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/guide"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
 	"watchtower/internal/tracks"

@@ -261,7 +261,7 @@ func TestShowPeopleList_TeamSummary(t *testing.T) {
 			RedFlags:           `[]`,
 			Highlights:         `["good work"]`,
 			Accomplishments:    `[]`,
-			CommunicationGuide:   "",
+			CommunicationGuide: "",
 			DecisionStyle:      "",
 			Tactics:            "[]",
 			Model:              "haiku",
@@ -309,7 +309,7 @@ func TestRunPeople_PreviousWindowFlag(t *testing.T) {
 		RedFlags:           `[]`,
 		Highlights:         `[]`,
 		Accomplishments:    `[]`,
-		CommunicationGuide:   "",
+		CommunicationGuide: "",
 		DecisionStyle:      "",
 		Tactics:            "[]",
 		Model:              "haiku",
@@ -776,7 +776,7 @@ func TestRunCatchup_WithDigestAndMessages(t *testing.T) {
 			ChannelID: "C001",
 			UserID:    "U001",
 			Text:      fmt.Sprintf("Recent message %d", i),
-			}))
+		}))
 	}
 
 	// Insert a daily digest covering this period
@@ -1062,11 +1062,11 @@ func TestRunTracksDone_OwnTrack(t *testing.T) {
 func TestPrintProgressJSON_MessagesPhase(t *testing.T) {
 	buf := new(bytes.Buffer)
 	snap := internalsync.Snapshot{
-		Phase:            internalsync.PhaseMessages,
-		StartTime:        time.Now().Add(-45 * time.Second),
-		ChannelsTotal:    20,
-		ChannelsDone:     10,
-		MessagesFetched:  500,
+		Phase:           internalsync.PhaseMessages,
+		StartTime:       time.Now().Add(-45 * time.Second),
+		ChannelsTotal:   20,
+		ChannelsDone:    10,
+		MessagesFetched: 500,
 	}
 	printProgressJSON(buf, snap, nil)
 	output := buf.String()

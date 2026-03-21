@@ -116,7 +116,7 @@ func TestShowUserDetail_FullAnalysis(t *testing.T) {
 		RedFlags:           `["Ignoring deadlines"]`,
 		Highlights:         `["Excellent code reviews"]`,
 		Accomplishments:    `["Shipped authentication service"]`,
-		CommunicationGuide:   "Prefers data-driven arguments",
+		CommunicationGuide: "Prefers data-driven arguments",
 		DecisionStyle:      "Careful approver, needs evidence",
 		Tactics:            `["If proposing changes, bring data","If deadline missed, discuss priorities"]`,
 		Model:              "haiku",
@@ -196,7 +196,7 @@ func TestShowPeopleList_WithRedFlagsAndConcerns(t *testing.T) {
 		RedFlags:           `["Overcommitting on tasks"]`,
 		Highlights:         `["Led sprint planning"]`,
 		Accomplishments:    `[]`,
-		CommunicationGuide:   "Be prepared for detailed discussions",
+		CommunicationGuide: "Be prepared for detailed discussions",
 		DecisionStyle:      "Drives decisions proactively",
 		Tactics:            `[]`,
 		Model:              "haiku",
@@ -319,7 +319,6 @@ func TestDefaultConfigPath_ReturnsNonEmpty(t *testing.T) {
 	assert.NotEmpty(t, path)
 	assert.True(t, strings.Contains(path, "config.yaml"))
 }
-
 
 // --- Digest stats edge cases ---
 func TestRunDigestStats_NegativeDays(t *testing.T) {

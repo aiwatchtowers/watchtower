@@ -759,7 +759,7 @@ func TestRun_ContextCancelled(t *testing.T) {
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := New(database, cfg, gen, testLogger())
-	_, _, err = p.Run(ctx)
+	_, _, _ = p.Run(ctx)
 
 	// Workers should exit early on cancelled context.
 	assert.Equal(t, 0, gen.calls)
@@ -1048,9 +1048,9 @@ func TestFormatProfileContext_WithAllFields(t *testing.T) {
 	p := New(database, cfg, gen, testLogger())
 	p.profile = &db.UserProfile{
 		CustomPromptContext: "I am a senior engineer",
-		StarredChannels:    `["C1","C2"]`,
-		StarredPeople:      `["U10"]`,
-		Reports:            `["U20","U21"]`,
+		StarredChannels:     `["C1","C2"]`,
+		StarredPeople:       `["U10"]`,
+		Reports:             `["U20","U21"]`,
 	}
 
 	ctx := p.formatProfileContext()
@@ -1095,9 +1095,9 @@ func TestFormatProfileContext_EmptyStarredLists(t *testing.T) {
 	p := New(database, cfg, gen, testLogger())
 	p.profile = &db.UserProfile{
 		CustomPromptContext: "test context",
-		StarredChannels:    "[]",
-		StarredPeople:      "[]",
-		Reports:            "[]",
+		StarredChannels:     "[]",
+		StarredPeople:       "[]",
+		Reports:             "[]",
 	}
 
 	ctx := p.formatProfileContext()
@@ -1767,10 +1767,10 @@ func TestFallbackPromptFormatVerbs(t *testing.T) {
 		prompt   string
 		expected int // number of %s placeholders expected
 	}{
-		{"channelDigestPrompt", channelDigestPrompt, 6},   // channelName, fromStr, toStr, profileCtx, langInstr, messages
-		{"dailyRollupPrompt", dailyRollupPrompt, 4},       // dateStr, profileCtx, langInstr, channelInput
-		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 6},     // date, fromStr, toStr, profileCtx, langInstr, dailies
-		{"periodSummaryPrompt", periodSummaryPrompt, 5},   // fromStr, toStr, profileCtx, langInstr, digests
+		{"channelDigestPrompt", channelDigestPrompt, 6}, // channelName, fromStr, toStr, profileCtx, langInstr, messages
+		{"dailyRollupPrompt", dailyRollupPrompt, 4},     // dateStr, profileCtx, langInstr, channelInput
+		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 6},   // date, fromStr, toStr, profileCtx, langInstr, dailies
+		{"periodSummaryPrompt", periodSummaryPrompt, 5}, // fromStr, toStr, profileCtx, langInstr, digests
 	}
 
 	for _, tt := range tests {

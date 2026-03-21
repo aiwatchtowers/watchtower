@@ -260,7 +260,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		d.SetPIDPath(pidFilePath(cfg))
 		if cfg.Digest.Enabled {
 			gen, cleanupPool := cliPooledGenerator(cfg, logger)
-		defer cleanupPool()
+			defer cleanupPool()
 			pipe := digest.New(database, cfg, gen, logger)
 			chainsPipe := chains.New(database, cfg, gen, logger)
 			pipe.ChainLinker = chainsPipe
