@@ -114,6 +114,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 		"--output-format", "json",
 		"--model", g.model,
 		"--no-session-persistence",
+		"--tools", "",
 	}
 
 	if systemPrompt != "" {
@@ -196,12 +197,16 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 		return "", nil, "", fmt.Errorf("claude returned empty result (turns=%d, tokens=%d+%d)", resp.NumTurns, resp.Usage.InputTokens, resp.Usage.OutputTokens)
 	}
 
+	// Estimate our prompt size in tokens (~4 chars per token).
+	promptTokens := (len(systemPrompt) + len(userMessage)) / 4
+	// Total API tokens = everything the API processed (our content + CLI overhead).
+	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
 	usage := &Usage{
-		InputTokens:  resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-		CostUSD:      resp.CostUSD,
+		InputTokens:    promptTokens,
+		OutputTokens:   resp.Usage.OutputTokens,
+		CostUSD:        resp.CostUSD,
+		TotalAPITokens: totalAPI,
 	}
 
 	return resp.Result, usage, resp.SessionID, nil
 }
-

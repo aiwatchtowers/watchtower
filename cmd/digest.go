@@ -53,6 +53,13 @@ var digestSummaryCmd = &cobra.Command{
 	RunE:  runDigestSummary,
 }
 
+var digestResetContextCmd = &cobra.Command{
+	Use:   "reset-context [channel]",
+	Short: "Reset running context (channel memory) for digests",
+	Long:  "Clears the running summary used for incremental context in digest generation. Without arguments, resets all channels. With a channel name, resets only that channel.",
+	RunE:  runDigestResetContext,
+}
+
 var (
 	digestStatsFlagDays    int
 	digestSummaryFlagFrom  string
@@ -66,6 +73,7 @@ func init() {
 	digestCmd.AddCommand(digestGenerateCmd)
 	digestCmd.AddCommand(digestStatsCmd)
 	digestCmd.AddCommand(digestSummaryCmd)
+	digestCmd.AddCommand(digestResetContextCmd)
 	digestCmd.Flags().StringVar(&digestFlagChannel, "channel", "", "show digest for a specific channel")
 	digestCmd.Flags().IntVar(&digestFlagDays, "days", 1, "number of days to show")
 	digestGenerateCmd.Flags().IntVar(&digestGenFlagSince, "since", 1, "generate digests for the last N days")
@@ -264,21 +272,42 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 
 	if digestGenFlagProgressJSON {
 		type pj struct {
-			Pipeline     string  `json:"pipeline"`
-			Done         int     `json:"done"`
-			Total        int     `json:"total"`
-			Status       string  `json:"status,omitempty"`
-			InputTokens  int     `json:"input_tokens"`
-			OutputTokens int     `json:"output_tokens"`
-			CostUSD      float64 `json:"cost_usd"`
-			Error        string  `json:"error,omitempty"`
-			Finished     bool    `json:"finished"`
-			ItemsFound   int     `json:"items_found"`
+			Pipeline         string  `json:"pipeline"`
+			Done             int     `json:"done"`
+			Total            int     `json:"total"`
+			Status           string  `json:"status,omitempty"`
+			InputTokens      int     `json:"input_tokens"`
+			OutputTokens     int     `json:"output_tokens"`
+			CostUSD          float64 `json:"cost_usd"`
+			Error            string  `json:"error,omitempty"`
+			Finished         bool    `json:"finished"`
+			ItemsFound       int     `json:"items_found"`
+			MessageCount     int     `json:"message_count,omitempty"`
+			PeriodFrom       string  `json:"period_from,omitempty"`
+			PeriodTo         string  `json:"period_to,omitempty"`
+			StepDurationSec  float64 `json:"step_duration_seconds,omitempty"`
+			StepInputTokens  int     `json:"step_input_tokens,omitempty"`
+			StepOutputTokens int     `json:"step_output_tokens,omitempty"`
+			StepCostUSD      float64 `json:"step_cost_usd,omitempty"`
+			TotalAPITokens   int     `json:"total_api_tokens,omitempty"`
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
 		pipe.OnProgress = func(done, total int, status string) {
-			emit(pj{Pipeline: "digest", Done: done, Total: total, Status: status})
+			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+			p := pj{Pipeline: "digest", Done: done, Total: total, Status: status, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost, TotalAPITokens: totalAPI}
+			if pipe.LastStepMessageCount > 0 {
+				p.MessageCount = pipe.LastStepMessageCount
+				p.PeriodFrom = pipe.LastStepPeriodFrom.Format(time.RFC3339)
+				p.PeriodTo = pipe.LastStepPeriodTo.Format(time.RFC3339)
+			}
+			if pipe.LastStepDurationSeconds > 0 {
+				p.StepDurationSec = pipe.LastStepDurationSeconds
+			}
+			p.StepInputTokens = pipe.LastStepInputTokens
+			p.StepOutputTokens = pipe.LastStepOutputTokens
+			p.StepCostUSD = pipe.LastStepCostUSD
+			emit(p)
 		}
 		n, usage, err := pipe.Run(cmd.Context())
 
@@ -291,6 +320,11 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		}
 
 		final := pj{Pipeline: "digest", Finished: true, ItemsFound: n}
+		if pipe.LastStepMessageCount > 0 {
+			final.MessageCount = pipe.LastStepMessageCount
+			final.PeriodFrom = pipe.LastStepPeriodFrom.Format(time.RFC3339)
+			final.PeriodTo = pipe.LastStepPeriodTo.Format(time.RFC3339)
+		}
 		if usage != nil {
 			final.InputTokens = usage.InputTokens
 			final.OutputTokens = usage.OutputTokens
@@ -532,4 +566,48 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 
 func joinTopics(topics []string) string {
 	return strings.Join(topics, ", ")
+}
+
+func runDigestResetContext(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	out := cmd.OutOrStdout()
+
+	var channelID string
+	if len(args) > 0 {
+		channelName := strings.TrimPrefix(args[0], "#")
+		ch, err := database.GetChannelByName(channelName)
+		if err != nil {
+			return fmt.Errorf("channel %q not found: %w", channelName, err)
+		}
+		channelID = ch.ID
+	}
+
+	affected, err := database.ResetRunningSummary(channelID, "")
+	if err != nil {
+		return fmt.Errorf("resetting running context: %w", err)
+	}
+
+	if channelID != "" {
+		fmt.Fprintf(out, "Reset running context for channel %s (%d digests updated).\n", args[0], affected)
+	} else {
+		fmt.Fprintf(out, "Reset running context for all channels (%d digests updated).\n", affected)
+	}
+
+	return nil
 }

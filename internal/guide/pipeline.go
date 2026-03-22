@@ -54,7 +54,6 @@ type TeamNorms struct {
 	TotalUsers      int
 }
 
-
 // ProgressFunc is called during generation to report progress.
 type ProgressFunc func(completed, totalUsers int, status string)
 
@@ -70,9 +69,17 @@ type Pipeline struct {
 	ForceRegenerate bool
 	Workers         int
 
-	totalInputTokens  atomic.Int64
-	totalOutputTokens atomic.Int64
-	totalCostMicro    atomic.Int64
+	// LastStep* fields are set before each OnProgress callback with the
+	// current step's message count and time window. Read them in OnProgress.
+	LastStepMessageCount    int
+	LastStepPeriodFrom     time.Time
+	LastStepPeriodTo       time.Time
+	LastStepDurationSeconds float64
+
+	totalInputTokens    atomic.Int64
+	totalOutputTokens   atomic.Int64
+	totalCostMicro      atomic.Int64
+	totalAPITokens atomic.Int64
 
 	channelNames map[string]string
 	userNames    map[string]string
@@ -95,8 +102,8 @@ func (p *Pipeline) SetPromptStore(store *prompts.Store) {
 }
 
 // AccumulatedUsage returns the total token usage accumulated across all Generate calls.
-func (p *Pipeline) AccumulatedUsage() (int, int, float64) {
-	return int(p.totalInputTokens.Load()), int(p.totalOutputTokens.Load()), float64(p.totalCostMicro.Load()) / 1e6
+func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
+	return int(p.totalInputTokens.Load()), int(p.totalOutputTokens.Load()), float64(p.totalCostMicro.Load()) / 1e6, int(p.totalAPITokens.Load())
 }
 
 // Run executes the people card pipeline for the current 7-day window.
@@ -183,12 +190,18 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				}
 				userName := p.userName(stats.UserID)
 				c := int(completed.Load())
+				p.LastStepMessageCount = stats.MessageCount
+				p.LastStepPeriodFrom = time.Unix(int64(from), 0)
+				p.LastStepPeriodTo = time.Unix(int64(to), 0)
+				p.LastStepDurationSeconds = 0
 				p.progress(c, totalUsers, fmt.Sprintf("@%s (%d msgs)...", userName, stats.MessageCount))
 
+				stepStart := time.Now()
 				userSituations := allSituations[stats.UserID]
 				if err := p.processUser(ctx, stats, from, to, userSituations, teamNorms); err != nil {
 					p.logger.Printf("people: error for @%s: %v", userName, err)
 				}
+				p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 				newVal := int(completed.Add(1))
 				p.progress(newVal, totalUsers, fmt.Sprintf("@%s done", userName))
 			}
@@ -222,7 +235,6 @@ const MinSituationMessages = 10
 func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to float64,
 	userSituations []db.ChannelSituations,
 	teamNorms *TeamNorms) error {
-
 	// Count total situations for this user
 	totalSituations := 0
 	for _, cs := range userSituations {
@@ -280,7 +292,8 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		rawMsgsBlock,
 	)
 
-	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "people.reduce"), "", prompt, "")
+	peopleSys, peopleUser := digest.SplitPromptAtData(prompt)
+	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "people.reduce"), peopleSys, peopleUser, "")
 	if err != nil {
 		return fmt.Errorf("AI generation failed: %w", err)
 	}
@@ -289,6 +302,7 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		p.totalInputTokens.Add(int64(usage.InputTokens))
 		p.totalOutputTokens.Add(int64(usage.OutputTokens))
 		p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
 	}
 
 	result, err := parsePeopleCardResult(raw)
@@ -367,7 +381,8 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 	tmpl, pv := p.getPrompt(prompts.PeopleTeam, defaultPeopleTeamPrompt)
 	prompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), sb.String())
 
-	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "people.team"), "", prompt, "")
+	teamSys, teamUser := digest.SplitPromptAtData(prompt)
+	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "people.team"), teamSys, teamUser, "")
 	if err != nil {
 		return fmt.Errorf("AI generation failed: %w", err)
 	}
@@ -376,6 +391,7 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 		p.totalInputTokens.Add(int64(usage.InputTokens))
 		p.totalOutputTokens.Add(int64(usage.OutputTokens))
 		p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
 	}
 
 	result, err := parseTeamSummaryResult(raw)
@@ -402,7 +418,6 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 
 	return p.db.UpsertPeopleCardSummary(s)
 }
-
 
 func (p *Pipeline) formatSituations(channelSituations []db.ChannelSituations) string {
 	if len(channelSituations) == 0 {
@@ -519,7 +534,6 @@ func computeTeamNorms(allStats []db.UserStats) *TeamNorms {
 	tn.AvgThreadsStart /= n
 	return tn
 }
-
 
 // relationshipContext determines the relationship between the current user and
 // the analyzed user based on the user profile (reports, peers, manager).

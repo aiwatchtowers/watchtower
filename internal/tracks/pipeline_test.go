@@ -903,9 +903,9 @@ type capturingGenerator struct {
 	capturedPrompt string
 }
 
-func (m *capturingGenerator) Generate(_ context.Context, _, prompt, _ string) (string, *digest.Usage, string, error) {
+func (m *capturingGenerator) Generate(_ context.Context, systemPrompt, prompt, _ string) (string, *digest.Usage, string, error) {
 	m.mu.Lock()
-	m.capturedPrompt = prompt
+	m.capturedPrompt = systemPrompt + "\n" + prompt
 	m.mu.Unlock()
 	return m.response, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.01}, "mock-session", nil
 }
@@ -1191,18 +1191,21 @@ func TestParseBatchUpdateResultInvalid(t *testing.T) {
 
 func TestAccumulatedUsage(t *testing.T) {
 	pipe := &Pipeline{}
-	in, out, cost := pipe.AccumulatedUsage()
+	in, out, cost, overhead := pipe.AccumulatedUsage()
 	assert.Equal(t, 0, in)
 	assert.Equal(t, 0, out)
 	assert.Equal(t, 0.0, cost)
+	assert.Equal(t, 0, overhead)
 
 	pipe.totalInputTokens.Add(1000)
 	pipe.totalOutputTokens.Add(500)
 	pipe.totalCostMicro.Add(10000) // 0.01 USD
-	in, out, cost = pipe.AccumulatedUsage()
+	pipe.totalAPITokens.Add(8000)
+	in, out, cost, overhead = pipe.AccumulatedUsage()
 	assert.Equal(t, 1000, in)
 	assert.Equal(t, 500, out)
 	assert.InDelta(t, 0.01, cost, 0.0001)
+	assert.Equal(t, 8000, overhead)
 }
 
 func TestReactivateSnoozed(t *testing.T) {
@@ -1307,7 +1310,7 @@ func TestFormatMessages(t *testing.T) {
 	msgs := []db.Message{
 		{TS: "1000000001.000000", TSUnix: 1000000001, UserID: "U1", Text: "hello world"},
 		{TS: "1000000002.000000", TSUnix: 1000000002, UserID: "U2", Text: "reply here", ThreadTS: nullString("1000000001.000000")},
-		{TS: "1000000003.000000", TSUnix: 1000000003, UserID: "U1", Text: "", IsDeleted: false}, // empty text, skipped
+		{TS: "1000000003.000000", TSUnix: 1000000003, UserID: "U1", Text: "", IsDeleted: false},       // empty text, skipped
 		{TS: "1000000004.000000", TSUnix: 1000000004, UserID: "U1", Text: "deleted", IsDeleted: true}, // deleted, skipped
 	}
 
@@ -1573,16 +1576,16 @@ func TestFormatExistingItems(t *testing.T) {
 
 	// Add tracks with various fields
 	_, err := database.UpsertTrack(db.Track{
-		ChannelID:       "C1",
-		AssigneeUserID:  "U001",
-		Text:            "track with fields",
-		Context:         "some context here",
-		Status:          "inbox",
-		Priority:        "medium",
-		PeriodFrom:      1000,
-		PeriodTo:        2000,
-		DecisionSummary: "decision made",
-		Tags:            `["backend"]`,
+		ChannelID:        "C1",
+		AssigneeUserID:   "U001",
+		Text:             "track with fields",
+		Context:          "some context here",
+		Status:           "inbox",
+		Priority:         "medium",
+		PeriodFrom:       1000,
+		PeriodTo:         2000,
+		DecisionSummary:  "decision made",
+		Tags:             `["backend"]`,
 		RelatedDigestIDs: "[1,2]",
 	})
 	require.NoError(t, err)
@@ -1644,12 +1647,12 @@ func TestProfileContextWithPeersAndManager(t *testing.T) {
 	p := &Pipeline{}
 	p.profile = &db.UserProfile{
 		CustomPromptContext: "Test context",
-		Reports:            `["U002","U003"]`,
-		Peers:              `["U010","U011"]`,
-		Manager:            "U020",
-		StarredChannels:    `["C1"]`,
-		StarredPeople:      `["U030"]`,
-		Role:               "Engineering Manager",
+		Reports:             `["U002","U003"]`,
+		Peers:               `["U010","U011"]`,
+		Manager:             "U020",
+		StarredChannels:     `["C1"]`,
+		StarredPeople:       `["U030"]`,
+		Role:                "Engineering Manager",
 	}
 
 	ctx := p.formatProfileContext()
@@ -1669,11 +1672,11 @@ func TestProfileContextEmptyReportsAndPeers(t *testing.T) {
 	p := &Pipeline{}
 	p.profile = &db.UserProfile{
 		CustomPromptContext: "Test context",
-		Reports:            "[]",
-		Peers:              "[]",
-		StarredChannels:    "[]",
-		StarredPeople:      "[]",
-		Role:               "Software Engineer",
+		Reports:             "[]",
+		Peers:               "[]",
+		StarredChannels:     "[]",
+		StarredPeople:       "[]",
+		Role:                "Software Engineer",
 	}
 
 	ctx := p.formatProfileContext()

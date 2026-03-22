@@ -19,9 +19,10 @@ import (
 
 // Usage holds token and cost metrics from an AI generation call.
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	CostUSD      float64
+	InputTokens    int     // Our prompt tokens (estimated from prompt size)
+	OutputTokens   int     // AI response tokens
+	CostUSD        float64 // Actual cost from CLI (includes all caching)
+	TotalAPITokens int     // Total tokens API processed (input + cache_read + cache_creation)
 }
 
 // Generator generates text responses from a system prompt and user message.
@@ -34,12 +35,13 @@ type Generator interface {
 
 // DigestResult is the structured output from Claude for a digest.
 type DigestResult struct {
-	Summary     string         `json:"summary"`
-	Topics      []string       `json:"topics"`
-	Decisions   []Decision     `json:"decisions"`
-	ActionItems []ActionItem   `json:"action_items"`
-	KeyMessages []string       `json:"key_messages"`
-	Situations  []db.Situation `json:"situations"`
+	Summary        string          `json:"summary"`
+	Topics         []string        `json:"topics"`
+	Decisions      []Decision      `json:"decisions"`
+	ActionItems    []ActionItem    `json:"action_items"`
+	KeyMessages    []string        `json:"key_messages"`
+	Situations     []db.Situation  `json:"situations"`
+	RunningSummary json.RawMessage `json:"running_summary,omitempty"`
 }
 
 // DigestSituationParticipant mirrors db.SituationParticipant for JSON parsing.
@@ -79,6 +81,7 @@ type ActionItem struct {
 type ChainLinker interface {
 	Run(ctx context.Context) (int, error)
 	FormatActiveChainsForPrompt(ctx context.Context) (string, error)
+	SetOnProgress(fn ProgressFunc)
 }
 
 // ProgressFunc is called during digest generation to report progress.
@@ -108,10 +111,53 @@ type Pipeline struct {
 	// Used by `digest generate` to replicate the daemon's phased pipeline.
 	ChainLinker ChainLinker
 
+	// accumulated usage across all Generate calls (atomic for concurrent workers)
+	totalInputTokens    atomic.Int64
+	totalOutputTokens   atomic.Int64
+	totalCostMicro      atomic.Int64 // cost * 1e6 for atomic ops
+	totalAPITokens atomic.Int64 // total API tokens (our content + CLI overhead)
+
+	// accumulated stats across all channel digests (atomic for concurrent workers)
+	totalMessageCount  atomic.Int64
+	earliestPeriodFrom atomic.Int64 // unix timestamp
+	latestPeriodTo     atomic.Int64 // unix timestamp
+
+	// LastStep* fields are set before each OnProgress callback with the
+	// current step's message count and time window. Read them in OnProgress.
+	LastStepMessageCount    int
+	LastStepPeriodFrom     time.Time
+	LastStepPeriodTo       time.Time
+	LastStepDurationSeconds float64
+	LastStepInputTokens    int
+	LastStepOutputTokens   int
+	LastStepCostUSD        float64
+
 	// caches populated during a run
 	channelNames map[string]string
 	userNames    map[string]string
 	profile      *db.UserProfile // loaded once per Run, nil if not available
+}
+
+// AccumulatedUsage returns the total token usage accumulated across all Generate calls.
+// Returns (inputTokens, outputTokens, costUSD, overheadTokens).
+func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
+	return int(p.totalInputTokens.Load()), int(p.totalOutputTokens.Load()), float64(p.totalCostMicro.Load()) / 1e6, int(p.totalAPITokens.Load())
+}
+
+// AccumulatedStats returns (totalMessageCount, earliestPeriodFrom, latestPeriodTo)
+// accumulated across all channel digest runs.
+func (p *Pipeline) AccumulatedStats() (int, float64, float64) {
+	return int(p.totalMessageCount.Load()), float64(p.earliestPeriodFrom.Load()), float64(p.latestPeriodTo.Load())
+}
+
+func (p *Pipeline) accumulateUsage(usage *Usage) {
+	if usage == nil {
+		return
+	}
+	p.totalInputTokens.Add(int64(usage.InputTokens))
+	p.totalOutputTokens.Add(int64(usage.OutputTokens))
+	p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
+	p.totalAPITokens.Add(int64(usage.TotalAPITokens))
 }
 
 // New creates a new digest pipeline.
@@ -176,12 +222,6 @@ func (p *Pipeline) Run(ctx context.Context) (int, *Usage, error) {
 
 	p.loadCaches()
 
-	// On first run, process day-by-day for better quality.
-	// Skip if SinceOverride is set (manual run with custom window).
-	if p.SinceOverride == 0 && p.isFirstRun() {
-		return p.runInitialDayByDay(ctx)
-	}
-
 	n, totalUsage, err := p.RunChannelDigests(ctx)
 	if err != nil {
 		return n, totalUsage, err
@@ -191,8 +231,14 @@ func (p *Pipeline) Run(ctx context.Context) (int, *Usage, error) {
 		return n, totalUsage, ctx.Err()
 	}
 
+	if p.OnProgress != nil {
+		p.OnProgress(0, 0, "Linking decision chains...")
+	}
 	p.runChainLinker(ctx)
 
+	if p.OnProgress != nil {
+		p.OnProgress(0, 0, "Generating daily rollup...")
+	}
 	if err := p.RunDailyRollup(ctx); err != nil {
 		p.logger.Printf("digest: daily rollup error: %v", err)
 	}
@@ -215,10 +261,6 @@ func (p *Pipeline) RunChannelDigestsOnly(ctx context.Context) (int, *Usage, erro
 
 	p.loadCaches()
 
-	if p.SinceOverride == 0 && p.isFirstRun() {
-		return p.runInitialDayByDay(ctx)
-	}
-
 	return p.RunChannelDigests(ctx)
 }
 
@@ -227,6 +269,15 @@ func (p *Pipeline) RunChannelDigestsOnly(ctx context.Context) (int, *Usage, erro
 func (p *Pipeline) runChainLinker(ctx context.Context) {
 	if p.ChainLinker == nil || ctx.Err() != nil {
 		return
+	}
+	// Reset LastStep* so chains progress doesn't show stale digest metrics.
+	p.LastStepMessageCount = 0
+	p.LastStepInputTokens = 0
+	p.LastStepOutputTokens = 0
+	p.LastStepCostUSD = 0
+	p.LastStepDurationSeconds = 0
+	if p.OnProgress != nil {
+		p.ChainLinker.SetOnProgress(p.OnProgress)
 	}
 	n, err := p.ChainLinker.Run(ctx)
 	if err != nil {
@@ -254,101 +305,9 @@ func (p *Pipeline) RunRollups(ctx context.Context) error {
 	return nil
 }
 
-// isFirstRun returns true if no channel digests exist yet.
-func (p *Pipeline) isFirstRun() bool {
-	digests, err := p.db.GetDigests(db.DigestFilter{Type: "channel", Limit: 1})
-	return err != nil || len(digests) == 0
-}
-
-// runInitialDayByDay processes the initial history window day-by-day,
-// generating channel digests + daily rollup for each day, then weekly trends.
-// This produces much better quality than one giant digest per channel.
-func (p *Pipeline) runInitialDayByDay(ctx context.Context) (int, *Usage, error) {
-	days := p.cfg.Sync.InitialHistoryDays
-	if days <= 0 {
-		days = config.DefaultInitialHistDays
-	}
-
-	now := time.Now()
-	totalGenerated := 0
-	totalUsage := &Usage{}
-
-	p.logger.Printf("digest: first run — processing %d days individually", days)
-
-	for d := days; d >= 1; d-- {
-		if ctx.Err() != nil {
-			return totalGenerated, totalUsage, ctx.Err()
-		}
-
-		dayDate := now.AddDate(0, 0, -d)
-		dayStart := time.Date(dayDate.Year(), dayDate.Month(), dayDate.Day(), 0, 0, 0, 0, time.UTC)
-		dayEnd := time.Date(dayDate.Year(), dayDate.Month(), dayDate.Day()+1, 0, 0, 0, 0, time.UTC)
-
-		fromUnix := float64(dayStart.Unix())
-		toUnix := float64(dayEnd.Unix())
-
-		if p.OnProgress != nil {
-			p.OnProgress(days-d, days, fmt.Sprintf("Day %d/%d (%s)...", days-d+1, days, dayStart.Format("2006-01-02")))
-		}
-
-		n, usage, err := p.runChannelDigestsForWindow(ctx, fromUnix, toUnix)
-		if err != nil {
-			p.logger.Printf("digest: day %s error: %v", dayStart.Format("2006-01-02"), err)
-			continue
-		}
-
-		totalGenerated += n
-		if usage != nil {
-			totalUsage.InputTokens += usage.InputTokens
-			totalUsage.OutputTokens += usage.OutputTokens
-			totalUsage.CostUSD += usage.CostUSD
-		}
-
-		if n > 0 {
-			if err := p.runDailyRollupForDate(ctx, dayStart); err != nil {
-				p.logger.Printf("digest: daily rollup for %s error: %v", dayStart.Format("2006-01-02"), err)
-			}
-		}
-	}
-
-	// Also process today (partial day).
-	if ctx.Err() == nil {
-		todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-		n, usage, err := p.runChannelDigestsForWindow(ctx, float64(todayStart.Unix()), float64(now.Unix()))
-		if err != nil {
-			p.logger.Printf("digest: today error: %v", err)
-		} else {
-			totalGenerated += n
-			if usage != nil {
-				totalUsage.InputTokens += usage.InputTokens
-				totalUsage.OutputTokens += usage.OutputTokens
-				totalUsage.CostUSD += usage.CostUSD
-			}
-			if n > 0 {
-				if err := p.RunDailyRollup(ctx); err != nil {
-					p.logger.Printf("digest: daily rollup error: %v", err)
-				}
-			}
-		}
-	}
-
-	// Link decisions to chains (once, across all days).
-	p.runChainLinker(ctx)
-
-	// Generate weekly trends from all daily rollups.
-	if ctx.Err() == nil {
-		if err := p.RunWeeklyTrends(ctx); err != nil {
-			p.logger.Printf("digest: weekly trends error: %v", err)
-		}
-	}
-
-	p.logger.Printf("digest: initial day-by-day complete: %d digests across %d days", totalGenerated, days)
-	return totalGenerated, totalUsage, nil
-}
-
 // RunChannelDigests generates digests for all channels with new messages
 // since the last digest run. Returns the count and accumulated token usage.
-// Channels are processed in parallel using digest.workers (default 5).
+// Channels are processed in parallel using digest.workers (default: config.DefaultDigestWorkers).
 func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 	sinceUnix := p.SinceOverride
 	if sinceUnix == 0 {
@@ -472,11 +431,19 @@ func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, no
 				}
 
 				c := int(completed.Load())
+				p.LastStepMessageCount = len(t.msgs)
+				p.LastStepPeriodFrom = time.Unix(int64(sinceUnix), 0)
+				p.LastStepPeriodTo = time.Unix(int64(nowUnix), 0)
+				p.LastStepDurationSeconds = 0
+				p.LastStepInputTokens = 0
+				p.LastStepOutputTokens = 0
+				p.LastStepCostUSD = 0
 				if p.OnProgress != nil {
 					p.OnProgress(c, total, fmt.Sprintf("#%s (%d msgs)", t.channelName, len(t.msgs)))
 				}
 
-				result, usage, pv, err := p.generateChannelDigest(ctx, t.channelName, t.msgs, sinceUnix, nowUnix)
+				stepStart := time.Now()
+				result, usage, pv, err := p.generateChannelDigest(ctx, t.channelID, t.channelName, t.msgs, sinceUnix, nowUnix)
 				if err != nil {
 					p.logger.Printf("digest: error generating digest for #%s: %v", t.channelName, err)
 					errCount.Add(1)
@@ -508,14 +475,51 @@ func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, no
 				}
 
 				generated.Add(1)
+				p.totalMessageCount.Add(int64(len(t.msgs)))
+				// Update earliest period_from (use CompareAndSwap for atomicity)
+				sinceTS := int64(sinceUnix)
+				for {
+					old := p.earliestPeriodFrom.Load()
+					if old != 0 && old <= sinceTS {
+						break
+					}
+					if p.earliestPeriodFrom.CompareAndSwap(old, sinceTS) {
+						break
+					}
+				}
+				// Update latest period_to
+				lastTS := int64(lastMsgTS)
+				for {
+					old := p.latestPeriodTo.Load()
+					if old >= lastTS {
+						break
+					}
+					if p.latestPeriodTo.CompareAndSwap(old, lastTS) {
+						break
+					}
+				}
+				p.LastStepMessageCount = len(t.msgs)
+				p.LastStepPeriodFrom = time.Unix(int64(sinceUnix), 0)
+				p.LastStepPeriodTo = time.Unix(int64(lastMsgTS), 0)
+				p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
+				if usage != nil {
+					p.LastStepInputTokens = usage.InputTokens
+					p.LastStepOutputTokens = usage.OutputTokens
+					p.LastStepCostUSD = usage.CostUSD
+					totalInput.Add(int64(usage.InputTokens))
+					totalOutput.Add(int64(usage.OutputTokens))
+					totalCostU.Add(int64(usage.CostUSD * 1e6))
+					p.accumulateUsage(usage)
+				} else {
+					p.LastStepInputTokens = 0
+					p.LastStepOutputTokens = 0
+					p.LastStepCostUSD = 0
+				}
 				done := int(completed.Add(1))
 				if p.OnProgress != nil {
 					p.OnProgress(done, total, fmt.Sprintf("#%s done", t.channelName))
 				}
 				if usage != nil {
-					totalInput.Add(int64(usage.InputTokens))
-					totalOutput.Add(int64(usage.OutputTokens))
-					totalCostU.Add(int64(usage.CostUSD * 1e6))
 					p.logger.Printf("digest: generated for #%s (%d messages, %d+%d tokens, $%.4f)",
 						t.channelName, len(t.msgs), usage.InputTokens, usage.OutputTokens, usage.CostUSD)
 				} else {
@@ -592,14 +596,18 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		channelInput = p.ChainContext + "\n" + channelInput
 	}
 
+	previousContext := p.loadPreviousContext("", "daily")
+
 	dateStr := dayStart.Format("2006-01-02")
 	tmpl, pv := p.getPrompt(prompts.DigestDaily, dailyRollupPrompt)
-	prompt := fmt.Sprintf(tmpl, dateStr, p.formatProfileContext(), p.languageInstruction(), channelInput)
+	fullPrompt := fmt.Sprintf(tmpl, dateStr, p.formatProfileContext(), p.languageInstruction(), previousContext, channelInput)
+	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
-	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.daily"), "", prompt, "")
+	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.daily"), systemPrompt, userMessage, "")
 	if err != nil {
 		return fmt.Errorf("generating daily rollup: %w", err)
 	}
+	p.accumulateUsage(usage)
 
 	result, err := parseDigestResult(raw)
 	if err != nil {
@@ -642,15 +650,19 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 		sb.WriteString("\n")
 	}
 
+	previousContext := p.loadPreviousContext("", "weekly")
+
 	fromStr := weekStart.Format("2006-01-02")
 	toStr := now.Format("2006-01-02")
 	tmpl, pv := p.getPrompt(prompts.DigestWeekly, weeklyTrendsPrompt)
-	prompt := fmt.Sprintf(tmpl, now.Format("2006-01-02"), fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), sb.String())
+	fullPrompt := fmt.Sprintf(tmpl, now.Format("2006-01-02"), fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), previousContext, sb.String())
+	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
-	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.weekly"), "", prompt, "")
+	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.weekly"), systemPrompt, userMessage, "")
 	if err != nil {
 		return fmt.Errorf("generating weekly trends: %w", err)
 	}
+	p.accumulateUsage(usage)
 
 	result, err := parseDigestResult(raw)
 	if err != nil {
@@ -709,9 +721,10 @@ func (p *Pipeline) RunPeriodSummary(ctx context.Context, from, to time.Time) (*D
 	fromStr := from.Format("2006-01-02")
 	toStr := to.Format("2006-01-02")
 	tmpl, _ := p.getPrompt(prompts.DigestPeriod, periodSummaryPrompt)
-	prompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), sb.String())
+	fullPrompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), sb.String())
+	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
-	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.period"), "", prompt, "")
+	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.period"), systemPrompt, userMessage, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating period summary: %w", err)
 	}
@@ -724,8 +737,45 @@ func (p *Pipeline) RunPeriodSummary(ctx context.Context, from, to time.Time) (*D
 	return result, usage, nil
 }
 
+// loadPreviousContext loads the running summary from the latest digest for the
+// given channel/type and formats it as a prompt section. Returns empty string
+// if no previous context exists, if the context is too old (>30 days), or on error.
+// Context older than 7 days is included with an "(outdated)" warning.
+func (p *Pipeline) loadPreviousContext(channelID, digestType string) string {
+	result, err := p.db.GetLatestRunningSummaryWithAge(channelID, digestType)
+	if err != nil {
+		p.logger.Printf("digest: warning: failed to load running summary for %s/%s: %v", channelID, digestType, err)
+		return ""
+	}
+	if result == nil || result.Summary == "" {
+		return ""
+	}
+
+	// TTL: >30 days — don't use at all
+	if result.AgeDays > 30 {
+		return ""
+	}
+
+	var section strings.Builder
+	section.WriteString("\n=== PREVIOUS CONTEXT ===\n")
+
+	// TTL: >7 days — mark as outdated
+	if result.AgeDays > 7 {
+		fmt.Fprintf(&section, "(outdated, from %.0f days ago)\n", result.AgeDays)
+	}
+
+	section.WriteString(result.Summary)
+	section.WriteString("\n\nRules for PREVIOUS CONTEXT:\n")
+	section.WriteString("- Use PREVIOUS CONTEXT to detect continuity: evolving topics, resolved questions, changed decisions.\n")
+	section.WriteString("- Say \"continues from [date]\" for ongoing topics, \"resolved since [date]\" for closed ones.\n")
+	section.WriteString("- Do NOT repeat decisions/topics from PREVIOUS CONTEXT unless their status changed.\n")
+	section.WriteString("- Generate an updated running_summary reflecting the current state after this analysis.\n")
+
+	return section.String()
+}
+
 // generateChannelDigest returns the parsed result, usage, prompt version, and error.
-func (p *Pipeline) generateChannelDigest(ctx context.Context, channelName string, msgs []db.Message, from, to float64) (*DigestResult, *Usage, int, error) {
+func (p *Pipeline) generateChannelDigest(ctx context.Context, channelID, channelName string, msgs []db.Message, from, to float64) (*DigestResult, *Usage, int, error) {
 	// Sort messages chronologically (oldest first) for natural reading
 	sort.Slice(msgs, func(i, j int) bool { return msgs[i].TSUnix < msgs[j].TSUnix })
 
@@ -737,10 +787,16 @@ func (p *Pipeline) generateChannelDigest(ctx context.Context, channelName string
 	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02 15:04")
 	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02 15:04")
 
-	tmpl, pv := p.getPrompt(prompts.DigestChannel, channelDigestPrompt)
-	prompt := fmt.Sprintf(tmpl, channelName, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), formatted)
+	previousContext := p.loadPreviousContext(channelID, "channel")
 
-	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.channel"), "", prompt, "")
+	tmpl, pv := p.getPrompt(prompts.DigestChannel, channelDigestPrompt)
+	fullPrompt := fmt.Sprintf(tmpl, channelName, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), previousContext, formatted)
+
+	// Split into system prompt (instructions) and user message (data).
+	// This enables Claude API prompt caching for the instruction part.
+	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
+
+	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.channel"), systemPrompt, userMessage, "")
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("claude call failed: %w", err)
 	}
@@ -755,20 +811,27 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	actionItems, _ := json.Marshal(result.ActionItems)
 	situations, _ := json.Marshal(result.Situations)
 
+	// Store running_summary as-is (json.RawMessage → string)
+	runningSummary := ""
+	if len(result.RunningSummary) > 0 {
+		runningSummary = string(result.RunningSummary)
+	}
+
 	d := db.Digest{
-		ChannelID:     channelID,
-		Type:          digestType,
-		PeriodFrom:    from,
-		PeriodTo:      to,
-		Summary:       result.Summary,
-		Topics:        string(topics),
-		Decisions:     string(decisions),
-		ActionItems:   string(actionItems),
-		PeopleSignals: "[]",
-		Situations:    string(situations),
-		MessageCount:  msgCount,
-		Model:         p.cfg.Digest.Model,
-		PromptVersion: promptVersion,
+		ChannelID:      channelID,
+		Type:           digestType,
+		PeriodFrom:     from,
+		PeriodTo:       to,
+		Summary:        result.Summary,
+		Topics:         string(topics),
+		Decisions:      string(decisions),
+		ActionItems:    string(actionItems),
+		PeopleSignals:  "[]",
+		Situations:     string(situations),
+		RunningSummary: runningSummary,
+		MessageCount:   msgCount,
+		Model:          p.cfg.Digest.Model,
+		PromptVersion:  promptVersion,
 	}
 	if usage != nil {
 		d.InputTokens = usage.InputTokens
@@ -815,6 +878,21 @@ func (p *Pipeline) formatMessages(msgs []db.Message) string {
 		fmt.Fprintf(&sb, "[%s @%s (%s)] %s\n", ts, userName, m.UserID, text)
 	}
 	return sb.String()
+}
+
+// SplitPromptAtData splits a formatted prompt into system prompt (instructions)
+// and user message (data) at the "=== " delimiter. This enables API-level prompt
+// caching for the instruction part. If no delimiter is found, everything goes as
+// user message with an empty system prompt.
+func SplitPromptAtData(prompt string) (systemPrompt, userMessage string) {
+	// Look for the data section delimiter (=== MESSAGES ===, === CHANNEL DIGESTS ===, etc.)
+	markers := []string{"=== MESSAGES ===", "=== CHANNEL DIGESTS ===", "=== DAILY DIGESTS ===", "=== DIGESTS ==="}
+	for _, marker := range markers {
+		if idx := strings.LastIndex(prompt, marker); idx > 0 {
+			return strings.TrimSpace(prompt[:idx]), prompt[idx:]
+		}
+	}
+	return "", prompt
 }
 
 func (p *Pipeline) loadCaches() {

@@ -84,10 +84,18 @@ type Pipeline struct {
 	// If non-empty, it's appended to the extraction prompt so AI can link tracks to chains.
 	ChainContext string
 
+	// LastStep* fields are set before each OnProgress callback with the
+	// current step's message count and time window. Read them in OnProgress.
+	LastStepMessageCount    int
+	LastStepPeriodFrom     time.Time
+	LastStepPeriodTo       time.Time
+	LastStepDurationSeconds float64
+
 	// Accumulated token usage across all Generate calls (thread-safe).
-	totalInputTokens  atomic.Int64
-	totalOutputTokens atomic.Int64
-	totalCostMicro    atomic.Int64 // cost * 1e6 for atomic ops
+	totalInputTokens    atomic.Int64
+	totalOutputTokens   atomic.Int64
+	totalCostMicro      atomic.Int64 // cost * 1e6 for atomic ops
+	totalAPITokens atomic.Int64
 
 	// caches (populated once per Run/CheckForUpdates, read by workers)
 	cacheMu      sync.RWMutex
@@ -139,8 +147,9 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 }
 
 // AccumulatedUsage returns the total token usage accumulated across all Generate calls.
-func (p *Pipeline) AccumulatedUsage() (int, int, float64) {
-	return int(p.totalInputTokens.Load()), int(p.totalOutputTokens.Load()), float64(p.totalCostMicro.Load()) / 1e6
+// Returns (inputTokens, outputTokens, costUSD, overheadTokens).
+func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
+	return int(p.totalInputTokens.Load()), int(p.totalOutputTokens.Load()), float64(p.totalCostMicro.Load()) / 1e6, int(p.totalAPITokens.Load())
 }
 
 // ReactivateSnoozed checks and reactivates snoozed tracks whose snooze_until has passed.
@@ -176,15 +185,23 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	}
 
 	now := time.Now()
-	from, to := DayWindow(now)
 
-	// On first run (no tracks exist for this user), process day-by-day
-	// for better quality instead of one giant window.
+	// Use full initial history window on first run, otherwise just today.
+	var from, to float64
 	switch hasTracks, err := p.db.HasTracksForUser(currentUserID); {
 	case err != nil:
 		p.logger.Printf("tracks: warning: could not check existing tracks: %v", err)
+		from, to = DayWindow(now)
 	case !hasTracks:
-		return p.runInitialDayByDay(ctx, currentUserID)
+		days := p.cfg.Sync.InitialHistoryDays
+		if days <= 0 {
+			days = config.DefaultInitialHistDays
+		}
+		from = float64(now.AddDate(0, 0, -days).Unix())
+		to = float64(now.Unix())
+		p.logger.Printf("tracks: first run — single window of %d days", days)
+	default:
+		from, to = DayWindow(now)
 	}
 
 	p.logger.Printf("tracks: window: from=%s to=%s, user=%s",
@@ -193,57 +210,6 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 		currentUserID)
 
 	return p.RunForWindow(ctx, currentUserID, from, to)
-}
-
-// runInitialDayByDay processes the initial history window day-by-day,
-// calling RunForWindow for each day separately. This produces more tracks
-// than processing the entire window at once.
-func (p *Pipeline) runInitialDayByDay(ctx context.Context, userID string) (int, error) {
-	days := p.cfg.Sync.InitialHistoryDays
-	if days <= 0 {
-		days = config.DefaultInitialHistDays
-	}
-
-	now := time.Now()
-	totalStored := 0
-
-	p.logger.Printf("tracks: first run — processing %d days individually", days)
-
-	for d := days; d >= 1; d-- {
-		if ctx.Err() != nil {
-			return totalStored, ctx.Err()
-		}
-
-		dayDate := now.AddDate(0, 0, -d)
-		dayStart := time.Date(dayDate.Year(), dayDate.Month(), dayDate.Day(), 0, 0, 0, 0, time.UTC)
-		dayEnd := time.Date(dayDate.Year(), dayDate.Month(), dayDate.Day()+1, 0, 0, 0, 0, time.UTC)
-
-		from := float64(dayStart.Unix())
-		to := float64(dayEnd.Unix())
-
-		p.progress(days-d, days, fmt.Sprintf("Day %d/%d (%s)...", days-d+1, days, dayStart.Format("2006-01-02")))
-
-		n, err := p.RunForWindow(ctx, userID, from, to)
-		if err != nil {
-			p.logger.Printf("tracks: day %s error: %v", dayStart.Format("2006-01-02"), err)
-			continue
-		}
-		totalStored += n
-	}
-
-	// Also process today.
-	if ctx.Err() == nil {
-		from, to := DayWindow(now)
-		n, err := p.RunForWindow(ctx, userID, from, to)
-		if err != nil {
-			p.logger.Printf("tracks: today error: %v", err)
-		} else {
-			totalStored += n
-		}
-	}
-
-	p.logger.Printf("tracks: initial day-by-day complete: %d tracks across %d days", totalStored, days)
-	return totalStored, nil
 }
 
 // RunForWindow executes track extraction for a specific time window and user.
@@ -320,14 +286,20 @@ func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to flo
 
 				channelName := p.channelName(t.channelID)
 				c := int(completed.Load())
+				p.LastStepMessageCount = len(t.msgs)
+				p.LastStepPeriodFrom = time.Unix(int64(from), 0)
+				p.LastStepPeriodTo = time.Unix(int64(to), 0)
+				p.LastStepDurationSeconds = 0
 				p.progress(c, total, fmt.Sprintf("#%s (%d messages)", channelName, len(t.msgs)))
 
+				stepStart := time.Now()
 				n, err := p.processChannel(ctx, userID, userName, t.channelID, channelName, t.msgs, from, to)
 				if err != nil {
 					p.logger.Printf("tracks: error processing #%s: %v", channelName, err)
 				} else if n > 0 {
-					totalStored.Add(int32(n)) //nolint:gosec // safe conversion within expected range
+					totalStored.Add(int32(n))
 				}
+				p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 				completed.Add(1)
 				p.progress(int(completed.Load()), total, fmt.Sprintf("#%s done", channelName))
 			}
@@ -460,7 +432,7 @@ func (p *Pipeline) CheckForUpdates(ctx context.Context) (int, error) {
 				if err != nil {
 					p.logger.Printf("tracks: error checking channel #%s: %v", channelName, err)
 				} else if n > 0 {
-					updatedCount.Add(int32(n)) //nolint:gosec // safe within expected range
+					updatedCount.Add(int32(n))
 				}
 
 				c := int(completed.Add(1))
@@ -552,7 +524,8 @@ func (p *Pipeline) checkChannelTracksForUpdates(ctx context.Context, channelID s
 		formatted,
 	)
 
-	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "tracks.update"), "", prompt, "")
+	updateSys, updateUser := digest.SplitPromptAtData(prompt)
+	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "tracks.update"), updateSys, updateUser, "")
 	if err != nil {
 		return 0, fmt.Errorf("AI generation failed for #%s: %w", channelName, err)
 	}
@@ -561,6 +534,7 @@ func (p *Pipeline) checkChannelTracksForUpdates(ctx context.Context, channelID s
 		p.totalInputTokens.Add(int64(usage.InputTokens))
 		p.totalOutputTokens.Add(int64(usage.OutputTokens))
 		p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
 	}
 
 	batch, err := parseBatchUpdateResult(raw)
@@ -665,12 +639,18 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 	roleRules := p.formatRoleRules()
 	prompt := fmt.Sprintf(tmpl, userName, userID, channelName, channelID, fromStr, toStr, p.languageInstruction(), existingSection, decisionsSection, crossChannelSection, formatted, profileSection, roleRules)
 
+	// Append channel running summary for additional context if available.
+	if runningSummary := p.loadChannelRunningSummary(channelID); runningSummary != "" {
+		prompt += runningSummary
+	}
+
 	// Append active chains context so AI can link tracks to existing chains.
 	if p.ChainContext != "" {
 		prompt += "\n" + p.ChainContext + "\nIf a track relates to one of the active chains above, include \"chain_id\": <id> in your response for that track.\n"
 	}
 
-	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "tracks.extract"), "", prompt, "")
+	systemPrompt, userMessage := digest.SplitPromptAtData(prompt)
+	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "tracks.extract"), systemPrompt, userMessage, "")
 	if err != nil {
 		return 0, fmt.Errorf("AI generation failed: %w", err)
 	}
@@ -679,6 +659,7 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 		p.totalInputTokens.Add(int64(usage.InputTokens))
 		p.totalOutputTokens.Add(int64(usage.OutputTokens))
 		p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
 	}
 
 	result, err := parseResult(raw)
@@ -944,6 +925,31 @@ func (p *Pipeline) formatDigestDecisions(channelID string, from, to float64) str
 		fmt.Fprintf(&sb, "Digest #%d (%s, #%s):\n", d.DigestID, dateStr, sanitize(d.ChannelName))
 		fmt.Fprintf(&sb, "  - %s\n", sanitize(d.Decision))
 	}
+	return sb.String()
+}
+
+// loadChannelRunningSummary returns the channel's running summary as a prompt
+// section, or empty string if none exists or if too old (>30 days).
+func (p *Pipeline) loadChannelRunningSummary(channelID string) string {
+	result, err := p.db.GetLatestRunningSummaryWithAge(channelID, "channel")
+	if err != nil {
+		p.logger.Printf("tracks: warning: failed to load running summary for %s: %v", channelID, err)
+		return ""
+	}
+	if result == nil || result.Summary == "" {
+		return ""
+	}
+	if result.AgeDays > 30 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n=== CHANNEL CONTEXT ===\n")
+	if result.AgeDays > 7 {
+		fmt.Fprintf(&sb, "(outdated, from %.0f days ago)\n", result.AgeDays)
+	}
+	sb.WriteString(result.Summary)
+	sb.WriteString("\nUse this context to better understand ongoing topics and avoid creating duplicate tracks for known discussions.\n")
 	return sb.String()
 }
 

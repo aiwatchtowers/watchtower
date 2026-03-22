@@ -394,13 +394,15 @@ func TestStoreDigest(t *testing.T) {
 
 // capturingGenerator captures the prompt passed to Generate for inspection.
 type capturingGenerator struct {
-	response       string
-	capturedPrompt string
-	calls          int
+	response             string
+	capturedPrompt       string
+	capturedSystemPrompt string
+	calls                int
 }
 
-func (m *capturingGenerator) Generate(_ context.Context, _, prompt, _ string) (string, *Usage, string, error) {
-	m.capturedPrompt = prompt
+func (m *capturingGenerator) Generate(_ context.Context, systemPrompt, prompt, _ string) (string, *Usage, string, error) {
+	m.capturedSystemPrompt = systemPrompt
+	m.capturedPrompt = systemPrompt + "\n" + prompt // combined for backward-compatible assertions
 	m.calls++
 	return m.response, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
 }
@@ -517,7 +519,7 @@ func TestRunChannelDigestsOnly_Enabled(t *testing.T) {
 	seedUser(t, database, "U1", "alice", "Alice")
 	seedMessagesForChannel(t, database, "C1", "U1", 5)
 
-	// Seed an existing channel digest so isFirstRun() returns false.
+	// Seed an existing channel digest so lastDigestTime() returns a recent time.
 	_, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C1", Type: "channel",
 		PeriodFrom: float64(time.Now().Unix() - 86400*2),
@@ -731,9 +733,9 @@ func TestRun_FullPipeline_WithSinceOverride(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, n) // 2 channels
 	assert.NotNil(t, usage)
-	// 2 channel digests + 1 daily rollup = 3 calls
+	// 2 channel digests (+ 1 daily rollup if both land on the same UTC day)
 	gen.mu.Lock()
-	assert.Equal(t, 3, gen.calls)
+	assert.GreaterOrEqual(t, gen.calls, 2)
 	gen.mu.Unlock()
 }
 
@@ -835,7 +837,7 @@ func TestRun_WithChainLinker(t *testing.T) {
 	seedUser(t, database, "U1", "alice", "Alice")
 	seedMessagesForChannel(t, database, "C1", "U1", 5)
 
-	// Seed an existing digest so isFirstRun() returns false.
+	// Seed an existing digest so lastDigestTime() returns a recent time.
 	_, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C1", Type: "channel",
 		PeriodFrom: 1000000, PeriodTo: 1100000,
@@ -880,6 +882,8 @@ func (m *mockChainLinker) FormatActiveChainsForPrompt(ctx context.Context) (stri
 	m.formatCalled = true
 	return m.chainContext, nil
 }
+
+func (m *mockChainLinker) SetOnProgress(_ ProgressFunc) {}
 
 func TestRunDailyRollup_WithDecisions(t *testing.T) {
 	database := testDB(t)
@@ -1249,25 +1253,6 @@ func TestGetPrompt_WithRole(t *testing.T) {
 	assert.Contains(t, tmpl, "You are analyzing Slack messages")
 }
 
-func TestIsFirstRun(t *testing.T) {
-	database := testDB(t)
-	cfg := testConfig()
-	gen := &mockGenerator{}
-
-	p := New(database, cfg, gen, testLogger())
-	assert.True(t, p.isFirstRun())
-
-	// Add a channel digest.
-	_, err := database.UpsertDigest(db.Digest{
-		ChannelID: "C1", Type: "channel",
-		PeriodFrom: 1000, PeriodTo: 2000,
-		Summary: "test", MessageCount: 5, Model: "haiku",
-	})
-	require.NoError(t, err)
-
-	assert.False(t, p.isFirstRun())
-}
-
 func TestLastDigestTime_NoDigests(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
@@ -1321,6 +1306,37 @@ func TestOnProgress_Callback(t *testing.T) {
 	_, _, err := p.RunChannelDigests(context.Background())
 	require.NoError(t, err)
 	assert.Greater(t, progressCalls, 0)
+}
+
+func TestLastStepFields(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "general")
+	seedUser(t, database, "U1", "alice", "Alice")
+	seedMessagesForChannel(t, database, "C1", "U1", 5)
+
+	gen := &mockGenerator{response: validDigestJSON()}
+	p := New(database, cfg, gen, testLogger())
+	p.SinceOverride = float64(time.Now().Unix() - 7200)
+
+	var lastMsgCount int
+	var lastFrom, lastTo time.Time
+	p.OnProgress = func(done, total int, status string) {
+		lastMsgCount = p.LastStepMessageCount
+		lastFrom = p.LastStepPeriodFrom
+		lastTo = p.LastStepPeriodTo
+	}
+
+	n, _, err := p.RunChannelDigests(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// LastStep* should reflect the last channel processed
+	assert.Equal(t, 5, lastMsgCount)
+	assert.False(t, lastFrom.IsZero())
+	assert.False(t, lastTo.IsZero())
+	assert.True(t, lastTo.After(lastFrom) || lastTo.Equal(lastFrom))
 }
 
 func TestRunChannelDigests_SkipsEmptyMessages(t *testing.T) {
@@ -1638,7 +1654,7 @@ func TestRunChannelDigests_SinceOverride(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
-func TestRunInitialDayByDay(t *testing.T) {
+func TestRunFirstRun_SingleWindow(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
 	cfg.Sync.InitialHistoryDays = 2
@@ -1659,12 +1675,17 @@ func TestRunInitialDayByDay(t *testing.T) {
 
 	gen := &threadSafeMockGenerator{response: validDigestJSON()}
 	p := New(database, cfg, gen, testLogger())
-	// Don't set SinceOverride — let isFirstRun() detect first run.
 	n, usage, err := p.Run(context.Background())
 
 	require.NoError(t, err)
 	assert.Greater(t, n, 0, "should generate digests")
 	assert.NotNil(t, usage)
+	// Single window: all messages processed in one batch per channel (not 3 day-by-day calls).
+	// No daily rollup since only 1 channel exists (needs ≥2).
+	gen.mu.Lock()
+	callCount := gen.calls
+	gen.mu.Unlock()
+	assert.Equal(t, 1, callCount, "should make exactly 1 AI call for single channel")
 }
 
 func TestRunDailyRollup_AIError(t *testing.T) {
@@ -1767,9 +1788,9 @@ func TestFallbackPromptFormatVerbs(t *testing.T) {
 		prompt   string
 		expected int // number of %s placeholders expected
 	}{
-		{"channelDigestPrompt", channelDigestPrompt, 6}, // channelName, fromStr, toStr, profileCtx, langInstr, messages
-		{"dailyRollupPrompt", dailyRollupPrompt, 4},     // dateStr, profileCtx, langInstr, channelInput
-		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 6},   // date, fromStr, toStr, profileCtx, langInstr, dailies
+		{"channelDigestPrompt", channelDigestPrompt, 7}, // channelName, fromStr, toStr, profileCtx, langInstr, previousCtx, messages
+		{"dailyRollupPrompt", dailyRollupPrompt, 5},     // dateStr, profileCtx, langInstr, previousCtx, channelInput
+		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 7},   // date, fromStr, toStr, profileCtx, langInstr, previousCtx, dailies
 		{"periodSummaryPrompt", periodSummaryPrompt, 5}, // fromStr, toStr, profileCtx, langInstr, digests
 	}
 
@@ -1780,4 +1801,170 @@ func TestFallbackPromptFormatVerbs(t *testing.T) {
 				"%s has %d %%s placeholders, expected %d", tt.name, count, tt.expected)
 		})
 	}
+}
+
+// validDigestJSONWithRunningSummary returns a valid JSON response that includes
+// a running_summary field for testing channel memory round-trip.
+func validDigestJSONWithRunningSummary() string {
+	return `{"summary":"Test summary","topics":["topic1"],"decisions":[],"action_items":[],"key_messages":[],"situations":[],"running_summary":{"active_topics":[{"topic":"Migration","status":"in_progress","started":"2026-03-18","last_update":"2026-03-21","key_participants":["U1"],"summary":"Working on migration"}],"recent_decisions":[],"channel_dynamics":"Active channel","open_questions":["When to deploy?"]}}`
+}
+
+func TestChannelMemory_RunningSummaryStoredAndLoaded(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "general")
+	seedUser(t, database, "U1", "alice", "Alice")
+	seedMessagesForChannel(t, database, "C1", "U1", 5)
+
+	// Seed an existing digest so lastDigestTime() returns a recent time.
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(time.Now().Unix() - 86400*2),
+		PeriodTo:   float64(time.Now().Unix() - 86400),
+		Summary:    "old digest", MessageCount: 3, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	// First run: AI returns a running_summary
+	gen := &mockGenerator{response: validDigestJSONWithRunningSummary()}
+	p := New(database, cfg, gen, testLogger())
+	n, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Verify running_summary was stored in DB
+	result, err := database.GetLatestRunningSummaryWithAge("C1", "channel")
+	require.NoError(t, err)
+	require.NotNil(t, result, "running summary should be stored")
+	assert.Contains(t, result.Summary, "Migration")
+	assert.Less(t, result.AgeDays, 1.0)
+}
+
+func TestChannelMemory_GracefulDegradation_NoContext(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "general")
+	seedUser(t, database, "U1", "alice", "Alice")
+	seedMessagesForChannel(t, database, "C1", "U1", 5)
+
+	// Seed an existing digest WITHOUT running_summary
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(time.Now().Unix() - 86400*2),
+		PeriodTo:   float64(time.Now().Unix() - 86400),
+		Summary:    "old digest", MessageCount: 3, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen := &mockGenerator{response: validDigestJSON()}
+	p := New(database, cfg, gen, testLogger())
+
+	// loadPreviousContext should return empty string (no crash)
+	ctx := p.loadPreviousContext("C1", "channel")
+	assert.Empty(t, ctx, "should return empty string when no running summary exists")
+
+	// Pipeline should still work fine
+	n, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+}
+
+func TestChannelMemory_TTL_ExpiredAfter30Days(t *testing.T) {
+	database := testDB(t)
+
+	// Insert a digest with running_summary but created_at 35 days ago
+	oldTime := time.Now().Add(-35 * 24 * time.Hour).UTC().Format("2006-01-02T15:04:05Z")
+	_, err := database.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary, running_summary, message_count, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"C1", "channel", float64(time.Now().Unix()-86400*36), float64(time.Now().Unix()-86400*35),
+		"old summary", `{"active_topics":[],"channel_dynamics":"test"}`, 10, oldTime)
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	p := New(database, cfg, &mockGenerator{}, testLogger())
+
+	ctx := p.loadPreviousContext("C1", "channel")
+	assert.Empty(t, ctx, "should not load context older than 30 days")
+}
+
+func TestChannelMemory_TTL_OutdatedWarningAfter7Days(t *testing.T) {
+	database := testDB(t)
+
+	// Insert a digest with running_summary created 10 days ago
+	oldTime := time.Now().Add(-10 * 24 * time.Hour).UTC().Format("2006-01-02T15:04:05Z")
+	_, err := database.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary, running_summary, message_count, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"C1", "channel", float64(time.Now().Unix()-86400*11), float64(time.Now().Unix()-86400*10),
+		"old summary", `{"active_topics":[],"channel_dynamics":"test"}`, 10, oldTime)
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	p := New(database, cfg, &mockGenerator{}, testLogger())
+
+	ctx := p.loadPreviousContext("C1", "channel")
+	assert.Contains(t, ctx, "PREVIOUS CONTEXT", "should load context between 7-30 days")
+	assert.Contains(t, ctx, "outdated", "should include outdated warning")
+}
+
+func TestChannelMemory_ResetRunningSummary(t *testing.T) {
+	database := testDB(t)
+
+	// Insert two digests with running summaries
+	for _, ch := range []string{"C1", "C2"} {
+		_, err := database.UpsertDigest(db.Digest{
+			ChannelID: ch, Type: "channel",
+			PeriodFrom: float64(time.Now().Unix() - 86400),
+			PeriodTo:   float64(time.Now().Unix()),
+			Summary:    "test", MessageCount: 5, Model: "haiku",
+			RunningSummary: `{"active_topics":[]}`,
+		})
+		require.NoError(t, err)
+	}
+
+	// Reset only C1
+	affected, err := database.ResetRunningSummary("C1", "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), affected)
+
+	// C1 should be empty, C2 should still have summary
+	r1, err := database.GetLatestRunningSummaryWithAge("C1", "channel")
+	require.NoError(t, err)
+	assert.Nil(t, r1, "C1 running summary should be cleared")
+
+	r2, err := database.GetLatestRunningSummaryWithAge("C2", "channel")
+	require.NoError(t, err)
+	require.NotNil(t, r2, "C2 running summary should still exist")
+
+	// Reset all
+	affected, err = database.ResetRunningSummary("", "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), affected) // only C2 left
+
+	r2, err = database.GetLatestRunningSummaryWithAge("C2", "channel")
+	require.NoError(t, err)
+	assert.Nil(t, r2, "C2 running summary should be cleared")
+}
+
+func TestChannelMemory_LoadPreviousContext_Fresh(t *testing.T) {
+	database := testDB(t)
+
+	// Insert a fresh digest with running_summary
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(time.Now().Unix() - 3600),
+		PeriodTo:   float64(time.Now().Unix()),
+		Summary:    "recent", MessageCount: 5, Model: "haiku",
+		RunningSummary: `{"active_topics":[{"topic":"Deploy"}],"channel_dynamics":"Active"}`,
+	})
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	p := New(database, cfg, &mockGenerator{}, testLogger())
+
+	ctx := p.loadPreviousContext("C1", "channel")
+	assert.Contains(t, ctx, "PREVIOUS CONTEXT")
+	assert.Contains(t, ctx, "Deploy")
+	assert.NotContains(t, ctx, "outdated", "fresh context should not have outdated warning")
 }

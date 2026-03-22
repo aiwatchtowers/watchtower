@@ -250,6 +250,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 
 	// Phase 5: Tracks (depend on digests + chains for context).
 	// Throttled to run at most once per tracks interval (default 1h).
+	tracksJustRan := false
 	if d.tracksPipe != nil {
 		interval := d.config.Digest.TracksInterval
 		if interval <= 0 {
@@ -257,6 +258,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 		}
 		now := time.Now()
 		if d.lastTracks.IsZero() || now.Sub(d.lastTracks) >= interval {
+			tracksJustRan = true
 			n, err := d.tracksPipe.Run(ctx)
 			if err != nil {
 				d.logger.Printf("tracks error: %v", err)
@@ -271,7 +273,8 @@ func (d *Daemon) runSync(ctx context.Context) {
 	}
 
 	// Check for updates on existing items (lightweight, runs every sync).
-	if d.tracksPipe != nil {
+	// Skip if tracks just ran — the data was just created, no updates to check.
+	if d.tracksPipe != nil && !tracksJustRan {
 		n, err := d.tracksPipe.CheckForUpdates(ctx)
 		if err != nil {
 			d.logger.Printf("tracks update check error: %v", err)

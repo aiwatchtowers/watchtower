@@ -1,25 +1,24 @@
 import SwiftUI
 
-struct ProgressDetailView: View {
+/// Reusable content for pipeline progress display.
+/// Used both in the standalone window (ProgressDetailView) and embedded in UsageView.
+struct ProgressDetailContent: View {
     @Environment(AppState.self) private var appState
+    @State private var expandedSteps: Set<UUID> = []
 
     var body: some View {
         let manager = appState.backgroundTaskManager
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header(manager)
-                costSummary(manager)
+        VStack(alignment: .leading, spacing: 16) {
+            header(manager)
+            costSummary(manager)
 
-                ForEach(BackgroundTaskManager.TaskKind.allCases) { kind in
-                    if let state = manager.tasks[kind] {
-                        taskSection(kind: kind, state: state)
-                    }
+            ForEach(BackgroundTaskManager.TaskKind.allCases) { kind in
+                if let state = manager.tasks[kind] {
+                    taskSection(kind: kind, state: state)
                 }
             }
-            .padding(20)
         }
-        .frame(minWidth: 500, minHeight: 400)
     }
 
     // MARK: - Header
@@ -45,11 +44,26 @@ struct ProgressDetailView: View {
     // MARK: - Cost Summary
 
     private func costSummary(_ manager: BackgroundTaskManager) -> some View {
-        GroupBox("Total Cost") {
-            HStack(spacing: 24) {
-                costItem(label: "Input Tokens", value: formatTokens(manager.totalInputTokens))
-                costItem(label: "Output Tokens", value: formatTokens(manager.totalOutputTokens))
-                costItem(label: "Cost", value: String(format: "$%.4f", manager.totalCostUsd))
+        GroupBox("Session Cost") {
+            VStack(spacing: 8) {
+                HStack(spacing: 24) {
+                    costItem(
+                        label: "Input (clean)",
+                        value: formatTokens(manager.totalInputTokens)
+                    )
+                    costItem(
+                        label: "Input (API)",
+                        value: formatTokens(manager.totalApiTokens)
+                    )
+                    costItem(
+                        label: "Output",
+                        value: formatTokens(manager.totalOutputTokens)
+                    )
+                    costItem(
+                        label: "Cost",
+                        value: String(format: "$%.4f", manager.totalCostUsd)
+                    )
+                }
             }
             .padding(4)
         }
@@ -68,10 +82,12 @@ struct ProgressDetailView: View {
 
     // MARK: - Task Section
 
-    private func taskSection(kind: BackgroundTaskManager.TaskKind, state: BackgroundTaskManager.TaskState) -> some View {
+    private func taskSection(
+        kind: BackgroundTaskManager.TaskKind,
+        state: BackgroundTaskManager.TaskState
+    ) -> some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
-                // Current status
                 HStack {
                     statusBadge(state.status)
                     Spacer()
@@ -87,11 +103,16 @@ struct ProgressDetailView: View {
                     }
                 }
 
-                if state.status == .running, let p = state.progress, p.total > 0 {
-                    ProgressView(value: Double(p.done), total: Double(max(p.total, 1)))
-                        .tint(.accentColor)
+                if state.status == .running, let prog = state.progress {
+                    if prog.total > 0 {
+                        ProgressView(value: Double(prog.done), total: Double(max(prog.total, 1)))
+                            .tint(.accentColor)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
 
-                    if let status = p.status, !status.isEmpty {
+                    if let status = prog.status, !status.isEmpty {
                         Text(status)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -104,32 +125,18 @@ struct ProgressDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                         .lineLimit(3)
+
+                    Button("Retry") {
+                        appState.backgroundTaskManager.retry(kind)
+                    }
+                    .font(.caption2)
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
                 }
 
-                // Step history
                 if !state.stepHistory.isEmpty {
                     Divider()
-                    Text("Step History")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-
-                    let taskInputTokens = state.stepHistory.reduce(0) { $0 + $1.inputTokens }
-                    let taskOutputTokens = state.stepHistory.reduce(0) { $0 + $1.outputTokens }
-                    let taskCost = state.stepHistory.reduce(0.0) { $0 + $1.costUsd }
-
-                    HStack(spacing: 16) {
-                        Text("\(taskInputTokens + taskOutputTokens) tokens")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(String(format: "$%.4f", taskCost))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ForEach(state.stepHistory.reversed()) { record in
-                        stepRow(record)
-                    }
+                    stepHistorySection(state.stepHistory)
                 }
             }
             .padding(4)
@@ -138,33 +145,147 @@ struct ProgressDetailView: View {
         }
     }
 
+    private func stepHistorySection(_ history: [BackgroundTaskManager.StepRecord]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Step History")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+
+            let taskInput = history.reduce(0) { $0 + $1.inputTokens }
+            let taskAPI = history.reduce(0) { $0 + $1.totalApiTokens }
+            let taskOutput = history.reduce(0) { $0 + $1.outputTokens }
+            let taskCost = history.reduce(0.0) { $0 + $1.costUsd }
+
+            HStack(spacing: 16) {
+                let apiLabel = taskAPI > 0 ? " / api \(formatTokens(taskAPI))" : ""
+                Text("clean \(formatTokens(taskInput))\(apiLabel) in, \(formatTokens(taskOutput)) out")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(String(format: "$%.4f", taskCost))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(history.reversed()) { record in
+                stepRow(record)
+            }
+        }
+    }
+
     // MARK: - Step Row
 
     private func stepRow(_ record: BackgroundTaskManager.StepRecord) -> some View {
-        HStack(spacing: 8) {
-            Text(record.timestamp, style: .time)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.tertiary)
+        let isExpanded = expandedSteps.contains(record.id)
 
-            Text("\(record.step)/\(record.total)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 40)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(record.timestamp, style: .time)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
 
-            if !record.status.isEmpty {
-                Text(record.status)
+                Text("\(record.step)/\(record.total)")
                     .font(.caption2)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 40)
+
+                if !record.status.isEmpty {
+                    Text(record.status)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer()
+
+                if record.durationSeconds > 0 {
+                    Text(formatDuration(record.durationSeconds))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+
+                let stepTokens = record.inputTokens + record.outputTokens
+                if stepTokens > 0 {
+                    let apiLabel = record.totalApiTokens > 0 ? "(\(formatTokens(record.totalApiTokens)))" : ""
+                    Text("\(formatTokens(record.inputTokens))\(apiLabel)/\(formatTokens(record.outputTokens))")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .animation(.easeInOut(duration: 0.15), value: isExpanded)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if isExpanded {
+                        expandedSteps.remove(record.id)
+                    } else {
+                        expandedSteps.insert(record.id)
+                    }
+                }
             }
 
-            Spacer()
+            if isExpanded {
+                stepDetail(record)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    // MARK: - Step Detail
+
+    private func stepDetail(_ record: BackgroundTaskManager.StepRecord) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+                .padding(.vertical, 4)
+
+            detailRow(label: "Duration", value: formatDuration(record.durationSeconds))
+
+            let hasTokens = record.inputTokens + record.outputTokens > 0
+            if hasTokens {
+                detailRow(label: "Input (clean)", value: formatTokens(record.inputTokens))
+                if record.totalApiTokens > 0 {
+                    detailRow(label: "Input (API)", value: formatTokens(record.totalApiTokens))
+                }
+                detailRow(label: "Output", value: formatTokens(record.outputTokens))
+            }
 
             if record.costUsd > 0 {
-                Text(String(format: "$%.4f", record.costUsd))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                detailRow(label: "Cost", value: String(format: "$%.4f", record.costUsd))
             }
+
+            if record.durationSeconds > 0 && record.outputTokens > 0 {
+                detailRow(
+                    label: "Speed",
+                    value: String(format: "%.0f tok/s", Double(record.outputTokens) / record.durationSeconds)
+                )
+            }
+
+            if let count = record.messageCount, count > 0 {
+                detailRow(label: "Messages", value: "\(count)")
+            }
+
+            if let periodStr = formatStepPeriod(record) {
+                detailRow(label: "Period", value: periodStr)
+            }
+        }
+        .padding(.leading, 24)
+        .padding(.bottom, 4)
+    }
+
+    private func detailRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .frame(width: 90, alignment: .leading)
+            Text(value)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -175,34 +296,26 @@ struct ProgressDetailView: View {
         switch status {
         case .pending:
             HStack(spacing: 4) {
-                Image(systemName: "clock")
-                    .font(.caption)
-                Text("Pending")
-                    .font(.caption)
+                Image(systemName: "clock").font(.caption)
+                Text("Pending").font(.caption)
             }
             .foregroundStyle(.secondary)
         case .running:
             HStack(spacing: 4) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.caption)
-                Text("Running")
-                    .font(.caption)
+                Image(systemName: "arrow.triangle.2.circlepath").font(.caption)
+                Text("Running").font(.caption)
             }
             .foregroundStyle(Color.accentColor)
         case .done:
             HStack(spacing: 4) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption)
-                Text("Done")
-                    .font(.caption)
+                Image(systemName: "checkmark.circle.fill").font(.caption)
+                Text("Done").font(.caption)
             }
             .foregroundStyle(.green)
         case .error:
             HStack(spacing: 4) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                Text("Error")
-                    .font(.caption)
+                Image(systemName: "exclamationmark.triangle.fill").font(.caption)
+                Text("Error").font(.caption)
             }
             .foregroundStyle(.red)
         }
@@ -211,10 +324,18 @@ struct ProgressDetailView: View {
     private func formatETA(_ seconds: Double) -> String {
         let s = Int(seconds)
         if s < 60 { return "~\(max(s, 1))s left" }
-        let m = s / 60
+        let min = s / 60
         let rem = s % 60
-        if rem == 0 { return "~\(m)m left" }
-        return "~\(m)m \(rem)s left"
+        if rem == 0 { return "~\(min)m left" }
+        return "~\(min)m \(rem)s left"
+    }
+
+    private func formatDuration(_ seconds: Double) -> String {
+        let s = Int(seconds)
+        if s < 60 { return "\(max(s, 1))s" }
+        let min = s / 60
+        let rem = s % 60
+        return "\(min)m \(rem)s"
     }
 
     private func formatTokens(_ count: Int) -> String {
@@ -224,5 +345,29 @@ struct ProgressDetailView: View {
             return String(format: "%.1fK", Double(count) / 1_000)
         }
         return "\(count)"
+    }
+
+    private func formatStepPeriod(_ record: BackgroundTaskManager.StepRecord) -> String? {
+        guard let from = record.periodFrom, let to = record.periodTo else { return nil }
+        let df = DateFormatter()
+        df.dateStyle = .short
+        df.timeStyle = .short
+        let fromDate = Date(timeIntervalSince1970: from)
+        let toDate = Date(timeIntervalSince1970: to)
+        return "\(df.string(from: fromDate)) - \(df.string(from: toDate))"
+    }
+}
+
+/// Standalone window wrapper for ProgressDetailContent.
+struct ProgressDetailView: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        ScrollView {
+            ProgressDetailContent()
+                .environment(appState)
+                .padding(20)
+        }
+        .frame(minWidth: 500, minHeight: 400)
     }
 }

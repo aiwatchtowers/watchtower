@@ -19,6 +19,9 @@ import (
 // DefaultStaleDays is how many days without activity before a chain becomes stale.
 const DefaultStaleDays = 14
 
+// ProgressFunc reports pipeline progress: done items out of total, with a status message.
+type ProgressFunc func(done, total int, status string)
+
 // Pipeline links unlinked decisions and digests from channel digests into thematic chains.
 type Pipeline struct {
 	db          *db.DB
@@ -26,6 +29,9 @@ type Pipeline struct {
 	gen         digest.Generator
 	logger      *log.Logger
 	promptStore *prompts.Store
+
+	// OnProgress is called to report progress during chain linking.
+	OnProgress ProgressFunc
 }
 
 // New creates a new chains pipeline.
@@ -36,6 +42,11 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		gen:    gen,
 		logger: logger,
 	}
+}
+
+// SetOnProgress sets the progress callback.
+func (p *Pipeline) SetOnProgress(fn digest.ProgressFunc) {
+	p.OnProgress = ProgressFunc(fn)
 }
 
 // SetPromptStore sets an optional prompt store for loading customized prompts.
@@ -56,22 +67,29 @@ type digestContext struct {
 // Run links unlinked decisions and digests from recent channel digests to chains.
 // Returns the number of items linked.
 func (p *Pipeline) Run(ctx context.Context) (int, error) {
+	runStart := time.Now()
+
 	// 1. Get unlinked decisions from recent channel digests (last 14 days).
 	cutoff := float64(time.Now().AddDate(0, 0, -DefaultStaleDays).Unix())
+	t0 := time.Now()
 	unlinked, err := p.db.GetUnlinkedDecisions(cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("getting unlinked decisions: %w", err)
 	}
-
-	p.logger.Printf("chains: found %d unlinked decision(s)", len(unlinked))
+	p.logger.Printf("chains: found %d unlinked decision(s) [%s]", len(unlinked), time.Since(t0).Round(time.Millisecond))
 
 	// 1b. Get unlinked digests for richer context.
+	t0 = time.Now()
 	unlinkedDigests, err := p.db.GetUnlinkedDigests(cutoff)
 	if err != nil {
 		p.logger.Printf("chains: failed to get unlinked digests (continuing without): %v", err)
 	}
+	p.logger.Printf("chains: found %d unlinked digest(s) [%s]", len(unlinkedDigests), time.Since(t0).Round(time.Millisecond))
 
-	p.logger.Printf("chains: found %d unlinked digest(s)", len(unlinkedDigests))
+	total := len(unlinked) + len(unlinkedDigests)
+	if p.OnProgress != nil {
+		p.OnProgress(0, total, fmt.Sprintf("Found %d decisions, %d digests to link", len(unlinked), len(unlinkedDigests)))
+	}
 
 	if len(unlinked) == 0 && len(unlinkedDigests) == 0 {
 		// Mark stale chains and return.
@@ -84,12 +102,15 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	}
 
 	// 2. Get active chains (including parent/child info).
+	t0 = time.Now()
 	activeChains, err := p.db.GetActiveChains(DefaultStaleDays)
 	if err != nil {
 		return 0, fmt.Errorf("getting active chains: %w", err)
 	}
+	p.logger.Printf("chains: loaded %d active chain(s) [%s]", len(activeChains), time.Since(t0).Round(time.Millisecond))
 
 	// 3. Build digest context for richer grouping.
+	t0 = time.Now()
 	var digContexts []digestContext
 	for _, d := range unlinkedDigests {
 		chName, _ := p.db.ChannelNameByID(d.ChannelID)
@@ -102,34 +123,63 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 			PeriodTo:    d.PeriodTo,
 		})
 	}
+	p.logger.Printf("chains: built digest contexts [%s]", time.Since(t0).Round(time.Millisecond))
 
 	// 4. Call AI to link decisions to chains.
+	if p.OnProgress != nil {
+		p.OnProgress(0, total, fmt.Sprintf("Linking %d items (%d active chains)...", total, len(activeChains)))
+	}
+	t0 = time.Now()
 	prompt := p.buildPrompt(activeChains, unlinked, digContexts)
+	p.logger.Printf("chains: built prompt (%d bytes) [%s]", len(prompt), time.Since(t0).Round(time.Millisecond))
+
 	systemPrompt := chainsSystemPrompt
 
-	resp, _, _, err := p.gen.Generate(ctx, systemPrompt, prompt, "")
+	t0 = time.Now()
+	resp, usage, _, err := p.gen.Generate(ctx, systemPrompt, prompt, "")
 	if err != nil {
 		return 0, fmt.Errorf("AI chain linking: %w", err)
 	}
+	aiDur := time.Since(t0).Round(time.Millisecond)
+	if usage != nil {
+		p.logger.Printf("chains: AI call done [%s] (%d+%d tokens, $%.4f, %d bytes response)",
+			aiDur, usage.InputTokens, usage.OutputTokens, usage.CostUSD, len(resp))
+	} else {
+		p.logger.Printf("chains: AI call done [%s] (%d bytes response)", aiDur, len(resp))
+	}
 
 	// 5. Parse AI response.
+	if p.OnProgress != nil {
+		p.OnProgress(0, total, "Applying chain assignments...")
+	}
+	t0 = time.Now()
 	assignments, err := parseResponse(resp)
 	if err != nil {
 		return 0, fmt.Errorf("parsing chain response: %w", err)
 	}
+	p.logger.Printf("chains: parsed %d assignments [%s]", len(assignments), time.Since(t0).Round(time.Millisecond))
 
 	// 6. Apply assignments: create new chains, link decisions and digests.
+	t0 = time.Now()
 	linked := 0
-	// Track newly created chains so we can set parent relationships.
+	// Track chain slugs → IDs to prevent duplicates within this run.
+	// Pre-populate with existing active chains so "NEW" with a duplicate slug reuses the existing chain.
 	newChainIDs := make(map[string]int) // slug → chain ID
+	for _, c := range activeChains {
+		newChainIDs[c.Slug] = c.ID
+	}
 
-	for _, a := range assignments {
+	for i, a := range assignments {
 		if a.Action == "SKIP" {
 			continue
 		}
 
 		if ctx.Err() != nil {
 			return linked, ctx.Err()
+		}
+
+		if p.OnProgress != nil {
+			p.OnProgress(i+1, len(assignments), fmt.Sprintf("Applying %d/%d...", i+1, len(assignments)))
 		}
 
 		if a.ItemType == "digest" {
@@ -147,32 +197,50 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 
 		var chainID int
 		if a.Action == "NEW" {
-			id, err := p.db.CreateChain(db.Chain{
-				ParentID:   a.ParentID,
-				Title:      a.Title,
-				Slug:       a.Slug,
-				Status:     "active",
-				Summary:    a.Summary,
-				ChannelIDs: marshalStringSlice([]string{dec.ChannelID}),
-				FirstSeen:  dec.PeriodTo,
-				LastSeen:   dec.PeriodTo,
-				ItemCount:  1,
-			})
-			if err != nil {
-				p.logger.Printf("chains: create chain error: %v", err)
-				continue
+			// Deduplicate: if a chain with this slug was already created in this run, reuse it.
+			if existingID, ok := newChainIDs[a.Slug]; ok {
+				chainID = existingID
+				p.logger.Printf("chains: reusing chain #%d %q for decision (same slug %q)", chainID, a.Title, a.Slug)
+				if err := p.db.AddChannelToChain(chainID, dec.ChannelID); err != nil {
+					p.logger.Printf("chains: add channel error: %v", err)
+				}
+			} else {
+				id, err := p.db.CreateChain(db.Chain{
+					ParentID:   a.ParentID,
+					Title:      a.Title,
+					Slug:       a.Slug,
+					Status:     "active",
+					Summary:    a.Summary,
+					ChannelIDs: marshalStringSlice([]string{dec.ChannelID}),
+					FirstSeen:  dec.PeriodTo,
+					LastSeen:   dec.PeriodTo,
+					ItemCount:  1,
+				})
+				if err != nil {
+					p.logger.Printf("chains: create chain error: %v", err)
+					continue
+				}
+				chainID = int(id)
+				newChainIDs[a.Slug] = chainID
+				p.logger.Printf("chains: created chain #%d %q", chainID, a.Title)
 			}
-			chainID = int(id)
-			newChainIDs[a.Slug] = chainID
-			p.logger.Printf("chains: created chain #%d %q", chainID, a.Title)
 		} else {
-			// Link to existing chain — validate AI-returned ID exists.
+			// Link to existing chain — validate AI-returned ID exists in active or newly created chains.
 			chainID = a.ChainID
 			found := false
 			for _, c := range activeChains {
 				if c.ID == chainID {
 					found = true
 					break
+				}
+			}
+			if !found {
+				// Also check chains created during this run.
+				for _, id := range newChainIDs {
+					if id == chainID {
+						found = true
+						break
+					}
 				}
 			}
 			if !found {
@@ -203,9 +271,13 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 		p.updateChainMetadata(chainID, dec.PeriodTo)
 	}
 
+	p.logger.Printf("chains: applied %d assignments [%s]", len(assignments), time.Since(t0).Round(time.Millisecond))
+
 	// 7. Update summaries for chains that got new items (batch AI call).
 	if linked > 0 {
+		t0 = time.Now()
 		p.updateChainSummaries(ctx, activeChains, assignments)
+		p.logger.Printf("chains: updated summaries [%s]", time.Since(t0).Round(time.Millisecond))
 	}
 
 	// 8. Mark stale chains.
@@ -213,6 +285,12 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 		p.logger.Printf("chains: mark stale error: %v", err)
 	} else if n > 0 {
 		p.logger.Printf("chains: marked %d chain(s) as stale", n)
+	}
+
+	p.logger.Printf("chains: total run time: %s", time.Since(runStart).Round(time.Millisecond))
+
+	if p.OnProgress != nil {
+		p.OnProgress(total, total, fmt.Sprintf("Linked %d item(s) to chains", linked))
 	}
 
 	return linked, nil
@@ -228,31 +306,49 @@ func (p *Pipeline) applyDigestAssignment(a assignment, digContexts []digestConte
 
 	var chainID int
 	if a.Action == "NEW" {
-		id, err := p.db.CreateChain(db.Chain{
-			ParentID:   a.ParentID,
-			Title:      a.Title,
-			Slug:       a.Slug,
-			Status:     "active",
-			Summary:    a.Summary,
-			ChannelIDs: marshalStringSlice([]string{dig.ChannelID}),
-			FirstSeen:  dig.PeriodTo,
-			LastSeen:   dig.PeriodTo,
-			ItemCount:  1,
-		})
-		if err != nil {
-			p.logger.Printf("chains: create chain for digest error: %v", err)
-			return 0
+		// Deduplicate: if a chain with this slug was already created in this run, reuse it.
+		if existingID, ok := newChainIDs[a.Slug]; ok {
+			chainID = existingID
+			p.logger.Printf("chains: reusing chain #%d %q for digest (same slug %q)", chainID, a.Title, a.Slug)
+			if err := p.db.AddChannelToChain(chainID, dig.ChannelID); err != nil {
+				p.logger.Printf("chains: add channel error: %v", err)
+			}
+		} else {
+			id, err := p.db.CreateChain(db.Chain{
+				ParentID:   a.ParentID,
+				Title:      a.Title,
+				Slug:       a.Slug,
+				Status:     "active",
+				Summary:    a.Summary,
+				ChannelIDs: marshalStringSlice([]string{dig.ChannelID}),
+				FirstSeen:  dig.PeriodTo,
+				LastSeen:   dig.PeriodTo,
+				ItemCount:  1,
+			})
+			if err != nil {
+				p.logger.Printf("chains: create chain for digest error: %v", err)
+				return 0
+			}
+			chainID = int(id)
+			newChainIDs[a.Slug] = chainID
+			p.logger.Printf("chains: created chain #%d %q (from digest)", chainID, a.Title)
 		}
-		chainID = int(id)
-		newChainIDs[a.Slug] = chainID
-		p.logger.Printf("chains: created chain #%d %q (from digest)", chainID, a.Title)
 	} else {
+		// Link to existing chain — validate AI-returned ID exists in active or newly created chains.
 		chainID = a.ChainID
 		found := false
 		for _, c := range activeChains {
 			if c.ID == chainID {
 				found = true
 				break
+			}
+		}
+		if !found {
+			for _, id := range newChainIDs {
+				if id == chainID {
+					found = true
+					break
+				}
 			}
 		}
 		if !found {

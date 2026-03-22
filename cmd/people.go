@@ -349,25 +349,44 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 
 	if peopleGenFlagProgressJSON {
 		type pj struct {
-			Pipeline     string  `json:"pipeline"`
-			Done         int     `json:"done"`
-			Total        int     `json:"total"`
-			Status       string  `json:"status,omitempty"`
-			InputTokens  int     `json:"input_tokens"`
-			OutputTokens int     `json:"output_tokens"`
-			CostUSD      float64 `json:"cost_usd"`
-			Error        string  `json:"error,omitempty"`
-			Finished     bool    `json:"finished"`
-			ItemsFound   int     `json:"items_found"`
+			Pipeline        string  `json:"pipeline"`
+			Done            int     `json:"done"`
+			Total           int     `json:"total"`
+			Status          string  `json:"status,omitempty"`
+			InputTokens     int     `json:"input_tokens"`
+			OutputTokens    int     `json:"output_tokens"`
+			CostUSD         float64 `json:"cost_usd"`
+			Error           string  `json:"error,omitempty"`
+			Finished        bool    `json:"finished"`
+			ItemsFound      int     `json:"items_found"`
+			MessageCount    int     `json:"message_count,omitempty"`
+			PeriodFrom      string  `json:"period_from,omitempty"`
+			PeriodTo        string  `json:"period_to,omitempty"`
+			StepDurationSec float64 `json:"step_duration_seconds,omitempty"`
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
 		pipe.OnProgress = func(completed, total int, status string) {
-			emit(pj{Pipeline: "people", Done: completed, Total: total, Status: status})
+			inTok, outTok, cost, _ := pipe.AccumulatedUsage()
+			p := pj{Pipeline: "people", Done: completed, Total: total, Status: status, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost}
+			if pipe.LastStepMessageCount > 0 {
+				p.MessageCount = pipe.LastStepMessageCount
+				p.PeriodFrom = pipe.LastStepPeriodFrom.Format(time.RFC3339)
+				p.PeriodTo = pipe.LastStepPeriodTo.Format(time.RFC3339)
+			}
+			if pipe.LastStepDurationSeconds > 0 {
+				p.StepDurationSec = pipe.LastStepDurationSeconds
+			}
+			emit(p)
 		}
 		n, err := pipe.Run(cmd.Context())
-		inTok, outTok, cost := pipe.AccumulatedUsage()
+		inTok, outTok, cost, _ := pipe.AccumulatedUsage()
 		final := pj{Pipeline: "people", Finished: true, ItemsFound: n, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost}
+		if pipe.LastStepMessageCount > 0 {
+			final.MessageCount = pipe.LastStepMessageCount
+			final.PeriodFrom = pipe.LastStepPeriodFrom.Format(time.RFC3339)
+			final.PeriodTo = pipe.LastStepPeriodTo.Format(time.RFC3339)
+		}
 		if err != nil {
 			final.Error = err.Error()
 		}

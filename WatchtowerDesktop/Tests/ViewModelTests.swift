@@ -10,7 +10,11 @@ final class DashboardViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -78,7 +82,11 @@ final class DigestViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -122,8 +130,11 @@ final class DigestViewModelTests: XCTestCase {
     func testDecisionEntries() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(db, channelID: "C001",
-                                          decisions: #"[{"text":"Use Go","by":"Alice","importance":"high"},{"text":"Deploy Friday"}]"#)
+            try TestDatabase.insertDigest(
+                db,
+                channelID: "C001",
+                decisions: #"[{"text":"Use Go","by":"Alice","importance":"high"},{"text":"Deploy Friday"}]"#
+            )
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
@@ -184,8 +195,7 @@ final class DigestViewModelTests: XCTestCase {
         let vm = DigestViewModel(dbManager: dbManager)
         vm.load()
 
-        XCTAssertEqual(vm.slackChannelURL(channelID: "C001")?.absoluteString,
-                       "slack://channel?team=T001&id=C001")
+        XCTAssertEqual(vm.slackChannelURL(channelID: "C001")?.absoluteString, "slack://channel?team=T001&id=C001")
     }
 
     @MainActor
@@ -228,7 +238,7 @@ final class DigestViewModelTests: XCTestCase {
         let vm = DigestViewModel(dbManager: dbManager)
         vm.load()
 
-        let dailyDigest = vm.digests.first { $0.type == "daily" }!
+        let dailyDigest = try XCTUnwrap(vm.digests.first { $0.type == "daily" })
         let contributing = vm.contributingChannels(for: dailyDigest)
         XCTAssertEqual(contributing.count, 2)
         XCTAssertTrue(contributing.contains { $0.name == "general" })
@@ -276,7 +286,11 @@ final class PeopleViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -383,12 +397,9 @@ final class PeopleViewModelTests: XCTestCase {
     @MainActor
     func testRedFlagCount() throws {
         try dbManager.dbPool.write { db in
-            try TestDatabase.insertPeopleCard(db, userID: "U001", periodFrom: 100, periodTo: 200,
-                                                 redFlags: #"["Issue"]"#)
-            try TestDatabase.insertPeopleCard(db, userID: "U002", periodFrom: 100, periodTo: 200,
-                                                 redFlags: "[]")
-            try TestDatabase.insertPeopleCard(db, userID: "U003", periodFrom: 100, periodTo: 200,
-                                                 redFlags: #"["A","B"]"#)
+            try TestDatabase.insertPeopleCard(db, userID: "U001", periodFrom: 100, periodTo: 200, redFlags: #"["Issue"]"#)
+            try TestDatabase.insertPeopleCard(db, userID: "U002", periodFrom: 100, periodTo: 200, redFlags: "[]")
+            try TestDatabase.insertPeopleCard(db, userID: "U003", periodFrom: 100, periodTo: 200, redFlags: #"["A","B"]"#)
         }
 
         let vm = PeopleViewModel(dbManager: dbManager)
@@ -436,7 +447,11 @@ final class ChatViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -449,7 +464,7 @@ final class ChatViewModelTests: XCTestCase {
         let vm = ChatViewModel(claudeService: MockClaudeService(), dbManager: dbManager)
         vm.messages = [
             ChatMessage(id: UUID(), role: .user, text: "Hi", timestamp: Date(), isStreaming: false),
-            ChatMessage(id: UUID(), role: .assistant, text: "Hello!", timestamp: Date(), isStreaming: false),
+            ChatMessage(id: UUID(), role: .assistant, text: "Hello!", timestamp: Date(), isStreaming: false)
         ]
         vm.newChat()
 
@@ -459,17 +474,17 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testCancelStream() {
+    func testCancelStream() throws {
         let vm = ChatViewModel(claudeService: MockClaudeService(), dbManager: dbManager)
         vm.isStreaming = true
         vm.messages = [
-            ChatMessage(id: UUID(), role: .assistant, text: "Partial...", timestamp: Date(), isStreaming: true),
+            ChatMessage(id: UUID(), role: .assistant, text: "Partial...", timestamp: Date(), isStreaming: true)
         ]
 
         vm.cancelStream()
 
         XCTAssertFalse(vm.isStreaming)
-        XCTAssertFalse(vm.messages.last!.isStreaming)
+        XCTAssertFalse(try XCTUnwrap(vm.messages.last).isStreaming)
     }
 
     @MainActor
@@ -569,7 +584,11 @@ final class SearchViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -647,7 +666,11 @@ final class TracksViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -693,8 +716,16 @@ final class TracksViewModelTests: XCTestCase {
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
             try TestDatabase.insertTrack(db, assigneeUserID: "U001", text: "Open task", status: "inbox")
-            try TestDatabase.insertTrack(db, channelID: "C001", assigneeUserID: "U001", text: "Done task", status: "done",
-                                               priority: "medium", periodFrom: 1700100000, periodTo: 1700200000)
+            try TestDatabase.insertTrack(
+                db,
+                channelID: "C001",
+                assigneeUserID: "U001",
+                text: "Done task",
+                status: "done",
+                priority: "medium",
+                periodFrom: 1700100000,
+                periodTo: 1700200000
+            )
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
@@ -711,8 +742,15 @@ final class TracksViewModelTests: XCTestCase {
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
             try TestDatabase.insertTrack(db, assigneeUserID: "U001", text: "High", priority: "high")
-            try TestDatabase.insertTrack(db, channelID: "C001", assigneeUserID: "U001", text: "Low", priority: "low",
-                                               periodFrom: 1700100000, periodTo: 1700200000)
+            try TestDatabase.insertTrack(
+                db,
+                channelID: "C001",
+                assigneeUserID: "U001",
+                text: "Low",
+                priority: "low",
+                periodFrom: 1700100000,
+                periodTo: 1700200000
+            )
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
@@ -886,14 +924,25 @@ final class TracksViewModelTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
-            try TestDatabase.insertTrack(db, channelID: "C001", assigneeUserID: "U001", text: "Task 1",
-                                               sourceChannelName: "general")
-            try TestDatabase.insertTrack(db, channelID: "C002", assigneeUserID: "U001", text: "Task 2",
-                                               sourceChannelName: "engineering",
-                                               periodFrom: 1700100000, periodTo: 1700200000)
-            try TestDatabase.insertTrack(db, channelID: "C001", assigneeUserID: "U001", text: "Task 3",
-                                               sourceChannelName: "general",
-                                               periodFrom: 1700200000, periodTo: 1700300000)
+            try TestDatabase.insertTrack(db, channelID: "C001", assigneeUserID: "U001", text: "Task 1", sourceChannelName: "general")
+            try TestDatabase.insertTrack(
+                db,
+                channelID: "C002",
+                assigneeUserID: "U001",
+                text: "Task 2",
+                sourceChannelName: "engineering",
+                periodFrom: 1700100000,
+                periodTo: 1700200000
+            )
+            try TestDatabase.insertTrack(
+                db,
+                channelID: "C001",
+                assigneeUserID: "U001",
+                text: "Task 3",
+                sourceChannelName: "general",
+                periodFrom: 1700200000,
+                periodTo: 1700300000
+            )
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
@@ -913,8 +962,7 @@ final class TracksViewModelTests: XCTestCase {
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
             try TestDatabase.insertTrack(db, channelID: "C001", assigneeUserID: "U001", text: "Task 1")
-            try TestDatabase.insertTrack(db, channelID: "C002", assigneeUserID: "U001", text: "Task 2",
-                                               periodFrom: 1700100000, periodTo: 1700200000)
+            try TestDatabase.insertTrack(db, channelID: "C002", assigneeUserID: "U001", text: "Task 2", periodFrom: 1700100000, periodTo: 1700200000)
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
@@ -931,8 +979,7 @@ final class TracksViewModelTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
-            try TestDatabase.insertTrack(db, channelID: "C001", assigneeUserID: "U001",
-                                               text: "Task", sourceChannelName: "")
+            try TestDatabase.insertTrack(db, channelID: "C001", assigneeUserID: "U001", text: "Task", sourceChannelName: "")
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
@@ -953,10 +1000,18 @@ final class ChatHistoryViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
         // Ensure chat_conversations table exists
-        try! dbManager.dbPool.write { db in
-            try ChatConversationQueries.ensureTable(db)
+        do {
+            try dbManager.dbPool.write { db in
+                try ChatConversationQueries.ensureTable(db)
+            }
+        } catch {
+            XCTFail("setUp ensureTable failed: \(error)")
         }
     }
 
@@ -976,9 +1031,9 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testDeleteConversation() {
+    func testDeleteConversation() throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv = vm.createConversation()!
+        let conv = try XCTUnwrap(vm.createConversation())
         XCTAssertEqual(vm.conversations.count, 1)
 
         vm.deleteConversation(conv.id)
@@ -987,10 +1042,10 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testDeleteSelectedSwitchesToFirst() {
+    func testDeleteSelectedSwitchesToFirst() throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv1 = vm.createConversation()!
-        let conv2 = vm.createConversation()!
+        let conv1 = try XCTUnwrap(vm.createConversation())
+        let conv2 = try XCTUnwrap(vm.createConversation())
         vm.selectedConversationID = conv2.id
 
         vm.deleteConversation(conv2.id)
@@ -1023,9 +1078,9 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testUpdateSessionID() {
+    func testUpdateSessionID() throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv = vm.createConversation()!
+        let conv = try XCTUnwrap(vm.createConversation())
 
         vm.updateSessionID(conv.id, sessionID: "sess-abc")
 
@@ -1034,9 +1089,9 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testLoad() {
+    func testLoad() throws {
         // Create conversations directly in DB
-        try! dbManager.dbPool.write { db in
+        try dbManager.dbPool.write { db in
             try ChatConversationQueries.create(db, title: "Chat A")
             try ChatConversationQueries.create(db, title: "Chat B")
         }
@@ -1064,7 +1119,11 @@ final class DigestViewModelAdditionalTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -1094,8 +1153,7 @@ final class DigestViewModelAdditionalTests: XCTestCase {
     func testMarkDecisionRead() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(db, channelID: "C001",
-                                          decisions: #"[{"text":"Decision A"},{"text":"Decision B"}]"#)
+            try TestDatabase.insertDigest(db, channelID: "C001", decisions: #"[{"text":"Decision A"},{"text":"Decision B"}]"#)
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
@@ -1117,10 +1175,22 @@ final class DigestViewModelAdditionalTests: XCTestCase {
         // Two digests with similar decisions — channel and daily rollup
         try dbManager.dbPool.write { db in
             try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(db, channelID: "C001", periodFrom: 1700000000, periodTo: 1700086400, type: "channel",
-                                          decisions: #"[{"text":"We decided to migrate the database to PostgreSQL immediately"}]"#)
-            try TestDatabase.insertDigest(db, channelID: "", periodFrom: 1700000000, periodTo: 1700086400, type: "daily",
-                                          decisions: #"[{"text":"Team decided to migrate the database to PostgreSQL soon"}]"#)
+            try TestDatabase.insertDigest(
+                db,
+                channelID: "C001",
+                periodFrom: 1700000000,
+                periodTo: 1700086400,
+                type: "channel",
+                decisions: #"[{"text":"We decided to migrate the database to PostgreSQL immediately"}]"#
+            )
+            try TestDatabase.insertDigest(
+                db,
+                channelID: "",
+                periodFrom: 1700000000,
+                periodTo: 1700086400,
+                type: "daily",
+                decisions: #"[{"text":"Team decided to migrate the database to PostgreSQL soon"}]"#
+            )
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
@@ -1136,10 +1206,22 @@ final class DigestViewModelAdditionalTests: XCTestCase {
         // Unique decisions from both channel and daily
         try dbManager.dbPool.write { db in
             try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(db, channelID: "C001", periodFrom: 1700000000, periodTo: 1700086400, type: "channel",
-                                          decisions: #"[{"text":"Use Redis for caching"}]"#)
-            try TestDatabase.insertDigest(db, channelID: "", periodFrom: 1700000000, periodTo: 1700086400, type: "daily",
-                                          decisions: #"[{"text":"Adopt TypeScript for frontend"}]"#)
+            try TestDatabase.insertDigest(
+                db,
+                channelID: "C001",
+                periodFrom: 1700000000,
+                periodTo: 1700086400,
+                type: "channel",
+                decisions: #"[{"text":"Use Redis for caching"}]"#
+            )
+            try TestDatabase.insertDigest(
+                db,
+                channelID: "",
+                periodFrom: 1700000000,
+                periodTo: 1700086400,
+                type: "daily",
+                decisions: #"[{"text":"Adopt TypeScript for frontend"}]"#
+            )
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
@@ -1219,7 +1301,11 @@ final class OnboardingChatViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -1285,7 +1371,7 @@ final class OnboardingChatViewModelTests: XCTestCase {
         """
         let mock = MockClaudeService(eventSequence: [
             [.text("Got it!"), .done],                    // send() response
-            [.text(extractionJSON), .done],               // parseProfileFromChat() response
+            [.text(extractionJSON), .done]               // parseProfileFromChat() response
         ])
         let vm = OnboardingChatViewModel(claudeService: mock, dbManager: dbManager)
 
@@ -1308,7 +1394,7 @@ final class OnboardingChatViewModelTests: XCTestCase {
         """
         let mock = MockClaudeService(eventSequence: [
             [.text("I understand."), .done],              // send() response
-            [.text(extractionJSON), .done],               // parseProfileFromChat() response
+            [.text(extractionJSON), .done]               // parseProfileFromChat() response
         ])
         let vm = OnboardingChatViewModel(claudeService: mock, dbManager: dbManager)
 
@@ -1318,8 +1404,8 @@ final class OnboardingChatViewModelTests: XCTestCase {
 
         await vm.finishChat()
 
-        XCTAssertTrue(vm.painPoints.contains(where: { $0.lowercased().contains("decision") }))
-        XCTAssertTrue(vm.painPoints.contains(where: { $0.lowercased().contains("deadline") }))
+        XCTAssertTrue(vm.painPoints.contains { $0.lowercased().contains("decision") })
+        XCTAssertTrue(vm.painPoints.contains { $0.lowercased().contains("deadline") })
     }
 
     @MainActor
@@ -1563,7 +1649,11 @@ final class ChainsViewModelTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        (dbManager, dbPath) = try! TestDatabase.createDatabaseManager()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
     }
 
     override func tearDown() {
@@ -1602,7 +1692,15 @@ final class ChainsViewModelTests: XCTestCase {
             try TestDatabase.insertChannel(db, id: "C001")
             try TestDatabase.insertDigest(db, decisions: "[{\"text\":\"Use RDS\",\"by\":\"@alice\",\"importance\":\"high\"}]")
             try TestDatabase.insertChain(db)
-            try TestDatabase.insertChainRef(db, chainID: 1, refType: "decision", digestID: 1, decisionIdx: 0, channelID: "C001", timestamp: 1700000000)
+            try TestDatabase.insertChainRef(
+                db,
+                chainID: 1,
+                refType: "decision",
+                digestID: 1,
+                decisionIdx: 0,
+                channelID: "C001",
+                timestamp: 1700000000
+            )
         }
 
         let vm = ChainsViewModel(dbManager: dbManager)
@@ -1654,49 +1752,125 @@ final class ChainsViewModelTests: XCTestCase {
 final class ChainModelTests: XCTestCase {
     func testDecodedChannelIDs() {
         let chain = Chain(
-            id: 1, parentID: nil, title: "Test", slug: "test", status: "active",
-            summary: "", channelIDs: "[\"C1\",\"C2\"]",
-            firstSeen: 100, lastSeen: 200, itemCount: 0, readAt: nil,
-            createdAt: "", updatedAt: ""
+            id: 1,
+            parentID: nil,
+            title: "Test",
+            slug: "test",
+            status: "active",
+            summary: "",
+            channelIDs: "[\"C1\",\"C2\"]",
+            firstSeen: 100,
+            lastSeen: 200,
+            itemCount: 0,
+            readAt: nil,
+            createdAt: "",
+            updatedAt: ""
         )
         XCTAssertEqual(chain.decodedChannelIDs, ["C1", "C2"])
     }
 
     func testDecodedChannelIDsEmpty() {
         let chain = Chain(
-            id: 1, parentID: nil, title: "Test", slug: "test", status: "active",
-            summary: "", channelIDs: "[]",
-            firstSeen: 100, lastSeen: 200, itemCount: 0, readAt: nil,
-            createdAt: "", updatedAt: ""
+            id: 1,
+            parentID: nil,
+            title: "Test",
+            slug: "test",
+            status: "active",
+            summary: "",
+            channelIDs: "[]",
+            firstSeen: 100,
+            lastSeen: 200,
+            itemCount: 0,
+            readAt: nil,
+            createdAt: "",
+            updatedAt: ""
         )
         XCTAssertTrue(chain.decodedChannelIDs.isEmpty)
     }
 
     func testStatusProperties() {
-        let active = Chain(id: 1, parentID: nil, title: "", slug: "", status: "active", summary: "", channelIDs: "[]", firstSeen: 0, lastSeen: 0, itemCount: 0, readAt: nil, createdAt: "", updatedAt: "")
+        let active = Chain(
+            id: 1,
+            parentID: nil,
+            title: "",
+            slug: "",
+            status: "active",
+            summary: "",
+            channelIDs: "[]",
+            firstSeen: 0,
+            lastSeen: 0,
+            itemCount: 0,
+            readAt: nil,
+            createdAt: "",
+            updatedAt: ""
+        )
         XCTAssertTrue(active.isActive)
         XCTAssertFalse(active.isResolved)
         XCTAssertFalse(active.isStale)
         XCTAssertFalse(active.isRead)
         XCTAssertTrue(active.isParent)
 
-        let resolved = Chain(id: 2, parentID: 1, title: "", slug: "", status: "resolved", summary: "", channelIDs: "[]", firstSeen: 0, lastSeen: 0, itemCount: 0, readAt: "2026-01-01", createdAt: "", updatedAt: "")
+        let resolved = Chain(
+            id: 2,
+            parentID: 1,
+            title: "",
+            slug: "",
+            status: "resolved",
+            summary: "",
+            channelIDs: "[]",
+            firstSeen: 0,
+            lastSeen: 0,
+            itemCount: 0,
+            readAt: "2026-01-01",
+            createdAt: "",
+            updatedAt: ""
+        )
         XCTAssertTrue(resolved.isResolved)
         XCTAssertTrue(resolved.isRead)
         XCTAssertFalse(resolved.isParent)
     }
 
     func testChainRefProperties() {
-        let decRef = ChainRef(id: 1, chainID: 1, refType: "decision", digestID: 5, decisionIdx: 2, trackID: 0, channelID: "C1", timestamp: 100, createdAt: "")
+        let decRef = ChainRef(
+            id: 1,
+            chainID: 1,
+            refType: "decision",
+            digestID: 5,
+            decisionIdx: 2,
+            trackID: 0,
+            channelID: "C1",
+            timestamp: 100,
+            createdAt: ""
+        )
         XCTAssertTrue(decRef.isDecision)
         XCTAssertFalse(decRef.isTrack)
         XCTAssertFalse(decRef.isDigest)
 
-        let trackRef = ChainRef(id: 2, chainID: 1, refType: "track", digestID: 0, decisionIdx: 0, trackID: 3, channelID: "C1", timestamp: 200, createdAt: "")
+        let trackRef = ChainRef(
+            id: 2,
+            chainID: 1,
+            refType: "track",
+            digestID: 0,
+            decisionIdx: 0,
+            trackID: 3,
+            channelID: "C1",
+            timestamp: 200,
+            createdAt: ""
+        )
         XCTAssertTrue(trackRef.isTrack)
         XCTAssertFalse(trackRef.isDecision)
 
-        let digestRef = ChainRef(id: 3, chainID: 1, refType: "digest", digestID: 10, decisionIdx: 0, trackID: 0, channelID: "C1", timestamp: 300, createdAt: "")
+        let digestRef = ChainRef(
+            id: 3,
+            chainID: 1,
+            refType: "digest",
+            digestID: 10,
+            decisionIdx: 0,
+            trackID: 0,
+            channelID: "C1",
+            timestamp: 300,
+            createdAt: ""
+        )
         XCTAssertTrue(digestRef.isDigest)
         XCTAssertFalse(digestRef.isDecision)
         XCTAssertFalse(digestRef.isTrack)
@@ -1711,13 +1885,25 @@ final class BackgroundTaskManagerTests: XCTestCase {
     func testStepRecordEquality() {
         let r1 = BackgroundTaskManager.StepRecord(
             timestamp: Date(timeIntervalSince1970: 1000),
-            pipeline: "digests", step: 1, total: 10,
-            status: "Processing #general", inputTokens: 100, outputTokens: 50, costUsd: 0.001
+            pipeline: "digests",
+            step: 1,
+            total: 10,
+            status: "Processing #general",
+            inputTokens: 100,
+            outputTokens: 50,
+            costUsd: 0.001,
+            durationSeconds: 5.0
         )
         let r2 = BackgroundTaskManager.StepRecord(
             timestamp: Date(timeIntervalSince1970: 1000),
-            pipeline: "digests", step: 1, total: 10,
-            status: "Processing #general", inputTokens: 100, outputTokens: 50, costUsd: 0.001
+            pipeline: "digests",
+            step: 1,
+            total: 10,
+            status: "Processing #general",
+            inputTokens: 100,
+            outputTokens: 50,
+            costUsd: 0.001,
+            durationSeconds: 5.0
         )
         // Different UUIDs, so not equal
         XCTAssertNotEqual(r1, r2)
@@ -1728,24 +1914,26 @@ final class BackgroundTaskManagerTests: XCTestCase {
     @MainActor
     func testTotalTokensAndCost() {
         let manager = BackgroundTaskManager()
+
+        // Totals now come from accumulated progress (not step history sum).
         var digestState = BackgroundTaskManager.TaskState()
-        digestState.stepHistory = [
-            .init(timestamp: Date(), pipeline: "digests", step: 1, total: 5,
-                  status: "", inputTokens: 100, outputTokens: 50, costUsd: 0.001),
-            .init(timestamp: Date(), pipeline: "digests", step: 2, total: 5,
-                  status: "", inputTokens: 200, outputTokens: 100, costUsd: 0.002),
-        ]
+        digestState.progress = decodeProgress("""
+            {"pipeline":"digests","done":2,"total":5,"status":"","input_tokens":300,"output_tokens":150,"cost_usd":0.003,"finished":false}
+            """)
         var tracksState = BackgroundTaskManager.TaskState()
-        tracksState.stepHistory = [
-            .init(timestamp: Date(), pipeline: "tracks", step: 1, total: 3,
-                  status: "", inputTokens: 300, outputTokens: 150, costUsd: 0.003),
-        ]
+        tracksState.progress = decodeProgress("""
+            {"pipeline":"tracks","done":1,"total":3,"status":"","input_tokens":300,"output_tokens":150,"cost_usd":0.003,"finished":false}
+            """)
         manager.tasks[.digests] = digestState
         manager.tasks[.tracks] = tracksState
 
         XCTAssertEqual(manager.totalInputTokens, 600)
         XCTAssertEqual(manager.totalOutputTokens, 300)
         XCTAssertEqual(manager.totalCostUsd, 0.006, accuracy: 0.0001)
+    }
+
+    private func decodeProgress(_ json: String) -> InsightProgressData {
+        try! JSONDecoder().decode(InsightProgressData.self, from: Data(json.utf8))
     }
 
     @MainActor

@@ -13,9 +13,9 @@ final class BackgroundTaskManager {
 
         var title: String {
             switch self {
-            case .digests: "Generating Digests"
-            case .tracks: "Generating Tracks"
-            case .people: "Generating People Cards"
+            case .digests: "Digests"
+            case .tracks: "Tracks"
+            case .people: "People Cards"
             }
         }
 
@@ -53,6 +53,42 @@ final class BackgroundTaskManager {
         let inputTokens: Int
         let outputTokens: Int
         let costUsd: Double
+        let totalApiTokens: Int
+        /// Duration of this step in seconds (time since previous step or task start).
+        let durationSeconds: Double
+        var messageCount: Int?
+        var periodFrom: Double?
+        var periodTo: Double?
+
+        init(
+            timestamp: Date,
+            pipeline: String,
+            step: Int,
+            total: Int,
+            status: String,
+            inputTokens: Int,
+            outputTokens: Int,
+            costUsd: Double,
+            totalApiTokens: Int = 0,
+            durationSeconds: Double,
+            messageCount: Int? = nil,
+            periodFrom: Double? = nil,
+            periodTo: Double? = nil
+        ) {
+            self.timestamp = timestamp
+            self.pipeline = pipeline
+            self.step = step
+            self.total = total
+            self.status = status
+            self.inputTokens = inputTokens
+            self.outputTokens = outputTokens
+            self.costUsd = costUsd
+            self.totalApiTokens = totalApiTokens
+            self.durationSeconds = durationSeconds
+            self.messageCount = messageCount
+            self.periodFrom = periodFrom
+            self.periodTo = periodTo
+        }
     }
 
     struct TaskState {
@@ -96,44 +132,63 @@ final class BackgroundTaskManager {
         }
     }
 
-    /// Total input tokens across all tasks.
+    /// Total input tokens across all tasks (from accumulated pipeline counters).
     var totalInputTokens: Int {
-        tasks.values.reduce(0) { sum, state in
-            sum + state.stepHistory.reduce(0) { $0 + $1.inputTokens }
-        }
+        tasks.values.reduce(0) { $0 + ($1.progress?.inputTokens ?? 0) }
     }
 
-    /// Total output tokens across all tasks.
+    /// Total output tokens across all tasks (from accumulated pipeline counters).
     var totalOutputTokens: Int {
-        tasks.values.reduce(0) { sum, state in
-            sum + state.stepHistory.reduce(0) { $0 + $1.outputTokens }
-        }
+        tasks.values.reduce(0) { $0 + ($1.progress?.outputTokens ?? 0) }
     }
 
-    /// Total cost across all tasks.
+    /// Total cost across all tasks (from accumulated pipeline counters).
     var totalCostUsd: Double {
-        tasks.values.reduce(0.0) { sum, state in
-            sum + state.stepHistory.reduce(0.0) { $0 + $1.costUsd }
-        }
+        tasks.values.reduce(0.0) { $0 + ($1.progress?.costUsd ?? 0) }
+    }
+
+    /// Total API tokens (our content + CLI overhead).
+    var totalApiTokens: Int {
+        tasks.values.reduce(0) { $0 + ($1.progress?.totalApiTokens ?? 0) }
     }
 
     private var runningProcess: Process?
+    private var pipelineTask: Task<Void, Never>?
+
+    /// Stop all running pipelines (terminates current process and cancels orchestration task).
+    func stopAll() {
+        runningProcess?.terminate()
+        runningProcess = nil
+        pipelineTask?.cancel()
+        pipelineTask = nil
+        for kind in TaskKind.allCases {
+            if tasks[kind]?.status == .running || tasks[kind]?.status == .pending {
+                tasks[kind]?.status = .error("Stopped")
+            }
+        }
+    }
 
     /// Start all background pipelines: digests first, then tracks + people in parallel, then daemon.
     func startPipelines(legacyPeople: Bool = false) {
+        // Guard against duplicate calls — only start if no pipeline is active
+        guard pipelineTask == nil else { return }
+
         // Initialize task states for active pipelines
         for kind in TaskKind.allCases {
             tasks[kind] = TaskState()
         }
 
-        Task {
+        pipelineTask = Task {
             // Phase 1: digests (tracks depend on digest decisions)
             await runTask(.digests)
+            guard !Task.isCancelled else { return }
 
             // Phase 2: tracks + people in parallel
-            async let tracksResult: Void = runTask(.tracks)
-            async let peopleResult: Void = runTask(.people)
-            _ = await (tracksResult, peopleResult)
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await self.runTask(.tracks) }
+                group.addTask { await self.runTask(.people) }
+            }
+            guard !Task.isCancelled else { return }
 
             // Phase 3: start daemon after all pipelines complete
             if let path = Constants.findCLIPath() {
@@ -142,6 +197,7 @@ final class BackgroundTaskManager {
 
             // Mark pipelines as completed for restart detection
             UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+            pipelineTask = nil
         }
     }
 
@@ -201,23 +257,7 @@ final class BackgroundTaskManager {
                     if let data = line.data(using: .utf8),
                        let json = try? decoder.decode(InsightProgressData.self, from: data) {
                         await MainActor.run {
-                            let prevDone = self.tasks[kind]?.progress?.done ?? 0
-                            self.tasks[kind]?.progress = json
-                            self.updateETA(kind: kind, progress: json)
-                            // Record completed step
-                            if json.done > prevDone {
-                                let record = StepRecord(
-                                    timestamp: Date(),
-                                    pipeline: json.pipeline,
-                                    step: json.done,
-                                    total: json.total,
-                                    status: json.status ?? "",
-                                    inputTokens: json.inputTokens,
-                                    outputTokens: json.outputTokens,
-                                    costUsd: json.costUsd
-                                )
-                                self.tasks[kind]?.stepHistory.append(record)
-                            }
+                            self.handleProgressUpdate(kind: kind, json: json)
                         }
                         if json.finished == true {
                             lastFinished = json
@@ -232,8 +272,8 @@ final class BackgroundTaskManager {
 
         // Wait for process exit
         let exitCode: Int32 = await withCheckedContinuation { cont in
-            process.terminationHandler = { p in
-                cont.resume(returning: p.terminationStatus)
+            process.terminationHandler = { proc in
+                cont.resume(returning: proc.terminationStatus)
             }
         }
 
@@ -258,6 +298,48 @@ final class BackgroundTaskManager {
         }
     }
 
+    private func handleProgressUpdate(kind: TaskKind, json: InsightProgressData) {
+        tasks[kind]?.progress = json
+        updateETA(kind: kind, progress: json)
+        // Only record completed steps: must have step_duration_seconds > 0
+        // and status containing "done" (filters out chains/rollup progress noise).
+        guard let stepDur = json.stepDurationSeconds, stepDur > 0,
+              let status = json.status, status.contains("done") else { return }
+        let now = Date()
+        let duration = stepDur
+        let stepInput: Int
+        let stepOutput: Int
+        let stepCost: Double
+        if let si = json.stepInputTokens, let so = json.stepOutputTokens, let sc = json.stepCostUsd {
+            stepInput = si
+            stepOutput = so
+            stepCost = sc
+        } else {
+            stepInput = 0
+            stepOutput = 0
+            stepCost = 0
+        }
+        // Per-step API tokens: delta from accumulated.
+        let prevAPI = tasks[kind]?.stepHistory.reduce(0) { $0 + $1.totalApiTokens } ?? 0
+        let stepAPI = max(0, (json.totalApiTokens ?? 0) - prevAPI)
+        let record = StepRecord(
+            timestamp: now,
+            pipeline: json.pipeline,
+            step: json.done,
+            total: json.total,
+            status: json.status ?? "",
+            inputTokens: stepInput,
+            outputTokens: stepOutput,
+            costUsd: stepCost,
+            totalApiTokens: stepAPI,
+            durationSeconds: duration,
+            messageCount: json.messageCount,
+            periodFrom: json.periodFrom,
+            periodTo: json.periodTo
+        )
+        tasks[kind]?.stepHistory.append(record)
+    }
+
     private func updateETA(kind: TaskKind, progress: InsightProgressData) {
         guard let state = tasks[kind],
               let startedAt = state.startedAt,
@@ -272,7 +354,7 @@ final class BackgroundTaskManager {
         tasks[kind]?.etaSeconds = remaining
     }
 
-    private nonisolated static func runCLIFireAndForget(path: String, arguments: [String]) async {
+    nonisolated private static func runCLIFireAndForget(path: String, arguments: [String]) async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: path)
