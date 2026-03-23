@@ -1990,7 +1990,7 @@ func TestProcessExtractedItems_FingerprintDedup_ReopensDone(t *testing.T) {
 
 	pipe := New(database, testConfig(), gen, log.Default())
 	msgs := []db.Message{{ChannelID: "C1", TS: "1000000099.000000", UserID: "U1", Text: "test"}}
-	pipe.processChannel(context.Background(), "U1", "testuser", "C1", "#test", msgs, 1000000000, 1000100000)
+	_, _ = pipe.processChannel(context.Background(), "U1", "testuser", "C1", "#test", msgs, 1000000000, 1000100000)
 
 	// The done track should be reopened, not a new one created.
 	tracks, err := database.GetExistingTracksForChannel("C1", "U1")
@@ -2039,7 +2039,7 @@ func TestProcessExtractedItems_FingerprintDedup_AppendsDismissed(t *testing.T) {
 
 	pipe := New(database, testConfig(), gen, log.Default())
 	msgs := []db.Message{{ChannelID: "C1", TS: "1000000099.000000", UserID: "U1", Text: "test"}}
-	pipe.processChannel(context.Background(), "U1", "testuser", "C1", "#test", msgs, 1000000000, 1000100000)
+	_, _ = pipe.processChannel(context.Background(), "U1", "testuser", "C1", "#test", msgs, 1000000000, 1000100000)
 
 	// Should NOT reopen dismissed — only append activity.
 	allTracks, err := database.GetTracks(db.TrackFilter{AssigneeUserID: "U1"})

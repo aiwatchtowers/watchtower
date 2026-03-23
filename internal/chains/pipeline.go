@@ -650,7 +650,7 @@ type assignment struct {
 	Title         string  `json:"title,omitempty"`
 	Slug          string  `json:"slug,omitempty"`
 	Summary       string  `json:"summary,omitempty"`
-	Confidence    float64 `json:"confidence"`           // 0-100 confidence score
+	Confidence    float64 `json:"confidence"` // 0-100 confidence score
 }
 
 func parseResponse(resp string) ([]assignment, error) {

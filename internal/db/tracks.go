@@ -996,7 +996,7 @@ func (db *DB) ReopenTrack(id int64, newContext string) error {
 		args = append(args, newContext)
 	}
 	args = append(args, id)
-	if _, err := tx.Exec(`UPDATE tracks SET `+setClauses+` WHERE id = ?`, args...); err != nil {
+	if _, err := tx.Exec(`UPDATE tracks SET `+setClauses+` WHERE id = ?`, args...); err != nil { //nolint:gosec // setClauses built from constants, not user input
 		return fmt.Errorf("reopening track: %w", err)
 	}
 
