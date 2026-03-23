@@ -16,6 +16,7 @@ final class ConfigService {
     var digestLanguage: String?
     var aiModel: String?
     var analysisLegacyMode: Bool = false
+    var briefingHour: Int = 8
     var claudePath: String?
     var parseError: String?
 
@@ -59,6 +60,10 @@ final class ConfigService {
                 analysisLegacyMode = (analysis["legacy_mode"] as? Bool) ?? false
             }
 
+            if let briefing = yaml["briefing"] as? [String: Any] {
+                briefingHour = (briefing["hour"] as? Int) ?? 8
+            }
+
             if let ai = yaml["ai"] as? [String: Any] {
                 aiModel = ai["model"] as? String
             }
@@ -91,6 +96,11 @@ final class ConfigService {
         if let val = digestMinMessages { digest["min_messages"] = val } else { digest.removeValue(forKey: "min_messages") }
         if let val = digestLanguage, !val.isEmpty { digest["language"] = val } else { digest.removeValue(forKey: "language") }
         if !digest.isEmpty { yaml["digest"] = digest } else { yaml.removeValue(forKey: "digest") }
+
+        // Briefing section
+        var briefing = (yaml["briefing"] as? [String: Any]) ?? [:]
+        briefing["hour"] = briefingHour
+        yaml["briefing"] = briefing
 
         // AI section
         var ai = (yaml["ai"] as? [String: Any]) ?? [:]

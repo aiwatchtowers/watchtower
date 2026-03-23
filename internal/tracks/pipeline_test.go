@@ -1860,3 +1860,197 @@ func TestDayWindowDifferentTimezones(t *testing.T) {
 	assert.Equal(t, 0, startTime.Hour())
 	assert.Equal(t, 0, startTime.Minute())
 }
+
+// --- extractFingerprint tests ---
+
+func TestExtractFingerprint_Tickets(t *testing.T) {
+	fp := extractFingerprint(
+		"Назначить ответственных за CEX-2711, CEX-4565, CEX-4245",
+		"Уязвимости SfD включая FIAT-150 и NOVA-212",
+	)
+	assert.Contains(t, fp, "CEX-2711")
+	assert.Contains(t, fp, "CEX-4565")
+	assert.Contains(t, fp, "CEX-4245")
+	assert.Contains(t, fp, "FIAT-150")
+	assert.Contains(t, fp, "NOVA-212")
+}
+
+func TestExtractFingerprint_CVEs(t *testing.T) {
+	fp := extractFingerprint(
+		"Устранить критическую уязвимость CVE-2026-4342 в ingress-nginx",
+		"Также CVE-2026-26931",
+	)
+	assert.Contains(t, fp, "CVE-2026-4342")
+	assert.Contains(t, fp, "CVE-2026-26931")
+}
+
+func TestExtractFingerprint_UserIDs(t *testing.T) {
+	fp := extractFingerprint(
+		"Проконтролировать U010T16N5LN и U0A8N9YS2AF",
+		"",
+	)
+	assert.Contains(t, fp, "U010T16N5LN")
+	assert.Contains(t, fp, "U0A8N9YS2AF")
+}
+
+func TestExtractFingerprint_IPs(t *testing.T) {
+	fp := extractFingerprint(
+		"Расследовать проблему с сервисом 10.200.200.251",
+		"Серверы 18.157.162.22 тоже затронуты",
+	)
+	assert.Contains(t, fp, "10.200.200.251")
+	assert.Contains(t, fp, "18.157.162.22")
+}
+
+func TestExtractFingerprint_MRs(t *testing.T) {
+	fp := extractFingerprint(
+		"Прояснить причину отзыва аппрува по MR !6584 (CEX-3686)",
+		"Также MR !6582",
+	)
+	assert.Contains(t, fp, "MR6584")
+	assert.Contains(t, fp, "MR6582")
+	assert.Contains(t, fp, "CEX-3686")
+}
+
+func TestExtractFingerprint_Dedup(t *testing.T) {
+	fp := extractFingerprint(
+		"CEX-2711 and CEX-2711 again",
+		"Plus CEX-2711 in context",
+	)
+	count := 0
+	for _, f := range fp {
+		if f == "CEX-2711" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "should deduplicate")
+}
+
+func TestExtractFingerprint_Sorted(t *testing.T) {
+	fp := extractFingerprint("CEX-9999 CEX-1111 CEX-5555", "")
+	assert.Equal(t, []string{"CEX-1111", "CEX-5555", "CEX-9999"}, fp)
+}
+
+func TestExtractFingerprint_Empty(t *testing.T) {
+	fp := extractFingerprint("No entities here at all", "just plain text")
+	assert.Empty(t, fp)
+}
+
+func TestFingerprintJSON(t *testing.T) {
+	assert.Equal(t, `["CEX-1234","CVE-2026-1"]`, fingerprintJSON([]string{"CEX-1234", "CVE-2026-1"}))
+	assert.Equal(t, "[]", fingerprintJSON(nil))
+	assert.Equal(t, "[]", fingerprintJSON([]string{}))
+}
+
+// --- Fingerprint dedup integration test ---
+
+func TestProcessExtractedItems_FingerprintDedup_ReopensDone(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "testuser", DisplayName: "Test"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "test", Type: "public"}))
+
+	// Create an existing done track with fingerprint containing CEX-2711.
+	_, err := database.UpsertTrack(db.Track{
+		ChannelID:       "C1",
+		AssigneeUserID:  "U1",
+		Text:            "Fix CEX-2711 vulnerability",
+		Context:         "Old context",
+		SourceMessageTS: "1000000001.000000",
+		Status:          "inbox",
+		Priority:        "high",
+		PeriodFrom:      1000000000,
+		PeriodTo:        1000100000,
+		Fingerprint:     `["CEX-2711"]`,
+	})
+	require.NoError(t, err)
+
+	// Mark it as done.
+	err = database.UpdateTrackStatus(1, "done")
+	require.NoError(t, err)
+
+	// Insert a message so processChannel has something to process.
+	require.NoError(t, database.UpsertMessage(db.Message{
+		ChannelID: "C1", TS: "1000000099.000000", UserID: "U1",
+		Text: "CEX-2711 needs another look",
+	}))
+
+	// Now pipeline extracts a new track mentioning CEX-2711 from a different message.
+	gen := &mockGenerator{
+		response: `{"items": [{
+			"text": "Verify CEX-2711 is deployed",
+			"context": "New activity on the same vulnerability",
+			"channel_id": "C1",
+			"channel_name": "#test",
+			"source_message_ts": "1000000099.000000",
+			"priority": "medium"
+		}]}`,
+	}
+
+	pipe := New(database, testConfig(), gen, log.Default())
+	msgs := []db.Message{{ChannelID: "C1", TS: "1000000099.000000", UserID: "U1", Text: "test"}}
+	pipe.processChannel(context.Background(), "U1", "testuser", "C1", "#test", msgs, 1000000000, 1000100000)
+
+	// The done track should be reopened, not a new one created.
+	tracks, err := database.GetExistingTracksForChannel("C1", "U1")
+	require.NoError(t, err)
+	require.Len(t, tracks, 1, "should reopen existing, not create new")
+	assert.Equal(t, "inbox", tracks[0].Status)
+	assert.True(t, tracks[0].HasUpdates)
+}
+
+func TestProcessExtractedItems_FingerprintDedup_AppendsDismissed(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "testuser", DisplayName: "Test"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "test", Type: "public"}))
+
+	// Create an existing dismissed track with fingerprint.
+	_, err := database.UpsertTrack(db.Track{
+		ChannelID:       "C1",
+		AssigneeUserID:  "U1",
+		Text:            "Investigate CEX-5268 permissions",
+		Context:         "Old context",
+		SourceMessageTS: "1000000001.000000",
+		Status:          "inbox",
+		Priority:        "medium",
+		PeriodFrom:      1000000000,
+		PeriodTo:        1000100000,
+		Fingerprint:     `["CEX-5268"]`,
+	})
+	require.NoError(t, err)
+
+	err = database.UpdateTrackStatus(1, "dismissed")
+	require.NoError(t, err)
+
+	// Pipeline extracts a new track mentioning CEX-5268.
+	gen := &mockGenerator{
+		response: `{"items": [{
+			"text": "Follow up on CEX-5268 deadline",
+			"context": "New activity",
+			"channel_id": "C1",
+			"channel_name": "#test",
+			"source_message_ts": "1000000099.000000",
+			"priority": "medium"
+		}]}`,
+	}
+
+	pipe := New(database, testConfig(), gen, log.Default())
+	msgs := []db.Message{{ChannelID: "C1", TS: "1000000099.000000", UserID: "U1", Text: "test"}}
+	pipe.processChannel(context.Background(), "U1", "testuser", "C1", "#test", msgs, 1000000000, 1000100000)
+
+	// Should NOT reopen dismissed — only append activity.
+	allTracks, err := database.GetTracks(db.TrackFilter{AssigneeUserID: "U1"})
+	require.NoError(t, err)
+
+	// Count non-dismissed tracks (should be 0 — the dismissed stays dismissed, no new created).
+	activeCount := 0
+	for _, tr := range allTracks {
+		if tr.Status != "dismissed" {
+			activeCount++
+		}
+	}
+	assert.Equal(t, 0, activeCount, "dismissed track should stay dismissed, no new track created")
+}

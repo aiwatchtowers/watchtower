@@ -723,8 +723,18 @@ func (cb *ContextBuilder) resolveChannelName(channelID string) string {
 		cb.channelNameCache[channelID] = channelID
 		return channelID
 	}
-	cb.channelNameCache[channelID] = ch.Name
-	return ch.Name
+	name := ch.Name
+	if name == "" && (ch.Type == "dm" || ch.Type == "im") && ch.DMUserID.Valid && ch.DMUserID.String != "" {
+		displayName, _ := cb.resolveUser(ch.DMUserID.String)
+		if displayName != "" {
+			name = "DM: " + displayName
+		}
+	}
+	if name == "" {
+		name = channelID
+	}
+	cb.channelNameCache[channelID] = name
+	return name
 }
 
 // resolveUser returns the username and display name for a user ID.

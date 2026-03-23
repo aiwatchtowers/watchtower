@@ -9,7 +9,8 @@ enum TrackQueries {
         channelID: String? = nil,
         priority: String? = nil,
         ownership: String? = nil,
-        limit: Int = 200
+        limit: Int = 200,
+        offset: Int = 0
     ) throws -> [Track] {
         var conditions: [String] = []
         var args: [any DatabaseValueConvertible] = []
@@ -39,13 +40,27 @@ enum TrackQueries {
             args.append(ownership)
         }
 
-        var sql = "SELECT * FROM tracks"
+        var sql = """
+            SELECT t.*,
+              CASE
+                WHEN t.source_channel_name = '' OR t.source_channel_name = t.channel_id THEN
+                  COALESCE(
+                    (SELECT 'DM: ' || COALESCE(NULLIF(u.display_name, ''), u.name)
+                     FROM channels c JOIN users u ON c.dm_user_id = u.id
+                     WHERE c.id = t.channel_id AND c.type IN ('dm', 'im')),
+                    CASE WHEN t.source_channel_name = '' THEN t.channel_id ELSE t.source_channel_name END
+                  )
+                ELSE t.source_channel_name
+              END as source_channel_name
+            FROM tracks t
+            """
         if !conditions.isEmpty {
             sql += " WHERE " + conditions.joined(separator: " AND ")
         }
-        sql += " ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END, created_at DESC"
-        sql += " LIMIT ?"
+        sql += " ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END, CASE WHEN source_message_ts != '' THEN source_message_ts ELSE created_at END DESC"
+        sql += " LIMIT ? OFFSET ?"
         args.append(limit)
+        args.append(offset)
 
         return try Track.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
@@ -107,6 +122,15 @@ enum TrackQueries {
                 INSERT INTO track_history (track_id, event, field, old_value, new_value)
                 VALUES (?, ?, 'status', ?, ?)
                 """, arguments: [id, event, oldStatus, status])
+
+            // Implicit feedback for Training
+            if status == "dismissed" {
+                try FeedbackQueries.addFeedback(db, entityType: "track", entityID: "\(id)", rating: -1,
+                                                comment: "dismissed")
+            } else if status == "done" || (status == "active" && oldStatus == "inbox") {
+                try FeedbackQueries.addFeedback(db, entityType: "track", entityID: "\(id)", rating: 1,
+                                                comment: status == "done" ? "completed" : "accepted")
+            }
         }
     }
 
@@ -142,6 +166,47 @@ enum TrackQueries {
             INSERT INTO track_history (track_id, event, field, old_value, new_value)
             VALUES (?, 'update_read', '', '', '')
             """, arguments: [id])
+    }
+
+    static func updatePriority(_ db: Database, id: Int, priority: String) throws {
+        let old = try String.fetchOne(db, sql: "SELECT priority FROM tracks WHERE id = ?", arguments: [id])
+        try db.execute(sql: "UPDATE tracks SET priority = ? WHERE id = ?", arguments: [priority, id])
+        if let old, old != priority {
+            try db.execute(sql: """
+                INSERT INTO track_history (track_id, event, field, old_value, new_value)
+                VALUES (?, 'priority_changed', 'priority', ?, ?)
+                """, arguments: [id, old, priority])
+            // Implicit negative feedback: AI assigned wrong priority
+            try FeedbackQueries.addFeedback(db, entityType: "track", entityID: "\(id)", rating: -1,
+                                            comment: "priority corrected: \(old) → \(priority)")
+        }
+    }
+
+    static func updateCategory(_ db: Database, id: Int, category: String) throws {
+        let old = try String.fetchOne(db, sql: "SELECT category FROM tracks WHERE id = ?", arguments: [id])
+        try db.execute(sql: "UPDATE tracks SET category = ? WHERE id = ?", arguments: [category, id])
+        if let old, old != category {
+            try db.execute(sql: """
+                INSERT INTO track_history (track_id, event, field, old_value, new_value)
+                VALUES (?, 'category_changed', 'category', ?, ?)
+                """, arguments: [id, old, category])
+            // Implicit negative feedback: AI assigned wrong category
+            try FeedbackQueries.addFeedback(db, entityType: "track", entityID: "\(id)", rating: -1,
+                                            comment: "category corrected: \(old) → \(category)")
+        }
+    }
+
+    static func updateOwnership(_ db: Database, id: Int, ownership: String) throws {
+        let old = try String.fetchOne(db, sql: "SELECT ownership FROM tracks WHERE id = ?", arguments: [id])
+        try db.execute(sql: "UPDATE tracks SET ownership = ? WHERE id = ?", arguments: [ownership, id])
+        if let old, old != ownership {
+            try db.execute(sql: """
+                INSERT INTO track_history (track_id, event, field, old_value, new_value)
+                VALUES (?, 'ownership_changed', 'ownership', ?, ?)
+                """, arguments: [id, old, ownership])
+            try FeedbackQueries.addFeedback(db, entityType: "track", entityID: "\(id)", rating: -1,
+                                            comment: "ownership corrected: \(old) → \(ownership)")
+        }
     }
 
     static func fetchByID(_ db: Database, id: Int) throws -> Track? {

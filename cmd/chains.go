@@ -41,10 +41,18 @@ var chainsArchiveCmd = &cobra.Command{
 	RunE:  runChainsArchive,
 }
 
+var chainsReopenCmd = &cobra.Command{
+	Use:   "reopen <id>",
+	Short: "Reopen a resolved chain (set back to active)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runChainsReopen,
+}
+
 func init() {
 	rootCmd.AddCommand(chainsCmd)
 	chainsCmd.AddCommand(chainsGenerateCmd)
 	chainsCmd.AddCommand(chainsArchiveCmd)
+	chainsCmd.AddCommand(chainsReopenCmd)
 	chainsCmd.Flags().StringVar(&chainsFlagStatus, "status", "", "filter by status (active, resolved, stale)")
 }
 
@@ -260,5 +268,30 @@ func runChainsArchive(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Chain #%d archived.\n", id)
+	return nil
+}
+
+func runChainsReopen(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return err
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid chain ID: %s", args[0])
+	}
+
+	if err := database.UpdateChainStatus(id, "active"); err != nil {
+		return fmt.Errorf("reopening chain: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Chain #%d reopened.\n", id)
 	return nil
 }

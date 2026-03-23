@@ -700,6 +700,16 @@ struct DigestListView: View {
             LazyVStack(spacing: 1) {
                 ForEach(filteredDigests) { digest in
                     digestListItem(digest, vm: vm)
+                        .onAppear {
+                            if digest.id == filteredDigests.last?.id {
+                                vm.loadMoreDigests()
+                            }
+                        }
+                }
+                if vm.isLoadingMoreDigests {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(8)
                 }
             }
             .padding(.vertical, 4)
@@ -756,6 +766,8 @@ struct DigestListView: View {
                 expandedDigestIDs.remove(id)
             } else {
                 expandedDigestIDs.insert(id)
+                // Mark digest as read when expanded
+                viewModel?.markDigestRead(id)
             }
         }
     }

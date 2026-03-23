@@ -5,7 +5,8 @@ enum DigestQueries {
         _ db: Database,
         type: String? = nil,
         channelID: String? = nil,
-        limit: Int = 50
+        limit: Int = 50,
+        offset: Int = 0
     ) throws -> [Digest] {
         var conditions: [String] = []
         var args: [any DatabaseValueConvertible] = []
@@ -23,8 +24,9 @@ enum DigestQueries {
         if !conditions.isEmpty {
             sql += " WHERE " + conditions.joined(separator: " AND ")
         }
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         args.append(limit)
+        args.append(offset)
 
         return try Digest.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
@@ -44,15 +46,15 @@ enum DigestQueries {
         )
     }
 
-    static func fetchWithDecisions(_ db: Database, limit: Int = 50) throws -> [Digest] {
+    static func fetchWithDecisions(_ db: Database, limit: Int = 50, offset: Int = 0) throws -> [Digest] {
         try Digest.fetchAll(
             db,
             sql: """
                 SELECT * FROM digests
                 WHERE decisions != '[]' AND decisions IS NOT NULL
-                ORDER BY created_at DESC LIMIT ?
+                ORDER BY created_at DESC LIMIT ? OFFSET ?
                 """,
-            arguments: [limit]
+            arguments: [limit, offset]
         )
     }
 

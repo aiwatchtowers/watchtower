@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"watchtower/internal/config"
@@ -112,10 +115,10 @@ type Pipeline struct {
 	ChainLinker ChainLinker
 
 	// accumulated usage across all Generate calls (atomic for concurrent workers)
-	totalInputTokens    atomic.Int64
-	totalOutputTokens   atomic.Int64
-	totalCostMicro      atomic.Int64 // cost * 1e6 for atomic ops
-	totalAPITokens atomic.Int64 // total API tokens (our content + CLI overhead)
+	totalInputTokens  atomic.Int64
+	totalOutputTokens atomic.Int64
+	totalCostMicro    atomic.Int64 // cost * 1e6 for atomic ops
+	totalAPITokens    atomic.Int64 // total API tokens (our content + CLI overhead)
 
 	// accumulated stats across all channel digests (atomic for concurrent workers)
 	totalMessageCount  atomic.Int64
@@ -125,12 +128,12 @@ type Pipeline struct {
 	// LastStep* fields are set before each OnProgress callback with the
 	// current step's message count and time window. Read them in OnProgress.
 	LastStepMessageCount    int
-	LastStepPeriodFrom     time.Time
-	LastStepPeriodTo       time.Time
+	LastStepPeriodFrom      time.Time
+	LastStepPeriodTo        time.Time
 	LastStepDurationSeconds float64
-	LastStepInputTokens    int
-	LastStepOutputTokens   int
-	LastStepCostUSD        float64
+	LastStepInputTokens     int
+	LastStepOutputTokens    int
+	LastStepCostUSD         float64
 
 	// caches populated during a run
 	channelNames map[string]string
@@ -206,6 +209,28 @@ func (p *Pipeline) getPrompt(id, fallback string) (string, int) {
 	return tmpl, 0
 }
 
+// acquireDigestLock acquires an exclusive file lock to prevent concurrent digest runs.
+// Returns the lock file (caller must defer Close) and unlock func, or error if already locked.
+func (p *Pipeline) acquireDigestLock() (*os.File, func(), error) {
+	lockPath := filepath.Join(p.cfg.WorkspaceDir(), "digest.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, nil, fmt.Errorf("creating lock dir: %w", err)
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening digest lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("another digest pipeline is already running")
+	}
+	unlock := func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}
+	return f, unlock, nil
+}
+
 // Run executes the full digest pipeline: channel digests, then daily rollup.
 // Returns the number of channel digests generated and total token usage.
 func (p *Pipeline) Run(ctx context.Context) (int, *Usage, error) {
@@ -213,11 +238,33 @@ func (p *Pipeline) Run(ctx context.Context) (int, *Usage, error) {
 		return 0, nil, nil
 	}
 
-	// Clean up duplicate daily/weekly rollups from before period_to normalization
+	_, unlock, err := p.acquireDigestLock()
+	if err != nil {
+		p.logger.Printf("digest: skipping — %v", err)
+		return 0, nil, nil
+	}
+	defer unlock()
+
+	// Clean up duplicate digests from near-simultaneous pipeline runs
+	var totalDeduped int64
+	if removed, err := p.db.DeduplicateChannelDigests(); err != nil {
+		p.logger.Printf("digest: warning: channel dedup cleanup failed: %v", err)
+	} else {
+		totalDeduped += removed
+	}
 	if removed, err := p.db.DeduplicateDailyDigests(); err != nil {
 		p.logger.Printf("digest: warning: dedup cleanup failed: %v", err)
-	} else if removed > 0 {
-		p.logger.Printf("digest: cleaned up %d duplicate rollup digests", removed)
+	} else {
+		totalDeduped += removed
+	}
+	if totalDeduped > 0 {
+		p.logger.Printf("digest: cleaned up %d duplicate digests", totalDeduped)
+		// Remove chain_refs pointing to deleted digests
+		if orphaned, err := p.db.CleanOrphanedChainRefs(); err != nil {
+			p.logger.Printf("digest: warning: orphaned chain ref cleanup failed: %v", err)
+		} else if orphaned > 0 {
+			p.logger.Printf("digest: cleaned up %d orphaned chain refs", orphaned)
+		}
 	}
 
 	p.loadCaches()
@@ -253,10 +300,31 @@ func (p *Pipeline) RunChannelDigestsOnly(ctx context.Context) (int, *Usage, erro
 		return 0, nil, nil
 	}
 
+	_, unlock, err := p.acquireDigestLock()
+	if err != nil {
+		p.logger.Printf("digest: skipping — %v", err)
+		return 0, nil, nil
+	}
+	defer unlock()
+
+	var totalDeduped int64
+	if removed, err := p.db.DeduplicateChannelDigests(); err != nil {
+		p.logger.Printf("digest: warning: channel dedup cleanup failed: %v", err)
+	} else {
+		totalDeduped += removed
+	}
 	if removed, err := p.db.DeduplicateDailyDigests(); err != nil {
 		p.logger.Printf("digest: warning: dedup cleanup failed: %v", err)
-	} else if removed > 0 {
-		p.logger.Printf("digest: cleaned up %d duplicate rollup digests", removed)
+	} else {
+		totalDeduped += removed
+	}
+	if totalDeduped > 0 {
+		p.logger.Printf("digest: cleaned up %d duplicate digests", totalDeduped)
+		if orphaned, err := p.db.CleanOrphanedChainRefs(); err != nil {
+			p.logger.Printf("digest: warning: orphaned chain ref cleanup failed: %v", err)
+		} else if orphaned > 0 {
+			p.logger.Printf("digest: cleaned up %d orphaned chain refs", orphaned)
+		}
 	}
 
 	p.loadCaches()
@@ -296,6 +364,13 @@ func (p *Pipeline) RunRollups(ctx context.Context) error {
 		return nil
 	}
 
+	_, unlock, err := p.acquireDigestLock()
+	if err != nil {
+		p.logger.Printf("digest: skipping rollups — %v", err)
+		return nil
+	}
+	defer unlock()
+
 	p.loadCaches()
 
 	if err := p.RunDailyRollup(ctx); err != nil {
@@ -313,6 +388,9 @@ func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
 	if sinceUnix == 0 {
 		sinceUnix = p.lastDigestTime()
 	}
+	// Truncate to nearest minute to prevent near-duplicate digests when
+	// the pipeline runs twice within seconds (same period_from key).
+	sinceUnix = float64(int64(sinceUnix) / 60 * 60)
 	nowUnix := float64(time.Now().Unix())
 	return p.runChannelDigestsForWindow(ctx, sinceUnix, nowUnix)
 }
@@ -450,7 +528,10 @@ func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, no
 					lastErrMu.Lock()
 					lastErr = err
 					lastErrMu.Unlock()
-					completed.Add(1)
+					done := int(completed.Add(1))
+					if p.OnProgress != nil {
+						p.OnProgress(done, total, fmt.Sprintf("#%s error: %v", t.channelName, err))
+					}
 					continue
 				}
 
@@ -470,7 +551,10 @@ func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, no
 					lastErrMu.Lock()
 					lastErr = err
 					lastErrMu.Unlock()
-					completed.Add(1)
+					done := int(completed.Add(1))
+					if p.OnProgress != nil {
+						p.OnProgress(done, total, fmt.Sprintf("#%s store error: %v", t.channelName, err))
+					}
 					continue
 				}
 

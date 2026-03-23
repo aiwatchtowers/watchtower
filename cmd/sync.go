@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"encoding/json"
+	"watchtower/internal/briefing"
 	"watchtower/internal/chains"
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
@@ -270,6 +271,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 			d.SetChainsPipeline(chainsPipe)
 			d.SetTracksPipeline(tracks.New(database, cfg, gen, logger))
 			d.SetPeoplePipeline(guide.New(database, cfg, gen, logger))
+			if cfg.Briefing.Enabled {
+				d.SetBriefingPipeline(briefing.New(database, cfg, gen, logger))
+			}
 		}
 		return d.Run(ctx)
 	}

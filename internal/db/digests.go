@@ -200,6 +200,21 @@ func (db *DB) DeduplicateDailyDigests() (int64, error) {
 	return res.RowsAffected()
 }
 
+// DeduplicateChannelDigests removes duplicate channel digests created when
+// period_from differs by seconds due to repeated pipeline runs.
+// Keeps only the newest per (channel_id, period_to rounded to minute).
+func (db *DB) DeduplicateChannelDigests() (int64, error) {
+	res, err := db.Exec(`DELETE FROM digests WHERE id NOT IN (
+		SELECT MAX(id) FROM digests
+		WHERE type = 'channel'
+		GROUP BY channel_id, type, CAST(period_from AS INTEGER) / 60, CAST(period_to AS INTEGER) / 60
+	) AND type = 'channel'`)
+	if err != nil {
+		return 0, fmt.Errorf("deduplicating channel digests: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // DigestStats holds aggregate usage statistics for digests.
 type DigestStats struct {
 	TotalDigests  int

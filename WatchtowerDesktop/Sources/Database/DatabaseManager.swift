@@ -111,6 +111,13 @@ final class DatabaseManager: Sendable {
             try db.execute(sql: "DELETE FROM guide_summaries")
             try db.execute(sql: "DELETE FROM people_card_summaries")
 
+            // Briefings
+            try db.execute(sql: "DELETE FROM briefings")
+
+            // Pipeline run history
+            try db.execute(sql: "DELETE FROM pipeline_steps")
+            try db.execute(sql: "DELETE FROM pipeline_runs")
+
             // Feedback & training signal (tied to wiped content)
             try db.execute(sql: "DELETE FROM feedback")
             try db.execute(sql: "DELETE FROM decision_importance_corrections")

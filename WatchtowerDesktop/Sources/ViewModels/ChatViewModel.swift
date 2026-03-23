@@ -45,6 +45,7 @@ final class ChatViewModel {
     private let claudeService: any ClaudeServiceProtocol
     private let dbManager: DatabaseManager
     private var streamTask: Task<Void, Never>?
+    private var observationTask: Task<Void, Never>?
 
     /// Callback to notify history that title/session changed
     var onConversationUpdated: ((Int64, String?, String?) -> Void)?
@@ -58,11 +59,14 @@ final class ChatViewModel {
         // If switching to a different conversation, load from DB
         if conversationID != conversation.id {
             cancelStream()
+            observationTask?.cancel()
+            observationTask = nil
             messages.removeAll()
             errorMessage = nil
             conversationID = conversation.id
             sessionID = conversation.sessionID
             loadMessages(conversationID: conversation.id)
+            startMessageObservation()
         }
     }
 
@@ -87,17 +91,63 @@ final class ChatViewModel {
         let dbPath = dbManager.dbPool.path
         let dbPool = dbManager.dbPool
         let model = selectedModel.rawValue
+        let capturedConvID = conversationID
+        let capturedDBManager = dbManager
+        let capturedClaudeService = claudeService
 
         streamTask = Task { [weak self] in
-            guard let self else { return }
             let systemPrompt: String? = currentSessionID == nil ? Self.buildSystemPrompt(dbPool: dbPool) : nil
-            await self.runStream(
-                text: text,
-                systemPrompt: systemPrompt,
-                sessionID: currentSessionID,
-                dbPath: dbPath,
-                model: model
-            )
+
+            var fullText = ""
+            var newSessionID: String?
+            do {
+                let stream = capturedClaudeService.stream(
+                    prompt: text,
+                    systemPrompt: systemPrompt,
+                    sessionID: currentSessionID,
+                    dbPath: dbPath,
+                    model: model
+                )
+                var sawTurnComplete = false
+                for try await event in stream {
+                    switch event {
+                    case .text(let chunk):
+                        if sawTurnComplete {
+                            fullText = chunk
+                            sawTurnComplete = false
+                        } else {
+                            fullText += chunk
+                        }
+                        self?.updateLastMessage(fullText)
+                    case .turnComplete(let text):
+                        fullText = text
+                        sawTurnComplete = true
+                        self?.updateLastMessage(fullText)
+                    case .sessionID(let sid):
+                        newSessionID = sid
+                        self?.sessionID = sid
+                        if let convID = capturedConvID {
+                            self?.onConversationUpdated?(convID, nil, sid)
+                        }
+                    case .done:
+                        break
+                    }
+                }
+            } catch {
+                if !Task.isCancelled {
+                    self?.errorMessage = error.localizedDescription
+                }
+            }
+
+            // Always persist the response, even if self is gone
+            if !fullText.isEmpty, let convID = capturedConvID {
+                Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText)
+            }
+            if let sid = newSessionID, let convID = capturedConvID {
+                Self.persistSessionStatic(dbManager: capturedDBManager, conversationID: convID, sessionID: sid)
+            }
+
+            self?.finishStream()
         }
     }
 
@@ -108,70 +158,34 @@ final class ChatViewModel {
         }
     }
 
-    private func runStream(
-        text: String,
-        systemPrompt: String?,
-        sessionID: String?,
-        dbPath: String,
-        model: String
-    ) async {
-        do {
-            let stream = claudeService.stream(
-                prompt: text,
-                systemPrompt: systemPrompt,
-                sessionID: sessionID,
-                dbPath: dbPath,
-                model: model
-            )
-            var sawTurnComplete = false
-            for try await event in stream {
-                handleStreamEvent(event, sawTurnComplete: &sawTurnComplete)
-            }
-        } catch {
-            if !Task.isCancelled {
-                errorMessage = error.localizedDescription
-            }
-        }
-        finalizeStream()
-    }
-
-    private func handleStreamEvent(_ event: StreamEvent, sawTurnComplete: inout Bool) {
-        switch event {
-        case .text(let chunk):
-            if let idx = messages.indices.last {
-                if sawTurnComplete {
-                    messages[idx].text = chunk
-                    sawTurnComplete = false
-                } else {
-                    messages[idx].text += chunk
-                }
-            }
-        case .turnComplete(let fullText):
-            if let idx = messages.indices.last {
-                messages[idx].text = fullText
-            }
-            sawTurnComplete = true
-        case .sessionID(let sid):
-            self.sessionID = sid
-            if let convID = conversationID {
-                onConversationUpdated?(convID, nil, sid)
-            }
-        case .done:
-            break
+    private func updateLastMessage(_ text: String) {
+        if let idx = messages.indices.last {
+            messages[idx].text = text
         }
     }
 
-    private func finalizeStream() {
+    private func finishStream() {
         if let idx = messages.indices.last {
             messages[idx].isStreaming = false
-            let assistantText = messages[idx].text
-            if !assistantText.isEmpty, let convID = conversationID {
-                persistMessage(conversationID: convID, role: "assistant", text: assistantText)
-            }
         }
         isStreaming = false
         if let convID = conversationID {
             onConversationUpdated?(convID, nil, nil)
+        }
+    }
+
+    // MARK: - Static persistence (works even if self is deallocated)
+
+    nonisolated private static func persistResponseStatic(dbManager: DatabaseManager, conversationID: Int64, text: String) {
+        _ = try? dbManager.dbPool.write { db in
+            try ChatMessageQueries.insert(db, conversationID: conversationID, role: "assistant", text: text)
+            try ChatConversationQueries.touch(db, id: conversationID)
+        }
+    }
+
+    nonisolated private static func persistSessionStatic(dbManager: DatabaseManager, conversationID: Int64, sessionID: String) {
+        _ = try? dbManager.dbPool.write { db in
+            try ChatConversationQueries.updateSessionID(db, id: conversationID, sessionID: sessionID)
         }
     }
 
@@ -192,10 +206,35 @@ final class ChatViewModel {
     func newChat() {
         // H9: cancel in-flight stream before clearing
         cancelStream()
+        observationTask?.cancel()
+        observationTask = nil
         messages.removeAll()
         sessionID = nil
         conversationID = nil
         errorMessage = nil
+    }
+
+    // MARK: - Observation
+
+    /// Observe chat_messages for this conversation so background-persisted
+    /// responses (from a stream that outlived a previous ViewModel) appear automatically.
+    private func startMessageObservation() {
+        guard let convID = conversationID else { return }
+        let dbPool = dbManager.dbPool
+        observationTask = Task { [weak self] in
+            let observation = ValueObservation.tracking { db in
+                try ChatMessageQueries.fetchByConversation(db, conversationID: convID)
+            }
+            do {
+                for try await records in observation.values(in: dbPool).dropFirst() {
+                    guard !Task.isCancelled else { break }
+                    guard let self, !self.isStreaming else { continue }
+                    if records.count != self.messages.count {
+                        self.messages = records.map { $0.toChatMessage() }
+                    }
+                }
+            } catch {}
+        }
     }
 
     // MARK: - Persistence
@@ -255,6 +294,7 @@ final class ChatViewModel {
         return promptHeader(name: name, domain: domain, now: now, dbPath: dbPath, schema: schema)
             + promptQueryPatterns(teamID: teamID)
             + promptRules(teamID: teamID)
+            + promptAppGuide()
     }
 
     nonisolated private static func promptHeader(
@@ -375,6 +415,145 @@ final class ChatViewModel {
         - Use line breaks between sections for clarity
         - Highlight: decisions, tracks, unanswered questions, unusual activity
         """
+    }
+
+    nonisolated private static func promptAppGuide() -> String {
+        """
+
+        === WATCHTOWER APP GUIDE ===
+        You are also an expert on the Watchtower app itself. When users ask about features,
+        how to use the app, or what something means — answer based on this guide.
+
+        Watchtower is a macOS desktop app that syncs a Slack workspace to a local SQLite database
+        and uses AI to generate insights: digests, tracks, discussion chains, and people analytics.
+
+        TABS:
+        - AI Chat: chat with Claude about workspace data, multi-turn with session memory
+        - Tracks: personal action items extracted from Slack (statuses: inbox/active/done/dismissed/snoozed;
+          ownership: mine/delegated/watching; priority: high/medium/low; categories: code_review, decision_needed, task, etc.)
+        - Chains: cross-channel discussion threads linked by AI (active/resolved/stale)
+        - Digests: AI summaries of channel activity (channel/daily/weekly), with topics, decisions, running context
+        - Decisions: flat list of all decisions across digests, with importance ratings
+        - People: team member profiles from AI analysis — communication style, decision role, accomplishments, red flags, activity hours
+        - Search: full-text search across all synced Slack messages
+        - Usage: token consumption and costs by date, model, feature; live pipeline progress
+        - Training: prompt editor, feedback stats, quality score, tuning controls
+
+        SETTINGS: sync interval, workers, history depth, digest model/language, Claude CLI path,
+        profile (role, team, manager, reports, peers), notifications, daemon control, logs, data management.
+
+        BACKGROUND PROCESSES: daemon syncs Slack periodically, then runs pipelines:
+        digest → tracks → people → chains (automatic after each sync).
+
+        KEY CONCEPTS:
+        - Running context: AI maintains per-channel memory (active topics, decisions, open questions)
+        - Situations: extracted interaction patterns used to build people cards
+        - Feedback loop: thumbs up/down + importance corrections improve AI via prompt tuning
+        - Starred items: prioritize specific channels and people in analysis
+
+        When answering about the app, be specific and accurate. Do not invent features that don't exist.
+        """
+    }
+
+    // MARK: - Welcome Message
+
+    /// Send a welcome message in a new chat, using the user's profile for personalization.
+    func sendWelcomeMessage(profile: UserProfile) {
+        guard !isStreaming else { return }
+
+        let welcomePrompt = Self.buildWelcomePrompt(profile: profile)
+
+        messages.append(ChatMessage(id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true))
+        isStreaming = true
+
+        let dbPath = dbManager.dbPool.path
+        let dbPool = dbManager.dbPool
+        let model = selectedModel.rawValue
+        let capturedConvID = conversationID
+        let capturedDBManager = dbManager
+        let capturedClaudeService = claudeService
+
+        streamTask = Task { [weak self] in
+            let systemPrompt = Self.buildSystemPrompt(dbPool: dbPool)
+
+            var fullText = ""
+            var newSessionID: String?
+            do {
+                let stream = capturedClaudeService.stream(
+                    prompt: welcomePrompt,
+                    systemPrompt: systemPrompt,
+                    sessionID: nil,
+                    dbPath: dbPath,
+                    model: model
+                )
+                var sawTurnComplete = false
+                for try await event in stream {
+                    switch event {
+                    case .text(let chunk):
+                        if sawTurnComplete {
+                            fullText = chunk
+                            sawTurnComplete = false
+                        } else {
+                            fullText += chunk
+                        }
+                        self?.updateLastMessage(fullText)
+                    case .turnComplete(let text):
+                        fullText = text
+                        sawTurnComplete = true
+                        self?.updateLastMessage(fullText)
+                    case .sessionID(let sid):
+                        newSessionID = sid
+                        self?.sessionID = sid
+                        if let convID = capturedConvID {
+                            self?.onConversationUpdated?(convID, nil, sid)
+                        }
+                    case .done:
+                        break
+                    }
+                }
+            } catch {
+                if !Task.isCancelled {
+                    self?.errorMessage = error.localizedDescription
+                }
+            }
+
+            if !fullText.isEmpty, let convID = capturedConvID {
+                Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText)
+            }
+            if let sid = newSessionID, let convID = capturedConvID {
+                Self.persistSessionStatic(dbManager: capturedDBManager, conversationID: convID, sessionID: sid)
+            }
+
+            self?.finishStream()
+        }
+    }
+
+    nonisolated private static func buildWelcomePrompt(profile: UserProfile) -> String {
+        var parts: [String] = []
+        parts.append("This is a NEW conversation. The user just opened the app for the first time after onboarding.")
+        parts.append("Introduce yourself briefly as Watchtower assistant and offer to help.")
+
+        if !profile.role.isEmpty {
+            parts.append("User's role: \(profile.role)")
+        }
+        if !profile.team.isEmpty {
+            parts.append("User's team: \(profile.team)")
+        }
+        if !profile.painPoints.isEmpty, profile.painPoints != "[]" {
+            parts.append("User's pain points from onboarding: \(profile.painPoints)")
+        }
+        if !profile.customPromptContext.isEmpty {
+            parts.append("User's profile context: \(profile.customPromptContext)")
+        }
+
+        parts.append("""
+            Based on the user's role and pain points, suggest 2-3 specific things you can help with RIGHT NOW.
+            For example: reviewing today's activity, checking for pending decisions, summarizing what their team discussed.
+            Keep it short (3-5 sentences), friendly, and actionable. Match the user's language if their profile gives hints.
+            Do NOT ask the user to type anything specific — just offer help naturally.
+            """)
+
+        return parts.joined(separator: "\n")
     }
 
     /// Fetch the database schema (CREATE TABLE statements)

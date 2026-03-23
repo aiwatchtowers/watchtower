@@ -171,10 +171,14 @@ func (db *DB) UpsertTrack(item Track) (int64, error) {
 	// to avoid overwriting user-curated data during re-extraction.
 	if !isNew && existing.status != "inbox" {
 		logTrackEventTx(tx, existing.id, "re_extracted", "", "", "metadata only (status="+existing.status+")")
+		fp := item.Fingerprint
+		if fp == "" {
+			fp = "[]"
+		}
 		_, err = tx.Exec(`UPDATE tracks SET
-			related_digest_ids = ?, sub_items = ?, tags = ?, participants = ?, source_refs = ?
+			related_digest_ids = ?, sub_items = ?, tags = ?, participants = ?, source_refs = ?, fingerprint = ?
 			WHERE id = ?`,
-			item.RelatedDigestIDs, item.SubItems, item.Tags, item.Participants, item.SourceRefs,
+			item.RelatedDigestIDs, item.SubItems, item.Tags, item.Participants, item.SourceRefs, fp,
 			existing.id)
 		if err != nil {
 			return 0, fmt.Errorf("updating track metadata: %w", err)
@@ -186,6 +190,11 @@ func (db *DB) UpsertTrack(item Track) (int64, error) {
 	}
 
 	// Perform upsert
+	fingerprint := item.Fingerprint
+	if fingerprint == "" {
+		fingerprint = "[]"
+	}
+
 	res, err := tx.Exec(`INSERT INTO tracks
 		(channel_id, assignee_user_id, assignee_raw, text, context,
 		 source_message_ts, source_channel_name, status, priority, due_date,
@@ -193,8 +202,8 @@ func (db *DB) UpsertTrack(item Track) (int64, error) {
 		 participants, source_refs,
 		 requester_name, requester_user_id, category, blocking, tags,
 		 decision_summary, decision_options, related_digest_ids, sub_items, prompt_version,
-		 ownership, ball_on, owner_user_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ownership, ball_on, owner_user_id, fingerprint)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, assignee_user_id, source_message_ts, text) DO UPDATE SET
 			context = excluded.context,
 			priority = excluded.priority,
@@ -219,7 +228,8 @@ func (db *DB) UpsertTrack(item Track) (int64, error) {
 			prompt_version = excluded.prompt_version,
 			ownership = excluded.ownership,
 			ball_on = excluded.ball_on,
-			owner_user_id = excluded.owner_user_id`,
+			owner_user_id = excluded.owner_user_id,
+			fingerprint = excluded.fingerprint`,
 		item.ChannelID, item.AssigneeUserID, item.AssigneeRaw,
 		item.Text, item.Context,
 		item.SourceMessageTS, item.SourceChannelName,
@@ -230,7 +240,7 @@ func (db *DB) UpsertTrack(item Track) (int64, error) {
 		item.RequesterName, item.RequesterUserID, item.Category, item.Blocking, item.Tags,
 		item.DecisionSummary, item.DecisionOptions, item.RelatedDigestIDs, item.SubItems,
 		item.PromptVersion,
-		item.Ownership, item.BallOn, item.OwnerUserID)
+		item.Ownership, item.BallOn, item.OwnerUserID, fingerprint)
 	if err != nil {
 		return 0, fmt.Errorf("upserting track: %w", err)
 	}
@@ -335,7 +345,7 @@ func (db *DB) GetTracks(f TrackFilter) ([]Track, error) {
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += ` ORDER BY created_at DESC`
+	query += ` ORDER BY CASE WHEN source_message_ts != '' THEN source_message_ts ELSE created_at END DESC`
 
 	if f.Limit > 0 {
 		query += ` LIMIT ?`
@@ -391,6 +401,15 @@ func (db *DB) UpdateTrackStatus(id int, status string) error {
 			event = "reopened"
 		}
 		logTrackEventTx(tx, int64(id), event, "status", oldStatus, status)
+
+		// Auto-record feedback: dismiss = negative, done = positive.
+		if status == "dismissed" {
+			_, _ = tx.Exec(`INSERT INTO feedback (entity_type, entity_id, rating, comment) VALUES ('track', ?, -1, 'auto: dismissed')`,
+				fmt.Sprintf("%d", id))
+		} else if status == "done" {
+			_, _ = tx.Exec(`INSERT INTO feedback (entity_type, entity_id, rating, comment) VALUES ('track', ?, 1, 'auto: completed')`,
+				fmt.Sprintf("%d", id))
+		}
 	}
 
 	return tx.Commit()
@@ -897,6 +916,162 @@ func (db *DB) UpdateTrackFromExtraction(id int, update Track) (bool, error) {
 	return true, nil
 }
 
+// HasResolvedTrackForMessage checks if a done/dismissed track already exists for this
+// (channel_id, assignee_user_id, source_message_ts) combination.
+// Used to prevent re-extraction of tracks the user has already resolved.
+func (db *DB) HasResolvedTrackForMessage(channelID, assigneeUserID, sourceMessageTS string) (bool, error) {
+	if sourceMessageTS == "" {
+		return false, nil
+	}
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM tracks
+		WHERE channel_id = ? AND assignee_user_id = ? AND source_message_ts = ?
+		AND status IN ('done', 'dismissed')`,
+		channelID, assigneeUserID, sourceMessageTS).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("checking resolved track: %w", err)
+	}
+	return count > 0, nil
+}
+
+// FindResolvedTrackByFingerprint finds a done/dismissed track (within last 7 days) that
+// shares at least one fingerprint entity with the given set.
+// Returns (trackID, status, found).
+func (db *DB) FindResolvedTrackByFingerprint(channelID, assigneeUserID string, fingerprint []string) (int64, string, bool, error) {
+	if len(fingerprint) == 0 {
+		return 0, "", false, nil
+	}
+	rows, err := db.Query(`SELECT id, status, fingerprint FROM tracks
+		WHERE assignee_user_id = ? AND status IN ('done', 'dismissed')
+		AND created_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')`,
+		assigneeUserID)
+	if err != nil {
+		return 0, "", false, fmt.Errorf("querying resolved tracks for fingerprint: %w", err)
+	}
+	defer rows.Close()
+
+	fpSet := make(map[string]struct{}, len(fingerprint))
+	for _, f := range fingerprint {
+		fpSet[f] = struct{}{}
+	}
+
+	for rows.Next() {
+		var id int64
+		var status, fpJSON string
+		if err := rows.Scan(&id, &status, &fpJSON); err != nil {
+			continue
+		}
+		var existing []string
+		if err := json.Unmarshal([]byte(fpJSON), &existing); err != nil || len(existing) == 0 {
+			continue
+		}
+		for _, e := range existing {
+			if _, ok := fpSet[e]; ok {
+				return id, status, true, nil
+			}
+		}
+	}
+	return 0, "", false, rows.Err()
+}
+
+// ReopenTrack moves a done track back to inbox with has_updates=true and logs the event.
+// Updates context if newContext is non-empty.
+func (db *DB) ReopenTrack(id int64, newContext string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning reopen tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var oldStatus, oldContext string
+	err = tx.QueryRow(`SELECT status, context FROM tracks WHERE id = ?`, id).Scan(&oldStatus, &oldContext)
+	if err != nil {
+		return fmt.Errorf("loading track for reopen: %w", err)
+	}
+
+	setClauses := `status = 'inbox', has_updates = 1, completed_at = NULL`
+	args := []any{}
+	if newContext != "" {
+		setClauses += `, context = ?`
+		args = append(args, newContext)
+	}
+	args = append(args, id)
+	if _, err := tx.Exec(`UPDATE tracks SET `+setClauses+` WHERE id = ?`, args...); err != nil {
+		return fmt.Errorf("reopening track: %w", err)
+	}
+
+	logTrackEventTx(tx, id, "reopened", "status", oldStatus, "inbox")
+	if newContext != "" && newContext != oldContext {
+		logTrackEventTx(tx, id, "context_updated", "context",
+			truncate(oldContext, 100), truncate(newContext, 100))
+	}
+
+	return tx.Commit()
+}
+
+// AppendTrackActivity records new activity on a resolved track without reopening it.
+// Sets has_updates=true and logs the event with the new context.
+func (db *DB) AppendTrackActivity(id int64, newContext string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning append activity tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE tracks SET has_updates = 1 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("setting has_updates: %w", err)
+	}
+
+	detail := "new activity detected"
+	if newContext != "" {
+		detail = truncate(newContext, 200)
+	}
+	logTrackEventTx(tx, id, "new_activity", "", "", detail)
+
+	return tx.Commit()
+}
+
+// GetResolvedTracksSummary returns a compact one-line summary of recently resolved tracks
+// for injection into the AI prompt as context. Max 500 chars.
+func (db *DB) GetResolvedTracksSummary(assigneeUserID string, since time.Time) (string, error) {
+	rows, err := db.Query(`SELECT substr(text, 1, 80), fingerprint FROM tracks
+		WHERE assignee_user_id = ? AND status IN ('done', 'dismissed')
+		AND created_at > ?
+		ORDER BY created_at DESC
+		LIMIT 20`,
+		assigneeUserID, since.UTC().Format("2006-01-02T15:04:05Z"))
+	if err != nil {
+		return "", fmt.Errorf("querying resolved tracks summary: %w", err)
+	}
+	defer rows.Close()
+
+	var parts []string
+	totalLen := 0
+	for rows.Next() {
+		var text, fpJSON string
+		if err := rows.Scan(&text, &fpJSON); err != nil {
+			continue
+		}
+		// Use fingerprint entities as compact reference if available.
+		var fp []string
+		if err := json.Unmarshal([]byte(fpJSON), &fp); err == nil && len(fp) > 0 {
+			text += " (" + strings.Join(fp[:min(len(fp), 3)], ",") + ")"
+		}
+		if totalLen+len(text) > 500 {
+			break
+		}
+		parts = append(parts, text)
+		totalLen += len(text) + 2 // account for "; "
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return strings.Join(parts, "; "), nil
+}
+
 // GetExistingTracksForChannel returns active/inbox tracks for a specific channel and user.
 // Used by the extraction pipeline to pass existing items into the AI prompt for deduplication.
 func (db *DB) GetExistingTracksForChannel(channelID, assigneeUserID string) ([]Track, error) {
@@ -995,6 +1170,33 @@ func (db *DB) UpdateTrackSubItems(id int, subItems string) error {
 		logTrackEventTx(tx, int64(id), "sub_items_updated", "sub_items", "", summary)
 	}
 
+	return tx.Commit()
+}
+
+// UpdateTrackOwnership updates the ownership field of a track and logs the change.
+func (db *DB) UpdateTrackOwnership(id int, newOwnership string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning ownership update tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var oldOwnership string
+	if err := tx.QueryRow(`SELECT ownership FROM tracks WHERE id = ?`, id).Scan(&oldOwnership); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("track %d not found", id)
+		}
+		return fmt.Errorf("getting track ownership: %w", err)
+	}
+
+	if oldOwnership == newOwnership {
+		return nil
+	}
+
+	if _, err := tx.Exec(`UPDATE tracks SET ownership = ? WHERE id = ?`, newOwnership, id); err != nil {
+		return fmt.Errorf("updating ownership: %w", err)
+	}
+	logTrackEventTx(tx, int64(id), "ownership_changed", "ownership", oldOwnership, newOwnership)
 	return tx.Commit()
 }
 

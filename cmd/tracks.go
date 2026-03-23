@@ -270,7 +270,22 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB) {
 	if len(channelNameMap) > 0 {
 		for chID := range channelNameMap {
 			if ch, err := database.GetChannelByID(chID); err == nil && ch != nil {
-				channelNameMap[chID] = ch.Name
+				name := ch.Name
+				if name == "" && (ch.Type == "dm" || ch.Type == "im") && ch.DMUserID.Valid && ch.DMUserID.String != "" {
+					if u, err := database.GetUserByID(ch.DMUserID.String); err == nil && u != nil {
+						uname := u.DisplayName
+						if uname == "" {
+							uname = u.Name
+						}
+						if uname != "" {
+							name = "DM: " + uname
+						}
+					}
+				}
+				if name == "" {
+					name = chID
+				}
+				channelNameMap[chID] = name
 			}
 		}
 	}
@@ -604,26 +619,32 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 
 	if tracksGenFlagProgressJSON {
 		type pj struct {
-			Pipeline        string  `json:"pipeline"`
-			Done            int     `json:"done"`
-			Total           int     `json:"total"`
-			Status          string  `json:"status,omitempty"`
-			InputTokens     int     `json:"input_tokens"`
-			OutputTokens    int     `json:"output_tokens"`
-			CostUSD         float64 `json:"cost_usd"`
-			Error           string  `json:"error,omitempty"`
-			Finished        bool    `json:"finished"`
-			ItemsFound      int     `json:"items_found"`
-			MessageCount    int     `json:"message_count,omitempty"`
-			PeriodFrom      string  `json:"period_from,omitempty"`
-			PeriodTo        string  `json:"period_to,omitempty"`
-			StepDurationSec float64 `json:"step_duration_seconds,omitempty"`
+			Pipeline         string  `json:"pipeline"`
+			Done             int     `json:"done"`
+			Total            int     `json:"total"`
+			Status           string  `json:"status,omitempty"`
+			InputTokens      int     `json:"input_tokens"`
+			OutputTokens     int     `json:"output_tokens"`
+			CostUSD          float64 `json:"cost_usd"`
+			Error            string  `json:"error,omitempty"`
+			Finished         bool    `json:"finished"`
+			ItemsFound       int     `json:"items_found"`
+			MessageCount     int     `json:"message_count,omitempty"`
+			PeriodFrom       string  `json:"period_from,omitempty"`
+			PeriodTo         string  `json:"period_to,omitempty"`
+			StepDurationSec  float64 `json:"step_duration_seconds,omitempty"`
+			StepInputTokens  int     `json:"step_input_tokens,omitempty"`
+			StepOutputTokens int     `json:"step_output_tokens,omitempty"`
+			StepCostUSD      float64 `json:"step_cost_usd,omitempty"`
+			TotalAPITokens   int     `json:"total_api_tokens,omitempty"`
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
+		runID, _ := database.CreatePipelineRun("tracks", "cli")
+
 		pipe.OnProgress = func(done, total int, status string) {
-			inTok, outTok, cost, _ := pipe.AccumulatedUsage()
-			p := pj{Pipeline: "tracks", Done: done, Total: total, Status: status, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost}
+			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+			p := pj{Pipeline: "tracks", Done: done, Total: total, Status: status, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost, TotalAPITokens: totalAPI}
 			if pipe.LastStepMessageCount > 0 {
 				p.MessageCount = pipe.LastStepMessageCount
 				p.PeriodFrom = pipe.LastStepPeriodFrom.Format(time.RFC3339)
@@ -632,7 +653,27 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 			if pipe.LastStepDurationSeconds > 0 {
 				p.StepDurationSec = pipe.LastStepDurationSeconds
 			}
+			p.StepInputTokens = pipe.LastStepInputTokens
+			p.StepOutputTokens = pipe.LastStepOutputTokens
+			p.StepCostUSD = pipe.LastStepCostUSD
 			emit(p)
+
+			if runID > 0 && p.StepDurationSec > 0 {
+				var pFrom, pTo *float64
+				if pipe.LastStepMessageCount > 0 {
+					f := float64(pipe.LastStepPeriodFrom.Unix())
+					t := float64(pipe.LastStepPeriodTo.Unix())
+					pFrom, pTo = &f, &t
+				}
+				_ = database.InsertPipelineStep(db.PipelineStep{
+					RunID: runID, Step: done, Total: total, Status: status,
+					InputTokens: p.StepInputTokens, OutputTokens: p.StepOutputTokens,
+					CostUSD: p.StepCostUSD, TotalAPITokens: totalAPI,
+					MessageCount: pipe.LastStepMessageCount,
+					PeriodFrom:   pFrom, PeriodTo: pTo,
+					DurationSeconds: p.StepDurationSec,
+				})
+			}
 		}
 
 		var n int
@@ -644,8 +685,8 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 		} else {
 			n, err = pipe.Run(cmd.Context())
 		}
-		inTok, outTok, cost, _ := pipe.AccumulatedUsage()
-		final := pj{Pipeline: "tracks", Finished: true, ItemsFound: n, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost}
+		inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+		final := pj{Pipeline: "tracks", Finished: true, ItemsFound: n, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost, TotalAPITokens: totalAPI}
 		if pipe.LastStepMessageCount > 0 {
 			final.MessageCount = pipe.LastStepMessageCount
 			final.PeriodFrom = pipe.LastStepPeriodFrom.Format(time.RFC3339)
@@ -655,8 +696,18 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 			final.Error = err.Error()
 		}
 		emit(final)
+
+		if runID > 0 {
+			var errMsg string
+			if err != nil {
+				errMsg = err.Error()
+			}
+			_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
+		}
 		return nil
 	}
+
+	runID, _ := database.CreatePipelineRun("tracks", "cli")
 
 	var n int
 	if sinceExplicit {
@@ -671,12 +722,19 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 		n, err = pipe.RunForWindow(cmd.Context(), userID, from, to)
 		if err != nil {
 			spinner.Stop("failed")
+			if runID > 0 {
+				_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+			}
 			return fmt.Errorf("tracks pipeline: %w", err)
 		}
 		if n == 0 {
 			spinner.Stop("No tracks found")
 		} else {
 			spinner.Stop(fmt.Sprintf("Found %d track(s). Run 'watchtower tracks' to view them.", n))
+		}
+		if runID > 0 {
+			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+			_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, totalAPI, nil, nil, "")
 		}
 		return nil
 	}
@@ -689,7 +747,15 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 	n, err = pipe.Run(cmd.Context())
 	if err != nil {
 		spinner.Stop("failed")
+		if runID > 0 {
+			_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+		}
 		return fmt.Errorf("tracks pipeline: %w", err)
+	}
+
+	if runID > 0 {
+		inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+		_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, totalAPI, nil, nil, "")
 	}
 
 	if n == 0 {

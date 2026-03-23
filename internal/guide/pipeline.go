@@ -72,14 +72,17 @@ type Pipeline struct {
 	// LastStep* fields are set before each OnProgress callback with the
 	// current step's message count and time window. Read them in OnProgress.
 	LastStepMessageCount    int
-	LastStepPeriodFrom     time.Time
-	LastStepPeriodTo       time.Time
+	LastStepPeriodFrom      time.Time
+	LastStepPeriodTo        time.Time
 	LastStepDurationSeconds float64
+	LastStepInputTokens     int
+	LastStepOutputTokens    int
+	LastStepCostUSD         float64
 
-	totalInputTokens    atomic.Int64
-	totalOutputTokens   atomic.Int64
-	totalCostMicro      atomic.Int64
-	totalAPITokens atomic.Int64
+	totalInputTokens  atomic.Int64
+	totalOutputTokens atomic.Int64
+	totalCostMicro    atomic.Int64
+	totalAPITokens    atomic.Int64
 
 	channelNames map[string]string
 	userNames    map[string]string
@@ -154,6 +157,15 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		allSituations = make(map[string][]db.ChannelSituations)
 	}
 
+	// In automatic mode (daemon), skip if no situations exist yet (e.g. first
+	// run before digests generated). Without situations all cards would be
+	// insufficient_data — wasteful. CLI with ForceRegenerate still runs.
+	if !p.ForceRegenerate && len(allSituations) == 0 {
+		p.progress(0, 0, "No situations from digests yet, skipping people cards")
+		p.logger.Println("people: no situations available, skipping (run digests first)")
+		return 0, nil
+	}
+
 	teamNorms := computeTeamNorms(allStats)
 
 	p.logger.Printf("people: team norms: %d users, %.0f avg msgs, %d users with situations",
@@ -194,6 +206,9 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				p.LastStepPeriodFrom = time.Unix(int64(from), 0)
 				p.LastStepPeriodTo = time.Unix(int64(to), 0)
 				p.LastStepDurationSeconds = 0
+				p.LastStepInputTokens = 0
+				p.LastStepOutputTokens = 0
+				p.LastStepCostUSD = 0
 				p.progress(c, totalUsers, fmt.Sprintf("@%s (%d msgs)...", userName, stats.MessageCount))
 
 				stepStart := time.Now()
@@ -303,6 +318,9 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		p.totalOutputTokens.Add(int64(usage.OutputTokens))
 		p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
 		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
+		p.LastStepInputTokens += usage.InputTokens
+		p.LastStepOutputTokens += usage.OutputTokens
+		p.LastStepCostUSD += usage.CostUSD
 	}
 
 	result, err := parsePeopleCardResult(raw)
@@ -392,6 +410,9 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 		p.totalOutputTokens.Add(int64(usage.OutputTokens))
 		p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
 		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
+		p.LastStepInputTokens += usage.InputTokens
+		p.LastStepOutputTokens += usage.OutputTokens
+		p.LastStepCostUSD += usage.CostUSD
 	}
 
 	result, err := parseTeamSummaryResult(raw)

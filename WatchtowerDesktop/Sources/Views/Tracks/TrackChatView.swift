@@ -18,6 +18,7 @@ final class TrackChatViewModel {
     private var item: Track
     private weak var viewModel: TracksViewModel?
     private var streamTask: Task<Void, Never>?
+    private var observationTask: Task<Void, Never>?
 
     init(item: Track, viewModel: TracksViewModel, dbManager: DatabaseManager, claudeService: (any ClaudeServiceProtocol)? = nil) {
         self.item = item
@@ -26,6 +27,7 @@ final class TrackChatViewModel {
         self.claudeService = claudeService ?? ClaudeService()
 
         loadOrCreateConversation()
+        startMessageObservation()
     }
 
     private func loadOrCreateConversation() {
@@ -59,6 +61,27 @@ final class TrackChatViewModel {
         }
     }
 
+    /// Observe chat_messages for this conversation so background-persisted
+    /// responses (from a stream that outlived a previous ViewModel) appear automatically.
+    private func startMessageObservation() {
+        guard let convID = conversationID else { return }
+        let dbPool = dbManager.dbPool
+        observationTask = Task { [weak self] in
+            let observation = ValueObservation.tracking { db in
+                try ChatMessageQueries.fetchByConversation(db, conversationID: convID)
+            }
+            do {
+                for try await records in observation.values(in: dbPool).dropFirst() {
+                    guard !Task.isCancelled else { break }
+                    guard let self, !self.isStreaming else { continue }
+                    if records.count != self.messages.count {
+                        self.messages = records.map { $0.toChatMessage() }
+                    }
+                }
+            } catch {}
+        }
+    }
+
     func send() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
@@ -81,81 +104,100 @@ final class TrackChatViewModel {
         let capturedItem = item
         let capturedClaudeService = claudeService
 
+        let capturedConvID = conversationID
+        let capturedDBManager = dbManager
+
         streamTask = Task { [weak self] in
             let systemPrompt: String? = currentSessionID == nil
                 ? Self.buildSystemPrompt(item: capturedItem, dbPool: dbPool)
                 : nil
-            await self?.runStream(
-                text: text,
-                systemPrompt: systemPrompt,
-                sessionID: currentSessionID,
-                dbPath: dbPath,
-                claudeService: capturedClaudeService
-            )
-        }
-    }
 
-    private func runStream(
-        text: String,
-        systemPrompt: String?,
-        sessionID: String?,
-        dbPath: String,
-        claudeService: any ClaudeServiceProtocol
-    ) async {
-        do {
-            let stream = claudeService.stream(
-                prompt: text,
-                systemPrompt: systemPrompt,
-                sessionID: sessionID,
-                dbPath: dbPath,
-                extraAllowedTools: ["Bash(watchtower*)"]
-            )
-            var sawTurnComplete = false
-            for try await event in stream {
-                handleStreamEvent(event, sawTurnComplete: &sawTurnComplete)
-            }
-        } catch {
-            if !Task.isCancelled {
-                errorMessage = error.localizedDescription
-            }
-        }
-        finalizeStream()
-    }
-
-    private func handleStreamEvent(_ event: StreamEvent, sawTurnComplete: inout Bool) {
-        switch event {
-        case .text(let chunk):
-            if let idx = messages.indices.last {
-                if sawTurnComplete {
-                    messages[idx].text = chunk
-                    sawTurnComplete = false
-                } else {
-                    messages[idx].text += chunk
+            // Run the stream — even if self is deallocated, we capture what we need
+            // to persist the response.
+            var fullText = ""
+            var newSessionID: String?
+            do {
+                let stream = capturedClaudeService.stream(
+                    prompt: text,
+                    systemPrompt: systemPrompt,
+                    sessionID: currentSessionID,
+                    dbPath: dbPath,
+                    extraAllowedTools: ["Bash(watchtower*)"]
+                )
+                var sawTurnComplete = false
+                for try await event in stream {
+                    switch event {
+                    case .text(let chunk):
+                        if sawTurnComplete {
+                            fullText = chunk
+                            sawTurnComplete = false
+                        } else {
+                            fullText += chunk
+                        }
+                        self?.updateLastMessage(fullText)
+                    case .turnComplete(let text):
+                        fullText = text
+                        sawTurnComplete = true
+                        self?.updateLastMessage(fullText)
+                    case .sessionID(let sid):
+                        newSessionID = sid
+                        self?.handleSessionID(sid)
+                    case .done:
+                        break
+                    }
+                }
+            } catch {
+                if !Task.isCancelled {
+                    self?.errorMessage = error.localizedDescription
                 }
             }
-        case .turnComplete(let fullText):
-            if let idx = messages.indices.last {
-                messages[idx].text = fullText
+
+            // Always persist the response, even if self is gone
+            if !fullText.isEmpty, let convID = capturedConvID {
+                Self.persistResponse(dbManager: capturedDBManager, conversationID: convID, text: fullText)
             }
-            sawTurnComplete = true
-        case .sessionID(let sid):
-            self.sessionID = sid
-            if let convID = conversationID {
-                persistSessionID(conversationID: convID, sessionID: sid)
+            if let sid = newSessionID, let convID = capturedConvID {
+                Self.persistSession(dbManager: capturedDBManager, conversationID: convID, sessionID: sid)
             }
-        case .done:
-            break
+
+            // Update UI if self is still alive
+            self?.finishStream()
         }
     }
 
-    private func finalizeStream() {
+    // MARK: - Persistence helpers (nonisolated for use from Task)
+
+    nonisolated private static func persistResponse(dbManager: DatabaseManager, conversationID: Int64, text: String) {
+        _ = try? dbManager.dbPool.write { db in
+            try ChatMessageQueries.insert(db, conversationID: conversationID, role: "assistant", text: text)
+            try ChatConversationQueries.touch(db, id: conversationID)
+        }
+    }
+
+    nonisolated private static func persistSession(dbManager: DatabaseManager, conversationID: Int64, sessionID: String) {
+        _ = try? dbManager.dbPool.write { db in
+            try ChatConversationQueries.updateSessionID(db, id: conversationID, sessionID: sessionID)
+        }
+    }
+
+    // MARK: - Stream helpers (safe to call with weak self)
+
+    private func updateLastMessage(_ text: String) {
+        if let idx = messages.indices.last {
+            messages[idx].text = text
+        }
+    }
+
+    private func handleSessionID(_ sid: String) {
+        self.sessionID = sid
+        if let convID = conversationID {
+            persistSessionID(conversationID: convID, sessionID: sid)
+        }
+    }
+
+    private func finishStream() {
         if let idx = messages.indices.last {
             messages[idx].isStreaming = false
-            let assistantText = messages[idx].text
-            if !assistantText.isEmpty, let convID = conversationID {
-                persistMessage(conversationID: convID, role: "assistant", text: assistantText)
-                touchConversation(convID)
-            }
         }
         isStreaming = false
         reloadItem()

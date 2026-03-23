@@ -293,7 +293,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     prompt_version      INTEGER NOT NULL DEFAULT 0,  -- version of prompt used for generation
     ownership           TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine', 'delegated', 'watching')),
     ball_on             TEXT NOT NULL DEFAULT '',     -- user_id of the person who needs to act next
-    owner_user_id       TEXT NOT NULL DEFAULT ''      -- owner of the track (for delegated = report's user_id)
+    owner_user_id       TEXT NOT NULL DEFAULT '',     -- owner of the track (for delegated = report's user_id)
+    fingerprint         TEXT NOT NULL DEFAULT '[]'   -- JSON array of extracted entities for dedup
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_dedup ON tracks(channel_id, assignee_user_id, source_message_ts, text);
 CREATE INDEX IF NOT EXISTS idx_tracks_assignee ON tracks(assignee_user_id);
@@ -303,7 +304,7 @@ CREATE INDEX IF NOT EXISTS idx_tracks_period ON tracks(period_from, period_to);
 -- Feedback on AI-generated content (thumbs up/down)
 CREATE TABLE IF NOT EXISTS feedback (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis')),
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'chain')),
     entity_id   TEXT NOT NULL,       -- digest.id, tracks.id, or "digest_id:decision_idx"
     rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),  -- -1 = bad, +1 = good
     comment     TEXT NOT NULL DEFAULT '',
@@ -547,3 +548,68 @@ CREATE TABLE IF NOT EXISTS people_card_summaries (
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     UNIQUE(period_from, period_to)
 );
+
+-- Daily personalized briefings
+CREATE TABLE IF NOT EXISTS briefings (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id     TEXT NOT NULL DEFAULT '',
+    user_id          TEXT NOT NULL,
+    date             TEXT NOT NULL,              -- YYYY-MM-DD
+    role             TEXT NOT NULL DEFAULT '',
+    attention        TEXT NOT NULL DEFAULT '[]',
+    your_day         TEXT NOT NULL DEFAULT '[]',
+    what_happened    TEXT NOT NULL DEFAULT '[]',
+    team_pulse       TEXT NOT NULL DEFAULT '[]',
+    coaching         TEXT NOT NULL DEFAULT '[]',
+    model            TEXT NOT NULL DEFAULT '',
+    input_tokens     INTEGER NOT NULL DEFAULT 0,
+    output_tokens    INTEGER NOT NULL DEFAULT 0,
+    cost_usd         REAL NOT NULL DEFAULT 0,
+    prompt_version   INTEGER NOT NULL DEFAULT 0,
+    read_at          TEXT,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(user_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date DESC);
+
+-- Pipeline run history — logs every pipeline invocation (CLI, daemon, desktop)
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline         TEXT NOT NULL,                          -- 'digests', 'tracks', 'people', 'chains'
+    source           TEXT NOT NULL DEFAULT 'cli',            -- 'cli', 'daemon'
+    status           TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'done', 'error')),
+    error_msg        TEXT NOT NULL DEFAULT '',
+    items_found      INTEGER NOT NULL DEFAULT 0,
+    input_tokens     INTEGER NOT NULL DEFAULT 0,
+    output_tokens    INTEGER NOT NULL DEFAULT 0,
+    cost_usd         REAL NOT NULL DEFAULT 0,
+    total_api_tokens INTEGER NOT NULL DEFAULT 0,
+    period_from      REAL,
+    period_to        REAL,
+    started_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    finished_at      TEXT,
+    duration_seconds REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC);
+
+-- Pipeline steps — per-step detail within a run
+CREATE TABLE IF NOT EXISTS pipeline_steps (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id           INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+    step             INTEGER NOT NULL,
+    total            INTEGER NOT NULL,
+    status           TEXT NOT NULL DEFAULT '',
+    channel_id       TEXT NOT NULL DEFAULT '',
+    channel_name     TEXT NOT NULL DEFAULT '',
+    input_tokens     INTEGER NOT NULL DEFAULT 0,
+    output_tokens    INTEGER NOT NULL DEFAULT 0,
+    cost_usd         REAL NOT NULL DEFAULT 0,
+    total_api_tokens INTEGER NOT NULL DEFAULT 0,
+    message_count    INTEGER NOT NULL DEFAULT 0,
+    period_from      REAL,
+    period_to        REAL,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_steps_run ON pipeline_steps(run_id);

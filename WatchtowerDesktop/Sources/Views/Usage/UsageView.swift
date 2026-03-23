@@ -119,7 +119,7 @@ struct UsageView: View {
         GroupBox("Total") {
             HStack(spacing: 24) {
                 costItem(label: "AI Calls", value: "\(usage.totalCalls)")
-                costItem(label: "Input (clean)", value: formatTokens(usage.totalInputTokens))
+                costItem(label: "Input (clean)", value: formatTokens(usage.totalInputTokens), tooltip: "Estimated tokens from Watchtower prompts (~4 chars/token)")
                 costItem(label: "Output", value: formatTokens(usage.totalOutputTokens))
                 costItem(label: "Cost", value: formatCost(usage.totalCost))
             }
@@ -188,7 +188,7 @@ struct UsageView: View {
 
     // MARK: - Helpers
 
-    private func costItem(label: String, value: String) -> some View {
+    private func costItem(label: String, value: String, tooltip: String? = nil) -> some View {
         VStack(spacing: 2) {
             Text(value)
                 .font(.headline)
@@ -197,6 +197,7 @@ struct UsageView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .help(tooltip ?? "")
     }
 
     private func formatTokens(_ count: Int) -> String {

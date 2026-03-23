@@ -156,8 +156,16 @@ final class BackgroundTaskManager {
     private var pipelineTask: Task<Void, Never>?
 
     /// Stop all running pipelines (terminates current process and cancels orchestration task).
-    func stopAll() {
-        runningProcess?.terminate()
+    /// Waits for the running process to exit so file locks are released before new pipelines start.
+    func stopAll() async {
+        if let process = runningProcess {
+            process.terminate()
+            // Wait for process to actually exit (releases file locks like digest.lock).
+            // Use detached task to avoid blocking MainActor while polling.
+            await Task.detached {
+                process.waitUntilExit()
+            }.value
+        }
         runningProcess = nil
         pipelineTask?.cancel()
         pipelineTask = nil
@@ -182,6 +190,10 @@ final class BackgroundTaskManager {
             // Phase 1: digests (tracks depend on digest decisions)
             await runTask(.digests)
             guard !Task.isCancelled else { return }
+
+            // Only proceed to tracks/people if digests succeeded.
+            // If digests errored, there's no useful data for downstream pipelines.
+            guard tasks[.digests]?.status == .done else { return }
 
             // Phase 2: tracks + people in parallel
             await withTaskGroup(of: Void.self) { group in
@@ -232,6 +244,7 @@ final class BackgroundTaskManager {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = kind.cliArguments
         process.environment = Constants.resolvedEnvironment()
         let stdoutPipe = Pipe()
@@ -270,12 +283,12 @@ final class BackgroundTaskManager {
             return lastFinished
         }
 
-        // Wait for process exit
-        let exitCode: Int32 = await withCheckedContinuation { cont in
-            process.terminationHandler = { proc in
-                cont.resume(returning: proc.terminationStatus)
-            }
-        }
+        // Wait for process exit using blocking waitUntilExit (more reliable than
+        // terminationHandler which can fire prematurely on some macOS versions).
+        let exitCode: Int32 = await Task.detached {
+            process.waitUntilExit()
+            return process.terminationStatus
+        }.value
 
         _ = await readTask.value
 

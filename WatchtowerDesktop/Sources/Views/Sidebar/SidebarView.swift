@@ -9,6 +9,7 @@ struct SidebarView: View {
     @State private var ownershipCounts: [String: Int] = [:]
     @State private var unreadChainCount: Int = 0
     @State private var unreadDigestCount: Int = 0
+    @State private var unreadBriefingCount: Int = 0
     @State private var countsObservationTask: Task<Void, Never>?
 
     private var isTracksExpanded: Bool { selection == .tracks }
@@ -201,6 +202,7 @@ struct SidebarView: View {
     private func badgeCount(for item: SidebarDestination) -> some View {
         let count: Int = {
             switch item {
+            case .briefings: return unreadBriefingCount
             case .tracks: return statusCounts["inbox"] ?? 0
             case .chains: return unreadChainCount
             default: return 0
@@ -224,11 +226,12 @@ struct SidebarView: View {
         loadCounts(db: db)
         let dbPool = db.dbPool
         countsObservationTask = Task {
-            // Observe both tracks and chains tables for badge updates
-            let observation = ValueObservation.tracking { db -> (Int, Int) in
+            // Observe tracks, chains, and briefings tables for badge updates
+            let observation = ValueObservation.tracking { db -> (Int, Int, Int) in
                 let tracks = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks") ?? 0
                 let chains = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM chains") ?? 0
-                return (tracks, chains)
+                let briefings = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM briefings") ?? 0
+                return (tracks, chains, briefings)
             }
             do {
                 for try await _ in observation.values(in: dbPool).dropFirst() {
@@ -239,24 +242,45 @@ struct SidebarView: View {
         }
     }
 
+    private struct SidebarCounts {
+        let statusCounts: [String: Int]
+        let totalCount: Int
+        let ownershipCounts: [String: Int]
+        let unreadChainCount: Int
+        let unreadDigestCount: Int
+        let unreadBriefingCount: Int
+    }
+
     private func loadCounts(db: DatabaseManager) {
         Task {
-            let result = try? await db.dbPool.read { db -> ([String: Int], Int, [String: Int], Int, Int) in
+            let result = try? await db.dbPool.read { db -> SidebarCounts in
                 let uid = try TrackQueries.fetchCurrentUserID(db)
-                guard let uid else { return ([:], 0, [:], 0, 0) }
-                let counts = try TrackQueries.fetchStatusCounts(db, assigneeUserID: uid)
-                let total = try TrackQueries.fetchTotalCount(db, assigneeUserID: uid)
-                let oCounts = try TrackQueries.fetchOwnershipCounts(db, assigneeUserID: uid)
-                let unreadChains = try ChainQueries.fetchUnreadCount(db)
-                let unreadDigests = try DigestQueries.unreadDigestCount(db)
-                return (counts, total, oCounts, unreadChains, unreadDigests)
+                guard let uid else {
+                    return SidebarCounts(
+                        statusCounts: [:],
+                        totalCount: 0,
+                        ownershipCounts: [:],
+                        unreadChainCount: 0,
+                        unreadDigestCount: 0,
+                        unreadBriefingCount: 0
+                    )
+                }
+                return SidebarCounts(
+                    statusCounts: try TrackQueries.fetchStatusCounts(db, assigneeUserID: uid),
+                    totalCount: try TrackQueries.fetchTotalCount(db, assigneeUserID: uid),
+                    ownershipCounts: try TrackQueries.fetchOwnershipCounts(db, assigneeUserID: uid),
+                    unreadChainCount: try ChainQueries.fetchUnreadCount(db),
+                    unreadDigestCount: try DigestQueries.unreadDigestCount(db),
+                    unreadBriefingCount: try BriefingQueries.unreadCount(db)
+                )
             }
             if let r = result {
-                self.statusCounts = r.0
-                self.totalCount = r.1
-                self.ownershipCounts = r.2
-                self.unreadChainCount = r.3
-                self.unreadDigestCount = r.4
+                self.statusCounts = r.statusCounts
+                self.totalCount = r.totalCount
+                self.ownershipCounts = r.ownershipCounts
+                self.unreadChainCount = r.unreadChainCount
+                self.unreadDigestCount = r.unreadDigestCount
+                self.unreadBriefingCount = r.unreadBriefingCount
             }
         }
     }

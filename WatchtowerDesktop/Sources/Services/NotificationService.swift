@@ -87,6 +87,23 @@ final class NotificationService: Sendable {
         UNUserNotificationCenter.current().add(request)
     }
 
+    func sendBriefingNotification(attentionCount: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "Morning Briefing Ready"
+        content.body = attentionCount > 0
+            ? "\(attentionCount) items need attention"
+            : "Your daily briefing is ready"
+        content.sound = .default
+        content.userInfo = ["type": "briefing"]
+
+        let request = UNNotificationRequest(
+            identifier: "briefing-\(Int(Date().timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     func sendDailySummaryNotification(summary: String) {
         let content = UNMutableNotificationContent()
         content.title = "Daily summary ready"

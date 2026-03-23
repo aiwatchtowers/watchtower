@@ -33,6 +33,11 @@ struct DecisionsListView: View {
                 expandedEntryIDs.remove(id)
             } else {
                 expandedEntryIDs.insert(id)
+                // Mark decision as read when expanded
+                if let entry = viewModel.decisionEntries.first(where: { $0.id == id }),
+                   !entry.isRead {
+                    viewModel.markDecisionRead(digestID: entry.digestID, decisionIdx: entry.decisionIdx)
+                }
             }
         }
     }
@@ -42,6 +47,16 @@ struct DecisionsListView: View {
             LazyVStack(spacing: 1) {
                 ForEach(filteredEntries) { entry in
                     decisionListItem(entry)
+                        .onAppear {
+                            if entry.id == filteredEntries.last?.id {
+                                viewModel.loadMoreDecisions()
+                            }
+                        }
+                }
+                if viewModel.isLoadingMoreDecisions {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(8)
                 }
             }
             .padding(.vertical, 4)

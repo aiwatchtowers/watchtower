@@ -53,7 +53,9 @@ final class AppState {
         guard let db = databaseManager, chatViewModel == nil else { return }
         let cvm = ChatViewModel(claudeService: ClaudeService(), dbManager: db)
         let hvm = ChatHistoryViewModel(dbManager: db)
-        hvm.load()
+        hvm.load(completion: { [weak self, weak cvm, weak hvm] in
+            self?.maybeCreateWelcomeChat(chatVM: cvm, historyVM: hvm)
+        })
 
         cvm.onConversationUpdated = { [weak hvm] convID, title, sessionID in
             guard let hvm else { return }
@@ -64,6 +66,25 @@ final class AppState {
 
         chatViewModel = cvm
         chatHistoryViewModel = hvm
+    }
+
+    /// Creates a welcome chat with AI greeting when no conversations exist and user profile is available.
+    private func maybeCreateWelcomeChat(chatVM: ChatViewModel?, historyVM: ChatHistoryViewModel?) {
+        guard let chatVM, let historyVM, let db = databaseManager else { return }
+        guard historyVM.conversations.isEmpty else { return }
+
+        // Load user profile
+        let profile: UserProfile? = try? db.dbPool.read { db in
+            try ProfileQueries.fetchCurrentProfile(db)
+        }
+        guard let profile, profile.onboardingDone else { return }
+
+        // Create conversation and send welcome message
+        guard let conv = historyVM.createConversation() else { return }
+        chatVM.newChat()
+        chatVM.bind(to: conv)
+        historyVM.updateTitle(conv.id, title: "Welcome")
+        chatVM.sendWelcomeMessage(profile: profile)
     }
 
     func navigateToDigest(_ digestID: Int) {
@@ -154,8 +175,8 @@ final class AppState {
     func resetLLMData() async throws {
         guard let db = databaseManager else { return }
 
-        // 1. Stop running pipelines (if any)
-        backgroundTaskManager.stopAll()
+        // 1. Stop running pipelines (if any) — await ensures process exits and releases file locks
+        await backgroundTaskManager.stopAll()
 
         // 2. Stop daemon
         let daemon = DaemonManager()

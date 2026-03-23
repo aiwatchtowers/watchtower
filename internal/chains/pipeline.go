@@ -157,7 +157,24 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parsing chain response: %w", err)
 	}
-	p.logger.Printf("chains: parsed %d assignments [%s]", len(assignments), time.Since(t0).Round(time.Millisecond))
+
+	// Filter out low-confidence assignments to prevent false groupings.
+	filtered := 0
+	for i := range assignments {
+		if assignments[i].Action != "SKIP" && assignments[i].Confidence < MinChainConfidence {
+			p.logger.Printf("chains: rejecting %s assignment [%s%d] (confidence %.0f%% < %d%%): %s",
+				assignments[i].Action, assignments[i].ItemType, assignments[i].DecisionIndex,
+				assignments[i].Confidence, MinChainConfidence,
+				assignments[i].Title)
+			assignments[i].Action = "SKIP"
+			filtered++
+		}
+	}
+	if filtered > 0 {
+		p.logger.Printf("chains: filtered %d low-confidence assignment(s)", filtered)
+	}
+
+	p.logger.Printf("chains: parsed %d assignments (%d accepted) [%s]", len(assignments), len(assignments)-filtered, time.Since(t0).Round(time.Millisecond))
 
 	// 6. Apply assignments: create new chains, link decisions and digests.
 	t0 = time.Now()
@@ -546,6 +563,14 @@ IMPORTANT RULES:
 9. Digests provide rich context (summaries, topics) — use them to better understand the theme of a channel's activity.
 10. Ask yourself: "Would these items appear in the same status update or project tracker?" If not, they don't belong in one chain.
 
+CONFIDENCE SCORING:
+Every assignment MUST include a "confidence" field (0-100) reflecting how certain you are that this item belongs to this chain.
+- 90-100: Clear match — same project, same initiative, directly related participants/topics
+- 70-89: Likely match — strong thematic overlap, shared context
+- 50-69: Weak match — surface-level keyword overlap but different contexts (e.g. "developer" in DevOps vs HR)
+- 0-49: No real match — different domains, coincidental keyword overlap
+Items with confidence below 70 will be automatically rejected. When in doubt, SKIP.
+
 Return a JSON array with one entry per item (decisions first, then digests).`
 
 func (p *Pipeline) buildPrompt(chains []db.Chain, unlinked []db.UnlinkedDecision, digContexts []digestContext) string {
@@ -593,28 +618,39 @@ func (p *Pipeline) buildPrompt(chains []db.Chain, unlinked []db.UnlinkedDecision
 		}
 	}
 
+	// Language instruction.
+	if lang := p.cfg.Digest.Language; lang != "" && !strings.EqualFold(lang, "English") {
+		sb.WriteString(fmt.Sprintf("\nIMPORTANT: Write ALL text values (title, summary) in %s.\n\n", lang))
+	}
+
 	sb.WriteString(`Return a JSON array. For each decision (D-prefixed index) and digest (G-prefixed index), specify one of:
-- {"index": 0, "item_type": "decision", "action": "EXISTING", "chain_id": 5}
-- {"index": 1, "item_type": "decision", "action": "NEW", "title": "Short title", "slug": "kebab-slug", "summary": "One sentence", "parent_id": 0}
-- {"index": 0, "item_type": "digest", "action": "EXISTING", "chain_id": 5}
-- {"index": 1, "item_type": "digest", "action": "NEW", "title": "Short title", "slug": "kebab-slug", "summary": "One sentence", "parent_id": 0}
-- {"index": 2, "item_type": "decision", "action": "SKIP"}
+- {"index": 0, "item_type": "decision", "action": "EXISTING", "chain_id": 5, "confidence": 85}
+- {"index": 1, "item_type": "decision", "action": "NEW", "title": "Short title", "slug": "kebab-slug", "summary": "One sentence", "parent_id": 0, "confidence": 92}
+- {"index": 0, "item_type": "digest", "action": "EXISTING", "chain_id": 5, "confidence": 78}
+- {"index": 1, "item_type": "digest", "action": "NEW", "title": "Short title", "slug": "kebab-slug", "summary": "One sentence", "parent_id": 0, "confidence": 90}
+- {"index": 2, "item_type": "decision", "action": "SKIP", "confidence": 0}
 
 Set parent_id to an existing chain ID to make a child chain, or 0 for top-level.
+Every non-SKIP assignment MUST have confidence >= 70 to be accepted.
 `)
 	return sb.String()
 }
 
+// MinChainConfidence is the minimum confidence score (0-100) for an AI chain assignment to be accepted.
+// Assignments below this threshold are treated as SKIP to prevent false groupings.
+const MinChainConfidence = 70
+
 // assignment is a parsed AI response for a single decision or digest.
 type assignment struct {
-	DecisionIndex int    `json:"index"`
-	ItemType      string `json:"item_type,omitempty"` // "decision" or "digest" (default "decision")
-	Action        string `json:"action"`              // "EXISTING", "NEW", "SKIP"
-	ChainID       int    `json:"chain_id,omitempty"`
-	ParentID      int    `json:"parent_id,omitempty"`
-	Title         string `json:"title,omitempty"`
-	Slug          string `json:"slug,omitempty"`
-	Summary       string `json:"summary,omitempty"`
+	DecisionIndex int     `json:"index"`
+	ItemType      string  `json:"item_type,omitempty"` // "decision" or "digest" (default "decision")
+	Action        string  `json:"action"`              // "EXISTING", "NEW", "SKIP"
+	ChainID       int     `json:"chain_id,omitempty"`
+	ParentID      int     `json:"parent_id,omitempty"`
+	Title         string  `json:"title,omitempty"`
+	Slug          string  `json:"slug,omitempty"`
+	Summary       string  `json:"summary,omitempty"`
+	Confidence    float64 `json:"confidence"`           // 0-100 confidence score
 }
 
 func parseResponse(resp string) ([]assignment, error) {

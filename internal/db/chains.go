@@ -164,6 +164,17 @@ func (db *DB) GetChainRefs(chainID int) ([]ChainRef, error) {
 	return refs, rows.Err()
 }
 
+// CleanOrphanedChainRefs removes chain_refs pointing to deleted digests.
+func (db *DB) CleanOrphanedChainRefs() (int64, error) {
+	res, err := db.Exec(`DELETE FROM chain_refs
+		WHERE (ref_type = 'digest' OR ref_type = 'decision')
+		AND digest_id NOT IN (SELECT id FROM digests)`)
+	if err != nil {
+		return 0, fmt.Errorf("cleaning orphaned chain refs: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // UnlinkedDecision is a decision from a digest that is not yet linked to any chain.
 type UnlinkedDecision struct {
 	DigestID     int

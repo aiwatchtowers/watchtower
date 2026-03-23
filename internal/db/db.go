@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 31"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 35"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -1403,6 +1403,219 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v31: %w", err)
 		}
 		version = 31
+	}
+
+	if version < 32 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("starting migration v32: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS pipeline_runs (
+				id               INTEGER PRIMARY KEY AUTOINCREMENT,
+				pipeline         TEXT NOT NULL,
+				source           TEXT NOT NULL DEFAULT 'cli',
+				status           TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'done', 'error')),
+				error_msg        TEXT NOT NULL DEFAULT '',
+				items_found      INTEGER NOT NULL DEFAULT 0,
+				input_tokens     INTEGER NOT NULL DEFAULT 0,
+				output_tokens    INTEGER NOT NULL DEFAULT 0,
+				cost_usd         REAL NOT NULL DEFAULT 0,
+				total_api_tokens INTEGER NOT NULL DEFAULT 0,
+				period_from      REAL,
+				period_to        REAL,
+				started_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+				finished_at      TEXT,
+				duration_seconds REAL NOT NULL DEFAULT 0
+			)`); err != nil {
+			return fmt.Errorf("migration v32 create pipeline_runs: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline)`); err != nil {
+			return fmt.Errorf("migration v32 index pipeline_runs pipeline: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC)`); err != nil {
+			return fmt.Errorf("migration v32 index pipeline_runs started: %w", err)
+		}
+
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS pipeline_steps (
+				id               INTEGER PRIMARY KEY AUTOINCREMENT,
+				run_id           INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+				step             INTEGER NOT NULL,
+				total            INTEGER NOT NULL,
+				status           TEXT NOT NULL DEFAULT '',
+				channel_id       TEXT NOT NULL DEFAULT '',
+				channel_name     TEXT NOT NULL DEFAULT '',
+				input_tokens     INTEGER NOT NULL DEFAULT 0,
+				output_tokens    INTEGER NOT NULL DEFAULT 0,
+				cost_usd         REAL NOT NULL DEFAULT 0,
+				total_api_tokens INTEGER NOT NULL DEFAULT 0,
+				message_count    INTEGER NOT NULL DEFAULT 0,
+				period_from      REAL,
+				period_to        REAL,
+				duration_seconds REAL NOT NULL DEFAULT 0,
+				created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			)`); err != nil {
+			return fmt.Errorf("migration v32 create pipeline_steps: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pipeline_steps_run ON pipeline_steps(run_id)`); err != nil {
+			return fmt.Errorf("migration v32 index pipeline_steps run: %w", err)
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 32"); err != nil {
+			return fmt.Errorf("setting schema version v32: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v32: %w", err)
+		}
+		version = 32
+	}
+
+	if version < 33 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("starting migration v33: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS briefings (
+				id               INTEGER PRIMARY KEY AUTOINCREMENT,
+				workspace_id     TEXT NOT NULL DEFAULT '',
+				user_id          TEXT NOT NULL,
+				date             TEXT NOT NULL,
+				role             TEXT NOT NULL DEFAULT '',
+				attention        TEXT NOT NULL DEFAULT '[]',
+				your_day         TEXT NOT NULL DEFAULT '[]',
+				what_happened    TEXT NOT NULL DEFAULT '[]',
+				team_pulse       TEXT NOT NULL DEFAULT '[]',
+				coaching         TEXT NOT NULL DEFAULT '[]',
+				model            TEXT NOT NULL DEFAULT '',
+				input_tokens     INTEGER NOT NULL DEFAULT 0,
+				output_tokens    INTEGER NOT NULL DEFAULT 0,
+				cost_usd         REAL NOT NULL DEFAULT 0,
+				prompt_version   INTEGER NOT NULL DEFAULT 0,
+				read_at          TEXT,
+				created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+				UNIQUE(user_id, date)
+			)`); err != nil {
+			return fmt.Errorf("migration v33 create briefings: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date DESC)`); err != nil {
+			return fmt.Errorf("migration v33 index briefings user_date: %w", err)
+		}
+
+		// Expand feedback entity_type CHECK to include 'briefing'.
+		// SQLite cannot ALTER CHECK constraints, so we recreate the table.
+		if !hasColumn(tx, "feedback", "id") {
+			// Table doesn't exist yet (fresh install via schema.sql handles it).
+		} else {
+			// Recreate feedback table with expanded CHECK.
+			if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS feedback_new (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing')),
+				entity_id   TEXT NOT NULL,
+				rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
+				comment     TEXT NOT NULL DEFAULT '',
+				created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			)`); err != nil {
+				return fmt.Errorf("migration v33 create feedback_new: %w", err)
+			}
+			if _, err := tx.Exec(`INSERT INTO feedback_new SELECT * FROM feedback`); err != nil {
+				return fmt.Errorf("migration v33 copy feedback: %w", err)
+			}
+			if _, err := tx.Exec(`DROP TABLE feedback`); err != nil {
+				return fmt.Errorf("migration v33 drop feedback: %w", err)
+			}
+			if _, err := tx.Exec(`ALTER TABLE feedback_new RENAME TO feedback`); err != nil {
+				return fmt.Errorf("migration v33 rename feedback: %w", err)
+			}
+			if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_feedback_entity ON feedback(entity_type, entity_id)`); err != nil {
+				return fmt.Errorf("migration v33 index feedback entity: %w", err)
+			}
+			if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(entity_type, rating)`); err != nil {
+				return fmt.Errorf("migration v33 index feedback rating: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 33"); err != nil {
+			return fmt.Errorf("setting schema version v33: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v33: %w", err)
+		}
+		version = 33
+	}
+
+	if version < 34 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v34: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Expand feedback entity_type CHECK to include 'chain'.
+		if !hasColumn(tx, "feedback", "id") {
+			// Table doesn't exist yet (fresh install via schema.sql handles it).
+		} else {
+			if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS feedback_new (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'chain')),
+				entity_id   TEXT NOT NULL,
+				rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
+				comment     TEXT NOT NULL DEFAULT '',
+				created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			)`); err != nil {
+				return fmt.Errorf("migration v34 create feedback_new: %w", err)
+			}
+			if _, err := tx.Exec(`INSERT INTO feedback_new SELECT * FROM feedback`); err != nil {
+				return fmt.Errorf("migration v34 copy feedback: %w", err)
+			}
+			if _, err := tx.Exec(`DROP TABLE feedback`); err != nil {
+				return fmt.Errorf("migration v34 drop feedback: %w", err)
+			}
+			if _, err := tx.Exec(`ALTER TABLE feedback_new RENAME TO feedback`); err != nil {
+				return fmt.Errorf("migration v34 rename feedback: %w", err)
+			}
+			if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_feedback_entity ON feedback(entity_type, entity_id)`); err != nil {
+				return fmt.Errorf("migration v34 index feedback_entity: %w", err)
+			}
+			if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(entity_type, rating)`); err != nil {
+				return fmt.Errorf("migration v34 index feedback_rating: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 34"); err != nil {
+			return fmt.Errorf("setting schema version v34: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v34: %w", err)
+		}
+		version = 34
+	}
+
+	if version < 35 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v35: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "tracks", "fingerprint") {
+			if _, err := tx.Exec(`ALTER TABLE tracks ADD COLUMN fingerprint TEXT NOT NULL DEFAULT '[]'`); err != nil {
+				return fmt.Errorf("migration v35 add fingerprint column: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 35"); err != nil {
+			return fmt.Errorf("setting schema version v35: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v35: %w", err)
+		}
+		version = 35
 	}
 
 	_ = version // silence unused variable if this is the last migration

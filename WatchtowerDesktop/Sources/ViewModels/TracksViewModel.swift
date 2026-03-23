@@ -17,9 +17,16 @@ final class TracksViewModel {
     var channelFilter: String?
     var ownershipFilter: String?
     var ownershipCounts: [String: Int] = [:]
+    private(set) var userNameCache: [String: String] = [:]
     var availableChannels: [(id: String, name: String)] = []
     var starredOnly: Bool = false
     private(set) var starredChannelIDs: Set<String> = []
+
+    // Pagination
+    private(set) var hasMoreItems = true
+    private var itemsOffset = 0
+    var isLoadingMore = false
+    private let pageSize = 50
 
     private(set) var workspaceDomain: String?
     private(set) var workspaceTeamID: String?
@@ -72,7 +79,8 @@ final class TracksViewModel {
                     statuses: nil,
                     channelID: channelFilter,
                     priority: priorityFilter,
-                    ownership: ownershipFilter
+                    ownership: ownershipFilter,
+                    limit: pageSize
                 )
                 let count = try uid.map { try TrackQueries.fetchOpenCount(db, assigneeUserID: $0) } ?? 0
                 let inbox = try uid.map { try TrackQueries.fetchInboxCount(db, assigneeUserID: $0) } ?? 0
@@ -94,6 +102,8 @@ final class TracksViewModel {
                 loadedItems = loadedItems.filter { starredCh.contains($0.channelID) }
             }
             items = loadedItems
+            itemsOffset = loadedItems.count
+            hasMoreItems = result.3.count >= pageSize
             openCount = result.4
             inboxCount = result.5
             updatedCount = result.6
@@ -101,6 +111,7 @@ final class TracksViewModel {
             totalCount = result.8
             ownershipCounts = result.9
             availableChannels = loadAvailableChannels()
+            refreshUserNameCache()
             errorMessage = nil
         } catch {
             items = []
@@ -170,6 +181,10 @@ final class TracksViewModel {
         }
     }
 
+    func setStatus(_ item: Track, to status: String) {
+        updateStatus(item, to: status)
+    }
+
     private func updateStatus(_ item: Track, to status: String) {
         do {
             try dbManager.dbPool.write { db in
@@ -179,6 +194,72 @@ final class TracksViewModel {
         } catch {
             errorMessage = "Failed to update: \(error.localizedDescription)"
         }
+    }
+
+    func updatePriority(_ item: Track, to priority: String) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TrackQueries.updatePriority(db, id: item.id, priority: priority)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update priority: \(error.localizedDescription)"
+        }
+    }
+
+    func updateCategory(_ item: Track, to category: String) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TrackQueries.updateCategory(db, id: item.id, category: category)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update category: \(error.localizedDescription)"
+        }
+    }
+
+    func updateOwnership(_ item: Track, to ownership: String) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TrackQueries.updateOwnership(db, id: item.id, ownership: ownership)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update ownership: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Pagination
+
+    func loadMore() {
+        guard hasMoreItems, !isLoadingMore else { return }
+        isLoadingMore = true
+        do {
+            let effectiveStatus: String? = statusFilter == nil ? "inbox" : statusFilter
+            let batch = try dbManager.dbPool.read { db in
+                try TrackQueries.fetchAll(
+                    db,
+                    assigneeUserID: currentUserID,
+                    status: effectiveStatus == "all" ? nil : effectiveStatus,
+                    statuses: nil,
+                    channelID: channelFilter,
+                    priority: priorityFilter,
+                    ownership: ownershipFilter,
+                    limit: pageSize,
+                    offset: itemsOffset
+                )
+            }
+            var newItems = batch
+            if starredOnly, !starredChannelIDs.isEmpty {
+                newItems = newItems.filter { starredChannelIDs.contains($0.channelID) }
+            }
+            items.append(contentsOf: newItems)
+            itemsOffset += batch.count
+            hasMoreItems = batch.count >= pageSize
+        } catch {
+            print("Failed to load more tracks: \(error)")
+        }
+        isLoadingMore = false
     }
 
     func itemByID(_ id: Int) -> Track? {
@@ -209,6 +290,59 @@ final class TracksViewModel {
     func slackMessageURL(channelID: String, messageTS: String) -> URL? {
         guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
         return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)&message=\(messageTS)")
+    }
+
+    private static let userIDPattern = try! NSRegularExpression(pattern: "U[A-Z0-9]{8,11}")
+
+    /// Resolve Slack user IDs found in track texts to display names.
+    private func refreshUserNameCache() {
+        var allText = items.flatMap { [$0.text, $0.context, $0.blocking, $0.requesterName] }
+        allText.append(contentsOf: items.flatMap { $0.decodedSubItems.map(\.text) })
+        allText.append(contentsOf: items.flatMap { $0.decodedParticipants.map(\.name) })
+        let joined = allText.joined(separator: " ")
+
+        let range = NSRange(joined.startIndex..., in: joined)
+        let matches = Self.userIDPattern.matches(in: joined, range: range)
+        var userIDs = Set<String>()
+        for match in matches {
+            if let idRange = Range(match.range, in: joined) {
+                userIDs.insert(String(joined[idRange]))
+            }
+        }
+        // Only look up IDs not already cached
+        let newIDs = userIDs.subtracting(userNameCache.keys)
+        guard !newIDs.isEmpty else { return }
+
+        do {
+            let map = try dbManager.dbPool.read { db in
+                var result: [String: String] = [:]
+                for uid in newIDs {
+                    let name = try UserQueries.fetchDisplayName(db, forID: uid)
+                    if name != uid { result[uid] = name }
+                }
+                return result
+            }
+            userNameCache.merge(map) { _, new in new }
+        } catch {}
+    }
+
+    func resolveUserIDs(_ text: String) -> String {
+        guard !userNameCache.isEmpty else { return text }
+        let pattern = try! NSRegularExpression(pattern: "\\(?(U[A-Z0-9]{8,11})\\)?")
+        let range = NSRange(text.startIndex..., in: text)
+        var result = text
+        let matches = pattern.matches(in: text, range: range).reversed()
+        for match in matches {
+            let fullRange = Range(match.range, in: result)!
+            let idRange = Range(match.range(at: 1), in: result)!
+            let userID = String(result[idRange])
+            if let name = userNameCache[userID] {
+                let fullMatch = String(result[fullRange])
+                let hasParens = fullMatch.hasPrefix("(") && fullMatch.hasSuffix(")")
+                result.replaceSubrange(fullRange, with: hasParens ? "(\(name))" : name)
+            }
+        }
+        return result
     }
 
     /// Unique channel names for filter picker, refreshed on each load().

@@ -23,7 +23,7 @@ final class UpdateService {
         return false
     }
 
-    private static let repo = "vadimtrunov/watchtower"
+    private static let repo = "aiwatchtowers/watchtower"
     private static let lastCheckKey = "lastUpdateCheckDate"
     private static let cacheDir: URL = {
         guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {

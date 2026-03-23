@@ -24,6 +24,7 @@ const (
 	GuidePeriod    = "guide.period"
 	PeopleReduce   = "people.reduce"
 	PeopleTeam     = "people.team"
+	BriefingDaily  = "briefing.daily"
 )
 
 // Store loads, caches, and persists prompt templates.

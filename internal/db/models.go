@@ -193,6 +193,7 @@ type Track struct {
 	Ownership         string  // "mine", "delegated", "watching"
 	BallOn            string  // user_id of the person who needs to act next
 	OwnerUserID       string  // owner of the track (for delegated = report's user_id)
+	Fingerprint       string  // JSON array of extracted entities (ticket IDs, user_ids, IPs, CVEs)
 }
 
 // Digest represents an AI-generated summary of channel activity.
@@ -430,6 +431,27 @@ type PeopleCardSummary struct {
 	OutputTokens  int
 	CostUSD       float64
 	PromptVersion int
+	CreatedAt     string
+}
+
+// Briefing represents a daily personalized briefing for the user.
+type Briefing struct {
+	ID            int
+	WorkspaceID   string
+	UserID        string
+	Date          string // YYYY-MM-DD
+	Role          string
+	Attention     string // JSON array of AttentionItem
+	YourDay       string // JSON array of YourDayItem
+	WhatHappened  string // JSON array of WhatHappenedItem
+	TeamPulse     string // JSON array of TeamPulseItem
+	Coaching      string // JSON array of CoachingItem
+	Model         string
+	InputTokens   int
+	OutputTokens  int
+	CostUSD       float64
+	PromptVersion int
+	ReadAt        sql.NullString // NULL = unread, ISO8601 = when read
 	CreatedAt     string
 }
 

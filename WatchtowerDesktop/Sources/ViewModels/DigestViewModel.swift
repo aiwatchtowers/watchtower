@@ -12,6 +12,19 @@ final class DigestViewModel {
     var unreadDigestCount: Int = 0
     var unreadDecisionCount: Int = 0
 
+    // Pagination — digests
+    private(set) var hasMoreDigests = true
+    private var digestsOffset = 0
+    var isLoadingMoreDigests = false
+    private let digestsPageSize = 50
+
+    // Pagination — decisions
+    private(set) var hasMoreDecisions = true
+    private var decisionsOffset = 0
+    var isLoadingMoreDecisions = false
+    private let decisionsPageSize = 50
+    private var allDecisionDigests: [Digest] = []
+
     // M9: pre-fetched caches (avoids DB read per row in view body)
     private var channelNameCache: [String: String] = [:]
     private(set) var workspaceDomain: String?
@@ -116,11 +129,16 @@ final class DigestViewModel {
                 )
             }
             digests = result.digests
+            digestsOffset = result.digests.count
+            hasMoreDigests = result.digests.count >= digestsPageSize
             channelNameCache = result.channelNames
             workspaceDomain = result.domain
             workspaceTeamID = result.teamID
             starredChannelIDs = result.starredChannels
             currentUserID = result.currentUserID
+            allDecisionDigests = result.withDecisions
+            decisionsOffset = result.withDecisions.count
+            hasMoreDecisions = result.withDecisions.count >= decisionsPageSize
             decisionEntries = buildDecisionEntries(
                 from: result.withDecisions,
                 readIndices: result.readIndices,
@@ -354,6 +372,78 @@ final class DigestViewModel {
         }) {
             decisionEntries[idx] = decisionEntries[idx].with(correctedImportance: corrected)
         }
+    }
+
+    // MARK: - Pagination
+
+    func loadMoreDigests() {
+        guard hasMoreDigests, !isLoadingMoreDigests else { return }
+        isLoadingMoreDigests = true
+        do {
+            let batch = try dbManager.dbPool.read { db in
+                try DigestQueries.fetchAll(db, type: selectedType, limit: digestsPageSize, offset: digestsOffset)
+            }
+            // Update channel name cache for new channels
+            let newChannelIDs = Set(batch.map(\.channelID).filter { !$0.isEmpty }) .subtracting(channelNameCache.keys)
+            if !newChannelIDs.isEmpty {
+                let names = try dbManager.dbPool.read { db -> [String: String] in
+                    var map: [String: String] = [:]
+                    for cid in newChannelIDs {
+                        if let ch = try ChannelQueries.fetchByID(db, id: cid) {
+                            map[cid] = ch.name
+                        }
+                    }
+                    return map
+                }
+                channelNameCache.merge(names) { _, new in new }
+            }
+            digests.append(contentsOf: batch)
+            digestsOffset += batch.count
+            hasMoreDigests = batch.count >= digestsPageSize
+        } catch {
+            print("Failed to load more digests: \(error)")
+        }
+        isLoadingMoreDigests = false
+    }
+
+    func loadMoreDecisions() {
+        guard hasMoreDecisions, !isLoadingMoreDecisions else { return }
+        isLoadingMoreDecisions = true
+        do {
+            let result = try dbManager.dbPool.read { db -> (digests: [Digest], readIndices: [Int: Set<Int>], corrections: [String: String]) in
+                let batch = try DigestQueries.fetchWithDecisions(db, limit: decisionsPageSize, offset: decisionsOffset)
+                let readIndices = try DigestQueries.readDecisionIndices(db, digestIDs: batch.map(\.id))
+                let corrections = try ImportanceCorrectionQueries.allCorrections(db)
+                return (batch, readIndices, corrections)
+            }
+            // Update channel name cache
+            let newChannelIDs = Set(result.digests.map(\.channelID).filter { !$0.isEmpty }).subtracting(channelNameCache.keys)
+            if !newChannelIDs.isEmpty {
+                let names = try dbManager.dbPool.read { db -> [String: String] in
+                    var map: [String: String] = [:]
+                    for cid in newChannelIDs {
+                        if let ch = try ChannelQueries.fetchByID(db, id: cid) {
+                            map[cid] = ch.name
+                        }
+                    }
+                    return map
+                }
+                channelNameCache.merge(names) { _, new in new }
+            }
+            allDecisionDigests.append(contentsOf: result.digests)
+            decisionsOffset += result.digests.count
+            hasMoreDecisions = result.digests.count >= decisionsPageSize
+            // Rebuild all entries to maintain dedup
+            decisionEntries = buildDecisionEntries(
+                from: allDecisionDigests,
+                readIndices: result.readIndices,
+                importanceCorrections: result.corrections
+            )
+            unreadDecisionCount = decisionEntries.filter { !$0.isRead }.count
+        } catch {
+            print("Failed to load more decisions: \(error)")
+        }
+        isLoadingMoreDecisions = false
     }
 
     func digestByID(_ id: Int) -> Digest? {

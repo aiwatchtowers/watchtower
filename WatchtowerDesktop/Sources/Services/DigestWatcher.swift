@@ -8,11 +8,13 @@ final class DigestWatcher {
     private let dbPool: DatabasePool
     private let notificationService: NotificationService
     private var lastCheckedDigestID: Int
+    private var lastCheckedBriefingID: Int
 
     init(dbPool: DatabasePool, notificationService: NotificationService = .shared) {
         self.dbPool = dbPool
         self.notificationService = notificationService
         self.lastCheckedDigestID = UserDefaults.standard.integer(forKey: "lastCheckedDigestID")
+        self.lastCheckedBriefingID = UserDefaults.standard.integer(forKey: "lastCheckedBriefingID")
     }
 
     func start() {
@@ -27,6 +29,16 @@ final class DigestWatcher {
             } catch {
                 // Will start from 0
             }
+        }
+
+        if lastCheckedBriefingID == 0 {
+            do {
+                let maxID = try dbPool.read { db in
+                    try BriefingQueries.maxID(db)
+                }
+                lastCheckedBriefingID = maxID
+                UserDefaults.standard.set(maxID, forKey: "lastCheckedBriefingID")
+            } catch {}
         }
 
         watchTask?.cancel()
@@ -79,8 +91,25 @@ final class DigestWatcher {
                 UserDefaults.standard.set(lastCheckedDigestID, forKey: "lastCheckedDigestID")
             }
         } catch {
-            // M18: log instead of silently swallowing
             print("[DigestWatcher] poll error: \(error.localizedDescription)")
+        }
+
+        // Poll for new briefings
+        do {
+            let newBriefings = try dbPool.read { db in
+                try BriefingQueries.fetchNewSince(db, afterID: lastCheckedBriefingID)
+            }
+            for briefing in newBriefings {
+                notificationService.sendBriefingNotification(
+                    attentionCount: briefing.parsedAttention.count
+                )
+                lastCheckedBriefingID = briefing.id
+            }
+            if lastCheckedBriefingID > 0 {
+                UserDefaults.standard.set(lastCheckedBriefingID, forKey: "lastCheckedBriefingID")
+            }
+        } catch {
+            print("[DigestWatcher] briefing poll error: \(error.localizedDescription)")
         }
     }
 

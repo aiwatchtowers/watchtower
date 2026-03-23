@@ -63,6 +63,7 @@ struct TrackDetailView: View {
                 priorityBadge
                 statusBadge
                 categoryBadge
+                ownershipBadge
 
                 if item.hasUpdates {
                     Label("Updated", systemImage: "bell.badge.fill")
@@ -89,7 +90,7 @@ struct TrackDetailView: View {
                 }
             }
 
-            Text(item.text)
+            Text(viewModel.resolveUserIDs(item.text))
                 .font(.title3)
                 .fontWeight(.semibold)
                 .textSelection(.enabled)
@@ -97,7 +98,7 @@ struct TrackDetailView: View {
 
             HStack(spacing: 12) {
                 if !item.sourceChannelName.isEmpty {
-                    if let url = viewModel.slackChannelURL(channelID: item.channelID) {
+                    if let url = channelSlackURL {
                         Link(destination: url) {
                             Label("#\(item.sourceChannelName)", systemImage: "number")
                                 .font(.caption)
@@ -170,7 +171,7 @@ struct TrackDetailView: View {
                         }
                         .buttonStyle(.borderless)
 
-                        Text(sub.text)
+                        Text(viewModel.resolveUserIDs(sub.text))
                             .font(.subheadline)
                             .strikethrough(sub.isDone)
                             .foregroundStyle(sub.isDone ? .secondary : .primary)
@@ -190,7 +191,7 @@ struct TrackDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Context")
                     .font(.headline)
-                Text(item.context)
+                Text(viewModel.resolveUserIDs(item.context))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -288,7 +289,7 @@ struct TrackDetailView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .font(.subheadline)
-                Text(item.blocking)
+                Text(viewModel.resolveUserIDs(item.blocking))
                     .font(.subheadline)
                     .foregroundStyle(.primary)
                     .textSelection(.enabled)
@@ -525,39 +526,151 @@ struct TrackDetailView: View {
     // MARK: - Helpers
 
     private var priorityBadge: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(priorityColor)
-                .frame(width: 8, height: 8)
-            Text(item.priority.capitalized)
-                .font(.caption)
-                .foregroundStyle(priorityColor)
+        Menu {
+            ForEach(["high", "medium", "low"], id: \.self) { p in
+                Button {
+                    viewModel.updatePriority(item, to: p)
+                } label: {
+                    if p == item.priority {
+                        Label(p.capitalized, systemImage: "checkmark")
+                    } else {
+                        Text(p.capitalized)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(priorityColor)
+                    .frame(width: 8, height: 8)
+                Text(item.priority.capitalized)
+                    .font(.caption)
+                    .foregroundStyle(priorityColor)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(priorityColor.opacity(0.1), in: Capsule())
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(priorityColor.opacity(0.1), in: Capsule())
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     private var statusBadge: some View {
-        Text(item.status.capitalized)
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(statusColor)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(statusColor.opacity(0.12), in: Capsule())
+        Menu {
+            ForEach(["inbox", "active", "done", "dismissed"], id: \.self) { s in
+                Button {
+                    viewModel.setStatus(item, to: s)
+                } label: {
+                    if s == item.status {
+                        Label(s.capitalized, systemImage: "checkmark")
+                    } else {
+                        Text(s.capitalized)
+                    }
+                }
+            }
+        } label: {
+            Text(item.status.capitalized)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(statusColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(statusColor.opacity(0.12), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
+
+    private static let allCategories: [(value: String, label: String)] = [
+        ("code_review", "Review"), ("decision_needed", "Decision"), ("info_request", "Info"),
+        ("task", "Task"), ("approval", "Approval"), ("follow_up", "Follow-up"),
+        ("bug_fix", "Bug"), ("discussion", "Discussion"),
+    ]
 
     @ViewBuilder
     private var categoryBadge: some View {
         let label = item.categoryLabel
         if !label.isEmpty {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(categoryColor)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(categoryColor.opacity(0.1), in: Capsule())
+            Menu {
+                ForEach(Self.allCategories, id: \.value) { cat in
+                    Button {
+                        viewModel.updateCategory(item, to: cat.value)
+                    } label: {
+                        if cat.value == item.category {
+                            Label(cat.label, systemImage: "checkmark")
+                        } else {
+                            Text(cat.label)
+                        }
+                    }
+                }
+            } label: {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(categoryColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(categoryColor.opacity(0.1), in: Capsule())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
+    private static let allOwnerships: [(value: String, label: String, icon: String)] = [
+        ("mine", "Mine", "person.fill"),
+        ("delegated", "Delegated", "arrow.right.circle.fill"),
+        ("watching", "Watching", "eye.fill"),
+    ]
+
+    private var ownershipBadge: some View {
+        Menu {
+            ForEach(Self.allOwnerships, id: \.value) { o in
+                Button {
+                    viewModel.updateOwnership(item, to: o.value)
+                } label: {
+                    if o.value == item.ownership {
+                        Label(o.label, systemImage: "checkmark")
+                    } else {
+                        Label(o.label, systemImage: o.icon)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: ownershipIcon)
+                    .font(.caption2)
+                Text(item.ownershipLabel)
+                    .font(.caption)
+            }
+            .foregroundStyle(ownershipColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(ownershipColor.opacity(0.1), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var channelSlackURL: URL? {
+        if !item.sourceMessageTS.isEmpty {
+            return viewModel.slackMessageURL(channelID: item.channelID, messageTS: item.sourceMessageTS)
+        }
+        return viewModel.slackChannelURL(channelID: item.channelID)
+    }
+
+    private var ownershipIcon: String {
+        switch item.ownership {
+        case "delegated": return "arrow.right.circle.fill"
+        case "watching": return "eye.fill"
+        default: return "person.fill"
+        }
+    }
+
+    private var ownershipColor: Color {
+        switch item.ownership {
+        case "delegated": return .indigo
+        case "watching": return .teal
+        default: return .secondary
         }
     }
 

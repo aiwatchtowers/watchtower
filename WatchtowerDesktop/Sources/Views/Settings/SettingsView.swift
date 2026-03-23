@@ -45,6 +45,7 @@ struct GeneralSettings: View {
             workspaceSection
             syncSection
             digestSection
+            briefingSection
             aiSection
 
             if let error = config.parseError {
@@ -146,6 +147,20 @@ struct GeneralSettings: View {
                 ),
                 prompt: Text("English")
             )
+        }
+    }
+
+    private var briefingSection: some View {
+        Section("Briefing") {
+            Picker(
+                "Briefing Hour",
+                selection: $config.briefingHour
+            ) {
+                ForEach(0..<24, id: \.self) { hour in
+                    Text(String(format: "%02d:00", hour)).tag(hour)
+                }
+            }
+            .help("Hour of day when daily briefing should be generated (0-23)")
         }
     }
 

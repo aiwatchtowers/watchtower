@@ -41,6 +41,12 @@ type DigestConfig struct {
 	TracksInterval time.Duration `mapstructure:"action_items_interval"` // YAML key kept for backward compat
 }
 
+// BriefingConfig holds settings for the daily briefing pipeline.
+type BriefingConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable daily briefings (default: true)
+	Hour    int  `mapstructure:"hour"`    // hour of day to generate (0-23, default: 8)
+}
+
 // AnalysisConfig holds settings for the people analysis pipeline.
 type AnalysisConfig struct {
 	LegacyMode bool `mapstructure:"legacy_mode"` // enable legacy people analytics (default: false)
@@ -52,6 +58,7 @@ type Config struct {
 	AI              AIConfig                    `mapstructure:"ai"`
 	Sync            SyncConfig                  `mapstructure:"sync"`
 	Digest          DigestConfig                `mapstructure:"digest"`
+	Briefing        BriefingConfig              `mapstructure:"briefing"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	ClaudePath      string                      `mapstructure:"claude_path"`
 }
@@ -76,6 +83,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("digest.workers", DefaultDigestWorkers)
 	v.SetDefault("digest.action_items_interval", DefaultTracksInterval)
 	v.RegisterAlias("digest.tracks_interval", "digest.action_items_interval")
+	v.SetDefault("briefing.enabled", DefaultBriefingEnabled)
+	v.SetDefault("briefing.hour", DefaultBriefingHour)
 	// Config file
 	v.SetConfigFile(configPath)
 

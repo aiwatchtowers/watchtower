@@ -2,6 +2,7 @@ import SwiftUI
 
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case chat
+    case briefings
     case tracks
     case chains
     case people
@@ -14,6 +15,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .chat: "AI Chat"
+        case .briefings: "Briefings"
         case .tracks: "Tracks"
         case .chains: "Chains"
         case .people: "People"
@@ -26,6 +28,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .chat: "bubble.left.and.bubble.right"
+        case .briefings: "sun.max"
         case .tracks: "checklist"
         case .chains: "link.circle"
         case .people: "person.2"
@@ -37,7 +40,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Main navigation items (shown above the separator).
     static var mainItems: [Self] {
-        [.chat, .tracks, .chains, .people, .search]
+        [.chat, .briefings, .tracks, .chains, .people, .search]
     }
 
     /// Tool items (shown below the separator).
@@ -128,6 +131,8 @@ struct MainNavigationView: View {
         switch appState.selectedDestination {
         case .chat:
             ChatView()
+        case .briefings:
+            BriefingsListView()
         case .tracks:
             TracksListView()
         case .chains:

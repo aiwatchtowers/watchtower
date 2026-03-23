@@ -133,6 +133,16 @@ struct TracksListView: View {
                     LazyVStack(spacing: 8) {
                         ForEach(vm.items) { item in
                             itemRow(item, vm: vm)
+                                .onAppear {
+                                    if item.id == vm.items.last?.id {
+                                        vm.loadMore()
+                                    }
+                                }
+                        }
+                        if vm.isLoadingMore {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(8)
                         }
                     }
                     .padding(.vertical, 8)
@@ -249,7 +259,7 @@ struct TrackRow: View {
     @ViewBuilder
     private var channelLink: some View {
         if !item.sourceChannelName.isEmpty {
-            if let url = viewModel.slackChannelURL(channelID: item.channelID) {
+            if let url = slackURL {
                 Link(destination: url) {
                     Text("#\(item.sourceChannelName)")
                         .font(.caption)
@@ -263,8 +273,15 @@ struct TrackRow: View {
         }
     }
 
+    private var slackURL: URL? {
+        if !item.sourceMessageTS.isEmpty {
+            return viewModel.slackMessageURL(channelID: item.channelID, messageTS: item.sourceMessageTS)
+        }
+        return viewModel.slackChannelURL(channelID: item.channelID)
+    }
+
     private var trackText: some View {
-        Text(item.text)
+        Text(viewModel.resolveUserIDs(item.text))
             .font(.subheadline)
             .fontWeight((item.isInbox || item.isActive) ? .medium : .regular)
             .strikethrough(item.isDone)
@@ -310,7 +327,7 @@ struct TrackRow: View {
     @ViewBuilder
     private var contextRow: some View {
         if !item.context.isEmpty {
-            Text(item.context)
+            Text(viewModel.resolveUserIDs(item.context))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .lineLimit(2)
@@ -324,7 +341,7 @@ struct TrackRow: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(.orange)
-                Text(item.blocking)
+                Text(viewModel.resolveUserIDs(item.blocking))
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .lineLimit(1)

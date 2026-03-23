@@ -16,6 +16,7 @@ var Defaults = map[string]string{
 	GuidePeriod:   defaultGuidePeriod,
 	PeopleReduce:  defaultPeopleReduce,
 	PeopleTeam:    defaultPeopleTeam,
+	BriefingDaily: defaultBriefingDaily,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -30,6 +31,7 @@ var AllIDs = []string{
 	GuidePeriod,
 	PeopleReduce,
 	PeopleTeam,
+	BriefingDaily,
 }
 
 // Descriptions maps prompt IDs to human-readable descriptions.
@@ -44,6 +46,7 @@ var Descriptions = map[string]string{
 	GuidePeriod:   "Team guide — cross-user communication tips",
 	PeopleReduce:  "People card — unified profile from signals",
 	PeopleTeam:    "Team summary — cross-user attention & tips",
+	BriefingDaily: "Daily briefing — personalized morning summary",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -510,4 +513,62 @@ Rules:
 - Return valid JSON only
 
 === PEOPLE CARDS ===
+%s`
+
+const defaultBriefingDaily = `You are creating a personalized daily briefing for %s on %s.
+User role: %s
+
+Your job is to synthesize all available data into five focused sections. This is the single page the user reads to start their day.
+
+Return ONLY a JSON object (no markdown fences, no explanation):
+
+{
+  "attention": [
+    {"text": "What needs attention and why", "source_type": "track|chain|digest|people", "source_id": "123", "priority": "high|medium", "reason": "Why this matters now"}
+  ],
+  "your_day": [
+    {"text": "Task or action for today", "track_id": 123, "due_date": "2026-03-22", "priority": "high|medium|low", "status": "inbox|active", "ownership": "mine|delegated|watching"}
+  ],
+  "what_happened": [
+    {"text": "Notable event or decision", "digest_id": 456, "channel_name": "#channel", "item_type": "decision|summary|topic", "importance": "high|medium|low"}
+  ],
+  "team_pulse": [
+    {"text": "Signal about a team member", "user_id": "U123", "signal_type": "volume_drop|volume_spike|new_red_flag|highlight|conflict", "detail": "Specifics"}
+  ],
+  "coaching": [
+    {"text": "Actionable communication tip", "related_user_id": "U123", "category": "communication|delegation|conflict|process"}
+  ]
+}
+
+Rules:
+- attention: max 5 items. Only things that genuinely need action. Include source_type and source_id for traceability.
+- your_day: built from active tracks. Include track_id. Order by priority, deadline proximity.
+- what_happened: max 7 items from channel digests. Include digest_id, channel_name. Focus on decisions and blockers.
+- team_pulse: signals from people cards. Include user_id. Flag volume changes, red flags, conflicts.
+- coaching: max 3 items. Grounded in observed patterns — not generic advice. Include related_user_id when applicable.
+- Be specific: name people, channels, decisions — not vague generalities.
+- Cross-reference tracks with digest decisions: if a track relates to a decision, mention both.
+- If user has reports, prioritize their signals in team_pulse.
+- %s
+- Return valid JSON only
+
+=== ACTIVE TRACKS ===
+%s
+
+=== ACTIVE CHAINS ===
+%s
+
+=== CHANNEL DIGESTS ===
+%s
+
+=== DAILY ROLLUP ===
+%s
+
+=== PEOPLE CARDS ===
+%s
+
+=== TEAM SUMMARY ===
+%s
+
+=== USER PROFILE ===
 %s`

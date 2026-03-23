@@ -90,7 +90,7 @@ func TestRunCreatesNewChain(t *testing.T) {
 	})
 
 	gen := &mockGenerator{
-		response: `[{"index": 0, "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating the database to PostgreSQL"}]`,
+		response: `[{"index": 0, "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating the database to PostgreSQL", "confidence": 90}]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
 
@@ -138,7 +138,7 @@ func TestRunLinksToExistingChain(t *testing.T) {
 	})
 
 	gen := &mockGenerator{
-		response: `[{"index": 0, "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `}]`,
+		response: `[{"index": 0, "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `, "confidence": 85}]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
 
@@ -362,8 +362,8 @@ func TestRunContextCancelled(t *testing.T) {
 	// Return two NEW assignments; cancel context before processing.
 	gen := &mockGenerator{
 		response: `[
-			{"index": 0, "action": "NEW", "title": "Prod Deploy", "slug": "prod-deploy", "summary": "Deploy to production"},
-			{"index": 1, "action": "NEW", "title": "gRPC Migration", "slug": "grpc-migration", "summary": "Move to gRPC"}
+			{"index": 0, "action": "NEW", "title": "Prod Deploy", "slug": "prod-deploy", "summary": "Deploy to production", "confidence": 90},
+			{"index": 1, "action": "NEW", "title": "gRPC Migration", "slug": "grpc-migration", "summary": "Move to gRPC", "confidence": 90}
 		]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -386,8 +386,8 @@ func TestRunOutOfBoundsDecisionIndex(t *testing.T) {
 
 	gen := &mockGenerator{
 		response: `[
-			{"index": 5, "action": "NEW", "title": "Bad Index", "slug": "bad-idx", "summary": "Out of range"},
-			{"index": -1, "action": "NEW", "title": "Negative", "slug": "neg", "summary": "Negative index"}
+			{"index": 5, "action": "NEW", "title": "Bad Index", "slug": "bad-idx", "summary": "Out of range", "confidence": 90},
+			{"index": -1, "action": "NEW", "title": "Negative", "slug": "neg", "summary": "Negative index", "confidence": 90}
 		]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -410,7 +410,7 @@ func TestRunUnknownChainID(t *testing.T) {
 
 	// AI returns EXISTING with a chain_id that does not exist.
 	gen := &mockGenerator{
-		response: `[{"index": 0, "action": "EXISTING", "chain_id": 9999}]`,
+		response: `[{"index": 0, "action": "EXISTING", "chain_id": 9999, "confidence": 80}]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
 
@@ -473,7 +473,7 @@ func TestRunLinksToExistingChainUpdatesMetadata(t *testing.T) {
 	})
 
 	gen := &mockGenerator{
-		response: `[{"index": 0, "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `}]`,
+		response: `[{"index": 0, "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `, "confidence": 85}]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
 
@@ -515,9 +515,9 @@ func TestRunMultipleDecisionsMixed(t *testing.T) {
 
 	gen := &mockGenerator{
 		response: `[
-			{"index": 0, "action": "NEW", "title": "TypeScript Adoption", "slug": "ts-adopt", "summary": "Moving to TypeScript"},
-			{"index": 1, "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `},
-			{"index": 2, "action": "SKIP"}
+			{"index": 0, "action": "NEW", "title": "TypeScript Adoption", "slug": "ts-adopt", "summary": "Moving to TypeScript", "confidence": 92},
+			{"index": 1, "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `, "confidence": 88},
+			{"index": 2, "action": "SKIP", "confidence": 0}
 		]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -807,7 +807,7 @@ func TestUpdateChainSummariesTriggered(t *testing.T) {
 
 	// AI links the decision to the existing chain — triggers updateChainSummaries.
 	gen := &mockGenerator{
-		response: `[{"index": 0, "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `}]`,
+		response: `[{"index": 0, "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `, "confidence": 85}]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
 
@@ -855,8 +855,8 @@ func TestRunDeduplicatesSameSlugNewChains(t *testing.T) {
 	// AI returns NEW with the same slug for both decisions — should deduplicate.
 	gen := &mockGenerator{
 		response: `[
-			{"index": 0, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating to PostgreSQL"},
-			{"index": 1, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating to PostgreSQL"}
+			{"index": 0, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating to PostgreSQL", "confidence": 90},
+			{"index": 1, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating to PostgreSQL", "confidence": 90}
 		]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -894,8 +894,8 @@ func TestRunLinksToNewlyCreatedChainByID(t *testing.T) {
 	// The new chain will get ID=1 since the DB is empty.
 	gen := &mockGenerator{
 		response: `[
-			{"index": 0, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating DB"},
-			{"index": 1, "item_type": "decision", "action": "EXISTING", "chain_id": 1}
+			{"index": 0, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating DB", "confidence": 90},
+			{"index": 1, "item_type": "decision", "action": "EXISTING", "chain_id": 1, "confidence": 85}
 		]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -930,8 +930,8 @@ func TestRunLinksDigestToNewlyCreatedChainByID(t *testing.T) {
 	// AI creates a NEW chain for decision 0, then links digest 1 to it by ID.
 	gen := &mockGenerator{
 		response: `[
-			{"index": 0, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating DB"},
-			{"index": 1, "item_type": "digest", "action": "EXISTING", "chain_id": 1}
+			{"index": 0, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Migrating DB", "confidence": 90},
+			{"index": 1, "item_type": "digest", "action": "EXISTING", "chain_id": 1, "confidence": 85}
 		]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -973,7 +973,7 @@ func TestRunDeduplicatesNewChainAgainstExistingSlug(t *testing.T) {
 
 	// AI says NEW with the same slug as the existing chain — should reuse existing.
 	gen := &mockGenerator{
-		response: `[{"index": 0, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Updated summary"}]`,
+		response: `[{"index": 0, "item_type": "decision", "action": "NEW", "title": "PostgreSQL Migration", "slug": "postgres-migration", "summary": "Updated summary", "confidence": 90}]`,
 	}
 	pipe := New(database, testConfig(), gen, testLogger())
 
@@ -991,4 +991,48 @@ func TestRunDeduplicatesNewChainAgainstExistingSlug(t *testing.T) {
 	refs, err := database.GetChainRefs(int(existingID))
 	require.NoError(t, err)
 	assert.Len(t, refs, 1)
+}
+
+func TestRunRejectsLowConfidenceAssignment(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.EnsureChannel("C1", "engineering", "public", ""))
+	require.NoError(t, database.EnsureChannel("C2", "devops", "public", ""))
+
+	// Create an existing chain about AI grading.
+	chainID, err := database.CreateChain(db.Chain{
+		Title:      "AI Competencies in Developer Grading",
+		Slug:       "ai-grading",
+		Status:     "active",
+		Summary:    "Including AI skills in developer assessment",
+		ChannelIDs: `["C1"]`,
+		FirstSeen:  float64(time.Now().Add(-48 * time.Hour).Unix()),
+		LastSeen:   float64(time.Now().Unix()),
+		ItemCount:  1,
+	})
+	require.NoError(t, err)
+
+	// Seed an unrelated DevOps digest and a related decision.
+	seedDigestWithDecisions(t, database, "C1", []digest.Decision{
+		{Text: "AI skill added to grading rubric", By: "@alice", Importance: "high"},
+	})
+	seedDigestWithDecisions(t, database, "C2", nil) // DevOps digest, no decisions
+
+	// AI returns high confidence for the related decision, low for the unrelated digest.
+	gen := &mockGenerator{
+		response: `[
+			{"index": 0, "item_type": "decision", "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `, "confidence": 92},
+			{"index": 0, "item_type": "digest", "action": "EXISTING", "chain_id": ` + itoa(int(chainID)) + `, "confidence": 45}
+		]`,
+	}
+	pipe := New(database, testConfig(), gen, testLogger())
+
+	n, err := pipe.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "only the high-confidence decision should be linked")
+
+	// Only the decision should be linked, not the low-confidence digest.
+	refs, err := database.GetChainRefs(int(chainID))
+	require.NoError(t, err)
+	assert.Len(t, refs, 1, "low-confidence digest should be rejected")
+	assert.Equal(t, "decision", refs[0].RefType)
 }

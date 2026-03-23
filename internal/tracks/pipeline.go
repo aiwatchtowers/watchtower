@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -87,15 +88,18 @@ type Pipeline struct {
 	// LastStep* fields are set before each OnProgress callback with the
 	// current step's message count and time window. Read them in OnProgress.
 	LastStepMessageCount    int
-	LastStepPeriodFrom     time.Time
-	LastStepPeriodTo       time.Time
+	LastStepPeriodFrom      time.Time
+	LastStepPeriodTo        time.Time
 	LastStepDurationSeconds float64
+	LastStepInputTokens     int
+	LastStepOutputTokens    int
+	LastStepCostUSD         float64
 
 	// Accumulated token usage across all Generate calls (thread-safe).
-	totalInputTokens    atomic.Int64
-	totalOutputTokens   atomic.Int64
-	totalCostMicro      atomic.Int64 // cost * 1e6 for atomic ops
-	totalAPITokens atomic.Int64
+	totalInputTokens  atomic.Int64
+	totalOutputTokens atomic.Int64
+	totalCostMicro    atomic.Int64 // cost * 1e6 for atomic ops
+	totalAPITokens    atomic.Int64
 
 	// caches (populated once per Run/CheckForUpdates, read by workers)
 	cacheMu      sync.RWMutex
@@ -290,6 +294,9 @@ func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to flo
 				p.LastStepPeriodFrom = time.Unix(int64(from), 0)
 				p.LastStepPeriodTo = time.Unix(int64(to), 0)
 				p.LastStepDurationSeconds = 0
+				p.LastStepInputTokens = 0
+				p.LastStepOutputTokens = 0
+				p.LastStepCostUSD = 0
 				p.progress(c, total, fmt.Sprintf("#%s (%d messages)", channelName, len(t.msgs)))
 
 				stepStart := time.Now()
@@ -535,6 +542,9 @@ func (p *Pipeline) checkChannelTracksForUpdates(ctx context.Context, channelID s
 		p.totalOutputTokens.Add(int64(usage.OutputTokens))
 		p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
 		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
+		p.LastStepInputTokens += usage.InputTokens
+		p.LastStepOutputTokens += usage.OutputTokens
+		p.LastStepCostUSD += usage.CostUSD
 	}
 
 	batch, err := parseBatchUpdateResult(raw)
@@ -627,6 +637,9 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 	// Load existing tracks for this channel to help AI deduplicate.
 	existingSection := p.formatExistingItems(channelID, userID)
 
+	// Load compact summary of recently resolved tracks to prevent re-extraction.
+	resolvedSection := p.formatResolvedSummary(userID)
+
 	// Load related digest decisions for context.
 	decisionsSection := p.formatDigestDecisions(channelID, from, to)
 
@@ -638,6 +651,11 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 	tmpl, promptVersion := p.getPrompt(prompts.TracksExtract)
 	roleRules := p.formatRoleRules()
 	prompt := fmt.Sprintf(tmpl, userName, userID, channelName, channelID, fromStr, toStr, p.languageInstruction(), existingSection, decisionsSection, crossChannelSection, formatted, profileSection, roleRules)
+
+	// Append compact summary of recently resolved tracks.
+	if resolvedSection != "" {
+		prompt += "\n" + resolvedSection
+	}
 
 	// Append channel running summary for additional context if available.
 	if runningSummary := p.loadChannelRunningSummary(channelID); runningSummary != "" {
@@ -660,6 +678,9 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 		p.totalOutputTokens.Add(int64(usage.OutputTokens))
 		p.totalCostMicro.Add(int64(usage.CostUSD * 1e6))
 		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
+		p.LastStepInputTokens += usage.InputTokens
+		p.LastStepOutputTokens += usage.OutputTokens
+		p.LastStepCostUSD += usage.CostUSD
 	}
 
 	result, err := parseResult(raw)
@@ -731,6 +752,10 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 			ownership = "mine"
 		}
 
+		// Extract entity fingerprint for dedup.
+		fp := extractFingerprint(item.Text, item.Context)
+		fpJSON := fingerprintJSON(fp)
+
 		track := db.Track{
 			ChannelID:         channelID,
 			AssigneeUserID:    userID,
@@ -763,6 +788,7 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 			Ownership:         ownership,
 			BallOn:            item.BallOn,
 			OwnerUserID:       item.OwnerUserID,
+			Fingerprint:       fpJSON,
 		}
 
 		// If AI identified this as an update to an existing track, update it.
@@ -792,6 +818,43 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 				}
 			}
 			continue
+		}
+
+		// Dedup layer 1: exact source_message_ts match against resolved tracks.
+		if track.SourceMessageTS != "" {
+			if resolved, err := p.db.HasResolvedTrackForMessage(channelID, userID, track.SourceMessageTS); err != nil {
+				p.logger.Printf("tracks: warning: resolved check failed: %v", err)
+			} else if resolved {
+				p.logger.Printf("tracks: skipping track from %s — already resolved (same message)", track.SourceMessageTS)
+				continue
+			}
+		}
+
+		// Dedup layer 2: fingerprint entity match against resolved tracks.
+		// If a resolved track shares entities (ticket IDs, user_ids, etc.):
+		//   - done → reopen to inbox (user completed it but topic resurfaced)
+		//   - dismissed → append activity only (user explicitly rejected it)
+		if len(fp) > 0 {
+			if resolvedID, resolvedStatus, found, err := p.db.FindResolvedTrackByFingerprint(channelID, userID, fp); err != nil {
+				p.logger.Printf("tracks: warning: fingerprint dedup check failed: %v", err)
+			} else if found {
+				if resolvedStatus == "done" {
+					if err := p.db.ReopenTrack(resolvedID, item.Context); err != nil {
+						p.logger.Printf("tracks: warning: failed to reopen track %d: %v", resolvedID, err)
+					} else {
+						p.logger.Printf("tracks: reopened done track #%d — new activity with matching entities %v", resolvedID, fp)
+						stored++
+					}
+				} else {
+					// dismissed — record activity but don't reopen
+					if err := p.db.AppendTrackActivity(resolvedID, item.Context); err != nil {
+						p.logger.Printf("tracks: warning: failed to append activity to track %d: %v", resolvedID, err)
+					} else {
+						p.logger.Printf("tracks: appended activity to dismissed track #%d — entities %v", resolvedID, fp)
+					}
+				}
+				continue
+			}
 		}
 
 		trackID, err := p.db.UpsertTrack(track)
@@ -907,6 +970,21 @@ func (p *Pipeline) formatCrossChannelItems(excludeChannelID, userID string) stri
 	return sb.String()
 }
 
+// formatResolvedSummary returns a compact section listing recently resolved tracks
+// so the AI avoids re-extracting them. Minimal context growth (~100-200 tokens).
+func (p *Pipeline) formatResolvedSummary(userID string) string {
+	since := time.Now().Add(-7 * 24 * time.Hour)
+	summary, err := p.db.GetResolvedTracksSummary(userID, since)
+	if err != nil {
+		p.logger.Printf("tracks: warning: failed to load resolved summary: %v", err)
+		return ""
+	}
+	if summary == "" {
+		return ""
+	}
+	return "=== RECENTLY RESOLVED TRACKS (do NOT re-extract these) ===\n" + summary + "\n"
+}
+
 // formatDigestDecisions loads recent decisions from related digests.
 func (p *Pipeline) formatDigestDecisions(channelID string, from, to float64) string {
 	decisions, err := p.db.GetDigestDecisionsForChannel(channelID, from, to)
@@ -951,6 +1029,66 @@ func (p *Pipeline) loadChannelRunningSummary(channelID string) string {
 	sb.WriteString(result.Summary)
 	sb.WriteString("\nUse this context to better understand ongoing topics and avoid creating duplicate tracks for known discussions.\n")
 	return sb.String()
+}
+
+// Regex patterns for entity extraction.
+var (
+	reTicket  = regexp.MustCompile(`(?i)\b(CEX|FIAT|NOVA|DEV|INFRA|CONVERT|DVSP|BLINC)-\d+\b`)
+	reUserID  = regexp.MustCompile(`\bU[A-Z0-9]{8,}\b`)
+	reIP      = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+	reCVE     = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d+\b`)
+	reMR      = regexp.MustCompile(`!(\d{4,})\b`)
+	reSlackTS = regexp.MustCompile(`\b\d{10}\.\d{6}\b`) // skip Slack timestamps — not entities
+)
+
+// extractFingerprint extracts key entities from track text and context
+// for programmatic deduplication. Returns a deduplicated, sorted slice.
+func extractFingerprint(text, ctx string) []string {
+	combined := text + " " + ctx
+	seen := make(map[string]struct{})
+	var result []string
+
+	add := func(s string) {
+		upper := strings.ToUpper(s)
+		if _, ok := seen[upper]; !ok {
+			seen[upper] = struct{}{}
+			result = append(result, upper)
+		}
+	}
+
+	for _, m := range reTicket.FindAllString(combined, -1) {
+		add(m)
+	}
+	for _, m := range reCVE.FindAllString(combined, -1) {
+		add(m)
+	}
+	for _, m := range reMR.FindAllString(combined, -1) {
+		add("MR" + m[1:]) // normalize "!6584" → "MR6584"
+	}
+	for _, m := range reUserID.FindAllString(combined, -1) {
+		add(m)
+	}
+	for _, m := range reIP.FindAllString(combined, -1) {
+		// Skip Slack-timestamp-like patterns (handled separately).
+		if !reSlackTS.MatchString(m) {
+			add(m)
+		}
+	}
+
+	sort.Strings(result)
+	return result
+}
+
+// fingerprintJSON returns the fingerprint as a JSON string.
+func fingerprintJSON(fp []string) string {
+	if len(fp) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(fp)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
 }
 
 func truncate(s string, maxLen int) string {
@@ -1001,7 +1139,16 @@ func (p *Pipeline) loadCaches() {
 		p.logger.Printf("warning: failed to load channel names: %v", err)
 	} else {
 		for _, ch := range channels {
-			channelNames[ch.ID] = ch.Name
+			name := ch.Name
+			if name == "" && ch.DMUserID.Valid && ch.DMUserID.String != "" {
+				if uname, ok := userNames[ch.DMUserID.String]; ok {
+					name = "DM: " + uname
+				}
+			}
+			if name == "" {
+				name = ch.ID
+			}
+			channelNames[ch.ID] = name
 		}
 	}
 

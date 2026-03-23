@@ -440,7 +440,8 @@ enum TestDatabase {
         prompt_version      INTEGER NOT NULL DEFAULT 0,
         ownership           TEXT NOT NULL DEFAULT 'mine',
         ball_on             TEXT NOT NULL DEFAULT '',
-        owner_user_id       TEXT NOT NULL DEFAULT ''
+        owner_user_id       TEXT NOT NULL DEFAULT '',
+        fingerprint         TEXT NOT NULL DEFAULT '[]'
     );
     CREATE TABLE IF NOT EXISTS track_history (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -580,6 +581,28 @@ enum TestDatabase {
         UNIQUE(period_from, period_to)
     );
 
+    CREATE TABLE IF NOT EXISTS briefings (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace_id     TEXT NOT NULL DEFAULT '',
+        user_id          TEXT NOT NULL,
+        date             TEXT NOT NULL,
+        role             TEXT NOT NULL DEFAULT '',
+        attention        TEXT NOT NULL DEFAULT '[]',
+        your_day         TEXT NOT NULL DEFAULT '[]',
+        what_happened    TEXT NOT NULL DEFAULT '[]',
+        team_pulse       TEXT NOT NULL DEFAULT '[]',
+        coaching         TEXT NOT NULL DEFAULT '[]',
+        model            TEXT NOT NULL DEFAULT '',
+        input_tokens     INTEGER NOT NULL DEFAULT 0,
+        output_tokens    INTEGER NOT NULL DEFAULT 0,
+        cost_usd         REAL NOT NULL DEFAULT 0,
+        prompt_version   INTEGER NOT NULL DEFAULT 0,
+        read_at          TEXT,
+        created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        UNIQUE(user_id, date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date DESC);
+
     CREATE TABLE IF NOT EXISTS user_profile (
         id                    INTEGER PRIMARY KEY,
         slack_user_id         TEXT NOT NULL UNIQUE,
@@ -599,6 +622,29 @@ enum TestDatabase {
         updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
     """
+
+    // MARK: - Briefing Fixtures
+
+    static func insertBriefing(
+        _ db: Database,
+        userID: String = "U001",
+        date: String = "2024-01-15",
+        role: String = "engineer",
+        attention: String = "[]",
+        yourDay: String = "[]",
+        whatHappened: String = "[]",
+        teamPulse: String = "[]",
+        coaching: String = "[]",
+        model: String = "haiku",
+        readAt: String? = nil
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO briefings (user_id, date, role, attention, your_day,
+                what_happened, team_pulse, coaching, model, read_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [userID, date, role, attention, yourDay,
+                             whatHappened, teamPulse, coaching, model, readAt])
+    }
 
     // MARK: - Profile Fixtures
 

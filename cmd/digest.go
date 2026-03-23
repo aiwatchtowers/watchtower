@@ -293,6 +293,8 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
+		runID, _ := database.CreatePipelineRun("digests", "cli")
+
 		pipe.OnProgress = func(done, total int, status string) {
 			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
 			p := pj{Pipeline: "digest", Done: done, Total: total, Status: status, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost, TotalAPITokens: totalAPI}
@@ -308,6 +310,24 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 			p.StepOutputTokens = pipe.LastStepOutputTokens
 			p.StepCostUSD = pipe.LastStepCostUSD
 			emit(p)
+
+			// Log step to DB
+			if runID > 0 && p.StepDurationSec > 0 {
+				var pFrom, pTo *float64
+				if pipe.LastStepMessageCount > 0 {
+					f := float64(pipe.LastStepPeriodFrom.Unix())
+					t := float64(pipe.LastStepPeriodTo.Unix())
+					pFrom, pTo = &f, &t
+				}
+				_ = database.InsertPipelineStep(db.PipelineStep{
+					RunID: runID, Step: done, Total: total, Status: status,
+					InputTokens: p.StepInputTokens, OutputTokens: p.StepOutputTokens,
+					CostUSD: p.StepCostUSD, TotalAPITokens: totalAPI,
+					MessageCount: pipe.LastStepMessageCount,
+					PeriodFrom:   pFrom, PeriodTo: pTo,
+					DurationSeconds: p.StepDurationSec,
+				})
+			}
 		}
 		n, usage, err := pipe.Run(cmd.Context())
 
@@ -334,14 +354,32 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 			final.Error = err.Error()
 		}
 		emit(final)
+
+		// Complete run in DB
+		if runID > 0 {
+			var errMsg string
+			if err != nil {
+				errMsg = err.Error()
+			}
+			inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
+			if usage != nil {
+				inTok, outTok, cost = usage.InputTokens, usage.OutputTokens, usage.CostUSD
+			}
+			_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
+		}
 		return nil
 	}
 
 	spinner := ui.NewSpinner(out, fmt.Sprintf("Generating digests for the last %d day(s) using %s...", days, cfg.Digest.Model))
 
+	runID, _ := database.CreatePipelineRun("digests", "cli")
+
 	n, usage, err := pipe.Run(cmd.Context())
 	if err != nil {
 		spinner.Stop("failed")
+		if runID > 0 {
+			_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+		}
 		return fmt.Errorf("digest pipeline: %w", err)
 	}
 
@@ -350,6 +388,15 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		logger.Printf("warning: auto-mark read failed: %v", markErr)
 	} else if markDigests > 0 {
 		logger.Printf("auto-marked %d digests as read (based on Slack read state)", markDigests)
+	}
+
+	// Complete run in DB
+	if runID > 0 {
+		inTok, outTok, cost := 0, 0, 0.0
+		if usage != nil {
+			inTok, outTok, cost = usage.InputTokens, usage.OutputTokens, usage.CostUSD
+		}
+		_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, 0, nil, nil, "")
 	}
 
 	if n == 0 {
