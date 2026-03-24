@@ -1024,8 +1024,8 @@ func TestFormatRoleRulesManager(t *testing.T) {
 			assert.Contains(t, rules, "DECISIONS in your area")
 			assert.Contains(t, rules, "DELEGATED TASKS")
 			assert.Contains(t, rules, "BLOCKERS & ESCALATIONS")
-			assert.Contains(t, rules, "STRATEGIC DISCUSSIONS")
-			assert.Contains(t, rules, "better to surface too much")
+			assert.Contains(t, rules, "MAINTAIN QUALITY")
+			assert.Contains(t, rules, "Does the user need to DO something")
 		})
 	}
 }
@@ -1040,7 +1040,7 @@ func TestFormatRoleRulesLead(t *testing.T) {
 			rules := p.formatRoleRules()
 			assert.Contains(t, rules, "ROLE-SPECIFIC RULES")
 			assert.Contains(t, rules, "TECHNICAL DECISIONS")
-			assert.Contains(t, rules, "CODE QUALITY SIGNALS")
+			assert.Contains(t, rules, "CROSS-TEAM DEPENDENCIES")
 			assert.NotContains(t, rules, "DELEGATED TASKS")
 		})
 	}
@@ -1055,6 +1055,38 @@ func TestFormatRoleRulesIC(t *testing.T) {
 			p.profile = &db.UserProfile{Role: role}
 			rules := p.formatRoleRules()
 			assert.Empty(t, rules, "IC roles should not get role-specific rules")
+		})
+	}
+}
+
+func TestShouldDropTrack(t *testing.T) {
+	tests := []struct {
+		name      string
+		ownership string
+		priority  string
+		category  string
+		blocking  string
+		want      bool
+	}{
+		{"watching+low always dropped", "watching", "low", "follow_up", "", true},
+		{"watching+low+discussion dropped", "watching", "low", "discussion", "", true},
+		{"watching+low+task dropped", "watching", "low", "task", "", true},
+		{"watching+medium+follow_up no blocker dropped", "watching", "medium", "follow_up", "", true},
+		{"watching+medium+discussion no blocker dropped", "watching", "medium", "discussion", "", true},
+		{"watching+medium+follow_up WITH blocker kept", "watching", "medium", "follow_up", "Release blocked", false},
+		{"watching+medium+task kept", "watching", "medium", "task", "", false},
+		{"watching+medium+bug_fix kept", "watching", "medium", "bug_fix", "", false},
+		{"watching+high kept", "watching", "high", "follow_up", "", false},
+		{"mine+low kept", "mine", "low", "follow_up", "", false},
+		{"mine+medium kept", "mine", "medium", "follow_up", "", false},
+		{"delegated+low kept", "delegated", "low", "follow_up", "", false},
+		{"delegated+medium+follow_up kept", "delegated", "medium", "follow_up", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldDropTrack(tt.ownership, tt.priority, tt.category, tt.blocking)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

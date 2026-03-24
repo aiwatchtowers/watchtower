@@ -248,6 +248,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 
 Rules:
 - GROUPING: This is the most important rule. Multiple messages about the same topic/project/task MUST be merged into ONE track. Look at the broader topic, not individual messages.
+- QUALITY OVER QUANTITY: Aim for 0-5 tracks per channel. If you find more than 5, re-evaluate — you are likely being too granular. Merge related items and drop low-value ones.
 - Only extract tracks with a CLEAR actionable request. Skip vague mentions.
 - Look for BOTH explicit and implicit tracks:
   * Direct requests: "@user, can you...", "@user please do X"
@@ -256,15 +257,24 @@ Rules:
   * Commitments made by the user: "I'll do X", "I will take care of Y"
   * Review requests: "please review", "can you take a look"
   * Follow-ups: "user, any update on X?"
-- Do NOT include:
+- STRICT DO NOT EXTRACT list:
   * Messages FROM the user that don't imply an action (status updates, answers)
   * General discussions where the user is mentioned but nothing is expected
   * Already completed actions (if the user clearly responded "done" or completed the task)
   * Bot messages and automated notifications (unless they require human action)
+  * Events that have ALREADY HAPPENED with no remaining action (e.g., "deploy completed", "survey filled", "hotfix released") — these are history, not tracks
+  * Pure FYI observations with no concrete next step (e.g., "someone didn't follow naming convention", "onboarding checklist is missing", "process gap exists") — unless there is a specific action the user must take
+  * Individual infrastructure alerts or incidents where the user is NOT the on-call responder and NOT the escalation point — aggregate systemic issues into ONE track instead of creating separate tracks per alert
+  * Discussions/debates with no resolution and no action expected from the user (e.g., "should we translate X?", "should we evaluate tool Y?") — only extract if the user is explicitly asked to decide
+  * Tracking someone else's work when the user has no authority or responsibility over it
+- ALERT/INCIDENT CHANNEL RULE: For channels with automated alerts or incident notifications, do NOT create a separate track for each alert. Instead:
+  * If there is a systemic pattern (same service failing repeatedly, on-call not responding), create ONE track about the systemic issue
+  * If a specific alert requires the user's action, create ONE track for that specific action
+  * Skip individual alerts that are informational or already being handled by others
 - priority levels:
   * "high" — blocking others, deadline-sensitive, production issues, executive requests
   * "medium" — normal work tasks, code reviews, questions
-  * "low" — nice-to-have, FYIs that might need action later
+  * "low" — nice-to-have, FYIs that might need action later. Use SPARINGLY — if a track is low priority and ownership is "watching", consider not extracting it at all
 - due_date: extract if mentioned in the conversation (ISO format YYYY-MM-DD), otherwise omit the field
 - source_message_ts: the Slack timestamp of the MOST important message (the original request or assignment)
 - context: detailed explanation (3-5 sentences) of the situation, decisions made, and why this action is needed. The reader should understand the full picture without reading the original thread.
@@ -277,7 +287,7 @@ Rules:
   * "approval" — needs sign-off or approval
   * "follow_up" — check back, provide update, follow up on something
   * "bug_fix" — fix a bug or issue
-  * "discussion" — participate in a discussion or give opinion
+  * "discussion" — participate in a discussion or give opinion. Use VERY SPARINGLY — only when the user is explicitly asked to contribute to a discussion
 - blocking: describe who or what is blocked if this track is NOT done. E.g., "Release v2.1 is blocked", "Backend team is waiting", "@designer can't proceed". Leave empty string "" if nothing is explicitly blocked.
 - tags: 1-3 short lowercase tags for the project, topic, or area (e.g., ["infrastructure", "security", "q1-planning"]). Extract from context — channel name, project mentions, etc.
 - decision_summary: if a decision was discussed or made, describe HOW the group arrived at it — what arguments were raised, who advocated for what, and what the outcome was. This tells the story of the decision process. Leave empty string "" if no decision context.
@@ -285,12 +295,12 @@ Rules:
 - participants: list ALL people involved in the discussion about this topic. For each person, summarize their stance/opinion/role. Include people who made decisions, raised concerns, proposed alternatives, or were assigned tasks. Omit participants only if they added nothing meaningful (e.g., just emoji reactions).
 - source_refs: list the 2-5 most important messages related to this track. For each, include the Slack timestamp, author, and a 1-sentence summary of what was said. These serve as "footnotes" so the reader can jump to key messages.
 - sub_items: break down the track into concrete sub-tasks or checklist items. Each sub-item has "text" (what to do) and "status" ("open" or "done"). If a sub-task was clearly completed in the conversation, set status to "done". Aim for 2-5 sub-items per track. Leave empty array [] if the track is atomic and doesn't need breakdown.
-- existing_id: if the track matches an existing track from the EXISTING TRACKS section below, set this to the track's numeric ID. The AI should UPDATE the existing track (merge new info into context, update priority/due_date if changed). Set to null for genuinely new tracks not covered by any existing track. Prefer updating over creating duplicates.
+- existing_id: if the track matches an existing track from the EXISTING TRACKS section below, set this to the track's numeric ID. The AI should UPDATE the existing track (merge new info into context, update priority/due_date if changed). Set to null for genuinely new tracks not covered by any existing track. STRONGLY prefer updating over creating duplicates — if the topic is even remotely the same, use existing_id.
 - status_hint: set to "done" if messages clearly confirm the existing track has been completed (someone did the work, deployed, confirmed, etc.). Set to "active" or leave empty ("") for tracks still in progress. This field is ONLY used with existing_id — for new tracks, leave it empty.
 - ownership: MUST be one of "mine", "delegated", "watching":
   * "mine" — the task/request is directed at the user, the ball is on them, they need to act
   * "delegated" — the task involves the user's direct report as the responsible person; the user oversees it
-  * "watching" — the task/decision affects the user's area but they are not the primary actor; important to stay informed
+  * "watching" — the task/decision affects the user's area but they are not the primary actor; important to stay informed. WARNING: "watching" tracks should only be created for HIGH-priority items that genuinely need the user's awareness. Do NOT create watching tracks for routine updates, minor issues, or things that will resolve on their own.
   * Default to "mine" if unsure — better to surface than miss
 - ball_on: the user_id of the person who needs to act NEXT on this track. If the user asked a question and is waiting for a reply, ball_on is the other person's user_id. If someone asked the user something, ball_on is the user's own user_id. Leave empty string "" if unclear.
 - owner_user_id: the user_id of the person who "owns" the track. For "mine" tracks, this is the current user. For "delegated" tracks, this is the direct report's user_id. For "watching" tracks, this can be whoever is responsible. Leave empty string "" if same as the current user.

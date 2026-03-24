@@ -370,27 +370,8 @@ struct TrackDetailView: View {
                 Text("Related Digests")
                     .font(.headline)
 
-                FlowLayout(spacing: 6) {
-                    ForEach(digestIDs, id: \.self) { digestID in
-                        Button {
-                            appState.navigateToDigest(digestID)
-                        } label: {
-                            Text("Digest #\(digestID)")
-                                .font(.caption)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(.blue.opacity(0.1), in: Capsule())
-                                .foregroundStyle(.blue)
-                        }
-                        .buttonStyle(.plain)
-                        .onHover { hovering in
-                            if hovering {
-                                NSCursor.pointingHand.push()
-                            } else {
-                                NSCursor.pop()
-                            }
-                        }
-                    }
+                ForEach(digestIDs, id: \.self) { digestID in
+                    RelatedDigestRow(digestID: digestID, viewModel: viewModel, appState: appState)
                 }
             }
         }
@@ -726,5 +707,114 @@ struct TrackDetailView: View {
 
     private func historyColor(_ event: String) -> Color {
         Self.historyColorMap[event] ?? .secondary
+    }
+}
+
+// MARK: - Related Digest Row (expandable)
+
+private struct RelatedDigestRow: View {
+    let digestID: Int
+    let viewModel: TracksViewModel
+    let appState: AppState
+    @State private var isExpanded = false
+    @State private var digest: Digest?
+    @State private var channelName: String?
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if let digest {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !digest.summary.isEmpty {
+                        Text(digest.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(6)
+                    }
+
+                    let topics = digest.parsedTopics
+                    if !topics.isEmpty {
+                        FlowLayout(spacing: 4) {
+                            ForEach(topics, id: \.self) { topic in
+                                Text(topic)
+                                    .font(.caption2)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.quaternary, in: Capsule())
+                            }
+                        }
+                    }
+
+                    let decisions = digest.parsedDecisions
+                    if !decisions.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Decisions")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                            ForEach(decisions) { decision in
+                                HStack(alignment: .top, spacing: 6) {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                        .frame(width: 12)
+                                        .padding(.top, 2)
+                                    Text(decision.text)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+
+                    Button {
+                        appState.navigateToDigest(digestID)
+                    } label: {
+                        Label("Open Digest", systemImage: "arrow.up.right.square")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.leading, 4)
+            } else {
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                if let channelName {
+                    Text("#\(channelName)")
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                }
+                Text("Digest #\(digestID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let digest {
+                    Text(digest.isRead ? "read" : "unread")
+                        .font(.caption2)
+                        .foregroundStyle(digest.isRead ? .green : .orange)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background((digest.isRead ? Color.green : Color.orange).opacity(0.1), in: Capsule())
+                }
+                Spacer()
+            }
+        }
+        .onAppear { loadDigest() }
+        .onChange(of: isExpanded) { _, expanded in
+            if expanded { loadDigest() }
+        }
+    }
+
+    private func loadDigest() {
+        guard digest == nil else { return }
+        digest = viewModel.fetchDigest(id: digestID)
+        if let d = digest {
+            channelName = viewModel.channelName(for: d.channelID)
+        }
     }
 }

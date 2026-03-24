@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 enum TrackQueries {
@@ -158,6 +159,22 @@ enum TrackQueries {
             INSERT INTO track_history (track_id, event, field, old_value, new_value)
             VALUES (?, 'snoozed', 'status', ?, 'snoozed')
             """, arguments: [id, currentStatus])
+    }
+
+    /// Cascade: mark all related digests (and their decisions) as read for a track.
+    static func markRelatedDigestsRead(_ db: Database, trackID: Int) throws {
+        let json = try String.fetchOne(
+            db,
+            sql: "SELECT related_digest_ids FROM tracks WHERE id = ?",
+            arguments: [trackID]
+        )
+        guard let json, json != "[]", !json.isEmpty,
+              let data = json.data(using: .utf8),
+              let digestIDs = try? JSONDecoder().decode([Int].self, from: data) else { return }
+        for digestID in digestIDs {
+            try DigestQueries.markDigestRead(db, id: digestID)
+            try DigestQueries.markAllDecisionsRead(db, digestID: digestID)
+        }
     }
 
     static func markUpdateRead(_ db: Database, id: Int) throws {

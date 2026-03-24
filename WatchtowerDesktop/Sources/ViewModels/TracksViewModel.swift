@@ -136,6 +136,7 @@ final class TracksViewModel {
         do {
             try dbManager.dbPool.write { db in
                 try TrackQueries.acceptItem(db, id: item.id)
+                try TrackQueries.markRelatedDigestsRead(db, trackID: item.id)
             }
             load()
         } catch {
@@ -147,6 +148,7 @@ final class TracksViewModel {
         do {
             try dbManager.dbPool.write { db in
                 try TrackQueries.snoozeItem(db, id: item.id, until: until.timeIntervalSince1970)
+                try TrackQueries.markRelatedDigestsRead(db, trackID: item.id)
             }
             load()
         } catch {
@@ -189,6 +191,10 @@ final class TracksViewModel {
         do {
             try dbManager.dbPool.write { db in
                 try TrackQueries.updateStatus(db, id: item.id, status: status)
+                // Cascade: mark related digests + decisions as read (except reopen)
+                if status != "inbox" {
+                    try TrackQueries.markRelatedDigestsRead(db, trackID: item.id)
+                }
             }
             load()
         } catch {
@@ -260,6 +266,27 @@ final class TracksViewModel {
             print("Failed to load more tracks: \(error)")
         }
         isLoadingMore = false
+    }
+
+    func fetchDigest(id: Int) -> Digest? {
+        do {
+            return try dbManager.dbPool.read { db in
+                try DigestQueries.fetchByID(db, id: id)
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    func channelName(for channelID: String) -> String? {
+        guard !channelID.isEmpty else { return nil }
+        do {
+            return try dbManager.dbPool.read { db in
+                try ChannelQueries.fetchByID(db, id: channelID)?.name
+            }
+        } catch {
+            return nil
+        }
     }
 
     func itemByID(_ id: Int) -> Track? {
