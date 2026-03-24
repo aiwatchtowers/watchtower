@@ -720,6 +720,19 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 			priority = "medium"
 		}
 
+		// Validate ownership.
+		ownership := item.Ownership
+		if ownership != "mine" && ownership != "delegated" && ownership != "watching" {
+			ownership = "mine"
+		}
+
+		// Post-AI quality filter: drop low-value tracks that add noise.
+		if shouldDropTrack(ownership, priority, item.Category, item.Blocking) {
+			p.logger.Printf("tracks: #%s — dropped low-value track (ownership=%s, priority=%s, category=%s): %.80s",
+				channelName, ownership, priority, item.Category, item.Text)
+			continue
+		}
+
 		var dueDate float64
 		if item.DueDate != "" {
 			if t, err := time.Parse("2006-01-02", item.DueDate); err == nil {
@@ -744,12 +757,6 @@ func (p *Pipeline) processChannel(ctx context.Context, userID, userName, channel
 		if item.Requester != nil {
 			requesterName = item.Requester.Name
 			requesterUserID = item.Requester.UserID
-		}
-
-		// Validate ownership.
-		ownership := item.Ownership
-		if ownership != "mine" && ownership != "delegated" && ownership != "watching" {
-			ownership = "mine"
 		}
 
 		// Extract entity fingerprint for dedup.
@@ -1091,6 +1098,25 @@ func fingerprintJSON(fp []string) string {
 	return string(data)
 }
 
+// shouldDropTrack returns true if a track is low-value noise that should not be stored.
+// This is a post-AI safety net — ideally the prompt prevents these, but this catches stragglers.
+func shouldDropTrack(ownership, priority, category, blocking string) bool {
+	// Rule 1: watching + low → always drop (pure FYI, no action needed)
+	if ownership == "watching" && priority == "low" {
+		return true
+	}
+
+	// Rule 2: watching + medium + (follow_up or discussion) + no blocker → drop
+	// These are "keep an eye on X" items that clutter the inbox.
+	if ownership == "watching" && priority == "medium" {
+		if (category == "follow_up" || category == "discussion") && blocking == "" {
+			return true
+		}
+	}
+
+	return false
+}
+
 func truncate(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {
@@ -1262,26 +1288,22 @@ func (p *Pipeline) formatRoleRules() string {
 
 	if isManager {
 		sb.WriteString("ALSO extract tracks for:\n")
-		sb.WriteString("- DECISIONS in your area: any discussion where a choice is being made or was made that affects your team/domain, even if you're not mentioned by name. Category: \"decision_needed\"\n")
-		sb.WriteString("- DELEGATED TASKS: tasks assigned to or being worked on by your reports — you need visibility. Category: \"task\" or \"follow_up\", ownership: \"delegated\"\n")
-		sb.WriteString("- BLOCKERS & ESCALATIONS: anything blocking your team members, requests for help, delays, conflicts. Category: \"follow_up\", priority: \"high\"\n")
-		sb.WriteString("- STATUS UPDATES that reveal problems: if someone reports something is late, broken, or at risk. Category: \"follow_up\"\n")
-		sb.WriteString("- CROSS-TEAM COORDINATION: requests or discussions involving other teams that affect your area. Category: \"follow_up\" or \"approval\"\n")
-		sb.WriteString("- STRATEGIC DISCUSSIONS: architectural decisions, process changes, tool evaluations, resource allocation. Category: \"decision_needed\" or \"discussion\"\n")
-		sb.WriteString("\nFor these manager-specific tracks:\n")
-		sb.WriteString("- Lower the threshold: include items even if the user is not explicitly mentioned\n")
-		sb.WriteString("- Use ownership \"watching\" for discussions where the user is not the primary actor but needs awareness\n")
-		sb.WriteString("- Use ownership \"delegated\" when a report is the responsible person\n")
-		sb.WriteString("- Prefer creating a track over skipping — better to surface too much than miss something important\n")
+		sb.WriteString("- DECISIONS in your area: discussions where a choice REQUIRES the user's input or approval. Category: \"decision_needed\"\n")
+		sb.WriteString("- DELEGATED TASKS: tasks assigned to reports that are BLOCKED, AT RISK, or OVERDUE — not routine work. Category: \"task\" or \"follow_up\", ownership: \"delegated\"\n")
+		sb.WriteString("- BLOCKERS & ESCALATIONS: things blocking team members that require manager intervention. Category: \"follow_up\", priority: \"high\"\n")
+		sb.WriteString("- CROSS-TEAM COORDINATION: requests from other teams that need the user's response. Category: \"follow_up\" or \"approval\"\n")
+		sb.WriteString("\nFor these manager-specific tracks, MAINTAIN QUALITY:\n")
+		sb.WriteString("- Use ownership \"delegated\" when a report is the responsible person AND the task is at risk or needs oversight\n")
+		sb.WriteString("- Use ownership \"watching\" ONLY for high-priority items: production incidents, blockers, deadline risks. Do NOT create watching tracks for routine status updates, minor bugs handled by others, or informational discussions\n")
+		sb.WriteString("- Do NOT create tracks for every discussion in your area. Ask: 'Does the user need to DO something about this, or will it resolve without them?' If it resolves without them — skip it.\n")
+		sb.WriteString("- Do NOT create separate tracks for individual alerts/incidents in monitoring channels — aggregate systemic issues only\n")
 	} else if isLead {
 		sb.WriteString("ALSO extract tracks for:\n")
-		sb.WriteString("- TECHNICAL DECISIONS: architectural choices, tech stack decisions, design tradeoffs. Category: \"decision_needed\"\n")
-		sb.WriteString("- CODE QUALITY SIGNALS: discussions about tech debt, performance issues, refactoring needs. Category: \"discussion\"\n")
-		sb.WriteString("- TEAM COORDINATION: cross-team technical dependencies, integration work. Category: \"follow_up\"\n")
-		sb.WriteString("- MENTORING OPPORTUNITIES: junior team members asking questions in your area of expertise. Category: \"info_request\"\n")
+		sb.WriteString("- TECHNICAL DECISIONS: architectural choices that REQUIRE the user's input or review. Category: \"decision_needed\"\n")
+		sb.WriteString("- CROSS-TEAM DEPENDENCIES: technical blockers between teams that need the user's coordination. Category: \"follow_up\"\n")
 		sb.WriteString("\nFor these lead-specific tracks:\n")
-		sb.WriteString("- Include technical discussions where your expertise is relevant, even without direct mention\n")
-		sb.WriteString("- Use ownership \"watching\" for cross-team decisions that may affect your codebase\n")
+		sb.WriteString("- Only create watching tracks for high-priority cross-team decisions affecting the user's codebase\n")
+		sb.WriteString("- Do NOT create tracks for general tech discussions, code quality observations, or mentoring unless the user is explicitly asked\n")
 	}
 
 	return sb.String()

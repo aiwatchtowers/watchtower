@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 enum DigestQueries {
@@ -95,6 +96,30 @@ enum DigestQueries {
                 """,
             arguments: [digestID, decisionIdx]
         )
+    }
+
+    /// Mark all decisions in a digest as read (cascade from digest read).
+    static func markAllDecisionsRead(_ db: Database, digestID: Int) throws {
+        guard try db.tableExists("decision_reads") else { return }
+        // Parse decisions count from the digest
+        let decisionsJSON = try String.fetchOne(
+            db,
+            sql: "SELECT decisions FROM digests WHERE id = ?",
+            arguments: [digestID]
+        )
+        guard let json = decisionsJSON, json != "[]", !json.isEmpty,
+              let data = json.data(using: .utf8),
+              let decisions = try? JSONDecoder().decode([Decision].self, from: data) else { return }
+        for idx in 0..<decisions.count {
+            try db.execute(
+                sql: """
+                    INSERT INTO decision_reads (digest_id, decision_idx)
+                    VALUES (?, ?)
+                    ON CONFLICT DO NOTHING
+                    """,
+                arguments: [digestID, idx]
+            )
+        }
     }
 
     static func readDecisionIndices(_ db: Database, digestIDs: [Int]) throws -> [Int: Set<Int>] {

@@ -247,14 +247,20 @@ final class DigestViewModel {
         do {
             try dbManager.dbPool.write { db in
                 try DigestQueries.markDigestRead(db, id: digestID)
+                // Cascade: mark all decisions in this digest as read
+                try DigestQueries.markAllDecisionsRead(db, digestID: digestID)
             }
-            // Update local state
+            // Update local state — digest
             if let idx = digests.firstIndex(where: { $0.id == digestID && !$0.isRead }) {
                 unreadDigestCount = max(0, unreadDigestCount - 1)
-                // Reload to get updated readAt
                 if let updated = digestByID(digestID) {
                     digests[idx] = updated
                 }
+            }
+            // Update local state — decisions
+            for idx in decisionEntries.indices where decisionEntries[idx].digestID == digestID && !decisionEntries[idx].isRead {
+                decisionEntries[idx] = decisionEntries[idx].with(isRead: true)
+                unreadDecisionCount = max(0, unreadDecisionCount - 1)
             }
         } catch {
             // Non-critical — just log
@@ -286,6 +292,8 @@ final class DigestViewModel {
             try dbManager.dbPool.write { db in
                 for id in ids {
                     try DigestQueries.markDigestRead(db, id: id)
+                    // Cascade: mark all decisions in each digest as read
+                    try DigestQueries.markAllDecisionsRead(db, digestID: id)
                 }
             }
             for id in ids {
@@ -294,6 +302,11 @@ final class DigestViewModel {
                         digests[idx] = updated
                     }
                     unreadDigestCount = max(0, unreadDigestCount - 1)
+                }
+                // Update local decision state
+                for idx in decisionEntries.indices where decisionEntries[idx].digestID == id && !decisionEntries[idx].isRead {
+                    decisionEntries[idx] = decisionEntries[idx].with(isRead: true)
+                    unreadDecisionCount = max(0, unreadDecisionCount - 1)
                 }
             }
         } catch {
