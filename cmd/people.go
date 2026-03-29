@@ -329,6 +329,10 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 		cfg.Digest.Model = config.DefaultDigestModel
 	}
 
+	if err := validateModel(cfg); err != nil {
+		return err
+	}
+
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
@@ -373,7 +377,7 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
-		runID, _ := database.CreatePipelineRun("people", "cli")
+		runID, _ := database.CreatePipelineRun("people", "cli", cfg.Digest.Model)
 
 		pipe.OnProgress = func(completed, total int, status string) {
 			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
@@ -459,7 +463,7 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "Generating people cards (7-day window) using %s...\n", cfg.Digest.Model)
 
-	runID, _ := database.CreatePipelineRun("people", "cli")
+	runID, _ := database.CreatePipelineRun("people", "cli", cfg.Digest.Model)
 
 	n, err := pipe.Run(cmd.Context())
 	fmt.Fprintln(out)

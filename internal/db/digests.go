@@ -140,6 +140,31 @@ func (db *DB) GetDigests(f DigestFilter) ([]Digest, error) {
 	return digests, rows.Err()
 }
 
+// GetDigestsOverlapping returns channel digests whose time range overlaps [from, to].
+// A digest overlaps if period_to >= from AND period_from <= to.
+func (db *DB) GetDigestsOverlapping(digestType string, from, to float64) ([]Digest, error) {
+	query := `SELECT id, channel_id, period_from, period_to, type, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd, created_at, read_at
+		FROM digests WHERE type = ? AND period_to >= ? AND period_from <= ?
+		ORDER BY period_to DESC, period_from DESC LIMIT 1000`
+	rows, err := db.Query(query, digestType, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("querying overlapping digests: %w", err)
+	}
+	defer rows.Close()
+
+	var digests []Digest
+	for rows.Next() {
+		var d Digest
+		if err := rows.Scan(&d.ID, &d.ChannelID, &d.PeriodFrom, &d.PeriodTo, &d.Type,
+			&d.Summary, &d.Topics, &d.Decisions, &d.ActionItems, &d.PeopleSignals, &d.Situations, &d.RunningSummary,
+			&d.MessageCount, &d.Model, &d.InputTokens, &d.OutputTokens, &d.CostUSD, &d.CreatedAt, &d.ReadAt); err != nil {
+			return nil, fmt.Errorf("scanning digest: %w", err)
+		}
+		digests = append(digests, d)
+	}
+	return digests, rows.Err()
+}
+
 // GetLatestDigest returns the most recent digest for a channel and type,
 // or nil if none exists.
 func (db *DB) GetLatestDigest(channelID, digestType string) (*Digest, error) {

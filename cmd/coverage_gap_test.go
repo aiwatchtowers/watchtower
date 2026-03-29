@@ -749,15 +749,6 @@ func TestPrintProgressJSON_DiscoveryPhase(t *testing.T) {
 	assert.Contains(t, output, `"discovery_pages"`)
 }
 
-func TestPrintProgressJSON_ThreadsPhase(t *testing.T) {
-	buf := new(bytes.Buffer)
-	snap := newThreadsSnapshot()
-	printProgressJSON(buf, snap, nil)
-	output := buf.String()
-	assert.Contains(t, output, "Threads")
-	assert.Contains(t, output, `"threads_total"`)
-}
-
 func TestPrintProgressJSON_UserProfilesPhase(t *testing.T) {
 	buf := new(bytes.Buffer)
 	snap := newUserProfilesSnapshot()
@@ -780,16 +771,6 @@ func newDiscoverySnapshot() internalsync.Snapshot {
 		DiscoveryTotalPages: 10,
 		DiscoveryChannels:   50,
 		DiscoveryUsers:      100,
-	}
-}
-
-func newThreadsSnapshot() internalsync.Snapshot {
-	return internalsync.Snapshot{
-		Phase:          internalsync.PhaseThreads,
-		StartTime:      time.Now().Add(-60 * time.Second),
-		ThreadsTotal:   100,
-		ThreadsDone:    50,
-		ThreadsFetched: 150,
 	}
 }
 

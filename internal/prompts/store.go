@@ -12,18 +12,23 @@ import (
 
 // Prompt IDs — the three main prompts targeted for feedback & tuning.
 const (
-	DigestChannel  = "digest.channel"
-	DigestDaily    = "digest.daily"
-	DigestWeekly   = "digest.weekly"
-	DigestPeriod   = "digest.period"
-	TracksCreate   = "tracks.create"
-	AnalysisUser   = "analysis.user"
-	AnalysisPeriod = "analysis.period"
-	GuideUser      = "guide.user"
-	GuidePeriod    = "guide.period"
-	PeopleReduce   = "people.reduce"
-	PeopleTeam     = "people.team"
-	BriefingDaily  = "briefing.daily"
+	DigestChannel   = "digest.channel"
+	DigestDaily     = "digest.daily"
+	DigestWeekly    = "digest.weekly"
+	DigestPeriod    = "digest.period"
+	TracksExtract   = "tracks.extract"
+	TracksUpdate    = "tracks.update"
+	AnalysisUser    = "analysis.user"
+	AnalysisPeriod  = "analysis.period"
+	GuideUser       = "guide.user"
+	GuidePeriod     = "guide.period"
+	PeopleReduce    = "people.reduce"
+	PeopleTeam      = "people.team"
+	BriefingDaily   = "briefing.daily"
+	InboxPrioritize    = "inbox.prioritize"
+	DigestChannelBatch  = "digest.channel_batch"
+	TracksExtractBatch  = "tracks.extract_batch"
+	PeopleBatch         = "people.batch"
 )
 
 // Store loads, caches, and persists prompt templates.

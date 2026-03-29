@@ -10,6 +10,7 @@ enum TrackQueries {
         priority: String? = nil,
         hasUpdates: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         channelID: String? = nil,
+        ownership: String? = nil,
         limit: Int = 200
     ) throws -> [Track] {
         var conditions: [String] = []
@@ -26,6 +27,10 @@ enum TrackQueries {
         if let channelID {
             conditions.append("channel_ids LIKE ?")
             args.append("%\(channelID)%")
+        }
+        if let ownership {
+            conditions.append("ownership = ?")
+            args.append(ownership)
         }
 
         var sql = "SELECT * FROM tracks"
@@ -70,25 +75,37 @@ enum TrackQueries {
         return (total, updated)
     }
 
+    static func fetchOwnershipCounts(_ db: Database) throws -> [String: Int] {
+        var result: [String: Int] = [:]
+        let rows = try Row.fetchAll(
+            db, sql: "SELECT ownership, COUNT(*) as cnt FROM tracks GROUP BY ownership"
+        )
+        for row in rows {
+            let key: String = row["ownership"]
+            let count: Int = row["cnt"]
+            result[key] = count
+        }
+        return result
+    }
+
     // MARK: - Mark read
 
-    /// Mark a track as read: set read_at=now, has_updates=0, and cascade-mark linked digests.
+    /// Mark a track as read: set read_at=now, has_updates=0, and cascade-mark related digests.
     static func markRead(_ db: Database, id: Int) throws {
         try db.execute(sql: """
             UPDATE tracks SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), has_updates = 0
             WHERE id = ?
             """, arguments: [id])
 
-        // Cascade: mark linked digests read via source_refs JSON
+        // Cascade: mark related digests read via related_digest_ids JSON
         let json = try String.fetchOne(
-            db, sql: "SELECT source_refs FROM tracks WHERE id = ?", arguments: [id]
+            db, sql: "SELECT related_digest_ids FROM tracks WHERE id = ?", arguments: [id]
         )
         guard let json, !json.isEmpty, json != "[]",
               let data = json.data(using: .utf8),
-              let refs = try? JSONDecoder().decode([TrackSourceRef].self, from: data)
+              let digestIDs = try? JSONDecoder().decode([Int].self, from: data)
         else { return }
-        let digestIDs = Set(refs.map(\.digestID).filter { $0 > 0 })
-        for digestID in digestIDs {
+        for digestID in digestIDs where digestID > 0 {
             try DigestQueries.markDigestRead(db, id: digestID)
             try DigestQueries.markAllDecisionsRead(db, digestID: digestID)
         }
@@ -107,6 +124,27 @@ enum TrackQueries {
             entityID: "\(id)",
             rating: -1,
             comment: "priority corrected to \(priority)"
+        )
+    }
+
+    // MARK: - Ownership
+
+    static func updateOwnership(_ db: Database, id: Int, ownership: String) throws {
+        try db.execute(
+            sql: "UPDATE tracks SET ownership = ? WHERE id = ?",
+            arguments: [ownership, id]
+        )
+    }
+
+    // MARK: - Sub-items
+
+    static func updateSubItems(_ db: Database, id: Int, subItems: [TrackSubItem]) throws {
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(subItems)
+        let json = String(data: data, encoding: .utf8) ?? "[]"
+        try db.execute(
+            sql: "UPDATE tracks SET sub_items = ? WHERE id = ?",
+            arguments: [json, id]
         )
     }
 

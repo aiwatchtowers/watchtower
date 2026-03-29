@@ -6,18 +6,27 @@ struct TrackDetailView: View {
     var onClose: (() -> Void)?
     @Environment(AppState.self) private var appState
     @State private var chatVM: TrackChatViewModel?
+    @State private var showCreateTask = false
+    @State private var linkedTasks: [TaskItem] = []
 
     var body: some View {
         VSplitView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     headerSection
-                    currentStatusSection
-                    narrativeSection
-                    timelineSection
+                    textSection
+                    requesterSection
+                    contextSection
+                    blockingSection
+                    subItemsSection
+                    decisionSection
+                    decisionOptionsSection
                     participantsSection
-                    keyMessagesSection
-                    linkedDigestsSection
+                    sourceRefsSection
+                    relatedDigestsSection
+                    linkedTasksSection
+                    dueDateSection
+                    tagsSection
                     actionsSection
                 }
                 .padding()
@@ -32,13 +41,16 @@ struct TrackDetailView: View {
             }
         }
         .onAppear {
-            if track.hasUpdates {
-                viewModel.markRead(track)
-            }
             if let db = appState.databaseManager {
                 chatVM = TrackChatViewModel(
                     track: track, viewModel: viewModel, dbManager: db
                 )
+                loadLinkedTasks(db: db)
+            }
+        }
+        .onChange(of: showCreateTask) { _, isShowing in
+            if !isShowing, let db = appState.databaseManager {
+                loadLinkedTasks(db: db)
             }
         }
     }
@@ -47,8 +59,11 @@ struct TrackDetailView: View {
 
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center) {
+            HStack(alignment: .center, spacing: 8) {
                 priorityBadge
+                ownershipBadge
+                categoryBadge
+
                 if track.hasUpdates {
                     Label("Updated", systemImage: "bell.badge.fill")
                         .font(.caption)
@@ -57,7 +72,9 @@ struct TrackDetailView: View {
                         .padding(.vertical, 4)
                         .background(.orange.opacity(0.12), in: Capsule())
                 }
+
                 Spacer()
+
                 Text(track.updatedAgo)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -72,60 +89,165 @@ struct TrackDetailView: View {
                 }
             }
 
-            Text(track.title)
+            // Main track text as title
+            Text(viewModel.resolveUserIDs(track.text))
                 .font(.title3)
                 .fontWeight(.semibold)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
-            // Channels
-            let channels = track.decodedChannelIDs
-            if !channels.isEmpty {
-                HStack(spacing: 8) {
-                    ForEach(channels, id: \.self) { chID in
-                        let name = viewModel.channelName(for: chID) ?? chID
-                        if let url = viewModel.slackChannelURL(channelID: chID) {
-                            Link(destination: url) {
-                                Label("#\(name)", systemImage: "number")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.borderless)
-                        } else {
+    // MARK: - Text (main body)
+
+    @ViewBuilder
+    private var textSection: some View {
+        // Channels
+        let channels = track.decodedChannelIDs
+        if !channels.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(channels, id: \.self) { chID in
+                    let name = viewModel.channelName(for: chID) ?? chID
+                    if let url = viewModel.slackChannelURL(channelID: chID) {
+                        Link(destination: url) {
                             Label("#\(name)", systemImage: "number")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
-                    }
-                }
-            }
-
-            // Tags
-            let trackTags = track.decodedTags
-            if !trackTags.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(trackTags, id: \.self) { tag in
-                        Text(tag)
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.quaternary, in: Capsule())
+                        .buttonStyle(.borderless)
+                    } else {
+                        Label("#\(name)", systemImage: "number")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
         }
     }
 
-    // MARK: - Current Status (highlighted card)
+    // MARK: - Requester
 
     @ViewBuilder
-    private var currentStatusSection: some View {
-        if !track.currentStatus.isEmpty {
+    private var requesterSection: some View {
+        if !track.requesterName.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "person.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Requested by: \(viewModel.resolveUserIDs(track.requesterName))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Context
+
+    @ViewBuilder
+    private var contextSection: some View {
+        if !track.context.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Context")
+                    .font(.headline)
+                Text(viewModel.resolveUserIDs(track.context))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    // MARK: - Blocking
+
+    @ViewBuilder
+    private var blockingSection: some View {
+        if !track.blocking.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Current Status")
+                Text("Blocking")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.red)
+                Text(viewModel.resolveUserIDs(track.blocking))
+                    .font(.subheadline)
+                    .textSelection(.enabled)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    // MARK: - Sub-items
+
+    @ViewBuilder
+    private var subItemsSection: some View {
+        let items = track.decodedSubItems
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                let progress = track.subItemsProgress
+                HStack {
+                    Text("Sub-items")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(progress.done)/\(progress.total)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Progress bar
+                if progress.total > 0 {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(.quaternary)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(.green)
+                                .frame(
+                                    width: geo.size.width
+                                        * CGFloat(progress.done)
+                                        / CGFloat(progress.total)
+                                )
+                        }
+                    }
+                    .frame(height: 6)
+                }
+
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    Button {
+                        viewModel.toggleSubItem(track, at: index)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(
+                                systemName: item.isDone
+                                    ? "checkmark.circle.fill"
+                                    : "circle"
+                            )
+                            .foregroundStyle(item.isDone ? .green : .secondary)
+                            .font(.subheadline)
+
+                            Text(item.text)
+                                .font(.subheadline)
+                                .strikethrough(item.isDone)
+                                .foregroundStyle(item.isDone ? .secondary : .primary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    // MARK: - Decision summary
+
+    @ViewBuilder
+    private var decisionSection: some View {
+        if !track.decisionSummary.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Decision")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
-                Text(viewModel.resolveUserIDs(track.currentStatus))
+                Text(viewModel.resolveUserIDs(track.decisionSummary))
                     .font(.subheadline)
                     .textSelection(.enabled)
             }
@@ -135,55 +257,58 @@ struct TrackDetailView: View {
         }
     }
 
-    // MARK: - Narrative
+    // MARK: - Decision options
 
     @ViewBuilder
-    private var narrativeSection: some View {
-        if !track.narrative.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Narrative")
-                    .font(.headline)
-                Text(viewModel.resolveUserIDs(track.narrative))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    // MARK: - Timeline
-
-    @ViewBuilder
-    private var timelineSection: some View {
-        let events = track.decodedTimeline
-        if !events.isEmpty {
+    private var decisionOptionsSection: some View {
+        let options = track.decodedDecisionOptions
+        if !options.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Timeline")
+                Text("Options")
                     .font(.headline)
 
-                ForEach(events) { event in
-                    HStack(alignment: .top, spacing: 8) {
-                        Circle()
-                            .fill(.blue)
-                            .frame(width: 8, height: 8)
-                            .padding(.top, 5)
+                ForEach(options) { opt in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(opt.option)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(event.event)
-                                .font(.caption)
-                            HStack(spacing: 6) {
-                                Text(event.date)
+                        if !opt.supporters.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: "hand.thumbsup.fill")
                                     .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                if let ch = event.channel, !ch.isEmpty {
-                                    Text("#\(ch)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
+                                    .foregroundStyle(.green)
+                                Text(opt.supporters.joined(separator: ", "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if !opt.pros.isEmpty {
+                            HStack(alignment: .top, spacing: 4) {
+                                Text("+")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                                    .frame(width: 12)
+                                Text(opt.pros)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if !opt.cons.isEmpty {
+                            HStack(alignment: .top, spacing: 4) {
+                                Text("-")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .frame(width: 12)
+                                Text(opt.cons)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                 }
             }
         }
@@ -202,7 +327,7 @@ struct TrackDetailView: View {
                 ForEach(people) { person in
                     HStack(spacing: 8) {
                         Image(systemName: "person.circle.fill")
-                            .foregroundStyle(roleColor(person.role))
+                            .foregroundStyle(stanceColor(person.stance))
                             .font(.subheadline)
                             .frame(width: 20)
 
@@ -210,10 +335,10 @@ struct TrackDetailView: View {
                             Text(person.name)
                                 .font(.subheadline)
                                 .fontWeight(.medium)
-                            if let role = person.role, !role.isEmpty {
-                                Text(role)
+                            if let stance = person.stance, !stance.isEmpty {
+                                Text(stance)
                                     .font(.caption)
-                                    .foregroundStyle(roleColor(role))
+                                    .foregroundStyle(stanceColor(stance))
                             }
                         }
                     }
@@ -222,17 +347,17 @@ struct TrackDetailView: View {
         }
     }
 
-    // MARK: - Key Messages
+    // MARK: - Source refs (key messages)
 
     @ViewBuilder
-    private var keyMessagesSection: some View {
-        let messages = track.decodedKeyMessages
-        if !messages.isEmpty {
+    private var sourceRefsSection: some View {
+        let refs = track.decodedSourceRefs
+        if !refs.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Key Messages")
                     .font(.headline)
 
-                ForEach(messages) { msg in
+                ForEach(refs) { ref in
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "quote.opening")
                             .foregroundStyle(.tertiary)
@@ -241,26 +366,23 @@ struct TrackDetailView: View {
                             .padding(.top, 2)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(msg.author)
+                            Text(viewModel.resolveUserIDs(ref.author))
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.secondary)
-                            Text(msg.text)
+                            Text(ref.text)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
-                            if let date = msg.date {
-                                Text(date, style: .relative)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
                         }
 
                         Spacer()
 
-                        if let ch = msg.channel, !ch.isEmpty {
+                        // Slack link for the message
+                        let channels = track.decodedChannelIDs
+                        if let chID = channels.first, !ref.ts.isEmpty {
                             if let url = viewModel.slackMessageURL(
-                                channelID: ch, messageTS: msg.ts
+                                channelID: chID, messageTS: ref.ts
                             ) {
                                 Link(destination: url) {
                                     Image(systemName: "arrow.up.right.square")
@@ -278,11 +400,11 @@ struct TrackDetailView: View {
         }
     }
 
-    // MARK: - Linked Digests (expandable via source_refs)
+    // MARK: - Related Digests (expandable)
 
     @ViewBuilder
-    private var linkedDigestsSection: some View {
-        let digestIDs = track.linkedDigestIDs
+    private var relatedDigestsSection: some View {
+        let digestIDs = track.decodedRelatedDigestIDs
         if !digestIDs.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Related Digests")
@@ -299,10 +421,68 @@ struct TrackDetailView: View {
         }
     }
 
+    // MARK: - Due date
+
+    @ViewBuilder
+    private var dueDateSection: some View {
+        if let formatted = track.dueDateFormatted {
+            HStack(spacing: 6) {
+                Image(systemName: "calendar")
+                    .font(.caption)
+                    .foregroundStyle(track.isOverdue ? .red : .secondary)
+                Text("Due: \(formatted)")
+                    .font(.caption)
+                    .foregroundStyle(track.isOverdue ? .red : .secondary)
+                if track.isOverdue {
+                    Text("OVERDUE")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.red, in: Capsule())
+                }
+            }
+        }
+    }
+
+    // MARK: - Tags
+
+    @ViewBuilder
+    private var tagsSection: some View {
+        let trackTags = track.decodedTags
+        if !trackTags.isEmpty {
+            HStack(spacing: 4) {
+                ForEach(trackTags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
+        }
+    }
+
     // MARK: - Actions
 
     private var actionsSection: some View {
         HStack(spacing: 8) {
+            Button {
+                showCreateTask = true
+            } label: {
+                Label("Take Action", systemImage: "checkmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .sheet(isPresented: $showCreateTask) {
+                CreateTaskSheet(
+                    prefillText: track.text,
+                    prefillIntent: track.context,
+                    prefillSourceType: "track",
+                    prefillSourceID: String(track.id)
+                )
+            }
+
             Spacer()
             if let dbManager = appState.databaseManager {
                 FeedbackButtons(
@@ -314,7 +494,83 @@ struct TrackDetailView: View {
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - Linked Tasks
+
+    @ViewBuilder
+    private var linkedTasksSection: some View {
+        if !linkedTasks.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Tasks")
+                    .font(.headline)
+
+                ForEach(linkedTasks) { task in
+                    Button {
+                        appState.navigateToTask(task.id)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: task.statusIcon)
+                                .foregroundStyle(taskStatusColor(task.status))
+                                .font(.subheadline)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(task.text)
+                                    .font(.subheadline)
+                                    .lineLimit(2)
+                                    .foregroundStyle(.primary)
+
+                                HStack(spacing: 6) {
+                                    Text(task.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                                        .font(.caption2)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(
+                                            taskStatusColor(task.status).opacity(0.15),
+                                            in: Capsule()
+                                        )
+
+                                    if let due = task.dueDateFormatted {
+                                        Label(due, systemImage: "calendar")
+                                            .font(.caption2)
+                                            .foregroundStyle(task.isOverdue ? .red : .secondary)
+                                    }
+                                }
+                            }
+
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.green.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func loadLinkedTasks(db: DatabaseManager) {
+        linkedTasks = (try? db.dbPool.read { database in
+            try TaskQueries.fetchBySourceRef(database, sourceType: "track", sourceID: String(track.id))
+        }) ?? []
+    }
+
+    private func taskStatusColor(_ status: String) -> Color {
+        switch status {
+        case "todo": .secondary
+        case "in_progress": .blue
+        case "blocked": .red
+        case "done": .green
+        case "dismissed": .gray
+        case "snoozed": .purple
+        default: .secondary
+        }
+    }
+
+    // MARK: - Badges
 
     private var priorityBadge: some View {
         Menu {
@@ -346,6 +602,46 @@ struct TrackDetailView: View {
         .fixedSize()
     }
 
+    private var ownershipBadge: some View {
+        Menu {
+            ForEach(["mine", "delegated", "watching"], id: \.self) { own in
+                Button {
+                    viewModel.updateOwnership(track, to: own)
+                } label: {
+                    if own == track.ownership {
+                        Label(ownershipLabel(own), systemImage: "checkmark")
+                    } else {
+                        Text(ownershipLabel(own))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: ownershipIcon)
+                    .font(.system(size: 9))
+                Text(track.ownershipLabel)
+                    .font(.caption)
+            }
+            .foregroundStyle(ownershipColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(ownershipColor.opacity(0.1), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var categoryBadge: some View {
+        Text(track.categoryLabel)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.secondary.opacity(0.1), in: Capsule())
+    }
+
+    // MARK: - Helpers
+
     private var priorityColor: Color {
         switch track.priority {
         case "high": .red
@@ -354,11 +650,40 @@ struct TrackDetailView: View {
         }
     }
 
-    private func roleColor(_ role: String?) -> Color {
-        switch role {
+    private var ownershipColor: Color {
+        switch track.ownership {
+        case "mine": .green
+        case "delegated": .purple
+        case "watching": .secondary
+        default: .secondary
+        }
+    }
+
+    private var ownershipIcon: String {
+        switch track.ownership {
+        case "mine": "person.fill"
+        case "delegated": "arrow.right.circle.fill"
+        case "watching": "eye.fill"
+        default: "circle"
+        }
+    }
+
+    private func ownershipLabel(_ value: String) -> String {
+        switch value {
+        case "mine": return "Mine"
+        case "delegated": return "Delegated"
+        case "watching": return "Watching"
+        default: return value.capitalized
+        }
+    }
+
+    private func stanceColor(_ stance: String?) -> Color {
+        switch stance {
         case "driver": .green
-        case "reviewer": .blue
+        case "supporter": .blue
         case "blocker": .red
+        case "reviewer": .purple
+        case "neutral": .secondary
         default: .secondary
         }
     }

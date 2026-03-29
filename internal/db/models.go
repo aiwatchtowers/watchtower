@@ -20,6 +20,7 @@ type User struct {
 	Email       string
 	IsBot       bool
 	IsDeleted   bool
+	IsStub      bool
 	ProfileJSON string
 	UpdatedAt   string
 }
@@ -61,6 +62,12 @@ type Reaction struct {
 	MessageTS string
 	UserID    string
 	Emoji     string
+}
+
+// ReactionSummary is an aggregated reaction count for a single emoji on a message.
+type ReactionSummary struct {
+	Emoji string
+	Count int
 }
 
 // File represents a file attached to a Slack message.
@@ -153,28 +160,39 @@ type CustomEmoji struct {
 	AliasFor string // Target emoji name if this is an alias
 }
 
-// Track represents an auto-generated informational track (v3).
+// Track represents an action-item extracted from Slack conversations.
 type Track struct {
-	ID            int
-	Title         string
-	Narrative     string
-	CurrentStatus string
-	Participants  string // JSON: [{"user_id":"U...","name":"...","role":"driver|reviewer|blocker|observer"}]
-	Timeline      string // JSON: [{"date":"2026-03-20","event":"...","channel_id":"C..."}]
-	KeyMessages   string // JSON: [{"ts":"...","author":"...","text":"...","channel_id":"C..."}]
-	Priority      string // "high", "medium", "low"
-	Tags          string // JSON: ["tag1","tag2"]
-	ChannelIDs    string // JSON: ["C1","C2"]
-	SourceRefs    string // JSON: [{"digest_id":1,"topic_id":42,"channel_id":"C...","timestamp":1234.0}]
-	ReadAt        string // "" = unread, ISO8601 = when read
-	HasUpdates    bool
-	Model         string
-	InputTokens   int
-	OutputTokens  int
-	CostUSD       float64
-	PromptVersion int
-	CreatedAt     string
-	UpdatedAt     string
+	ID               int
+	AssigneeUserID   string
+	Text             string
+	Context          string  // 3-5 sentence explanation
+	Category         string  // code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
+	Ownership        string  // "mine", "delegated", "watching"
+	BallOn           string  // user_id of next actor
+	OwnerUserID      string  // for delegated: report's user_id
+	RequesterName    string  // who made the request
+	RequesterUserID  string  // requester's Slack user_id
+	Blocking         string  // who/what is blocked
+	DecisionSummary  string  // how the group arrived at the decision
+	DecisionOptions  string  // JSON: [{option, supporters, pros, cons}]
+	SubItems         string  // JSON: [{text, status}]
+	Participants     string  // JSON: [{name, user_id, stance}]
+	SourceRefs       string  // JSON: [{ts, author, text}] key message quotes
+	Tags             string  // JSON: ["tag1","tag2"]
+	ChannelIDs       string  // JSON: ["C1","C2"] cross-channel
+	RelatedDigestIDs string  // JSON: [1,2,3]
+	Priority         string  // "high", "medium", "low"
+	DueDate          float64 // Unix timestamp, 0 = no deadline
+	Fingerprint      string  // JSON: extracted entities for dedup
+	ReadAt           string  // "" = unread, ISO8601 = when read
+	HasUpdates       bool
+	Model            string
+	InputTokens      int
+	OutputTokens     int
+	CostUSD          float64
+	PromptVersion    int
+	CreatedAt        string
+	UpdatedAt        string
 }
 
 // Digest represents an AI-generated summary of channel activity.
@@ -434,6 +452,83 @@ type ChannelSettings struct {
 	IsMutedForLLM bool
 	IsFavorite    bool
 	UpdatedAt     string
+}
+
+// Task represents a personal action item for the user.
+type Task struct {
+	ID          int
+	Text        string
+	Intent      string
+	Status      string // "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
+	Priority    string // "high", "medium", "low"
+	Ownership   string // "mine", "delegated", "watching"
+	BallOn      string
+	DueDate     string // "YYYY-MM-DD" or ""
+	SnoozeUntil string // "YYYY-MM-DD" or ""
+	Blocking    string
+	Tags        string // JSON
+	SubItems    string // JSON
+	SourceType  string // "track", "digest", "briefing", "manual", "chat"
+	SourceID    string
+	CreatedAt   string
+	UpdatedAt   string
+}
+
+// TaskFilter specifies criteria for querying tasks.
+type TaskFilter struct {
+	Status      string
+	Priority    string
+	Ownership   string
+	SourceType  string
+	SourceID    string
+	Limit       int
+	IncludeDone bool
+}
+
+// InboxItem represents a Slack message awaiting user response.
+type InboxItem struct {
+	ID             int
+	ChannelID      string
+	MessageTS      string
+	ThreadTS       string
+	SenderUserID   string
+	TriggerType    string // "mention", "dm"
+	Snippet        string
+	Context        string
+	RawText        string
+	Permalink      string
+	Status         string // "pending", "resolved", "dismissed", "snoozed"
+	Priority       string // "high", "medium", "low"
+	AIReason       string
+	ResolvedReason string
+	SnoozeUntil    string
+	WaitingUserIDs string // JSON array of user IDs waiting for response, e.g. ["U123","U456"]
+	TaskID         *int
+	ReadAt         string
+	CreatedAt      string
+	UpdatedAt      string
+}
+
+// InboxCandidate is a potential inbox item found by detection queries.
+type InboxCandidate struct {
+	ChannelID    string
+	MessageTS    string
+	ThreadTS     string
+	SenderUserID string
+	Text         string
+	Permalink    string
+	TriggerType  string // "mention", "dm", "thread_reply", "reaction"
+	TSUnix       float64
+}
+
+// InboxFilter specifies criteria for querying inbox items.
+type InboxFilter struct {
+	Status          string // "" = any
+	Priority        string // "" = any
+	TriggerType     string // "" = any
+	ChannelID       string // "" = any
+	Limit           int    // 0 = no limit
+	IncludeResolved bool   // include resolved/dismissed
 }
 
 // PromptHistory records a snapshot of a prompt at a specific version.

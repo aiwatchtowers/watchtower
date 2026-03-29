@@ -6,30 +6,40 @@ package prompts
 // in digest, tracks, and analysis packages. They serve as the
 // initial seed and fallback when no DB version exists.
 var Defaults = map[string]string{
-	DigestChannel: defaultDigestChannel,
-	DigestDaily:   defaultDigestDaily,
-	DigestWeekly:  defaultDigestWeekly,
-	DigestPeriod:  defaultDigestPeriod,
-	TracksCreate:  defaultTracksCreate,
-	GuideUser:     defaultGuideUser,
-	GuidePeriod:   defaultGuidePeriod,
-	PeopleReduce:  defaultPeopleReduce,
-	PeopleTeam:    defaultPeopleTeam,
-	BriefingDaily: defaultBriefingDaily,
+	DigestChannel:   defaultDigestChannel,
+	DigestDaily:     defaultDigestDaily,
+	DigestWeekly:    defaultDigestWeekly,
+	DigestPeriod:    defaultDigestPeriod,
+	TracksExtract:   defaultTracksExtract,
+	TracksUpdate:    defaultTracksUpdate,
+	GuideUser:       defaultGuideUser,
+	GuidePeriod:     defaultGuidePeriod,
+	PeopleReduce:    defaultPeopleReduce,
+	PeopleTeam:      defaultPeopleTeam,
+	BriefingDaily:   defaultBriefingDaily,
+	InboxPrioritize:    defaultInboxPrioritize,
+	DigestChannelBatch:  defaultDigestChannelBatch,
+	TracksExtractBatch:  defaultTracksExtractBatch,
+	PeopleBatch:         defaultPeopleBatch,
 }
 
 // AllIDs returns prompt IDs in display order.
 var AllIDs = []string{
 	DigestChannel,
+	DigestChannelBatch,
 	DigestDaily,
 	DigestWeekly,
 	DigestPeriod,
-	TracksCreate,
+	TracksExtract,
+	TracksUpdate,
+	TracksExtractBatch,
 	GuideUser,
 	GuidePeriod,
 	PeopleReduce,
 	PeopleTeam,
+	PeopleBatch,
 	BriefingDaily,
+	InboxPrioritize,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -37,30 +47,40 @@ var AllIDs = []string{
 // prompts in the DB whose version is lower than the default version, unless
 // the user has customized the prompt (detected by comparing template text).
 var DefaultVersions = map[string]int{
-	DigestChannel: 3, // v3: topics as structured objects (title, summary, decisions, etc.)
-	DigestDaily:   1,
-	DigestWeekly:  1,
-	DigestPeriod:  1,
-	TracksCreate:  2, // v2: tracks v3 auto-creation from unlinked topics
-	GuideUser:     1,
-	GuidePeriod:   1,
-	PeopleReduce:  1,
-	PeopleTeam:    1,
-	BriefingDaily: 1,
+	DigestChannel:   3, // v3: topics as structured objects (title, summary, decisions, etc.)
+	DigestDaily:     1,
+	DigestWeekly:    1,
+	DigestPeriod:    1,
+	TracksExtract:   1, // v1: per-channel extraction with cross-channel merge
+	TracksUpdate:       1, // v1: check tracks for updates from new messages
+	TracksExtractBatch: 2, // v2: digest-based input instead of raw messages
+	GuideUser:       1,
+	GuidePeriod:     1,
+	PeopleReduce:    1,
+	PeopleTeam:      1,
+	BriefingDaily:   3, // v3: inbox integration
+	InboxPrioritize:    2, // v2: richer context (age, sender role, replies)
+	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
+	PeopleBatch:        1, // v1: batch people cards for low-data users
 }
 
 // Descriptions maps prompt IDs to human-readable descriptions.
 var Descriptions = map[string]string{
-	DigestChannel: "Channel digest — per-channel message analysis",
-	DigestDaily:   "Daily rollup — cross-channel daily summary",
-	DigestWeekly:  "Weekly trends — week-over-week analysis",
-	DigestPeriod:  "Period summary — comprehensive period overview",
-	TracksCreate:  "Track creation — auto-create informational tracks from digest topics",
-	GuideUser:     "Communication guide — personal coaching per user",
-	GuidePeriod:   "Team guide — cross-user communication tips",
-	PeopleReduce:  "People card — unified profile from signals",
-	PeopleTeam:    "Team summary — cross-user attention & tips",
-	BriefingDaily: "Daily briefing — personalized morning summary",
+	DigestChannel:   "Channel digest — per-channel message analysis",
+	DigestDaily:     "Daily rollup — cross-channel daily summary",
+	DigestWeekly:    "Weekly trends — week-over-week analysis",
+	DigestPeriod:    "Period summary — comprehensive period overview",
+	TracksExtract:   "Track extraction — per-channel action item extraction with cross-channel merge",
+	TracksUpdate:       "Track update check — detect meaningful updates for existing tracks",
+	TracksExtractBatch: "Batch track extraction — multi-channel extraction for low-activity channels",
+	GuideUser:       "Communication guide — personal coaching per user",
+	GuidePeriod:     "Team guide — cross-user communication tips",
+	PeopleReduce:    "People card — unified profile from signals",
+	PeopleTeam:      "Team summary — cross-user attention & tips",
+	BriefingDaily:   "Daily briefing — personalized morning summary",
+	InboxPrioritize:    "Inbox prioritization — AI priority + auto-resolve for inbox items",
+	DigestChannelBatch: "Channel batch digest — multi-channel analysis for low-activity channels",
+	PeopleBatch:        "People batch cards — lightweight cards for low-data users in one AI call",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -240,68 +260,122 @@ Rules:
 === DIGESTS ===
 %s`
 
-const defaultTracksCreate = `You are an AI that groups workspace discussion topics into informational tracks.
+const defaultTracksExtract = `You are analyzing Slack messages from channel #%[3]s (%[4]s) to find tracks directed at user @%[1]s (user_id: %[2]s) for the period %[5]s to %[6]s.
 
-%[1]s
+Your task: identify actions, requests, tasks, and expectations directed at this specific user in this channel.
 
-Your job: analyze unlinked topics from recent channel digests and either CREATE new tracks or UPDATE existing ones.
+CRITICAL: Group related requests into a SINGLE track. If multiple messages discuss the same topic/task, combine them into ONE comprehensive track — do NOT create separate items for each message about the same topic.
 
-A track is a living narrative about an initiative, project, or problem. Tracks should be:
-- COARSE-GRAINED: one track per initiative/project/problem, not per decision
-- NARRATIVE: tell a story, not list facts
-- ACTIONABLE: explain why it matters
+DEDUPLICATION: Review the EXISTING TRACKS section below. If a message relates to an existing track (from ANY channel, not just this one), UPDATE it (set "existing_id" to the track's ID) instead of creating a new one. This enables cross-channel topic merging — if the same initiative is discussed in #backend and #infra, it should be ONE track.
 
-=== EXISTING TRACKS ===
-%[2]s
+COMPLETION DETECTION: If you see messages confirming that an existing track has been COMPLETED, return the track with "existing_id" and "status_hint": "done". Do NOT ignore completion signals.
 
-=== UNLINKED TOPICS ===
-%[3]s
-
-=== CHANNEL CONTEXT ===
-%[4]s
+%[12]s
 
 Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
-  "new_tracks": [
+  "items": [
     {
-      "title": "Short title (5-10 words)",
-      "narrative": "Living description: what is happening, how it develops, where it is heading (2-4 sentences)",
-      "current_status": "One sentence: where things stand now, what is expected next",
-      "participants": [{"user_id": "U...", "name": "...", "role": "driver|reviewer|blocker|observer"}],
-      "timeline": [{"date": "2026-03-20", "event": "...", "channel_id": "C..."}],
-      "key_messages": [{"ts": "...", "author": "...", "text": "...", "channel_id": "C..."}],
-      "priority": "high|medium|low",
-      "tags": ["tag1", "tag2"],
-      "channel_ids": ["C1", "C2"],
-      "source_topic_ids": [42, 43]
+      "existing_id": null,
+      "status_hint": "",
+      "text": "clear, actionable description of what needs to be done",
+      "context": "detailed context (3-5 sentences): what was discussed, what decisions were made, what is the background, why this matters",
+      "source_message_ts": "1234567890.123456",
+      "priority": "high",
+      "due_date": "2025-01-15",
+      "requester": {"name": "@username", "user_id": "U123"},
+      "category": "task",
+      "blocking": "who or what is blocked if this isn't done",
+      "tags": ["project-name", "topic"],
+      "decision_summary": "how the group arrived at the current state",
+      "decision_options": [
+        {"option": "description of option A", "supporters": ["@user1"], "pros": "advantages", "cons": "disadvantages"}
+      ],
+      "participants": [
+        {"name": "@username", "user_id": "U123", "stance": "brief summary of this person's position"}
+      ],
+      "source_refs": [
+        {"ts": "1234567890.123456", "author": "@username", "text": "key quote (1 sentence)"}
+      ],
+      "sub_items": [
+        {"text": "specific sub-task", "status": "open"}
+      ],
+      "ownership": "mine",
+      "ball_on": "U123",
+      "owner_user_id": "U456"
     }
-  ],
-  "updated_tracks": [
+  ]
+}
+
+%[7]s
+
+Rules:
+- GROUPING: Multiple messages about the same topic = ONE track. Aim for 0-5 tracks per channel.
+- CROSS-CHANNEL MERGE: If the topic matches an existing track from another channel, set existing_id to that track. This is the key feature — one topic across channels = one track.
+- Only extract tracks with a CLEAR actionable request. Skip vague mentions.
+- Look for BOTH explicit and implicit tracks:
+  * Direct requests, assignments, questions expecting action, commitments, review requests, follow-ups
+- DO NOT EXTRACT:
+  * Status updates from user without action, general mentions, already completed actions
+  * Bot notifications (unless requiring human action), FYI with no next step
+  * Individual alerts (aggregate systemic patterns into ONE track)
+  * Discussions with no action expected from user
+- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, use sparingly)
+- category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
+- ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
+- ball_on: user_id of who acts next
+- source_refs: 2-5 most important messages as footnotes
+- sub_items: break into sub-tasks with "open"/"done" status, 2-5 per track
+- existing_id: match against EXISTING TRACKS from ALL channels. STRONGLY prefer updating over creating duplicates.
+- status_hint: "done" if confirmed complete, "" otherwise. Only with existing_id.
+- If no tracks are found, return {"items": []}
+%[13]s
+- Return valid JSON only
+%[8]s
+
+%[9]s
+
+%[10]s
+
+=== MESSAGES ===
+%[11]s`
+
+const defaultTracksUpdate = `You are checking whether new Slack messages contain a meaningful update for existing tracks.
+
+Channel: #%[1]s
+%[6]s
+
+%[4]s
+
+=== TRACKS TO CHECK ===
+%[3]s
+
+=== NEW MESSAGES ===
+%[5]s
+
+For EACH track, determine if any new messages contain a meaningful update.
+
+Return ONLY a JSON object:
+
+{
+  "results": [
     {
-      "track_id": 1,
-      "narrative": "Updated narrative incorporating new information",
-      "current_status": "Updated status",
-      "participants": [{"user_id": "U...", "name": "...", "role": "driver|reviewer|blocker|observer"}],
-      "timeline": [{"date": "2026-03-25", "event": "new development", "channel_id": "C..."}],
-      "key_messages": [{"ts": "...", "author": "...", "text": "...", "channel_id": "C..."}],
-      "priority": "high|medium|low",
-      "tags": ["tag1"],
-      "new_source_topic_ids": [55]
+      "track_id": 123,
+      "has_update": true,
+      "updated_context": "brief summary of what changed",
+      "status_hint": "done",
+      "ball_on": "U123"
     }
   ]
 }
 
 Rules:
-- MERGE related topics into one track. Prefer fewer, richer tracks over many thin ones.
-- If an unlinked topic clearly relates to an existing track, UPDATE that track (add to updated_tracks with track_id).
-- If topics are about a genuinely new initiative/problem, CREATE a new track.
-- source_topic_ids / new_source_topic_ids: list of topic IDs (from digest_topics.id) that feed into this track.
-- Every unlinked topic should appear in exactly one track (new or updated). Do not leave topics unassigned.
-- priority: "high" if blocking/urgent/escalated, "low" if informational, "medium" otherwise.
-- key_messages: max 5, truncate text to 100 chars.
-- timeline: max 10 entries.
-- %[5]s
+- Include an entry for EVERY track
+- has_update: true only for genuine progress/completion/blocker change
+- updated_context: 1-2 sentences when has_update is true
+- status_hint: "done"/"active"/"unchanged"
+- ball_on: user_id of next actor, "" if unchanged
 - Return valid JSON only`
 
 const defaultGuideUser = `You are a personal communication coach helping the user work more effectively with @%s over a 7-day window (%s to %s).
@@ -484,7 +558,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
   "attention": [
-    {"text": "What needs attention and why", "source_type": "track|digest|people", "source_id": "123", "priority": "high|medium", "reason": "Why this matters now"}
+    {"text": "What needs attention and why", "source_type": "track|digest|people|inbox", "source_id": "123", "priority": "high|medium", "reason": "Why this matters now"}
   ],
   "your_day": [
     {"text": "Suggested action based on track", "track_id": 123, "priority": "high|medium|low", "status": "active"}
@@ -501,17 +575,25 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 }
 
 Rules:
-- attention: max 5 items. PRIORITIZE tracks with high priority or recent updates.
-  - Include source_type and source_id for traceability.
-- your_day: suggested actions from active tracks. Include track_id. Order by priority.
-  - If no active tracks exist, leave this array empty — do NOT invent tasks.
+- attention: max 5 items. Flag overdue/blocked tasks. PRIORITIZE tracks with high priority or recent updates.
+  - Include source_type and source_id for traceability. Use source_type='task' for task-sourced items, 'inbox' for inbox items.
+  - Use suggest_task=true on tracks where the user should create a task.
+- your_day: Prioritize user's actual tasks (task_id) over track suggestions. Include overdue tasks first. Order by priority.
+  - If no active tasks or tracks exist, leave this array empty — do NOT invent items.
 - what_happened: max 7 items from channel digests. Include digest_id, channel_name. Focus on decisions and blockers.
 - team_pulse: signals from people cards. Include user_id. Flag volume changes, red flags, conflicts.
 - coaching: max 3 items. Grounded in observed patterns — not generic advice. Include related_user_id when applicable.
+  - When suggesting actions, consider existing tasks. Use suggest_task=true on tracks where user should create a task.
 - Be specific: name people, channels, decisions — not vague generalities.
 - If user has reports, prioritize their signals in team_pulse.
 - %s
 - Return valid JSON only
+
+=== YOUR TASKS ===
+%s
+
+=== INBOX (awaiting your response) ===
+%s
 
 === ACTIVE TRACKS ===
 %s
@@ -529,4 +611,213 @@ Rules:
 %s
 
 === USER PROFILE ===
+%s`
+
+const defaultInboxPrioritize = `You are prioritizing Slack messages that may need the user's response.
+User role: %s
+
+You will receive two lists:
+1. NEW PENDING ITEMS — messages that @mention the user or are DMs from others. Assign a priority and reason.
+2. REPLIED ITEMS — messages where the user has already posted a reply. Determine if the matter is resolved.
+
+Return ONLY a JSON object (no markdown fences, no explanation):
+
+{
+  "items": [
+    {"id": 123, "priority": "high|medium|low", "reason": "Why this priority", "resolved": false},
+    {"id": 456, "priority": "", "reason": "User responded and issue is addressed", "resolved": true}
+  ]
+}
+
+Rules:
+- For NEW PENDING: assign priority based on urgency, sender role, and context.
+  - high: direct request for action, blocker, manager asking, production issue
+  - medium: question, review request, normal work discussion
+  - low: FYI, informational, bot notification, no action needed
+- Consider message age: older unresolved items may need higher priority.
+- Consider sender role: manager/lead requests are typically higher priority than peer FYIs.
+- "thread_reply" items are replies to the user's own messages — prioritize if they ask questions or need decisions.
+- "reaction" items mean someone flagged the user's message with an attention emoji — usually needs a look.
+- For REPLIED items: set resolved=true if the user's reply addressed the question/request. Set resolved=false if the conversation is still ongoing.
+- Include the original item ID in each result.
+- Be concise in reasons (1 sentence max).
+- Return valid JSON only.
+
+%s`
+
+const defaultDigestChannelBatch = `You are analyzing Slack messages from multiple channels for the period %s to %s.
+
+%s
+
+Analyze messages from each channel below. For each channel, produce a digest ONLY if something noteworthy happened (decisions, blockers, important updates, action items). SKIP channels with only routine messages, bot alerts, or noise.
+
+Return ONLY a JSON array (no markdown fences, no explanation):
+[
+  {
+    "channel_id": "C123ABC",
+    "summary": "2-3 sentence overview",
+    "topics": [
+      {
+        "title": "Short topic title",
+        "summary": "1-2 sentence summary",
+        "decisions": [{"text": "what was decided", "by": "@username", "message_ts": "1234567890.123456", "importance": "high"}],
+        "action_items": [{"text": "what needs to be done", "assignee": "@username", "status": "open"}],
+        "situations": [{"topic": "...", "type": "collaboration", "participants": [{"user_id": "U123456", "role": "initiator"}], "dynamic": "...", "outcome": "...", "red_flags": [], "observations": [], "message_refs": []}],
+        "key_messages": ["1234567890.123456"]
+      }
+    ],
+    "running_summary": {"active_topics": [{"topic": "...", "status": "in_progress", "started": "2026-03-18", "last_update": "2026-03-21", "key_participants": ["U123"], "summary": "..."}], "recent_decisions": [], "channel_dynamics": "...", "open_questions": []}
+  }
+]
+
+Return [] if nothing noteworthy across all channels.
+
+%s
+
+Rules:
+- topics: EACH TOPIC is a self-contained thematic unit about ONE specific subject
+  * 2-7 topics per channel (proportional to message count; fewer messages = fewer topics)
+  * title: specific, descriptive (e.g. "Hashbank deposit processing failure", not "Issues")
+  * summary: what happened in this topic specifically
+  * Each topic carries its OWN decisions, action_items, situations, key_messages — do NOT mix content across topics
+- decisions (within each topic): A DECISION is a conscious choice between alternatives that changes the course of action. Each decision MUST have a clear "who decided" and "what was chosen". Do NOT include:
+  * Status updates ("X was deployed", "X was updated")
+  * Notifications or FYIs ("users were notified about X")
+  * Routine operations (deploys, releases, merges) UNLESS they involve a non-obvious choice
+  Include message_ts for traceability.
+  importance levels:
+  * "high" — changes architecture, strategy, budget, staffing, product direction, security posture, or has org-wide impact
+  * "medium" — changes a process, workflow, or technical approach within a team/project
+  * "low" — minor tactical choices (naming, formatting, scheduling, tooling tweaks)
+  If only 0-1 true decisions exist in a topic, return an empty or single-item array. Do NOT inflate the list.
+- action_items (within each topic): Tasks mentioned or assigned. status is always "open" for new items
+- key_messages (within each topic): Timestamps of the most important messages (max 5 per topic)
+- situations (within each topic): Notable INTERACTIONS between people (max 2-3 per topic). Each situation has:
+  * topic, type, participants (with user_id and role), dynamic, outcome, red_flags, observations, message_refs
+  Use Slack user IDs (e.g. U123456). Only include situations where the interaction pattern is noteworthy.
+- SKIP channels where nothing actionable or noteworthy happened
+- running_summary per channel: same rules, max 2000 chars. Include active_topics, recent_decisions, channel_dynamics, open_questions.
+- Return valid JSON only
+%s
+=== CHANNELS ===
+%s`
+
+const defaultTracksExtractBatch = `You are analyzing channel digests from multiple Slack channels to find tracks directed at user @%s (user_id: %s) for the period %s to %s.
+
+%s
+
+Each channel below has pre-analyzed topics with decisions, action items, and situations extracted from channel digests. Extract actionable tracks from these structured observations.
+
+CRITICAL: Group related topics into a SINGLE track. If multiple topics discuss the same task/initiative, combine them into ONE comprehensive track — do NOT create separate items for each topic about the same thing.
+
+DEDUPLICATION: Review the EXISTING TRACKS section below. If a topic relates to an existing track (from ANY channel), UPDATE it (set "existing_id" to the track's ID) instead of creating a new one.
+
+COMPLETION DETECTION: If topics indicate that an existing track has been COMPLETED, return the track with "existing_id" and "status_hint": "done".
+
+Return ONLY a JSON array (no markdown fences, no explanation):
+
+[
+  {
+    "channel_id": "C123ABC",
+    "items": [
+      {
+        "existing_id": null,
+        "status_hint": "",
+        "text": "clear, actionable description of what needs to be done",
+        "context": "detailed context (3-5 sentences)",
+        "source_message_ts": "1234567890.123456",
+        "priority": "high",
+        "due_date": "2025-01-15",
+        "requester": {"name": "@username", "user_id": "U123"},
+        "category": "task",
+        "blocking": "",
+        "tags": [],
+        "decision_summary": "",
+        "decision_options": [],
+        "participants": [{"name": "@username", "user_id": "U123", "stance": "brief summary"}],
+        "source_refs": [{"ts": "1234567890.123456", "author": "@username", "text": "key quote"}],
+        "sub_items": [{"text": "sub-task", "status": "open"}],
+        "ownership": "mine",
+        "ball_on": "U123",
+        "owner_user_id": "U456"
+      }
+    ]
+  }
+]
+
+Return [] if no tracks found in any channel.
+
+%s
+
+Rules:
+- GROUPING: Multiple topics about the same initiative = ONE track. Aim for 0-5 tracks per channel.
+- CROSS-CHANNEL MERGE: If the topic matches an existing track from another channel, set existing_id to that track. This is the key feature — one topic across channels = one track.
+- Only extract tracks with a CLEAR actionable request or decision needing action. Skip informational topics with no action expected.
+- Extract tracks from:
+  * Action items assigned to the user, decisions requiring user input, requests and tasks directed at user
+  * Situations where the user is a key participant, follow-ups and approvals needed
+- DO NOT EXTRACT:
+  * Completed actions with no follow-up, informational summaries with no action
+  * Topics where the user is merely mentioned but has no action expected
+  * Discussions that resolved without user involvement
+- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, use sparingly)
+- category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
+- ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
+- ball_on: user_id of who acts next
+- source_refs: reference key messages from digest topics
+- sub_items: break into sub-tasks with "open"/"done" status, 2-5 per track
+- existing_id: match against EXISTING TRACKS. STRONGLY prefer updating over creating duplicates.
+- status_hint: "done" if confirmed complete, "" otherwise. Only with existing_id.
+- SKIP channels where nothing actionable was found — omit them from the result entirely
+%s
+- Return valid JSON only
+%s
+
+%s
+
+%s
+
+=== CHANNEL DIGESTS ===
+%s`
+
+const defaultPeopleBatch = `You are creating lightweight people cards for multiple users based on limited behavioral signals observed across Slack channels over %s to %s.
+
+%s
+
+These users have fewer signals than usual, but you should still provide useful insights based on what IS available.
+
+Return ONLY a JSON array (no markdown fences, no explanation):
+[
+  {
+    "user_id": "U123ABC",
+    "summary": "1-2 sentences: what stands out about this person based on available signals.",
+    "communication_style": "driver|collaborator|executor|observer|facilitator",
+    "decision_role": "decision-maker|approver|contributor|observer|blocker",
+    "red_flags": ["Specific concerns if any. Empty [] if none."],
+    "highlights": ["Positive contributions if any. Empty [] if none."],
+    "accomplishments": ["Concrete deliverables if visible."],
+    "communication_guide": "Brief: how to communicate with this person based on observed patterns.",
+    "decision_style": "How they participate in decisions, or 'Limited data' if not enough signals.",
+    "tactics": ["If X, then Y — max 2 tactics."]
+  }
+]
+
+Return [] if no users have enough data for any analysis.
+
+%s
+
+Rules:
+- One entry per user in the USERS block below. Include user_id in each entry.
+- Base analysis on available situations and stats. Do NOT invent patterns.
+- Keep cards concise — these are lightweight summaries, not full profiles.
+- Compare stats to team norms: only mention stats that deviate significantly.
+- If a user has zero situations but has stats, focus on activity patterns.
+- communication_style and decision_role: pick the closest match, even with limited data.
+- %s
+- Return valid JSON only
+
+=== TEAM NORMS ===
+%s
+
+=== USERS ===
 %s`

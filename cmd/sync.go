@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/guide"
+	"watchtower/internal/inbox"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
 	"watchtower/internal/tracks"
@@ -41,6 +42,7 @@ var (
 	syncFlagSkipDMs      bool
 	syncFlagDays         int
 	syncFlagProgressJSON bool
+	syncFlagNoPipelines  bool
 )
 
 var syncCmd = &cobra.Command{
@@ -68,6 +70,7 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncFlagSkipDMs, "skip-dms", false, "skip syncing DMs and group DMs")
 	syncCmd.Flags().BoolVar(&syncFlagProgressJSON, "progress-json", false, "output progress as JSON lines to stdout")
 	syncCmd.Flags().IntVar(&syncFlagDays, "days", 0, "override initial_history_days for this run")
+	syncCmd.Flags().BoolVar(&syncFlagNoPipelines, "no-pipelines", false, "sync messages only, skip digest/tracks/people/briefing pipelines")
 }
 
 func runSyncStopCmd(cmd *cobra.Command, args []string) error {
@@ -272,6 +275,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 			if cfg.Briefing.Enabled {
 				d.SetBriefingPipeline(briefing.New(database, cfg, gen, logger))
 			}
+			if cfg.Inbox.Enabled {
+				d.SetInboxPipeline(inbox.New(database, cfg, gen, logger))
+			}
 		}
 		return d.Run(ctx)
 	}
@@ -301,9 +307,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("sync failed: %w", syncErr)
 		}
 		elapsed := time.Since(snap.StartTime).Round(time.Second)
-		fmt.Fprintf(out, "Sync complete in %s: %d messages, %d threads synced.\n",
-			elapsed, snap.MessagesFetched, snap.ThreadsFetched)
-		runPostSyncPipelines(ctx, database, cfg, logger)
+		fmt.Fprintf(out, "Sync complete in %s: %d messages synced.\n",
+			elapsed, snap.MessagesFetched)
+		if !syncFlagNoPipelines {
+			runPostSyncPipelines(ctx, database, cfg, logger)
+		}
 		return nil
 	}
 
@@ -339,7 +347,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 			// Skip post-sync pipelines in --progress-json mode: the desktop app
 			// runs them independently via BackgroundTaskManager after onboarding.
-			if !syncFlagProgressJSON {
+			if !syncFlagProgressJSON && !syncFlagNoPipelines {
 				runPostSyncPipelines(ctx, database, cfg, logger)
 			}
 			return nil
@@ -385,15 +393,13 @@ type progressJSON struct {
 	DiscoveryTotalPages int     `json:"discovery_total_pages"`
 	DiscoveryChannels   int     `json:"discovery_channels"`
 	DiscoveryUsers      int     `json:"discovery_users"`
+	SearchAfter         string  `json:"search_after,omitempty"`
 	UserProfilesTotal   int     `json:"user_profiles_total"`
 	UserProfilesDone    int     `json:"user_profiles_done"`
 	MsgChannelsTotal    int     `json:"msg_channels_total"`
 	MsgChannelsDone     int     `json:"msg_channels_done"`
-	MessagesFetched     int     `json:"messages_fetched"`
-	ThreadsTotal        int     `json:"threads_total"`
-	ThreadsDone         int     `json:"threads_done"`
-	ThreadsFetched      int     `json:"threads_fetched"`
-	Error               string  `json:"error,omitempty"`
+	MessagesFetched int    `json:"messages_fetched"`
+	Error           string `json:"error,omitempty"`
 }
 
 func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Config, logger *log.Logger) {
@@ -458,14 +464,12 @@ func printProgressJSON(w io.Writer, snap sync.Snapshot, syncErr error) {
 		DiscoveryTotalPages: snap.DiscoveryTotalPages,
 		DiscoveryChannels:   snap.DiscoveryChannels,
 		DiscoveryUsers:      snap.DiscoveryUsers,
+		SearchAfter:         snap.SearchAfter,
 		UserProfilesTotal:   snap.UserProfilesTotal,
 		UserProfilesDone:    snap.UserProfilesDone,
 		MsgChannelsTotal:    snap.MsgChannelsTotal,
 		MsgChannelsDone:     snap.MsgChannelsDone,
-		MessagesFetched:     snap.MessagesFetched,
-		ThreadsTotal:        snap.ThreadsTotal,
-		ThreadsDone:         snap.ThreadsDone,
-		ThreadsFetched:      snap.ThreadsFetched,
+		MessagesFetched: snap.MessagesFetched,
 	}
 	if syncErr != nil {
 		p.Error = syncErr.Error()

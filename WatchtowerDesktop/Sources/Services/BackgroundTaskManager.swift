@@ -5,6 +5,7 @@ import Foundation
 @Observable
 final class BackgroundTaskManager {
     enum TaskKind: String, CaseIterable, Identifiable {
+        case inbox
         case digests
         case tracks
         case people
@@ -13,6 +14,7 @@ final class BackgroundTaskManager {
 
         var title: String {
             switch self {
+            case .inbox: "Inbox"
             case .digests: "Digests"
             case .tracks: "Tracks"
             case .people: "People Cards"
@@ -21,6 +23,7 @@ final class BackgroundTaskManager {
 
         var icon: String {
             switch self {
+            case .inbox: "tray"
             case .digests: "doc.text.magnifyingglass"
             case .tracks: "binoculars"
             case .people: "person.2.circle"
@@ -29,6 +32,7 @@ final class BackgroundTaskManager {
 
         var cliArguments: [String] {
             switch self {
+            case .inbox: ["inbox", "generate", "--progress-json"]
             case .digests: ["digest", "generate", "--progress-json", "--channels-only"]
             case .tracks: ["tracks", "generate", "--progress-json"]
             case .people: ["people", "generate", "--progress-json"]
@@ -174,6 +178,16 @@ final class BackgroundTaskManager {
         }
     }
 
+    /// Synchronously terminate all running pipeline processes on app quit.
+    /// Must be called on the main thread.
+    nonisolated func terminateProcessesSync() {
+        MainActor.assumeIsolated {
+            for (_, process) in runningProcesses where process.isRunning {
+                process.terminate()
+            }
+        }
+    }
+
     /// Start all background pipelines: digests first, then tracks + people in parallel, then daemon.
     func startPipelines(legacyPeople: Bool = false) {
         // Guard against duplicate calls — only start if no pipeline is active
@@ -185,6 +199,11 @@ final class BackgroundTaskManager {
         }
 
         pipelineTask = Task {
+            // Inbox runs independently — fire and forget, never blocks other pipelines.
+            Task { @MainActor in
+                await self.runTask(.inbox)
+            }
+
             // Phase 1: channel digests (tracks + people depend on digest data)
             await runTask(.digests)
             guard !Task.isCancelled else { return }

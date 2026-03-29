@@ -36,6 +36,9 @@ final class AppState {
     /// Set to navigate to a specific digest from anywhere in the app.
     var pendingDigestID: Int?
 
+    /// Set to navigate to a specific task from anywhere in the app.
+    var pendingTaskID: Int?
+
     /// Watches for new digests and sends notifications.
     private(set) var digestWatcher: DigestWatcher?
 
@@ -76,17 +79,24 @@ final class AppState {
         }
         guard let profile, profile.onboardingDone else { return }
 
+        let language = ConfigService().digestLanguage ?? "English"
+
         // Create conversation and send welcome message
         guard let conv = historyVM.createConversation() else { return }
         chatVM.newChat()
         chatVM.bind(to: conv)
         historyVM.updateTitle(conv.id, title: "Welcome")
-        chatVM.sendWelcomeMessage(profile: profile)
+        chatVM.sendWelcomeMessage(profile: profile, language: language)
     }
 
     func navigateToDigest(_ digestID: Int) {
         pendingDigestID = digestID
         selectedDestination = .digests
+    }
+
+    func navigateToTask(_ taskID: Int) {
+        pendingTaskID = taskID
+        selectedDestination = .tasks
     }
 
     private var isInitializing = false
@@ -95,6 +105,13 @@ final class AppState {
         guard !isInitializing else { return }
         isInitializing = true
         isLoading = true
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.backgroundTaskManager.terminateProcessesSync()
+        }
         Task {
             do {
                 let manager = try await Task.detached {

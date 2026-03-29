@@ -221,18 +221,18 @@ func TestShowTrackDetail(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = database.UpsertTrack(db.Track{
-		Title:         "Test Track",
-		Narrative:     "A test narrative",
-		CurrentStatus: "Under review",
-		Priority:      "high",
-		ChannelIDs:    `["C001"]`,
-		Tags:          `["api"]`,
+		Text:       "Test Track",
+		Context:    "A test narrative",
+		Priority:   "high",
+		Category:   "task",
+		ChannelIDs: `["C001"]`,
+		Tags:       `["api"]`,
 	})
 	require.NoError(t, err)
 
 	track, err := database.GetTrackByID(1)
 	require.NoError(t, err)
-	assert.Equal(t, "Test Track", track.Title)
+	assert.Equal(t, "Test Track", track.Text)
 
 	database.Close()
 }

@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     domain            TEXT NOT NULL DEFAULT '',
     synced_at         TEXT,              -- ISO8601 timestamp of last sync
     search_last_date  TEXT NOT NULL DEFAULT '',  -- YYYY-MM-DD of last search sync
-    current_user_id   TEXT NOT NULL DEFAULT ''   -- Slack user_id of the token owner (from auth.test)
+    current_user_id   TEXT NOT NULL DEFAULT '',  -- Slack user_id of the token owner (from auth.test)
+    inbox_last_processed_ts REAL NOT NULL DEFAULT 0  -- Unix timestamp of last inbox pipeline run
 );
 
 -- Users
@@ -20,11 +21,15 @@ CREATE TABLE IF NOT EXISTS users (
     email         TEXT NOT NULL DEFAULT '',
     is_bot        INTEGER NOT NULL DEFAULT 0,
     is_deleted    INTEGER NOT NULL DEFAULT 0,
+    is_stub       INTEGER NOT NULL DEFAULT 0,
+    is_bot_override INTEGER DEFAULT NULL,  -- NULL=use Slack value, 1=force bot, 0=force not-bot
+    is_muted_for_llm INTEGER NOT NULL DEFAULT 0,  -- 1=exclude this user's messages from AI analysis
     profile_json  TEXT NOT NULL DEFAULT '{}',
     updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);
+CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);
 
 -- Channels
 CREATE TABLE IF NOT EXISTS channels (
@@ -272,37 +277,105 @@ CREATE TABLE IF NOT EXISTS custom_emojis (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
--- Auto-generated informational tracks (v3 — replaces chains + old tracks)
+-- Action-item tracks (hybrid v2 extraction + cross-channel merge)
 CREATE TABLE IF NOT EXISTS tracks (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    title           TEXT NOT NULL,
-    narrative       TEXT NOT NULL DEFAULT '',
-    current_status  TEXT NOT NULL DEFAULT '',
-    participants    TEXT NOT NULL DEFAULT '[]',    -- JSON: [{user_id, name, role}]
-    timeline        TEXT NOT NULL DEFAULT '[]',    -- JSON: [{date, event, channel_id}]
-    key_messages    TEXT NOT NULL DEFAULT '[]',    -- JSON: [{ts, author, text, channel_id}]
-    priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
-    tags            TEXT NOT NULL DEFAULT '[]',    -- JSON: ["tag1","tag2"]
-    channel_ids     TEXT NOT NULL DEFAULT '[]',    -- JSON: ["C1","C2"]
-    source_refs     TEXT NOT NULL DEFAULT '[]',    -- JSON: [{digest_id, topic_id, channel_id, timestamp}]
-    read_at         TEXT,                          -- NULL = unread, ISO8601 = when read
-    has_updates     INTEGER NOT NULL DEFAULT 0,
-    model           TEXT NOT NULL DEFAULT '',
-    input_tokens    INTEGER NOT NULL DEFAULT 0,
-    output_tokens   INTEGER NOT NULL DEFAULT 0,
-    cost_usd        REAL NOT NULL DEFAULT 0,
-    prompt_version  INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignee_user_id    TEXT NOT NULL DEFAULT '',           -- user the track is for
+    text                TEXT NOT NULL,                      -- actionable description
+    context             TEXT NOT NULL DEFAULT '',           -- 3-5 sentence explanation
+    category            TEXT NOT NULL DEFAULT 'task',       -- code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
+    ownership           TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
+    ball_on             TEXT NOT NULL DEFAULT '',           -- user_id of next actor
+    owner_user_id       TEXT NOT NULL DEFAULT '',           -- for delegated: report's user_id
+    requester_name      TEXT NOT NULL DEFAULT '',           -- who made the request
+    requester_user_id   TEXT NOT NULL DEFAULT '',           -- requester's Slack user_id
+    blocking            TEXT NOT NULL DEFAULT '',           -- who/what is blocked
+    decision_summary    TEXT NOT NULL DEFAULT '',           -- how group arrived at decision
+    decision_options    TEXT NOT NULL DEFAULT '[]',         -- JSON: [{option, supporters, pros, cons}]
+    sub_items           TEXT NOT NULL DEFAULT '[]',         -- JSON: [{text, status}]
+    participants        TEXT NOT NULL DEFAULT '[]',         -- JSON: [{name, user_id, stance}]
+    source_refs         TEXT NOT NULL DEFAULT '[]',         -- JSON: [{ts, author, text}] key message quotes
+    tags                TEXT NOT NULL DEFAULT '[]',         -- JSON: ["tag1","tag2"]
+    channel_ids         TEXT NOT NULL DEFAULT '[]',         -- JSON: ["C1","C2"] cross-channel
+    related_digest_ids  TEXT NOT NULL DEFAULT '[]',         -- JSON: [1,2,3]
+    priority            TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+    due_date            REAL,                               -- Unix timestamp if deadline extracted
+    fingerprint         TEXT NOT NULL DEFAULT '[]',         -- JSON: extracted entities for dedup
+    read_at             TEXT,                               -- NULL=unread, ISO8601=when read
+    has_updates         INTEGER NOT NULL DEFAULT 0,
+    model               TEXT NOT NULL DEFAULT '',
+    input_tokens        INTEGER NOT NULL DEFAULT 0,
+    output_tokens       INTEGER NOT NULL DEFAULT 0,
+    cost_usd            REAL NOT NULL DEFAULT 0,
+    prompt_version      INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_priority ON tracks(priority);
 CREATE INDEX IF NOT EXISTS idx_tracks_has_updates ON tracks(has_updates);
 CREATE INDEX IF NOT EXISTS idx_tracks_updated ON tracks(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tracks_ownership ON tracks(ownership);
+CREATE INDEX IF NOT EXISTS idx_tracks_assignee ON tracks(assignee_user_id);
+
+-- Personal action items (tasks)
+CREATE TABLE IF NOT EXISTS tasks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    text            TEXT NOT NULL,
+    intent          TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
+    priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+    ownership       TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
+    ball_on         TEXT NOT NULL DEFAULT '',
+    due_date        TEXT NOT NULL DEFAULT '',
+    snooze_until    TEXT NOT NULL DEFAULT '',
+    blocking        TEXT NOT NULL DEFAULT '',
+    tags            TEXT NOT NULL DEFAULT '[]',
+    sub_items       TEXT NOT NULL DEFAULT '[]',
+    source_type     TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('track','digest','briefing','manual','chat','inbox')),
+    source_id       TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at DESC);
+
+-- Inbox items — messages awaiting user response (@mentions, DMs)
+CREATE TABLE IF NOT EXISTS inbox_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id      TEXT NOT NULL,
+    message_ts      TEXT NOT NULL,
+    thread_ts       TEXT NOT NULL DEFAULT '',
+    sender_user_id  TEXT NOT NULL,
+    trigger_type    TEXT NOT NULL CHECK(trigger_type IN ('mention','dm','thread_reply','reaction')),
+    snippet         TEXT NOT NULL DEFAULT '',
+    context         TEXT NOT NULL DEFAULT '',
+    raw_text        TEXT NOT NULL DEFAULT '',
+    permalink       TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','dismissed','snoozed')),
+    priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+    ai_reason       TEXT NOT NULL DEFAULT '',
+    resolved_reason TEXT NOT NULL DEFAULT '',
+    snooze_until    TEXT NOT NULL DEFAULT '',
+    waiting_user_ids TEXT NOT NULL DEFAULT '',
+    task_id         INTEGER,
+    read_at         TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(channel_id, message_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_priority ON inbox_items(priority);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_updated ON inbox_items(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_sender ON inbox_items(sender_user_id);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_snooze ON inbox_items(snooze_until);
 
 -- Feedback on AI-generated content (thumbs up/down)
 CREATE TABLE IF NOT EXISTS feedback (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing')),
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox')),
     entity_id   TEXT NOT NULL,       -- digest.id, tracks.id, or "digest_id:decision_idx"
     rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),  -- -1 = bad, +1 = good
     comment     TEXT NOT NULL DEFAULT '',
@@ -533,8 +606,9 @@ CREATE TABLE IF NOT EXISTS channel_settings (
 -- Pipeline run history — logs every pipeline invocation (CLI, daemon, desktop)
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    pipeline         TEXT NOT NULL,                          -- 'digests', 'tracks', 'people'
+    pipeline         TEXT NOT NULL,                          -- 'digests', 'tracks', 'people', 'briefing'
     source           TEXT NOT NULL DEFAULT 'cli',            -- 'cli', 'daemon'
+    model            TEXT NOT NULL DEFAULT '',
     status           TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'done', 'error')),
     error_msg        TEXT NOT NULL DEFAULT '',
     items_found      INTEGER NOT NULL DEFAULT 0,

@@ -19,9 +19,11 @@ import (
 )
 
 var (
-	tracksFlagPriority string
-	tracksFlagChannel  string
-	tracksFlagUpdates  bool
+	tracksFlagPriority    string
+	tracksFlagOwnership   string
+	tracksFlagChannel     string
+	tracksFlagUpdates     bool
+	tracksGenFlagProgress bool
 )
 
 var tracksCmd = &cobra.Command{
@@ -57,8 +59,10 @@ func init() {
 	tracksCmd.AddCommand(tracksReadCmd)
 	tracksCmd.AddCommand(tracksGenerateCmd)
 	tracksCmd.Flags().StringVar(&tracksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
+	tracksCmd.Flags().StringVar(&tracksFlagOwnership, "ownership", "", "filter by ownership (mine, delegated, watching)")
 	tracksCmd.Flags().StringVar(&tracksFlagChannel, "channel", "", "filter by channel name")
 	tracksCmd.Flags().BoolVar(&tracksFlagUpdates, "updates", false, "show only tracks with updates")
+	tracksGenerateCmd.Flags().BoolVar(&tracksGenFlagProgress, "progress-json", false, "output progress as JSON lines")
 }
 
 func runTracks(cmd *cobra.Command, args []string) error {
@@ -86,6 +90,10 @@ func runTracks(cmd *cobra.Command, args []string) error {
 	if !validPriorities[tracksFlagPriority] {
 		return fmt.Errorf("invalid --priority %q: must be one of high, medium, low", tracksFlagPriority)
 	}
+	validOwnerships := map[string]bool{"mine": true, "delegated": true, "watching": true, "": true}
+	if !validOwnerships[tracksFlagOwnership] {
+		return fmt.Errorf("invalid --ownership %q: must be one of mine, delegated, watching", tracksFlagOwnership)
+	}
 
 	channelIDFilter := ""
 	if tracksFlagChannel != "" {
@@ -101,6 +109,7 @@ func runTracks(cmd *cobra.Command, args []string) error {
 
 	f := db.TrackFilter{
 		Priority:  tracksFlagPriority,
+		Ownership: tracksFlagOwnership,
 		ChannelID: channelIDFilter,
 	}
 	if tracksFlagUpdates {
@@ -133,10 +142,21 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB) {
 		"low":    ".",
 	}
 
+	ownershipBadge := map[string]string{
+		"mine":      "[mine]",
+		"delegated": "[delegated]",
+		"watching":  "[watching]",
+	}
+
 	for _, item := range items {
 		icon := priorityIcon[item.Priority]
 		if icon == "" {
 			icon = "-"
+		}
+
+		badge := ownershipBadge[item.Ownership]
+		if badge == "" {
+			badge = "[" + item.Ownership + "]"
 		}
 
 		updateBadge := ""
@@ -149,11 +169,12 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB) {
 			readBadge = " *"
 		}
 
-		fmt.Fprintf(w, "%s #%d **%s**%s%s\n", icon, item.ID, item.Title, updateBadge, readBadge)
-
-		if item.CurrentStatus != "" {
-			fmt.Fprintf(w, "   Status: %s\n", item.CurrentStatus)
+		catLabel := ""
+		if item.Category != "" {
+			catLabel = " (" + item.Category + ")"
 		}
+
+		fmt.Fprintf(w, "%s #%d %s%s **%s**%s%s\n", icon, item.ID, badge, catLabel, item.Text, updateBadge, readBadge)
 
 		// Show channels
 		var channelIDs []string
@@ -169,15 +190,9 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB) {
 			fmt.Fprintf(w, "   Channels: %s\n", strings.Join(names, ", "))
 		}
 
-		// Tags
-		var tags []string
-		if json.Unmarshal([]byte(item.Tags), &tags) == nil && len(tags) > 0 {
-			fmt.Fprintf(w, "   Tags: %s\n", strings.Join(tags, ", "))
-		}
-
 		// Age
-		if item.CreatedAt != "" {
-			if t, err := time.Parse("2006-01-02T15:04:05Z", item.CreatedAt); err == nil {
+		if item.UpdatedAt != "" {
+			if t, err := time.Parse("2006-01-02T15:04:05Z", item.UpdatedAt); err == nil {
 				fmt.Fprintf(w, "   %s\n", humanize.Time(t))
 			}
 		}
@@ -203,15 +218,25 @@ func runTracksShow(cmd *cobra.Command, args []string) error {
 	}
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Track #%d: %s\n", track.ID, track.Title)
-	fmt.Fprintf(out, "Priority: %s | Updated: %s\n", track.Priority, track.UpdatedAt)
+	fmt.Fprintf(out, "Track #%d: %s\n", track.ID, track.Text)
+	fmt.Fprintf(out, "Priority: %s | Category: %s | Ownership: %s | Updated: %s\n",
+		track.Priority, track.Category, track.Ownership, track.UpdatedAt)
 
-	if track.CurrentStatus != "" {
-		fmt.Fprintf(out, "\nCurrent Status: %s\n", track.CurrentStatus)
+	if track.Context != "" {
+		fmt.Fprintf(out, "\nContext:\n%s\n", track.Context)
 	}
 
-	if track.Narrative != "" {
-		fmt.Fprintf(out, "\nNarrative:\n%s\n", track.Narrative)
+	if track.RequesterName != "" {
+		fmt.Fprintf(out, "\nRequester: %s\n", track.RequesterName)
+	}
+
+	if track.Blocking != "" {
+		fmt.Fprintf(out, "Blocking: %s\n", track.Blocking)
+	}
+
+	if track.DueDate != 0 {
+		dueTime := time.Unix(int64(track.DueDate), 0)
+		fmt.Fprintf(out, "Due: %s\n", dueTime.Format("2006-01-02"))
 	}
 
 	// Participants
@@ -219,60 +244,95 @@ func runTracksShow(cmd *cobra.Command, args []string) error {
 		type participant struct {
 			UserID string `json:"user_id"`
 			Name   string `json:"name"`
-			Role   string `json:"role"`
+			Stance string `json:"stance"`
 		}
 		var parts []participant
 		if json.Unmarshal([]byte(track.Participants), &parts) == nil && len(parts) > 0 {
 			fmt.Fprintf(out, "\nParticipants:\n")
 			for _, p := range parts {
-				fmt.Fprintf(out, "  - %s (%s)\n", p.Name, p.Role)
-			}
-		}
-	}
-
-	// Timeline
-	if track.Timeline != "" && track.Timeline != "[]" {
-		type event struct {
-			Date      string `json:"date"`
-			Event     string `json:"event"`
-			ChannelID string `json:"channel_id"`
-		}
-		var events []event
-		if json.Unmarshal([]byte(track.Timeline), &events) == nil && len(events) > 0 {
-			fmt.Fprintf(out, "\nTimeline:\n")
-			for _, e := range events {
-				chName := e.ChannelID
-				if ch, chErr := database.GetChannelByID(e.ChannelID); chErr == nil && ch != nil && ch.Name != "" {
-					chName = "#" + ch.Name
-				}
-				if chName != "" && chName != e.ChannelID {
-					fmt.Fprintf(out, "  %s  %s — %s\n", e.Date, chName, e.Event)
+				if p.Stance != "" {
+					fmt.Fprintf(out, "  - %s (%s)\n", p.Name, p.Stance)
 				} else {
-					fmt.Fprintf(out, "  %s  %s\n", e.Date, e.Event)
+					fmt.Fprintf(out, "  - %s\n", p.Name)
 				}
 			}
 		}
 	}
 
-	// Key Messages
-	if track.KeyMessages != "" && track.KeyMessages != "[]" {
-		type keyMsg struct {
+	// Source refs (key message quotes)
+	if track.SourceRefs != "" && track.SourceRefs != "[]" {
+		type sourceRef struct {
 			TS        string `json:"ts"`
 			Author    string `json:"author"`
 			Text      string `json:"text"`
 			ChannelID string `json:"channel_id"`
+			DigestID  int    `json:"digest_id"`
+			TopicID   int    `json:"topic_id"`
 		}
-		var msgs []keyMsg
-		if json.Unmarshal([]byte(track.KeyMessages), &msgs) == nil && len(msgs) > 0 {
-			fmt.Fprintf(out, "\nKey Messages:\n")
-			for _, m := range msgs {
-				chName := m.ChannelID
-				if ch, chErr := database.GetChannelByID(m.ChannelID); chErr == nil && ch != nil && ch.Name != "" {
-					chName = "#" + ch.Name
+		var refs []sourceRef
+		if json.Unmarshal([]byte(track.SourceRefs), &refs) == nil && len(refs) > 0 {
+			fmt.Fprintf(out, "\nSource Refs:\n")
+			for _, r := range refs {
+				if r.Author != "" && r.Text != "" {
+					chName := r.ChannelID
+					if ch, chErr := database.GetChannelByID(r.ChannelID); chErr == nil && ch != nil && ch.Name != "" {
+						chName = "#" + ch.Name
+					}
+					fmt.Fprintf(out, "  [%s] %s: %s\n", chName, r.Author, r.Text)
+				} else if r.DigestID > 0 {
+					fmt.Fprintf(out, "  digest=%d topic=%d channel=%s\n", r.DigestID, r.TopicID, r.ChannelID)
 				}
-				fmt.Fprintf(out, "  [%s] %s: %s\n", chName, m.Author, m.Text)
 			}
 		}
+	}
+
+	// Sub-items
+	if track.SubItems != "" && track.SubItems != "[]" {
+		type subItem struct {
+			Text   string `json:"text"`
+			Status string `json:"status"`
+		}
+		var subs []subItem
+		if json.Unmarshal([]byte(track.SubItems), &subs) == nil && len(subs) > 0 {
+			fmt.Fprintf(out, "\nSub-items:\n")
+			for _, s := range subs {
+				marker := "[ ]"
+				if s.Status == "done" {
+					marker = "[x]"
+				}
+				fmt.Fprintf(out, "  %s %s\n", marker, s.Text)
+			}
+		}
+	}
+
+	// Decision options
+	if track.DecisionOptions != "" && track.DecisionOptions != "[]" {
+		type decOption struct {
+			Option     string   `json:"option"`
+			Supporters []string `json:"supporters"`
+			Pros       string   `json:"pros"`
+			Cons       string   `json:"cons"`
+		}
+		var opts []decOption
+		if json.Unmarshal([]byte(track.DecisionOptions), &opts) == nil && len(opts) > 0 {
+			fmt.Fprintf(out, "\nDecision Options:\n")
+			for _, o := range opts {
+				fmt.Fprintf(out, "  - %s\n", o.Option)
+				if len(o.Supporters) > 0 {
+					fmt.Fprintf(out, "    Supporters: %s\n", strings.Join(o.Supporters, ", "))
+				}
+				if o.Pros != "" {
+					fmt.Fprintf(out, "    Pros: %s\n", o.Pros)
+				}
+				if o.Cons != "" {
+					fmt.Fprintf(out, "    Cons: %s\n", o.Cons)
+				}
+			}
+		}
+	}
+
+	if track.DecisionSummary != "" {
+		fmt.Fprintf(out, "\nDecision Summary: %s\n", track.DecisionSummary)
 	}
 
 	// Channels
@@ -330,6 +390,13 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
+	if cfg.Digest.Model == "" {
+		cfg.Digest.Model = config.DefaultDigestModel
+	}
+	if err := validateModel(cfg); err != nil {
+		return err
+	}
+
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
@@ -343,9 +410,100 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 	pipe := tracks.New(database, cfg, gen, logger)
 
 	out := cmd.OutOrStdout()
+
+	if tracksGenFlagProgress {
+		type pj struct {
+			Pipeline         string  `json:"pipeline"`
+			Done             int     `json:"done"`
+			Total            int     `json:"total"`
+			Status           string  `json:"status,omitempty"`
+			InputTokens      int     `json:"input_tokens"`
+			OutputTokens     int     `json:"output_tokens"`
+			CostUSD          float64 `json:"cost_usd"`
+			Error            string  `json:"error,omitempty"`
+			Finished         bool    `json:"finished"`
+			ItemsFound       int     `json:"items_found"`
+			StepDurationSec  float64 `json:"step_duration_seconds,omitempty"`
+			StepInputTokens  int     `json:"step_input_tokens,omitempty"`
+			StepOutputTokens int     `json:"step_output_tokens,omitempty"`
+			StepCostUSD      float64 `json:"step_cost_usd,omitempty"`
+			TotalAPITokens   int     `json:"total_api_tokens,omitempty"`
+		}
+		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
+
+		runID, _ := database.CreatePipelineRun("tracks", "cli", cfg.Digest.Model)
+
+		pipe.OnProgress = func(done, total int, status string) {
+			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+			p := pj{Pipeline: "tracks", Done: done, Total: total, Status: status, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost, TotalAPITokens: totalAPI}
+			if pipe.LastStepDurationSeconds > 0 {
+				p.StepDurationSec = pipe.LastStepDurationSeconds
+			}
+			p.StepInputTokens = pipe.LastStepInputTokens
+			p.StepOutputTokens = pipe.LastStepOutputTokens
+			p.StepCostUSD = pipe.LastStepCostUSD
+			emit(p)
+
+			// Log step to DB.
+			if runID > 0 && p.StepDurationSec > 0 {
+				_ = database.InsertPipelineStep(db.PipelineStep{
+					RunID: runID, Step: done, Total: total, Status: status,
+					InputTokens:     p.StepInputTokens,
+					OutputTokens:    p.StepOutputTokens,
+					CostUSD:         p.StepCostUSD,
+					TotalAPITokens:  totalAPI,
+					DurationSeconds: p.StepDurationSec,
+				})
+			}
+		}
+
+		created, updated, err := pipe.Run(cmd.Context())
+		inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+			emit(pj{Pipeline: "tracks", Finished: true, Error: errMsg, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost, TotalAPITokens: totalAPI})
+		} else {
+			emit(pj{Pipeline: "tracks", Finished: true, ItemsFound: created + updated, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost, TotalAPITokens: totalAPI})
+		}
+
+		if runID > 0 {
+			var pFrom, pTo *float64
+			if pipe.LastFrom > 0 {
+				pFrom = &pipe.LastFrom
+			}
+			if pipe.LastTo > 0 {
+				pTo = &pipe.LastTo
+			}
+			_ = database.CompletePipelineRun(runID, created+updated, inTok, outTok, cost, totalAPI, pFrom, pTo, errMsg)
+		}
+
+		if err != nil {
+			return fmt.Errorf("tracks pipeline: %w", err)
+		}
+		return nil
+	}
+
 	fmt.Fprintln(out, "Running tracks pipeline...")
 
+	runID, _ := database.CreatePipelineRun("tracks", "cli", cfg.Digest.Model)
+
 	created, updated, err := pipe.Run(cmd.Context())
+	inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
+	if runID > 0 {
+		var pFrom, pTo *float64
+		if pipe.LastFrom > 0 {
+			pFrom = &pipe.LastFrom
+		}
+		if pipe.LastTo > 0 {
+			pTo = &pipe.LastTo
+		}
+		_ = database.CompletePipelineRun(runID, created+updated, inTok, outTok, cost, totalAPI, pFrom, pTo, errMsg)
+	}
 	if err != nil {
 		return fmt.Errorf("tracks pipeline: %w", err)
 	}

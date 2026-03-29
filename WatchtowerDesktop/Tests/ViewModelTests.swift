@@ -683,8 +683,8 @@ final class TracksViewModelTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db, domain: "acme")
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
-            try TestDatabase.insertTrack(db, title: "Fix the bug", priority: "high", hasUpdates: true)
-            try TestDatabase.insertTrack(db, title: "Write docs", priority: "low")
+            try TestDatabase.insertTrack(db, text: "Fix the bug", priority: "high", hasUpdates: true)
+            try TestDatabase.insertTrack(db, text: "Write docs", priority: "low")
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
@@ -694,8 +694,8 @@ final class TracksViewModelTests: XCTestCase {
         // Has updates goes to updatedTracks, rest to allTracks
         XCTAssertEqual(vm.updatedTracks.count, 1)
         XCTAssertEqual(vm.allTracks.count, 1)
-        XCTAssertEqual(vm.updatedTracks[0].title, "Fix the bug")
-        XCTAssertEqual(vm.allTracks[0].title, "Write docs")
+        XCTAssertEqual(vm.updatedTracks[0].text, "Fix the bug")
+        XCTAssertEqual(vm.allTracks[0].text, "Write docs")
         XCTAssertEqual(vm.totalCount, 2)
         XCTAssertEqual(vm.updatedCount, 1)
         XCTAssertEqual(vm.workspaceDomain, "acme")
@@ -718,8 +718,8 @@ final class TracksViewModelTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
-            try TestDatabase.insertTrack(db, title: "High", priority: "high")
-            try TestDatabase.insertTrack(db, title: "Low", priority: "low")
+            try TestDatabase.insertTrack(db, text: "High", priority: "high")
+            try TestDatabase.insertTrack(db, text: "Low", priority: "low")
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
@@ -727,7 +727,7 @@ final class TracksViewModelTests: XCTestCase {
         vm.load()
 
         XCTAssertEqual(vm.allTracks.count, 1)
-        XCTAssertEqual(vm.allTracks[0].title, "High")
+        XCTAssertEqual(vm.allTracks[0].text, "High")
     }
 
     @MainActor
@@ -735,7 +735,7 @@ final class TracksViewModelTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
-            try TestDatabase.insertTrack(db, title: "Fix it", hasUpdates: true)
+            try TestDatabase.insertTrack(db, text: "Fix it", hasUpdates: true)
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
@@ -780,8 +780,8 @@ final class TracksViewModelTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
-            try TestDatabase.insertTrack(db, title: "Task 1", channelIDs: #"["C001"]"#)
-            try TestDatabase.insertTrack(db, title: "Task 2", channelIDs: #"["C002"]"#)
+            try TestDatabase.insertTrack(db, text: "Task 1", channelIDs: #"["C001"]"#)
+            try TestDatabase.insertTrack(db, text: "Task 2", channelIDs: #"["C002"]"#)
         }
 
         let vm = TracksViewModel(dbManager: dbManager)

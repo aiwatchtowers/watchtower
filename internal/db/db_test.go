@@ -81,7 +81,7 @@ func TestMigrationSetsUserVersion(t *testing.T) {
 
 	v, err := db.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 }
 
 func TestMigrationIdempotent(t *testing.T) {
@@ -526,19 +526,19 @@ func TestMigrationV19ActionItemsToTracks(t *testing.T) {
 	require.NoError(t, err)
 	db1.Close()
 
-	// Reopen — migrations v19..v43 should run.
+	// Reopen — migrations v19..v45 should run.
 	db2, err := Open(dbPath)
 	require.NoError(t, err)
 	defer db2.Close()
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 
-	// v43 drops old tracks/track_history/chains and recreates tracks with new schema.
-	// Verify new tracks table exists with v3 columns.
-	_, err = db2.Exec(`INSERT INTO tracks (title, priority) VALUES ('test track', 'high')`)
-	require.NoError(t, err, "new tracks table should accept v3 inserts")
+	// v45 drops old tracks and recreates with hybrid v2 schema.
+	// Verify new tracks table exists with v2 columns.
+	_, err = db2.Exec(`INSERT INTO tracks (text, priority) VALUES ('test track', 'high')`)
+	require.NoError(t, err, "new tracks table should accept v2 inserts")
 
 	// Verify track_history no longer exists (dropped by v43).
 	var cnt int

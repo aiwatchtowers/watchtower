@@ -152,14 +152,14 @@ func TestRunTracks_PriorityFilter(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = database.UpsertTrack(db.Track{
-		Title:      "High priority task",
+		Text:       "High priority task",
 		Priority:   "high",
 		ChannelIDs: `["C001"]`,
 	})
 	require.NoError(t, err)
 
 	_, err = database.UpsertTrack(db.Track{
-		Title:      "Low priority task",
+		Text:       "Low priority task",
 		Priority:   "low",
 		ChannelIDs: `["C001"]`,
 	})
@@ -169,6 +169,7 @@ func TestRunTracks_PriorityFilter(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tracksCmd.SetOut(buf)
 	tracksFlagPriority = "high"
+	tracksFlagOwnership = ""
 	tracksFlagChannel = ""
 	tracksFlagUpdates = false
 	defer func() { tracksFlagPriority = "" }()
@@ -187,7 +188,7 @@ func TestRunTracks_ChannelFilterSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = database.UpsertTrack(db.Track{
-		Title:      "General task",
+		Text:       "General task",
 		Priority:   "medium",
 		ChannelIDs: `["C001"]`,
 	})
@@ -218,8 +219,10 @@ func TestPrintTracks_ChannelLookup(t *testing.T) {
 	tracks := []db.Track{
 		{
 			ID:         1,
-			Title:      "Task without channel name",
+			Text:       "Task without channel name",
 			Priority:   "medium",
+			Ownership:  "mine",
+			Category:   "task",
 			ChannelIDs: `["C001"]`,
 		},
 	}

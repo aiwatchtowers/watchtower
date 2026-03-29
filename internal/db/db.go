@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 43"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 52"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -1964,6 +1964,471 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migration v43 re-enable FK: %w", err)
 		}
 		version = 43
+	}
+
+	if version < 44 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v44: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Create tasks table.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS tasks (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			text            TEXT NOT NULL,
+			intent          TEXT NOT NULL DEFAULT '',
+			status          TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
+			priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+			ownership       TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
+			ball_on         TEXT NOT NULL DEFAULT '',
+			due_date        TEXT NOT NULL DEFAULT '',
+			snooze_until    TEXT NOT NULL DEFAULT '',
+			blocking        TEXT NOT NULL DEFAULT '',
+			tags            TEXT NOT NULL DEFAULT '[]',
+			sub_items       TEXT NOT NULL DEFAULT '[]',
+			source_type     TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('track','digest','briefing','manual','chat')),
+			source_id       TEXT NOT NULL DEFAULT '',
+			created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v44 create tasks: %w", err)
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source_type, source_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at DESC)`,
+		} {
+			if _, err := tx.Exec(idx); err != nil {
+				return fmt.Errorf("migration v44 index: %w", err)
+			}
+		}
+
+		// Expand feedback entity_type CHECK to include 'task'.
+		if hasColumn(tx, "feedback", "id") {
+			if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS feedback_new (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task')),
+				entity_id   TEXT NOT NULL,
+				rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
+				comment     TEXT NOT NULL DEFAULT '',
+				created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			)`); err != nil {
+				return fmt.Errorf("migration v44 create feedback_new: %w", err)
+			}
+			if _, err := tx.Exec(`INSERT INTO feedback_new SELECT * FROM feedback`); err != nil {
+				return fmt.Errorf("migration v44 copy feedback: %w", err)
+			}
+			if _, err := tx.Exec(`DROP TABLE feedback`); err != nil {
+				return fmt.Errorf("migration v44 drop feedback: %w", err)
+			}
+			if _, err := tx.Exec(`ALTER TABLE feedback_new RENAME TO feedback`); err != nil {
+				return fmt.Errorf("migration v44 rename feedback: %w", err)
+			}
+			if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_feedback_entity ON feedback(entity_type, entity_id)`); err != nil {
+				return fmt.Errorf("migration v44 index feedback entity: %w", err)
+			}
+			if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(entity_type, rating)`); err != nil {
+				return fmt.Errorf("migration v44 index feedback rating: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 44"); err != nil {
+			return fmt.Errorf("setting schema version v44: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v44: %w", err)
+		}
+		version = 44
+	}
+
+	if version < 45 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v45: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Drop old tracks table (v3 narrative-based) and recreate as hybrid v2 action-item tracks.
+		if _, err := tx.Exec(`DROP TABLE IF EXISTS tracks`); err != nil {
+			return fmt.Errorf("migration v45 drop tracks: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS tracks (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			assignee_user_id    TEXT NOT NULL DEFAULT '',
+			text                TEXT NOT NULL,
+			context             TEXT NOT NULL DEFAULT '',
+			category            TEXT NOT NULL DEFAULT 'task',
+			ownership           TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
+			ball_on             TEXT NOT NULL DEFAULT '',
+			owner_user_id       TEXT NOT NULL DEFAULT '',
+			requester_name      TEXT NOT NULL DEFAULT '',
+			requester_user_id   TEXT NOT NULL DEFAULT '',
+			blocking            TEXT NOT NULL DEFAULT '',
+			decision_summary    TEXT NOT NULL DEFAULT '',
+			decision_options    TEXT NOT NULL DEFAULT '[]',
+			sub_items           TEXT NOT NULL DEFAULT '[]',
+			participants        TEXT NOT NULL DEFAULT '[]',
+			source_refs         TEXT NOT NULL DEFAULT '[]',
+			tags                TEXT NOT NULL DEFAULT '[]',
+			channel_ids         TEXT NOT NULL DEFAULT '[]',
+			related_digest_ids  TEXT NOT NULL DEFAULT '[]',
+			priority            TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+			due_date            REAL,
+			fingerprint         TEXT NOT NULL DEFAULT '[]',
+			read_at             TEXT,
+			has_updates         INTEGER NOT NULL DEFAULT 0,
+			model               TEXT NOT NULL DEFAULT '',
+			input_tokens        INTEGER NOT NULL DEFAULT 0,
+			output_tokens       INTEGER NOT NULL DEFAULT 0,
+			cost_usd            REAL NOT NULL DEFAULT 0,
+			prompt_version      INTEGER NOT NULL DEFAULT 0,
+			created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v45 create tracks: %w", err)
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_tracks_priority ON tracks(priority)`,
+			`CREATE INDEX IF NOT EXISTS idx_tracks_has_updates ON tracks(has_updates)`,
+			`CREATE INDEX IF NOT EXISTS idx_tracks_updated ON tracks(updated_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_tracks_ownership ON tracks(ownership)`,
+			`CREATE INDEX IF NOT EXISTS idx_tracks_assignee ON tracks(assignee_user_id)`,
+		} {
+			if _, err := tx.Exec(idx); err != nil {
+				return fmt.Errorf("migration v45 index: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 45"); err != nil {
+			return fmt.Errorf("setting schema version v45: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v45: %w", err)
+		}
+		version = 45
+	}
+
+	if version < 46 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v46: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Add inbox_last_processed_ts to workspace.
+		if !hasColumn(tx, "workspace", "inbox_last_processed_ts") {
+			if _, err := tx.Exec(`ALTER TABLE workspace ADD COLUMN inbox_last_processed_ts REAL NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("migration v46 add workspace column: %w", err)
+			}
+		}
+
+		// Create inbox_items table.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS inbox_items (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id      TEXT NOT NULL,
+			message_ts      TEXT NOT NULL,
+			thread_ts       TEXT NOT NULL DEFAULT '',
+			sender_user_id  TEXT NOT NULL,
+			trigger_type    TEXT NOT NULL CHECK(trigger_type IN ('mention','dm')),
+			snippet         TEXT NOT NULL DEFAULT '',
+			permalink       TEXT NOT NULL DEFAULT '',
+			status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','dismissed','snoozed')),
+			priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+			ai_reason       TEXT NOT NULL DEFAULT '',
+			resolved_reason TEXT NOT NULL DEFAULT '',
+			snooze_until    TEXT NOT NULL DEFAULT '',
+			task_id         INTEGER,
+			read_at         TEXT,
+			created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			UNIQUE(channel_id, message_ts)
+		)`); err != nil {
+			return fmt.Errorf("migration v46 create inbox_items: %w", err)
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status)`,
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_priority ON inbox_items(priority)`,
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_updated ON inbox_items(updated_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_sender ON inbox_items(sender_user_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_snooze ON inbox_items(snooze_until)`,
+		} {
+			if _, err := tx.Exec(idx); err != nil {
+				return fmt.Errorf("migration v46 index: %w", err)
+			}
+		}
+
+		// Recreate feedback with expanded CHECK to include 'inbox'.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS feedback_new (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox')),
+			entity_id   TEXT NOT NULL,
+			rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
+			comment     TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v46 create feedback_new: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO feedback_new SELECT * FROM feedback`); err != nil {
+			return fmt.Errorf("migration v46 copy feedback: %w", err)
+		}
+		if _, err := tx.Exec(`DROP TABLE feedback`); err != nil {
+			return fmt.Errorf("migration v46 drop feedback: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE feedback_new RENAME TO feedback`); err != nil {
+			return fmt.Errorf("migration v46 rename feedback: %w", err)
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_feedback_entity ON feedback(entity_type, entity_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(entity_type, rating)`,
+		} {
+			if _, err := tx.Exec(idx); err != nil {
+				return fmt.Errorf("migration v46 feedback index: %w", err)
+			}
+		}
+
+		// Recreate tasks with expanded source_type CHECK to include 'inbox'.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS tasks_new (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			text            TEXT NOT NULL,
+			intent          TEXT NOT NULL DEFAULT '',
+			status          TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
+			priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+			ownership       TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
+			ball_on         TEXT NOT NULL DEFAULT '',
+			due_date        TEXT NOT NULL DEFAULT '',
+			snooze_until    TEXT NOT NULL DEFAULT '',
+			blocking        TEXT NOT NULL DEFAULT '',
+			tags            TEXT NOT NULL DEFAULT '[]',
+			sub_items       TEXT NOT NULL DEFAULT '[]',
+			source_type     TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('track','digest','briefing','manual','chat','inbox')),
+			source_id       TEXT NOT NULL DEFAULT '',
+			created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v46 create tasks_new: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO tasks_new SELECT * FROM tasks`); err != nil {
+			return fmt.Errorf("migration v46 copy tasks: %w", err)
+		}
+		if _, err := tx.Exec(`DROP TABLE tasks`); err != nil {
+			return fmt.Errorf("migration v46 drop tasks: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE tasks_new RENAME TO tasks`); err != nil {
+			return fmt.Errorf("migration v46 rename tasks: %w", err)
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source_type, source_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at DESC)`,
+		} {
+			if _, err := tx.Exec(idx); err != nil {
+				return fmt.Errorf("migration v46 tasks index: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 46"); err != nil {
+			return fmt.Errorf("setting schema version v46: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v46: %w", err)
+		}
+		version = 46
+	}
+
+	if version < 47 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v47 tx: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "pipeline_runs", "model") {
+			if _, err := tx.Exec(`ALTER TABLE pipeline_runs ADD COLUMN model TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration v47 add model to pipeline_runs: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 47"); err != nil {
+			return fmt.Errorf("setting schema version v47: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v47: %w", err)
+		}
+		version = 47
+	}
+
+	if version < 48 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v48: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Recreate inbox_items with expanded trigger_type CHECK and new columns.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS inbox_items_new (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id      TEXT NOT NULL,
+			message_ts      TEXT NOT NULL,
+			thread_ts       TEXT NOT NULL DEFAULT '',
+			sender_user_id  TEXT NOT NULL,
+			trigger_type    TEXT NOT NULL CHECK(trigger_type IN ('mention','dm','thread_reply','reaction')),
+			snippet         TEXT NOT NULL DEFAULT '',
+			context         TEXT NOT NULL DEFAULT '',
+			raw_text        TEXT NOT NULL DEFAULT '',
+			permalink       TEXT NOT NULL DEFAULT '',
+			status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','dismissed','snoozed')),
+			priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+			ai_reason       TEXT NOT NULL DEFAULT '',
+			resolved_reason TEXT NOT NULL DEFAULT '',
+			snooze_until    TEXT NOT NULL DEFAULT '',
+			task_id         INTEGER,
+			read_at         TEXT,
+			created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			UNIQUE(channel_id, message_ts)
+		)`); err != nil {
+			return fmt.Errorf("v48: create inbox_items_new: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO inbox_items_new (id, channel_id, message_ts, thread_ts, sender_user_id,
+			trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason,
+			snooze_until, task_id, read_at, created_at, updated_at)
+			SELECT id, channel_id, message_ts, thread_ts, sender_user_id,
+			trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason,
+			snooze_until, task_id, read_at, created_at, updated_at
+			FROM inbox_items`); err != nil {
+			return fmt.Errorf("v48: copy inbox_items: %w", err)
+		}
+		if _, err := tx.Exec(`DROP TABLE inbox_items`); err != nil {
+			return fmt.Errorf("v48: drop inbox_items: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE inbox_items_new RENAME TO inbox_items`); err != nil {
+			return fmt.Errorf("v48: rename inbox_items: %w", err)
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status)`,
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_priority ON inbox_items(priority)`,
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_updated ON inbox_items(updated_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_sender ON inbox_items(sender_user_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_inbox_items_snooze ON inbox_items(snooze_until)`,
+		} {
+			if _, err := tx.Exec(idx); err != nil {
+				return fmt.Errorf("v48: inbox index: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 48"); err != nil {
+			return fmt.Errorf("v48: set version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v48: %w", err)
+		}
+		version = 48
+	}
+
+	if version < 49 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v49: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "users", "is_stub") {
+			if _, err := tx.Exec(`ALTER TABLE users ADD COLUMN is_stub INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("migration v49 add is_stub: %w", err)
+			}
+		}
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub)`); err != nil {
+			return fmt.Errorf("migration v49 index is_stub: %w", err)
+		}
+		// Mark existing users with empty real_name and profile as stubs for backfill.
+		if _, err := tx.Exec(`UPDATE users SET is_stub = 1 WHERE real_name = '' AND profile_json = '{}'`); err != nil {
+			return fmt.Errorf("migration v49 mark stubs: %w", err)
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 49"); err != nil {
+			return fmt.Errorf("setting schema version v49: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v49: %w", err)
+		}
+		version = 49
+	}
+
+	if version < 50 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v50: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "inbox_items", "waiting_user_ids") {
+			if _, err := tx.Exec(`ALTER TABLE inbox_items ADD COLUMN waiting_user_ids TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration v50 add waiting_user_ids: %w", err)
+			}
+		}
+
+		// Backfill: set waiting_user_ids from sender_user_id for existing items.
+		if _, err := tx.Exec(`UPDATE inbox_items SET waiting_user_ids = '["' || sender_user_id || '"]'
+			WHERE waiting_user_ids = '' AND sender_user_id != ''`); err != nil {
+			return fmt.Errorf("migration v50 backfill waiting_user_ids: %w", err)
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 50"); err != nil {
+			return fmt.Errorf("setting schema version v50: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v50: %w", err)
+		}
+		version = 50
+	}
+
+	if version < 51 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v51 tx: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "users", "is_bot_override") {
+			if _, err := tx.Exec(`ALTER TABLE users ADD COLUMN is_bot_override INTEGER DEFAULT NULL`); err != nil {
+				return fmt.Errorf("migration v51 add is_bot_override: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 51"); err != nil {
+			return fmt.Errorf("setting schema version v51: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v51: %w", err)
+		}
+		version = 51
+	}
+
+	if version < 52 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v52: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "users", "is_muted_for_llm") {
+			if _, err := tx.Exec(`ALTER TABLE users ADD COLUMN is_muted_for_llm INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("migration v52 add is_muted_for_llm to users: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 52"); err != nil {
+			return fmt.Errorf("setting schema version v52: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v52: %w", err)
+		}
+		version = 52
 	}
 
 	_ = version // silence unused variable if this is the last migration

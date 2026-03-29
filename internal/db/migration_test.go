@@ -38,7 +38,7 @@ func TestHasColumn_WithTransaction(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback()
 
-	assert.True(t, hasColumn(tx, "tracks", "title"))
+	assert.True(t, hasColumn(tx, "tracks", "text"))
 	assert.True(t, hasColumn(tx, "tracks", "priority"))
 	assert.False(t, hasColumn(tx, "tracks", "nonexistent"))
 }
@@ -90,7 +90,7 @@ func TestMigrationFromV20_CreatesChains(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 
 	// Verify chains/chain_refs tables are DROPPED by v43
 	var n string
@@ -133,7 +133,7 @@ func TestMigrationFromV21_ChainsAndInteractions(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 
 	// After v43: chains/chain_refs dropped, user_interactions should exist
 	var n string
@@ -166,7 +166,7 @@ func TestMigrationFromV22_UserInteractions(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 
 	// Insert and query to verify table structure
 	err = db2.UpsertUserInteractions([]UserInteraction{
@@ -205,16 +205,16 @@ func TestMigrationIdempotent_V21HasColumn(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 
-	// v43 creates new tracks table — should be usable
-	_, err = db2.UpsertTrack(Track{Title: "new track", Priority: "high"})
+	// v45 creates new tracks table — should be usable
+	_, err = db2.UpsertTrack(Track{Text: "new track", Priority: "high"})
 	require.NoError(t, err)
 
 	tracks, err := db2.GetAllActiveTracks()
 	require.NoError(t, err)
 	require.Len(t, tracks, 1)
-	assert.Equal(t, "new track", tracks[0].Title)
+	assert.Equal(t, "new track", tracks[0].Text)
 }
 
 // TestMigrationIdempotent_V22HasColumn tests that v22 migration is idempotent
@@ -236,7 +236,7 @@ func TestMigrationIdempotent_V22HasColumn(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 
 	// After v43: chains table should not exist
 	var n string
@@ -269,7 +269,7 @@ func TestMigrationIdempotent_V23HasColumn(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 
 	// Data should survive
 	interactions, err := db2.GetUserInteractions("U1", 1000, 2000)
@@ -284,7 +284,7 @@ func TestUserVersion(t *testing.T) {
 
 	v, err := db.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 }
 
 // TestUserVersion_CustomValue verifies UserVersion after manual set.
@@ -532,7 +532,7 @@ PRAGMA user_version = 1;
 	// Verify schema version is now 23
 	v, err := db.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 43, v)
+	assert.Equal(t, 52, v)
 
 	// Verify data survived all migrations
 	var wsName string
@@ -585,10 +585,9 @@ PRAGMA user_version = 1;
 	})
 	require.NoError(t, err)
 
-	// V43 migration: old tracks table dropped, new v3 tracks table created.
-	// Chains, chain_refs, track_history tables are also dropped by v43.
+	// V45 migration: old tracks table dropped, new hybrid v2 tracks table created.
 	trackID, err := db.UpsertTrack(Track{
-		Title: "test track", Priority: "high",
+		Text: "test track", Priority: "high",
 		ChannelIDs: `["C1"]`, SourceRefs: `[]`, Tags: `[]`,
 	})
 	require.NoError(t, err)
@@ -596,7 +595,7 @@ PRAGMA user_version = 1;
 
 	track, err := db.GetTrackByID(int(trackID))
 	require.NoError(t, err)
-	assert.Equal(t, "test track", track.Title)
+	assert.Equal(t, "test track", track.Text)
 	assert.Equal(t, "high", track.Priority)
 
 	// V20 migration: user_profile table should exist

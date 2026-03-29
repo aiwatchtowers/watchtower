@@ -291,6 +291,10 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		cfg.Digest.Model = config.DefaultDigestModel
 	}
 
+	if err := validateModel(cfg); err != nil {
+		return err
+	}
+
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
@@ -346,7 +350,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
-		runID, _ := database.CreatePipelineRun("digests", "cli")
+		runID, _ := database.CreatePipelineRun("digests", "cli", cfg.Digest.Model)
 
 		pipe.OnProgress = func(done, total int, status string) {
 			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
@@ -393,22 +397,18 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 
 		// Auto-mark digests as read based on Slack read cursors
 		// (important for onboarding where digest generate runs standalone).
-		if markDigests, _, markErr := database.AutoMarkReadFromSlack(); markErr != nil {
+		if markDigests, markTracks, markErr := database.AutoMarkReadFromSlack(); markErr != nil {
 			logger.Printf("warning: auto-mark read failed: %v", markErr)
-		} else if markDigests > 0 {
-			logger.Printf("auto-marked %d digests as read (based on Slack read state)", markDigests)
+		} else if markDigests > 0 || markTracks > 0 {
+			logger.Printf("auto-marked %d digests, %d tracks as read (based on Slack read state)", markDigests, markTracks)
 		}
 
-		final := pj{Pipeline: "digest", Finished: true, ItemsFound: n}
+		inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+		final := pj{Pipeline: "digest", Finished: true, ItemsFound: n, InputTokens: inTok, OutputTokens: outTok, CostUSD: cost, TotalAPITokens: totalAPI}
 		if pipe.LastStepMessageCount > 0 {
 			final.MessageCount = pipe.LastStepMessageCount
 			final.PeriodFrom = pipe.LastStepPeriodFrom.Format(time.RFC3339)
 			final.PeriodTo = pipe.LastStepPeriodTo.Format(time.RFC3339)
-		}
-		if usage != nil {
-			final.InputTokens = usage.InputTokens
-			final.OutputTokens = usage.OutputTokens
-			final.CostUSD = usage.CostUSD
 		}
 		if err != nil {
 			final.Error = err.Error()
@@ -423,7 +423,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 			}
 			inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
 			if usage != nil {
-				inTok, outTok, cost = usage.InputTokens, usage.OutputTokens, usage.CostUSD
+				inTok, outTok, cost, totalAPI = usage.InputTokens, usage.OutputTokens, usage.CostUSD, usage.TotalAPITokens
 			}
 			_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
 		}
@@ -432,7 +432,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 
 	spinner := ui.NewSpinner(out, fmt.Sprintf("Generating digests for the last %d day(s) using %s...", days, cfg.Digest.Model))
 
-	runID, _ := database.CreatePipelineRun("digests", "cli")
+	runID, _ := database.CreatePipelineRun("digests", "cli", cfg.Digest.Model)
 
 	var n int
 	var usage *digest.Usage
@@ -458,11 +458,11 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 
 	// Complete run in DB
 	if runID > 0 {
-		inTok, outTok, cost := 0, 0, 0.0
+		inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
 		if usage != nil {
-			inTok, outTok, cost = usage.InputTokens, usage.OutputTokens, usage.CostUSD
+			inTok, outTok, cost, totalAPI = usage.InputTokens, usage.OutputTokens, usage.CostUSD, usage.TotalAPITokens
 		}
-		_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, 0, nil, nil, "")
+		_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, totalAPI, nil, nil, "")
 	}
 
 	if n == 0 {
@@ -625,7 +625,27 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 	defer savePool()
 	pipe := digest.New(database, cfg, gen, logger)
 
+	runID, _ := database.CreatePipelineRun("digest-summary", "cli", cfg.Digest.Model)
+
 	result, usage, err := pipe.RunPeriodSummary(cmd.Context(), from, to)
+
+	// Complete pipeline run regardless of outcome.
+	{
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
+		if usage != nil {
+			inTok, outTok, cost, totalAPI = usage.InputTokens, usage.OutputTokens, usage.CostUSD, usage.TotalAPITokens
+		}
+		fromUnix := float64(from.Unix())
+		toUnix := float64(to.Unix())
+		if runID > 0 {
+			_ = database.CompletePipelineRun(runID, 1, inTok, outTok, cost, totalAPI, &fromUnix, &toUnix, errMsg)
+		}
+	}
+
 	if err != nil {
 		return err
 	}

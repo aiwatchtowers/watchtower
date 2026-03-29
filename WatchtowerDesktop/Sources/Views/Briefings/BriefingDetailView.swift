@@ -3,6 +3,9 @@ import SwiftUI
 struct BriefingDetailView: View {
     let briefing: Briefing
     @Environment(AppState.self) private var appState
+    @State private var showCreateTask = false
+    @State private var taskPrefillText = ""
+    @State private var taskPrefillIntent = ""
 
     var body: some View {
         ScrollView {
@@ -15,6 +18,14 @@ struct BriefingDetailView: View {
                 coachingSection
             }
             .padding()
+        }
+        .sheet(isPresented: $showCreateTask) {
+            CreateTaskSheet(
+                prefillText: taskPrefillText,
+                prefillIntent: taskPrefillIntent,
+                prefillSourceType: "briefing",
+                prefillSourceID: String(briefing.id)
+            )
         }
     }
 
@@ -106,6 +117,23 @@ struct BriefingDetailView: View {
         }
         .buttonStyle(.plain)
 
+        if item.suggestTask == true {
+            HStack {
+                Spacer()
+                Button {
+                    taskPrefillText = item.text
+                    taskPrefillIntent = item.reason ?? ""
+                    showCreateTask = true
+                } label: {
+                    Label("Create task", systemImage: "plus.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            .padding(.trailing, 4)
+            .padding(.top, 2)
+        }
     }
 
     // MARK: - Your Day
@@ -138,7 +166,9 @@ struct BriefingDetailView: View {
 
     private func yourDayCard(_ item: YourDayItem) -> some View {
         Button {
-            if let trackID = item.trackID {
+            if let taskID = item.taskID {
+                appState.navigateToTask(taskID)
+            } else if let trackID = item.trackID {
                 navigateToSource(type: "track", id: String(trackID))
             }
         } label: {
@@ -172,7 +202,7 @@ struct BriefingDetailView: View {
 
                 Spacer()
 
-                if item.trackID != nil {
+                if item.trackID != nil || item.taskID != nil {
                     Image(systemName: "chevron.right")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -357,6 +387,20 @@ struct BriefingDetailView: View {
                                     )
                             }
                         }
+
+                        Spacer()
+
+                        Button {
+                            taskPrefillText = item.text
+                            taskPrefillIntent = item.category ?? ""
+                            showCreateTask = true
+                        } label: {
+                            Image(systemName: "plus.circle")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Add Task")
                     }
                 }
             }

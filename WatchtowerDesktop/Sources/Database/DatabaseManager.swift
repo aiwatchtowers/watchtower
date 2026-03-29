@@ -112,6 +112,11 @@ final class DatabaseManager: Sendable {
             // Briefings
             try db.execute(sql: "DELETE FROM briefings")
 
+            // Tasks & Inbox
+            try db.execute(sql: "DELETE FROM tasks")
+            try db.execute(sql: "DELETE FROM inbox_items")
+            try db.execute(sql: "UPDATE workspace SET inbox_last_processed_ts = 0")
+
             // Pipeline run history
             try db.execute(sql: "DELETE FROM pipeline_steps")
             try db.execute(sql: "DELETE FROM pipeline_runs")

@@ -41,7 +41,7 @@ func TestRunTracks_WithTracks(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = database.UpsertTrack(db.Track{
-		Title:      "Review the PR for auth changes",
+		Text:       "Review the PR for auth changes",
 		Priority:   "high",
 		ChannelIDs: `["C001"]`,
 		Tags:       `["api"]`,
@@ -49,7 +49,7 @@ func TestRunTracks_WithTracks(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = database.UpsertTrack(db.Track{
-		Title:      "Deploy the new version",
+		Text:       "Deploy the new version",
 		Priority:   "medium",
 		ChannelIDs: `["C001"]`,
 	})
@@ -59,6 +59,7 @@ func TestRunTracks_WithTracks(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tracksCmd.SetOut(buf)
 	tracksFlagPriority = ""
+	tracksFlagOwnership = ""
 	tracksFlagChannel = ""
 	tracksFlagUpdates = false
 
@@ -75,6 +76,7 @@ func TestRunTracks_ChannelFilter(t *testing.T) {
 	defer cleanup()
 
 	tracksFlagPriority = ""
+	tracksFlagOwnership = ""
 	tracksFlagChannel = "nonexistent"
 	tracksFlagUpdates = false
 	defer func() { tracksFlagChannel = "" }()
@@ -90,6 +92,7 @@ func TestRunTracks_RequiresConfig(t *testing.T) {
 	defer func() { flagConfig = oldFlagConfig }()
 
 	tracksFlagPriority = ""
+	tracksFlagOwnership = ""
 	tracksFlagChannel = ""
 	tracksFlagUpdates = false
 
@@ -99,6 +102,7 @@ func TestRunTracks_RequiresConfig(t *testing.T) {
 
 func TestTracksFlags(t *testing.T) {
 	assert.NotNil(t, tracksCmd.Flags().Lookup("priority"))
+	assert.NotNil(t, tracksCmd.Flags().Lookup("ownership"))
 	assert.NotNil(t, tracksCmd.Flags().Lookup("channel"))
 	assert.NotNil(t, tracksCmd.Flags().Lookup("updates"))
 }
@@ -113,18 +117,22 @@ func TestPrintTracks(t *testing.T) {
 
 	tracks := []db.Track{
 		{
-			ID:            1,
-			Title:         "Review PR #42",
-			CurrentStatus: "Needs reviewer",
-			Priority:      "high",
-			ChannelIDs:    `["C001"]`,
-			Tags:          `["api","frontend"]`,
-			HasUpdates:    true,
+			ID:         1,
+			Text:       "Review PR #42",
+			Context:    "Needs reviewer",
+			Priority:   "high",
+			Ownership:  "mine",
+			Category:   "code_review",
+			ChannelIDs: `["C001"]`,
+			Tags:       `["api","frontend"]`,
+			HasUpdates: true,
 		},
 		{
-			ID:       2,
-			Title:    "Deploy new version",
-			Priority: "medium",
+			ID:        2,
+			Text:      "Deploy new version",
+			Priority:  "medium",
+			Ownership: "mine",
+			Category:  "task",
 		},
 	}
 

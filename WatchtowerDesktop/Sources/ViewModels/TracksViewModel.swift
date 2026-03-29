@@ -10,11 +10,13 @@ final class TracksViewModel {
     var errorMessage: String?
     var totalCount: Int = 0
     var updatedCount: Int = 0
+    var trackTaskCounts: [Int: Int] = [:]
 
     // Filters
     var priorityFilter: String?
     var channelFilter: String?
     var tagFilter: String?
+    var ownershipFilter: String?
 
     private(set) var workspaceDomain: String?
     private(set) var workspaceTeamID: String?
@@ -59,12 +61,15 @@ final class TracksViewModel {
                 let all = try TrackQueries.fetchAll(
                     db,
                     priority: self.priorityFilter,
-                    channelID: self.channelFilter
+                    channelID: self.channelFilter,
+                    ownership: self.ownershipFilter
                 )
-                return (ws?.domain, ws?.id, all, counts)
+                let taskCounts = try TaskQueries.fetchActiveCountsBySourceTrack(db)
+                return (ws?.domain, ws?.id, all, counts, taskCounts)
             }
             workspaceDomain = result.0
             workspaceTeamID = result.1
+            trackTaskCounts = result.4
 
             var tracks = result.2
             // Apply tag filter in memory (tags is JSON array)
@@ -86,6 +91,10 @@ final class TracksViewModel {
         isLoading = false
     }
 
+    func taskCount(for trackID: Int) -> Int {
+        trackTaskCounts[trackID] ?? 0
+    }
+
     func markRead(_ track: Track) {
         do {
             try dbManager.dbPool.write { db in
@@ -105,6 +114,31 @@ final class TracksViewModel {
             load()
         } catch {
             errorMessage = "Failed to update priority: \(error.localizedDescription)"
+        }
+    }
+
+    func updateOwnership(_ track: Track, to ownership: String) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TrackQueries.updateOwnership(db, id: track.id, ownership: ownership)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update ownership: \(error.localizedDescription)"
+        }
+    }
+
+    func toggleSubItem(_ track: Track, at index: Int) {
+        var items = track.decodedSubItems
+        guard index >= 0, index < items.count else { return }
+        items[index].status = items[index].isDone ? "open" : "done"
+        do {
+            try dbManager.dbPool.write { db in
+                try TrackQueries.updateSubItems(db, id: track.id, subItems: items)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to toggle sub-item: \(error.localizedDescription)"
         }
     }
 
@@ -194,7 +228,7 @@ final class TracksViewModel {
 
     private func refreshUserNameCache(tracks: [Track]) {
         let allText = tracks.flatMap {
-            [$0.title, $0.narrative, $0.currentStatus, $0.participants]
+            [$0.text, $0.context, $0.blocking, $0.participants, $0.requesterName]
         }
         let joined = allText.joined(separator: " ")
         let range = NSRange(joined.startIndex..., in: joined)

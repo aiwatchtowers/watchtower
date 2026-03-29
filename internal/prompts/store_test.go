@@ -326,14 +326,14 @@ func TestGetForRole_RoleVariantInDB(t *testing.T) {
 	_ = store.Seed()
 
 	// Insert a role-specific variant
-	roleVariantID := TracksCreate + "_direction_owner"
+	roleVariantID := TracksExtract + "_direction_owner"
 	require.NoError(t, database.UpsertPrompt(db.Prompt{
 		ID:       roleVariantID,
 		Template: "role-specific tracks prompt for direction owner",
 		Version:  1,
 	}))
 
-	tmpl, version, err := store.GetForRole(TracksCreate, "direction_owner")
+	tmpl, version, err := store.GetForRole(TracksExtract, "direction_owner")
 	require.NoError(t, err)
 	assert.Equal(t, 1, version)
 	assert.Equal(t, "role-specific tracks prompt for direction owner", tmpl)
@@ -647,9 +647,9 @@ func TestSuggest_TracksPrompt(t *testing.T) {
 	gen := &mockGenerator{response: response}
 	tuner := NewTuner(store, database, gen)
 
-	result, err := tuner.Suggest(context.Background(), TracksCreate)
+	result, err := tuner.Suggest(context.Background(), TracksExtract)
 	require.NoError(t, err)
-	assert.Equal(t, TracksCreate, result.PromptID)
+	assert.Equal(t, TracksExtract, result.PromptID)
 }
 
 func TestSuggest_PeopleReducePrompt(t *testing.T) {
@@ -1151,7 +1151,8 @@ func TestSuggest_AllPromptTypes(t *testing.T) {
 		{DigestDaily, "digest"},
 		{DigestWeekly, "digest"},
 		{DigestPeriod, "digest"},
-		{TracksCreate, "track"},
+		{TracksExtract, "track"},
+		{TracksUpdate, "track"},
 		{PeopleReduce, "user_analysis"},
 		{PeopleTeam, "user_analysis"},
 	}

@@ -2,6 +2,7 @@ package digest
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -189,13 +190,15 @@ func TestRunChannelDigests_BelowMinMessages(t *testing.T) {
 		seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("msg %d", i))
 	}
 
-	gen := &mockGenerator{response: `{}`}
+	// With unified batching, a single channel (even below min_messages) goes
+	// through a single-entry batch → uses individual channel prompt.
+	gen := &mockGenerator{response: validDigestJSON()}
 	p := New(database, cfg, gen, testLogger())
 	n, _, err := p.RunChannelDigests(context.Background())
 
 	require.NoError(t, err)
-	assert.Equal(t, 0, n)
-	assert.Equal(t, 0, gen.calls)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, 1, gen.calls, "single-entry batch uses individual channel prompt")
 }
 
 func TestRunChannelDigests_Disabled(t *testing.T) {
@@ -210,6 +213,193 @@ func TestRunChannelDigests_Disabled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, gen.calls)
+}
+
+func TestRunChannelDigests_SkipsDMs(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.BatchMaxChannels = 1 // force individual processing
+
+	// 1:1 DM should be skipped, group DM should be kept.
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "CDM", Name: "dm-user", Type: "dm"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "CGDM", Name: "group-chat", Type: "group_dm"}))
+	seedChannel(t, database, "C1", "general")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+	// Use 35 messages per channel (medium tier ≥30) so BatchMaxChannels=1 forces individual processing.
+	for i := range 35 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "CDM", ts, "U1", fmt.Sprintf("dm msg %d", i))
+		seedMessage(t, database, "CGDM", ts, "U1", fmt.Sprintf("group dm msg %d", i))
+		seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("public msg %d", i))
+	}
+
+	gen := &mockGenerator{response: validDigestJSON()}
+	p := New(database, cfg, gen, testLogger())
+	n, _, err := p.RunChannelDigests(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, n, "should skip 1:1 DM but keep group DM and public channel")
+}
+
+func TestRunChannelDigests_SkipsBotOnly(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C_ALERTS", "alerts")
+	seedChannel(t, database, "C_GENERAL", "general")
+	require.NoError(t, database.UpsertUser(db.User{ID: "UBOT", Name: "alertbot", IsBot: true}))
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+	for i := range 10 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		// Alerts channel: all messages from bot.
+		seedMessage(t, database, "C_ALERTS", ts, "UBOT", fmt.Sprintf("alert %d", i))
+		// General channel: messages from human.
+		seedMessage(t, database, "C_GENERAL", ts, "U1", fmt.Sprintf("msg %d", i))
+	}
+
+	gen := &mockGenerator{response: validDigestJSON()}
+	p := New(database, cfg, gen, testLogger())
+	n, _, err := p.RunChannelDigests(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "should skip bot-only channel, only digest general")
+}
+
+func TestRunChannelDigests_BotHeavyWithHumanReply(t *testing.T) {
+	// Bot-heavy channel (≥90% bot msgs) with a human reply should be processed
+	// but only with human messages + surrounding context, not all bot alerts.
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C_ALERTS", "alerts")
+	require.NoError(t, database.UpsertUser(db.User{ID: "UBOT", Name: "alertbot", IsBot: true}))
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+	// 19 bot messages + 1 human reply (95% bot = bot-heavy).
+	for i := range 19 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "C_ALERTS", ts, "UBOT", fmt.Sprintf("alert %d", i))
+	}
+	ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(19*60), 0)
+	seedMessage(t, database, "C_ALERTS", ts, "U1", "looking into this")
+
+	gen := &mockGenerator{response: validDigestJSON()}
+	p := New(database, cfg, gen, testLogger())
+	n, _, err := p.RunChannelDigests(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "should process bot-heavy channel because human replied")
+	assert.Equal(t, 1, gen.calls)
+}
+
+func TestRunChannelDigests_BotHeavyExtractsContext(t *testing.T) {
+	// Verify extractHumanContext keeps human msg + thread + surrounding bot msgs.
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C_ALERTS", "alerts")
+	require.NoError(t, database.UpsertUser(db.User{ID: "UBOT", Name: "alertbot", IsBot: true}))
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	p := New(database, cfg, nil, testLogger())
+	p.loadCaches()
+
+	// Simulate 20 messages: 19 bot + 1 human at position 10.
+	var msgs []db.Message
+	for i := range 20 {
+		userID := "UBOT"
+		text := fmt.Sprintf("alert %d", i)
+		if i == 10 {
+			userID = "U1"
+			text = "investigating this"
+		}
+		msgs = append(msgs, db.Message{
+			ChannelID: "C_ALERTS",
+			TS:        fmt.Sprintf("%d.000000", 1000+i),
+			UserID:    userID,
+			Text:      text,
+			TSUnix:    float64(1000 + i),
+		})
+	}
+
+	result := p.extractHumanContext(msgs)
+	// Should keep: human msg (pos 10) + 3 before (7,8,9) + 3 after (11,12,13) = 7 messages.
+	assert.Equal(t, 7, len(result), "should extract human msg + 3 before + 3 after")
+
+	// Verify human message is included.
+	found := false
+	for _, m := range result {
+		if m.UserID == "U1" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "human message must be in result")
+}
+
+func TestRunChannelDigests_BotHeavyThreadContext(t *testing.T) {
+	// When human replies in a thread, keep the entire thread.
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C_ALERTS", "alerts")
+	require.NoError(t, database.UpsertUser(db.User{ID: "UBOT", Name: "alertbot", IsBot: true}))
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	p := New(database, cfg, nil, testLogger())
+	p.loadCaches()
+
+	threadParentTS := "1005.000000"
+	var msgs []db.Message
+	// 15 unrelated bot alerts.
+	for i := range 15 {
+		msgs = append(msgs, db.Message{
+			ChannelID: "C_ALERTS",
+			TS:        fmt.Sprintf("%d.000000", 1000+i),
+			UserID:    "UBOT",
+			Text:      fmt.Sprintf("alert %d", i),
+			TSUnix:    float64(1000 + i),
+		})
+	}
+	// Thread parent (bot alert at position 5).
+	msgs[5].ReplyCount = 2
+	// Thread reply from bot.
+	msgs = append(msgs, db.Message{
+		ChannelID: "C_ALERTS",
+		TS:        "1020.000000",
+		UserID:    "UBOT",
+		Text:      "auto-resolved",
+		ThreadTS:  sql.NullString{String: threadParentTS, Valid: true},
+		TSUnix:    1020,
+	})
+	// Thread reply from human.
+	msgs = append(msgs, db.Message{
+		ChannelID: "C_ALERTS",
+		TS:        "1021.000000",
+		UserID:    "U1",
+		Text:      "confirmed fix",
+		ThreadTS:  sql.NullString{String: threadParentTS, Valid: true},
+		TSUnix:    1021,
+	})
+
+	result := p.extractHumanContext(msgs)
+
+	// Must include: thread parent + both thread replies + surrounding context.
+	tsSet := make(map[string]bool)
+	for _, m := range result {
+		tsSet[m.TS] = true
+	}
+	assert.True(t, tsSet[threadParentTS], "thread parent must be included")
+	assert.True(t, tsSet["1020.000000"], "bot thread reply must be included")
+	assert.True(t, tsSet["1021.000000"], "human thread reply must be included")
 }
 
 func TestRunChannelDigests_NoNewMessages(t *testing.T) {
@@ -359,7 +549,7 @@ func TestFormatMessages(t *testing.T) {
 		{UserID: "U1", Text: "deleted", TSUnix: 1000180, IsDeleted: true}, // deleted — skipped
 	}
 
-	formatted := p.formatMessages(msgs)
+	formatted := p.formatMessages(msgs, nil)
 	assert.Contains(t, formatted, "@Alice Smith (U1)] hello world")
 	assert.Contains(t, formatted, "@Alice Smith (U1)] another message")
 	assert.NotContains(t, formatted, "deleted")
@@ -732,13 +922,15 @@ func TestRunPeriodSummary_IncludesDailyAndWeeklyLabels(t *testing.T) {
 func TestRun_FullPipeline_WithSinceOverride(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
+	cfg.Digest.BatchMaxChannels = 1 // force individual processing
 
 	seedChannel(t, database, "C1", "general")
 	seedChannel(t, database, "C2", "random")
 	seedUser(t, database, "U1", "alice", "Alice")
 
-	seedMessagesForChannel(t, database, "C1", "U1", 5)
-	seedMessagesForChannel(t, database, "C2", "U1", 5)
+	// Use 35 messages per channel (medium tier ≥30) so BatchMaxChannels=1 forces individual processing.
+	seedMessagesForChannel(t, database, "C1", "U1", 35)
+	seedMessagesForChannel(t, database, "C2", "U1", 35)
 
 	gen := &threadSafeMockGenerator{response: validDigestJSON()}
 	p := New(database, cfg, gen, testLogger())
@@ -787,12 +979,14 @@ func TestRunChannelDigests_MultipleWorkers(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
 	cfg.AI.Workers = 3
+	cfg.Digest.BatchMaxChannels = 1 // force individual processing to test worker parallelism
 
 	seedUser(t, database, "U1", "alice", "Alice")
 	for i := 0; i < 5; i++ {
 		chID := fmt.Sprintf("C%d", i)
 		seedChannel(t, database, chID, fmt.Sprintf("chan%d", i))
-		seedMessagesForChannel(t, database, chID, "U1", 5)
+		// Use 35 messages per channel (medium tier ≥30) so BatchMaxChannels=1 forces individual processing.
+		seedMessagesForChannel(t, database, chID, "U1", 35)
 	}
 
 	gen := &threadSafeMockGenerator{response: validDigestJSON()}
@@ -1053,11 +1247,98 @@ func TestFormatMessages_SanitizesDelimiters(t *testing.T) {
 		{UserID: "U1", Text: "check this out === important ---", TSUnix: 1000000},
 	}
 
-	formatted := p.formatMessages(msgs)
+	formatted := p.formatMessages(msgs, nil)
 	assert.Contains(t, formatted, "= = =")
 	assert.Contains(t, formatted, "- - -")
 	assert.NotContains(t, formatted, "===")
 	assert.NotContains(t, formatted, "---")
+}
+
+func TestFormatMessages_ThreadGrouping(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	gen := &mockGenerator{}
+
+	seedUser(t, database, "U1", "alice", "Alice")
+	seedUser(t, database, "U2", "bob", "Bob")
+	seedUser(t, database, "U3", "carol", "Carol")
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	msgs := []db.Message{
+		{TS: "1000.001", UserID: "U1", Text: "start of thread", TSUnix: 1000, ReplyCount: 2},
+		{TS: "1001.001", UserID: "U2", Text: "reply one", TSUnix: 1001, ThreadTS: sql.NullString{String: "1000.001", Valid: true}},
+		{TS: "1002.001", UserID: "U3", Text: "top level msg", TSUnix: 1002},
+		{TS: "1003.001", UserID: "U3", Text: "reply two", TSUnix: 1003, ThreadTS: sql.NullString{String: "1000.001", Valid: true}},
+	}
+
+	formatted := p.formatMessages(msgs, nil)
+
+	// Parent should appear first, then replies indented, then top-level.
+	lines := strings.Split(strings.TrimSpace(formatted), "\n")
+	assert.Equal(t, 4, len(lines), "expected 4 lines: parent + 2 replies + 1 top-level")
+	assert.Contains(t, lines[0], "start of thread")
+	assert.Contains(t, lines[1], "↳")
+	assert.Contains(t, lines[1], "reply one")
+	assert.Contains(t, lines[2], "↳")
+	assert.Contains(t, lines[2], "reply two")
+	assert.Contains(t, lines[3], "top level msg")
+	assert.NotContains(t, lines[3], "↳")
+}
+
+func TestFormatMessages_OrphanThreadReplies(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	gen := &mockGenerator{}
+
+	seedUser(t, database, "U1", "alice", "Alice")
+	seedUser(t, database, "U2", "bob", "Bob")
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	// Replies whose parent is NOT in the batch.
+	msgs := []db.Message{
+		{TS: "2001.001", UserID: "U1", Text: "orphan reply 1", TSUnix: 2001, ThreadTS: sql.NullString{String: "999.001", Valid: true}},
+		{TS: "2002.001", UserID: "U2", Text: "orphan reply 2", TSUnix: 2002, ThreadTS: sql.NullString{String: "999.001", Valid: true}},
+		{TS: "2003.001", UserID: "U1", Text: "normal msg", TSUnix: 2003},
+	}
+
+	formatted := p.formatMessages(msgs, nil)
+	lines := strings.Split(strings.TrimSpace(formatted), "\n")
+	assert.Equal(t, 3, len(lines))
+	assert.Contains(t, lines[0], "↳")
+	assert.Contains(t, lines[0], "orphan reply 1")
+	assert.Contains(t, lines[1], "↳")
+	assert.Contains(t, lines[1], "orphan reply 2")
+	assert.Contains(t, lines[2], "normal msg")
+	assert.NotContains(t, lines[2], "↳")
+}
+
+func TestFormatMessages_SelfReferencingParent(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	gen := &mockGenerator{}
+
+	seedUser(t, database, "U1", "alice", "Alice")
+	seedUser(t, database, "U2", "bob", "Bob")
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	// Parent with self-referencing thread_ts (ts == thread_ts, as from full sync).
+	msgs := []db.Message{
+		{TS: "1000.001", UserID: "U1", Text: "parent msg", TSUnix: 1000, ReplyCount: 1,
+			ThreadTS: sql.NullString{String: "1000.001", Valid: true}},
+		{TS: "1001.001", UserID: "U2", Text: "child reply", TSUnix: 1001,
+			ThreadTS: sql.NullString{String: "1000.001", Valid: true}},
+	}
+
+	formatted := p.formatMessages(msgs, nil)
+	lines := strings.Split(strings.TrimSpace(formatted), "\n")
+	assert.Equal(t, 2, len(lines))
+	assert.Contains(t, lines[0], "parent msg")
+	assert.NotContains(t, lines[0], "↳")
+	assert.Contains(t, lines[1], "↳")
+	assert.Contains(t, lines[1], "child reply")
 }
 
 func TestFormatProfileContext_WithAllFields(t *testing.T) {
@@ -1805,8 +2086,9 @@ func TestFallbackPromptFormatVerbs(t *testing.T) {
 		prompt   string
 		expected int // number of %s placeholders expected
 	}{
-		{"channelDigestPrompt", channelDigestPrompt, 7}, // channelName, fromStr, toStr, profileCtx, langInstr, previousCtx, messages
-		{"dailyRollupPrompt", dailyRollupPrompt, 5},     // dateStr, profileCtx, langInstr, previousCtx, channelInput
+		{"channelDigestPrompt", channelDigestPrompt, 7},           // channelName, fromStr, toStr, profileCtx, langInstr, previousCtx, messages
+		{"channelBatchDigestPrompt", channelBatchDigestPrompt, 6}, // fromStr, toStr, profileCtx, langInstr, prevCtxNote, channelBlocks
+		{"dailyRollupPrompt", dailyRollupPrompt, 5},               // dateStr, profileCtx, langInstr, previousCtx, channelInput
 		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 7},   // date, fromStr, toStr, profileCtx, langInstr, previousCtx, dailies
 		{"periodSummaryPrompt", periodSummaryPrompt, 5}, // fromStr, toStr, profileCtx, langInstr, digests
 	}
@@ -1984,4 +2266,450 @@ func TestChannelMemory_LoadPreviousContext_Fresh(t *testing.T) {
 	assert.Contains(t, ctx, "PREVIOUS CONTEXT")
 	assert.Contains(t, ctx, "Deploy")
 	assert.NotContains(t, ctx, "outdated", "fresh context should not have outdated warning")
+}
+
+// --- Batch digest tests ---
+
+func TestGroupIntoBatches(t *testing.T) {
+	mkEntry := func(id string, visible int) batchEntry {
+		return batchEntry{channelID: id, channelName: id, visibleCount: visible}
+	}
+
+	t.Run("empty", func(t *testing.T) {
+		result := groupIntoBatches(nil, 10, 50)
+		assert.Nil(t, result)
+	})
+
+	t.Run("single batch when no limit", func(t *testing.T) {
+		entries := []batchEntry{mkEntry("C1", 3), mkEntry("C2", 4), mkEntry("C3", 2)}
+		result := groupIntoBatches(entries, 0, 0)
+		require.Len(t, result, 1)
+		assert.Len(t, result[0], 3)
+	})
+
+	t.Run("split by maxChannels", func(t *testing.T) {
+		entries := []batchEntry{mkEntry("C1", 2), mkEntry("C2", 2), mkEntry("C3", 2)}
+		result := groupIntoBatches(entries, 2, 100)
+		require.Len(t, result, 2)
+		assert.Len(t, result[0], 2)
+		assert.Len(t, result[1], 1)
+	})
+
+	t.Run("split by maxMessages", func(t *testing.T) {
+		entries := []batchEntry{mkEntry("C1", 4), mkEntry("C2", 4), mkEntry("C3", 3)}
+		result := groupIntoBatches(entries, 10, 5)
+		require.Len(t, result, 3) // each entry alone is ≤5, but pairs exceed
+		assert.Len(t, result[0], 1)
+		assert.Len(t, result[1], 1)
+		assert.Len(t, result[2], 1)
+	})
+
+	t.Run("combined limits", func(t *testing.T) {
+		entries := []batchEntry{mkEntry("C1", 2), mkEntry("C2", 2), mkEntry("C3", 2), mkEntry("C4", 2)}
+		result := groupIntoBatches(entries, 3, 50)
+		require.Len(t, result, 2)
+		assert.Len(t, result[0], 3)
+		assert.Len(t, result[1], 1)
+	})
+}
+
+func TestParseBatchDigestResult(t *testing.T) {
+	t.Run("valid array", func(t *testing.T) {
+		raw := `[
+			{"channel_id":"C1","summary":"Test summary","topics":[{"title":"t1","summary":"s1","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]},
+			{"channel_id":"C2","summary":"Another","topics":[]}
+		]`
+		results, err := parseBatchDigestResult(raw)
+		require.NoError(t, err)
+		assert.Len(t, results, 2)
+		assert.Equal(t, "C1", results[0].ChannelID)
+		assert.Equal(t, "C2", results[1].ChannelID)
+	})
+
+	t.Run("empty array", func(t *testing.T) {
+		results, err := parseBatchDigestResult("[]")
+		require.NoError(t, err)
+		assert.Empty(t, results)
+	})
+
+	t.Run("filters empty channel_id", func(t *testing.T) {
+		raw := `[{"channel_id":"","summary":"skip"},{"channel_id":"C1","summary":"keep","topics":[]}]`
+		results, err := parseBatchDigestResult(raw)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "C1", results[0].ChannelID)
+	})
+
+	t.Run("filters empty summary", func(t *testing.T) {
+		raw := `[{"channel_id":"C1","summary":"","topics":[]},{"channel_id":"C2","summary":"ok","topics":[]}]`
+		results, err := parseBatchDigestResult(raw)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "C2", results[0].ChannelID)
+	})
+
+	t.Run("markdown fences", func(t *testing.T) {
+		raw := "```json\n[{\"channel_id\":\"C1\",\"summary\":\"test\",\"topics\":[]}]\n```"
+		results, err := parseBatchDigestResult(raw)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		_, err := parseBatchDigestResult("not json")
+		assert.Error(t, err)
+	})
+}
+
+// sourceFromContext extracts the source label set by WithSource.
+func sourceFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(sessionSourceKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// multiMockGenerator returns different responses based on the source context key.
+type multiMockGenerator struct {
+	mu        sync.Mutex
+	responses map[string]string // source → response
+	calls     map[string]int
+	fallback  string
+}
+
+func (m *multiMockGenerator) Generate(ctx context.Context, _, _, _ string) (string, *Usage, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.calls == nil {
+		m.calls = make(map[string]int)
+	}
+	source := sourceFromContext(ctx)
+	m.calls[source]++
+	if resp, ok := m.responses[source]; ok {
+		return resp, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
+	}
+	return m.fallback, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
+}
+
+func TestBatchDigestIntegration(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 5
+	cfg.Digest.BatchMaxChannels = 5
+	cfg.Digest.BatchMaxMessages = 6 // forces big channel (6 msgs) into its own batch
+
+	seedChannel(t, database, "C_BIG", "big-channel")
+	seedChannel(t, database, "C_SMALL1", "small-one")
+	seedChannel(t, database, "C_SMALL2", "small-two")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+
+	// Big channel: 6 messages (above threshold)
+	for i := range 6 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "C_BIG", ts, "U1", fmt.Sprintf("big message %d", i))
+	}
+	// Small channels: 2 messages each (below threshold of 5)
+	for i := range 2 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "C_SMALL1", ts, "U1", fmt.Sprintf("small1 msg %d", i))
+	}
+	for i := range 2 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "C_SMALL2", ts, "U1", fmt.Sprintf("small2 msg %d", i))
+	}
+
+	// With unified batching: big channel (6 msgs) goes to single-entry batch → individual prompt.
+	// Small channels (2 msgs each) are grouped into one batch → batch prompt.
+	individualResp := validDigestJSON()
+	batchResp := `[
+		{"channel_id":"C_SMALL1","summary":"Small1 summary","topics":[{"title":"t1","summary":"s1","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]},
+		{"channel_id":"C_SMALL2","summary":"Small2 summary","topics":[{"title":"t2","summary":"s2","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}
+	]`
+
+	gen := &multiMockGenerator{
+		responses: map[string]string{
+			"digest.channel":       individualResp,
+			"digest.channel_batch": batchResp,
+		},
+	}
+
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	n, _, err := p.runChannelDigestsForWindow(context.Background(), float64(since.Unix()), float64(now.Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, 3, n, "should generate 3 digests: 1 individual + 2 batch")
+
+	// Verify batch LLM was called exactly once, individual once
+	gen.mu.Lock()
+	assert.Equal(t, 1, gen.calls["digest.channel_batch"], "batch should be called once")
+	assert.Equal(t, 1, gen.calls["digest.channel"], "individual should be called once for single-entry batch")
+	gen.mu.Unlock()
+
+	// Verify all 3 digests are in DB
+	digests, err := database.GetDigests(db.DigestFilter{Type: "channel"})
+	require.NoError(t, err)
+	assert.Len(t, digests, 3)
+}
+
+func TestBatchSkipsUnnoteworthyChannels(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 5
+
+	seedChannel(t, database, "C_SMALL1", "small-one")
+	seedChannel(t, database, "C_SMALL2", "small-two")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+
+	// Both channels have 2 messages
+	for i := range 2 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "C_SMALL1", ts, "U1", fmt.Sprintf("msg %d", i))
+	}
+	for i := range 2 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "C_SMALL2", ts, "U1", fmt.Sprintf("msg %d", i))
+	}
+
+	// AI returns only 1 channel as noteworthy, skips the other
+	batchResp := `[{"channel_id":"C_SMALL1","summary":"Something important","topics":[{"title":"important","summary":"yes","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}]`
+
+	gen := &multiMockGenerator{
+		responses: map[string]string{
+			"digest.channel_batch": batchResp,
+		},
+	}
+
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	n, _, err := p.runChannelDigestsForWindow(context.Background(), float64(since.Unix()), float64(now.Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "should generate 1 digest (AI skipped one channel)")
+
+	digests, err := database.GetDigests(db.DigestFilter{Type: "channel"})
+	require.NoError(t, err)
+	assert.Len(t, digests, 1)
+	assert.Equal(t, "Something important", digests[0].Summary)
+}
+
+func TestUnifiedBatching_LargeChannelAlone(t *testing.T) {
+	// A channel with many messages exceeds BatchMaxMessages, so it goes into
+	// its own single-entry batch → individual prompt.
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 5
+	cfg.Digest.BatchMaxChannels = 5
+	cfg.Digest.BatchMaxMessages = 30 // low limit to force separation
+
+	seedChannel(t, database, "C_BIG", "big-channel")
+	seedChannel(t, database, "C_SMALL", "small-channel")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	now := time.Now()
+	since := now.Add(-2 * time.Hour)
+
+	// Big channel: 25 visible messages (exceeds BatchMaxMessages=30 when combined)
+	for i := range 25 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*10), 0)
+		seedMessage(t, database, "C_BIG", ts, "U1", fmt.Sprintf("msg %d", i))
+	}
+	// Small channel: 20 visible messages
+	for i := range 20 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "C_SMALL", ts, "U1", fmt.Sprintf("small msg %d", i))
+	}
+
+	gen := &multiMockGenerator{
+		responses: map[string]string{
+			"digest.channel": validDigestJSON(),
+		},
+	}
+
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	n, _, err := p.runChannelDigestsForWindow(context.Background(), float64(since.Unix()), float64(now.Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+
+	// Both should use individual prompt since they end up in separate single-entry batches
+	// (25+20=45 > 30, so they can't share a batch; each alone is ≤30)
+	gen.mu.Lock()
+	assert.Equal(t, 2, gen.calls["digest.channel"], "both channels should use individual prompt")
+	assert.Equal(t, 0, gen.calls["digest.channel_batch"], "no batch calls needed")
+	gen.mu.Unlock()
+}
+
+func TestUnifiedBatching_ThreeChannelsBatched(t *testing.T) {
+	// Three channels with 20 messages each should be batched together.
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 5
+	cfg.Digest.BatchMaxChannels = 5
+	cfg.Digest.BatchMaxMessages = 300
+
+	seedChannel(t, database, "C1", "chan-one")
+	seedChannel(t, database, "C2", "chan-two")
+	seedChannel(t, database, "C3", "chan-three")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+
+	for _, chID := range []string{"C1", "C2", "C3"} {
+		for i := range 20 {
+			ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+			seedMessage(t, database, chID, ts, "U1", fmt.Sprintf("msg %d", i))
+		}
+	}
+
+	batchResp := `[
+		{"channel_id":"C1","summary":"C1 summary","topics":[{"title":"t1","summary":"s1","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]},
+		{"channel_id":"C2","summary":"C2 summary","topics":[{"title":"t2","summary":"s2","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]},
+		{"channel_id":"C3","summary":"C3 summary","topics":[{"title":"t3","summary":"s3","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}
+	]`
+
+	gen := &multiMockGenerator{
+		responses: map[string]string{
+			"digest.channel_batch": batchResp,
+		},
+	}
+
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	n, _, err := p.runChannelDigestsForWindow(context.Background(), float64(since.Unix()), float64(now.Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+
+	gen.mu.Lock()
+	assert.Equal(t, 1, gen.calls["digest.channel_batch"], "all three channels should be in one batch")
+	assert.Equal(t, 0, gen.calls["digest.channel"], "no individual calls")
+	gen.mu.Unlock()
+}
+
+func TestUnifiedBatching_SingleChannelFallback(t *testing.T) {
+	// When batch has exactly 1 channel, it should use the individual channel prompt.
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 5
+	cfg.Digest.BatchMaxChannels = 5
+	cfg.Digest.BatchMaxMessages = 300
+
+	seedChannel(t, database, "C1", "only-channel")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	now := time.Now()
+	since := now.Add(-1 * time.Hour)
+
+	for i := range 10 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+		seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("msg %d", i))
+	}
+
+	gen := &multiMockGenerator{
+		responses: map[string]string{
+			"digest.channel": validDigestJSON(),
+		},
+	}
+
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	n, _, err := p.runChannelDigestsForWindow(context.Background(), float64(since.Unix()), float64(now.Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	gen.mu.Lock()
+	assert.Equal(t, 1, gen.calls["digest.channel"], "single channel should use individual prompt")
+	assert.Equal(t, 0, gen.calls["digest.channel_batch"], "batch prompt should not be used")
+	gen.mu.Unlock()
+}
+
+func TestTieredBatching_HighMediumLow(t *testing.T) {
+	// Verify tiered batching: high-activity channels get individual prompts,
+	// medium channels are batched normally, low-activity channels are batched aggressively.
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 1
+	cfg.Digest.BatchMaxChannels = 3
+	cfg.Digest.BatchMaxMessages = 800
+
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	// 1 high-activity channel (>200 msgs) → individual prompt
+	seedChannel(t, database, "C_HIGH", "high-activity")
+	// 2 medium-activity channels (30-200 msgs) → batched together (maxCh=3)
+	seedChannel(t, database, "C_MED1", "med-one")
+	seedChannel(t, database, "C_MED2", "med-two")
+	// 8 low-activity channels (<30 msgs) → batched aggressively (maxCh=3*3=9 per batch)
+	for i := range 8 {
+		seedChannel(t, database, fmt.Sprintf("C_LOW%d", i), fmt.Sprintf("low-%d", i))
+	}
+
+	now := time.Now()
+	since := now.Add(-2 * time.Hour)
+
+	// High: 210 messages (above DefaultBatchHighActivityThreshold=200)
+	for i := range 210 {
+		ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*3), 0)
+		seedMessage(t, database, "C_HIGH", ts, "U1", fmt.Sprintf("high msg %d", i))
+	}
+	// Medium: 50 messages each (between 30 and 200)
+	for _, ch := range []string{"C_MED1", "C_MED2"} {
+		for i := range 50 {
+			ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*60), 0)
+			seedMessage(t, database, ch, ts, "U1", fmt.Sprintf("med msg %d", i))
+		}
+	}
+	// Low: 10 messages each (below DefaultBatchLowActivityThreshold=30)
+	for li := range 8 {
+		ch := fmt.Sprintf("C_LOW%d", li)
+		for i := range 10 {
+			ts := fmt.Sprintf("%d.%06d", since.Unix()+int64(i*120+li), 0)
+			seedMessage(t, database, ch, ts, "U1", fmt.Sprintf("low msg %d", i))
+		}
+	}
+
+	// Build a generic batch response that returns results for all channels in the batch.
+	// The multiMockGenerator uses source-based routing: individual → "digest.channel", batch → "digest.channel_batch".
+	// For batch calls, we return all possible channels — parseBatchDigestResult filters by non-empty channel_id+summary.
+	var allBatchItems []string
+	for _, id := range []string{"C_MED1", "C_MED2"} {
+		allBatchItems = append(allBatchItems, fmt.Sprintf(
+			`{"channel_id":"%s","summary":"%s summary","topics":[{"title":"t","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}`, id, id))
+	}
+	for i := range 8 {
+		allBatchItems = append(allBatchItems, fmt.Sprintf(
+			`{"channel_id":"C_LOW%d","summary":"Low%d","topics":[{"title":"t","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}`, i, i))
+	}
+	batchResp := "[" + strings.Join(allBatchItems, ",") + "]"
+
+	gen := &multiMockGenerator{
+		responses: map[string]string{
+			"digest.channel":       validDigestJSON(),
+			"digest.channel_batch": batchResp,
+		},
+	}
+
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	n, _, err := p.runChannelDigestsForWindow(context.Background(), float64(since.Unix()), float64(now.Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, 11, n, "should generate 11 digests: 1 high + 2 med + 8 low")
+
+	gen.mu.Lock()
+	// High-activity channel → individual prompt.
+	assert.Equal(t, 1, gen.calls["digest.channel"], "high-activity channel should use individual prompt")
+	// Medium (2 channels in 1 batch) + Low (8 channels, maxCh*3=9 → 1 batch) = 2 batch calls.
+	assert.Equal(t, 2, gen.calls["digest.channel_batch"], "should have 2 batch calls: 1 medium + 1 low")
+	gen.mu.Unlock()
 }

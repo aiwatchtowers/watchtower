@@ -501,7 +501,7 @@ func TestRunTracks_MultiplePriorities(t *testing.T) {
 
 	for _, prio := range []string{"high", "medium", "low"} {
 		_, err = database.UpsertTrack(db.Track{
-			Title:    "Track priority: " + prio,
+			Text:     "Track priority: " + prio,
 			Priority: prio,
 		})
 		require.NoError(t, err)
@@ -511,6 +511,7 @@ func TestRunTracks_MultiplePriorities(t *testing.T) {
 	buf := new(bytes.Buffer)
 	tracksCmd.SetOut(buf)
 	tracksFlagPriority = ""
+	tracksFlagOwnership = ""
 	tracksFlagChannel = ""
 	tracksFlagUpdates = false
 

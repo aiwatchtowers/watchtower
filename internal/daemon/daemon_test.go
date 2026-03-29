@@ -629,3 +629,72 @@ func TestDaemon_MinPollInterval(t *testing.T) {
 	// Should still have run at least the initial sync
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1))
 }
+
+func TestDaemon_UnsnoozeExpiredTasks(t *testing.T) {
+	var syncCount atomic.Int32
+	orch, _ := newTestOrchestrator(t, &syncCount)
+
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	wsDir := dir + "/.local/share/watchtower/test-ws"
+	require.NoError(t, os.MkdirAll(wsDir, 0o755))
+
+	database, err := db.Open(wsDir + "/watchtower.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	// Create a snoozed task with expired snooze_until.
+	_, err = database.CreateTask(db.Task{
+		Text:        "Expired snooze",
+		Status:      "snoozed",
+		Priority:    "medium",
+		Ownership:   "mine",
+		SnoozeUntil: "2020-01-01",
+		SourceType:  "manual",
+	})
+	require.NoError(t, err)
+
+	// Create a snoozed task with future snooze_until.
+	_, err = database.CreateTask(db.Task{
+		Text:        "Future snooze",
+		Status:      "snoozed",
+		Priority:    "medium",
+		Ownership:   "mine",
+		SnoozeUntil: "2099-12-31",
+		SourceType:  "manual",
+	})
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		ActiveWorkspace: "test-ws",
+		Workspaces: map[string]*config.WorkspaceConfig{
+			"test-ws": {SlackToken: "xoxp-test"},
+		},
+		Sync: config.SyncConfig{
+			PollInterval: 10 * time.Second,
+			SyncOnWake:   false,
+		},
+	}
+
+	d := New(orch, cfg)
+	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
+	d.SetDB(database)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	err = d.Run(ctx)
+	assert.NoError(t, err)
+
+	// Verify: expired task should be unsnoozed.
+	task1, err := database.GetTaskByID(1)
+	require.NoError(t, err)
+	assert.Equal(t, "todo", task1.Status)
+	assert.Equal(t, "", task1.SnoozeUntil)
+
+	// Verify: future task should still be snoozed.
+	task2, err := database.GetTaskByID(2)
+	require.NoError(t, err)
+	assert.Equal(t, "snoozed", task2.Status)
+	assert.Equal(t, "2099-12-31", task2.SnoozeUntil)
+}

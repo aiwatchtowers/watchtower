@@ -10,6 +10,9 @@ struct DigestDetailView: View {
     @State private var markedRead = false
     @State private var markReadError: String?
     @State private var digestTopics: [DigestTopic] = []
+    @State private var showCreateTask = false
+    @State private var taskPrefillText = ""
+    @State private var taskPrefillSourceType = "digest"
 
     var body: some View {
         ScrollView {
@@ -49,6 +52,13 @@ struct DigestDetailView: View {
                 statsFooter
             }
             .padding()
+        }
+        .sheet(isPresented: $showCreateTask) {
+            CreateTaskSheet(
+                prefillText: taskPrefillText,
+                prefillSourceType: taskPrefillSourceType,
+                prefillSourceID: String(digest.id)
+            )
         }
         .navigationTitle(channelName.map { "#\($0)" } ?? "Digest")
         .task {
@@ -206,8 +216,22 @@ struct DigestDetailView: View {
             // New structured topics with nested decisions
             ForEach(digestTopics) { topic in
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(topic.title)
-                        .font(.headline)
+                    HStack {
+                        Text(topic.title)
+                            .font(.headline)
+                        Spacer()
+                        Button {
+                            taskPrefillText = topic.title + (topic.summary.isEmpty ? "" : ": \(topic.summary)")
+                            taskPrefillSourceType = "digest"
+                            showCreateTask = true
+                        } label: {
+                            Image(systemName: "plus.circle")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Create task from topic")
+                    }
                     if !topic.summary.isEmpty {
                         Text(topic.summary)
                             .font(.subheadline)
@@ -313,14 +337,34 @@ struct DigestDetailView: View {
                     Text("Decisions")
                         .font(.headline)
                     ForEach(Array(decisions.enumerated()), id: \.element.id) { idx, decision in
-                        DecisionCard(
-                            decision: decision,
-                            slackURL: decision.messageTS.flatMap { ts in
-                                viewModel.slackMessageURL(channelID: digest.channelID, messageTS: ts)
-                            },
-                            feedbackEntityID: "\(digest.id):\(idx)",
-                            dbManager: appState.databaseManager
-                        )
+                        VStack(spacing: 0) {
+                            DecisionCard(
+                                decision: decision,
+                                slackURL: decision.messageTS.flatMap { ts in
+                                    viewModel.slackMessageURL(
+                                        channelID: digest.channelID,
+                                        messageTS: ts
+                                    )
+                                },
+                                feedbackEntityID: "\(digest.id):\(idx)",
+                                dbManager: appState.databaseManager
+                            )
+                            HStack {
+                                Spacer()
+                                Button {
+                                    taskPrefillText = decision.text
+                                    taskPrefillSourceType = "digest"
+                                    showCreateTask = true
+                                } label: {
+                                    Label("Create task", systemImage: "plus.circle")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                            }
+                            .padding(.trailing, 4)
+                            .padding(.top, 2)
+                        }
                     }
                 }
             }

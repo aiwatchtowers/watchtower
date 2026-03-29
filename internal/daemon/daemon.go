@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/guide"
+	"watchtower/internal/inbox"
 
 	"watchtower/internal/sync"
 	"watchtower/internal/tracks"
@@ -39,6 +40,7 @@ type Daemon struct {
 	tracksPipe   *tracks.Pipeline
 	peoplePipe   *guide.Pipeline
 	briefingPipe *briefing.Pipeline
+	inboxPipe    *inbox.Pipeline
 	lastPeople   time.Time // when people cards last ran (once per day)
 	lastBriefing time.Time // when briefing last ran (once per day)
 }
@@ -75,6 +77,11 @@ func (d *Daemon) SetTracksPipeline(p *tracks.Pipeline) {
 // SetBriefingPipeline sets the daily briefing pipeline.
 func (d *Daemon) SetBriefingPipeline(p *briefing.Pipeline) {
 	d.briefingPipe = p
+}
+
+// SetInboxPipeline sets the inbox detection pipeline.
+func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
+	d.inboxPipe = p
 }
 
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
@@ -170,11 +177,39 @@ func (d *Daemon) runSync(ctx context.Context) {
 		d.logger.Printf("sync had errors, but running pipelines on existing data")
 	}
 
+	// Inbox runs fully independently — it does not block any other pipeline.
+	go func() {
+		if d.inboxPipe == nil {
+			return
+		}
+		var inboxRunID int64
+		if d.db != nil {
+			inboxRunID, _ = d.db.CreatePipelineRun("inbox", "daemon", d.config.Digest.Model)
+		}
+		created, resolved, err := d.inboxPipe.Run(ctx)
+		if err != nil {
+			d.logger.Printf("inbox error: %v", err)
+		} else if created > 0 || resolved > 0 {
+			d.logger.Printf("inbox: %d new, %d resolved", created, resolved)
+		}
+		if inboxRunID > 0 {
+			var errMsg string
+			if err != nil {
+				errMsg = err.Error()
+			}
+			inTok, outTok, cost, totalAPI := d.inboxPipe.AccumulatedUsage()
+			if inTok > 0 || outTok > 0 {
+				d.logger.Printf("inbox: %d+%d tokens, $%.4f", inTok, outTok, cost)
+			}
+			_ = d.db.CompletePipelineRun(inboxRunID, created+resolved, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
+		}
+	}()
+
 	// Phase 1: Channel digests (generates people_signals in MAP phase).
 	if d.digestPipe != nil {
 		var runID int64
 		if d.db != nil {
-			runID, _ = d.db.CreatePipelineRun("digests", "daemon")
+			runID, _ = d.db.CreatePipelineRun("digests", "daemon", d.config.Digest.Model)
 		}
 		n, usage, err := d.digestPipe.RunChannelDigestsOnly(ctx)
 		if err != nil {
@@ -192,18 +227,29 @@ func (d *Daemon) runSync(ctx context.Context) {
 			if err != nil {
 				errMsg = err.Error()
 			}
-			inTok, outTok, cost := 0, 0, 0.0
+			inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
 			if usage != nil {
-				inTok, outTok, cost = usage.InputTokens, usage.OutputTokens, usage.CostUSD
+				inTok, outTok, cost, totalAPI = usage.InputTokens, usage.OutputTokens, usage.CostUSD, usage.TotalAPITokens
 			}
-			_ = d.db.CompletePipelineRun(runID, n, inTok, outTok, cost, 0, nil, nil, errMsg)
+			_ = d.db.CompletePipelineRun(runID, n, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
 		}
 	}
 
-	// Auto-mark channel digests as read based on Slack read cursors.
-	// Must run AFTER channel digests are generated so newly created digests
-	// can be marked read if the user already read those messages in Slack.
-	d.autoMarkRead()
+	// Note: auto-mark read runs once after all analysis phases complete (below).
+
+	// Unsnooze tasks whose snooze_until date has passed.
+	if d.db != nil {
+		if n, err := d.db.UnsnoozeExpiredTasks(); err != nil {
+			d.logger.Printf("unsnooze tasks error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("unsnoozed %d task(s)", n)
+		}
+		if n, err := d.db.UnsnoozeExpiredInboxItems(); err != nil {
+			d.logger.Printf("unsnooze inbox error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("unsnoozed %d inbox item(s)", n)
+		}
+	}
 
 	// Phases 2-4 run in parallel where possible:
 	//   Group A: Tracks → inject track context → Rollups
@@ -219,7 +265,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 		if d.tracksPipe != nil {
 			var trackRunID int64
 			if d.db != nil {
-				trackRunID, _ = d.db.CreatePipelineRun("tracks", "daemon")
+				trackRunID, _ = d.db.CreatePipelineRun("tracks", "daemon", d.config.Digest.Model)
 			}
 			n, updated, err := d.tracksPipe.Run(ctx)
 			if err != nil {
@@ -232,8 +278,15 @@ func (d *Daemon) runSync(ctx context.Context) {
 				if err != nil {
 					errMsg = err.Error()
 				}
-				inTok, outTok, cost, _ := d.tracksPipe.AccumulatedUsage()
-				_ = d.db.CompletePipelineRun(trackRunID, n+updated, inTok, outTok, cost, 0, nil, nil, errMsg)
+				inTok, outTok, cost, totalAPI := d.tracksPipe.AccumulatedUsage()
+				var pFrom, pTo *float64
+				if d.tracksPipe.LastFrom > 0 {
+					pFrom = &d.tracksPipe.LastFrom
+				}
+				if d.tracksPipe.LastTo > 0 {
+					pTo = &d.tracksPipe.LastTo
+				}
+				_ = d.db.CompletePipelineRun(trackRunID, n+updated, inTok, outTok, cost, totalAPI, pFrom, pTo, errMsg)
 			}
 
 			// Inject track context into digest pipeline for track-aware rollups.
@@ -251,8 +304,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 			}
 		}
 
-		// Auto-mark rollup digests (daily/weekly) as read.
-		d.autoMarkRead()
+		// Note: auto-mark read runs once after all analysis phases complete (below).
 	}()
 
 	// Group B: People REDUCE (reads signals from Phase 1, generates people_cards).
@@ -265,7 +317,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 			if d.lastPeople.IsZero() || now.Sub(d.lastPeople) >= 24*time.Hour {
 				var peopleRunID int64
 				if d.db != nil {
-					peopleRunID, _ = d.db.CreatePipelineRun("people", "daemon")
+					peopleRunID, _ = d.db.CreatePipelineRun("people", "daemon", d.config.Digest.Model)
 				}
 				n, err := d.peoplePipe.Run(ctx)
 				if err != nil {
@@ -282,7 +334,8 @@ func (d *Daemon) runSync(ctx context.Context) {
 					if err != nil {
 						errMsg = err.Error()
 					}
-					_ = d.db.CompletePipelineRun(peopleRunID, n, 0, 0, 0, 0, nil, nil, errMsg)
+					inTok, outTok, cost, totalAPI := d.peoplePipe.AccumulatedUsage()
+					_ = d.db.CompletePipelineRun(peopleRunID, n, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
 				}
 			}
 		}
@@ -290,12 +343,17 @@ func (d *Daemon) runSync(ctx context.Context) {
 
 	phasesWg.Wait()
 
+	// Auto-mark digests and tracks as read based on Slack read cursors.
+	// Runs once after all analysis phases so channel digests, rollups, and tracks
+	// are all available for marking.
+	d.autoMarkRead()
+
 	// Phase 6: Daily briefing (depends on digests + tracks + people cards).
 	// Throttled to run at most once per day, triggered by schedule time.
 	if d.briefingPipe != nil && d.shouldRunBriefing() {
 		var briefingRunID int64
 		if d.db != nil {
-			briefingRunID, _ = d.db.CreatePipelineRun("briefing", "daemon")
+			briefingRunID, _ = d.db.CreatePipelineRun("briefing", "daemon", d.config.Digest.Model)
 		}
 		id, err := d.briefingPipe.Run(ctx)
 		if err != nil {
@@ -314,7 +372,8 @@ func (d *Daemon) runSync(ctx context.Context) {
 			if id > 0 {
 				items = 1
 			}
-			_ = d.db.CompletePipelineRun(briefingRunID, items, 0, 0, 0, 0, nil, nil, errMsg)
+			inTok, outTok, cost, totalAPI := d.briefingPipe.AccumulatedUsage()
+			_ = d.db.CompletePipelineRun(briefingRunID, items, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
 		}
 	}
 }
@@ -325,11 +384,11 @@ func (d *Daemon) autoMarkRead() {
 	if d.db == nil {
 		return
 	}
-	digestsMarked, _, err := d.db.AutoMarkReadFromSlack()
+	digestsMarked, tracksMarked, err := d.db.AutoMarkReadFromSlack()
 	if err != nil {
 		d.logger.Printf("auto-mark read error: %v", err)
-	} else if digestsMarked > 0 {
-		d.logger.Printf("auto-marked %d digest(s) as read", digestsMarked)
+	} else if digestsMarked > 0 || tracksMarked > 0 {
+		d.logger.Printf("auto-marked %d digest(s), %d track(s) as read", digestsMarked, tracksMarked)
 	}
 }
 

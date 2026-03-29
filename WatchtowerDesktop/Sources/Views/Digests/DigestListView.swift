@@ -383,7 +383,11 @@ struct DigestListView: View {
         let isSelected = selectedDigestID == digest.id && !isSelectMode
         let bgColor: Color = isSelected
             ? Color.accentColor.opacity(0.15)
-            : isChecked ? Color.accentColor.opacity(0.08) : Color.clear
+            : isChecked
+                ? Color.accentColor.opacity(0.08)
+                : !digest.isRead
+                    ? Color.blue.opacity(0.06)
+                    : Color.clear
 
         return HStack(spacing: 0) {
             if isSelectMode {
@@ -442,12 +446,6 @@ struct DigestListView: View {
         let expanded = expandedDigestIDs.contains(digest.id)
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 6) {
-                if !digest.isRead {
-                    Circle()
-                        .fill(.blue)
-                        .frame(width: 8, height: 8)
-                }
-
                 Text(digestTypeLabel(digest.type))
                     .font(.caption2)
                     .fontWeight(.semibold)

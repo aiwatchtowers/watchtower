@@ -3,6 +3,8 @@ import SwiftUI
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case chat
     case briefings
+    case inbox
+    case tasks
     case tracks
     case digests
     case people
@@ -17,6 +19,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         switch self {
         case .chat: "AI Chat"
         case .briefings: "Briefings"
+        case .inbox: "Inbox"
+        case .tasks: "Tasks"
         case .tracks: "Tracks"
         case .digests: "Digests"
         case .people: "People"
@@ -31,6 +35,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         switch self {
         case .chat: "bubble.left.and.bubble.right"
         case .briefings: "sun.max"
+        case .inbox: "tray"
+        case .tasks: "checkmark.circle"
         case .tracks: "binoculars"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
@@ -43,7 +49,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Main navigation items (shown above the separator).
     static var mainItems: [Self] {
-        [.chat, .briefings, .tracks, .digests, .people, .statistics, .search]
+        [.chat, .briefings, .inbox, .tasks, .tracks, .digests, .people, .statistics, .search]
     }
 
     /// Tool items (shown below the separator).
@@ -57,13 +63,42 @@ struct NavigationRoot: View {
 
     var body: some View {
         if appState.isLoading {
-            Color.clear
+            SplashView()
         } else if appState.needsOnboarding {
             OnboardingView {
                 appState.initialize()
             }
         } else {
             MainNavigationView()
+        }
+    }
+}
+
+struct SplashView: View {
+    @State private var opacity: Double = 0
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            Image("Banner", bundle: .module)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 360)
+
+            ProgressView()
+                .scaleEffect(0.8)
+                .padding(.top, 8)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .opacity(opacity)
+        .onAppear {
+            withAnimation(.easeIn(duration: 0.4)) {
+                opacity = 1
+            }
         }
     }
 }
@@ -136,6 +171,10 @@ struct MainNavigationView: View {
             ChatView()
         case .briefings:
             BriefingsListView()
+        case .inbox:
+            InboxListView()
+        case .tasks:
+            TasksListView()
         case .tracks:
             TracksListView()
         case .digests:
@@ -197,13 +236,10 @@ struct OnboardingView: View {
     var body: some View {
         VStack(spacing: 24) {
             // Header
-            Image(systemName: "binoculars.circle")
-                .font(.system(size: 64))
-                .foregroundStyle(.secondary)
-
-            Text("Welcome to Watchtower")
-                .font(.largeTitle)
-                .fontWeight(.bold)
+            Image("Banner", bundle: .module)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 320)
 
             // Steps indicator
             stepsIndicator

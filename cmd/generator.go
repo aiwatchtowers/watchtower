@@ -9,6 +9,13 @@ import (
 	"watchtower/internal/sessions"
 )
 
+// validateModel is a no-op kept for call-site compatibility.
+// Model validation was removed — new model IDs often fail the check
+// before the CLI is updated, producing false negatives.
+func validateModel(_ *config.Config) error {
+	return nil
+}
+
 // cliGenerator creates a bare ClaudeGenerator for one-off CLI commands.
 func cliGenerator(cfg *config.Config) digest.Generator {
 	return digest.NewClaudeGenerator(cfg.Digest.Model, cfg.ClaudePath)

@@ -55,7 +55,7 @@ final class TrackChatViewModel {
             let conv = try dbManager.dbPool.write { db in
                 try ChatConversationQueries.create(
                     db,
-                    title: "Track: \(String(track.title.prefix(60)))",
+                    title: "Track: \(String(track.text.prefix(60)))",
                     contextType: "track",
                     contextID: String(track.id)
                 )
@@ -315,10 +315,13 @@ final class TrackChatViewModel {
 
         === CURRENT TRACK ===
         ID: \(track.id)
-        Title: \(track.title)
-        Narrative: \(track.narrative)
-        Current Status: \(track.currentStatus)
+        Text: \(track.text)
+        Context: \(track.context)
+        Category: \(track.category)
+        Ownership: \(track.ownership)
         Priority: \(track.priority)
+        Requester: \(track.requesterName)
+        Blocking: \(track.blocking)
         Channels: \(channelList)
         Created: \(track.createdAt)
         Updated: \(track.updatedAt)

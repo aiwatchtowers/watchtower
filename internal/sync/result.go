@@ -11,9 +11,8 @@ type SyncResult struct {
 	StartedAt       time.Time `json:"started_at"`
 	FinishedAt      time.Time `json:"finished_at"`
 	DurationSecs    float64   `json:"duration_secs"`
-	MessagesFetched int       `json:"messages_fetched"`
-	ThreadsFetched  int       `json:"threads_fetched"`
-	Error           string    `json:"error,omitempty"`
+	MessagesFetched int    `json:"messages_fetched"`
+	Error           string `json:"error,omitempty"`
 }
 
 // ResultFromSnapshot builds a SyncResult from a progress snapshot.
@@ -24,7 +23,6 @@ func ResultFromSnapshot(snap Snapshot, syncErr error) SyncResult {
 		FinishedAt:      now,
 		DurationSecs:    now.Sub(snap.StartTime).Seconds(),
 		MessagesFetched: snap.MessagesFetched,
-		ThreadsFetched:  snap.ThreadsFetched,
 	}
 	if syncErr != nil {
 		r.Error = syncErr.Error()

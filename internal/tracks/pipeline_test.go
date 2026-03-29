@@ -2,8 +2,9 @@ package tracks
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,20 +47,19 @@ func TestUpsertTrackNew(t *testing.T) {
 	database := testDB(t)
 
 	id, err := database.UpsertTrack(db.Track{
-		Title:         "API redesign discussion",
-		Narrative:     "Team is discussing API v2",
-		CurrentStatus: "Under review",
-		Priority:      "high",
-		Tags:          `["api","v2"]`,
-		ChannelIDs:    `["C1","C2"]`,
-		SourceRefs:    `[{"digest_id":1,"topic_id":42,"channel_id":"C1","timestamp":1000.0}]`,
+		Text:       "API redesign discussion",
+		Context:    "Team is discussing API v2",
+		Priority:   "high",
+		Tags:       `["api","v2"]`,
+		ChannelIDs: `["C1","C2"]`,
+		SourceRefs: `[{"digest_id":1,"topic_id":42,"channel_id":"C1","timestamp":1000.0}]`,
 	})
 	require.NoError(t, err)
 	assert.Greater(t, id, int64(0))
 
 	track, err := database.GetTrackByID(int(id))
 	require.NoError(t, err)
-	assert.Equal(t, "API redesign discussion", track.Title)
+	assert.Equal(t, "API redesign discussion", track.Text)
 	assert.Equal(t, "high", track.Priority)
 	assert.Equal(t, "", track.ReadAt) // unread
 	assert.False(t, track.HasUpdates)
@@ -69,7 +69,7 @@ func TestUpsertTrackUpdate(t *testing.T) {
 	database := testDB(t)
 
 	id, err := database.UpsertTrack(db.Track{
-		Title:    "Old title",
+		Text:     "Old title",
 		Priority: "medium",
 	})
 	require.NoError(t, err)
@@ -80,14 +80,14 @@ func TestUpsertTrackUpdate(t *testing.T) {
 	// Now update — should set has_updates=1 because it was read
 	_, err = database.UpsertTrack(db.Track{
 		ID:       int(id),
-		Title:    "Updated title",
+		Text:     "Updated title",
 		Priority: "high",
 	})
 	require.NoError(t, err)
 
 	track, err := database.GetTrackByID(int(id))
 	require.NoError(t, err)
-	assert.Equal(t, "Updated title", track.Title)
+	assert.Equal(t, "Updated title", track.Text)
 	assert.True(t, track.HasUpdates)
 }
 
@@ -95,7 +95,7 @@ func TestMarkTrackRead(t *testing.T) {
 	database := testDB(t)
 
 	id, err := database.UpsertTrack(db.Track{
-		Title:    "Test",
+		Text:     "Test",
 		Priority: "low",
 	})
 	require.NoError(t, err)
@@ -115,22 +115,22 @@ func TestMarkTrackRead(t *testing.T) {
 func TestGetTracksFilter(t *testing.T) {
 	database := testDB(t)
 
-	_, err := database.UpsertTrack(db.Track{Title: "High priority", Priority: "high", ChannelIDs: `["C1"]`})
+	_, err := database.UpsertTrack(db.Track{Text: "High priority", Priority: "high", ChannelIDs: `["C1"]`})
 	require.NoError(t, err)
-	_, err = database.UpsertTrack(db.Track{Title: "Low priority", Priority: "low", ChannelIDs: `["C2"]`})
+	_, err = database.UpsertTrack(db.Track{Text: "Low priority", Priority: "low", ChannelIDs: `["C2"]`})
 	require.NoError(t, err)
 
 	// Filter by priority
 	tracks, err := database.GetTracks(db.TrackFilter{Priority: "high"})
 	require.NoError(t, err)
 	assert.Len(t, tracks, 1)
-	assert.Equal(t, "High priority", tracks[0].Title)
+	assert.Equal(t, "High priority", tracks[0].Text)
 
 	// Filter by channel
 	tracks, err = database.GetTracks(db.TrackFilter{ChannelID: "C2"})
 	require.NoError(t, err)
 	assert.Len(t, tracks, 1)
-	assert.Equal(t, "Low priority", tracks[0].Title)
+	assert.Equal(t, "Low priority", tracks[0].Text)
 
 	// Filter by has_updates
 	hasUpdates := true
@@ -142,9 +142,9 @@ func TestGetTracksFilter(t *testing.T) {
 func TestGetAllActiveTracks(t *testing.T) {
 	database := testDB(t)
 
-	_, err := database.UpsertTrack(db.Track{Title: "Track 1", Priority: "high"})
+	_, err := database.UpsertTrack(db.Track{Text: "Track 1", Priority: "high"})
 	require.NoError(t, err)
-	_, err = database.UpsertTrack(db.Track{Title: "Track 2", Priority: "low"})
+	_, err = database.UpsertTrack(db.Track{Text: "Track 2", Priority: "low"})
 	require.NoError(t, err)
 
 	tracks, err := database.GetAllActiveTracks()
@@ -155,9 +155,9 @@ func TestGetAllActiveTracks(t *testing.T) {
 func TestGetTrackCount(t *testing.T) {
 	database := testDB(t)
 
-	_, err := database.UpsertTrack(db.Track{Title: "A", Priority: "high"})
+	_, err := database.UpsertTrack(db.Track{Text: "A", Priority: "high"})
 	require.NoError(t, err)
-	_, err = database.UpsertTrack(db.Track{Title: "B", Priority: "medium"})
+	_, err = database.UpsertTrack(db.Track{Text: "B", Priority: "medium"})
 	require.NoError(t, err)
 
 	total, _, err := database.GetTrackCount()
@@ -255,7 +255,7 @@ func TestChannelNameCacheMiss(t *testing.T) {
 func TestGetPromptFallback(t *testing.T) {
 	pipe := &Pipeline{cfg: testConfig()}
 	// No prompt store — should return default
-	tmpl, version := pipe.getPrompt("tracks.create")
+	tmpl, version := pipe.getPrompt("tracks.extract")
 	assert.NotEmpty(t, tmpl)
 	assert.Equal(t, 0, version)
 }
@@ -278,6 +278,7 @@ func TestSanitize(t *testing.T) {
 		})
 	}
 }
+
 
 func TestCleanJSON(t *testing.T) {
 	tests := []struct {
@@ -307,43 +308,14 @@ func TestValidatePriority(t *testing.T) {
 	assert.Equal(t, "medium", validatePriority(""))
 }
 
-func TestFormatExistingTracks(t *testing.T) {
-	pipe := &Pipeline{
-		channelNames: map[string]string{"C1": "general"},
-	}
-	tracks := []db.Track{
-		{ID: 1, Title: "Track one", CurrentStatus: "In progress", Priority: "high", ChannelIDs: `["C1"]`},
-		{ID: 2, Title: "Track two", Priority: "low", ChannelIDs: `[]`},
-	}
-	result := pipe.formatExistingTracks(tracks)
-	assert.Contains(t, result, "Track one")
-	assert.Contains(t, result, "In progress")
-	assert.Contains(t, result, "high")
-	assert.Contains(t, result, "Track two")
-}
-
-func TestFormatUnlinkedTopics(t *testing.T) {
-	pipe := &Pipeline{
-		channelNames: map[string]string{"C1": "general"},
-	}
-	topics := []db.UnlinkedTopic{
-		{TopicID: 1, DigestID: 10, ChannelID: "C1", ChannelName: "general", Title: "API discussion", Summary: "Team discussed API v2"},
-		{TopicID: 2, DigestID: 11, ChannelID: "C1", ChannelName: "general", Title: "Bug triage", Summary: "3 bugs found"},
-	}
-	result := pipe.formatUnlinkedTopics(topics)
-	assert.Contains(t, result, "API discussion")
-	assert.Contains(t, result, "#general")
-	assert.Contains(t, result, "Bug triage")
-}
-
 func TestFormatActiveTracksForPrompt(t *testing.T) {
 	database := testDB(t)
 
 	_, err := database.UpsertTrack(db.Track{
-		Title:         "Track 1",
-		CurrentStatus: "In progress",
-		Priority:      "high",
-		ChannelIDs:    `["C1"]`,
+		Text:       "Track 1",
+		Context:    "In progress",
+		Priority:   "high",
+		ChannelIDs: `["C1"]`,
 	})
 	require.NoError(t, err)
 
@@ -362,55 +334,19 @@ func TestFormatActiveTracksForPromptEmpty(t *testing.T) {
 	assert.Empty(t, result)
 }
 
-func TestMergeSourceRefs(t *testing.T) {
-	existing := `[{"digest_id":1,"topic_id":10,"channel_id":"C1","timestamp":1000.0}]`
-	newRefs := `[{"digest_id":2,"topic_id":20,"channel_id":"C2","timestamp":2000.0}]`
-
-	merged := mergeSourceRefs(existing, newRefs)
-	var refs []json.RawMessage
-	require.NoError(t, json.Unmarshal([]byte(merged), &refs))
-	assert.Len(t, refs, 2)
-}
-
-func TestMergeSourceRefsDeduplicate(t *testing.T) {
-	existing := `[{"digest_id":1,"topic_id":10,"channel_id":"C1","timestamp":1000.0}]`
-	newRefs := `[{"digest_id":1,"topic_id":10,"channel_id":"C1","timestamp":1000.0}]`
-
-	merged := mergeSourceRefs(existing, newRefs)
-	var refs []json.RawMessage
-	require.NoError(t, json.Unmarshal([]byte(merged), &refs))
-	assert.Len(t, refs, 1) // deduplicated
-}
-
-func TestMergeSourceRefsEmptyExisting(t *testing.T) {
-	newRefs := `[{"digest_id":1,"topic_id":10,"channel_id":"C1","timestamp":1000.0}]`
-	merged := mergeSourceRefs("", newRefs)
-	// json.Marshal re-serializes float64(1000) as "1000", so check parsed content
-	var refs []json.RawMessage
-	require.NoError(t, json.Unmarshal([]byte(merged), &refs))
-	assert.Len(t, refs, 1)
-
-	merged = mergeSourceRefs("[]", newRefs)
-	require.NoError(t, json.Unmarshal([]byte(merged), &refs))
-	assert.Len(t, refs, 1)
-}
-
-func TestParseTrackResult(t *testing.T) {
+func TestParseResult(t *testing.T) {
 	raw := `{
-		"new_tracks": [{"title": "Test track", "priority": "high", "source_topic_ids": [1, 2]}],
-		"updated_tracks": [{"track_id": 5, "title": "Updated", "new_source_topic_ids": [3]}]
+		"items": [{"text": "Test track", "priority": "high", "context": "Some context"}]
 	}`
 
-	result, err := parseTrackResult(raw)
+	result, err := parseResult(raw)
 	require.NoError(t, err)
-	assert.Len(t, result.NewTracks, 1)
-	assert.Equal(t, "Test track", result.NewTracks[0].Title)
-	assert.Len(t, result.UpdatedTracks, 1)
-	assert.Equal(t, 5, result.UpdatedTracks[0].TrackID)
+	assert.Len(t, result.Items, 1)
+	assert.Equal(t, "Test track", result.Items[0].Text)
 }
 
-func TestParseTrackResultInvalid(t *testing.T) {
-	_, err := parseTrackResult("bad json {{{")
+func TestParseResultInvalid(t *testing.T) {
+	_, err := parseResult("bad json {{{")
 	assert.Error(t, err)
 }
 
@@ -435,100 +371,67 @@ func TestRunDisabled(t *testing.T) {
 	assert.Equal(t, 0, updated)
 }
 
-func TestRunWithTopicsAndAI(t *testing.T) {
+func TestRunWithDigestsAndAI(t *testing.T) {
 	database := testDB(t)
 
-	// Seed channel and digest with topic (must be recent for GetUnlinkedTopics filter)
+	// Seed workspace with current user
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U2", Name: "bob", DisplayName: "Bob"}))
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
 
-	now := float64(time.Now().Unix())
+	// Insert a channel digest with a topic in the time window.
+	now := time.Now()
+	from := float64(now.Add(-2 * time.Hour).Unix())
+	to := float64(now.Unix())
 	_, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C1", Type: "channel",
-		PeriodFrom: now - 3600, PeriodTo: now,
-		Summary: "Test digest", MessageCount: 10, Model: "test",
+		PeriodFrom: from, PeriodTo: to,
+		Summary: "Discussion about API PR review", MessageCount: 5, Model: "test",
 	})
 	require.NoError(t, err)
 
-	// Insert a topic for this digest
 	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
-		VALUES (1, 0, 'API Discussion', 'Team discussed API v2 design', '[]', '[]', '[]', '[]')`)
+		VALUES (1, 0, 'API PR Review', 'Bob asked Alice to review the API pull request.', '[]',
+		'[{"text":"Review API PR","assignee":"@alice","status":"open"}]', '[]', '[]')`)
 	require.NoError(t, err)
 
-	// AI response that creates a new track
-	aiResponse := `{
-		"new_tracks": [{
-			"title": "API v2 design discussion",
-			"narrative": "The team is actively discussing API v2 design.",
-			"current_status": "Under discussion",
-			"participants": [{"user_id":"U1","name":"alice","role":"driver"}],
-			"timeline": [{"date":"2026-03-25","event":"Initial discussion","channel_id":"C1"}],
-			"key_messages": [],
+	// AI response — batch format.
+	ts := fmt.Sprintf("%d.000000", now.Add(-30*time.Minute).Unix())
+	aiResponse := `[{
+		"channel_id": "C1",
+		"items": [{
+			"text": "Review API PR",
+			"context": "Bob asked Alice to review the API pull request.",
+			"category": "code_review",
+			"ownership": "mine",
 			"priority": "medium",
-			"tags": ["api"],
-			"source_topic_ids": [1]
-		}],
-		"updated_tracks": []
-	}`
+			"requester": {"name": "@bob", "user_id": "U2"},
+			"participants": [{"name":"Bob","user_id":"U2","stance":"requester"}],
+			"source_refs": [{"ts":"` + ts + `","author":"@bob","text":"can you review the API PR?"}],
+			"tags": ["api"]
+		}]
+	}]`
 
 	gen := &mockGenerator{response: aiResponse}
-	pipe := New(database, testConfig(), gen, log.Default())
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
 
-	created, updated, err := pipe.Run(context.Background())
+	created, _, err := pipe.Run(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
-	assert.Equal(t, 0, updated)
 
 	// Verify track was stored
 	tracks, err := database.GetAllActiveTracks()
 	require.NoError(t, err)
 	require.Len(t, tracks, 1)
-	assert.Equal(t, "API v2 design discussion", tracks[0].Title)
-	assert.Equal(t, "medium", tracks[0].Priority)
-
-	// Verify source_refs
-	var refs []struct {
-		DigestID  int    `json:"digest_id"`
-		TopicID   int    `json:"topic_id"`
-		ChannelID string `json:"channel_id"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(tracks[0].SourceRefs), &refs))
-	assert.Len(t, refs, 1)
-	assert.Equal(t, 1, refs[0].DigestID)
-	assert.Equal(t, 1, refs[0].TopicID)
-	assert.Equal(t, "C1", refs[0].ChannelID)
-}
-
-func TestBuildSourceRefs(t *testing.T) {
-	pipe := &Pipeline{}
-	lookup := map[int]db.UnlinkedTopic{
-		1: {TopicID: 1, DigestID: 10, ChannelID: "C1", PeriodTo: 1000.0},
-		2: {TopicID: 2, DigestID: 11, ChannelID: "C2", PeriodTo: 2000.0},
-	}
-
-	result := pipe.buildSourceRefs([]int{1, 2}, lookup)
-
-	var refs []struct {
-		DigestID  int     `json:"digest_id"`
-		TopicID   int     `json:"topic_id"`
-		ChannelID string  `json:"channel_id"`
-		Timestamp float64 `json:"timestamp"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(result), &refs))
-	assert.Len(t, refs, 2)
-}
-
-func TestCollectChannelIDs(t *testing.T) {
-	pipe := &Pipeline{}
-	lookup := map[int]db.UnlinkedTopic{
-		1: {TopicID: 1, ChannelID: "C1"},
-		2: {TopicID: 2, ChannelID: "C1"},
-		3: {TopicID: 3, ChannelID: "C2"},
-	}
-
-	ids := pipe.collectChannelIDs([]int{1, 2, 3}, lookup)
-	assert.Contains(t, ids, "C1")
-	assert.Contains(t, ids, "C2")
-	assert.Len(t, ids, 2) // deduplicated
+	assert.Equal(t, "Review API PR", tracks[0].Text)
+	assert.Equal(t, "code_review", tracks[0].Category)
+	assert.Equal(t, "mine", tracks[0].Ownership)
+	assert.Equal(t, "U1", tracks[0].AssigneeUserID)
+	assert.Contains(t, tracks[0].ChannelIDs, "C1")
 }
 
 // Verify GetUnlinkedTopics returns only topics not linked to any track via source_refs.
@@ -559,7 +462,7 @@ func TestGetUnlinkedTopics(t *testing.T) {
 
 	// Now create a track that links to topic 1 (id=1)
 	_, err = database.UpsertTrack(db.Track{
-		Title:      "Linked track",
+		Text:       "Linked track",
 		Priority:   "medium",
 		SourceRefs: `[{"digest_id":1,"topic_id":1,"channel_id":"C1","timestamp":1000.0}]`,
 	})
@@ -570,4 +473,253 @@ func TestGetUnlinkedTopics(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, topics, 1)
 	assert.Equal(t, "Topic B", topics[0].Title)
+}
+
+// --- Batch & optimization tests ---
+
+func TestGroupDigestBatches(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		result := groupDigestBatches(nil, 10, 50)
+		assert.Nil(t, result)
+	})
+
+	t.Run("single batch", func(t *testing.T) {
+		entries := []digestEntry{
+			{channelID: "C1", topicCount: 2},
+			{channelID: "C2", topicCount: 3},
+		}
+		batches := groupDigestBatches(entries, 10, 50)
+		assert.Len(t, batches, 1)
+		assert.Len(t, batches[0], 2)
+	})
+
+	t.Run("split by channels", func(t *testing.T) {
+		entries := []digestEntry{
+			{channelID: "C1", topicCount: 1},
+			{channelID: "C2", topicCount: 1},
+			{channelID: "C3", topicCount: 1},
+		}
+		batches := groupDigestBatches(entries, 2, 100)
+		assert.Len(t, batches, 2)
+		assert.Len(t, batches[0], 2)
+		assert.Len(t, batches[1], 1)
+	})
+
+	t.Run("split by topics", func(t *testing.T) {
+		entries := []digestEntry{
+			{channelID: "C1", topicCount: 30},
+			{channelID: "C2", topicCount: 25},
+			{channelID: "C3", topicCount: 10},
+		}
+		batches := groupDigestBatches(entries, 10, 50)
+		// C1 (30) fits alone, C2 (25) would exceed 50 with C1, so new batch.
+		// C2 (25) + C3 (10) = 35 <= 50, so same batch.
+		assert.Len(t, batches, 2)
+		assert.Len(t, batches[0], 1) // C1
+		assert.Equal(t, "C1", batches[0][0].channelID)
+		assert.Len(t, batches[1], 2) // C2 + C3
+		assert.Equal(t, "C2", batches[1][0].channelID)
+		assert.Equal(t, "C3", batches[1][1].channelID)
+	})
+}
+
+func TestParseBatchTracksResult(t *testing.T) {
+	t.Run("valid array", func(t *testing.T) {
+		raw := `[{"channel_id":"C1","items":[{"text":"Do thing","priority":"high","context":"ctx"}]},{"channel_id":"C2","items":[]}]`
+		results, err := parseBatchTracksResult(raw)
+		require.NoError(t, err)
+		assert.Len(t, results, 1) // C2 filtered out (empty items)
+		assert.Equal(t, "C1", results[0].ChannelID)
+		assert.Len(t, results[0].Items, 1)
+	})
+
+	t.Run("empty array", func(t *testing.T) {
+		results, err := parseBatchTracksResult("[]")
+		require.NoError(t, err)
+		assert.Len(t, results, 0)
+	})
+
+	t.Run("markdown fences", func(t *testing.T) {
+		raw := "```json\n[{\"channel_id\":\"C1\",\"items\":[{\"text\":\"Test\",\"priority\":\"medium\",\"context\":\"c\"}]}]\n```"
+		results, err := parseBatchTracksResult(raw)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		_, err := parseBatchTracksResult("bad json [[[")
+		assert.Error(t, err)
+	})
+}
+
+func TestFormatCrossChannelTruncation(t *testing.T) {
+	database := testDB(t)
+
+	// Create 25 tracks with varying priorities.
+	for i := 0; i < 25; i++ {
+		priority := "low"
+		if i < 5 {
+			priority = "high"
+		} else if i < 15 {
+			priority = "medium"
+		}
+		_, err := database.UpsertTrack(db.Track{
+			Text:       fmt.Sprintf("Track %d", i),
+			Priority:   priority,
+			ChannelIDs: `["C_OTHER"]`,
+		})
+		require.NoError(t, err)
+	}
+
+	pipe := New(database, testConfig(), nil, log.Default())
+	result := pipe.formatCrossChannelItems(map[string]bool{"C_EXCLUDED": true}, "U1")
+
+	// Should contain truncation notice.
+	assert.Contains(t, result, "Showing top 20 of 25")
+
+	// Count track entries.
+	lines := strings.Split(result, "\n")
+	trackLines := 0
+	for _, l := range lines {
+		if strings.HasPrefix(l, "#") {
+			trackLines++
+		}
+	}
+	assert.Equal(t, 20, trackLines)
+}
+
+// routingMockGenerator routes responses based on whether the userMessage contains batch markers.
+type routingMockGenerator struct {
+	individualResponse string
+	batchResponse      string
+}
+
+func (m *routingMockGenerator) Generate(_ context.Context, _, userMessage, _ string) (string, *digest.Usage, string, error) {
+	resp := m.individualResponse
+	if strings.Contains(userMessage, "=== CHANNEL DIGESTS ===") {
+		resp = m.batchResponse
+	}
+	return resp, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.01}, "mock-session", nil
+}
+
+func TestBatchTracksIntegration(t *testing.T) {
+	database := testDB(t)
+
+	// Seed workspace.
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U2", Name: "bob", DisplayName: "Bob"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C2", Name: "frontend", Type: "public"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C3", Name: "infra", Type: "public"}))
+
+	now := time.Now()
+	from := float64(now.Add(-2 * time.Hour).Unix())
+	to := float64(now.Unix())
+
+	// C1: digest with 3 topics (high activity)
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: from, PeriodTo: to,
+		Summary: "Backend review discussions", MessageCount: 10, Model: "test",
+	})
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+			VALUES (1, ?, ?, 'Topic summary', '[]', '[]', '[]', '[]')`, i, fmt.Sprintf("Backend topic %d", i))
+		require.NoError(t, err)
+	}
+
+	// C2: digest with 1 topic (low activity)
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C2", Type: "channel",
+		PeriodFrom: from, PeriodTo: to,
+		Summary: "Frontend small discussion", MessageCount: 2, Model: "test",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+		VALUES (2, 0, 'Frontend task', 'Small channel task', '[]', '[]', '[]', '[]')`)
+	require.NoError(t, err)
+
+	// C3: digest with 1 topic
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C3", Type: "channel",
+		PeriodFrom: from, PeriodTo: to,
+		Summary: "Infra question", MessageCount: 1, Model: "test",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+		VALUES (3, 0, 'Infra check', 'Infrastructure question', '[]', '[]', '[]', '[]')`)
+	require.NoError(t, err)
+
+	// All channels go through unified batch processing now.
+	batchResponse := `[{"channel_id":"C1","items":[{"text":"Review backend code","context":"Bob asked for review","category":"code_review","ownership":"mine","priority":"medium"}]},{"channel_id":"C2","items":[{"text":"Frontend task","context":"From small channel","category":"task","ownership":"mine","priority":"low"}]},{"channel_id":"C3","items":[{"text":"Infra check","context":"Infrastructure question","category":"info_request","ownership":"mine","priority":"medium"}]}]`
+
+	gen := &routingMockGenerator{
+		individualResponse: batchResponse, // not used, but required by struct
+		batchResponse:      batchResponse,
+	}
+
+	cfg := testConfig()
+	cfg.AI.Workers = 2
+	pipe := New(database, cfg, gen, log.Default())
+
+	created, _, err := pipe.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 3, created) // all 3 from single batch
+
+	tracks, err := database.GetAllActiveTracks()
+	require.NoError(t, err)
+	assert.Len(t, tracks, 3)
+
+	// Verify we got tracks from all channels.
+	texts := map[string]bool{}
+	for _, tr := range tracks {
+		texts[tr.Text] = true
+	}
+	assert.True(t, texts["Review backend code"])
+	assert.True(t, texts["Frontend task"])
+	assert.True(t, texts["Infra check"])
+}
+
+func TestStoreTrackItems(t *testing.T) {
+	database := testDB(t)
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+
+	pipe := New(database, testConfig(), nil, log.Default())
+
+	items := []aiItem{
+		{
+			Text:      "Test track 1",
+			Context:   "Context 1",
+			Priority:  "high",
+			Category:  "task",
+			Ownership: "mine",
+		},
+		{
+			Text:      "Test track 2",
+			Context:   "Context 2",
+			Priority:  "medium",
+			Category:  "code_review",
+			Ownership: "mine",
+		},
+	}
+
+	usage := &digest.Usage{InputTokens: 200, OutputTokens: 100, CostUSD: 0.02}
+	stored := pipe.storeTrackItems(items, "U1", "C1", "general", usage, 1, 1000, 2000)
+	assert.Equal(t, 2, stored)
+
+	tracks, err := database.GetAllActiveTracks()
+	require.NoError(t, err)
+	assert.Len(t, tracks, 2)
+}
+
+func TestPriorityOrder(t *testing.T) {
+	assert.Equal(t, 0, priorityOrder("high"))
+	assert.Equal(t, 1, priorityOrder("medium"))
+	assert.Equal(t, 2, priorityOrder("low"))
+	assert.Equal(t, 2, priorityOrder("unknown"))
 }

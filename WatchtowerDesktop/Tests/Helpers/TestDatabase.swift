@@ -183,25 +183,33 @@ enum TestDatabase {
 
     static func insertTrack(
         _ db: Database,
-        title: String = "Fix the bug",
-        narrative: String = "Discussed in standup",
-        currentStatus: String = "Under investigation",
+        text: String = "Fix the bug",
+        context: String = "Discussed in standup",
+        category: String = "task",
+        ownership: String = "mine",
         priority: String = "medium",
         tags: String = "[]",
         channelIDs: String = "[\"C001\"]",
         sourceRefs: String = "[]",
         hasUpdates: Bool = false,
         participants: String = "[]",
-        timeline: String = "[]",
-        keyMessages: String = "[]",
+        requesterName: String = "",
+        blocking: String = "",
+        decisionSummary: String = "",
+        decisionOptions: String = "[]",
+        subItems: String = "[]",
+        relatedDigestIDs: String = "[]",
         model: String = "haiku"
     ) throws {
         try db.execute(sql: """
-            INSERT INTO tracks (title, narrative, current_status, priority, tags,
-                channel_ids, source_refs, has_updates, participants, timeline, key_messages, model)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [title, narrative, currentStatus, priority, tags,
-                             channelIDs, sourceRefs, hasUpdates ? 1 : 0, participants, timeline, keyMessages, model])
+            INSERT INTO tracks (text, context, category, ownership, priority, tags,
+                channel_ids, source_refs, has_updates, participants, requester_name,
+                blocking, decision_summary, decision_options, sub_items, related_digest_ids, model)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [text, context, category, ownership, priority, tags,
+                             channelIDs, sourceRefs, hasUpdates ? 1 : 0, participants,
+                             requesterName, blocking, decisionSummary, decisionOptions,
+                             subItems, relatedDigestIDs, model])
     }
 
     // MARK: - Schema
@@ -223,6 +231,7 @@ enum TestDatabase {
         email         TEXT NOT NULL DEFAULT '',
         is_bot        INTEGER NOT NULL DEFAULT 0,
         is_deleted    INTEGER NOT NULL DEFAULT 0,
+        is_bot_override INTEGER DEFAULT NULL,
         profile_json  TEXT NOT NULL DEFAULT '{}',
         updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
@@ -331,6 +340,19 @@ enum TestDatabase {
         PRIMARY KEY (digest_id, user_id, situation_idx)
     );
     CREATE INDEX IF NOT EXISTS idx_digest_participants_user ON digest_participants(user_id);
+    CREATE TABLE IF NOT EXISTS digest_topics (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        digest_id     INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
+        idx           INTEGER NOT NULL DEFAULT 0,
+        title         TEXT NOT NULL,
+        summary       TEXT NOT NULL DEFAULT '',
+        decisions     TEXT NOT NULL DEFAULT '[]',
+        action_items  TEXT NOT NULL DEFAULT '[]',
+        situations    TEXT NOT NULL DEFAULT '[]',
+        key_messages  TEXT NOT NULL DEFAULT '[]',
+        UNIQUE(digest_id, idx)
+    );
+    CREATE INDEX IF NOT EXISTS idx_digest_topics_digest ON digest_topics(digest_id);
     CREATE TABLE IF NOT EXISTS decision_reads (
         digest_id    INTEGER NOT NULL,
         decision_idx INTEGER NOT NULL,
@@ -387,16 +409,27 @@ enum TestDatabase {
     );
     CREATE TABLE IF NOT EXISTS tracks (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-        title               TEXT NOT NULL DEFAULT '',
-        narrative           TEXT NOT NULL DEFAULT '',
-        current_status      TEXT NOT NULL DEFAULT '',
+        assignee_user_id    TEXT NOT NULL DEFAULT '',
+        text                TEXT NOT NULL,
+        context             TEXT NOT NULL DEFAULT '',
+        category            TEXT NOT NULL DEFAULT 'task',
+        ownership           TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
+        ball_on             TEXT NOT NULL DEFAULT '',
+        owner_user_id       TEXT NOT NULL DEFAULT '',
+        requester_name      TEXT NOT NULL DEFAULT '',
+        requester_user_id   TEXT NOT NULL DEFAULT '',
+        blocking            TEXT NOT NULL DEFAULT '',
+        decision_summary    TEXT NOT NULL DEFAULT '',
+        decision_options    TEXT NOT NULL DEFAULT '[]',
+        sub_items           TEXT NOT NULL DEFAULT '[]',
         participants        TEXT NOT NULL DEFAULT '[]',
-        timeline            TEXT NOT NULL DEFAULT '[]',
-        key_messages        TEXT NOT NULL DEFAULT '[]',
-        priority            TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+        source_refs         TEXT NOT NULL DEFAULT '[]',
         tags                TEXT NOT NULL DEFAULT '[]',
         channel_ids         TEXT NOT NULL DEFAULT '[]',
-        source_refs         TEXT NOT NULL DEFAULT '[]',
+        related_digest_ids  TEXT NOT NULL DEFAULT '[]',
+        priority            TEXT NOT NULL DEFAULT 'medium',
+        due_date            REAL,
+        fingerprint         TEXT NOT NULL DEFAULT '[]',
         read_at             TEXT,
         has_updates         INTEGER NOT NULL DEFAULT 0,
         model               TEXT NOT NULL DEFAULT '',
@@ -407,9 +440,59 @@ enum TestDatabase {
         created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS tasks (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        text            TEXT NOT NULL,
+        intent          TEXT NOT NULL DEFAULT '',
+        status          TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
+        priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+        ownership       TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
+        ball_on         TEXT NOT NULL DEFAULT '',
+        due_date        TEXT NOT NULL DEFAULT '',
+        snooze_until    TEXT NOT NULL DEFAULT '',
+        blocking        TEXT NOT NULL DEFAULT '',
+        tags            TEXT NOT NULL DEFAULT '[]',
+        sub_items       TEXT NOT NULL DEFAULT '[]',
+        source_type     TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('track','digest','briefing','manual','chat','inbox')),
+        source_id       TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+    CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+    CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS inbox_items (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id      TEXT NOT NULL,
+        message_ts      TEXT NOT NULL,
+        thread_ts       TEXT NOT NULL DEFAULT '',
+        sender_user_id  TEXT NOT NULL,
+        trigger_type    TEXT NOT NULL CHECK(trigger_type IN ('mention','dm')),
+        snippet         TEXT NOT NULL DEFAULT '',
+        permalink       TEXT NOT NULL DEFAULT '',
+        status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','dismissed','snoozed')),
+        priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+        ai_reason       TEXT NOT NULL DEFAULT '',
+        resolved_reason TEXT NOT NULL DEFAULT '',
+        snooze_until    TEXT NOT NULL DEFAULT '',
+        task_id         INTEGER,
+        read_at         TEXT,
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        UNIQUE(channel_id, message_ts)
+    );
+    CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_items(status);
+    CREATE INDEX IF NOT EXISTS idx_inbox_priority ON inbox_items(priority);
+    CREATE INDEX IF NOT EXISTS idx_inbox_updated ON inbox_items(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_inbox_sender ON inbox_items(sender_user_id);
+    CREATE INDEX IF NOT EXISTS idx_inbox_snooze ON inbox_items(snooze_until);
+
     CREATE TABLE IF NOT EXISTS feedback (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing')),
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox')),
         entity_id   TEXT NOT NULL,
         rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
         comment     TEXT NOT NULL DEFAULT '',
@@ -526,6 +609,42 @@ enum TestDatabase {
     );
     CREATE INDEX IF NOT EXISTS idx_briefings_user_date ON briefings(user_id, date DESC);
 
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        pipeline         TEXT NOT NULL,
+        source           TEXT NOT NULL DEFAULT 'cli',
+        model            TEXT NOT NULL DEFAULT '',
+        status           TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'done', 'error')),
+        error_msg        TEXT NOT NULL DEFAULT '',
+        items_found      INTEGER NOT NULL DEFAULT 0,
+        input_tokens     INTEGER NOT NULL DEFAULT 0,
+        output_tokens    INTEGER NOT NULL DEFAULT 0,
+        cost_usd         REAL NOT NULL DEFAULT 0,
+        total_api_tokens INTEGER NOT NULL DEFAULT 0,
+        period_from      REAL,
+        period_to        REAL,
+        started_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        finished_at      TEXT,
+        duration_seconds REAL NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS pipeline_steps (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id           INTEGER NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+        step             INTEGER NOT NULL,
+        total            INTEGER NOT NULL,
+        status           TEXT NOT NULL DEFAULT '',
+        channel_id       TEXT NOT NULL DEFAULT '',
+        channel_name     TEXT NOT NULL DEFAULT '',
+        input_tokens     INTEGER NOT NULL DEFAULT 0,
+        output_tokens    INTEGER NOT NULL DEFAULT 0,
+        cost_usd         REAL NOT NULL DEFAULT 0,
+        total_api_tokens INTEGER NOT NULL DEFAULT 0,
+        message_count    INTEGER NOT NULL DEFAULT 0,
+        period_from      REAL,
+        period_to        REAL,
+        duration_seconds REAL NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
     CREATE TABLE IF NOT EXISTS channel_settings (
         channel_id         TEXT PRIMARY KEY,
         is_muted_for_llm   INTEGER NOT NULL DEFAULT 0,
@@ -667,6 +786,58 @@ enum TestDatabase {
                              model, inputTokens, outputTokens, costUSD, promptVersion])
     }
 
-    // MARK: - Chain Fixtures
+    // MARK: - Task Fixtures
 
+    static func insertTask(
+        _ db: Database,
+        text: String = "Review PR",
+        intent: String = "",
+        status: String = "todo",
+        priority: String = "medium",
+        ownership: String = "mine",
+        ballOn: String = "",
+        dueDate: String = "",
+        snoozeUntil: String = "",
+        blocking: String = "",
+        tags: String = "[]",
+        subItems: String = "[]",
+        sourceType: String = "manual",
+        sourceID: String = ""
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO tasks (text, intent, status, priority, ownership, ball_on,
+                due_date, snooze_until, blocking, tags, sub_items, source_type, source_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [text, intent, status, priority, ownership, ballOn,
+                             dueDate, snoozeUntil, blocking, tags, subItems, sourceType, sourceID])
+    }
+
+    // MARK: - Inbox Fixtures
+
+    static func insertInboxItem(
+        _ db: Database,
+        channelID: String = "C001",
+        messageTS: String = "1700000000.000100",
+        threadTS: String = "",
+        senderUserID: String = "U002",
+        triggerType: String = "mention",
+        snippet: String = "Hey, can you review this?",
+        permalink: String = "",
+        status: String = "pending",
+        priority: String = "medium",
+        aiReason: String = "",
+        resolvedReason: String = "",
+        snoozeUntil: String = "",
+        taskID: Int? = nil,
+        readAt: String? = nil
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
+                trigger_type, snippet, permalink, status, priority, ai_reason,
+                resolved_reason, snooze_until, task_id, read_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [channelID, messageTS, threadTS, senderUserID,
+                             triggerType, snippet, permalink, status, priority, aiReason,
+                             resolvedReason, snoozeUntil, taskID, readAt])
+    }
 }
