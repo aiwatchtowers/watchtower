@@ -25,11 +25,14 @@ import (
 type mockGenerator struct {
 	response string
 	err      error
+	mu       sync.Mutex
 	calls    int
 }
 
 func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *Usage, string, error) {
+	m.mu.Lock()
 	m.calls++
+	m.mu.Unlock()
 	return m.response, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", m.err
 }
 
@@ -603,13 +606,16 @@ type capturingGenerator struct {
 	response             string
 	capturedPrompt       string
 	capturedSystemPrompt string
+	mu                   sync.Mutex
 	calls                int
 }
 
 func (m *capturingGenerator) Generate(_ context.Context, systemPrompt, prompt, _ string) (string, *Usage, string, error) {
+	m.mu.Lock()
 	m.capturedSystemPrompt = systemPrompt
 	m.capturedPrompt = systemPrompt + "\n" + prompt // combined for backward-compatible assertions
 	m.calls++
+	m.mu.Unlock()
 	return m.response, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
 }
 
