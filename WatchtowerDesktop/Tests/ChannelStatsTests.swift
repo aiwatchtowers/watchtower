@@ -11,11 +11,10 @@ final class ChannelStatsTests: XCTestCase {
         try db.write { db in
             let settings = ChannelSettings(channelID: "C001", isMutedForLLM: true, isFavorite: false)
             try settings.insert(db)
-            let fetched = try ChannelSettings.fetchOne(db, key: "C001")
-            XCTAssertNotNil(fetched)
-            XCTAssertEqual(fetched?.channelID, "C001")
-            XCTAssertTrue(fetched!.isMutedForLLM)
-            XCTAssertFalse(fetched!.isFavorite)
+            let fetched = try XCTUnwrap(ChannelSettings.fetchOne(db, key: "C001"))
+            XCTAssertEqual(fetched.channelID, "C001")
+            XCTAssertTrue(fetched.isMutedForLLM)
+            XCTAssertFalse(fetched.isFavorite)
         }
     }
 
@@ -130,14 +129,14 @@ final class ChannelStatsTests: XCTestCase {
     func testMuteSkippedWhenAlreadyMuted() {
         let stat = makeStat(totalMessages: 100, botRatio: 0.9, isMutedForLLM: true)
         let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
-        XCTAssertTrue(recs.filter { $0.action == .mute }.isEmpty)
+        XCTAssertFalse(recs.contains { $0.action == .mute })
     }
 
     func testMuteSkippedWhenFavorite() {
         // Go: skip if already favorite
         let stat = makeStat(totalMessages: 100, botRatio: 0.9, isFavorite: true)
         let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
-        XCTAssertTrue(recs.filter { $0.action == .mute }.isEmpty)
+        XCTAssertFalse(recs.contains { $0.action == .mute })
     }
 
     func testLeaveNoUserMessages() {
@@ -162,19 +161,19 @@ final class ChannelStatsTests: XCTestCase {
     func testLeaveSkippedForDM() {
         let stat = makeStat(type: "dm", isMember: true, userMessages: 0)
         let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
-        XCTAssertTrue(recs.filter { $0.action == .leave }.isEmpty)
+        XCTAssertFalse(recs.contains { $0.action == .leave })
     }
 
     func testLeaveSkippedForWatched() {
         let stat = makeStat(type: "public", isMember: true, userMessages: 0, isWatched: true)
         let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
-        XCTAssertTrue(recs.filter { $0.action == .leave }.isEmpty)
+        XCTAssertFalse(recs.contains { $0.action == .leave })
     }
 
     func testLeaveSkippedForFavorite() {
         let stat = makeStat(type: "public", isMember: true, userMessages: 0, isFavorite: true)
         let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
-        XCTAssertTrue(recs.filter { $0.action == .leave }.isEmpty)
+        XCTAssertFalse(recs.contains { $0.action == .leave })
     }
 
     func testFavoriteHighEngagement() {
@@ -198,7 +197,7 @@ final class ChannelStatsTests: XCTestCase {
     func testFavoriteSkippedWhenAlreadyFavorite() {
         let stat = makeStat(userMessages: 15, mentionCount: 5, isFavorite: true)
         let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
-        XCTAssertTrue(recs.filter { $0.action == .favorite }.isEmpty)
+        XCTAssertFalse(recs.contains { $0.action == .favorite })
     }
 
     func testNoDoubleRecommendation() {
@@ -218,20 +217,20 @@ final class ChannelStatsTests: XCTestCase {
             try TestDatabase.insertChannel(db, id: "C001", name: "test")
             try ChannelStatsQueries.toggleMuteForLLM(db, channelID: "C001", muted: true)
         }
-        let settings = try db.read { try ChannelSettings.fetchOne($0, key: "C001") }
-        XCTAssertTrue(settings!.isMutedForLLM)
-        XCTAssertFalse(settings!.isFavorite)
+        let settings = try XCTUnwrap(db.read { try ChannelSettings.fetchOne($0, key: "C001") })
+        XCTAssertTrue(settings.isMutedForLLM)
+        XCTAssertFalse(settings.isFavorite)
 
         try db.write { try ChannelStatsQueries.toggleMuteForLLM($0, channelID: "C001", muted: false) }
-        let updated = try db.read { try ChannelSettings.fetchOne($0, key: "C001") }
-        XCTAssertFalse(updated!.isMutedForLLM)
+        let updated = try XCTUnwrap(db.read { try ChannelSettings.fetchOne($0, key: "C001") })
+        XCTAssertFalse(updated.isMutedForLLM)
     }
 
     func testToggleFavorite() throws {
         let db = try TestDatabase.create()
         try db.write { try ChannelStatsQueries.toggleFavorite($0, channelID: "C001", favorite: true) }
-        let settings = try db.read { try ChannelSettings.fetchOne($0, key: "C001") }
-        XCTAssertTrue(settings!.isFavorite)
+        let settings = try XCTUnwrap(db.read { try ChannelSettings.fetchOne($0, key: "C001") })
+        XCTAssertTrue(settings.isFavorite)
     }
 
     func testTogglePreservesOtherSetting() throws {
@@ -240,9 +239,9 @@ final class ChannelStatsTests: XCTestCase {
             try ChannelStatsQueries.toggleMuteForLLM(db, channelID: "C001", muted: true)
             try ChannelStatsQueries.toggleFavorite(db, channelID: "C001", favorite: true)
         }
-        let settings = try db.read { try ChannelSettings.fetchOne($0, key: "C001") }
-        XCTAssertTrue(settings!.isMutedForLLM)
-        XCTAssertTrue(settings!.isFavorite)
+        let settings = try XCTUnwrap(db.read { try ChannelSettings.fetchOne($0, key: "C001") })
+        XCTAssertTrue(settings.isMutedForLLM)
+        XCTAssertTrue(settings.isFavorite)
     }
 
     // MARK: - Workspace / Current User
@@ -367,9 +366,12 @@ final class ChannelStatsTests: XCTestCase {
             try TestDatabase.insertWorkspace(db, id: "T001")
             try TestDatabase.insertChannel(db, id: "C001", name: "general")
             // Digest with topic that has decisions
-            try TestDatabase.insertDigest(db, channelID: "C001",
+            try TestDatabase.insertDigest(
+                db,
+                channelID: "C001",
                 periodFrom: Date().timeIntervalSince1970 - 86400,
-                periodTo: Date().timeIntervalSince1970)
+                periodTo: Date().timeIntervalSince1970
+            )
             try db.execute(sql: """
                 INSERT INTO digest_topics (digest_id, idx, title, decisions)
                 VALUES (1, 0, 'topic', '[{"text":"decide X"}]')
@@ -383,7 +385,7 @@ final class ChannelStatsTests: XCTestCase {
         }
         let signals = try db.read { try ChannelStatsQueries.fetchValueSignals($0) }
         XCTAssertEqual(signals.count, 1)
-        let vs = signals["C001"]!
+        let vs = try XCTUnwrap(signals["C001"])
         XCTAssertEqual(vs.decisionCount, 1)
         XCTAssertEqual(vs.activeTrackCount, 1)
         XCTAssertEqual(vs.taskCount, 1)
@@ -513,8 +515,8 @@ final class ChannelStatsTests: XCTestCase {
             "digest_count": digestCount,
             "messages_since_digest": messagesSinceDigest
         ]
-        if let d = lastDigestAt {
-            json["last_digest_at"] = d
+        if let digestAt = lastDigestAt {
+            json["last_digest_at"] = digestAt
         }
         // swiftlint:disable:next force_try
         let data = try! JSONSerialization.data(withJSONObject: json)

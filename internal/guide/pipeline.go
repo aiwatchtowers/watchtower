@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	DefaultWindowDays      = 7
-	DefaultMinMessages     = 3
-	DefaultBatchUsers      = 10
-	DefaultFullBatchUsers  = 5 // smaller batches for full-data users (more context per user)
+	DefaultWindowDays     = 7
+	DefaultMinMessages    = 3
+	DefaultBatchUsers     = 10
+	DefaultFullBatchUsers = 5 // smaller batches for full-data users (more context per user)
 )
 
 // PeopleCardResult is the AI output for a unified people card.

@@ -57,7 +57,7 @@ func (db *DB) FindPendingInboxByThread(channelID, threadTS string) (int, error) 
 		ORDER BY created_at DESC LIMIT 1`,
 		channelID, threadTS).Scan(&id)
 	if err != nil {
-		return 0, nil // not found
+		return 0, nil //nolint:nilerr // not found is not an error
 	}
 	return id, nil
 }

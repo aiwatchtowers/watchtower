@@ -161,7 +161,9 @@ final class TokenUsageQueryTests: XCTestCase {
 
     // Helper to create TokenUsageRow in-memory (no DB roundtrip needed)
     private func makeRow(pipeline: String, model: String, cost: Double) -> TokenUsageRow {
-        TokenUsageRow(pipeline: pipeline, model: model, calls: 1,
-                      inputTokens: 100, outputTokens: 50, costUSD: cost, totalApiTokens: 200)
+        TokenUsageRow(
+            pipeline: pipeline, model: model, calls: 1,
+            inputTokens: 100, outputTokens: 50, costUSD: cost, totalApiTokens: 200
+        )
     }
 }

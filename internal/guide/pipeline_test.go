@@ -459,8 +459,8 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "alice")  // Will be low-data (batch)
-	seedUser(t, database, "U2", "bob")    // Will be full-data (individual)
+	seedUser(t, database, "U1", "alice") // Will be low-data (batch)
+	seedUser(t, database, "U2", "bob")   // Will be full-data (individual)
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -484,9 +484,9 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 		`[{"topic":"Topic A","type":"collaboration","participants":[{"user_id":"U1","role":"contributor"},{"user_id":"U2","role":"lead"}],"dynamic":"worked together","outcome":"done","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic B","type":"knowledge_transfer","participants":[{"user_id":"U2","role":"author"}],"dynamic":"shared docs","outcome":"published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic C","type":"decision_deadlock","participants":[{"user_id":"U2","role":"mediator"}],"dynamic":"resolved debate","outcome":"agreed","red_flags":[],"observations":[],"message_refs":[]}]`)
 
 	gen := &multiMockGenerator{
-		batchResponse: `[{"user_id":"U1","summary":"Low activity contributor","communication_style":"observer","decision_role":"contributor","red_flags":[],"highlights":["Responsive"],"accomplishments":[],"communication_guide":"Use async","decision_style":"Limited data","tactics":["Follow up in thread"]},{"user_id":"U2","summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}]`,
+		batchResponse:      `[{"user_id":"U1","summary":"Low activity contributor","communication_style":"observer","decision_role":"contributor","red_flags":[],"highlights":["Responsive"],"accomplishments":[],"communication_guide":"Use async","decision_style":"Limited data","tactics":["Follow up in thread"]},{"user_id":"U2","summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}]`,
 		individualResponse: `{"summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}`,
-		teamResponse: `{"summary":"Team is healthy","attention":[],"tips":["Use threads"]}`,
+		teamResponse:       `{"summary":"Team is healthy","attention":[],"tips":["Use threads"]}`,
 	}
 
 	pipe := New(database, cfg, gen, logger)
@@ -525,8 +525,8 @@ func TestPipeline_BatchFallback(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "alice")  // Low-data → batch
-	seedUser(t, database, "U2", "bob")    // Low-data → batch
+	seedUser(t, database, "U1", "alice") // Low-data → batch
+	seedUser(t, database, "U2", "bob")   // Low-data → batch
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())

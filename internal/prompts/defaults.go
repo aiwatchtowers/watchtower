@@ -6,21 +6,21 @@ package prompts
 // in digest, tracks, and analysis packages. They serve as the
 // initial seed and fallback when no DB version exists.
 var Defaults = map[string]string{
-	DigestChannel:   defaultDigestChannel,
-	DigestDaily:     defaultDigestDaily,
-	DigestWeekly:    defaultDigestWeekly,
-	DigestPeriod:    defaultDigestPeriod,
-	TracksExtract:   defaultTracksExtract,
-	TracksUpdate:    defaultTracksUpdate,
-	GuideUser:       defaultGuideUser,
-	GuidePeriod:     defaultGuidePeriod,
-	PeopleReduce:    defaultPeopleReduce,
-	PeopleTeam:      defaultPeopleTeam,
-	BriefingDaily:   defaultBriefingDaily,
+	DigestChannel:      defaultDigestChannel,
+	DigestDaily:        defaultDigestDaily,
+	DigestWeekly:       defaultDigestWeekly,
+	DigestPeriod:       defaultDigestPeriod,
+	TracksExtract:      defaultTracksExtract,
+	TracksUpdate:       defaultTracksUpdate,
+	GuideUser:          defaultGuideUser,
+	GuidePeriod:        defaultGuidePeriod,
+	PeopleReduce:       defaultPeopleReduce,
+	PeopleTeam:         defaultPeopleTeam,
+	BriefingDaily:      defaultBriefingDaily,
 	InboxPrioritize:    defaultInboxPrioritize,
-	DigestChannelBatch:  defaultDigestChannelBatch,
-	TracksExtractBatch:  defaultTracksExtractBatch,
-	PeopleBatch:         defaultPeopleBatch,
+	DigestChannelBatch: defaultDigestChannelBatch,
+	TracksExtractBatch: defaultTracksExtractBatch,
+	PeopleBatch:        defaultPeopleBatch,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -47,18 +47,18 @@ var AllIDs = []string{
 // prompts in the DB whose version is lower than the default version, unless
 // the user has customized the prompt (detected by comparing template text).
 var DefaultVersions = map[string]int{
-	DigestChannel:   3, // v3: topics as structured objects (title, summary, decisions, etc.)
-	DigestDaily:     1,
-	DigestWeekly:    1,
-	DigestPeriod:    1,
-	TracksExtract:   1, // v1: per-channel extraction with cross-channel merge
+	DigestChannel:      3, // v3: topics as structured objects (title, summary, decisions, etc.)
+	DigestDaily:        1,
+	DigestWeekly:       1,
+	DigestPeriod:       1,
+	TracksExtract:      1, // v1: per-channel extraction with cross-channel merge
 	TracksUpdate:       1, // v1: check tracks for updates from new messages
 	TracksExtractBatch: 2, // v2: digest-based input instead of raw messages
-	GuideUser:       1,
-	GuidePeriod:     1,
-	PeopleReduce:    1,
-	PeopleTeam:      1,
-	BriefingDaily:   3, // v3: inbox integration
+	GuideUser:          1,
+	GuidePeriod:        1,
+	PeopleReduce:       1,
+	PeopleTeam:         1,
+	BriefingDaily:      3, // v3: inbox integration
 	InboxPrioritize:    2, // v2: richer context (age, sender role, replies)
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
@@ -66,18 +66,18 @@ var DefaultVersions = map[string]int{
 
 // Descriptions maps prompt IDs to human-readable descriptions.
 var Descriptions = map[string]string{
-	DigestChannel:   "Channel digest — per-channel message analysis",
-	DigestDaily:     "Daily rollup — cross-channel daily summary",
-	DigestWeekly:    "Weekly trends — week-over-week analysis",
-	DigestPeriod:    "Period summary — comprehensive period overview",
-	TracksExtract:   "Track extraction — per-channel action item extraction with cross-channel merge",
+	DigestChannel:      "Channel digest — per-channel message analysis",
+	DigestDaily:        "Daily rollup — cross-channel daily summary",
+	DigestWeekly:       "Weekly trends — week-over-week analysis",
+	DigestPeriod:       "Period summary — comprehensive period overview",
+	TracksExtract:      "Track extraction — per-channel action item extraction with cross-channel merge",
 	TracksUpdate:       "Track update check — detect meaningful updates for existing tracks",
 	TracksExtractBatch: "Batch track extraction — multi-channel extraction for low-activity channels",
-	GuideUser:       "Communication guide — personal coaching per user",
-	GuidePeriod:     "Team guide — cross-user communication tips",
-	PeopleReduce:    "People card — unified profile from signals",
-	PeopleTeam:      "Team summary — cross-user attention & tips",
-	BriefingDaily:   "Daily briefing — personalized morning summary",
+	GuideUser:          "Communication guide — personal coaching per user",
+	GuidePeriod:        "Team guide — cross-user communication tips",
+	PeopleReduce:       "People card — unified profile from signals",
+	PeopleTeam:         "Team summary — cross-user attention & tips",
+	BriefingDaily:      "Daily briefing — personalized morning summary",
 	InboxPrioritize:    "Inbox prioritization — AI priority + auto-resolve for inbox items",
 	DigestChannelBatch: "Channel batch digest — multi-channel analysis for low-activity channels",
 	PeopleBatch:        "People batch cards — lightweight cards for low-data users in one AI call",

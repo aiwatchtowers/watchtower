@@ -2089,8 +2089,8 @@ func TestFallbackPromptFormatVerbs(t *testing.T) {
 		{"channelDigestPrompt", channelDigestPrompt, 7},           // channelName, fromStr, toStr, profileCtx, langInstr, previousCtx, messages
 		{"channelBatchDigestPrompt", channelBatchDigestPrompt, 6}, // fromStr, toStr, profileCtx, langInstr, prevCtxNote, channelBlocks
 		{"dailyRollupPrompt", dailyRollupPrompt, 5},               // dateStr, profileCtx, langInstr, previousCtx, channelInput
-		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 7},   // date, fromStr, toStr, profileCtx, langInstr, previousCtx, dailies
-		{"periodSummaryPrompt", periodSummaryPrompt, 5}, // fromStr, toStr, profileCtx, langInstr, digests
+		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 7},             // date, fromStr, toStr, profileCtx, langInstr, previousCtx, dailies
+		{"periodSummaryPrompt", periodSummaryPrompt, 5},           // fromStr, toStr, profileCtx, langInstr, digests
 	}
 
 	for _, tt := range tests {

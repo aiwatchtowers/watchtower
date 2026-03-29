@@ -279,7 +279,6 @@ func TestSanitize(t *testing.T) {
 	}
 }
 
-
 func TestCleanJSON(t *testing.T) {
 	tests := []struct {
 		name     string

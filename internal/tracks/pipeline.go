@@ -99,8 +99,8 @@ type Pipeline struct {
 	channelNames       map[string]string
 	userNames          map[string]string
 	profile            *db.UserProfile
-	crossChannelCache  string       // pre-formatted cross-channel section
-	allActiveTracksRef []db.Track   // cached active tracks for the run
+	crossChannelCache  string     // pre-formatted cross-channel section
+	allActiveTracksRef []db.Track // cached active tracks for the run
 }
 
 // New creates a new tracks pipeline.
@@ -366,7 +366,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to flo
 	p.LastStepDurationSeconds = 0 // reset to avoid duplicate step recording on final progress
 	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for @%s across %d channels", totalStored, userName, len(allEntries)))
 	p.logger.Printf("tracks: %d tracks for @%s from %d channels", totalStored, userName, len(allEntries))
-	return totalStored, nil
+	return totalStored, nil //nolint:nilerr // partial results returned; per-batch errors logged above
 }
 
 // digestEntry represents a channel's digest data for batch processing.
@@ -382,7 +382,6 @@ type digestEntry struct {
 // Returns the number of tracks successfully stored/updated.
 func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelName string,
 	usage *digest.Usage, promptVersion int, from, to float64) int {
-
 	// Divide token cost across items.
 	var inputTokens, outputTokens int
 	var costUSD float64
@@ -600,7 +599,6 @@ func parseBatchTracksResult(raw string) ([]batchChannelResult, error) {
 // generateBatchTracks processes multiple channels' digest data in a single LLM call.
 func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntry,
 	userID, userName string, from, to float64) (int, error) {
-
 	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
 	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
 

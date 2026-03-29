@@ -11,8 +11,8 @@ type SyncResult struct {
 	StartedAt       time.Time `json:"started_at"`
 	FinishedAt      time.Time `json:"finished_at"`
 	DurationSecs    float64   `json:"duration_secs"`
-	MessagesFetched int    `json:"messages_fetched"`
-	Error           string `json:"error,omitempty"`
+	MessagesFetched int       `json:"messages_fetched"`
+	Error           string    `json:"error,omitempty"`
 }
 
 // ResultFromSnapshot builds a SyncResult from a progress snapshot.

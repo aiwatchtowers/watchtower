@@ -243,7 +243,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	resp, err := parseCLIOutput(output)
 	if err != nil {
 		// Fallback: treat as plain text if JSON parsing fails (e.g. old CLI version)
-		return strings.TrimRight(string(output), "\n"), nil, nil
+		return strings.TrimRight(string(output), "\n"), nil, nil //nolint:nilerr // intentional fallback to plain text
 	}
 
 	if resp.IsError {

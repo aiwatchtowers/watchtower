@@ -337,7 +337,9 @@ final class BackgroundTaskManager {
         // Only record completed steps: must have step_duration_seconds > 0
         // and status containing "done" (filters out rollup progress noise).
         #if DEBUG
-        print("[BTM] \(kind.rawValue) progress: done=\(json.done)/\(json.total) status=\(json.status ?? "nil") stepDur=\(json.stepDurationSeconds ?? -1)")
+        let statusStr = json.status ?? "nil"
+        let stepDur = json.stepDurationSeconds ?? -1
+        print("[BTM] \(kind.rawValue) progress: done=\(json.done)/\(json.total) status=\(statusStr) stepDur=\(stepDur)")
         #endif
         guard let stepDur = json.stepDurationSeconds, stepDur > 0,
               let status = json.status, status.contains("done") else { return }

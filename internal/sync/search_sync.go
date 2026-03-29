@@ -14,7 +14,6 @@ import (
 	"github.com/slack-go/slack"
 )
 
-
 // searchChannelType maps a search result CtxChannel to our type string.
 func searchChannelType(ch slack.CtxChannel) string {
 	if ch.IsMPIM {

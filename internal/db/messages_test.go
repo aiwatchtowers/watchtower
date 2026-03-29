@@ -249,8 +249,6 @@ func TestGetAllThreadParentsEmpty(t *testing.T) {
 	assert.Empty(t, parents)
 }
 
-
-
 func TestUpsertMessageUnicode(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

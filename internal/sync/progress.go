@@ -185,8 +185,8 @@ type Snapshot struct {
 	UserProfilesDone    int
 	MsgChannelsTotal    int
 	MsgChannelsDone     int
-	MessagesFetched int
-	PhaseStartTime  time.Time
+	MessagesFetched     int
+	PhaseStartTime      time.Time
 	ChannelsSkippedInfo string
 }
 
@@ -210,8 +210,8 @@ func (p *Progress) Snapshot() Snapshot {
 		UserProfilesDone:    p.userProfilesDone,
 		MsgChannelsTotal:    p.msgChannelsTotal,
 		MsgChannelsDone:     p.msgChannelsDone,
-		MessagesFetched: p.messagesFetched,
-		PhaseStartTime:  p.phaseStartTime,
+		MessagesFetched:     p.messagesFetched,
+		PhaseStartTime:      p.phaseStartTime,
 		ChannelsSkippedInfo: p.channelsSkippedInfo,
 	}
 }
@@ -228,8 +228,8 @@ type JSONSnapshot struct {
 	MessagesFetched     int     `json:"messages_fetched"`
 	MsgChannelsDone     int     `json:"msg_channels_done"`
 	MsgChannelsTotal    int     `json:"msg_channels_total"`
-	UserProfilesDone  int `json:"user_profiles_done"`
-	UserProfilesTotal int `json:"user_profiles_total"`
+	UserProfilesDone    int     `json:"user_profiles_done"`
+	UserProfilesTotal   int     `json:"user_profiles_total"`
 }
 
 // JSON returns a JSON-encoded progress line.
@@ -246,8 +246,8 @@ func (p *Progress) JSON() []byte {
 		MessagesFetched:     snap.MessagesFetched,
 		MsgChannelsDone:     snap.MsgChannelsDone,
 		MsgChannelsTotal:    snap.MsgChannelsTotal,
-		UserProfilesDone:  snap.UserProfilesDone,
-		UserProfilesTotal: snap.UserProfilesTotal,
+		UserProfilesDone:    snap.UserProfilesDone,
+		UserProfilesTotal:   snap.UserProfilesTotal,
 	}
 	data, _ := json.Marshal(j)
 	return data

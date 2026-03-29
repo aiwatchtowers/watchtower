@@ -1477,16 +1477,16 @@ final class BackgroundTaskManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testTotalTokensAndCost() {
+    func testTotalTokensAndCost() throws {
         let manager = BackgroundTaskManager()
 
         // Totals now come from accumulated progress (not step history sum).
         var digestState = BackgroundTaskManager.TaskState()
-        digestState.progress = decodeProgress("""
+        digestState.progress = try decodeProgress("""
             {"pipeline":"digests","done":2,"total":5,"status":"","input_tokens":300,"output_tokens":150,"cost_usd":0.003,"finished":false}
             """)
         var peopleState = BackgroundTaskManager.TaskState()
-        peopleState.progress = decodeProgress("""
+        peopleState.progress = try decodeProgress("""
             {"pipeline":"people","done":1,"total":3,"status":"","input_tokens":300,"output_tokens":150,"cost_usd":0.003,"finished":false}
             """)
         manager.tasks[.digests] = digestState
@@ -1497,8 +1497,8 @@ final class BackgroundTaskManagerTests: XCTestCase {
         XCTAssertEqual(manager.totalCostUsd, 0.006, accuracy: 0.0001)
     }
 
-    private func decodeProgress(_ json: String) -> InsightProgressData {
-        try! JSONDecoder().decode(InsightProgressData.self, from: Data(json.utf8))
+    private func decodeProgress(_ json: String) throws -> InsightProgressData {
+        try JSONDecoder().decode(InsightProgressData.self, from: Data(json.utf8))
     }
 
     @MainActor
