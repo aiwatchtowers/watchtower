@@ -326,8 +326,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
     ownership       TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
     ball_on         TEXT NOT NULL DEFAULT '',
-    due_date        TEXT NOT NULL DEFAULT '',
-    snooze_until    TEXT NOT NULL DEFAULT '',
+    due_date        TEXT NOT NULL DEFAULT '',           -- YYYY-MM-DDTHH:MM or ""
+    snooze_until    TEXT NOT NULL DEFAULT '',           -- YYYY-MM-DDTHH:MM or ""
     blocking        TEXT NOT NULL DEFAULT '',
     tags            TEXT NOT NULL DEFAULT '[]',
     sub_items       TEXT NOT NULL DEFAULT '[]',

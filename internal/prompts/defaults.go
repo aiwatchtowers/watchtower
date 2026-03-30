@@ -21,6 +21,7 @@ var Defaults = map[string]string{
 	DigestChannelBatch: defaultDigestChannelBatch,
 	TracksExtractBatch: defaultTracksExtractBatch,
 	PeopleBatch:        defaultPeopleBatch,
+	TasksGenerate:      defaultTasksGenerate,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -40,6 +41,7 @@ var AllIDs = []string{
 	PeopleBatch,
 	BriefingDaily,
 	InboxPrioritize,
+	TasksGenerate,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -62,6 +64,7 @@ var DefaultVersions = map[string]int{
 	InboxPrioritize:    2, // v2: richer context (age, sender role, replies)
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
+	TasksGenerate:      1, // v1: AI task generation with checklist and due date
 }
 
 // Descriptions maps prompt IDs to human-readable descriptions.
@@ -81,6 +84,7 @@ var Descriptions = map[string]string{
 	InboxPrioritize:    "Inbox prioritization — AI priority + auto-resolve for inbox items",
 	DigestChannelBatch: "Channel batch digest — multi-channel analysis for low-activity channels",
 	PeopleBatch:        "People batch cards — lightweight cards for low-data users in one AI call",
+	TasksGenerate:      "Task generation — AI-powered task breakdown with checklist, priority, and due date",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -321,7 +325,7 @@ Rules:
   * Bot notifications (unless requiring human action), FYI with no next step
   * Individual alerts (aggregate systemic patterns into ONE track)
   * Discussions with no action expected from user
-- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, use sparingly)
+- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, background)
 - category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
 - ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
 - ball_on: user_id of who acts next
@@ -760,7 +764,7 @@ Rules:
   * Completed actions with no follow-up, informational summaries with no action
   * Topics where the user is merely mentioned but has no action expected
   * Discussions that resolved without user involvement
-- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, use sparingly)
+- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, background)
 - category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
 - ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
 - ball_on: user_id of who acts next
@@ -821,3 +825,29 @@ Rules:
 
 === USERS ===
 %s`
+
+const defaultTasksGenerate = `You are a task planning assistant. The user describes a task they want to accomplish.
+Your job is to enrich the task: break it into actionable sub-items (checklist), suggest priority, and propose a realistic due date+time.
+
+Current date/time: %s
+
+Rules:
+- Generate 3-8 sub-items that form a logical checklist for completing the task
+- Each sub-item should be a concrete, actionable step
+- Suggest priority: "high" (urgent/blocking), "medium" (normal), "low" (nice-to-have)
+- Suggest a due date+time in YYYY-MM-DDTHH:MM format based on task complexity
+- Write a brief intent (why this task matters, 1 sentence)
+- If source context is provided, use it to make sub-items more specific
+- Keep sub-item text concise (under 80 chars each)
+
+Return ONLY valid JSON in this exact format:
+{
+  "text": "improved task title (keep concise)",
+  "intent": "why this task matters",
+  "priority": "high|medium|low",
+  "due_date": "YYYY-MM-DDTHH:MM",
+  "sub_items": [
+    {"text": "step 1 description", "done": false},
+    {"text": "step 2 description", "done": false}
+  ]
+}`

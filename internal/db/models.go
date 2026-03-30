@@ -463,8 +463,8 @@ type Task struct {
 	Priority    string // "high", "medium", "low"
 	Ownership   string // "mine", "delegated", "watching"
 	BallOn      string
-	DueDate     string // "YYYY-MM-DD" or ""
-	SnoozeUntil string // "YYYY-MM-DD" or ""
+	DueDate     string // "YYYY-MM-DDTHH:MM" or ""
+	SnoozeUntil string // "YYYY-MM-DDTHH:MM" or ""
 	Blocking    string
 	Tags        string // JSON
 	SubItems    string // JSON

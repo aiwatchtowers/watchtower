@@ -27,8 +27,8 @@ struct TaskItem: FetchableRecord, Identifiable, Equatable {
     let priority: String        // "high", "medium", "low"
     let ownership: String       // "mine", "delegated", "watching"
     let ballOn: String
-    let dueDate: String         // "YYYY-MM-DD" or ""
-    let snoozeUntil: String     // "YYYY-MM-DD" or ""
+    let dueDate: String         // "YYYY-MM-DDTHH:MM" or ""
+    let snoozeUntil: String     // "YYYY-MM-DDTHH:MM" or ""
     let blocking: String
     let tags: String            // JSON
     let subItems: String        // JSON
@@ -64,13 +64,13 @@ struct TaskItem: FetchableRecord, Identifiable, Equatable {
 
     var isOverdue: Bool {
         guard isActive, !dueDate.isEmpty else { return false }
-        guard let due = Self.dateFormatter.date(from: dueDate) else { return false }
-        return due < Calendar.current.startOfDay(for: Date())
+        guard let due = Self.parseDueDate(dueDate) else { return false }
+        return due < Date()
     }
 
     var isDueToday: Bool {
         guard !dueDate.isEmpty else { return false }
-        guard let due = Self.dateFormatter.date(from: dueDate) else { return false }
+        guard let due = Self.parseDueDate(dueDate) else { return false }
         return Calendar.current.isDateInToday(due)
     }
 
@@ -159,6 +159,25 @@ struct TaskItem: FetchableRecord, Identifiable, Equatable {
         return fmt
     }()
 
+    private static let datetimeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt
+    }()
+
+    /// Parses due date string supporting both "YYYY-MM-DDTHH:MM" and legacy "YYYY-MM-DD" formats.
+    static func parseDueDate(_ str: String) -> Date? {
+        if let d = datetimeFormatter.date(from: str) { return d }
+        if let d = dateFormatter.date(from: str) { return d }
+        return nil
+    }
+
+    /// Formats due date for storage: "yyyy-MM-dd'T'HH:mm".
+    static func formatDueDate(_ date: Date) -> String {
+        datetimeFormatter.string(from: date)
+    }
+
     private static let iso8601WithFractional: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -183,10 +202,22 @@ struct TaskItem: FetchableRecord, Identifiable, Equatable {
 
     var dueDateFormatted: String? {
         guard !dueDate.isEmpty,
-              let date = Self.dateFormatter.date(from: dueDate) else { return nil }
+              let date = Self.parseDueDate(dueDate) else { return nil }
         let display = DateFormatter()
         display.dateStyle = .medium
-        display.timeStyle = .none
+        // Show time only if it's not midnight (00:00).
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+        if comps.hour == 0 && comps.minute == 0 {
+            display.timeStyle = .none
+        } else {
+            display.timeStyle = .short
+        }
         return display.string(from: date)
+    }
+
+    /// The parsed due date, or nil.
+    var dueDateParsed: Date? {
+        guard !dueDate.isEmpty else { return nil }
+        return Self.parseDueDate(dueDate)
     }
 }

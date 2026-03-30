@@ -208,9 +208,9 @@ final class InboxViewModel {
     }
 
     func slackMessageURL(for item: InboxItem) -> URL? {
-        guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
         let ts = item.threadTS.isEmpty ? item.messageTS : item.threadTS
-        return URL(string: "slack://channel?team=\(teamID)&id=\(item.channelID)&message=\(ts)")
+        let tsNoDot = ts.replacingOccurrences(of: ".", with: "")
+        return URL(string: "https://app.slack.com/archives/\(item.channelID)/p\(tsNoDot)")
     }
 
     // MARK: - Grouping

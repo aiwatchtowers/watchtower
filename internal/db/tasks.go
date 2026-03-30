@@ -159,21 +159,21 @@ func (db *DB) DeleteTask(id int) error {
 // Active = not done/dismissed. Overdue = active with due_date < today.
 func (db *DB) GetTaskCounts() (int, int, error) {
 	var active, overdue int
-	today := time.Now().UTC().Format("2006-01-02")
+	now := time.Now().UTC().Format("2006-01-02T15:04")
 	err := db.QueryRow(`SELECT
 		COUNT(*),
 		COALESCE(SUM(CASE WHEN due_date != '' AND due_date < ? THEN 1 ELSE 0 END), 0)
-		FROM tasks WHERE status NOT IN ('done', 'dismissed')`, today).Scan(&active, &overdue)
+		FROM tasks WHERE status NOT IN ('done', 'dismissed')`, now).Scan(&active, &overdue)
 	return active, overdue, err
 }
 
 // UnsnoozeExpiredTasks moves snoozed tasks with expired snooze_until back to todo.
 // Returns the number of tasks unsnoozed.
 func (db *DB) UnsnoozeExpiredTasks() (int, error) {
-	today := time.Now().UTC().Format("2006-01-02")
+	now := time.Now().UTC().Format("2006-01-02T15:04")
 	res, err := db.Exec(`UPDATE tasks SET status = 'todo', snooze_until = '',
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE status = 'snoozed' AND snooze_until != '' AND snooze_until <= ?`, today)
+		WHERE status = 'snoozed' AND snooze_until != '' AND snooze_until <= ?`, now)
 	if err != nil {
 		return 0, fmt.Errorf("unsnoozing tasks: %w", err)
 	}

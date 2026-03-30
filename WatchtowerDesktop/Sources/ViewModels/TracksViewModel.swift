@@ -179,10 +179,11 @@ final class TracksViewModel {
     }
 
     func slackMessageURL(channelID: String, messageTS: String) -> URL? {
-        guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
-        return URL(
-            string: "slack://channel?team=\(teamID)&id=\(channelID)&message=\(messageTS)"
-        )
+        // Use Slack web permalink format — macOS opens it in Slack desktop app
+        // and it correctly navigates to the specific message.
+        // Format: https://app.slack.com/archives/{CHANNEL_ID}/p{TS_WITHOUT_DOT}
+        let tsNoDot = messageTS.replacingOccurrences(of: ".", with: "")
+        return URL(string: "https://app.slack.com/archives/\(channelID)/p\(tsNoDot)")
     }
 
     func submitFeedback(trackID: Int, rating: Int) {

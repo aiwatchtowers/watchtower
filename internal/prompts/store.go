@@ -29,6 +29,7 @@ const (
 	DigestChannelBatch = "digest.channel_batch"
 	TracksExtractBatch = "tracks.extract_batch"
 	PeopleBatch        = "people.batch"
+	TasksGenerate      = "tasks.generate"
 )
 
 // Store loads, caches, and persists prompt templates.

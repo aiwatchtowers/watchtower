@@ -174,14 +174,6 @@ struct TasksListView: View {
                 }
             }
 
-            Menu("Ownership") {
-                Button("All") { vm.ownershipFilter = nil; vm.load() }
-                ForEach(["mine", "delegated", "watching"], id: \.self) { own in
-                    Button(own.capitalized) {
-                        vm.ownershipFilter = own; vm.load()
-                    }
-                }
-            }
         } label: {
             Image(systemName: "line.3.horizontal.decrease.circle")
                 .foregroundStyle(hasActiveFilter(vm) ? .blue : .secondary)
@@ -192,7 +184,6 @@ struct TasksListView: View {
 
     private func hasActiveFilter(_ vm: TasksViewModel) -> Bool {
         vm.priorityFilter != nil
-            || vm.ownershipFilter != nil
             || vm.showDone
     }
 

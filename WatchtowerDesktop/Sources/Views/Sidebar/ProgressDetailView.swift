@@ -121,9 +121,9 @@ struct ProgressDetailContent: View {
 
             if run.inputTokens > 0 || run.outputTokens > 0 {
                 HStack(spacing: 16) {
-                    detailRow(label: "Input (clean)", value: formatTokens(run.inputTokens))
+                    detailRow(label: "Input", value: formatTokens(run.inputTokens))
                     if run.totalApiTokens > 0 {
-                        detailRow(label: "Input (full)", value: formatTokens(run.totalApiTokens))
+                        detailRow(label: "Input (+ cache)", value: formatTokens(run.totalApiTokens))
                     }
                     detailRow(label: "Output", value: formatTokens(run.outputTokens))
                     if run.costUsd > 0 {
@@ -415,9 +415,9 @@ struct ProgressDetailContent: View {
 
             let hasTokens = record.inputTokens + record.outputTokens > 0
             if hasTokens {
-                detailRow(label: "Input (clean)", value: formatTokens(record.inputTokens))
+                detailRow(label: "Input", value: formatTokens(record.inputTokens))
                 if record.totalApiTokens > 0 {
-                    detailRow(label: "Input (full)", value: formatTokens(record.totalApiTokens))
+                    detailRow(label: "Input (+ cache)", value: formatTokens(record.totalApiTokens))
                 }
                 detailRow(label: "Output", value: formatTokens(record.outputTokens))
             }
