@@ -311,7 +311,7 @@ func (c *Client) SearchMessages(ctx context.Context, query string, page int) (*S
 		var err error
 		result, err = c.api.SearchMessagesContext(ctx, query, slack.SearchParameters{
 			Sort:          "timestamp",
-			SortDirection: "desc",
+			SortDirection: "asc",
 			Count:         100,
 			Page:          page,
 		})
@@ -352,6 +352,23 @@ func (c *Client) GetEmoji(ctx context.Context) (map[string]string, error) {
 		return err
 	})
 	return emojis, err
+}
+
+// GetMessageReactions fetches reactions for a specific message. (Tier 3)
+// Returns the list of ItemReaction (emoji + users) or nil if none.
+func (c *Client) GetMessageReactions(ctx context.Context, channelID, timestamp string) ([]slack.ItemReaction, error) {
+	ref := slack.NewRefToMessage(channelID, timestamp)
+	var item slack.ReactedItem
+	err := c.doRequest(ctx, Tier3, func() error {
+		c.logf("slack API: reactions.get channel=%s ts=%s", channelID, timestamp)
+		var err error
+		item, err = c.api.GetReactionsContext(ctx, ref, slack.NewGetReactionsParameters())
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return item.Reactions, nil
 }
 
 // APIStats returns per-tier request counts and total 429 retry count.

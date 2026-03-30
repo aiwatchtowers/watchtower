@@ -3,9 +3,12 @@ import SwiftUI
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case chat
     case briefings
+    case inbox
+    case tasks
     case tracks
-    case chains
+    case digests
     case people
+    case statistics
     case search
     case usage
     case training
@@ -16,9 +19,12 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         switch self {
         case .chat: "AI Chat"
         case .briefings: "Briefings"
+        case .inbox: "Inbox"
+        case .tasks: "Tasks"
         case .tracks: "Tracks"
-        case .chains: "Chains"
+        case .digests: "Digests"
         case .people: "People"
+        case .statistics: "Statistics"
         case .search: "Search"
         case .usage: "Usage"
         case .training: "Training"
@@ -29,9 +35,12 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         switch self {
         case .chat: "bubble.left.and.bubble.right"
         case .briefings: "sun.max"
-        case .tracks: "checklist"
-        case .chains: "link.circle"
+        case .inbox: "tray"
+        case .tasks: "checkmark.circle"
+        case .tracks: "binoculars"
+        case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
+        case .statistics: "chart.bar.xaxis"
         case .search: "magnifyingglass"
         case .usage: "chart.bar"
         case .training: "brain.head.profile"
@@ -40,7 +49,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Main navigation items (shown above the separator).
     static var mainItems: [Self] {
-        [.chat, .briefings, .tracks, .chains, .people, .search]
+        [.chat, .briefings, .inbox, .tasks, .tracks, .digests, .people, .statistics, .search]
     }
 
     /// Tool items (shown below the separator).
@@ -54,13 +63,39 @@ struct NavigationRoot: View {
 
     var body: some View {
         if appState.isLoading {
-            Color.clear
+            SplashView()
         } else if appState.needsOnboarding {
             OnboardingView {
                 appState.initialize()
             }
         } else {
             MainNavigationView()
+        }
+    }
+}
+
+struct SplashView: View {
+    @State private var opacity: Double = 0
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            BannerImage(maxWidth: 360)
+
+            ProgressView()
+                .scaleEffect(0.8)
+                .padding(.top, 8)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .opacity(opacity)
+        .onAppear {
+            withAnimation(.easeIn(duration: 0.4)) {
+                opacity = 1
+            }
         }
     }
 }
@@ -133,12 +168,18 @@ struct MainNavigationView: View {
             ChatView()
         case .briefings:
             BriefingsListView()
+        case .inbox:
+            InboxListView()
+        case .tasks:
+            TasksListView()
         case .tracks:
             TracksListView()
-        case .chains:
+        case .digests:
             DigestListView()
         case .people:
             PeopleListView()
+        case .statistics:
+            StatisticsView()
         case .search:
             SearchView()
         case .usage:
@@ -192,13 +233,7 @@ struct OnboardingView: View {
     var body: some View {
         VStack(spacing: 24) {
             // Header
-            Image(systemName: "binoculars.circle")
-                .font(.system(size: 64))
-                .foregroundStyle(.secondary)
-
-            Text("Welcome to Watchtower")
-                .font(.largeTitle)
-                .fontWeight(.bold)
+            BannerImage(maxWidth: 320)
 
             // Steps indicator
             stepsIndicator
@@ -1740,5 +1775,47 @@ private func syncProgressView(_ progress: SyncProgressData) -> some View {
         let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
 
         return CLIResult(exitCode: process.terminationStatus, stdout: stdoutText, stderr: stderrText)
+    }
+}
+
+// MARK: - Banner Image
+
+struct BannerImage: View {
+    var maxWidth: CGFloat = 360
+
+    private var nsImage: NSImage? {
+        // Try resource bundle first (SPM / .app)
+        if let url = AppBundle.resources.url(forResource: "banner", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            return img
+        }
+        // Try Bundle.main directly
+        if let url = Bundle.main.url(forResource: "banner", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            return img
+        }
+        // Try next to executable
+        if let execURL = Bundle.main.executableURL?.deletingLastPathComponent() {
+            let bundlePath = execURL.appendingPathComponent("WatchtowerDesktop_WatchtowerDesktop.bundle/banner.png")
+            if let img = NSImage(contentsOf: bundlePath) {
+                return img
+            }
+        }
+        return nil
+    }
+
+    var body: some View {
+        if let nsImage {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: maxWidth)
+        } else {
+            // Fallback: show app name as text
+            Text("WATCHTOWER")
+                .font(.system(size: 32, weight: .bold))
+                .foregroundStyle(.orange)
+                .frame(maxWidth: maxWidth)
+        }
     }
 }

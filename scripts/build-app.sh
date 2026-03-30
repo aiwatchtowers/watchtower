@@ -75,6 +75,16 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 # Copy desktop binary
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/WatchtowerDesktop"
 
+# Copy SPM resource bundles into Contents/Resources/ (standard macOS .app location)
+# AppBundle.resources searches here via Bundle.main.resourceURL
+RESOURCE_BUNDLE_DIR=$(swift build -c release --arch arm64 --show-bin-path)
+for bundle in "$RESOURCE_BUNDLE_DIR"/*.bundle; do
+    if [ -d "$bundle" ]; then
+        cp -R "$bundle" "$APP_BUNDLE/Contents/Resources/"
+        echo "    Copied resource bundle: $(basename "$bundle")"
+    fi
+done
+
 # Copy Go CLI into bundle
 cp "$BUILD_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
 
@@ -249,6 +259,11 @@ if [ "$SIGN_IDENTITY" != "-" ] && [ -n "$NOTARIZE_PROFILE" ]; then
             "$DMG_PATH"
     fi
     rm -rf "$DMG_STAGING"
+
+    echo "==> Notarizing DMG..."
+    xcrun notarytool submit "$DMG_PATH" \
+        --keychain-profile "$NOTARIZE_PROFILE" \
+        --wait
 
     echo "==> Stapling DMG..."
     xcrun stapler staple "$DMG_PATH"

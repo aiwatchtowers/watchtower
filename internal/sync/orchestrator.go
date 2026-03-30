@@ -140,12 +140,8 @@ func (o *Orchestrator) runFullSync(ctx context.Context, opts SyncOptions) error 
 		return fmt.Errorf("user profile sync: %w", err)
 	}
 
-	// Phase 5: threads
-	o.logger.Println("phase 5: syncing threads")
-	o.progress.SetPhase(PhaseThreads)
-	if err := o.syncThreads(ctx, opts); err != nil {
-		return fmt.Errorf("thread sync: %w", err)
-	}
+	// Sync reactions for pending inbox items so auto-resolve can detect them.
+	o.syncInboxReactions(ctx)
 
 	return o.finishSync()
 }
@@ -186,26 +182,46 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 		return fmt.Errorf("user profile sync: %w", err)
 	}
 
-	// Phase 5: lazy thread loading — backfill parent messages for orphan replies.
-	// Non-blocking: errors are logged and skipped, does not fail the sync.
-	o.syncOrphanThreads(ctx)
+	// Thread sync skipped in search path — search.messages already returns
+	// both parent messages and thread replies within the search window.
+	// Full thread sync only runs with --full flag (runFullSync).
+
+	// Sync reactions for pending inbox items so auto-resolve can detect them.
+	o.syncInboxReactions(ctx)
 
 	return o.finishSync()
 }
 
 // syncChannelReadState fetches channel read cursors from Slack and updates them in the DB.
-// Uses conversations.info per channel (only for channels with unread digests) because
-// conversations.list does not reliably return last_read for most channel types.
+// Uses conversations.info per channel because conversations.list does not reliably return
+// last_read for most channel types.
+//
+// Two modes:
+//   - Normal: only fetches for channels with unread digests (minimal API calls).
+//   - First run: if no digests exist yet, fetches for all member channels that lack
+//     a last_read cursor. This ensures AutoMarkReadFromSlack works immediately after
+//     the first digest generation (without waiting for a second sync cycle).
 func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 	o.logger.Println("syncing channel read state")
+
 	channelIDs, err := o.db.UnreadDigestChannelIDs()
 	if err != nil {
 		o.logger.Printf("warning: failed to get unread digest channels: %v", err)
 		return
 	}
+
+	// First-run path: no digests yet, pre-fetch last_read for channels without it.
 	if len(channelIDs) == 0 {
-		o.logger.Println("channel read state: no unread digests, skipping")
-		return
+		channelIDs, err = o.db.ChannelIDsWithoutLastRead()
+		if err != nil {
+			o.logger.Printf("warning: failed to get channels without last_read: %v", err)
+			return
+		}
+		if len(channelIDs) == 0 {
+			o.logger.Println("channel read state: all channels up to date, skipping")
+			return
+		}
+		o.logger.Printf("channel read state: first run, fetching last_read for %d member channels", len(channelIDs))
 	}
 
 	var updated int
@@ -227,6 +243,83 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 	o.logger.Printf("channel read state: %d/%d channels updated (via conversations.info)", updated, len(channelIDs))
 }
 
+// syncInboxReactions fetches fresh reactions from Slack for pending inbox items.
+// This ensures CheckUserReplied() can detect user reactions even though
+// search.messages doesn't return reactions and conversations.history only
+// captures reactions at the time of the sync.
+func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
+	pendingItems, err := o.db.GetInboxItems(db.InboxFilter{Status: "pending"})
+	if err != nil {
+		o.logger.Printf("warning: failed to load pending inbox items for reaction sync: %v", err)
+		return
+	}
+	if len(pendingItems) == 0 {
+		return
+	}
+
+	// Deduplicate by (channel_id, message_ts) since multiple inbox items can
+	// reference the same message.
+	type key struct{ ch, ts string }
+	seen := make(map[key]bool, len(pendingItems))
+	var targets []key
+	for _, item := range pendingItems {
+		k := key{item.ChannelID, item.MessageTS}
+		if !seen[k] {
+			seen[k] = true
+			targets = append(targets, k)
+		}
+	}
+
+	var synced int
+	for _, t := range targets {
+		reactions, err := o.slackClient.GetMessageReactions(ctx, t.ch, t.ts)
+		if err != nil {
+			// Non-fatal: channel might be archived, message deleted, etc.
+			if !isNonFatalError(err) {
+				o.logger.Printf("warning: reactions.get channel=%s ts=%s: %v", t.ch, t.ts, err)
+			}
+			continue
+		}
+
+		if len(reactions) == 0 {
+			continue
+		}
+
+		// Convert to db.Reaction and upsert.
+		var dbReactions []db.Reaction
+		for _, r := range reactions {
+			for _, uid := range r.Users {
+				dbReactions = append(dbReactions, db.Reaction{
+					ChannelID: t.ch,
+					MessageTS: t.ts,
+					UserID:    uid,
+					Emoji:     r.Name,
+				})
+			}
+		}
+
+		tx, err := o.db.Begin()
+		if err != nil {
+			o.logger.Printf("warning: begin tx for inbox reactions: %v", err)
+			continue
+		}
+		if err := o.db.UpsertReactionBatch(tx, dbReactions); err != nil {
+			tx.Rollback()
+			o.logger.Printf("warning: upsert inbox reactions: %v", err)
+			continue
+		}
+		if err := tx.Commit(); err != nil {
+			o.logger.Printf("warning: commit inbox reactions: %v", err)
+			continue
+		}
+		synced++
+	}
+
+	if synced > 0 {
+		o.logger.Printf("synced reactions for %d/%d pending inbox messages", synced, len(targets))
+	}
+}
+
 // finishSync logs API stats, updates the sync timestamp, and marks sync as done.
 func (o *Orchestrator) finishSync() error {
 	o.progress.SetPhase(PhaseDone)
@@ -239,12 +332,12 @@ func (o *Orchestrator) finishSync() error {
 		total, counts[watchtowerslack.Tier2], counts[watchtowerslack.Tier3], counts[watchtowerslack.Tier4], retries)
 	o.slackClient.ResetAPIStats()
 
-	// Auto-mark digests as read based on Slack read cursors.
-	digestsMarked, _, err := o.db.AutoMarkReadFromSlack()
+	// Auto-mark digests and tracks as read based on Slack read cursors.
+	digestsMarked, tracksMarked, err := o.db.AutoMarkReadFromSlack()
 	if err != nil {
 		o.logger.Printf("warning: auto-mark read failed: %v", err)
-	} else if digestsMarked > 0 {
-		o.logger.Printf("auto-marked %d digests as read (based on Slack read state)", digestsMarked)
+	} else if digestsMarked > 0 || tracksMarked > 0 {
+		o.logger.Printf("auto-marked %d digests, %d tracks as read (based on Slack read state)", digestsMarked, tracksMarked)
 	}
 
 	// Update workspace synced_at so the desktop app shows accurate "last synced" time.
@@ -421,8 +514,6 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 
 // syncMessages is implemented in message_sync.go.
 
-// syncThreads is implemented in thread_sync.go.
-
 // syncEmoji fetches custom workspace emojis and stores them in the database.
 func (o *Orchestrator) syncEmoji(ctx context.Context) error {
 	o.logger.Println("syncing custom emojis")
@@ -456,6 +547,7 @@ var nonFatalSlackErrors = map[string]bool{
 	"not_in_channel":    true,
 	"missing_scope":     true,
 	"access_denied":     true,
+	"user_not_found":    true,
 }
 
 // isNonFatalError returns true for Slack errors that should be logged but not stop the sync.

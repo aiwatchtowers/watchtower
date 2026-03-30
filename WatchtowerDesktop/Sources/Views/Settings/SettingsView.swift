@@ -39,6 +39,10 @@ struct GeneralSettings: View {
     @State private var connectionTestResult: String?
     @State private var connectionTestSuccess = false
     @State private var daemonManager = DaemonManager()
+    @State private var slackReconnecting = false
+    @State private var slackReconnectResult: String?
+    @State private var slackReconnectSuccess = false
+    @State private var slackAuthProcess: Process?
 
     var body: some View {
         Form {
@@ -76,6 +80,37 @@ struct GeneralSettings: View {
             LabeledContent("Active Workspace") {
                 Text(config.activeWorkspace ?? "None")
                     .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button {
+                    reconnectSlack()
+                } label: {
+                    HStack(spacing: 4) {
+                        if slackReconnecting {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(slackReconnecting ? "Connecting..." : "Reconnect Slack")
+                    }
+                }
+                .disabled(slackReconnecting)
+
+                if slackReconnecting {
+                    Button("Cancel") {
+                        cancelSlackReconnect()
+                    }
+                }
+
+                if let result = slackReconnectResult {
+                    Image(systemName: slackReconnectSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(slackReconnectSuccess ? .green : .red)
+                    Text(result)
+                        .font(.caption)
+                        .foregroundStyle(slackReconnectSuccess ? .green : .red)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
             }
         }
     }
@@ -174,6 +209,17 @@ struct GeneralSettings: View {
                 ),
                 prompt: Text("claude-sonnet-4-6")
             )
+
+            TextField(
+                "Workers",
+                value: Binding(
+                    get: { config.aiWorkers },
+                    set: { config.aiWorkers = $0 }
+                ),
+                format: .number,
+                prompt: Text("5")
+            )
+            .help("Max parallel LLM calls across all pipelines")
 
             HStack {
                 TextField(
@@ -373,6 +419,123 @@ struct GeneralSettings: View {
                 }
             }
         }
+    }
+
+    private func reconnectSlack() {
+        guard let cliPath = Constants.findCLIPath() else {
+            slackReconnectResult = "watchtower CLI not found"
+            slackReconnectSuccess = false
+            return
+        }
+
+        slackReconnecting = true
+        slackReconnectResult = nil
+        slackReconnectSuccess = false
+
+        Task.detached {
+            // Ensure TLS cert is trusted first
+            let trustResult = await Self.runCLIProcess(path: cliPath, arguments: ["auth", "trust-cert"])
+            if trustResult.exitCode != 0 {
+                await MainActor.run {
+                    slackReconnecting = false
+                    slackReconnectResult = trustResult.stderr.isEmpty
+                        ? "Failed to set up secure connection"
+                        : String(trustResult.stderr.prefix(200))
+                }
+                return
+            }
+
+            await MainActor.run {
+                slackReconnectResult = "Complete authorization in your browser..."
+            }
+
+            // Run auth login (opens browser) — keep reference to process for cancellation
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: cliPath)
+            process.arguments = ["auth", "login"]
+            process.environment = Constants.resolvedEnvironment()
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            do {
+                try process.run()
+            } catch {
+                await MainActor.run {
+                    slackReconnecting = false
+                    slackReconnectResult = "Failed to launch: \(error.localizedDescription)"
+                }
+                return
+            }
+
+            await MainActor.run {
+                slackAuthProcess = process
+            }
+
+            process.waitUntilExit()
+
+            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            _ = String(data: stdoutData, encoding: .utf8) // consume stdout
+
+            await MainActor.run {
+                slackAuthProcess = nil
+                slackReconnecting = false
+
+                let exitCode = process.terminationStatus
+                if exitCode == 0 {
+                    slackReconnectSuccess = true
+                    slackReconnectResult = "Connected"
+                    config.reload()
+                } else if exitCode == 15 || exitCode == 9 {
+                    // SIGTERM / SIGKILL — user cancelled
+                    slackReconnectResult = nil
+                } else {
+                    slackReconnectResult = stderr.isEmpty
+                        ? "Authentication failed (exit \(exitCode))"
+                        : String(stderr.prefix(200))
+                }
+            }
+        }
+    }
+
+    private func cancelSlackReconnect() {
+        if let process = slackAuthProcess, process.isRunning {
+            process.terminate()
+        }
+        slackAuthProcess = nil
+        slackReconnecting = false
+        slackReconnectResult = nil
+    }
+
+    private static func runCLIProcess(path: String, arguments: [String]) async -> (exitCode: Int32, stdout: String, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        process.environment = Constants.resolvedEnvironment()
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return (-1, "", error.localizedDescription)
+        }
+
+        process.waitUntilExit()
+
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        return (process.terminationStatus, stdout, stderr)
     }
 
     private func testClaudeConnection() {
