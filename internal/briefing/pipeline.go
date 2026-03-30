@@ -333,7 +333,11 @@ func (p *Pipeline) gatherTracks() (string, bool) {
 			sb.WriteString(fmt.Sprintf("  Context: %s\n", ctx))
 		}
 		if t.Participants != "" && t.Participants != "[]" {
-			sb.WriteString(fmt.Sprintf("  Participants: %s\n", t.Participants))
+			participants := t.Participants
+			if len(participants) > 150 {
+				participants = participants[:150] + "...]"
+			}
+			sb.WriteString(fmt.Sprintf("  Participants: %s\n", participants))
 		}
 	}
 	return sb.String(), true
