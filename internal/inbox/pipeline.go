@@ -475,7 +475,7 @@ func (p *Pipeline) aiPrioritizeNewItems(ctx context.Context, currentUserID strin
 		}
 
 		systemPrompt := fmt.Sprintf(promptTmpl, role, sb.String())
-		response, usage, _, err := p.generator.Generate(ctx, systemPrompt, "Prioritize these items.", "")
+		response, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "inbox.prioritize"), systemPrompt, "Prioritize these items.", "")
 		if err != nil {
 			p.logger.Printf("inbox: AI batch %d error: %v", i+1, err)
 			continue

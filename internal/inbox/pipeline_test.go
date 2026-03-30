@@ -41,7 +41,6 @@ func testConfig() *config.Config {
 	return &config.Config{
 		Digest: config.DigestConfig{
 			Enabled: true,
-			Model:   "test-model",
 		},
 		Inbox: config.InboxConfig{
 			Enabled:             true,

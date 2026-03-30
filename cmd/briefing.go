@@ -114,9 +114,6 @@ func runBriefingGenerate(cmd *cobra.Command, _ []string) error {
 	}
 
 	cfg.Briefing.Enabled = true
-	if cfg.Digest.Model == "" {
-		cfg.Digest.Model = config.DefaultDigestModel
-	}
 
 	if err := validateModel(cfg); err != nil {
 		return err

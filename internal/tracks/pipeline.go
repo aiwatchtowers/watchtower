@@ -148,6 +148,23 @@ func (p *Pipeline) lastTracksTime() float64 {
 	return periodTo
 }
 
+// lastTracksStartedAt returns the started_at ISO timestamp of the last successful
+// tracks pipeline run. Used to fetch only digests created after that point.
+func (p *Pipeline) lastTracksStartedAt() string {
+	startedAt, err := p.db.GetLatestPipelineRunStartedAt("tracks")
+	if err != nil || startedAt == "" {
+		return ""
+	}
+
+	// Cap at 24h ago to avoid processing huge windows after long outages.
+	maxLookback := time.Now().Add(-DefaultWindowHours * time.Hour).UTC().Format(time.RFC3339)
+	if startedAt < maxLookback {
+		return maxLookback
+	}
+
+	return startedAt
+}
+
 // Run executes the tracks extraction pipeline.
 // Returns (stored count, error).
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
@@ -174,6 +191,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	// Use full initial history window on first run, incremental on subsequent runs.
 	var from, to float64
+	var digestsSinceISO string // if set, use created_at filter instead of overlap
 	to = float64(now.Unix())
 	switch hasTracks, err := p.db.HasTracksForUser(currentUserID); {
 	case err != nil:
@@ -189,10 +207,17 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	default:
 		if lastTo := p.lastTracksTime(); lastTo > 0 {
 			from = lastTo
-			p.logger.Printf("tracks: incremental from last run period_to=%s",
-				time.Unix(int64(lastTo), 0).Format("2006-01-02 15:04"))
 		} else {
 			from, _ = DayWindow(now)
+		}
+		// Incremental: only process digests created since last tracks run started.
+		// This avoids re-processing the same digests every cycle (~35x token reduction).
+		if sinceISO := p.lastTracksStartedAt(); sinceISO != "" {
+			digestsSinceISO = sinceISO
+			p.logger.Printf("tracks: incremental — digests created after %s", sinceISO)
+		} else {
+			p.logger.Printf("tracks: incremental from period_to=%s (no started_at, using overlap)",
+				time.Unix(int64(from), 0).Format("2006-01-02 15:04"))
 		}
 	}
 
@@ -204,12 +229,14 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 		time.Unix(int64(to), 0).Format("2006-01-02 15:04"),
 		currentUserID)
 
-	stored, err := p.RunForWindow(ctx, currentUserID, from, to)
+	stored, err := p.RunForWindow(ctx, currentUserID, from, to, digestsSinceISO)
 	return stored, 0, err
 }
 
 // RunForWindow executes track extraction for a specific time window and user.
-func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to float64) (int, error) {
+// digestsSinceISO, if non-empty, restricts to digests created after that ISO timestamp
+// (incremental mode). If empty, falls back to overlap-based query (first run / CLI).
+func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to float64, digestsSinceISO ...string) (int, error) {
 	p.loadCaches()
 
 	// Load user profile for ownership determination.
@@ -233,17 +260,30 @@ func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to flo
 	p.crossChannelCache = "" // reset; built lazily per-channel with exclusion
 	p.cacheMu.Unlock()
 
-	// Load channel digests that overlap with the window.
-	// Use period_to filter (not period_from) because a digest's period may start
-	// before our window but still contain relevant data within the window.
-	digests, err := p.db.GetDigestsOverlapping("channel", from, to)
-	if err != nil {
-		return 0, fmt.Errorf("loading digests: %w", err)
+	// Load digests: incremental (created_at-based) or overlap-based.
+	var digests []db.Digest
+	sinceISO := ""
+	if len(digestsSinceISO) > 0 {
+		sinceISO = digestsSinceISO[0]
+	}
+	if sinceISO != "" {
+		// Incremental: only process digests created since last tracks run.
+		digests, err = p.db.GetDigestsCreatedAfter("channel", sinceISO)
+		if err != nil {
+			return 0, fmt.Errorf("loading new digests: %w", err)
+		}
+		p.logger.Printf("tracks: found %d new digests (created after %s)", len(digests), sinceISO)
+	} else {
+		// First run or fallback: overlap-based query.
+		digests, err = p.db.GetDigestsOverlapping("channel", from, to)
+		if err != nil {
+			return 0, fmt.Errorf("loading digests: %w", err)
+		}
 	}
 
 	if len(digests) == 0 {
-		p.progress(0, 0, "No digests in window")
-		p.logger.Printf("tracks: no digests found in window [%.0f, %.0f]", from, to)
+		p.progress(0, 0, "No new digests to process")
+		p.logger.Printf("tracks: no digests found")
 		return 0, nil
 	}
 
@@ -507,7 +547,9 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 	// Divide token cost across items.
 	var inputTokens, outputTokens int
 	var costUSD float64
+	model := "auto"
 	if usage != nil && len(items) > 0 {
+		model = usage.Model
 		inputTokens = usage.InputTokens / len(items)
 		outputTokens = usage.OutputTokens / len(items)
 		costUSD = usage.CostUSD / float64(len(items))
@@ -591,7 +633,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			Priority:         priority,
 			DueDate:          dueDate,
 			Fingerprint:      fpJSON,
-			Model:            p.cfg.Digest.Model,
+			Model:            model,
 			InputTokens:      inputTokens,
 			OutputTokens:     outputTokens,
 			CostUSD:          costUSD,

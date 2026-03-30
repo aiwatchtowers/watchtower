@@ -390,9 +390,6 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	if cfg.Digest.Model == "" {
-		cfg.Digest.Model = config.DefaultDigestModel
-	}
 	if err := validateModel(cfg); err != nil {
 		return err
 	}
@@ -431,7 +428,7 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
-		runID, _ := database.CreatePipelineRun("tracks", "cli", cfg.Digest.Model)
+		runID, _ := database.CreatePipelineRun("tracks", "cli", "auto")
 
 		pipe.OnProgress = func(done, total int, status string) {
 			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
@@ -486,7 +483,7 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintln(out, "Running tracks pipeline...")
 
-	runID, _ := database.CreatePipelineRun("tracks", "cli", cfg.Digest.Model)
+	runID, _ := database.CreatePipelineRun("tracks", "cli", "auto")
 
 	created, updated, err := pipe.Run(cmd.Context())
 	inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()

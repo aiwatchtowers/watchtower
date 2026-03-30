@@ -317,9 +317,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	if cfg.Digest.Model == "" {
-		cfg.Digest.Model = config.DefaultDigestModel
-	}
 	if err := validateModel(cfg); err != nil {
 		return err
 	}
@@ -410,7 +407,7 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
-		runID, _ := database.CreatePipelineRun("inbox", "cli", cfg.Digest.Model)
+		runID, _ := database.CreatePipelineRun("inbox", "cli", "auto")
 		lastTotal := 4 // default, updated dynamically
 
 		pipe.OnProgress = func(done, total int, status string) {
@@ -477,7 +474,7 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	runID, _ := database.CreatePipelineRun("inbox", "cli", cfg.Digest.Model)
+	runID, _ := database.CreatePipelineRun("inbox", "cli", "auto")
 
 	created, resolved, err := pipe.Run(cmd.Context())
 	inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()

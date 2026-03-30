@@ -488,11 +488,12 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		DecisionStyle:       result.DecisionStyle,
 		Tactics:             string(tactics),
 		RelationshipContext: relCtx,
-		Status:              "active",
-		Model:               p.cfg.Digest.Model,
-		PromptVersion:       pv,
+		Status:        "active",
+		Model:         "auto",
+		PromptVersion: pv,
 	}
 	if usage != nil {
+		card.Model = usage.Model
 		card.InputTokens = usage.InputTokens
 		card.OutputTokens = usage.OutputTokens
 		card.CostUSD = usage.CostUSD
@@ -521,7 +522,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 		Accomplishments:  "[]",
 		Tactics:          "[]",
 		Status:           "insufficient_data",
-		Model:            p.cfg.Digest.Model,
+		Model:            "auto",
 	}
 	_, err := p.db.UpsertPeopleCard(card)
 	return err
@@ -555,7 +556,7 @@ func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, f
 		DecisionStyle:      result.DecisionStyle,
 		Tactics:            string(tactics),
 		Status:             "active",
-		Model:              p.cfg.Digest.Model,
+		Model:              digest.ModelForSource("people.batch"),
 		PromptVersion:      pv,
 		InputTokens:        inTok,
 		OutputTokens:       outTok,
@@ -734,10 +735,11 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 		Summary:       result.Summary,
 		Attention:     string(attention),
 		Tips:          string(tips),
-		Model:         p.cfg.Digest.Model,
+		Model:         "auto",
 		PromptVersion: pv,
 	}
 	if usage != nil {
+		s.Model = usage.Model
 		s.InputTokens = usage.InputTokens
 		s.OutputTokens = usage.OutputTokens
 		s.CostUSD = usage.CostUSD

@@ -28,6 +28,7 @@ type Usage struct {
 	OutputTokens   int     // AI response tokens
 	CostUSD        float64 // Actual cost from CLI (includes all caching)
 	TotalAPITokens int     // Total tokens API processed (input + cache_read + cache_creation)
+	Model          string  // Actual model used for this call
 }
 
 // Generator generates text responses from a system prompt and user message.
@@ -1242,11 +1243,12 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 		PeopleSignals:  "[]",
 		Situations:     string(situations),
 		RunningSummary: runningSummary,
-		MessageCount:   msgCount,
-		Model:          p.cfg.Digest.Model,
-		PromptVersion:  promptVersion,
+		MessageCount:  msgCount,
+		Model:         "auto",
+		PromptVersion: promptVersion,
 	}
 	if usage != nil {
+		d.Model = usage.Model
 		d.InputTokens = usage.InputTokens
 		d.OutputTokens = usage.OutputTokens
 		d.CostUSD = usage.CostUSD

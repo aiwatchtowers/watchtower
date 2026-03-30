@@ -287,10 +287,6 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 
 	// Force digest enabled for this run regardless of config.
 	cfg.Digest.Enabled = true
-	if cfg.Digest.Model == "" {
-		cfg.Digest.Model = config.DefaultDigestModel
-	}
-
 	if err := validateModel(cfg); err != nil {
 		return err
 	}
@@ -350,7 +346,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
-		runID, _ := database.CreatePipelineRun("digests", "cli", cfg.Digest.Model)
+		runID, _ := database.CreatePipelineRun("digests", "cli", "auto")
 
 		pipe.OnProgress = func(done, total int, status string) {
 			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
@@ -430,9 +426,9 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	spinner := ui.NewSpinner(out, fmt.Sprintf("Generating digests for the last %d day(s) using %s...", days, cfg.Digest.Model))
+	spinner := ui.NewSpinner(out, fmt.Sprintf("Generating digests for the last %d day(s)...", days))
 
-	runID, _ := database.CreatePipelineRun("digests", "cli", cfg.Digest.Model)
+	runID, _ := database.CreatePipelineRun("digests", "cli", "auto")
 
 	var n int
 	var usage *digest.Usage
@@ -572,10 +568,6 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	if cfg.Digest.Model == "" {
-		cfg.Digest.Model = config.DefaultDigestModel
-	}
-
 	// Parse time range
 	var from, to time.Time
 	now := time.Now().UTC()
@@ -613,8 +605,8 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	fmt.Fprintf(out, "Generating summary for %s to %s using %s...\n\n",
-		from.Format("2006-01-02"), to.Format("2006-01-02"), cfg.Digest.Model)
+	fmt.Fprintf(out, "Generating summary for %s to %s...\n\n",
+		from.Format("2006-01-02"), to.Format("2006-01-02"))
 
 	logger := log.New(io.Discard, "", 0)
 	if flagVerbose {
@@ -625,7 +617,7 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 	defer savePool()
 	pipe := digest.New(database, cfg, gen, logger)
 
-	runID, _ := database.CreatePipelineRun("digest-summary", "cli", cfg.Digest.Model)
+	runID, _ := database.CreatePipelineRun("digest-summary", "cli", "auto")
 
 	result, usage, err := pipe.RunPeriodSummary(cmd.Context(), from, to)
 

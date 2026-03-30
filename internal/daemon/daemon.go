@@ -184,7 +184,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 		}
 		var inboxRunID int64
 		if d.db != nil {
-			inboxRunID, _ = d.db.CreatePipelineRun("inbox", "daemon", d.config.Digest.Model)
+			inboxRunID, _ = d.db.CreatePipelineRun("inbox", "daemon", "auto")
 		}
 		created, resolved, err := d.inboxPipe.Run(ctx)
 		if err != nil {
@@ -209,7 +209,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	if d.digestPipe != nil {
 		var runID int64
 		if d.db != nil {
-			runID, _ = d.db.CreatePipelineRun("digests", "daemon", d.config.Digest.Model)
+			runID, _ = d.db.CreatePipelineRun("digests", "daemon", "auto")
 		}
 		n, usage, err := d.digestPipe.RunChannelDigestsOnly(ctx)
 		if err != nil {
@@ -265,7 +265,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 		if d.tracksPipe != nil {
 			var trackRunID int64
 			if d.db != nil {
-				trackRunID, _ = d.db.CreatePipelineRun("tracks", "daemon", d.config.Digest.Model)
+				trackRunID, _ = d.db.CreatePipelineRun("tracks", "daemon", "auto")
 			}
 			n, updated, err := d.tracksPipe.Run(ctx)
 			if err != nil {
@@ -317,7 +317,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 			if d.lastPeople.IsZero() || now.Sub(d.lastPeople) >= 24*time.Hour {
 				var peopleRunID int64
 				if d.db != nil {
-					peopleRunID, _ = d.db.CreatePipelineRun("people", "daemon", d.config.Digest.Model)
+					peopleRunID, _ = d.db.CreatePipelineRun("people", "daemon", "auto")
 				}
 				n, err := d.peoplePipe.Run(ctx)
 				if err != nil {
@@ -353,7 +353,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	if d.briefingPipe != nil && d.shouldRunBriefing() {
 		var briefingRunID int64
 		if d.db != nil {
-			briefingRunID, _ = d.db.CreatePipelineRun("briefing", "daemon", d.config.Digest.Model)
+			briefingRunID, _ = d.db.CreatePipelineRun("briefing", "daemon", "auto")
 		}
 		id, err := d.briefingPipe.Run(ctx)
 		if err != nil {

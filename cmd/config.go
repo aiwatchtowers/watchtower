@@ -150,7 +150,6 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 	v.Set("sync.sync_threads", config.DefaultSyncThreads)
 	v.Set("sync.sync_on_wake", config.DefaultSyncOnWake)
 	v.Set("digest.enabled", config.DefaultDigestEnabled)
-	v.Set("digest.model", config.DefaultDigestModel)
 	v.Set("digest.min_messages", config.DefaultDigestMinMsgs)
 
 	// Write to a temp file with restricted permissions, then atomically rename
@@ -259,7 +258,6 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "sync.sync_threads: %t\n", cfg.Sync.SyncThreads)
 	fmt.Fprintf(out, "sync.sync_on_wake: %t\n", cfg.Sync.SyncOnWake)
 	fmt.Fprintf(out, "digest.enabled: %t\n", cfg.Digest.Enabled)
-	fmt.Fprintf(out, "digest.model: %s\n", cfg.Digest.Model)
 	fmt.Fprintf(out, "digest.min_messages: %d\n", cfg.Digest.MinMessages)
 	for name, ws := range cfg.Workspaces {
 		if ws.SlackToken != "" {

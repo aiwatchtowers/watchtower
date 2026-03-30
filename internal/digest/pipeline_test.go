@@ -33,7 +33,7 @@ func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *Us
 	m.mu.Lock()
 	m.calls++
 	m.mu.Unlock()
-	return m.response, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", m.err
+	return m.response, &Usage{Model: "test-model", InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", m.err
 }
 
 func testDB(t *testing.T) *db.DB {
@@ -48,7 +48,6 @@ func testConfig() *config.Config {
 	return &config.Config{
 		Digest: config.DigestConfig{
 			Enabled:     true,
-			Model:       "haiku",
 			MinMessages: 3,
 		},
 	}
@@ -176,7 +175,7 @@ func TestRunChannelDigests(t *testing.T) {
 	assert.Equal(t, "C1", digests[0].ChannelID)
 	assert.Equal(t, "Team discussed deployment", digests[0].Summary)
 	assert.Equal(t, 5, digests[0].MessageCount)
-	assert.Equal(t, "haiku", digests[0].Model)
+	assert.Equal(t, "test-model", digests[0].Model)
 }
 
 func TestRunChannelDigests_BelowMinMessages(t *testing.T) {
@@ -616,7 +615,7 @@ func (m *capturingGenerator) Generate(_ context.Context, systemPrompt, prompt, _
 	m.capturedPrompt = systemPrompt + "\n" + prompt // combined for backward-compatible assertions
 	m.calls++
 	m.mu.Unlock()
-	return m.response, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
+	return m.response, &Usage{Model: "test-model", InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
 }
 
 func TestProfileContextInjectedIntoDigestPrompt(t *testing.T) {
@@ -706,7 +705,7 @@ func (m *threadSafeMockGenerator) Generate(_ context.Context, _, prompt, _ strin
 	m.calls++
 	m.prompts = append(m.prompts, prompt)
 	m.mu.Unlock()
-	return m.response, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", m.err
+	return m.response, &Usage{Model: "test-model", InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", m.err
 }
 
 func validDigestJSON() string {
@@ -2392,9 +2391,9 @@ func (m *multiMockGenerator) Generate(ctx context.Context, _, _, _ string) (stri
 	source := sourceFromContext(ctx)
 	m.calls[source]++
 	if resp, ok := m.responses[source]; ok {
-		return resp, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
+		return resp, &Usage{Model: "test-model", InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
 	}
-	return m.fallback, &Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
+	return m.fallback, &Usage{Model: "test-model", InputTokens: 100, OutputTokens: 50, CostUSD: 0.001}, "mock-session", nil
 }
 
 func TestBatchDigestIntegration(t *testing.T) {

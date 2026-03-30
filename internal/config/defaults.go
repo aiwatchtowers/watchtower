@@ -12,9 +12,8 @@ const (
 	DefaultPollInterval       = 15 * time.Minute
 	DefaultSyncThreads        = true
 	DefaultSyncOnWake         = true
-	DefaultDigestEnabled      = true
-	DefaultDigestModel        = "claude-haiku-4-5-20251001"
-	DefaultDigestMinMsgs      = 10
+	DefaultDigestEnabled = true
+	DefaultDigestMinMsgs = 10
 	DefaultDigestLang         = "Russian"
 	DefaultDigestWorkers      = 5 // Deprecated: use DefaultAIWorkers. Kept for backward compat.
 	DefaultTracksInterval     = 1 * time.Hour

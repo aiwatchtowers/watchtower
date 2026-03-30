@@ -34,7 +34,6 @@ type SyncConfig struct {
 
 type DigestConfig struct {
 	Enabled          bool          `mapstructure:"enabled"`
-	Model            string        `mapstructure:"model"`
 	MinMessages      int           `mapstructure:"min_messages"`
 	Language         string        `mapstructure:"language"`
 	Workers          int           `mapstructure:"workers"`
@@ -94,7 +93,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("sync.sync_threads", DefaultSyncThreads)
 	v.SetDefault("sync.sync_on_wake", DefaultSyncOnWake)
 	v.SetDefault("digest.enabled", DefaultDigestEnabled)
-	v.SetDefault("digest.model", DefaultDigestModel)
 	v.SetDefault("digest.min_messages", DefaultDigestMinMsgs)
 	v.SetDefault("digest.language", DefaultDigestLang)
 	v.SetDefault("digest.workers", DefaultDigestWorkers)
@@ -128,7 +126,6 @@ func Load(configPath string) (*Config, error) {
 	_ = v.BindEnv("ai.model", "WATCHTOWER_AI_MODEL")
 	_ = v.BindEnv("ai.workers", "WATCHTOWER_AI_WORKERS")
 	_ = v.BindEnv("sync.workers", "WATCHTOWER_SYNC_WORKERS")
-	_ = v.BindEnv("digest.model", "WATCHTOWER_DIGEST_MODEL")
 
 	cfg := &Config{}
 	if err := v.Unmarshal(cfg); err != nil {

@@ -303,7 +303,6 @@ digest:
 	assert.Contains(t, output, "sync.sync_threads: true")
 	assert.Contains(t, output, "sync.sync_on_wake: true")
 	assert.Contains(t, output, "digest.enabled: true")
-	assert.Contains(t, output, "digest.model: haiku")
 	assert.Contains(t, output, "digest.min_messages: 10")
 	assert.Contains(t, output, "xoxp-****")
 }
