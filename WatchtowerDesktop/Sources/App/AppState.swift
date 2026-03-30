@@ -113,6 +113,7 @@ final class AppState {
             self?.backgroundTaskManager.terminateProcessesSync()
         }
         Task {
+            let splashStart = ContinuousClock.now
             do {
                 let manager = try await Task.detached {
                     // Run Go CLI to apply any pending DB migrations before opening
@@ -134,12 +135,20 @@ final class AppState {
                 needsOnboarding = onboarding.currentStep != .complete
                 profileComplete = !needsOnboarding
                 analysisLegacyMode = ConfigService().analysisLegacyMode
+                // Hold splash for at least 2 seconds
+                let elapsed = ContinuousClock.now - splashStart
+                if elapsed < .seconds(2) {
+                    try? await Task.sleep(for: .seconds(2) - elapsed)
+                }
                 isLoading = false
                 loadCustomEmoji(from: manager)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
                     backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode)
+                } else if !needsOnboarding {
+                    // Restart daemon so it picks up the latest CLI binary
+                    restartDaemonIfRunning()
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -210,6 +219,18 @@ final class AppState {
         UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
         backgroundTaskManager.tasks.removeAll()
         backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode)
+    }
+
+    /// Restart the daemon so it picks up the latest CLI binary (e.g. after app update or dev rebuild).
+    private func restartDaemonIfRunning() {
+        Task {
+            let daemon = DaemonManager()
+            daemon.resolvePathIfNeeded()
+            guard DaemonManager.checkDaemonRunning() else { return }
+            await daemon.stopDaemon()
+            try? await Task.sleep(for: .milliseconds(500))
+            await daemon.startDaemon()
+        }
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

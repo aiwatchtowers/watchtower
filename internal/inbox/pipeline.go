@@ -140,6 +140,12 @@ func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
 // Run executes the inbox pipeline: detect new items, check for auto-resolve, then AI prioritize.
 // Returns (created count, resolved count, error).
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
+	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
+	p.totalInputTokens = 0
+	p.totalOutputTokens = 0
+	p.totalCostMicro = 0
+	p.totalAPITokens = 0
+
 	if p.cfg != nil && !p.cfg.Inbox.Enabled {
 		return 0, 0, nil
 	}
@@ -469,7 +475,7 @@ func (p *Pipeline) aiPrioritizeNewItems(ctx context.Context, currentUserID strin
 		}
 
 		systemPrompt := fmt.Sprintf(promptTmpl, role, sb.String())
-		response, usage, _, err := p.generator.Generate(ctx, systemPrompt, "Prioritize these items.", "")
+		response, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "inbox.prioritize"), systemPrompt, "Prioritize these items.", "")
 		if err != nil {
 			p.logger.Printf("inbox: AI batch %d error: %v", i+1, err)
 			continue

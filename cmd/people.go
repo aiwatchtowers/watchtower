@@ -325,9 +325,6 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg.Digest.Enabled = true
-	if cfg.Digest.Model == "" {
-		cfg.Digest.Model = config.DefaultDigestModel
-	}
 
 	if err := validateModel(cfg); err != nil {
 		return err
@@ -377,7 +374,7 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 		}
 		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
-		runID, _ := database.CreatePipelineRun("people", "cli", cfg.Digest.Model)
+		runID, _ := database.CreatePipelineRun("people", "cli", "auto")
 
 		pipe.OnProgress = func(completed, total int, status string) {
 			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
@@ -461,9 +458,9 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "\r\033[K[%s] %.0f%% (%d/%d)%s  %s", bar, pct, completed, total, eta, status)
 	}
 
-	fmt.Fprintf(out, "Generating people cards (7-day window) using %s...\n", cfg.Digest.Model)
+	fmt.Fprintln(out, "Generating people cards (7-day window)...")
 
-	runID, _ := database.CreatePipelineRun("people", "cli", cfg.Digest.Model)
+	runID, _ := database.CreatePipelineRun("people", "cli", "auto")
 
 	n, err := pipe.Run(cmd.Context())
 	fmt.Fprintln(out)

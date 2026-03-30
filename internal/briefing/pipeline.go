@@ -193,7 +193,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	// Generate.
 	p.logger.Printf("briefing: generating for %s on %s", userName, date)
 
-	response, usage, _, err := p.generator.Generate(ctx, systemPrompt, "Generate the daily briefing.", "")
+	response, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "briefing.daily"), systemPrompt, "Generate the daily briefing.", "")
 	if err != nil {
 		return 0, fmt.Errorf("generating briefing: %w", err)
 	}
@@ -234,7 +234,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		WhatHappened:  string(whatHappenedJSON),
 		TeamPulse:     string(teamPulseJSON),
 		Coaching:      string(coachingJSON),
-		Model:         p.cfg.Digest.Model,
+		Model:         usage.Model,
 		InputTokens:   inTok,
 		OutputTokens:  outTok,
 		CostUSD:       cost,
@@ -333,7 +333,11 @@ func (p *Pipeline) gatherTracks() (string, bool) {
 			sb.WriteString(fmt.Sprintf("  Context: %s\n", ctx))
 		}
 		if t.Participants != "" && t.Participants != "[]" {
-			sb.WriteString(fmt.Sprintf("  Participants: %s\n", t.Participants))
+			participants := t.Participants
+			if len(participants) > 150 {
+				participants = participants[:150] + "...]"
+			}
+			sb.WriteString(fmt.Sprintf("  Participants: %s\n", participants))
 		}
 	}
 	return sb.String(), true

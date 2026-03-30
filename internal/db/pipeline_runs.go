@@ -193,6 +193,26 @@ func (db *DB) GetLatestPipelineRunPeriodTo(pipeline string) (float64, error) {
 	return result.Float64, nil
 }
 
+// GetLatestPipelineRunStartedAt returns the started_at time of the latest
+// successful pipeline run. This is used by the tracks pipeline to only process
+// digests created after the last tracks run started (not overlap-based).
+// Returns empty string if no successful run exists.
+func (db *DB) GetLatestPipelineRunStartedAt(pipeline string) (string, error) {
+	var result sql.NullString
+	err := db.DB.QueryRow(`
+		SELECT MAX(started_at) FROM pipeline_runs
+		WHERE pipeline = ? AND status = 'done' AND started_at IS NOT NULL`,
+		pipeline,
+	).Scan(&result)
+	if err != nil {
+		return "", fmt.Errorf("get latest pipeline run started_at: %w", err)
+	}
+	if !result.Valid {
+		return "", nil
+	}
+	return result.String, nil
+}
+
 func scanPipelineRuns(rows *sql.Rows) ([]PipelineRun, error) {
 	var runs []PipelineRun
 	for rows.Next() {

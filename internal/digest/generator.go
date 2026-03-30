@@ -143,10 +143,15 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 // disk clutter. The sessionID parameter is accepted for interface compatibility
 // but ignored — session reuse via --resume is not supported by the current CLI.
 func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
+	model := g.model // fallback
+	if s, ok := ctx.Value(sessionSourceKey{}).(string); ok && s != "" {
+		model = ModelForSource(s)
+	}
+
 	args := []string{
 		"-p", userMessage,
 		"--output-format", "json",
-		"--model", g.model,
+		"--model", model,
 		"--no-session-persistence",
 		"--tools", "",
 	}
@@ -236,6 +241,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	// Total API tokens = everything the API processed (our content + CLI overhead).
 	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
 	usage := &Usage{
+		Model:          model,
 		InputTokens:    promptTokens,
 		OutputTokens:   resp.Usage.OutputTokens,
 		CostUSD:        resp.CostUSD,

@@ -148,9 +148,32 @@ func (p *Pipeline) lastTracksTime() float64 {
 	return periodTo
 }
 
+// lastTracksStartedAt returns the started_at ISO timestamp of the last successful
+// tracks pipeline run. Used to fetch only digests created after that point.
+func (p *Pipeline) lastTracksStartedAt() string {
+	startedAt, err := p.db.GetLatestPipelineRunStartedAt("tracks")
+	if err != nil || startedAt == "" {
+		return ""
+	}
+
+	// Cap at 24h ago to avoid processing huge windows after long outages.
+	maxLookback := time.Now().Add(-DefaultWindowHours * time.Hour).UTC().Format(time.RFC3339)
+	if startedAt < maxLookback {
+		return maxLookback
+	}
+
+	return startedAt
+}
+
 // Run executes the tracks extraction pipeline.
 // Returns (stored count, error).
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
+	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
+	p.totalInputTokens.Store(0)
+	p.totalOutputTokens.Store(0)
+	p.totalCostMicro.Store(0)
+	p.totalAPITokens.Store(0)
+
 	if !p.cfg.Digest.Enabled {
 		return 0, 0, nil
 	}
@@ -168,6 +191,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	// Use full initial history window on first run, incremental on subsequent runs.
 	var from, to float64
+	var digestsSinceISO string // if set, use created_at filter instead of overlap
 	to = float64(now.Unix())
 	switch hasTracks, err := p.db.HasTracksForUser(currentUserID); {
 	case err != nil:
@@ -183,10 +207,17 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	default:
 		if lastTo := p.lastTracksTime(); lastTo > 0 {
 			from = lastTo
-			p.logger.Printf("tracks: incremental from last run period_to=%s",
-				time.Unix(int64(lastTo), 0).Format("2006-01-02 15:04"))
 		} else {
 			from, _ = DayWindow(now)
+		}
+		// Incremental: only process digests created since last tracks run started.
+		// This avoids re-processing the same digests every cycle (~35x token reduction).
+		if sinceISO := p.lastTracksStartedAt(); sinceISO != "" {
+			digestsSinceISO = sinceISO
+			p.logger.Printf("tracks: incremental — digests created after %s", sinceISO)
+		} else {
+			p.logger.Printf("tracks: incremental from period_to=%s (no started_at, using overlap)",
+				time.Unix(int64(from), 0).Format("2006-01-02 15:04"))
 		}
 	}
 
@@ -198,12 +229,14 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 		time.Unix(int64(to), 0).Format("2006-01-02 15:04"),
 		currentUserID)
 
-	stored, err := p.RunForWindow(ctx, currentUserID, from, to)
+	stored, err := p.RunForWindow(ctx, currentUserID, from, to, digestsSinceISO)
 	return stored, 0, err
 }
 
 // RunForWindow executes track extraction for a specific time window and user.
-func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to float64) (int, error) {
+// digestsSinceISO, if non-empty, restricts to digests created after that ISO timestamp
+// (incremental mode). If empty, falls back to overlap-based query (first run / CLI).
+func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to float64, digestsSinceISO ...string) (int, error) {
 	p.loadCaches()
 
 	// Load user profile for ownership determination.
@@ -227,17 +260,30 @@ func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to flo
 	p.crossChannelCache = "" // reset; built lazily per-channel with exclusion
 	p.cacheMu.Unlock()
 
-	// Load channel digests that overlap with the window.
-	// Use period_to filter (not period_from) because a digest's period may start
-	// before our window but still contain relevant data within the window.
-	digests, err := p.db.GetDigestsOverlapping("channel", from, to)
-	if err != nil {
-		return 0, fmt.Errorf("loading digests: %w", err)
+	// Load digests: incremental (created_at-based) or overlap-based.
+	var digests []db.Digest
+	sinceISO := ""
+	if len(digestsSinceISO) > 0 {
+		sinceISO = digestsSinceISO[0]
+	}
+	if sinceISO != "" {
+		// Incremental: only process digests created since last tracks run.
+		digests, err = p.db.GetDigestsCreatedAfter("channel", sinceISO)
+		if err != nil {
+			return 0, fmt.Errorf("loading new digests: %w", err)
+		}
+		p.logger.Printf("tracks: found %d new digests (created after %s)", len(digests), sinceISO)
+	} else {
+		// First run or fallback: overlap-based query.
+		digests, err = p.db.GetDigestsOverlapping("channel", from, to)
+		if err != nil {
+			return 0, fmt.Errorf("loading digests: %w", err)
+		}
 	}
 
 	if len(digests) == 0 {
-		p.progress(0, 0, "No digests in window")
-		p.logger.Printf("tracks: no digests found in window [%.0f, %.0f]", from, to)
+		p.progress(0, 0, "No new digests to process")
+		p.logger.Printf("tracks: no digests found")
 		return 0, nil
 	}
 
@@ -303,6 +349,122 @@ func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to flo
 
 	if len(allEntries) == 0 {
 		p.progress(0, 0, "No topics in digests")
+		return 0, nil
+	}
+
+	// --- Level 1: Channel relevance scoring (pre-filter) ---
+	// Build set of channel IDs that have existing tracks.
+	existingTrackChannels := make(map[string]bool)
+	for _, t := range allActive {
+		// Parse channel_ids JSON array.
+		var chIDs []string
+		if err := json.Unmarshal([]byte(t.ChannelIDs), &chIDs); err == nil {
+			for _, ch := range chIDs {
+				existingTrackChannels[ch] = true
+			}
+		}
+	}
+
+	// Parse starred channels from profile.
+	starredChannels := make(map[string]bool)
+	if profile != nil && profile.StarredChannels != "" && profile.StarredChannels != "[]" {
+		var starred []string
+		if err := json.Unmarshal([]byte(profile.StarredChannels), &starred); err == nil {
+			for _, ch := range starred {
+				starredChannels[ch] = true
+			}
+		}
+	}
+
+	// Parse reports/peers from profile for participant matching.
+	relatedUsers := make(map[string]bool)
+	if profile != nil {
+		for _, field := range []string{profile.Reports, profile.Peers} {
+			if field != "" && field != "[]" {
+				var ids []string
+				if err := json.Unmarshal([]byte(field), &ids); err == nil {
+					for _, id := range ids {
+						relatedUsers[id] = true
+					}
+				}
+			}
+		}
+	}
+
+	// --- Level 2: Topic dedup by source_refs ---
+	// Collect set of already-processed topic keys from existing tracks' source_refs.
+	type topicKey struct {
+		DigestID int
+		TopicID  int
+	}
+	processedTopics := make(map[topicKey]bool)
+	tracksWithUpdates := make(map[int]bool) // track IDs with has_updates=true
+	for _, t := range allActive {
+		if t.HasUpdates {
+			tracksWithUpdates[t.ID] = true
+		}
+		if t.SourceRefs == "" || t.SourceRefs == "[]" {
+			continue
+		}
+		var refs []struct {
+			DigestID int `json:"digest_id"`
+			TopicID  int `json:"topic_id"`
+		}
+		if err := json.Unmarshal([]byte(t.SourceRefs), &refs); err == nil {
+			for _, ref := range refs {
+				if ref.DigestID > 0 && ref.TopicID > 0 && !tracksWithUpdates[t.ID] {
+					processedTopics[topicKey{ref.DigestID, ref.TopicID}] = true
+				}
+			}
+		}
+	}
+
+	// Filter entries by channel relevance score and dedup topics.
+	var filteredEntries []digestEntry
+	skippedByScore := 0
+	dedupedTopics := 0
+	for _, entry := range allEntries {
+		// Level 2: filter already-processed topics.
+		var remainingTopics []db.DigestTopic
+		for _, t := range entry.topics {
+			key := topicKey{t.DigestID, t.ID}
+			if processedTopics[key] {
+				dedupedTopics++
+				continue
+			}
+			remainingTopics = append(remainingTopics, t)
+		}
+		if len(remainingTopics) == 0 {
+			continue
+		}
+		entry.topics = remainingTopics
+		entry.topicCount = len(remainingTopics)
+
+		// Level 1: score channel relevance.
+		score := scoreChannel(entry.channelID, entry.topics, userID, existingTrackChannels, starredChannels, relatedUsers)
+		if score == 0 {
+			skippedByScore++
+			continue
+		}
+		filteredEntries = append(filteredEntries, entry)
+	}
+
+	if skippedByScore > 0 {
+		p.logger.Printf("tracks: skipped %d channels (score=0, no relevance signals)", skippedByScore)
+	}
+	if dedupedTopics > 0 {
+		p.logger.Printf("tracks: deduped %d topics already linked to existing tracks", dedupedTopics)
+	}
+
+	// Recalculate totals after filtering.
+	allEntries = filteredEntries
+	totalTopicCount = 0
+	for _, e := range allEntries {
+		totalTopicCount += e.topicCount
+	}
+
+	if len(allEntries) == 0 {
+		p.progress(0, 0, "No relevant topics after filtering")
 		return 0, nil
 	}
 
@@ -385,7 +547,9 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 	// Divide token cost across items.
 	var inputTokens, outputTokens int
 	var costUSD float64
+	model := "auto"
 	if usage != nil && len(items) > 0 {
+		model = usage.Model
 		inputTokens = usage.InputTokens / len(items)
 		outputTokens = usage.OutputTokens / len(items)
 		costUSD = usage.CostUSD / float64(len(items))
@@ -469,7 +633,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			Priority:         priority,
 			DueDate:          dueDate,
 			Fingerprint:      fpJSON,
-			Model:            p.cfg.Digest.Model,
+			Model:            model,
 			InputTokens:      inputTokens,
 			OutputTokens:     outputTokens,
 			CostUSD:          costUSD,
@@ -701,7 +865,12 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 	return totalStored, nil
 }
 
+// maxTracksForRollup is the maximum number of tracks included in rollup prompts.
+const maxTracksForRollup = 30
+
 // FormatActiveTracksForPrompt formats active tracks for injection into rollup prompts.
+// Tracks are sorted by priority (high→medium→low) then updated_at DESC, capped at maxTracksForRollup.
+// Uses compact format: #ID [priority] text (~20 tokens/track vs ~70 in verbose format).
 func (p *Pipeline) FormatActiveTracksForPrompt() (string, error) {
 	tracks, err := p.db.GetAllActiveTracks()
 	if err != nil {
@@ -711,10 +880,26 @@ func (p *Pipeline) FormatActiveTracksForPrompt() (string, error) {
 		return "", nil
 	}
 
+	// Sort by priority (high first), then by updated_at DESC.
+	sort.Slice(tracks, func(i, j int) bool {
+		pi, pj := priorityOrder(tracks[i].Priority), priorityOrder(tracks[j].Priority)
+		if pi != pj {
+			return pi < pj
+		}
+		return tracks[i].UpdatedAt > tracks[j].UpdatedAt
+	})
+
+	totalCount := len(tracks)
+	if len(tracks) > maxTracksForRollup {
+		tracks = tracks[:maxTracksForRollup]
+	}
+
 	var sb strings.Builder
+	if totalCount > maxTracksForRollup {
+		fmt.Fprintf(&sb, "Showing %d of %d active tracks.\n", maxTracksForRollup, totalCount)
+	}
 	for _, t := range tracks {
-		sb.WriteString(fmt.Sprintf("- [track #%d, %s, %s] %s\n  Context: %s\n",
-			t.ID, t.Priority, t.Ownership, sanitize(t.Text), sanitize(truncate(t.Context, 200))))
+		fmt.Fprintf(&sb, "#%d [%s] %s\n", t.ID, t.Priority, sanitize(t.Text))
 	}
 	return sb.String(), nil
 }
@@ -1094,6 +1279,62 @@ func (p *Pipeline) loadCaches() {
 	p.channelNames = channelNames
 	p.userNames = userNames
 	p.cacheMu.Unlock()
+}
+
+// scoreChannel computes a relevance score for a channel.
+// score == 0 means no signal that this channel is relevant to the user — skip it.
+//
+// Scoring (all additive):
+//
+//	+3: channel has existing tracks (must process for updates)
+//	+2: user @mentioned in key_messages or situations
+//	+2: channel is starred by user
+//	+1: reports/peers in topic participants/situations
+//	+1: channel contains action_items (likely actionable)
+func scoreChannel(channelID string, topics []db.DigestTopic, userID string,
+	existingTrackChannels, starredChannels, relatedUsers map[string]bool) int {
+	score := 0
+
+	if existingTrackChannels[channelID] {
+		score += 3
+	}
+	if starredChannels[channelID] {
+		score += 2
+	}
+
+	mentionTag := "<@" + userID + ">"
+	for _, t := range topics {
+		// Check @mention in key_messages and situations.
+		if strings.Contains(t.KeyMessages, mentionTag) || strings.Contains(t.Situations, mentionTag) {
+			score += 2
+			break
+		}
+	}
+
+	if len(relatedUsers) > 0 {
+		for _, t := range topics {
+			found := false
+			for uid := range relatedUsers {
+				if strings.Contains(t.Situations, uid) || strings.Contains(t.KeyMessages, uid) {
+					score += 1
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+	}
+
+	for _, t := range topics {
+		if t.ActionItems != "" && t.ActionItems != "[]" {
+			score += 1
+			break
+		}
+	}
+
+	return score
 }
 
 func (p *Pipeline) channelName(id string) string {

@@ -42,7 +42,6 @@ func testConfig() *config.Config {
 	return &config.Config{
 		Digest: config.DigestConfig{
 			Enabled:     true,
-			Model:       "haiku",
 			MinMessages: 3,
 		},
 	}

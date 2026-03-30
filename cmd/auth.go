@@ -226,7 +226,6 @@ func saveAuthResult(result *auth.OAuthResult) (*authResultInfo, error) {
 		"sync.sync_threads":         config.DefaultSyncThreads,
 		"sync.sync_on_wake":         config.DefaultSyncOnWake,
 		"digest.enabled":            config.DefaultDigestEnabled,
-		"digest.model":              config.DefaultDigestModel,
 		"digest.min_messages":       config.DefaultDigestMinMsgs,
 	}
 	for key, val := range defaults {

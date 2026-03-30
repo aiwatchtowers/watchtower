@@ -131,6 +131,12 @@ func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
 
 // Run executes the people card pipeline for the current 7-day window.
 func (p *Pipeline) Run(ctx context.Context) (int, error) {
+	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
+	p.totalInputTokens.Store(0)
+	p.totalOutputTokens.Store(0)
+	p.totalCostMicro.Store(0)
+	p.totalAPITokens.Store(0)
+
 	if !p.cfg.Digest.Enabled {
 		return 0, nil
 	}
@@ -483,10 +489,11 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		Tactics:             string(tactics),
 		RelationshipContext: relCtx,
 		Status:              "active",
-		Model:               p.cfg.Digest.Model,
+		Model:               "auto",
 		PromptVersion:       pv,
 	}
 	if usage != nil {
+		card.Model = usage.Model
 		card.InputTokens = usage.InputTokens
 		card.OutputTokens = usage.OutputTokens
 		card.CostUSD = usage.CostUSD
@@ -515,7 +522,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 		Accomplishments:  "[]",
 		Tactics:          "[]",
 		Status:           "insufficient_data",
-		Model:            p.cfg.Digest.Model,
+		Model:            "auto",
 	}
 	_, err := p.db.UpsertPeopleCard(card)
 	return err
@@ -549,7 +556,7 @@ func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, f
 		DecisionStyle:      result.DecisionStyle,
 		Tactics:            string(tactics),
 		Status:             "active",
-		Model:              p.cfg.Digest.Model,
+		Model:              digest.ModelForSource("people.batch"),
 		PromptVersion:      pv,
 		InputTokens:        inTok,
 		OutputTokens:       outTok,
@@ -728,10 +735,11 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 		Summary:       result.Summary,
 		Attention:     string(attention),
 		Tips:          string(tips),
-		Model:         p.cfg.Digest.Model,
+		Model:         "auto",
 		PromptVersion: pv,
 	}
 	if usage != nil {
+		s.Model = usage.Model
 		s.InputTokens = usage.InputTokens
 		s.OutputTokens = usage.OutputTokens
 		s.CostUSD = usage.CostUSD

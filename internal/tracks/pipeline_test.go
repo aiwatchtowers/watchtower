@@ -36,7 +36,6 @@ func testConfig() *config.Config {
 	return &config.Config{
 		Digest: config.DigestConfig{
 			Enabled: true,
-			Model:   "test-model",
 		},
 	}
 }
@@ -617,7 +616,7 @@ func TestBatchTracksIntegration(t *testing.T) {
 	from := float64(now.Add(-2 * time.Hour).Unix())
 	to := float64(now.Unix())
 
-	// C1: digest with 3 topics (high activity)
+	// C1: digest with 3 topics (high activity) — has action_items to pass relevance filter
 	_, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C1", Type: "channel",
 		PeriodFrom: from, PeriodTo: to,
@@ -626,11 +625,11 @@ func TestBatchTracksIntegration(t *testing.T) {
 	require.NoError(t, err)
 	for i := 0; i < 3; i++ {
 		_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
-			VALUES (1, ?, ?, 'Topic summary', '[]', '[]', '[]', '[]')`, i, fmt.Sprintf("Backend topic %d", i))
+			VALUES (1, ?, ?, 'Topic summary', '[]', '[{"text":"review code"}]', '[]', '[]')`, i, fmt.Sprintf("Backend topic %d", i))
 		require.NoError(t, err)
 	}
 
-	// C2: digest with 1 topic (low activity)
+	// C2: digest with 1 topic (low activity) — has @mention of U1 to pass relevance filter
 	_, err = database.UpsertDigest(db.Digest{
 		ChannelID: "C2", Type: "channel",
 		PeriodFrom: from, PeriodTo: to,
@@ -638,10 +637,10 @@ func TestBatchTracksIntegration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
-		VALUES (2, 0, 'Frontend task', 'Small channel task', '[]', '[]', '[]', '[]')`)
+		VALUES (2, 0, 'Frontend task', 'Small channel task', '[]', '[]', '[]', '["<@U1> please check"]')`)
 	require.NoError(t, err)
 
-	// C3: digest with 1 topic
+	// C3: digest with 1 topic — has action_items to pass relevance filter
 	_, err = database.UpsertDigest(db.Digest{
 		ChannelID: "C3", Type: "channel",
 		PeriodFrom: from, PeriodTo: to,
@@ -649,7 +648,7 @@ func TestBatchTracksIntegration(t *testing.T) {
 	})
 	require.NoError(t, err)
 	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
-		VALUES (3, 0, 'Infra check', 'Infrastructure question', '[]', '[]', '[]', '[]')`)
+		VALUES (3, 0, 'Infra check', 'Infrastructure question', '[]', '[{"text":"check infra"}]', '[]', '[]')`)
 	require.NoError(t, err)
 
 	// All channels go through unified batch processing now.
@@ -721,4 +720,164 @@ func TestPriorityOrder(t *testing.T) {
 	assert.Equal(t, 1, priorityOrder("medium"))
 	assert.Equal(t, 2, priorityOrder("low"))
 	assert.Equal(t, 2, priorityOrder("unknown"))
+}
+
+// --- Channel scoring & topic dedup tests ---
+
+func TestScoreChannel(t *testing.T) {
+	existingTrackChannels := map[string]bool{"C1": true}
+	starredChannels := map[string]bool{"C2": true}
+	relatedUsers := map[string]bool{"U99": true}
+
+	t.Run("no signals = 0", func(t *testing.T) {
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: "[]"}}
+		score := scoreChannel("C_NEW", topics, "U1", nil, nil, nil)
+		assert.Equal(t, 0, score)
+	})
+
+	t.Run("existing tracks = 3", func(t *testing.T) {
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: "[]"}}
+		score := scoreChannel("C1", topics, "U1", existingTrackChannels, nil, nil)
+		assert.Equal(t, 3, score)
+	})
+
+	t.Run("starred channel = 2", func(t *testing.T) {
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: "[]"}}
+		score := scoreChannel("C2", topics, "U1", nil, starredChannels, nil)
+		assert.Equal(t, 2, score)
+	})
+
+	t.Run("user mention = 2", func(t *testing.T) {
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: `["<@U1> please review"]`}}
+		score := scoreChannel("C_NEW", topics, "U1", nil, nil, nil)
+		assert.Equal(t, 2, score)
+	})
+
+	t.Run("related user in situations = 1", func(t *testing.T) {
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: `[{"topic":"x","participants":[{"user_id":"U99"}]}]`, KeyMessages: "[]"}}
+		score := scoreChannel("C_NEW", topics, "U1", nil, nil, relatedUsers)
+		assert.Equal(t, 1, score)
+	})
+
+	t.Run("action items = 1", func(t *testing.T) {
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: `[{"text":"do something"}]`, Situations: "[]", KeyMessages: "[]"}}
+		score := scoreChannel("C_NEW", topics, "U1", nil, nil, nil)
+		assert.Equal(t, 1, score)
+	})
+
+	t.Run("multiple signals additive", func(t *testing.T) {
+		topics := []db.DigestTopic{{
+			Title:       "Test",
+			ActionItems: `[{"text":"do it"}]`,
+			Situations:  `[{"topic":"x","participants":[{"user_id":"U99"}]}]`,
+			KeyMessages: `["<@U1> review this"]`,
+		}}
+		// All signals matching: existing(3) + starred(2) + mention(2) + related(1) + action(1) = 9
+		all := map[string]bool{"C1": true}
+		score := scoreChannel("C1", topics, "U1", all, all, relatedUsers)
+		assert.Equal(t, 9, score)
+	})
+}
+
+func TestFormatActiveTracksForPromptLimit(t *testing.T) {
+	database := testDB(t)
+
+	// Create 35 tracks to test the limit of 30.
+	for i := 0; i < 35; i++ {
+		priority := "low"
+		if i < 5 {
+			priority = "high"
+		} else if i < 15 {
+			priority = "medium"
+		}
+		_, err := database.UpsertTrack(db.Track{
+			Text:     fmt.Sprintf("Track %d", i),
+			Priority: priority,
+		})
+		require.NoError(t, err)
+	}
+
+	pipe := New(database, testConfig(), nil, log.Default())
+	result, err := pipe.FormatActiveTracksForPrompt()
+	require.NoError(t, err)
+
+	// Should contain truncation notice.
+	assert.Contains(t, result, "Showing 30 of 35")
+
+	// Count track lines (compact format: #ID [priority] text).
+	lines := strings.Split(strings.TrimSpace(result), "\n")
+	trackLines := 0
+	for _, l := range lines {
+		if strings.HasPrefix(l, "#") {
+			trackLines++
+		}
+	}
+	assert.Equal(t, 30, trackLines)
+
+	// Should NOT contain "Context:" (compact format).
+	assert.NotContains(t, result, "Context:")
+
+	// High priority tracks should come first.
+	firstTrackLine := ""
+	for _, l := range lines {
+		if strings.HasPrefix(l, "#") {
+			firstTrackLine = l
+			break
+		}
+	}
+	assert.Contains(t, firstTrackLine, "[high]")
+}
+
+func TestTopicDedupBySourceRefs(t *testing.T) {
+	database := testDB(t)
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
+
+	now := time.Now()
+	from := float64(now.Add(-2 * time.Hour).Unix())
+	to := float64(now.Unix())
+
+	// Create digest with 2 topics.
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: from, PeriodTo: to,
+		Summary: "Test", MessageCount: 5, Model: "test",
+	})
+	require.NoError(t, err)
+
+	// Topic 1 (id=1) with action_items to pass relevance filter
+	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+		VALUES (1, 0, 'Already tracked', 'Summary A', '[]', '[{"text":"do"}]', '[]', '[]')`)
+	require.NoError(t, err)
+	// Topic 2 (id=2) with action_items
+	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+		VALUES (1, 1, 'New topic', 'Summary B', '[]', '[{"text":"check"}]', '[]', '[]')`)
+	require.NoError(t, err)
+
+	// Create existing track linked to topic 1.
+	_, err = database.UpsertTrack(db.Track{
+		Text:       "Existing track",
+		Priority:   "medium",
+		SourceRefs: `[{"digest_id":1,"topic_id":1,"channel_id":"C1","timestamp":1000.0}]`,
+		ChannelIDs: `["C1"]`,
+	})
+	require.NoError(t, err)
+
+	// Mock AI that returns a track for the new topic.
+	aiResponse := `[{"channel_id":"C1","items":[{"text":"New track from topic B","context":"From new topic","priority":"medium","category":"task","ownership":"mine"}]}]`
+
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, &mockGenerator{response: aiResponse}, log.Default())
+
+	created, _, err := pipe.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, created) // Only 1 (from new topic), not 2
+
+	tracks, err := database.GetAllActiveTracks()
+	require.NoError(t, err)
+	assert.Len(t, tracks, 2) // 1 existing + 1 new
 }
