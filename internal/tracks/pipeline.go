@@ -426,7 +426,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 		}
 
 		participants := jsonOrEmpty(item.Participants)
-		sourceRefs := jsonOrEmpty(item.SourceRefs)
+		sourceRefs := filterValidSourceRefs(jsonOrEmpty(item.SourceRefs))
 		tags := jsonOrEmpty(item.Tags)
 		decisionOptions := jsonOrEmpty(item.DecisionOptions)
 		subItems := jsonOrEmpty(item.SubItems)
@@ -627,7 +627,22 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 				fmt.Fprintf(&channelBlocks, "Situations: %s\n", t.Situations)
 			}
 			if t.KeyMessages != "" && t.KeyMessages != "[]" {
-				fmt.Fprintf(&channelBlocks, "Key messages: %s\n", t.KeyMessages)
+				// Collect fallback timestamps from situation message_refs.
+				var fallbackTS []string
+				if t.Situations != "" && t.Situations != "[]" {
+					var situations []db.Situation
+					if err := json.Unmarshal([]byte(t.Situations), &situations); err == nil {
+						for _, s := range situations {
+							for _, ref := range s.MessageRefs {
+								if reSlackTSExact.MatchString(ref) {
+									fallbackTS = append(fallbackTS, ref)
+								}
+							}
+						}
+					}
+				}
+				enriched := p.enrichKeyMessages(e.channelID, t.KeyMessages, fallbackTS)
+				fmt.Fprintf(&channelBlocks, "Key messages: %s\n", enriched)
 			}
 		}
 
@@ -829,6 +844,78 @@ func (p *Pipeline) formatCrossChannelItems(excludeChannelIDs map[string]bool, us
 		fmt.Fprintf(&sb, "#%d [%s] %q%s\n", track.ID, track.Ownership, sanitize(track.Text), tagsStr)
 	}
 	return sb.String()
+}
+
+// reSlackTSExact matches an exact valid Slack message timestamp (e.g. "1774788718.201299").
+var reSlackTSExact = regexp.MustCompile(`^\d{10}\.\d{6}$`)
+
+// enrichKeyMessages replaces bare timestamps in key_messages with enriched
+// message data (ts, channel_id, user_id, text snippet) from the database.
+// This gives the AI accurate data for source_refs instead of requiring it to
+// guess author/text, and includes channel_id for correct deep links.
+// If key_messages contains no valid timestamps, fallbackTS is used instead.
+func (p *Pipeline) enrichKeyMessages(channelID, keyMessagesJSON string, fallbackTS []string) string {
+	var raw []string
+	if err := json.Unmarshal([]byte(keyMessagesJSON), &raw); err != nil {
+		return keyMessagesJSON // return as-is if not parseable
+	}
+
+	// Filter to valid Slack timestamps only.
+	timestamps := raw[:0]
+	for _, ts := range raw {
+		if reSlackTSExact.MatchString(ts) {
+			timestamps = append(timestamps, ts)
+		}
+	}
+
+	// Fallback to situation message_refs if no valid timestamps.
+	if len(timestamps) == 0 {
+		timestamps = fallbackTS
+	}
+	if len(timestamps) == 0 {
+		return "[]"
+	}
+
+	messages, err := p.db.GetMessagesByTS(channelID, timestamps)
+	if err != nil || len(messages) == 0 {
+		return "[]" // no valid messages found
+	}
+
+	// Build enriched array.
+	type enrichedMsg struct {
+		TS        string `json:"ts"`
+		ChannelID string `json:"channel_id"`
+		UserID    string `json:"user_id"`
+		Author    string `json:"author"`
+		Text      string `json:"text"`
+	}
+
+	enriched := make([]enrichedMsg, 0, len(messages))
+	for _, msg := range messages {
+		text := msg.Text
+		if len(text) > 200 {
+			text = text[:200] + "..."
+		}
+		author := msg.UserID
+		p.cacheMu.RLock()
+		if name, ok := p.userNames[msg.UserID]; ok {
+			author = "@" + name
+		}
+		p.cacheMu.RUnlock()
+		enriched = append(enriched, enrichedMsg{
+			TS:        msg.TS,
+			ChannelID: msg.ChannelID,
+			UserID:    msg.UserID,
+			Author:    author,
+			Text:      text,
+		})
+	}
+
+	data, err := json.Marshal(enriched)
+	if err != nil {
+		return keyMessagesJSON
+	}
+	return string(data)
 }
 
 // loadChannelRunningSummary loads a channel's running summary as a prompt section.
@@ -1121,6 +1208,33 @@ func jsonOrEmpty(raw json.RawMessage) string {
 		return "[]"
 	}
 	return string(raw)
+}
+
+// filterValidSourceRefs removes source_refs entries with empty or invalid ts.
+func filterValidSourceRefs(raw string) string {
+	if raw == "[]" || raw == "" {
+		return "[]"
+	}
+	var refs []struct {
+		TS        string `json:"ts"`
+		ChannelID string `json:"channel_id,omitempty"`
+		Author    string `json:"author,omitempty"`
+		Text      string `json:"text,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(raw), &refs); err != nil {
+		return "[]"
+	}
+	filtered := refs[:0]
+	for _, r := range refs {
+		if reSlackTSExact.MatchString(r.TS) {
+			filtered = append(filtered, r)
+		}
+	}
+	if len(filtered) == 0 {
+		return "[]"
+	}
+	data, _ := json.Marshal(filtered)
+	return string(data)
 }
 
 func jsonStringArray(arr []string) string {

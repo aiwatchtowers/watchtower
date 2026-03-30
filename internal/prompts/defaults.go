@@ -296,7 +296,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
         {"name": "@username", "user_id": "U123", "stance": "brief summary of this person's position"}
       ],
       "source_refs": [
-        {"ts": "1234567890.123456", "author": "@username", "text": "key quote (1 sentence)"}
+        {"ts": "1234567890.123456", "channel_id": "C123ABC", "author": "@username", "text": "key quote (1 sentence)"}
       ],
       "sub_items": [
         {"text": "specific sub-task", "status": "open"}
@@ -325,7 +325,7 @@ Rules:
 - category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
 - ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
 - ball_on: user_id of who acts next
-- source_refs: 2-5 most important messages as footnotes
+- source_refs: 2-5 most important messages as footnotes. MUST copy ts and channel_id exactly from key_messages data — do NOT invent timestamps
 - sub_items: break into sub-tasks with "open"/"done" status, 2-5 per track
 - existing_id: match against EXISTING TRACKS from ALL channels. STRONGLY prefer updating over creating duplicates.
 - status_hint: "done" if confirmed complete, "" otherwise. Only with existing_id.
@@ -735,7 +735,7 @@ Return ONLY a JSON array (no markdown fences, no explanation):
         "decision_summary": "",
         "decision_options": [],
         "participants": [{"name": "@username", "user_id": "U123", "stance": "brief summary"}],
-        "source_refs": [{"ts": "1234567890.123456", "author": "@username", "text": "key quote"}],
+        "source_refs": [{"ts": "1234567890.123456", "channel_id": "C123ABC", "author": "@username", "text": "key quote"}],
         "sub_items": [{"text": "sub-task", "status": "open"}],
         "ownership": "mine",
         "ball_on": "U123",
@@ -764,7 +764,7 @@ Rules:
 - category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
 - ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
 - ball_on: user_id of who acts next
-- source_refs: reference key messages from digest topics
+- source_refs: reference key messages from digest topics. MUST copy ts and channel_id exactly from enriched key_messages — do NOT invent timestamps
 - sub_items: break into sub-tasks with "open"/"done" status, 2-5 per track
 - existing_id: match against EXISTING TRACKS. STRONGLY prefer updating over creating duplicates.
 - status_hint: "done" if confirmed complete, "" otherwise. Only with existing_id.

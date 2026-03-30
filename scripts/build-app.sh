@@ -75,7 +75,8 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 # Copy desktop binary
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/WatchtowerDesktop"
 
-# Copy SPM resource bundles (contains Assets.xcassets etc.)
+# Copy SPM resource bundles into Contents/Resources/ (standard macOS .app location)
+# AppBundle.resources searches here via Bundle.main.resourceURL
 RESOURCE_BUNDLE_DIR=$(swift build -c release --arch arm64 --show-bin-path)
 for bundle in "$RESOURCE_BUNDLE_DIR"/*.bundle; do
     if [ -d "$bundle" ]; then

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -1251,7 +1252,7 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 			dec, _ := json.Marshal(t.Decisions)
 			ai, _ := json.Marshal(t.ActionItems)
 			sit, _ := json.Marshal(t.Situations)
-			km, _ := json.Marshal(t.KeyMessages)
+			km, _ := json.Marshal(filterValidTimestamps(t.KeyMessages))
 			dbTopics = append(dbTopics, db.DigestTopic{
 				Idx:         i,
 				Title:       t.Title,
@@ -1769,6 +1770,21 @@ func sanitizePromptValue(text string) string {
 	text = strings.ReplaceAll(text, "===", "= = =")
 	text = strings.ReplaceAll(text, "---", "- - -")
 	return text
+}
+
+// reSlackTS matches a valid Slack message timestamp (e.g. "1774788718.201299").
+var reSlackTS = regexp.MustCompile(`^\d{10}\.\d{6}$`)
+
+// filterValidTimestamps removes entries from key_messages that are not valid
+// Slack timestamps. AI sometimes returns human-readable text instead.
+func filterValidTimestamps(msgs []string) []string {
+	filtered := msgs[:0]
+	for _, m := range msgs {
+		if reSlackTS.MatchString(m) {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
 }
 
 // parseDigestResult extracts a DigestResult from Claude's response.

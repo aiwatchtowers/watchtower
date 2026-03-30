@@ -141,7 +141,7 @@ final class ClaudeService: ClaudeServiceProtocol, Sendable {
     ) async throws {
         let claudePath = try findClaude()
 
-        var args = ["-p", prompt, "--output-format", "stream-json", "--model", model]
+        var args = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model]
 
         if let sessionID {
             args += ["--resume", sessionID]

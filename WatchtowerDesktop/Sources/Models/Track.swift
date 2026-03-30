@@ -22,10 +22,18 @@ struct TrackParticipant: Codable, Identifiable, Equatable {
 
 struct TrackSourceRef: Codable, Identifiable, Equatable {
     let ts: String
+    let channelID: String?
     let author: String
     let text: String
 
     var id: String { "\(ts)-\(author)" }
+
+    enum CodingKeys: String, CodingKey {
+        case ts
+        case channelID = "channel_id"
+        case author
+        case text
+    }
 }
 
 struct TrackDecisionOption: Codable, Identifiable, Equatable {
@@ -219,7 +227,8 @@ struct Track: FetchableRecord, Identifiable, Equatable {
     var decodedSourceRefs: [TrackSourceRef] {
         guard !sourceRefs.isEmpty, sourceRefs != "[]",
               let data = sourceRefs.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([TrackSourceRef].self, from: data)) ?? []
+        let refs = (try? JSONDecoder().decode([TrackSourceRef].self, from: data)) ?? []
+        return refs.filter { !$0.ts.isEmpty }
     }
 
     var decodedTags: [String] {

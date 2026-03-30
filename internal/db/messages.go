@@ -355,6 +355,34 @@ func (db *DB) GetMessageNear(channelID string, tsUnix float64) (*Message, error)
 	return &msg, nil
 }
 
+// GetMessagesByTS returns messages matching the given (channel_id, ts) pairs.
+// Useful for enriching key_messages timestamps with actual message content.
+func (db *DB) GetMessagesByTS(channelID string, timestamps []string) ([]Message, error) {
+	if len(timestamps) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(timestamps))
+	args := make([]any, 0, len(timestamps)+1)
+	args = append(args, channelID)
+	for i, ts := range timestamps {
+		placeholders[i] = "?"
+		args = append(args, ts)
+	}
+	rows, err := db.Query(`
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		FROM messages
+		WHERE channel_id = ? AND ts IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY ts_unix ASC`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying messages by ts: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessages(rows)
+}
+
 // GetThreadRepliesAfterTS returns thread replies in a channel where
 // thread_ts matches the given parent TS and the message TS is strictly
 // greater than afterTS. Results are ordered oldest-first, capped at 200.

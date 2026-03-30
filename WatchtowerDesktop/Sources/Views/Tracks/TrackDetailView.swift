@@ -378,9 +378,9 @@ struct TrackDetailView: View {
 
                         Spacer()
 
-                        // Slack link for the message
-                        let channels = track.decodedChannelIDs
-                        if let chID = channels.first, !ref.ts.isEmpty {
+                        // Slack link for the message — prefer channel_id from ref, fall back to track's first channel
+                        let refChannelID = ref.channelID ?? track.decodedChannelIDs.first
+                        if let chID = refChannelID, !ref.ts.isEmpty {
                             if let url = viewModel.slackMessageURL(
                                 channelID: chID, messageTS: ref.ts
                             ) {
