@@ -21,6 +21,7 @@ var Defaults = map[string]string{
 	DigestChannelBatch: defaultDigestChannelBatch,
 	TracksExtractBatch: defaultTracksExtractBatch,
 	PeopleBatch:        defaultPeopleBatch,
+	TasksGenerate:      defaultTasksGenerate,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -40,6 +41,7 @@ var AllIDs = []string{
 	PeopleBatch,
 	BriefingDaily,
 	InboxPrioritize,
+	TasksGenerate,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -59,9 +61,10 @@ var DefaultVersions = map[string]int{
 	PeopleReduce:       1,
 	PeopleTeam:         1,
 	BriefingDaily:      3, // v3: inbox integration
-	InboxPrioritize:    2, // v2: richer context (age, sender role, replies)
+	InboxPrioritize:    3, // v3: closing signal resolution rules
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
+	TasksGenerate:      1, // v1: AI task generation with checklist and due date
 }
 
 // Descriptions maps prompt IDs to human-readable descriptions.
@@ -81,6 +84,7 @@ var Descriptions = map[string]string{
 	InboxPrioritize:    "Inbox prioritization — AI priority + auto-resolve for inbox items",
 	DigestChannelBatch: "Channel batch digest — multi-channel analysis for low-activity channels",
 	PeopleBatch:        "People batch cards — lightweight cards for low-data users in one AI call",
+	TasksGenerate:      "Task generation — AI-powered task breakdown with checklist, priority, and due date",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -321,7 +325,7 @@ Rules:
   * Bot notifications (unless requiring human action), FYI with no next step
   * Individual alerts (aggregate systemic patterns into ONE track)
   * Discussions with no action expected from user
-- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, use sparingly)
+- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, background)
 - category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
 - ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
 - ball_on: user_id of who acts next
@@ -638,6 +642,10 @@ Rules:
 - Consider sender role: manager/lead requests are typically higher priority than peer FYIs.
 - "thread_reply" items are replies to the user's own messages — prioritize if they ask questions or need decisions.
 - "reaction" items mean someone flagged the user's message with an attention emoji — usually needs a look.
+- Closing signals ("thanks", "thank you", "got it", "ok", "спасибо", "понял", etc.) where the user
+  already replied and the conversation appears concluded: set resolved=true, priority="",
+  reason="Closing signal — no reply needed".
+- Short acknowledgment messages at the end of a resolved conversation should be resolved=true.
 - For REPLIED items: set resolved=true if the user's reply addressed the question/request. Set resolved=false if the conversation is still ongoing.
 - Include the original item ID in each result.
 - Be concise in reasons (1 sentence max).
@@ -708,9 +716,15 @@ const defaultTracksExtractBatch = `You are analyzing channel digests from multip
 
 Each channel below has pre-analyzed topics with decisions, action items, and situations extracted from channel digests. Extract actionable tracks from these structured observations.
 
-CRITICAL: Group related topics into a SINGLE track. If multiple topics discuss the same task/initiative, combine them into ONE comprehensive track — do NOT create separate items for each topic about the same thing.
+CRITICAL — DEDUPLICATION (read this carefully):
+1. BEFORE creating any new track, scan the ENTIRE "EXISTING TRACKS" section below.
+2. If a topic is about the same initiative, project, task, or discussion as an existing track — even if phrased differently or from a different channel — you MUST set "existing_id" to that track's ID instead of creating a new one.
+3. When in doubt, UPDATE an existing track rather than creating a new one. Duplicates are the worst outcome.
 
-DEDUPLICATION: Review the EXISTING TRACKS section below. If a topic relates to an existing track (from ANY channel), UPDATE it (set "existing_id" to the track's ID) instead of creating a new one.
+CRITICAL — GROUPING:
+1. Multiple topics about the same initiative/project/task = ONE track. Do NOT create separate tracks for different aspects of the same thing.
+2. A track should represent ONE coherent initiative or workstream. Do NOT mix unrelated topics into a single track just because they come from the same channel.
+3. Aim for 0-3 tracks per channel. If you're generating more, you're probably not grouping enough.
 
 COMPLETION DETECTION: If topics indicate that an existing track has been COMPLETED, return the track with "existing_id" and "status_hint": "done".
 
@@ -750,8 +764,9 @@ Return [] if no tracks found in any channel.
 %s
 
 Rules:
-- GROUPING: Multiple topics about the same initiative = ONE track. Aim for 0-5 tracks per channel.
-- CROSS-CHANNEL MERGE: If the topic matches an existing track from another channel, set existing_id to that track. This is the key feature — one topic across channels = one track.
+- GROUPING: Multiple topics about the same initiative = ONE track. Aim for 0-3 tracks per channel. Different aspects of the same project (e.g. design discussion + implementation + review) = ONE track.
+- MERGE WITH EXISTING: If a topic matches an existing track (from ANY channel, including the same one), set existing_id. This is the most important rule — one initiative = one track, always.
+- TOPIC SEPARATION: Each track should be about ONE coherent initiative. Do NOT combine unrelated topics into a single track. If topics are about genuinely different things, create separate tracks.
 - Only extract tracks with a CLEAR actionable request or decision needing action. Skip informational topics with no action expected.
 - Extract tracks from:
   * Action items assigned to the user, decisions requiring user input, requests and tasks directed at user
@@ -760,13 +775,13 @@ Rules:
   * Completed actions with no follow-up, informational summaries with no action
   * Topics where the user is merely mentioned but has no action expected
   * Discussions that resolved without user involvement
-- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, use sparingly)
+- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, background)
 - category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
 - ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
 - ball_on: user_id of who acts next
 - source_refs: reference key messages from digest topics. MUST copy ts and channel_id exactly from enriched key_messages — do NOT invent timestamps
 - sub_items: break into sub-tasks with "open"/"done" status, 2-5 per track
-- existing_id: match against EXISTING TRACKS. STRONGLY prefer updating over creating duplicates.
+- existing_id: match against EXISTING TRACKS by meaning, not exact wording. ALWAYS prefer updating over creating duplicates. If you're unsure whether a topic matches an existing track, it probably does — set existing_id.
 - status_hint: "done" if confirmed complete, "" otherwise. Only with existing_id.
 - SKIP channels where nothing actionable was found — omit them from the result entirely
 %s
@@ -821,3 +836,29 @@ Rules:
 
 === USERS ===
 %s`
+
+const defaultTasksGenerate = `You are a task planning assistant. The user describes a task they want to accomplish.
+Your job is to enrich the task: break it into actionable sub-items (checklist), suggest priority, and propose a realistic due date+time.
+
+Current date/time: %s
+
+Rules:
+- Generate 3-8 sub-items that form a logical checklist for completing the task
+- Each sub-item should be a concrete, actionable step
+- Suggest priority: "high" (urgent/blocking), "medium" (normal), "low" (nice-to-have)
+- Suggest a due date+time in YYYY-MM-DDTHH:MM format based on task complexity
+- Write a brief intent (why this task matters, 1 sentence)
+- If source context is provided, use it to make sub-items more specific
+- Keep sub-item text concise (under 80 chars each)
+
+Return ONLY valid JSON in this exact format:
+{
+  "text": "improved task title (keep concise)",
+  "intent": "why this task matters",
+  "priority": "high|medium|low",
+  "due_date": "YYYY-MM-DDTHH:MM",
+  "sub_items": [
+    {"text": "step 1 description", "done": false},
+    {"text": "step 2 description", "done": false}
+  ]
+}`

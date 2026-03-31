@@ -320,7 +320,6 @@ func TestRunTasksShow(t *testing.T) {
 	assert.Contains(t, output, "Show this task")
 	assert.Contains(t, output, "in_progress")
 	assert.Contains(t, output, "high")
-	assert.Contains(t, output, "delegated")
 	assert.Contains(t, output, "alice")
 	assert.Contains(t, output, "2026-04-01")
 	assert.Contains(t, output, "review")

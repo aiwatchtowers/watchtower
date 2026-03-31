@@ -51,10 +51,10 @@ var (
 
 // UserScopes are the Slack user token scopes required by Watchtower.
 var UserScopes = []string{
-	"channels:history", "channels:read",
-	"groups:history", "groups:read",
-	"im:history", "im:read",
-	"mpim:history", "mpim:read",
+	"channels:history", "channels:read", "channels:write",
+	"groups:history", "groups:read", "groups:write",
+	"im:history", "im:read", "im:write",
+	"mpim:history", "mpim:read", "mpim:write",
 	"search:read",
 	"users:read", "users:read.email",
 	"files:read", "reactions:read", "team:read",

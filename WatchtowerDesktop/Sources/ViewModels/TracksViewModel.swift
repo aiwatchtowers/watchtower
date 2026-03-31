@@ -17,6 +17,8 @@ final class TracksViewModel {
     var channelFilter: String?
     var tagFilter: String?
     var ownershipFilter: String?
+    var showRead: Bool = false
+    var showDismissed: Bool = false
 
     private(set) var workspaceDomain: String?
     private(set) var workspaceTeamID: String?
@@ -62,7 +64,8 @@ final class TracksViewModel {
                     db,
                     priority: self.priorityFilter,
                     channelID: self.channelFilter,
-                    ownership: self.ownershipFilter
+                    ownership: self.ownershipFilter,
+                    includeDismissed: self.showDismissed
                 )
                 let taskCounts = try TaskQueries.fetchActiveCountsBySourceTrack(db)
                 return (ws?.domain, ws?.id, all, counts, taskCounts)
@@ -78,7 +81,9 @@ final class TracksViewModel {
             }
 
             updatedTracks = tracks.filter { $0.hasUpdates }
-            allTracks = tracks.filter { !$0.hasUpdates }
+            let rest = tracks.filter { !$0.hasUpdates }
+            // Hide read tracks unless showRead is enabled
+            allTracks = showRead ? rest : rest.filter { $0.isUnread }
             totalCount = result.3.total
             updatedCount = result.3.updated
             refreshUserNameCache(tracks: tracks)
@@ -142,6 +147,28 @@ final class TracksViewModel {
         }
     }
 
+    func dismissTrack(_ track: Track) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TrackQueries.dismiss(db, id: track.id)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to dismiss: \(error.localizedDescription)"
+        }
+    }
+
+    func restoreTrack(_ track: Track) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TrackQueries.restore(db, id: track.id)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to restore: \(error.localizedDescription)"
+        }
+    }
+
     func fetchDigest(id: Int) -> Digest? {
         do {
             return try dbManager.dbPool.read { db in
@@ -180,9 +207,7 @@ final class TracksViewModel {
 
     func slackMessageURL(channelID: String, messageTS: String) -> URL? {
         guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
-        return URL(
-            string: "slack://channel?team=\(teamID)&id=\(channelID)&message=\(messageTS)"
-        )
+        return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)&message=\(messageTS)")
     }
 
     func submitFeedback(trackID: Int, rating: Int) {

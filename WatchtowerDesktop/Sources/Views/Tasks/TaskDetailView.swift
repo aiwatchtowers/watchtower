@@ -43,7 +43,7 @@ struct TaskDetailView: View {
         editingBlocking = task.blocking
         editingBallOn = task.ballOn
         hasDueDate = !task.dueDate.isEmpty
-        if let date = Self.dateFormatter.date(from: task.dueDate) {
+        if let date = TaskItem.parseDueDate(task.dueDate) {
             dueDate = date
         }
     }
@@ -54,7 +54,6 @@ struct TaskDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center) {
                 priorityMenu
-                ownershipMenu
                 Spacer()
                 if let onClose {
                     Button { onClose() } label: {
@@ -158,7 +157,7 @@ struct TaskDetailView: View {
                     DatePicker(
                         "",
                         selection: $dueDate,
-                        displayedComponents: .date
+                        displayedComponents: [.date, .hourAndMinute]
                     )
                     .labelsHidden()
                     .onChange(of: dueDate) { _, _ in
@@ -383,11 +382,11 @@ struct TaskDetailView: View {
 
             Divider()
 
-            DatePicker("Pick date", selection: $snoozeCustomDate, displayedComponents: .date)
+            DatePicker("Pick date", selection: $snoozeCustomDate, displayedComponents: [.date, .hourAndMinute])
                 .labelsHidden()
 
             Button("Snooze to selected date") {
-                let dateStr = Self.dateFormatter.string(from: snoozeCustomDate)
+                let dateStr = TaskItem.formatDueDate(snoozeCustomDate)
                 viewModel.snooze(task, until: dateStr)
                 showSnoozePopover = false
             }
@@ -541,7 +540,7 @@ struct TaskDetailView: View {
     }
 
     private func commitDueDate() {
-        let dateStr = Self.dateFormatter.string(from: dueDate)
+        let dateStr = TaskItem.formatDueDate(dueDate)
         guard dateStr != task.dueDate else { return }
         viewModel.updateDueDate(task, to: dateStr)
     }
@@ -560,15 +559,8 @@ struct TaskDetailView: View {
 
     private func snoozeFor(days: Int) {
         let date = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date()
-        let dateStr = Self.dateFormatter.string(from: date)
+        let dateStr = TaskItem.formatDueDate(date)
         viewModel.snooze(task, until: dateStr)
         showSnoozePopover = false
     }
-
-    private static let dateFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        return fmt
-    }()
 }

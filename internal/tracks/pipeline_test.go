@@ -550,11 +550,11 @@ func TestParseBatchTracksResult(t *testing.T) {
 	})
 }
 
-func TestFormatCrossChannelTruncation(t *testing.T) {
+func TestFormatExistingTracksTruncation(t *testing.T) {
 	database := testDB(t)
 
-	// Create 25 tracks with varying priorities.
-	for i := 0; i < 25; i++ {
+	// Create 35 tracks with varying priorities.
+	for i := 0; i < 35; i++ {
 		priority := "low"
 		if i < 5 {
 			priority = "high"
@@ -563,6 +563,7 @@ func TestFormatCrossChannelTruncation(t *testing.T) {
 		}
 		_, err := database.UpsertTrack(db.Track{
 			Text:       fmt.Sprintf("Track %d", i),
+			Context:    fmt.Sprintf("Context for track %d with some details", i),
 			Priority:   priority,
 			ChannelIDs: `["C_OTHER"]`,
 		})
@@ -570,10 +571,10 @@ func TestFormatCrossChannelTruncation(t *testing.T) {
 	}
 
 	pipe := New(database, testConfig(), nil, log.Default())
-	result := pipe.formatCrossChannelItems(map[string]bool{"C_EXCLUDED": true}, "U1")
+	result := pipe.formatExistingTracks("U1")
 
 	// Should contain truncation notice.
-	assert.Contains(t, result, "Showing top 20 of 25")
+	assert.Contains(t, result, "Showing top 30 of 35")
 
 	// Count track entries.
 	lines := strings.Split(result, "\n")
@@ -583,7 +584,29 @@ func TestFormatCrossChannelTruncation(t *testing.T) {
 			trackLines++
 		}
 	}
-	assert.Equal(t, 20, trackLines)
+	assert.Equal(t, 30, trackLines)
+
+	// Should include context snippet.
+	assert.Contains(t, result, "Context for track")
+}
+
+func TestFormatExistingTracksIncludesBatchChannels(t *testing.T) {
+	database := testDB(t)
+
+	// Create a track from a channel that would be in the batch.
+	_, err := database.UpsertTrack(db.Track{
+		Text:       "Existing track from batch channel",
+		Context:    "This track was created in a previous run",
+		Priority:   "high",
+		ChannelIDs: `["C_BATCH"]`,
+	})
+	require.NoError(t, err)
+
+	pipe := New(database, testConfig(), nil, log.Default())
+	result := pipe.formatExistingTracks("U1")
+
+	// Track from batch channel must be included (previously it was excluded).
+	assert.Contains(t, result, "Existing track from batch channel")
 }
 
 // routingMockGenerator routes responses based on whether the userMessage contains batch markers.
@@ -826,6 +849,145 @@ func TestFormatActiveTracksForPromptLimit(t *testing.T) {
 		}
 	}
 	assert.Contains(t, firstTrackLine, "[high]")
+}
+
+func TestTokenizeText(t *testing.T) {
+	tokens := tokenizeText("DDoS post-mortem на web-версии", "инцидент стабилизирован")
+	assert.Contains(t, tokens, "ddos")
+	assert.Contains(t, tokens, "post")
+	assert.Contains(t, tokens, "morte") // "mortem" pseudo-stemmed to 5 chars
+	assert.Contains(t, tokens, "web")
+	assert.Contains(t, tokens, "верси") // "версии" pseudo-stemmed to 5 chars
+	assert.Contains(t, tokens, "инцид") // "инцидент" pseudo-stemmed to 5 chars
+	assert.Contains(t, tokens, "стаби") // "стабилизирован" pseudo-stemmed
+	// Short tokens (<3 chars) excluded.
+	assert.NotContains(t, tokens, "на")
+	// Same root, different forms → same stem.
+	t1 := tokenizeText("инциденту")
+	t2 := tokenizeText("инцидента")
+	t3 := tokenizeText("инцидент")
+	assert.Contains(t, t1, "инцид")
+	assert.Contains(t, t2, "инцид")
+	assert.Contains(t, t3, "инцид")
+}
+
+func TestJaccardSimilarity(t *testing.T) {
+	// Text+context combined, as used in real pipeline.
+	a := tokenizeText("DDoS post-mortem на web-версии продукта", "31.03 инцидент на web-версии сервиса")
+	b := tokenizeText("Убедиться в проведении пост-мортема по DDoS-инциденту на web-версии",
+		"31.03 ночью зафиксирован инцидент на web-версии сервиса")
+	score := jaccardSimilarity(a, b)
+	assert.Greater(t, score, textSimilarityThreshold, "DDoS-related texts should exceed threshold")
+
+	// Completely unrelated texts.
+	c := tokenizeText("Обновить документацию по API эндпоинтам", "Новые эндпоинты не задокументированы")
+	score2 := jaccardSimilarity(a, c)
+	assert.Less(t, score2, 0.05, "Unrelated texts should have very low similarity")
+
+	// Empty sets.
+	assert.Equal(t, 0.0, jaccardSimilarity(map[string]struct{}{}, a))
+}
+
+func TestFindSimilarTrack(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+
+	// Create existing track about DDoS post-mortem (with context, as in production).
+	_, err := database.UpsertTrack(db.Track{
+		AssigneeUserID: "U1",
+		Text:           "Запросить root-cause анализ / постмортем по DDoS-инциденту на web-версии",
+		Context:        "31.03 был зафиксирован DDoS-инцидент, затронувший исключительно web-версию сервиса. Савелий Власенко закрыл инцидент без указания причины",
+		Priority:       "medium",
+		ChannelIDs:     `["C1"]`,
+	})
+	require.NoError(t, err)
+
+	// Create unrelated track.
+	_, err = database.UpsertTrack(db.Track{
+		AssigneeUserID: "U1",
+		Text:           "Обновить документацию API",
+		Context:        "Новые эндпоинты не задокументированы",
+		Priority:       "low",
+		ChannelIDs:     `["C2"]`,
+	})
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	pipe := New(database, cfg, &mockGenerator{}, log.Default())
+
+	// Pre-load cache (normally done in RunForWindow).
+	allActive, _ := database.GetAllActiveTracks()
+	pipe.allActiveTracksRef = allActive
+
+	// Similar text should match (realistic dupe from production).
+	id, score := pipe.findSimilarTrack("U1",
+		"Убедиться в проведении постмортема DDoS-инцидента на веб-версии: подтвердить root cause",
+		"31.03 около 01:05 Савелий Власенко сообщил о стабилизации инцидента, затронувшего только веб-версию")
+	assert.Greater(t, id, 0, "Should find similar track")
+	assert.GreaterOrEqual(t, score, textSimilarityThreshold)
+
+	// Completely different text should not match.
+	id2, _ := pipe.findSimilarTrack("U1",
+		"Согласовать бюджет на Q2",
+		"Финансовый отдел запросил план расходов")
+	assert.Equal(t, 0, id2, "Should not find similar track for unrelated text")
+
+	// Different user should not match.
+	id3, _ := pipe.findSimilarTrack("U999",
+		"Убедиться в проведении постмортема DDoS-инцидента на веб-версии",
+		"31.03 инцидент на веб-версии сервиса")
+	assert.Equal(t, 0, id3, "Should not match tracks from different user")
+}
+
+func TestTextSimilarityDedupInStoreTrackItems(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "incidents", Type: "public"}))
+
+	// Create existing track (with realistic context for similarity matching).
+	_, err := database.UpsertTrack(db.Track{
+		AssigneeUserID: "U1",
+		Text:           "Запросить root-cause анализ / постмортем по DDoS-инциденту на web-версии",
+		Context:        "31.03 был зафиксирован DDoS-инцидент, затронувший исключительно web-версию сервиса. Савелий Власенко закрыл инцидент без указания причины",
+		Priority:       "medium",
+		ChannelIDs:     `["C1"]`,
+	})
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	pipe := New(database, cfg, &mockGenerator{}, log.Default())
+
+	// Pre-load cache.
+	allActive, _ := database.GetAllActiveTracks()
+	pipe.allActiveTracksRef = allActive
+
+	now := time.Now()
+	from := float64(now.Add(-2 * time.Hour).Unix())
+	to := float64(now.Unix())
+
+	// Try to store a near-duplicate — should merge instead of creating new.
+	items := []aiItem{
+		{
+			Text:      "Убедиться в проведении постмортема DDoS-инцидента на веб-версии: подтвердить root cause",
+			Context:   "31.03 около 01:05 Савелий Власенко сообщил о стабилизации инцидента, затронувшего только веб-версию",
+			Priority:  "medium",
+			Category:  "task",
+			Ownership: "mine",
+		},
+	}
+
+	stored := pipe.storeTrackItems(items, "U1", "C1", "incidents", nil, 1, from, to)
+	assert.Equal(t, 1, stored)
+
+	// Should still be 1 track total (merged), not 2.
+	tracks, err := database.GetAllActiveTracks()
+	require.NoError(t, err)
+	assert.Len(t, tracks, 1, "Duplicate should be merged, not created as new")
+
+	// The track text should be updated to the new version.
+	assert.Contains(t, tracks[0].Text, "постмортема")
 }
 
 func TestTopicDedupBySourceRefs(t *testing.T) {

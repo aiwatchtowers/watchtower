@@ -186,6 +186,7 @@ type Track struct {
 	Fingerprint      string  // JSON: extracted entities for dedup
 	ReadAt           string  // "" = unread, ISO8601 = when read
 	HasUpdates       bool
+	DismissedAt      string // "" = active, ISO8601 = when dismissed
 	Model            string
 	InputTokens      int
 	OutputTokens     int
@@ -463,8 +464,8 @@ type Task struct {
 	Priority    string // "high", "medium", "low"
 	Ownership   string // "mine", "delegated", "watching"
 	BallOn      string
-	DueDate     string // "YYYY-MM-DD" or ""
-	SnoozeUntil string // "YYYY-MM-DD" or ""
+	DueDate     string // "YYYY-MM-DDTHH:MM" or ""
+	SnoozeUntil string // "YYYY-MM-DDTHH:MM" or ""
 	Blocking    string
 	Tags        string // JSON
 	SubItems    string // JSON

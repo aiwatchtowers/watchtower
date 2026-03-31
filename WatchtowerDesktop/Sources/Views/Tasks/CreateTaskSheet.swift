@@ -12,12 +12,12 @@ struct CreateTaskSheet: View {
     @State private var text: String = ""
     @State private var intent: String = ""
     @State private var priority: String = "medium"
-    @State private var ownership: String = "mine"
     @State private var dueDate: Date?
     @State private var hasDueDate: Bool = false
     @State private var subItems: [TaskSubItem] = []
     @State private var newSubItemText: String = ""
     @State private var errorMessage: String?
+    @State private var isGenerating: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,7 +27,7 @@ struct CreateTaskSheet: View {
             Divider()
             sheetFooter
         }
-        .frame(width: 480, height: 520)
+        .frame(width: 480, height: 560)
         .onAppear {
             text = prefillText
             intent = prefillIntent
@@ -49,8 +49,9 @@ struct CreateTaskSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 textField
+                aiGenerateButton
                 intentField
-                pickersRow
+                priorityRow
                 dueDateRow
                 checklistSection
                 sourceInfo
@@ -71,6 +72,33 @@ struct CreateTaskSheet: View {
         }
     }
 
+    private var aiGenerateButton: some View {
+        HStack {
+            Button {
+                generateWithAI()
+            } label: {
+                HStack(spacing: 6) {
+                    if isGenerating {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "sparkles")
+                    }
+                    Text(isGenerating ? "Generating..." : "Generate with AI")
+                }
+            }
+            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating)
+
+            Spacer()
+
+            if isGenerating {
+                Text("AI is breaking down the task...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var intentField: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Why? (optional)")
@@ -81,33 +109,18 @@ struct CreateTaskSheet: View {
         }
     }
 
-    private var pickersRow: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Priority")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                Picker("Priority", selection: $priority) {
-                    Text("High").tag("high")
-                    Text("Medium").tag("medium")
-                    Text("Low").tag("low")
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
+    private var priorityRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Priority")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            Picker("Priority", selection: $priority) {
+                Text("High").tag("high")
+                Text("Medium").tag("medium")
+                Text("Low").tag("low")
             }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Ownership")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                Picker("Ownership", selection: $ownership) {
-                    Text("Mine").tag("mine")
-                    Text("Delegated").tag("delegated")
-                    Text("Watching").tag("watching")
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
         }
     }
 
@@ -123,7 +136,7 @@ struct CreateTaskSheet: View {
                         get: { dueDate ?? Date() },
                         set: { dueDate = $0 }
                     ),
-                    displayedComponents: .date
+                    displayedComponents: [.date, .hourAndMinute]
                 )
                 .labelsHidden()
             }
@@ -216,6 +229,104 @@ struct CreateTaskSheet: View {
         }
     }
 
+    // MARK: - AI Generation
+
+    private func generateWithAI() {
+        guard let cliPath = Constants.findCLIPath() else {
+            errorMessage = "watchtower binary not found"
+            return
+        }
+
+        let taskText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !taskText.isEmpty else { return }
+
+        isGenerating = true
+        errorMessage = nil
+
+        Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: cliPath)
+
+            var args = ["tasks", "generate", "--text", taskText]
+            if prefillSourceType != "manual" && !prefillSourceID.isEmpty {
+                args += ["--source-type", prefillSourceType, "--source-id", prefillSourceID]
+            }
+            process.arguments = args
+            process.environment = Constants.resolvedEnvironment()
+
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+                let outStr = String(data: outData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                let errStr = String(data: errData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                await MainActor.run {
+                    isGenerating = false
+
+                    if process.terminationStatus != 0 {
+                        errorMessage = errStr.isEmpty ? "AI generation failed" : errStr
+                        return
+                    }
+
+                    applyGeneratedResult(outStr)
+                }
+            } catch {
+                await MainActor.run {
+                    isGenerating = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func applyGeneratedResult(_ jsonStr: String) {
+        guard let data = jsonStr.data(using: .utf8) else {
+            errorMessage = "Invalid response from AI"
+            return
+        }
+
+        struct GeneratedTask: Decodable {
+            let text: String?
+            let intent: String?
+            let priority: String?
+            // swiftlint:disable:next identifier_name
+            let due_date: String?
+            // swiftlint:disable:next identifier_name
+            let sub_items: [TaskSubItem]?
+        }
+
+        do {
+            let result = try JSONDecoder().decode(GeneratedTask.self, from: data)
+
+            if let t = result.text, !t.isEmpty { text = t }
+            if let i = result.intent, !i.isEmpty { intent = i }
+            if let p = result.priority, ["high", "medium", "low"].contains(p) { priority = p }
+            if let d = result.due_date, !d.isEmpty,
+               let date = TaskItem.parseDueDate(d) {
+                dueDate = date
+                hasDueDate = true
+            }
+            if let items = result.sub_items, !items.isEmpty {
+                subItems = items
+            }
+        } catch {
+            errorMessage = "Failed to parse AI response: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Create
+
     private func createTask() {
         guard let db = appState.databaseManager else {
             errorMessage = "Database not available"
@@ -227,10 +338,7 @@ struct CreateTaskSheet: View {
 
         let dueDateStr: String
         if hasDueDate, let dueDate {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "yyyy-MM-dd"
-            fmt.locale = Locale(identifier: "en_US_POSIX")
-            dueDateStr = fmt.string(from: dueDate)
+            dueDateStr = TaskItem.formatDueDate(dueDate)
         } else {
             dueDateStr = ""
         }
@@ -252,7 +360,6 @@ struct CreateTaskSheet: View {
                     text: trimmed,
                     intent: intent.trimmingCharacters(in: .whitespacesAndNewlines),
                     priority: priority,
-                    ownership: ownership,
                     dueDate: dueDateStr,
                     sourceType: prefillSourceType,
                     sourceID: prefillSourceID,

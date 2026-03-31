@@ -73,7 +73,7 @@ enum TaskQueries {
             db,
             sql: "SELECT COUNT(*) FROM tasks WHERE status IN ('todo', 'in_progress', 'blocked')"
         ) ?? 0
-        let today = Self.todayDateString()
+        let now = Self.nowDatetimeString()
         let overdue = try Int.fetchOne(
             db,
             sql: """
@@ -81,7 +81,7 @@ enum TaskQueries {
                 WHERE status IN ('todo', 'in_progress', 'blocked')
                 AND due_date != '' AND due_date < ?
                 """,
-            arguments: [today]
+            arguments: [now]
         ) ?? 0
         return (active, overdue)
     }
@@ -240,6 +240,13 @@ enum TaskQueries {
     static func todayDateString() -> String {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt.string(from: Date())
+    }
+
+    static func nowDatetimeString() -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm"
         fmt.locale = Locale(identifier: "en_US_POSIX")
         return fmt.string(from: Date())
     }

@@ -92,6 +92,7 @@ struct Track: FetchableRecord, Identifiable, Equatable {
     let fingerprint: String
     let readAt: String?
     let hasUpdates: Bool
+    let dismissedAt: String
     let model: String
     let inputTokens: Int
     let outputTokens: Int
@@ -125,6 +126,7 @@ struct Track: FetchableRecord, Identifiable, Equatable {
         fingerprint = row["fingerprint"] ?? "[]"
         readAt = row["read_at"]
         hasUpdates = row["has_updates"] ?? false
+        dismissedAt = row["dismissed_at"] ?? ""
         model = row["model"] ?? ""
         inputTokens = row["input_tokens"] ?? 0
         outputTokens = row["output_tokens"] ?? 0
@@ -144,6 +146,7 @@ struct Track: FetchableRecord, Identifiable, Equatable {
 
     var isRead: Bool { readAt != nil && !hasUpdates }
     var isUnread: Bool { !isRead }
+    var isDismissed: Bool { !dismissedAt.isEmpty }
 
     // MARK: - Labels
 

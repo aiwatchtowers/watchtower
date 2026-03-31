@@ -303,6 +303,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     fingerprint         TEXT NOT NULL DEFAULT '[]',         -- JSON: extracted entities for dedup
     read_at             TEXT,                               -- NULL=unread, ISO8601=when read
     has_updates         INTEGER NOT NULL DEFAULT 0,
+    dismissed_at        TEXT NOT NULL DEFAULT '',           -- ''=active, ISO8601=when dismissed
     model               TEXT NOT NULL DEFAULT '',
     input_tokens        INTEGER NOT NULL DEFAULT 0,
     output_tokens       INTEGER NOT NULL DEFAULT 0,
@@ -326,8 +327,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
     ownership       TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
     ball_on         TEXT NOT NULL DEFAULT '',
-    due_date        TEXT NOT NULL DEFAULT '',
-    snooze_until    TEXT NOT NULL DEFAULT '',
+    due_date        TEXT NOT NULL DEFAULT '',           -- YYYY-MM-DDTHH:MM or ""
+    snooze_until    TEXT NOT NULL DEFAULT '',           -- YYYY-MM-DDTHH:MM or ""
     blocking        TEXT NOT NULL DEFAULT '',
     tags            TEXT NOT NULL DEFAULT '[]',
     sub_items       TEXT NOT NULL DEFAULT '[]',

@@ -644,7 +644,7 @@ func (cb *ContextBuilder) formatMessage(channelName string, msg db.Message) stri
 
 	line := fmt.Sprintf("#%s | %s | %s: %s", channelName, timeStr, userLabel, text)
 	if msg.Permalink != "" {
-		line += " [" + msg.Permalink + "]"
+		line += " [" + watchtowerslack.PermalinkToDeeplink(msg.Permalink, cb.teamID) + "]"
 	} else if cb.teamID != "" {
 		line += " [" + watchtowerslack.GenerateDeeplink(cb.teamID, msg.ChannelID, msg.TS) + "]"
 	}

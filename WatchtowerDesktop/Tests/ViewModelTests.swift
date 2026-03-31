@@ -739,6 +739,7 @@ final class TracksViewModelTests: XCTestCase {
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
+        vm.showRead = true // show read tracks to verify they move correctly
         vm.load()
         XCTAssertEqual(vm.updatedTracks.count, 1)
 
@@ -768,11 +769,13 @@ final class TracksViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testSlackMessageURLNilWithoutTeamID() {
+    func testSlackMessageURLWithoutDomain() {
         let vm = TracksViewModel(dbManager: dbManager)
         vm.load()
 
-        XCTAssertNil(vm.slackMessageURL(channelID: "C001", messageTS: "123.456"))
+        // No workspace loaded — teamID is nil, so URL should be nil
+        let url = vm.slackMessageURL(channelID: "C001", messageTS: "123.456")
+        XCTAssertNil(url)
     }
 
     @MainActor

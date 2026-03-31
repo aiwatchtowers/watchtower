@@ -1,12 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -62,8 +67,8 @@ var tasksDismissCmd = &cobra.Command{
 }
 
 var tasksSnoozeCmd = &cobra.Command{
-	Use:   "snooze <id> <YYYY-MM-DD>",
-	Short: "Snooze a task until a date",
+	Use:   "snooze <id> <YYYY-MM-DDTHH:MM>",
+	Short: "Snooze a task until a date+time",
 	Args:  cobra.ExactArgs(2),
 	RunE:  runTasksSnooze,
 }
@@ -75,9 +80,16 @@ var tasksUpdateCmd = &cobra.Command{
 	RunE:  runTasksUpdate,
 }
 
+var tasksGenerateCmd = &cobra.Command{
+	Use:   "generate",
+	Short: "Generate task details with AI (checklist, priority, due date)",
+	Long:  "Uses AI to enrich a task description: breaks it into sub-items, suggests priority and due date. Outputs JSON to stdout.",
+	RunE:  runTasksGenerate,
+}
+
 func init() {
 	rootCmd.AddCommand(tasksCmd)
-	tasksCmd.AddCommand(tasksShowCmd, tasksCreateCmd, tasksDoneCmd, tasksDismissCmd, tasksSnoozeCmd, tasksUpdateCmd)
+	tasksCmd.AddCommand(tasksShowCmd, tasksCreateCmd, tasksDoneCmd, tasksDismissCmd, tasksSnoozeCmd, tasksUpdateCmd, tasksGenerateCmd)
 
 	tasksCmd.Flags().StringVar(&tasksFlagStatus, "status", "", "filter by status (todo, in_progress, blocked, done, dismissed, snoozed)")
 	tasksCmd.Flags().StringVar(&tasksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
@@ -89,7 +101,7 @@ func init() {
 	tasksCreateCmd.Flags().StringVar(&tasksFlagIntent, "intent", "", "task intent/context")
 	tasksCreateCmd.Flags().StringVar(&tasksFlagPriority, "priority", "medium", "priority (high, medium, low)")
 	tasksCreateCmd.Flags().StringVar(&tasksFlagOwnership, "ownership", "mine", "ownership (mine, delegated, watching)")
-	tasksCreateCmd.Flags().StringVar(&tasksFlagDue, "due", "", "due date (YYYY-MM-DD)")
+	tasksCreateCmd.Flags().StringVar(&tasksFlagDue, "due", "", "due date+time (YYYY-MM-DDTHH:MM)")
 	tasksCreateCmd.Flags().StringVar(&tasksFlagSourceType, "source-type", "manual", "source type (track, digest, briefing, manual, chat)")
 	tasksCreateCmd.Flags().StringVar(&tasksFlagSourceID, "source-id", "", "source entity ID")
 	tasksCreateCmd.Flags().StringVar(&tasksFlagTags, "tags", "", "comma-separated tags")
@@ -100,9 +112,13 @@ func init() {
 	tasksUpdateCmd.Flags().StringVar(&tasksFlagStatus, "status", "", "new status")
 	tasksUpdateCmd.Flags().StringVar(&tasksFlagOwnership, "ownership", "", "new ownership")
 	tasksUpdateCmd.Flags().StringVar(&tasksFlagBallOn, "ball-on", "", "who has the ball")
-	tasksUpdateCmd.Flags().StringVar(&tasksFlagDue, "due", "", "new due date (YYYY-MM-DD)")
+	tasksUpdateCmd.Flags().StringVar(&tasksFlagDue, "due", "", "new due date+time (YYYY-MM-DDTHH:MM)")
 	tasksUpdateCmd.Flags().StringVar(&tasksFlagBlocking, "blocking", "", "what this task blocks")
 	tasksUpdateCmd.Flags().StringVar(&tasksFlagTags, "tags", "", "comma-separated tags")
+
+	tasksGenerateCmd.Flags().StringVar(&tasksFlagText, "text", "", "task description (required)")
+	tasksGenerateCmd.Flags().StringVar(&tasksFlagSourceType, "source-type", "", "source type for context (track, digest)")
+	tasksGenerateCmd.Flags().StringVar(&tasksFlagSourceID, "source-id", "", "source entity ID for context")
 }
 
 func runTasks(cmd *cobra.Command, _ []string) error {
@@ -169,8 +185,6 @@ func runTasks(cmd *cobra.Command, _ []string) error {
 			line += fmt.Sprintf("    due: %s", item.DueDate)
 		}
 
-		line += fmt.Sprintf("  %s", item.Ownership)
-
 		if item.Status != "todo" {
 			line += fmt.Sprintf("  (%s)", item.Status)
 		}
@@ -200,7 +214,7 @@ func runTasksShow(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Task #%d: %s\n", task.ID, task.Text)
-	fmt.Fprintf(out, "Status: %s | Priority: %s | Ownership: %s\n", task.Status, task.Priority, task.Ownership)
+	fmt.Fprintf(out, "Status: %s | Priority: %s\n", task.Status, task.Priority)
 
 	if task.Intent != "" {
 		fmt.Fprintf(out, "Intent: %s\n", task.Intent)
@@ -417,4 +431,135 @@ func runTasksUpdate(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Task #%d updated\n", id)
 	return nil
+}
+
+func runTasksGenerate(cmd *cobra.Command, _ []string) error {
+	if tasksFlagText == "" {
+		return fmt.Errorf("--text is required")
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	// Build source context if provided.
+	var sourceContext string
+	if tasksFlagSourceType != "" && tasksFlagSourceID != "" {
+		database, err := db.Open(cfg.DBPath())
+		if err != nil {
+			return fmt.Errorf("opening database: %w", err)
+		}
+		sourceContext = loadSourceContext(database, tasksFlagSourceType, tasksFlagSourceID)
+		database.Close()
+	}
+
+	// Build prompt.
+	now := time.Now().Format("2006-01-02T15:04 (Monday)")
+	promptTmpl := prompts.Defaults[prompts.TasksGenerate]
+	systemPrompt := fmt.Sprintf(promptTmpl, now)
+
+	userMessage := tasksFlagText
+	if sourceContext != "" {
+		userMessage += "\n\n=== SOURCE CONTEXT ===\n" + sourceContext
+	}
+
+	// Call AI.
+	gen := digest.NewClaudeGenerator(digest.ModelSonnet, cfg.ClaudePath)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	result, usage, _, err := gen.Generate(ctx, systemPrompt, userMessage, "")
+	if err != nil {
+		return fmt.Errorf("AI generation failed: %w", err)
+	}
+
+	// Record usage in pipeline_runs.
+	database, err := db.Open(cfg.DBPath())
+	if err == nil {
+		model := digest.ModelSonnet
+		runID, runErr := database.CreatePipelineRun("tasks", "cli", model)
+		if runErr == nil {
+			inputTokens, outputTokens, costUSD, totalAPI := 0, 0, 0.0, 0
+			if usage != nil {
+				inputTokens = usage.InputTokens
+				outputTokens = usage.OutputTokens
+				costUSD = usage.CostUSD
+				totalAPI = usage.TotalAPITokens
+			}
+			_ = database.CompletePipelineRun(runID, 1, inputTokens, outputTokens, costUSD, totalAPI, nil, nil, "")
+		}
+		database.Close()
+	}
+
+	// Extract JSON from result (AI may wrap it in markdown code blocks).
+	jsonStr := extractJSON(result)
+
+	// Output raw JSON to stdout for the desktop app to parse.
+	fmt.Fprintln(cmd.OutOrStdout(), jsonStr)
+	return nil
+}
+
+// loadSourceContext retrieves context from the source entity for AI enrichment.
+func loadSourceContext(database *db.DB, sourceType, sourceID string) string {
+	switch sourceType {
+	case "track":
+		id, err := strconv.Atoi(sourceID)
+		if err != nil {
+			return ""
+		}
+		track, err := database.GetTrackByID(id)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("Track #%d: %s\n%s", track.ID, track.Text, track.Context)
+	case "digest":
+		id, err := strconv.Atoi(sourceID)
+		if err != nil {
+			return ""
+		}
+		d, err := database.GetDigestByID(id)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("Digest #%d: %s", d.ID, d.Summary)
+	default:
+		return ""
+	}
+}
+
+// extractJSON finds and returns the first JSON object in the string,
+// handling cases where AI wraps JSON in markdown code blocks.
+func extractJSON(s string) string {
+	// Try to find ```json ... ``` block first.
+	if idx := strings.Index(s, "```json"); idx >= 0 {
+		start := idx + len("```json")
+		if end := strings.Index(s[start:], "```"); end >= 0 {
+			return strings.TrimSpace(s[start : start+end])
+		}
+	}
+	// Try to find ``` ... ``` block.
+	if idx := strings.Index(s, "```"); idx >= 0 {
+		start := idx + len("```")
+		// Skip optional language tag on same line.
+		if nl := strings.Index(s[start:], "\n"); nl >= 0 {
+			start += nl + 1
+		}
+		if end := strings.Index(s[start:], "```"); end >= 0 {
+			return strings.TrimSpace(s[start : start+end])
+		}
+	}
+	// Try to find raw JSON object.
+	if idx := strings.Index(s, "{"); idx >= 0 {
+		if end := strings.LastIndex(s, "}"); end > idx {
+			return s[idx : end+1]
+		}
+	}
+	return s
 }

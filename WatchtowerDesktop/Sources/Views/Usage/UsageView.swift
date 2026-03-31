@@ -112,14 +112,14 @@ struct UsageView: View {
             HStack(spacing: 24) {
                 summaryItem(label: "AI Calls", value: "\(viewModel.totalCalls)")
                 summaryItem(
-                    label: "Input (clean)",
+                    label: "Input",
                     value: formatTokens(viewModel.totalInputTokens),
-                    tooltip: "Estimated tokens from Watchtower prompts (~4 chars/token)"
+                    tooltip: "Input tokens sent to the API (excluding cache reads)"
                 )
                 summaryItem(
-                    label: "Input (full)",
+                    label: "Input (+ cache)",
                     value: formatTokens(viewModel.totalApiTokens),
-                    tooltip: "Total input tokens processed by the API, including CLI overhead and caching"
+                    tooltip: "Total input tokens including cache reads and cache writes"
                 )
                 summaryItem(label: "Output", value: formatTokens(viewModel.totalOutputTokens))
                 summaryItem(label: "Cost", value: formatCost(viewModel.totalCost))

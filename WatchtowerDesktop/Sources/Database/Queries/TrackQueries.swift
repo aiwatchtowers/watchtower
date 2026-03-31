@@ -11,11 +11,15 @@ enum TrackQueries {
         hasUpdates: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         channelID: String? = nil,
         ownership: String? = nil,
+        includeDismissed: Bool = false,
         limit: Int = 200
     ) throws -> [Track] {
         var conditions: [String] = []
         var args: [any DatabaseValueConvertible] = []
 
+        if !includeDismissed {
+            conditions.append("dismissed_at = ''")
+        }
         if let priority {
             conditions.append("priority = ?")
             args.append(priority)
@@ -68,9 +72,9 @@ enum TrackQueries {
     // MARK: - Counts
 
     static func fetchCounts(_ db: Database) throws -> (total: Int, updated: Int) {
-        let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks") ?? 0
+        let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE dismissed_at = ''") ?? 0
         let updated = try Int.fetchOne(
-            db, sql: "SELECT COUNT(*) FROM tracks WHERE has_updates = 1"
+            db, sql: "SELECT COUNT(*) FROM tracks WHERE has_updates = 1 AND dismissed_at = ''"
         ) ?? 0
         return (total, updated)
     }
@@ -145,6 +149,22 @@ enum TrackQueries {
         try db.execute(
             sql: "UPDATE tracks SET sub_items = ? WHERE id = ?",
             arguments: [json, id]
+        )
+    }
+
+    // MARK: - Dismiss / Restore
+
+    static func dismiss(_ db: Database, id: Int) throws {
+        try db.execute(
+            sql: "UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+            arguments: [id]
+        )
+    }
+
+    static func restore(_ db: Database, id: Int) throws {
+        try db.execute(
+            sql: "UPDATE tracks SET dismissed_at = '' WHERE id = ?",
+            arguments: [id]
         )
     }
 

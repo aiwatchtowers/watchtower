@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 52"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 54"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -2429,6 +2429,55 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v52: %w", err)
 		}
 		version = 52
+	}
+
+	if version < 53 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v53: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Convert due_date from YYYY-MM-DD to YYYY-MM-DDTHH:MM format.
+		if _, err := tx.Exec(`UPDATE tasks SET due_date = due_date || 'T00:00'
+			WHERE due_date != '' AND due_date NOT LIKE '%T%'`); err != nil {
+			return fmt.Errorf("migration v53 convert due_date: %w", err)
+		}
+		// Convert snooze_until from YYYY-MM-DD to YYYY-MM-DDTHH:MM format.
+		if _, err := tx.Exec(`UPDATE tasks SET snooze_until = snooze_until || 'T00:00'
+			WHERE snooze_until != '' AND snooze_until NOT LIKE '%T%'`); err != nil {
+			return fmt.Errorf("migration v53 convert snooze_until: %w", err)
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 53"); err != nil {
+			return fmt.Errorf("setting schema version v53: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v53: %w", err)
+		}
+		version = 53
+	}
+
+	if version < 54 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v54: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "tracks", "dismissed_at") {
+			if _, err := tx.Exec(`ALTER TABLE tracks ADD COLUMN dismissed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration v54 add dismissed_at: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 54"); err != nil {
+			return fmt.Errorf("setting schema version v54: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v54: %w", err)
+		}
+		version = 54
 	}
 
 	_ = version // silence unused variable if this is the last migration
