@@ -500,10 +500,10 @@ final class DigestViewModel {
         return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)")
     }
 
-    /// Build Slack message permalink (opens in Slack app via web URL)
+    /// Build Slack message deep link (opens Slack app directly)
     func slackMessageURL(channelID: String, messageTS: String) -> URL? {
-        let tsNoDot = messageTS.replacingOccurrences(of: ".", with: "")
-        return URL(string: "https://app.slack.com/archives/\(channelID)/p\(tsNoDot)")
+        guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
+        return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)&message=\(messageTS)")
     }
 
     // MARK: - Starred Channels Management

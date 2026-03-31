@@ -8,6 +8,7 @@ import (
 	"log"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -555,11 +556,11 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 		costUSD = usage.CostUSD / float64(len(items))
 	}
 
-	// Look up related digest IDs for this channel + time window.
-	relatedDigestIDs := "[]"
+	// Fallback related digest IDs for items without usable source_refs.
+	fallbackDigestIDs := "[]"
 	if digestIDs, err := p.db.FindRelatedDigestIDs(channelID, from, to); err == nil && len(digestIDs) > 0 {
 		if b, err := json.Marshal(digestIDs); err == nil {
-			relatedDigestIDs = string(b)
+			fallbackDigestIDs = string(b)
 		}
 	}
 
@@ -611,6 +612,9 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 
 		channelIDsJSON := jsonStringArray([]string{channelID})
 
+		// Derive related digest IDs per-item from source_refs timestamps.
+		itemDigestIDs := p.resolveItemDigestIDs(channelID, sourceRefs, fallbackDigestIDs)
+
 		track := db.Track{
 			AssigneeUserID:   userID,
 			Text:             item.Text,
@@ -629,7 +633,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			SourceRefs:       sourceRefs,
 			Tags:             tags,
 			ChannelIDs:       channelIDsJSON,
-			RelatedDigestIDs: relatedDigestIDs,
+			RelatedDigestIDs: itemDigestIDs,
 			Priority:         priority,
 			DueDate:          dueDate,
 			Fingerprint:      fpJSON,
@@ -668,6 +672,18 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 				}
 				continue
 			}
+		}
+
+		// Dedup: text similarity match against existing tracks.
+		if similarID, score := p.findSimilarTrack(userID, item.Text, item.Context); similarID > 0 {
+			if _, err := p.db.UpdateTrackFromExtraction(similarID, track); err != nil {
+				p.logger.Printf("tracks: warning: failed to update text-similar track %d: %v", similarID, err)
+			} else {
+				p.logger.Printf("tracks: merged into existing track #%d via text similarity (%.2f): %.80s",
+					similarID, score, item.Text)
+				stored++
+			}
+			continue
 		}
 
 		trackID, err := p.db.UpsertTrack(track)
@@ -766,13 +782,10 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
 	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
 
-	// Build channel blocks from digest topics and collect exclusion set.
-	excludeSet := make(map[string]bool, len(entries))
+	// Build channel blocks from digest topics.
 	var channelBlocks strings.Builder
 
 	for _, e := range entries {
-		excludeSet[e.channelID] = true
-
 		fmt.Fprintf(&channelBlocks, "--- #%s (%s) ---\n", e.channelName, e.channelID)
 		for _, d := range e.digests {
 			if d.Summary != "" {
@@ -817,8 +830,8 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 		channelBlocks.WriteString("\n")
 	}
 
-	// Single unified existing tracks section (no per-channel duplication).
-	crossChannelSection := p.formatCrossChannelItems(excludeSet, userID)
+	// Show ALL existing tracks (including from batch channels) to prevent duplicates.
+	crossChannelSection := p.formatExistingTracks(userID)
 	profileSection := p.formatProfileContext()
 	roleRules := p.formatRoleRules()
 
@@ -947,8 +960,8 @@ func (p *Pipeline) formatExistingItems(channelID, userID string) string {
 	return sb.String()
 }
 
-// maxCrossChannelTracks is the maximum number of cross-channel tracks included in prompts.
-const maxCrossChannelTracks = 20
+// maxExistingTracks is the maximum number of existing tracks included in prompts.
+const maxExistingTracks = 30
 
 // priorityOrder returns sort order for track priority (lower = higher priority).
 func priorityOrder(p string) int {
@@ -962,10 +975,10 @@ func priorityOrder(p string) int {
 	}
 }
 
-// formatCrossChannelItems formats tracks from OTHER channels for cross-channel merge.
+// formatExistingTracks formats ALL active tracks for deduplication and merge.
 // Uses cached allActiveTracksRef if available, otherwise loads from DB.
-// excludeChannelIDs is a set of channel IDs to exclude (all channels being processed).
-func (p *Pipeline) formatCrossChannelItems(excludeChannelIDs map[string]bool, userID string) string {
+// Includes tracks from batch channels — this is critical to avoid duplicates.
+func (p *Pipeline) formatExistingTracks(userID string) string {
 	p.cacheMu.RLock()
 	allTracks := p.allActiveTracksRef
 	p.cacheMu.RUnlock()
@@ -975,7 +988,7 @@ func (p *Pipeline) formatCrossChannelItems(excludeChannelIDs map[string]bool, us
 		var err error
 		allTracks, err = p.db.GetAllActiveTracks()
 		if err != nil {
-			p.logger.Printf("tracks: warning: failed to load cross-channel tracks: %v", err)
+			p.logger.Printf("tracks: warning: failed to load existing tracks: %v", err)
 			return ""
 		}
 	}
@@ -984,49 +997,42 @@ func (p *Pipeline) formatCrossChannelItems(excludeChannelIDs map[string]bool, us
 		return ""
 	}
 
-	var filtered []db.Track
-	for _, t := range allTracks {
-		excluded := false
-		for chID := range excludeChannelIDs {
-			if strings.Contains(t.ChannelIDs, chID) {
-				excluded = true
-				break
-			}
-		}
-		if !excluded {
-			filtered = append(filtered, t)
-		}
-	}
-	if len(filtered) == 0 {
-		return ""
-	}
-
 	// Sort by priority (high first), then by ID desc (newest first).
-	sort.Slice(filtered, func(i, j int) bool {
-		pi, pj := priorityOrder(filtered[i].Priority), priorityOrder(filtered[j].Priority)
+	sort.Slice(allTracks, func(i, j int) bool {
+		pi, pj := priorityOrder(allTracks[i].Priority), priorityOrder(allTracks[j].Priority)
 		if pi != pj {
 			return pi < pj
 		}
-		return filtered[i].ID > filtered[j].ID
+		return allTracks[i].ID > allTracks[j].ID
 	})
 
-	totalCount := len(filtered)
-	if len(filtered) > maxCrossChannelTracks {
-		filtered = filtered[:maxCrossChannelTracks]
+	totalCount := len(allTracks)
+	shown := allTracks
+	if len(shown) > maxExistingTracks {
+		shown = shown[:maxExistingTracks]
 	}
 
 	var sb strings.Builder
-	sb.WriteString("=== EXISTING TRACKS FROM OTHER CHANNELS ===\n")
-	sb.WriteString("If a message relates to any of these tracks, set existing_id to merge (cross-channel).\n")
-	if totalCount > maxCrossChannelTracks {
-		fmt.Fprintf(&sb, "Showing top %d of %d.\n", maxCrossChannelTracks, totalCount)
+	sb.WriteString("=== EXISTING TRACKS ===\n")
+	sb.WriteString("IMPORTANT: Before creating ANY new track, check this list carefully.\n")
+	sb.WriteString("If a topic relates to an existing track, set existing_id to UPDATE it instead of creating a duplicate.\n")
+	if totalCount > maxExistingTracks {
+		fmt.Fprintf(&sb, "Showing top %d of %d.\n", maxExistingTracks, totalCount)
 	}
-	for _, track := range filtered {
+	for _, track := range shown {
 		tagsStr := ""
 		if track.Tags != "" && track.Tags != "[]" {
 			tagsStr = " tags:" + track.Tags
 		}
-		fmt.Fprintf(&sb, "#%d [%s] %q%s\n", track.ID, track.Ownership, sanitize(track.Text), tagsStr)
+		contextSnippet := ""
+		if track.Context != "" {
+			c := sanitize(track.Context)
+			if len(c) > 120 {
+				c = c[:120] + "..."
+			}
+			contextSnippet = " — " + c
+		}
+		fmt.Fprintf(&sb, "#%d [%s] %q%s%s\n", track.ID, track.Ownership, sanitize(track.Text), contextSnippet, tagsStr)
 	}
 	return sb.String()
 }
@@ -1101,6 +1107,54 @@ func (p *Pipeline) enrichKeyMessages(channelID, keyMessagesJSON string, fallback
 		return keyMessagesJSON
 	}
 	return string(data)
+}
+
+// resolveItemDigestIDs finds digest IDs that contain the track's source_refs messages.
+// Falls back to the channel-level digest IDs if source_refs don't yield results.
+func (p *Pipeline) resolveItemDigestIDs(channelID, sourceRefs, fallback string) string {
+	if sourceRefs == "" || sourceRefs == "[]" {
+		return fallback
+	}
+
+	var refs []struct {
+		TS        string `json:"ts"`
+		ChannelID string `json:"channel_id"`
+	}
+	if err := json.Unmarshal([]byte(sourceRefs), &refs); err != nil || len(refs) == 0 {
+		return fallback
+	}
+
+	// Extract timestamps for this channel's messages.
+	var timestamps []float64
+	for _, ref := range refs {
+		ch := ref.ChannelID
+		if ch == "" {
+			ch = channelID
+		}
+		if ch != channelID {
+			continue // cross-channel ref, skip for this channel's digest lookup
+		}
+		if reSlackTSExact.MatchString(ref.TS) {
+			if f, err := strconv.ParseFloat(ref.TS, 64); err == nil {
+				timestamps = append(timestamps, f)
+			}
+		}
+	}
+
+	if len(timestamps) == 0 {
+		return fallback
+	}
+
+	digestIDs, err := p.db.FindDigestIDsByMessageTimestamps(channelID, timestamps)
+	if err != nil || len(digestIDs) == 0 {
+		return fallback
+	}
+
+	b, err := json.Marshal(digestIDs)
+	if err != nil {
+		return fallback
+	}
+	return string(b)
 }
 
 // loadChannelRunningSummary loads a channel's running summary as a prompt section.
@@ -1371,6 +1425,84 @@ func (p *Pipeline) languageInstruction() string {
 }
 
 // --- helpers: fingerprint & dedup ---
+
+// textSimilarityThreshold is the minimum Jaccard similarity for text-based dedup.
+// Calibrated on production data: duplicates score 0.22-0.46, unrelated 0.00-0.04.
+const textSimilarityThreshold = 0.20
+
+// reWordTokenizer splits text into word tokens for similarity comparison.
+var reWordTokenizer = regexp.MustCompile(`[\p{L}\d]{3,}`)
+
+// tokenizeText extracts pseudo-stemmed word tokens from text for similarity comparison.
+// Words are lowercased and truncated to 5 runes to handle Russian morphology
+// (e.g., "инциденту", "инцидента", "инцидент" all become "инцид").
+func tokenizeText(texts ...string) map[string]struct{} {
+	tokens := make(map[string]struct{})
+	for _, text := range texts {
+		for _, word := range reWordTokenizer.FindAllString(strings.ToLower(text), -1) {
+			runes := []rune(word)
+			if len(runes) > 5 {
+				word = string(runes[:5])
+			}
+			tokens[word] = struct{}{}
+		}
+	}
+	return tokens
+}
+
+// jaccardSimilarity computes Jaccard similarity between two token sets.
+func jaccardSimilarity(a, b map[string]struct{}) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	intersection := 0
+	for k := range a {
+		if _, ok := b[k]; ok {
+			intersection++
+		}
+	}
+	union := len(a) + len(b) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// findSimilarTrack finds the most similar existing active track by text content.
+// Returns the track ID and similarity score, or (0, 0) if none above threshold.
+func (p *Pipeline) findSimilarTrack(userID, text, context string) (int, float64) {
+	p.cacheMu.RLock()
+	allTracks := p.allActiveTracksRef
+	p.cacheMu.RUnlock()
+
+	if len(allTracks) == 0 {
+		return 0, 0
+	}
+
+	newTokens := tokenizeText(text, context)
+	if len(newTokens) == 0 {
+		return 0, 0
+	}
+
+	bestID := 0
+	bestScore := 0.0
+	for _, t := range allTracks {
+		if t.AssigneeUserID != userID {
+			continue
+		}
+		existTokens := tokenizeText(t.Text, t.Context)
+		score := jaccardSimilarity(newTokens, existTokens)
+		if score > bestScore {
+			bestScore = score
+			bestID = t.ID
+		}
+	}
+
+	if bestScore >= textSimilarityThreshold {
+		return bestID, bestScore
+	}
+	return 0, 0
+}
 
 var (
 	reTicket  = regexp.MustCompile(`(?i)\b(CEX|FIAT|NOVA|DEV|INFRA|CONVERT|DVSP|BLINC)-\d+\b`)

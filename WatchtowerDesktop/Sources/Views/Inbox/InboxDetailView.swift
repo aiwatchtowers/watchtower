@@ -161,23 +161,18 @@ struct InboxDetailView: View {
     private var conversationMessages: [ChatMessage] {
         var result: [ChatMessage] = []
 
-        // Thread context lines first
+        let snippetText = SlackTextParser.toPlainText(item.snippet)
+        let senderName = viewModel.senderName(for: item)
+
+        // Thread context lines first; highlight if it matches the trigger snippet
         for line in contextLines {
-            result.append(ChatMessage(author: line.author, text: line.text, isHighlighted: false))
+            let isSnippet = line.author == senderName && line.text == snippetText
+            result.append(ChatMessage(author: line.author, text: line.text, isHighlighted: isSnippet))
         }
 
-        // If the snippet matches the last context line, mark it highlighted instead of duplicating
-        let snippetText = SlackTextParser.toPlainText(item.snippet)
-        if !snippetText.isEmpty {
-            let senderName = viewModel.senderName(for: item)
-            if let lastIdx = result.lastIndex(where: { $0.author == senderName }) {
-                // Replace with highlighted version
-                let existing = result[lastIdx]
-                result[lastIdx] = ChatMessage(author: existing.author, text: existing.text, isHighlighted: true)
-            } else {
-                // No match in context — add as standalone
-                result.append(ChatMessage(author: senderName, text: snippetText, isHighlighted: true))
-            }
+        // If snippet wasn't found in context, append it as the trigger message
+        if !snippetText.isEmpty && !result.contains(where: { $0.isHighlighted }) {
+            result.append(ChatMessage(author: senderName, text: snippetText, isHighlighted: true))
         }
 
         return result

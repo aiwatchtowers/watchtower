@@ -26,7 +26,39 @@ var (
 	slackSpecialRe  = regexp.MustCompile(`<!([a-z_]+)(?:\|([^>]+))?>`)
 	slackEmojiRe    = regexp.MustCompile(`:[a-z0-9_+-]+:`)
 	slackMarkdownRe = regexp.MustCompile("(?s)```[^`]*```")
+
+	// closingSignals is a set of short acknowledgment/closing phrases that don't need a reply.
+	closingSignals = map[string]bool{
+		// EN
+		"thanks": true, "thank you": true, "thx": true, "ty": true,
+		"got it": true, "ok": true, "okay": true, "cool": true,
+		"great": true, "perfect": true, "awesome": true,
+		"np": true, "no problem": true, "will do": true,
+		"sounds good": true, "noted": true, "ack": true,
+		// RU
+		"спасибо": true, "спс": true, "ок": true,
+		"понял": true, "понятно": true, "принял": true,
+		"ясно": true, "хорошо": true, "отлично": true,
+		"ладно": true, "круто": true, "пон": true,
+		// Emoji-only
+		"👍": true, "🙏": true, "🙌": true, "👌": true, "✅": true,
+	}
+
+	trailingPunctRe = regexp.MustCompile(`[.!?,;:…]+$`)
 )
+
+// isClosingSignal returns true if the message text is a short closing/acknowledgment phrase.
+func isClosingSignal(text string) bool {
+	s := strings.TrimSpace(text)
+	if s == "" || len(s) > 80 {
+		return false
+	}
+	// Strip trailing punctuation.
+	s = trailingPunctRe.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+	s = strings.ToLower(s)
+	return closingSignals[s]
+}
 
 // toWaitingJSON converts a list of user IDs to a JSON array string.
 func toWaitingJSON(userIDs []string) string {
@@ -240,6 +272,15 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 		if snippet == "" {
 			continue
 		}
+
+		// Pre-filter: skip closing signals ("thanks", "ok", etc.) when user already replied before.
+		if isClosingSignal(c.Text) {
+			repliedBefore, _ := p.db.CheckUserRepliedBefore(currentUserID, c.ChannelID, c.MessageTS, c.ThreadTS)
+			if repliedBefore {
+				continue
+			}
+		}
+
 		if len(snippet) > 500 {
 			snippet = snippet[:500] + "..."
 		}
@@ -345,10 +386,11 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	}
 	total := 2 + numBatches + 1
 	if p.generator != nil {
-		_, err := p.aiPrioritizeNewItems(ctx, currentUserID, newItems, 2, total)
+		aiResolved, err := p.aiPrioritizeNewItems(ctx, currentUserID, newItems, 2, total)
 		if err != nil {
 			p.logger.Printf("inbox: AI prioritize error: %v", err)
 		}
+		resolved += aiResolved
 	}
 
 	p.progress(total, total, fmt.Sprintf("Done — %d created, %d resolved", created, resolved))
@@ -461,6 +503,7 @@ func (p *Pipeline) aiPrioritizeNewItems(ctx context.Context, currentUserID strin
 		Priority string
 		AIReason string
 	})
+	allResolved := make(map[int]string)
 
 	for i, batch := range batches {
 		step := baseStep + 1 + i
@@ -500,7 +543,9 @@ func (p *Pipeline) aiPrioritizeNewItems(ctx context.Context, currentUserID strin
 		}
 
 		for _, item := range result.Items {
-			if item.Priority != "" {
+			if item.Resolved {
+				allResolved[item.ID] = item.Reason
+			} else if item.Priority != "" {
 				allUpdates[item.ID] = struct {
 					Priority string
 					AIReason string
@@ -509,13 +554,22 @@ func (p *Pipeline) aiPrioritizeNewItems(ctx context.Context, currentUserID strin
 		}
 	}
 
+	resolved := 0
+	for id, reason := range allResolved {
+		if err := p.db.ResolveInboxItem(id, "AI: "+reason); err != nil {
+			p.logger.Printf("inbox: error AI-resolving item %d: %v", id, err)
+			continue
+		}
+		resolved++
+	}
+
 	if len(allUpdates) > 0 {
 		if err := p.db.BulkUpdateInboxPriorities(allUpdates); err != nil {
 			p.logger.Printf("inbox: error bulk updating priorities: %v", err)
 		}
 	}
 
-	return 0, nil
+	return resolved, nil
 }
 
 // formatItemLine builds a rich context line for a single inbox item.

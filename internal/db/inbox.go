@@ -544,6 +544,29 @@ func (db *DB) CheckUserReplied(currentUserID, channelID, messageTS, threadTS str
 	return count > 0, nil
 }
 
+// CheckUserRepliedBefore checks whether the current user posted in the thread/channel
+// BEFORE the given messageTS. This is used to detect closing signals where the user
+// already replied and the other person is just acknowledging.
+func (db *DB) CheckUserRepliedBefore(currentUserID, channelID, messageTS, threadTS string) (bool, error) {
+	var count int
+	if threadTS != "" {
+		err := db.QueryRow(`SELECT COUNT(*) FROM messages
+			WHERE channel_id = ? AND thread_ts = ? AND user_id = ? AND ts < ?`,
+			channelID, threadTS, currentUserID, messageTS).Scan(&count)
+		if err != nil {
+			return false, fmt.Errorf("checking thread reply before: %w", err)
+		}
+	} else {
+		err := db.QueryRow(`SELECT COUNT(*) FROM messages
+			WHERE channel_id = ? AND user_id = ? AND ts < ? AND (thread_ts IS NULL OR thread_ts = '')`,
+			channelID, currentUserID, messageTS).Scan(&count)
+		if err != nil {
+			return false, fmt.Errorf("checking channel reply before: %w", err)
+		}
+	}
+	return count > 0, nil
+}
+
 // GetThreadContext returns recent messages in a thread for context.
 func (db *DB) GetThreadContext(channelID, threadTS string, limit int) ([]struct {
 	UserID string

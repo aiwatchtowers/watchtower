@@ -12,7 +12,7 @@ const trackSelectCols = `id, assignee_user_id, text, context, category,
 	blocking, decision_summary, decision_options, sub_items,
 	participants, source_refs, tags, channel_ids, related_digest_ids,
 	priority, COALESCE(due_date, 0), fingerprint,
-	COALESCE(read_at,''), has_updates,
+	COALESCE(read_at,''), has_updates, COALESCE(dismissed_at,''),
 	model, input_tokens, output_tokens, cost_usd, prompt_version,
 	created_at, updated_at`
 
@@ -25,7 +25,7 @@ func scanTrack(row interface{ Scan(...any) error }) (*Track, error) {
 		&t.Blocking, &t.DecisionSummary, &t.DecisionOptions, &t.SubItems,
 		&t.Participants, &t.SourceRefs, &t.Tags, &t.ChannelIDs, &t.RelatedDigestIDs,
 		&t.Priority, &t.DueDate, &t.Fingerprint,
-		&t.ReadAt, &t.HasUpdates,
+		&t.ReadAt, &t.HasUpdates, &t.DismissedAt,
 		&t.Model, &t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.PromptVersion,
 		&t.CreatedAt, &t.UpdatedAt,
 	); err != nil {
@@ -158,9 +158,9 @@ func (db *DB) GetTrackByID(id int) (*Track, error) {
 	return t, nil
 }
 
-// GetAllActiveTracks returns all tracks ordered by updated_at DESC.
+// GetAllActiveTracks returns all non-dismissed tracks ordered by updated_at DESC.
 func (db *DB) GetAllActiveTracks() ([]Track, error) {
-	rows, err := db.Query(`SELECT ` + trackSelectCols + ` FROM tracks ORDER BY updated_at DESC`)
+	rows, err := db.Query(`SELECT ` + trackSelectCols + ` FROM tracks WHERE dismissed_at = '' ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("querying active tracks: %w", err)
 	}
@@ -179,11 +179,12 @@ func (db *DB) GetAllActiveTracks() ([]Track, error) {
 
 // TrackFilter specifies criteria for querying tracks.
 type TrackFilter struct {
-	Priority   string // "" = any
-	Ownership  string // "" = any
-	HasUpdates *bool  // nil = any
-	ChannelID  string // "" = any, filter via JSON LIKE
-	Limit      int    // 0 = no limit
+	Priority         string // "" = any
+	Ownership        string // "" = any
+	HasUpdates       *bool  // nil = any
+	ChannelID        string // "" = any, filter via JSON LIKE
+	IncludeDismissed bool   // false = exclude dismissed (default)
+	Limit            int    // 0 = no limit
 }
 
 // GetTracks returns tracks matching the filter, ordered by has_updates DESC, updated_at DESC.
@@ -191,6 +192,10 @@ func (db *DB) GetTracks(f TrackFilter) ([]Track, error) {
 	query := `SELECT ` + trackSelectCols + ` FROM tracks`
 	var conditions []string
 	var args []any
+
+	if !f.IncludeDismissed {
+		conditions = append(conditions, "dismissed_at = ''")
+	}
 
 	if f.Priority != "" {
 		conditions = append(conditions, "priority = ?")
@@ -268,16 +273,34 @@ func (db *DB) MarkTrackRead(id int) error {
 	return nil
 }
 
+// DismissTrack marks a track as dismissed.
+func (db *DB) DismissTrack(id int) error {
+	_, err := db.Exec(`UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("dismissing track %d: %w", id, err)
+	}
+	return nil
+}
+
+// RestoreTrack un-dismisses a track.
+func (db *DB) RestoreTrack(id int) error {
+	_, err := db.Exec(`UPDATE tracks SET dismissed_at = '' WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("restoring track %d: %w", id, err)
+	}
+	return nil
+}
+
 // SetTrackHasUpdates sets has_updates=1 for a track.
 func (db *DB) SetTrackHasUpdates(id int) error {
 	_, err := db.Exec(`UPDATE tracks SET has_updates = 1 WHERE id = ?`, id)
 	return err
 }
 
-// GetTrackCount returns (total, updated) track counts.
+// GetTrackCount returns (total, updated) track counts, excluding dismissed tracks.
 func (db *DB) GetTrackCount() (int, int, error) {
 	var total, updated int
-	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(has_updates), 0) FROM tracks`).Scan(&total, &updated)
+	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(has_updates), 0) FROM tracks WHERE dismissed_at = ''`).Scan(&total, &updated)
 	return total, updated, err
 }
 
@@ -312,6 +335,53 @@ func (db *DB) FindRelatedDigestIDs(channelID string, from, to float64) ([]int, e
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// FindDigestIDsByMessageTimestamps finds channel digest IDs whose time window contains
+// any of the given message timestamps. Used to precisely link tracks to the digests
+// that actually contain their source messages.
+func (db *DB) FindDigestIDsByMessageTimestamps(channelID string, timestamps []float64) ([]int, error) {
+	if len(timestamps) == 0 {
+		return nil, nil
+	}
+
+	// Find min/max to narrow the query, then check each digest individually.
+	minTS, maxTS := timestamps[0], timestamps[0]
+	for _, ts := range timestamps[1:] {
+		if ts < minTS {
+			minTS = ts
+		}
+		if ts > maxTS {
+			maxTS = ts
+		}
+	}
+
+	rows, err := db.Query(`SELECT id, period_from, period_to FROM digests
+		WHERE channel_id = ? AND type = 'channel'
+		AND period_from <= ? AND period_to >= ?
+		ORDER BY period_to DESC LIMIT 10`,
+		channelID, maxTS, minTS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []int
+	for rows.Next() {
+		var id int
+		var pFrom, pTo float64
+		if err := rows.Scan(&id, &pFrom, &pTo); err != nil {
+			return nil, err
+		}
+		// Check if any timestamp falls within this digest's window.
+		for _, ts := range timestamps {
+			if ts >= pFrom && ts <= pTo {
+				result = append(result, id)
+				break
+			}
+		}
+	}
+	return result, rows.Err()
 }
 
 // FindTracksByFingerprint finds tracks where fingerprint JSON arrays overlap.

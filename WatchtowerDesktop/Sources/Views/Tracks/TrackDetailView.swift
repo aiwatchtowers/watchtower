@@ -483,6 +483,23 @@ struct TrackDetailView: View {
                 )
             }
 
+            if track.isDismissed {
+                Button {
+                    viewModel.restoreTrack(track)
+                } label: {
+                    Label("Restore", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Button {
+                    onClose?()
+                    viewModel.dismissTrack(track)
+                } label: {
+                    Label("Dismiss", systemImage: "archivebox")
+                }
+                .buttonStyle(.bordered)
+            }
+
             Spacer()
             if let dbManager = appState.databaseManager {
                 FeedbackButtons(

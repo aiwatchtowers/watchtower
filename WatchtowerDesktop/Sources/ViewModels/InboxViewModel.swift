@@ -20,6 +20,7 @@ final class InboxViewModel {
     // Name caches
     private(set) var senderNames: [String: String] = [:]
     private(set) var channelNames: [String: String] = [:]
+    private(set) var workspaceDomain: String?
     private(set) var workspaceTeamID: String?
 
     private let dbManager: DatabaseManager
@@ -83,12 +84,13 @@ final class InboxViewModel {
                     triggerType: self.triggerTypeFilter,
                     includeResolved: self.showResolved
                 )
-                return (ws?.id, all, counts)
+                return (ws?.domain, ws?.id, all, counts)
             }
 
-            workspaceTeamID = result.0
-            let items = result.1
-            let counts = result.2
+            workspaceDomain = result.0
+            workspaceTeamID = result.1
+            let items = result.2
+            let counts = result.3
             allItems = items
             pendingCount = counts.pending
             unreadCount = counts.unread
@@ -208,9 +210,9 @@ final class InboxViewModel {
     }
 
     func slackMessageURL(for item: InboxItem) -> URL? {
+        guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
         let ts = item.threadTS.isEmpty ? item.messageTS : item.threadTS
-        let tsNoDot = ts.replacingOccurrences(of: ".", with: "")
-        return URL(string: "https://app.slack.com/archives/\(item.channelID)/p\(tsNoDot)")
+        return URL(string: "slack://channel?team=\(teamID)&id=\(item.channelID)&message=\(ts)")
     }
 
     // MARK: - Grouping

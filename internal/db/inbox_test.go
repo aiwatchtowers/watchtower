@@ -517,6 +517,45 @@ func TestGetInboxItems_IncludeResolved(t *testing.T) {
 	assert.Len(t, items, 1)
 }
 
+func TestCheckUserRepliedBefore(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	require.NoError(t, err)
+
+	// Thread: user replied before the "thanks" message.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1000.001', 'U_OTHER', 'Can you help?', '1000.001')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1001.001', 'U_ME', 'Sure, done', '1000.001')`)
+	require.NoError(t, err)
+	// "Thanks" message at ts=1002.001
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1002.001', 'U_OTHER', 'Thanks!', '1000.001')`)
+	require.NoError(t, err)
+
+	// User replied before the "thanks" message.
+	replied, err := db.CheckUserRepliedBefore("U_ME", "C1", "1002.001", "1000.001")
+	require.NoError(t, err)
+	assert.True(t, replied)
+
+	// User did NOT reply before the first message.
+	replied, err = db.CheckUserRepliedBefore("U_ME", "C1", "1000.001", "1000.001")
+	require.NoError(t, err)
+	assert.False(t, replied)
+
+	// Non-threaded: user replied in channel before.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '2000.001', 'U_ME', 'Channel message')`)
+	require.NoError(t, err)
+
+	replied, err = db.CheckUserRepliedBefore("U_ME", "C1", "2001.001", "")
+	require.NoError(t, err)
+	assert.True(t, replied)
+
+	// No reply in a completely different context.
+	replied, err = db.CheckUserRepliedBefore("U_ME", "C_NONE", "1000.001", "")
+	require.NoError(t, err)
+	assert.False(t, replied)
+}
+
 func TestCreateInboxItem_UniqueConstraint(t *testing.T) {
 	db := openTestDB(t)
 

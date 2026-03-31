@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 53"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 54"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -2456,6 +2456,28 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v53: %w", err)
 		}
 		version = 53
+	}
+
+	if version < 54 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v54: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "tracks", "dismissed_at") {
+			if _, err := tx.Exec(`ALTER TABLE tracks ADD COLUMN dismissed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration v54 add dismissed_at: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 54"); err != nil {
+			return fmt.Errorf("setting schema version v54: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v54: %w", err)
+		}
+		version = 54
 	}
 
 	_ = version // silence unused variable if this is the last migration

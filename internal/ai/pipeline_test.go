@@ -284,8 +284,8 @@ func TestIntegrationResponseRenderer(t *testing.T) {
 	rendered, err := renderer.Render(response)
 	require.NoError(t, err)
 
-	// The renderer should resolve the reference to a Slack permalink
-	assert.Contains(t, rendered, "slack://channel?team=T001")
+	// The renderer should resolve the reference to a Slack deep link
+	assert.Contains(t, rendered, "slack://channel?team=T001&id=")
 	assert.Contains(t, rendered, "Sources")
 }
 

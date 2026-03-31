@@ -275,6 +275,25 @@ struct InboxListView: View {
                 }
 
                 Spacer()
+
+                if item.isPending {
+                    Button {
+                        vm.resolve(item)
+                    } label: {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Done")
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                }
             }
             .padding(.leading, 36)
             .padding(.trailing, 12)

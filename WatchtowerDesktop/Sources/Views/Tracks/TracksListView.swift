@@ -80,13 +80,35 @@ struct TracksListView: View {
                     .frame(maxWidth: 140)
                 }
 
-                // Ownership filter
+                // Ownership filter + view toggles
                 HStack(spacing: 4) {
                     ownershipButton(vm, label: "All", value: nil)
                     ownershipButton(vm, label: "Mine", value: "mine")
                     ownershipButton(vm, label: "Delegated", value: "delegated")
                     ownershipButton(vm, label: "Watching", value: "watching")
                     Spacer()
+
+                    Button {
+                        vm.showRead.toggle()
+                        vm.load()
+                    } label: {
+                        Image(systemName: vm.showRead ? "eye.fill" : "eye.slash")
+                            .font(.caption)
+                            .foregroundStyle(vm.showRead ? .primary : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(vm.showRead ? "Hide read tracks" : "Show read tracks")
+
+                    Button {
+                        vm.showDismissed.toggle()
+                        vm.load()
+                    } label: {
+                        Image(systemName: "archivebox")
+                            .font(.caption)
+                            .foregroundStyle(vm.showDismissed ? .primary : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(vm.showDismissed ? "Hide dismissed" : "Show dismissed")
                 }
             }
             .padding()
@@ -187,13 +209,38 @@ struct TracksListView: View {
         let isSelected = selectedItemID == track.id
         let bgColor: Color = isSelected
             ? Color.accentColor.opacity(0.15)
-            : track.isUnread
-                ? Color.blue.opacity(0.06)
-                : Color.clear
+            : track.isDismissed
+                ? Color.secondary.opacity(0.04)
+                : track.isUnread
+                    ? Color.blue.opacity(0.06)
+                    : Color.clear
 
         return TrackRow(track: track, viewModel: vm)
             .contentShape(Rectangle())
             .onTapGesture { selectedItemID = track.id }
+            .contextMenu {
+                if track.isDismissed {
+                    Button {
+                        vm.restoreTrack(track)
+                    } label: {
+                        Label("Restore", systemImage: "arrow.uturn.backward")
+                    }
+                } else {
+                    Button {
+                        if selectedItemID == track.id { selectedItemID = nil }
+                        vm.dismissTrack(track)
+                    } label: {
+                        Label("Dismiss", systemImage: "archivebox")
+                    }
+                }
+                if track.isUnread {
+                    Button {
+                        vm.markRead(track)
+                    } label: {
+                        Label("Mark as Read", systemImage: "eye")
+                    }
+                }
+            }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(bgColor, in: RoundedRectangle(cornerRadius: 6))

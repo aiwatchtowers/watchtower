@@ -152,8 +152,7 @@ func TestResolveRefs_Found(t *testing.T) {
 
 	resolved := rr.resolveRefs(refs)
 	require.Len(t, resolved, 1)
-	assert.Contains(t, resolved[0].permalink, "slack://channel?team=T001")
-	assert.Contains(t, resolved[0].permalink, "id=C001")
+	assert.Contains(t, resolved[0].permalink, "slack://channel?team=T001&id=C001&message=")
 }
 
 func TestResolveRefs_ChannelNotFound(t *testing.T) {
@@ -198,12 +197,12 @@ func TestReplaceRefs(t *testing.T) {
 			fullMatch:   "#engineering 2025-02-26 14:30",
 			channelName: "engineering",
 			timestamp:   time.Date(2025, 2, 26, 14, 30, 0, 0, time.UTC),
-			permalink:   "https://test-corp.slack.com/archives/C001/p1740580200000100",
+			permalink:   "slack://channel?team=T001&id=C001&message=1740580200.000100",
 		},
 	}
 
 	result := rr.replaceRefs("See #engineering 2025-02-26 14:30 for details.", refs)
-	assert.Contains(t, result, "[#engineering 2025-02-26 14:30](https://test-corp.slack.com/archives/C001/p1740580200000100)")
+	assert.Contains(t, result, "[#engineering 2025-02-26 14:30](slack://channel?team=T001&id=C001&message=1740580200.000100)")
 	assert.NotContains(t, result, "See #engineering 2025-02-26 14:30 for")
 }
 
@@ -232,12 +231,12 @@ func TestBuildSourcesSection_WithRefs(t *testing.T) {
 		{
 			channelName: "engineering",
 			timestamp:   time.Date(2025, 2, 26, 14, 30, 0, 0, time.UTC),
-			permalink:   "https://test-corp.slack.com/archives/C001/p123",
+			permalink:   "slack://channel?team=T001&id=C001&message=1740580200.000100",
 		},
 		{
 			channelName: "design-team",
 			timestamp:   time.Date(2025, 2, 26, 14, 25, 0, 0, time.UTC),
-			permalink:   "https://test-corp.slack.com/archives/C002/p456",
+			permalink:   "slack://channel?team=T001&id=C002&message=1740579900.000200",
 		},
 	}
 
@@ -245,7 +244,7 @@ func TestBuildSourcesSection_WithRefs(t *testing.T) {
 	assert.Contains(t, sources, "Sources:")
 	assert.Contains(t, sources, "[1] #engineering 2025-02-26 14:30")
 	assert.Contains(t, sources, "[2] #design-team 2025-02-26 14:25")
-	assert.Contains(t, sources, "https://test-corp.slack.com/archives/C001/p123")
+	assert.Contains(t, sources, "slack://channel?team=T001&id=C001")
 }
 
 func TestBuildSourcesSection_NoResolved(t *testing.T) {
@@ -297,7 +296,7 @@ func TestRender_FullPipeline(t *testing.T) {
 	// Should have a Sources section with the resolved reference
 	assert.Contains(t, plain, "Sources:")
 	assert.Contains(t, plain, "#engineering 2025-02-26 14:30")
-	assert.Contains(t, plain, "slack://channel?team=T001")
+	assert.Contains(t, plain, "slack://channel?team=T001&id=C001")
 }
 
 func TestRender_NoRefs(t *testing.T) {

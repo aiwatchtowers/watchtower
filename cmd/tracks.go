@@ -23,6 +23,7 @@ var (
 	tracksFlagOwnership   string
 	tracksFlagChannel     string
 	tracksFlagUpdates     bool
+	tracksFlagDismissed   bool
 	tracksGenFlagProgress bool
 )
 
@@ -47,6 +48,20 @@ var tracksReadCmd = &cobra.Command{
 	RunE:  runTracksRead,
 }
 
+var tracksDismissCmd = &cobra.Command{
+	Use:   "dismiss <id>",
+	Short: "Dismiss a track (hide from default view)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTracksDismiss,
+}
+
+var tracksRestoreCmd = &cobra.Command{
+	Use:   "restore <id>",
+	Short: "Restore a dismissed track",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTracksRestore,
+}
+
 var tracksGenerateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Run tracks pipeline to create/update tracks from digest topics",
@@ -57,11 +72,14 @@ func init() {
 	rootCmd.AddCommand(tracksCmd)
 	tracksCmd.AddCommand(tracksShowCmd)
 	tracksCmd.AddCommand(tracksReadCmd)
+	tracksCmd.AddCommand(tracksDismissCmd)
+	tracksCmd.AddCommand(tracksRestoreCmd)
 	tracksCmd.AddCommand(tracksGenerateCmd)
 	tracksCmd.Flags().StringVar(&tracksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	tracksCmd.Flags().StringVar(&tracksFlagOwnership, "ownership", "", "filter by ownership (mine, delegated, watching)")
 	tracksCmd.Flags().StringVar(&tracksFlagChannel, "channel", "", "filter by channel name")
 	tracksCmd.Flags().BoolVar(&tracksFlagUpdates, "updates", false, "show only tracks with updates")
+	tracksCmd.Flags().BoolVar(&tracksFlagDismissed, "dismissed", false, "show dismissed tracks")
 	tracksGenerateCmd.Flags().BoolVar(&tracksGenFlagProgress, "progress-json", false, "output progress as JSON lines")
 }
 
@@ -108,9 +126,10 @@ func runTracks(cmd *cobra.Command, args []string) error {
 	}
 
 	f := db.TrackFilter{
-		Priority:  tracksFlagPriority,
-		Ownership: tracksFlagOwnership,
-		ChannelID: channelIDFilter,
+		Priority:         tracksFlagPriority,
+		Ownership:        tracksFlagOwnership,
+		ChannelID:        channelIDFilter,
+		IncludeDismissed: tracksFlagDismissed,
 	}
 	if tracksFlagUpdates {
 		v := true
@@ -375,6 +394,46 @@ func runTracksRead(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Track #%d marked as read\n", id)
+	return nil
+}
+
+func runTracksDismiss(cmd *cobra.Command, args []string) error {
+	id, err := strconv.Atoi(args[0])
+	if err != nil || id <= 0 {
+		return fmt.Errorf("invalid track ID %q: must be a positive integer", args[0])
+	}
+
+	database, err := openTracksDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	if err := database.DismissTrack(id); err != nil {
+		return fmt.Errorf("dismissing track: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Track #%d dismissed\n", id)
+	return nil
+}
+
+func runTracksRestore(cmd *cobra.Command, args []string) error {
+	id, err := strconv.Atoi(args[0])
+	if err != nil || id <= 0 {
+		return fmt.Errorf("invalid track ID %q: must be a positive integer", args[0])
+	}
+
+	database, err := openTracksDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	if err := database.RestoreTrack(id); err != nil {
+		return fmt.Errorf("restoring track: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Track #%d restored\n", id)
 	return nil
 }
 

@@ -97,3 +97,50 @@ func TestGenerateDeeplink(t *testing.T) {
 		})
 	}
 }
+
+func TestPermalinkToDeeplink(t *testing.T) {
+	tests := []struct {
+		name      string
+		permalink string
+		teamID    string
+		want      string
+	}{
+		{
+			name:      "standard permalink",
+			permalink: "https://mycompany.slack.com/archives/C024BE91L/p1234567890123456",
+			teamID:    "T0123ABC",
+			want:      "slack://channel?team=T0123ABC&id=C024BE91L&message=1234567890.123456",
+		},
+		{
+			name:      "dm channel permalink",
+			permalink: "https://team.slack.com/archives/D0123ABC/p1609459200001200",
+			teamID:    "T001",
+			want:      "slack://channel?team=T001&id=D0123ABC&message=1609459200.001200",
+		},
+		{
+			name:      "empty teamID returns original",
+			permalink: "https://mycompany.slack.com/archives/C001/p1700000000000000",
+			teamID:    "",
+			want:      "https://mycompany.slack.com/archives/C001/p1700000000000000",
+		},
+		{
+			name:      "non-matching URL returns original",
+			permalink: "https://example.com/some/path",
+			teamID:    "T001",
+			want:      "https://example.com/some/path",
+		},
+		{
+			name:      "empty permalink returns empty",
+			permalink: "",
+			teamID:    "T001",
+			want:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := PermalinkToDeeplink(tt.permalink, tt.teamID)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

@@ -222,7 +222,7 @@ final class DigestViewModelTests: XCTestCase {
         vm.load()
 
         let url = vm.slackMessageURL(channelID: "C001", messageTS: "1740577800.000100")
-        XCTAssertEqual(url?.absoluteString, "https://app.slack.com/archives/C001/p1740577800000100")
+        XCTAssertEqual(url?.absoluteString, "slack://channel?team=T001&id=C001&message=1740577800.000100")
     }
 
     @MainActor
@@ -739,6 +739,7 @@ final class TracksViewModelTests: XCTestCase {
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
+        vm.showRead = true // show read tracks to verify they move correctly
         vm.load()
         XCTAssertEqual(vm.updatedTracks.count, 1)
 
@@ -764,17 +765,17 @@ final class TracksViewModelTests: XCTestCase {
         vm.load()
 
         let url = vm.slackMessageURL(channelID: "C001", messageTS: "1740577800.000100")
-        XCTAssertEqual(url?.absoluteString, "https://app.slack.com/archives/C001/p1740577800000100")
+        XCTAssertEqual(url?.absoluteString, "slack://channel?team=T001&id=C001&message=1740577800.000100")
     }
 
     @MainActor
-    func testSlackMessageURLWithoutTeamID() {
+    func testSlackMessageURLWithoutDomain() {
         let vm = TracksViewModel(dbManager: dbManager)
         vm.load()
 
-        // Web permalink format doesn't require teamID, so URL should still be valid
+        // No workspace loaded — teamID is nil, so URL should be nil
         let url = vm.slackMessageURL(channelID: "C001", messageTS: "123.456")
-        XCTAssertEqual(url?.absoluteString, "https://app.slack.com/archives/C001/p123456")
+        XCTAssertNil(url)
     }
 
     @MainActor

@@ -303,6 +303,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     fingerprint         TEXT NOT NULL DEFAULT '[]',         -- JSON: extracted entities for dedup
     read_at             TEXT,                               -- NULL=unread, ISO8601=when read
     has_updates         INTEGER NOT NULL DEFAULT 0,
+    dismissed_at        TEXT NOT NULL DEFAULT '',           -- ''=active, ISO8601=when dismissed
     model               TEXT NOT NULL DEFAULT '',
     input_tokens        INTEGER NOT NULL DEFAULT 0,
     output_tokens       INTEGER NOT NULL DEFAULT 0,
