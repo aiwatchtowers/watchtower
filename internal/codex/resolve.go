@@ -32,8 +32,10 @@ func FindBinary(override string) string {
 	}
 
 	cachedBinaryMu.Do(func() {
-		// Fast path: already in PATH.
-		if p, err := exec.LookPath("codex"); err == nil {
+		// Use RichPATH so version-manager binaries (nvm, volta, fnm)
+		// are found before stale system-wide installs (e.g. /usr/local/bin).
+		richPATH := RichPATH()
+		if p, err := lookPathIn("codex", richPATH); err == nil {
 			cachedBinary = p
 			return
 		}
@@ -50,27 +52,32 @@ func FindBinary(override string) string {
 
 // RichPATH returns a PATH that includes common tool locations so that
 // subprocess invocations can find node, npx, etc. even from a macOS .app bundle.
+// It combines the login shell PATH with well-known tool directories (nvm, volta,
+// fnm, Homebrew) prepended so that the correct node version is used for tools
+// installed via version managers.
 // The result is cached after the first call.
 func RichPATH() string {
 	cachedPATHMu.Do(func() {
-		if shellPATH := loginShellPATH(); shellPATH != "" {
-			cachedPATH = shellPATH
-			return
+		base := loginShellPATH()
+		if base == "" {
+			base = os.Getenv("PATH")
 		}
-		cachedPATH = fallbackPATH()
+		cachedPATH = enrichPATH(base)
 	})
 
 	return cachedPATH
 }
 
-func fallbackPATH() string {
-	existing := os.Getenv("PATH")
+// enrichPATH prepends well-known tool directories (nvm, volta, fnm, Homebrew)
+// to the given base PATH, deduplicating entries. nvm/volta/fnm paths come first
+// so that version-manager-installed node is preferred over system node.
+func enrichPATH(base string) string {
 	home, _ := os.UserHomeDir()
-	extra := []string{
-		"/usr/local/bin",
-		"/opt/homebrew/bin",
-	}
+
+	// Paths prepended in order — version managers first, then system locations.
+	var extra []string
 	if home != "" {
+		// nvm — newest version last so it appears first after reversal.
 		nvmDir := filepath.Join(home, ".nvm", "versions", "node")
 		if entries, err := os.ReadDir(nvmDir); err == nil {
 			for i := len(entries) - 1; i >= 0; i-- {
@@ -78,16 +85,18 @@ func fallbackPATH() string {
 			}
 		}
 		extra = append(extra,
-			filepath.Join(home, ".local", "bin"),
 			filepath.Join(home, ".volta", "bin"),
 			filepath.Join(home, ".fnm", "current", "bin"),
+			filepath.Join(home, ".local", "bin"),
 		)
 	}
+	extra = append(extra,
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+	)
 
+	// Build result: extra paths first (deduplicated), then base paths (deduplicated).
 	seen := make(map[string]bool)
-	for _, p := range strings.Split(existing, ":") {
-		seen[p] = true
-	}
 	var parts []string
 	for _, p := range extra {
 		if !seen[p] {
@@ -95,10 +104,29 @@ func fallbackPATH() string {
 			parts = append(parts, p)
 		}
 	}
-	if existing != "" {
-		parts = append(parts, existing)
+	for _, p := range strings.Split(base, ":") {
+		if !seen[p] {
+			seen[p] = true
+			parts = append(parts, p)
+		}
 	}
 	return strings.Join(parts, ":")
+}
+
+// lookPathIn searches for an executable in the given PATH string
+// (colon-separated directories), similar to exec.LookPath but using
+// a custom PATH instead of the process environment.
+func lookPathIn(name, pathEnv string) (string, error) {
+	for _, dir := range strings.Split(pathEnv, ":") {
+		if dir == "" {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return p, nil
+		}
+	}
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
 }
 
 func loginShell() string {

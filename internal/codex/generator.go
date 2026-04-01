@@ -129,7 +129,7 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 		}
 
 		if event.Type == "item.completed" && event.Item != nil && event.Item.Type == "agent_message" {
-			lastContent = event.Item.Content
+			lastContent = event.Item.MessageText()
 		}
 	}
 

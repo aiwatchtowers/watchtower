@@ -131,9 +131,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			}
 
 			// Stream agent_message content as it arrives.
-			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.Content != "" {
+			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.MessageText() != "" {
 				select {
-				case textCh <- event.Item.Content:
+				case textCh <- event.Item.MessageText():
 				case <-ctx.Done():
 					_ = cmd.Wait()
 					errCh <- ctx.Err()

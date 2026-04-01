@@ -108,3 +108,30 @@ func TestParseJSONLOutput_InvalidJSON(t *testing.T) {
 		t.Errorf("result = %q, want %q", result, "ok")
 	}
 }
+
+func TestParseJSONLOutput_TextFieldFallback(t *testing.T) {
+	// Newer Codex CLI uses "text" instead of "content".
+	jsonl := `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"hello from text"}}
+`
+	result, _, err := parseJSONLOutput([]byte(jsonl))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "hello from text" {
+		t.Errorf("result = %q, want %q", result, "hello from text")
+	}
+}
+
+func TestCodexItem_MessageText(t *testing.T) {
+	// Text takes precedence over Content.
+	item := &CodexItem{Text: "from text", Content: "from content"}
+	if got := item.MessageText(); got != "from text" {
+		t.Errorf("MessageText() = %q, want %q", got, "from text")
+	}
+
+	// Falls back to Content when Text is empty.
+	item2 := &CodexItem{Content: "from content"}
+	if got := item2.MessageText(); got != "from content" {
+		t.Errorf("MessageText() = %q, want %q", got, "from content")
+	}
+}

@@ -12,8 +12,18 @@ type CodexEvent struct {
 // CodexItem represents an item within a Codex event.
 type CodexItem struct {
 	ID      string `json:"id"`
-	Type    string `json:"type"` // agent_message, command_execution, mcp_tool_call
-	Content string `json:"content"`
+	Type    string `json:"type"`    // agent_message, command_execution, mcp_tool_call
+	Content string `json:"content"` // older Codex CLI versions
+	Text    string `json:"text"`    // newer Codex CLI versions (v0.118+)
+}
+
+// MessageText returns the agent message text, preferring Text over Content
+// for compatibility across Codex CLI versions.
+func (i *CodexItem) MessageText() string {
+	if i.Text != "" {
+		return i.Text
+	}
+	return i.Content
 }
 
 // CodexUsage holds token usage metrics from a Codex CLI call.
