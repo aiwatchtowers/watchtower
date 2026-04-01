@@ -90,7 +90,7 @@ type Pipeline struct {
 	// Accumulated token usage across all Generate calls (thread-safe).
 	totalInputTokens  atomic.Int64
 	totalOutputTokens atomic.Int64
-	totalAPITokens atomic.Int64
+	totalAPITokens    atomic.Int64
 
 	// caches (populated once per Run)
 	cacheMu            sync.RWMutex

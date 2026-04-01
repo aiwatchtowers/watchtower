@@ -401,8 +401,8 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 					RunID: runID, Step: completed, Total: total, Status: status,
 					InputTokens: p.StepInputTokens, OutputTokens: p.StepOutputTokens,
 					TotalAPITokens: totalAPI,
-					MessageCount: pipe.LastStepMessageCount,
-					PeriodFrom:   pFrom, PeriodTo: pTo,
+					MessageCount:   pipe.LastStepMessageCount,
+					PeriodFrom:     pFrom, PeriodTo: pTo,
 					DurationSeconds: p.StepDurationSec,
 				})
 			}

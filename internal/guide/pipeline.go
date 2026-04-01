@@ -97,9 +97,9 @@ type Pipeline struct {
 	LastStepDurationSeconds float64
 	LastStepInputTokens     int
 	LastStepOutputTokens    int
-	totalInputTokens  atomic.Int64
-	totalOutputTokens atomic.Int64
-	totalAPITokens    atomic.Int64
+	totalInputTokens        atomic.Int64
+	totalOutputTokens       atomic.Int64
+	totalAPITokens          atomic.Int64
 
 	channelNames map[string]string
 	userNames    map[string]string
@@ -448,7 +448,6 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
 		p.LastStepInputTokens += usage.InputTokens
 		p.LastStepOutputTokens += usage.OutputTokens
-
 	}
 
 	result, err := parsePeopleCardResult(raw)
@@ -713,7 +712,6 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
 		p.LastStepInputTokens += usage.InputTokens
 		p.LastStepOutputTokens += usage.OutputTokens
-
 	}
 
 	result, err := parseTeamSummaryResult(raw)

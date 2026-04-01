@@ -126,7 +126,7 @@ type Pipeline struct {
 	// accumulated usage across all Generate calls (atomic for concurrent workers)
 	totalInputTokens  atomic.Int64
 	totalOutputTokens atomic.Int64
-	totalAPITokens atomic.Int64 // total API tokens (our content + CLI overhead)
+	totalAPITokens    atomic.Int64 // total API tokens (our content + CLI overhead)
 
 	// accumulated stats across all channel digests (atomic for concurrent workers)
 	totalMessageCount  atomic.Int64
