@@ -205,7 +205,15 @@ struct GeneralSettings: View {
                 "AI Provider",
                 selection: Binding(
                     get: { config.aiProvider ?? "claude" },
-                    set: { config.aiProvider = $0 }
+                    set: { newProvider in
+                        let oldProvider = config.aiProvider ?? "claude"
+                        config.aiProvider = newProvider
+                        // Reset model when switching providers so it doesn't carry over
+                        if newProvider != oldProvider {
+                            config.aiModel = nil
+                            connectionTestResult = nil
+                        }
+                    }
                 )
             ) {
                 Text("Claude").tag("claude")
@@ -280,7 +288,7 @@ struct GeneralSettings: View {
 
             HStack {
                 Button {
-                    testClaudeConnection()
+                    testConnection()
                 } label: {
                     HStack(spacing: 4) {
                         if connectionTestRunning {
@@ -573,9 +581,14 @@ struct GeneralSettings: View {
         return (process.terminationStatus, stdout, stderr)
     }
 
-    private func testClaudeConnection() {
-        guard let claudePath = Constants.findClaudePath() else {
-            connectionTestResult = "Claude CLI not found"
+    private func testConnection() {
+        let isCodex = (config.aiProvider ?? "claude") == "codex"
+        let cliPath: String? = isCodex ? Constants.findCodexPath() : Constants.findClaudePath()
+        let providerName = isCodex ? "Codex" : "Claude"
+        let defaultModel = isCodex ? "gpt-5.4" : "claude-sonnet-4-6"
+
+        guard let path = cliPath else {
+            connectionTestResult = "\(providerName) CLI not found"
             connectionTestSuccess = false
             return
         }
@@ -583,14 +596,18 @@ struct GeneralSettings: View {
         connectionTestRunning = true
         connectionTestResult = nil
 
-        let model = (config.aiModel ?? "").isEmpty ? "claude-sonnet-4-6" : (config.aiModel ?? "claude-sonnet-4-6")
+        let model = (config.aiModel ?? "").isEmpty ? defaultModel : (config.aiModel ?? defaultModel)
 
         Task.detached {
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: claudePath)
-            process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model]
+            process.executableURL = URL(fileURLWithPath: path)
 
-            // Use shared resolved environment (caches login shell PATH)
+            if isCodex {
+                process.arguments = ["exec", "--model", model, "--json", "-c", "approval_policy=never", "respond with: OK"]
+            } else {
+                process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model]
+            }
+
             process.environment = Constants.resolvedEnvironment()
 
             let stdoutPipe = Pipe()
