@@ -17,15 +17,15 @@ import (
 
 // MeetingPrepResult is the AI output for a single meeting.
 type MeetingPrepResult struct {
-	EventID         string                `json:"event_id"`
-	Title           string                `json:"title"`
-	StartTime       string                `json:"start_time"`
-	TalkingPoints   []TalkingPoint        `json:"talking_points"`
-	OpenItems       []OpenItem            `json:"open_items"`
-	PeopleNotes     []PersonNote          `json:"people_notes"`
-	SuggestedPrep   []string              `json:"suggested_prep"`
+	EventID         string                  `json:"event_id"`
+	Title           string                  `json:"title"`
+	StartTime       string                  `json:"start_time"`
+	TalkingPoints   []TalkingPoint          `json:"talking_points"`
+	OpenItems       []OpenItem              `json:"open_items"`
+	PeopleNotes     []PersonNote            `json:"people_notes"`
+	SuggestedPrep   []string                `json:"suggested_prep"`
 	Recommendations []MeetingRecommendation `json:"recommendations"`
-	ContextGaps     []string              `json:"context_gaps,omitempty"`
+	ContextGaps     []string                `json:"context_gaps,omitempty"`
 }
 
 // MeetingRecommendation is a suggestion for improving the meeting.

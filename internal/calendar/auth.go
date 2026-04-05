@@ -45,7 +45,7 @@ type GoogleOAuthConfig struct {
 
 // OAuthToken represents an OAuth2 token (stored as JSON).
 type OAuthToken struct {
-	AccessToken  string `json:"access_token"`
+	AccessToken  string `json:"access_token"`  //nolint:gosec // not a hardcoded credential, this is a struct field name
 	TokenType    string `json:"token_type"`
 	RefreshToken string `json:"refresh_token"`
 	Expiry       string `json:"expiry,omitempty"`

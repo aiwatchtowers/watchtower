@@ -486,7 +486,9 @@ final class ChatViewModel {
         and uses AI to generate insights: daily briefings, inbox, calendar with meeting prep, digests, tracks, and people analytics.
 
         TABS:
-        - AI Chat: chat with AI about workspace data. Provider selector (Claude/Codex), model selector (filtered by provider). Claude: Sonnet/Haiku/Opus; Codex: GPT-5.4/GPT-5.4 Mini/GPT-5.3 Codex. Multi-turn with session memory (Claude only; Codex is ephemeral). Upcoming calendar events (48h) are injected into context automatically
+        - AI Chat: chat with AI about workspace data. Provider selector (Claude/Codex), model selector.
+          Claude: Sonnet/Haiku/Opus; Codex: GPT-5.4/GPT-5.4 Mini/GPT-5.3 Codex.
+          Multi-turn with session memory (Claude only; Codex is ephemeral). Calendar events (48h) injected into context
         - Briefings: personalized daily overview — today's schedule (calendar events), needs attention, your day, what happened, team pulse, coaching
         - Inbox: messages awaiting your response — @mentions and DMs auto-detected after each sync, AI-prioritized (high/medium/low), auto-resolved when you reply. Statuses: pending, resolved, dismissed, snoozed. Actions: resolve, dismiss, snooze, create task, open in Slack
         - Calendar: Google Calendar integration — today's and tomorrow's events, meeting prep (AI-generated talking points, open items, people notes, suggested prep). Connect in Settings. Events highlight: green=happening now, blue=upcoming within 1 hour
