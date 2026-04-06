@@ -700,7 +700,14 @@ CREATE INDEX IF NOT EXISTS idx_meeting_prep_cache_generated ON meeting_prep_cach
 CREATE TABLE IF NOT EXISTS jira_boards (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
     board_type TEXT NOT NULL DEFAULT '', is_selected INTEGER NOT NULL DEFAULT 0,
-    issue_count INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT ''
+    issue_count INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT '',
+    raw_columns_json TEXT NOT NULL DEFAULT '',
+    raw_config_json TEXT NOT NULL DEFAULT '',
+    llm_profile_json TEXT NOT NULL DEFAULT '',
+    workflow_summary TEXT NOT NULL DEFAULT '',
+    user_overrides_json TEXT NOT NULL DEFAULT '',
+    config_hash TEXT NOT NULL DEFAULT '',
+    profile_generated_at TEXT NOT NULL DEFAULT ''
 );
 
 -- Jira issues
@@ -753,6 +760,22 @@ CREATE TABLE IF NOT EXISTS jira_user_map (
     match_method TEXT NOT NULL DEFAULT '', match_confidence REAL NOT NULL DEFAULT 0,
     resolved_at TEXT NOT NULL DEFAULT ''
 );
+
+-- Jira Slack links (key detection)
+CREATE TABLE IF NOT EXISTS jira_slack_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_key TEXT NOT NULL,
+    channel_id TEXT NOT NULL DEFAULT '',
+    message_ts TEXT NOT NULL DEFAULT '',
+    track_id INTEGER,
+    digest_id INTEGER,
+    link_type TEXT NOT NULL DEFAULT 'mention',
+    detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(issue_key, channel_id, message_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_jira_slack_links_issue ON jira_slack_links(issue_key);
+CREATE INDEX IF NOT EXISTS idx_jira_slack_links_channel ON jira_slack_links(channel_id, message_ts);
+CREATE INDEX IF NOT EXISTS idx_jira_slack_links_track ON jira_slack_links(track_id);
 
 -- Jira sync state
 CREATE TABLE IF NOT EXISTS jira_sync_state (

@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 58"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 59"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -2678,6 +2678,68 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v58: %w", err)
 		}
 		version = 58
+	}
+
+	if version < 59 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v59: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Add board profile columns.
+		boardProfileCols := []struct {
+			name string
+			def  string
+		}{
+			{"raw_columns_json", "TEXT NOT NULL DEFAULT ''"},
+			{"raw_config_json", "TEXT NOT NULL DEFAULT ''"},
+			{"llm_profile_json", "TEXT NOT NULL DEFAULT ''"},
+			{"workflow_summary", "TEXT NOT NULL DEFAULT ''"},
+			{"user_overrides_json", "TEXT NOT NULL DEFAULT ''"},
+			{"config_hash", "TEXT NOT NULL DEFAULT ''"},
+			{"profile_generated_at", "TEXT NOT NULL DEFAULT ''"},
+		}
+		for _, col := range boardProfileCols {
+			if !hasColumn(tx, "jira_boards", col.name) {
+				if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE jira_boards ADD COLUMN %s %s", col.name, col.def)); err != nil {
+					return fmt.Errorf("migration v59 add column %s: %w", col.name, err)
+				}
+			}
+		}
+
+		// Create jira_slack_links table.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS jira_slack_links (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			issue_key TEXT NOT NULL,
+			channel_id TEXT NOT NULL DEFAULT '',
+			message_ts TEXT NOT NULL DEFAULT '',
+			track_id INTEGER,
+			digest_id INTEGER,
+			link_type TEXT NOT NULL DEFAULT 'mention',
+			detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			UNIQUE(issue_key, channel_id, message_ts)
+		)`); err != nil {
+			return fmt.Errorf("migration v59 create jira_slack_links: %w", err)
+		}
+		slackLinksIndexes := []string{
+			`CREATE INDEX IF NOT EXISTS idx_jira_slack_links_issue ON jira_slack_links(issue_key)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_slack_links_channel ON jira_slack_links(channel_id, message_ts)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_slack_links_track ON jira_slack_links(track_id)`,
+		}
+		for _, stmt := range slackLinksIndexes {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration v59 create index: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 59"); err != nil {
+			return fmt.Errorf("setting schema version v59: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v59: %w", err)
+		}
+		version = 59
 	}
 
 	_ = version // silence unused variable if this is the last migration

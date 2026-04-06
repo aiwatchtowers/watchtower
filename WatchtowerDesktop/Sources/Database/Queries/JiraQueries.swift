@@ -38,6 +38,13 @@ enum JiraQueries {
             .fetchAll(db)
     }
 
+    static func fetchBoard(
+        _ db: Database,
+        id: Int
+    ) throws -> JiraBoard? {
+        try JiraBoard.fetchOne(db, key: id)
+    }
+
     // MARK: - Sync State
 
     static func fetchLastSyncTime(

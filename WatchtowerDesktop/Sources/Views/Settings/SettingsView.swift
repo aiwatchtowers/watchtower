@@ -245,52 +245,6 @@ struct GeneralSettings: View {
             .help("Max parallel LLM calls across all pipelines")
 
             HStack {
-                TextField(
-                    "Claude CLI Path",
-                    text: Binding(
-                        get: { config.claudePath ?? "" },
-                        set: { config.claudePath = $0.isEmpty ? nil : $0 }
-                    ),
-                    prompt: Text("auto-detect")
-                )
-
-                if let path = Constants.findClaudePath() {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .help("Found: \(path)")
-                } else {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.red)
-                        .help("Claude CLI not found")
-                }
-            }
-            .help("Override auto-detection. Run 'which claude' in terminal to find the path.")
-
-            if config.aiProvider == "codex" {
-                HStack {
-                    TextField(
-                        "Codex CLI Path",
-                        text: Binding(
-                            get: { config.codexPath ?? "" },
-                            set: { config.codexPath = $0.isEmpty ? nil : $0 }
-                        ),
-                        prompt: Text("auto-detect")
-                    )
-
-                    if let path = Constants.findCodexPath() {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .help("Found: \(path)")
-                    } else {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.red)
-                            .help("Codex CLI not found")
-                    }
-                }
-                .help("Override auto-detection. Run 'which codex' in terminal to find the path.")
-            }
-
-            HStack {
                 Button {
                     testConnection()
                 } label: {
@@ -416,6 +370,7 @@ struct GeneralSettings: View {
                 .environment(appState)
             JiraUserMappingSettingsView()
                 .environment(appState)
+            JiraFeaturesSettingsView()
             JiraSyncInfoView()
                 .environment(appState)
         }
@@ -690,89 +645,24 @@ struct GeneralSettings: View {
     }
 
     private func testConnection() {
-        let isCodex = (config.aiProvider ?? "claude") == "codex"
-        let cliPath: String? = isCodex ? Constants.findCodexPath() : Constants.findClaudePath()
-        let providerName = isCodex ? "Codex" : "Claude"
-        let defaultModel = isCodex ? "gpt-5.4" : "claude-sonnet-4-6"
-
-        guard let path = cliPath else {
-            connectionTestResult = "\(providerName) CLI not found"
-            connectionTestSuccess = false
-            return
-        }
-
         connectionTestRunning = true
         connectionTestResult = nil
 
-        let model = (config.aiModel ?? "").isEmpty ? defaultModel : (config.aiModel ?? defaultModel)
-
-        Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: path)
-
-            if isCodex {
-                process.arguments = ["exec", "--model", model, "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "respond with: OK"]
-            } else {
-                process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model]
-            }
-
-            process.environment = Constants.resolvedEnvironment()
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
+        Task {
             do {
-                try process.run()
-            } catch {
-                await MainActor.run {
-                    connectionTestRunning = false
-                    connectionTestSuccess = false
-                    connectionTestResult = "Failed to launch: \(error.localizedDescription)"
-                }
-                return
-            }
-
-            process.waitUntilExit()
-
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-            await MainActor.run {
+                let result = try await WatchtowerAIService.testConnection()
                 connectionTestRunning = false
-                if process.terminationStatus == 0 && !stdout.isEmpty {
-                    connectionTestSuccess = true
-                    connectionTestResult = "Connected (\(model))"
-                } else {
-                    connectionTestSuccess = false
-                    connectionTestResult = Self.diagnoseError(stderr: stderr, exitCode: process.terminationStatus)
-                }
+                connectionTestSuccess = true
+                connectionTestResult = "Connected (\(result.provider)/\(result.model))"
+            } catch let error as WatchtowerAIError {
+                connectionTestRunning = false
+                connectionTestSuccess = false
+                connectionTestResult = error.localizedDescription
+            } catch {
+                connectionTestRunning = false
+                connectionTestSuccess = false
+                connectionTestResult = error.localizedDescription
             }
         }
-    }
-
-    private static func diagnoseError(stderr: String, exitCode: Int32) -> String {
-        let lower = stderr.lowercased()
-        if lower.contains("not authenticated") || lower.contains("unauthorized")
-            || lower.contains("api key") || lower.contains("log in") || lower.contains("login") {
-            return "Not authenticated. Run 'claude' in Terminal."
-        }
-        if lower.contains("model") && (lower.contains("access") || lower.contains("available") || lower.contains("permission")) {
-            return "Model not available for your account."
-        }
-        if lower.contains("rate limit") || lower.contains("overloaded") {
-            return "API overloaded. Try again later."
-        }
-        if lower.contains("network") || lower.contains("connection") || lower.contains("timed out") {
-            return "Network error."
-        }
-        if !stderr.isEmpty {
-            let short = stderr.count > 200 ? String(stderr.prefix(200)) + "..." : stderr
-            return "Error (exit \(exitCode)): \(short)"
-        }
-        return "Failed (exit code \(exitCode))"
     }
 }

@@ -588,13 +588,32 @@ type MeetingPrepCache struct {
 
 // JiraBoard represents a Jira agile board stored locally.
 type JiraBoard struct {
+	ID                 int
+	Name               string
+	ProjectKey         string
+	BoardType          string
+	IsSelected         bool
+	IssueCount         int
+	SyncedAt           string
+	RawColumnsJSON     string `json:"raw_columns_json"`
+	RawConfigJSON      string `json:"raw_config_json"`
+	LLMProfileJSON     string `json:"llm_profile_json"`
+	WorkflowSummary    string `json:"workflow_summary"`
+	UserOverridesJSON  string `json:"user_overrides_json"`
+	ConfigHash         string `json:"config_hash"`
+	ProfileGeneratedAt string `json:"profile_generated_at"`
+}
+
+// JiraSlackLink represents a detected Jira key mention in Slack.
+type JiraSlackLink struct {
 	ID         int
-	Name       string
-	ProjectKey string
-	BoardType  string
-	IsSelected bool
-	IssueCount int
-	SyncedAt   string
+	IssueKey   string
+	ChannelID  string
+	MessageTS  string
+	TrackID    *int
+	DigestID   *int
+	LinkType   string
+	DetectedAt string
 }
 
 // JiraIssue represents a Jira issue stored locally.

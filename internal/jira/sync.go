@@ -7,19 +7,24 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"watchtower/internal/db"
 )
 
+// validProjectKeyRe validates Jira project keys to prevent JQL injection.
+var validProjectKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
+
 // Syncer performs incremental and full syncs of Jira issues into the local database.
 type Syncer struct {
-	client   *Client
-	db       *db.DB
-	mapper   *UserMapper
-	logger   *log.Logger
-	boardIDs []int
+	client        *Client
+	db            *db.DB
+	mapper        *UserMapper
+	logger        *log.Logger
+	boardIDs      []int
+	boardAnalyzer *BoardAnalyzer // optional, for config change detection
 }
 
 // NewSyncer creates a Syncer.
@@ -36,6 +41,11 @@ func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []i
 // SetLogger replaces the syncer's logger.
 func (s *Syncer) SetLogger(l *log.Logger) {
 	s.logger = l
+}
+
+// SetBoardAnalyzer sets an optional board analyzer for config change detection during sync.
+func (s *Syncer) SetBoardAnalyzer(analyzer *BoardAnalyzer) {
+	s.boardAnalyzer = analyzer
 }
 
 // Sync performs an incremental sync: fetches issues updated since last sync minus 2 minutes overlap.
@@ -55,6 +65,11 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	for _, board := range boards {
 		projectKey := board.ProjectKey
 		if projectKey == "" {
+			continue
+		}
+
+		if !validProjectKeyRe.MatchString(projectKey) {
+			s.logger.Printf("skipping board %d: invalid project key %q", board.ID, projectKey)
 			continue
 		}
 
@@ -100,6 +115,16 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		s.logger.Printf("sprint sync error: %v", err)
 	}
 
+	// Check if board configs changed since last analysis.
+	if s.boardAnalyzer != nil {
+		changed, err := s.boardAnalyzer.CheckConfigChanged(ctx)
+		if err != nil {
+			s.logger.Printf("board config check error: %v", err)
+		} else if len(changed) > 0 {
+			s.logger.Printf("board config changed for %d board(s): %v — run 'watchtower jira boards analyze' to update profiles", len(changed), changed)
+		}
+	}
+
 	return total, nil
 }
 
@@ -115,6 +140,11 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 	for _, board := range boards {
 		projectKey := board.ProjectKey
 		if projectKey == "" {
+			continue
+		}
+
+		if !validProjectKeyRe.MatchString(projectKey) {
+			s.logger.Printf("skipping board %d: invalid project key %q", board.ID, projectKey)
 			continue
 		}
 

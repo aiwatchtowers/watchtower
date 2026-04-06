@@ -107,10 +107,7 @@ final class ChatViewModel {
     }
 
     static func createService(for provider: AIProvider) -> any AIServiceProtocol {
-        switch provider {
-        case .claude: ClaudeService()
-        case .codex: CodexService()
-        }
+        WatchtowerAIService()
     }
 
     func bind(to conversation: ChatConversation) {
@@ -504,6 +501,9 @@ final class ChatViewModel {
 
         SETTINGS: sync interval, workers, history depth, AI provider (Claude/Codex), digest model/language, briefing hour,
         Claude CLI path, Codex CLI path (when Codex selected), Google Calendar (connect/disconnect, sync days ahead),
+        Jira (connect/disconnect via OAuth, board selection, Board Profiles with workflow visualization and stale threshold sliders and Re-analyze button,
+        User Mapping, sync status, Jira Features with toggle switches by category — Your Work / Team Visibility / Product & Strategy / Automation,
+        role-based defaults on first connection),
         profile (role, team, manager, reports, peers), notifications, daemon control, logs, data management.
 
         BACKGROUND PROCESSES: daemon syncs Slack periodically, then runs pipelines:
@@ -517,6 +517,7 @@ final class ChatViewModel {
         - Starred items: prioritize specific channels and people in analysis
         - Muted channels: excluded from AI processing to reduce noise and token costs
         - Google Calendar: optional integration syncing events to local DB, enabling meeting prep and schedule-aware briefings/chat
+        - Jira Cloud: optional integration via OAuth. Board Profiles (LLM-analyzed workflow stages, stale thresholds, health signals). Issues sync every 15 min. Jira keys (PROJ-123) auto-detected in Slack messages and linked. Feature toggles by role control which Jira features are active (Your Work, Team Visibility, Product & Strategy, Automation). CLI: watchtower jira login/logout/status, watchtower jira boards/select/deselect/analyze/override, watchtower jira users/map, watchtower jira sync, watchtower jira features/enable/disable/reset
 
         When answering about the app, be specific and accurate. Do not invent features that don't exist.
         """
