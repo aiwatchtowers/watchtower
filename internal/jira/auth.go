@@ -161,7 +161,7 @@ func buildAuthURL(cfg JiraOAuthConfig, redirectURI, state string) string {
 	params := url.Values{
 		"audience":      {"api.atlassian.com"},
 		"client_id":     {cfg.ClientID},
-		"scope":         {"read:jira-work read:jira-user"},
+		"scope":         {"read:jira-work read:jira-user offline_access"},
 		"redirect_uri":  {redirectURI},
 		"state":         {state},
 		"response_type": {"code"},
