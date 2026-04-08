@@ -68,15 +68,31 @@ type CalendarConfig struct {
 	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: 2)
 }
 
+// JiraFeatureToggles controls which Jira features are enabled for the user.
+type JiraFeatureToggles struct {
+	MyIssuesInBriefing   bool `mapstructure:"my_issues_in_briefing" json:"my_issues_in_briefing"`
+	AwaitingMyInput      bool `mapstructure:"awaiting_my_input" json:"awaiting_my_input"`
+	WhoPing              bool `mapstructure:"who_ping" json:"who_ping"`
+	TrackJiraLinking     bool `mapstructure:"track_jira_linking" json:"track_jira_linking"`
+	TeamWorkload         bool `mapstructure:"team_workload" json:"team_workload"`
+	BlockerMap           bool `mapstructure:"blocker_map" json:"blocker_map"`
+	IterationProgress    bool `mapstructure:"iteration_progress" json:"iteration_progress"`
+	EpicProgress         bool `mapstructure:"epic_progress" json:"epic_progress"`
+	WriteBackSuggestions bool `mapstructure:"write_back_suggestions" json:"write_back_suggestions"`
+	ReleaseDashboard     bool `mapstructure:"release_dashboard" json:"release_dashboard"`
+	WithoutJiraDetection bool `mapstructure:"without_jira_detection" json:"without_jira_detection"`
+}
+
 // JiraConfig holds Jira Cloud integration settings.
 type JiraConfig struct {
-	Enabled          bool              `mapstructure:"enabled"`
-	CloudID          string            `mapstructure:"cloud_id"`
-	SiteURL          string            `mapstructure:"site_url"`
-	UserDisplayName  string            `mapstructure:"user_display_name"`
-	SelectedBoards   []int             `mapstructure:"selected_boards"`
-	SyncIntervalMins int               `mapstructure:"sync_interval_mins"`
-	UserMap          map[string]string `mapstructure:"user_map"`
+	Enabled          bool               `mapstructure:"enabled"`
+	CloudID          string             `mapstructure:"cloud_id"`
+	SiteURL          string             `mapstructure:"site_url"`
+	UserDisplayName  string             `mapstructure:"user_display_name"`
+	SelectedBoards   []int              `mapstructure:"selected_boards"`
+	SyncIntervalMins int                `mapstructure:"sync_interval_mins"`
+	UserMap          map[string]string  `mapstructure:"user_map"`
+	Features         JiraFeatureToggles `mapstructure:"features"`
 }
 
 // AnalysisConfig holds settings for the people analysis pipeline.

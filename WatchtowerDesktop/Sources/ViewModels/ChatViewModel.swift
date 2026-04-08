@@ -488,7 +488,8 @@ final class ChatViewModel {
         TABS:
         - AI Chat: chat with AI about workspace data. Provider selector (Claude/Codex), model selector.
           Claude: Sonnet/Haiku/Opus; Codex: GPT-5.4/GPT-5.4 Mini/GPT-5.3 Codex.
-          Multi-turn with session memory (Claude only; Codex is ephemeral). Calendar events (48h) injected into context
+          Multi-turn with session memory (Claude only; Codex is ephemeral).
+          Calendar events (48h) injected into context
         - Briefings: personalized daily overview — today's schedule (calendar events), needs attention, your day, what happened, team pulse, coaching
         - Inbox: messages awaiting your response — @mentions and DMs auto-detected after each sync, AI-prioritized (high/medium/low), auto-resolved when you reply. Statuses: pending, resolved, dismissed, snoozed. Actions: resolve, dismiss, snooze, create task, open in Slack
         - Calendar: Google Calendar integration — today's and tomorrow's events, meeting prep (AI-generated talking points, open items, people notes, suggested prep). Connect in Settings. Events highlight: green=happening now, blue=upcoming within 1 hour
@@ -504,6 +505,8 @@ final class ChatViewModel {
 
         SETTINGS: sync interval, workers, history depth, AI provider (Claude/Codex), digest model/language, briefing hour,
         Claude CLI path, Codex CLI path (when Codex selected), Google Calendar (connect/disconnect, sync days ahead),
+        Jira (OAuth, board selection, Board Profiles with workflow viz and stale sliders,
+        User Mapping, sync status, Feature toggles by category and role),
         profile (role, team, manager, reports, peers), notifications, daemon control, logs, data management.
 
         BACKGROUND PROCESSES: daemon syncs Slack periodically, then runs pipelines:
@@ -517,6 +520,10 @@ final class ChatViewModel {
         - Starred items: prioritize specific channels and people in analysis
         - Muted channels: excluded from AI processing to reduce noise and token costs
         - Google Calendar: optional integration syncing events to local DB, enabling meeting prep and schedule-aware briefings/chat
+        - Jira Cloud: optional integration via OAuth. Board Profiles (LLM-analyzed workflow stages,
+          stale thresholds, health signals). Issues sync every 15 min. Jira keys (PROJ-123)
+          auto-detected in Slack. Feature toggles by role (Your Work, Team, Product, Automation).
+          CLI: jira login/logout/status, boards/select/analyze, users/map, sync, features
 
         When answering about the app, be specific and accurate. Do not invent features that don't exist.
         """

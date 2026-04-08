@@ -11,6 +11,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case people
     case statistics
     case search
+    case boards
     case usage
     case training
 
@@ -28,6 +29,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .people: "People"
         case .statistics: "Statistics"
         case .search: "Search"
+        case .boards: "Boards"
         case .usage: "Usage"
         case .training: "Training"
         }
@@ -45,6 +47,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .people: "person.2"
         case .statistics: "chart.bar.xaxis"
         case .search: "magnifyingglass"
+        case .boards: "rectangle.on.rectangle.angled"
         case .usage: "chart.bar"
         case .training: "brain.head.profile"
         }
@@ -57,7 +60,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Tool items (shown below the separator).
     static var toolItems: [Self] {
-        [.usage, .training]
+        [.boards, .usage, .training]
     }
 }
 
@@ -187,6 +190,8 @@ struct MainNavigationView: View {
             StatisticsView()
         case .search:
             SearchView()
+        case .boards:
+            BoardsView()
         case .usage:
             UsageView()
         case .training:

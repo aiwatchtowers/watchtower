@@ -412,12 +412,22 @@ struct GeneralSettings: View {
         }
 
         if jiraAuth.isConnected {
-            JiraBoardsSettingsView()
-                .environment(appState)
-            JiraUserMappingSettingsView()
-                .environment(appState)
-            JiraSyncInfoView()
-                .environment(appState)
+            Section {
+                Button {
+                    appState.selectedDestination = .boards
+                } label: {
+                    HStack {
+                        Label(
+                            "Manage Boards",
+                            systemImage: "rectangle.on.rectangle.angled"
+                        )
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 

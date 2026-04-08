@@ -72,6 +72,27 @@ func TestIsBug(t *testing.T) {
 	}
 }
 
+func TestValidProjectKeyRe(t *testing.T) {
+	valid := []string{"PROJ", "AB", "A1", "MY_PROJECT", "X99"}
+	for _, key := range valid {
+		assert.True(t, validProjectKeyRe.MatchString(key), "expected %q to be valid", key)
+	}
+
+	invalid := []string{
+		"",
+		"a",            // lowercase start
+		"1ABC",         // number start
+		"A",            // single char
+		"PROJ-123",     // contains hyphen
+		"proj",         // all lowercase
+		"A B",          // space
+		"A;DROP TABLE", // injection attempt
+	}
+	for _, key := range invalid {
+		assert.False(t, validProjectKeyRe.MatchString(key), "expected %q to be invalid", key)
+	}
+}
+
 func TestExtractDescriptionText(t *testing.T) {
 	// nil description.
 	assert.Equal(t, "", extractDescriptionText(nil))

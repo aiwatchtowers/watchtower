@@ -99,6 +99,11 @@ type Pipeline struct {
 	profile            *db.UserProfile
 	crossChannelCache  string     // pre-formatted cross-channel section
 	allActiveTracksRef []db.Track // cached active tracks for the run
+
+	// jiraKeyDetector, if set, detects Jira keys in extracted tracks.
+	jiraKeyDetector interface {
+		ProcessTrack(trackID int, text string, sourceRefs string, channelIDs string) (int, error)
+	}
 }
 
 // New creates a new tracks pipeline.
@@ -109,6 +114,13 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		generator: gen,
 		logger:    logger,
 	}
+}
+
+// SetJiraKeyDetector sets an optional Jira key detector for linking extracted tracks to Jira issues.
+func (p *Pipeline) SetJiraKeyDetector(detector interface {
+	ProcessTrack(trackID int, text string, sourceRefs string, channelIDs string) (int, error)
+}) {
+	p.jiraKeyDetector = detector
 }
 
 // SetPromptStore sets an optional prompt store for loading customized prompts.
@@ -684,7 +696,16 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			p.logger.Printf("tracks: error storing track: %v", err)
 			continue
 		}
-		_ = trackID
+
+		// Detect Jira keys in the stored track.
+		if p.jiraKeyDetector != nil {
+			if n, err := p.jiraKeyDetector.ProcessTrack(int(trackID), track.Text, track.SourceRefs, track.ChannelIDs); err != nil {
+				p.logger.Printf("tracks: jira key detection error for track %d: %v", trackID, err)
+			} else if n > 0 {
+				p.logger.Printf("tracks: detected %d Jira key(s) in track %d", n, trackID)
+			}
+		}
+
 		stored++
 	}
 

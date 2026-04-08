@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -79,6 +80,45 @@ var jiraSyncCmd = &cobra.Command{
 	RunE:  runJiraSync,
 }
 
+var jiraFeaturesCmd = &cobra.Command{
+	Use:   "features",
+	Short: "Show Jira feature toggles",
+	RunE:  runJiraFeatures,
+}
+
+var jiraFeaturesEnableCmd = &cobra.Command{
+	Use:   "enable <feature>",
+	Short: "Enable a Jira feature",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runJiraFeaturesEnable,
+}
+
+var jiraFeaturesDisableCmd = &cobra.Command{
+	Use:   "disable <feature>",
+	Short: "Disable a Jira feature",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runJiraFeaturesDisable,
+}
+
+var jiraFeaturesResetCmd = &cobra.Command{
+	Use:   "reset",
+	Short: "Reset feature toggles to role defaults",
+	RunE:  runJiraFeaturesReset,
+}
+
+var jiraBoardsAnalyzeCmd = &cobra.Command{
+	Use:   "analyze [board-ids...]",
+	Short: "Analyze board workflow with LLM",
+	RunE:  runJiraBoardsAnalyze,
+}
+
+var jiraBoardsOverrideCmd = &cobra.Command{
+	Use:   "override <boardID>",
+	Short: "Set user overrides for a board",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runJiraBoardsOverride,
+}
+
 func init() {
 	rootCmd.AddCommand(jiraCmd)
 	jiraCmd.AddCommand(jiraLoginCmd)
@@ -87,11 +127,20 @@ func init() {
 	jiraCmd.AddCommand(jiraBoardsCmd)
 	jiraBoardsCmd.AddCommand(jiraBoardsSelectCmd)
 	jiraBoardsCmd.AddCommand(jiraBoardsDeselectCmd)
+	jiraBoardsCmd.AddCommand(jiraBoardsAnalyzeCmd)
+	jiraBoardsCmd.AddCommand(jiraBoardsOverrideCmd)
 	jiraCmd.AddCommand(jiraUsersCmd)
 	jiraUsersCmd.AddCommand(jiraUsersMapCmd)
 	jiraCmd.AddCommand(jiraSyncCmd)
+	jiraCmd.AddCommand(jiraFeaturesCmd)
+	jiraFeaturesCmd.AddCommand(jiraFeaturesEnableCmd)
+	jiraFeaturesCmd.AddCommand(jiraFeaturesDisableCmd)
+	jiraFeaturesCmd.AddCommand(jiraFeaturesResetCmd)
 
 	jiraLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
+	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
+	jiraBoardsAnalyzeCmd.Flags().Bool("force", false, "re-analyze even if config hash unchanged")
+	jiraBoardsOverrideCmd.Flags().String("stale", "", "stale thresholds (e.g. 'Code Review=1,QA=2')")
 }
 
 func runJiraLogin(cmd *cobra.Command, _ []string) error {
@@ -518,6 +567,352 @@ func resolveJiraOAuthConfig() jira.JiraOAuthConfig {
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 	}
+}
+
+// featureToggleRef returns a pointer to a feature toggle field by name.
+func featureToggleRef(f *config.JiraFeatureToggles, name string) (*bool, bool) {
+	switch name {
+	case "my_issues", "my_issues_in_briefing":
+		return &f.MyIssuesInBriefing, true
+	case "awaiting_input", "awaiting_my_input":
+		return &f.AwaitingMyInput, true
+	case "who_ping":
+		return &f.WhoPing, true
+	case "track_linking", "track_jira_linking":
+		return &f.TrackJiraLinking, true
+	case "team_workload":
+		return &f.TeamWorkload, true
+	case "blocker_map":
+		return &f.BlockerMap, true
+	case "iteration_progress":
+		return &f.IterationProgress, true
+	case "epic_progress":
+		return &f.EpicProgress, true
+	case "write_back", "write_back_suggestions":
+		return &f.WriteBackSuggestions, true
+	case "release_dashboard":
+		return &f.ReleaseDashboard, true
+	case "without_jira", "without_jira_detection":
+		return &f.WithoutJiraDetection, true
+	default:
+		return nil, false
+	}
+}
+
+// featureNames is the ordered list of feature toggle short names.
+var featureNames = []string{
+	"my_issues", "awaiting_input", "who_ping", "track_linking",
+	"team_workload", "blocker_map", "iteration_progress", "epic_progress",
+	"write_back", "release_dashboard", "without_jira",
+}
+
+func runJiraFeatures(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	// Determine role from DB user profile.
+	role := config.DefaultJiraFeaturesRole
+	database, err := db.Open(cfg.DBPath())
+	if err == nil {
+		defer database.Close()
+		userID, _ := database.GetCurrentUserID()
+		if userID != "" {
+			if profile, _ := database.GetUserProfile(userID); profile != nil && profile.Role != "" {
+				role = profile.Role
+			}
+		}
+	}
+
+	features := cfg.Jira.Features
+	defaults := config.DefaultJiraFeatures(role)
+
+	jsonFlag, _ := cmd.Flags().GetBool("json")
+	if jsonFlag {
+		roleDisplay := config.RoleDisplayNames[role]
+		if roleDisplay == "" {
+			roleDisplay = role
+		}
+		output := map[string]interface{}{
+			"role":         role,
+			"role_display": roleDisplay,
+			"features":     features,
+			"defaults":     defaults,
+		}
+		data, _ := json.MarshalIndent(output, "", "  ")
+		fmt.Fprintln(cmd.OutOrStdout(), string(data))
+		return nil
+	}
+
+	out := cmd.OutOrStdout()
+	roleDisplay := config.RoleDisplayNames[role]
+	if roleDisplay == "" {
+		roleDisplay = role
+	}
+	fmt.Fprintf(out, "Role: %s (%s)\n\n", role, roleDisplay)
+	fmt.Fprintf(out, "%-22s %-10s %-10s\n", "Feature", "Enabled", "Default")
+	fmt.Fprintf(out, "%-22s %-10s %-10s\n", "----------------------", "----------", "----------")
+
+	for _, name := range featureNames {
+		ptr, _ := featureToggleRef(&features, name)
+		defPtr, _ := featureToggleRef(&defaults, name)
+		enabled := "false"
+		defVal := "false"
+		if ptr != nil && *ptr {
+			enabled = "true"
+		}
+		if defPtr != nil && *defPtr {
+			defVal = "true"
+		}
+		fmt.Fprintf(out, "%-22s %-10s %-10s\n", name, enabled, defVal)
+	}
+	return nil
+}
+
+func runJiraFeaturesEnable(cmd *cobra.Command, args []string) error {
+	return setJiraFeatureToggle(cmd, args[0], true)
+}
+
+func runJiraFeaturesDisable(cmd *cobra.Command, args []string) error {
+	return setJiraFeatureToggle(cmd, args[0], false)
+}
+
+func setJiraFeatureToggle(cmd *cobra.Command, name string, value bool) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	features := cfg.Jira.Features
+	ptr, ok := featureToggleRef(&features, name)
+	if !ok {
+		return fmt.Errorf("unknown feature %q; valid: %s", name, strings.Join(featureNames, ", "))
+	}
+	*ptr = value
+
+	v := viper.New()
+	v.SetConfigFile(flagConfig)
+	_ = v.ReadInConfig()
+	v.Set("jira.features", features)
+	if err := writeConfigAtomic(v, flagConfig); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	action := "enabled"
+	if !value {
+		action = "disabled"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Feature %q %s.\n", name, action)
+	return nil
+}
+
+func runJiraFeaturesReset(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	role := config.DefaultJiraFeaturesRole
+	database, err := db.Open(cfg.DBPath())
+	if err == nil {
+		defer database.Close()
+		userID, _ := database.GetCurrentUserID()
+		if userID != "" {
+			if profile, _ := database.GetUserProfile(userID); profile != nil && profile.Role != "" {
+				role = profile.Role
+			}
+		}
+	}
+
+	defaults := config.DefaultJiraFeatures(role)
+
+	v := viper.New()
+	v.SetConfigFile(flagConfig)
+	_ = v.ReadInConfig()
+	v.Set("jira.features", defaults)
+	if err := writeConfigAtomic(v, flagConfig); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	roleDisplay := config.RoleDisplayNames[role]
+	if roleDisplay == "" {
+		roleDisplay = role
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Feature toggles reset to %s (%s) defaults.\n", role, roleDisplay)
+	return nil
+}
+
+func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	if cfg.Jira.CloudID == "" {
+		return fmt.Errorf("jira cloud_id not configured, run 'watchtower jira login' first")
+	}
+
+	store := jira.NewTokenStore(cfg.WorkspaceDir())
+	if !store.Exists() {
+		return fmt.Errorf("jira not connected, run 'watchtower jira login' first")
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	jiraCfg := resolveJiraOAuthConfig()
+	client := jira.NewClient(cfg.Jira.CloudID, jiraCfg, store)
+
+	applyProviderOverride(cfg)
+	aiProvider := newAIClient(cfg, cfg.DBPath())
+
+	analyzer := jira.NewBoardAnalyzer(client, database, aiProvider)
+
+	force, _ := cmd.Flags().GetBool("force")
+	out := cmd.OutOrStdout()
+
+	if len(args) > 0 {
+		// Analyze specific boards.
+		for _, arg := range args {
+			boardID, err := strconv.Atoi(arg)
+			if err != nil {
+				return fmt.Errorf("invalid board ID %q: %w", arg, err)
+			}
+			board, err := database.GetJiraBoardProfile(boardID)
+			if err != nil {
+				return fmt.Errorf("getting board %d: %w", boardID, err)
+			}
+			if board == nil {
+				return fmt.Errorf("board %d not found", boardID)
+			}
+			if force {
+				board.ConfigHash = ""
+			}
+			profile, err := analyzer.AnalyzeBoard(cmd.Context(), *board)
+			if err != nil {
+				return fmt.Errorf("analyzing board %d: %w", boardID, err)
+			}
+			fmt.Fprintf(out, "Board %d (%s): %s\n", boardID, board.Name, profile.WorkflowSummary)
+		}
+	} else {
+		// Analyze all selected boards.
+		if force {
+			boards, err := database.GetJiraSelectedBoards()
+			if err != nil {
+				return fmt.Errorf("getting selected boards: %w", err)
+			}
+			for _, b := range boards {
+				full, err := database.GetJiraBoardProfile(b.ID)
+				if err != nil || full == nil {
+					full = &b
+				}
+				full.ConfigHash = ""
+				profile, err := analyzer.AnalyzeBoard(cmd.Context(), *full)
+				if err != nil {
+					fmt.Fprintf(out, "Warning: failed to analyze board %d (%s): %v\n", b.ID, b.Name, err)
+					continue
+				}
+				fmt.Fprintf(out, "Board %d (%s): %s\n", b.ID, b.Name, profile.WorkflowSummary)
+			}
+		} else {
+			count, err := analyzer.AnalyzeAllSelected(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("analyzing boards: %w", err)
+			}
+			fmt.Fprintf(out, "Analyzed %d boards.\n", count)
+		}
+	}
+
+	return nil
+}
+
+func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
+	boardID, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid board ID %q: %w", args[0], err)
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	staleFlag, _ := cmd.Flags().GetString("stale")
+	if staleFlag == "" {
+		return fmt.Errorf("--stale flag is required (e.g. 'Code Review=1,QA=2')")
+	}
+
+	thresholds := make(map[string]int)
+	for _, part := range strings.Split(staleFlag, ",") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) != 2 {
+			return fmt.Errorf("invalid stale threshold format: %q (expected 'Name=days')", part)
+		}
+		days, err := strconv.Atoi(strings.TrimSpace(kv[1]))
+		if err != nil {
+			return fmt.Errorf("invalid days value %q: %w", kv[1], err)
+		}
+		thresholds[strings.TrimSpace(kv[0])] = days
+	}
+
+	// Read existing overrides and merge new values on top.
+	board, err := database.GetJiraBoardProfile(boardID)
+	if err != nil {
+		return fmt.Errorf("getting board %d: %w", boardID, err)
+	}
+
+	var overrides jira.UserOverrides
+	if board != nil && board.UserOverridesJSON != "" {
+		_ = json.Unmarshal([]byte(board.UserOverridesJSON), &overrides)
+	}
+	if overrides.StaleThresholds == nil {
+		overrides.StaleThresholds = make(map[string]int)
+	}
+	for k, v := range thresholds {
+		overrides.StaleThresholds[k] = v
+	}
+	overridesJSON, _ := json.Marshal(overrides)
+
+	if err := database.UpdateJiraBoardUserOverrides(boardID, string(overridesJSON)); err != nil {
+		return fmt.Errorf("updating overrides: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Board %d overrides updated.\n", boardID)
+	return nil
 }
 
 // truncate shortens a string to maxLen, appending "..." if needed.

@@ -41,4 +41,67 @@ const (
 	// Jira defaults
 	DefaultJiraEnabled          = false
 	DefaultJiraSyncIntervalMins = 15
+
+	// DefaultJiraFeaturesRole is the default role for Jira feature toggles.
+	DefaultJiraFeaturesRole = "ic"
 )
+
+// RoleDisplayNames maps role keys to human-readable display names.
+var RoleDisplayNames = map[string]string{
+	"ic":                "IC",
+	"senior_ic":         "Tech Lead",
+	"middle_management": "EM",
+	"top_management":    "Director",
+	"direction_owner":   "PM",
+}
+
+// DefaultJiraFeatures returns the default feature toggles for a given role.
+func DefaultJiraFeatures(role string) JiraFeatureToggles {
+	switch role {
+	case "senior_ic":
+		return JiraFeatureToggles{
+			MyIssuesInBriefing:   true,
+			AwaitingMyInput:      true,
+			WhoPing:              true,
+			TrackJiraLinking:     true,
+			BlockerMap:           true,
+			WriteBackSuggestions: true,
+			WithoutJiraDetection: true,
+		}
+	case "middle_management":
+		return JiraFeatureToggles{
+			MyIssuesInBriefing: true,
+			AwaitingMyInput:    true,
+			WhoPing:            true,
+			TrackJiraLinking:   true,
+			TeamWorkload:       true,
+			BlockerMap:         true,
+			IterationProgress:  true,
+		}
+	case "direction_owner":
+		return JiraFeatureToggles{
+			WhoPing:              true,
+			TrackJiraLinking:     true,
+			BlockerMap:           true,
+			IterationProgress:    true,
+			EpicProgress:         true,
+			WithoutJiraDetection: true,
+		}
+	case "top_management":
+		return JiraFeatureToggles{
+			TrackJiraLinking:  true,
+			TeamWorkload:      true,
+			BlockerMap:        true,
+			IterationProgress: true,
+			EpicProgress:      true,
+			ReleaseDashboard:  true,
+		}
+	default: // "ic" and any unknown role
+		return JiraFeatureToggles{
+			MyIssuesInBriefing: true,
+			AwaitingMyInput:    true,
+			WhoPing:            true,
+			TrackJiraLinking:   true,
+		}
+	}
+}

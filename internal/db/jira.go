@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// UpsertJiraBoard inserts or updates a Jira board.
+// UpsertJiraBoard inserts or updates a Jira board. Profile columns are NOT overwritten on conflict.
 func (db *DB) UpsertJiraBoard(board JiraBoard) error {
 	_, err := db.Exec(`INSERT INTO jira_boards (id, name, project_key, board_type, is_selected, issue_count, synced_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -16,6 +16,46 @@ func (db *DB) UpsertJiraBoard(board JiraBoard) error {
 		return fmt.Errorf("upserting jira board %d: %w", board.ID, err)
 	}
 	return nil
+}
+
+// UpdateJiraBoardProfile updates board analysis profile columns.
+func (db *DB) UpdateJiraBoardProfile(boardID int, rawColumnsJSON, rawConfigJSON, llmProfileJSON, workflowSummary, configHash, profileGeneratedAt string) error {
+	_, err := db.Exec(`UPDATE jira_boards SET raw_columns_json=?, raw_config_json=?, llm_profile_json=?,
+		workflow_summary=?, config_hash=?, profile_generated_at=? WHERE id=?`,
+		rawColumnsJSON, rawConfigJSON, llmProfileJSON, workflowSummary, configHash, profileGeneratedAt, boardID)
+	if err != nil {
+		return fmt.Errorf("updating jira board profile %d: %w", boardID, err)
+	}
+	return nil
+}
+
+// UpdateJiraBoardUserOverrides updates user overrides for a board.
+func (db *DB) UpdateJiraBoardUserOverrides(boardID int, userOverridesJSON string) error {
+	_, err := db.Exec(`UPDATE jira_boards SET user_overrides_json=? WHERE id=?`, userOverridesJSON, boardID)
+	if err != nil {
+		return fmt.Errorf("updating jira board user overrides %d: %w", boardID, err)
+	}
+	return nil
+}
+
+// GetJiraBoardProfile returns a board with all profile columns by ID.
+func (db *DB) GetJiraBoardProfile(boardID int) (*JiraBoard, error) {
+	row := db.QueryRow(`SELECT id, name, project_key, board_type, is_selected, issue_count, synced_at,
+		raw_columns_json, raw_config_json, llm_profile_json, workflow_summary,
+		user_overrides_json, config_hash, profile_generated_at
+		FROM jira_boards WHERE id = ?`, boardID)
+
+	var b JiraBoard
+	err := row.Scan(&b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt,
+		&b.RawColumnsJSON, &b.RawConfigJSON, &b.LLMProfileJSON, &b.WorkflowSummary,
+		&b.UserOverridesJSON, &b.ConfigHash, &b.ProfileGeneratedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scanning jira board profile %d: %w", boardID, err)
+	}
+	return &b, nil
 }
 
 // GetJiraBoards returns all Jira boards.
@@ -294,9 +334,84 @@ func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
 	return states, rows.Err()
 }
 
+// UpsertJiraSlackLink inserts or updates a Jira-Slack link.
+func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
+	_, err := db.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(issue_key, channel_id, message_ts) DO UPDATE SET
+			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
+			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id)`,
+		link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType)
+	if err != nil {
+		return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
+	}
+	return nil
+}
+
+// GetJiraSlackLinksByIssue returns all Slack links for a given Jira issue key.
+func (db *DB) GetJiraSlackLinksByIssue(issueKey string) ([]JiraSlackLink, error) {
+	rows, err := db.Query(`SELECT id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at
+		FROM jira_slack_links WHERE issue_key = ? ORDER BY detected_at DESC`, issueKey)
+	if err != nil {
+		return nil, fmt.Errorf("querying jira slack links by issue %s: %w", issueKey, err)
+	}
+	defer rows.Close()
+
+	var links []JiraSlackLink
+	for rows.Next() {
+		var l JiraSlackLink
+		if err := rows.Scan(&l.ID, &l.IssueKey, &l.ChannelID, &l.MessageTS, &l.TrackID, &l.DigestID, &l.LinkType, &l.DetectedAt); err != nil {
+			return nil, fmt.Errorf("scanning jira slack link: %w", err)
+		}
+		links = append(links, l)
+	}
+	return links, rows.Err()
+}
+
+// GetJiraSlackLinksByMessage returns all Jira links for a specific Slack message.
+func (db *DB) GetJiraSlackLinksByMessage(channelID, messageTS string) ([]JiraSlackLink, error) {
+	rows, err := db.Query(`SELECT id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at
+		FROM jira_slack_links WHERE channel_id = ? AND message_ts = ? ORDER BY detected_at DESC`, channelID, messageTS)
+	if err != nil {
+		return nil, fmt.Errorf("querying jira slack links by message: %w", err)
+	}
+	defer rows.Close()
+
+	var links []JiraSlackLink
+	for rows.Next() {
+		var l JiraSlackLink
+		if err := rows.Scan(&l.ID, &l.IssueKey, &l.ChannelID, &l.MessageTS, &l.TrackID, &l.DigestID, &l.LinkType, &l.DetectedAt); err != nil {
+			return nil, fmt.Errorf("scanning jira slack link: %w", err)
+		}
+		links = append(links, l)
+	}
+	return links, rows.Err()
+}
+
+// GetKnownProjectKeys returns distinct project keys from jira_issues and jira_boards.
+func (db *DB) GetKnownProjectKeys() ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT project_key FROM jira_issues WHERE project_key != ''
+		UNION SELECT DISTINCT project_key FROM jira_boards WHERE project_key != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("querying known project keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scanning project key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 // ClearJiraData deletes all data from jira_* tables.
 func (db *DB) ClearJiraData() error {
 	tables := []string{
+		"jira_slack_links",
 		"jira_issue_links",
 		"jira_issues",
 		"jira_sprints",

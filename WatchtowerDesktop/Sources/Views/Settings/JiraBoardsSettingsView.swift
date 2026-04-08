@@ -7,6 +7,8 @@ struct JiraBoardsSettingsView: View {
     @State private var observationTask: Task<Void, Never>?
     @State private var toggleError: String?
 
+    @State private var isFetching = false
+
     var body: some View {
         Section("Boards") {
             if boards.isEmpty {
@@ -17,6 +19,17 @@ struct JiraBoardsSettingsView: View {
                     boardRow(board)
                 }
             }
+
+            Button(action: fetchBoards) {
+                HStack(spacing: 6) {
+                    if isFetching {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(boards.isEmpty ? "Fetch Boards" : "Refresh Boards")
+                }
+            }
+            .disabled(isFetching)
 
             if let err = toggleError {
                 Text(err)
@@ -29,42 +42,64 @@ struct JiraBoardsSettingsView: View {
     }
 
     private func boardRow(_ board: JiraBoard) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(board.name)
-                    .fontWeight(.medium)
-                HStack(spacing: 6) {
-                    Text(board.projectKey)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(board.boardType)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            boardTypeBadgeColor(board.boardType),
-                            in: Capsule()
-                        )
-                }
-            }
-
-            Spacer()
-
-            Text("\(board.issueCount) issues")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Toggle(
-                "",
-                isOn: Binding(
-                    get: { board.isSelected },
-                    set: { newValue in
-                        toggleBoard(board, selected: newValue)
+        NavigationLink(destination: JiraBoardProfileView(board: board)) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(board.name)
+                        .fontWeight(.medium)
+                    HStack(spacing: 6) {
+                        Text(board.projectKey)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(board.boardType)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                boardTypeBadgeColor(board.boardType),
+                                in: Capsule()
+                            )
+                        analyzedBadge(board)
                     }
+                }
+
+                Spacer()
+
+                Text("\(board.issueCount) issues")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { board.isSelected },
+                        set: { newValue in
+                            toggleBoard(board, selected: newValue)
+                        }
+                    )
                 )
-            )
-            .labelsHidden()
-            .toggleStyle(.switch)
+                .labelsHidden()
+                .toggleStyle(.switch)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func analyzedBadge(_ board: JiraBoard) -> some View {
+        if !board.llmProfileJSON.isEmpty {
+            Text("Analyzed")
+                .font(.caption2)
+                .foregroundStyle(.green)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.green.opacity(0.15), in: Capsule())
+        } else {
+            Text("Not analyzed")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.gray.opacity(0.15), in: Capsule())
         }
     }
 
@@ -155,6 +190,57 @@ struct JiraBoardsSettingsView: View {
             }
             if let result {
                 boards = result
+            }
+        }
+    }
+
+    private func fetchBoards() {
+        guard let cliPath = Constants.findCLIPath() else {
+            toggleError = "Watchtower CLI not found"
+            return
+        }
+
+        isFetching = true
+        toggleError = nil
+
+        Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: cliPath)
+            process.arguments = ["jira", "boards"]
+            process.environment = Constants.resolvedEnvironment()
+            process.currentDirectoryURL =
+                Constants.processWorkingDirectory()
+
+            let stderrPipe = Pipe()
+            process.standardOutput = Pipe()
+            process.standardError = stderrPipe
+
+            do {
+                try process.run()
+            } catch {
+                await MainActor.run {
+                    isFetching = false
+                    toggleError = "Failed to launch CLI"
+                }
+                return
+            }
+
+            let stderrData = stderrPipe.fileHandleForReading
+                .readDataToEndOfFile()
+            process.waitUntilExit()
+
+            await MainActor.run {
+                isFetching = false
+                if process.terminationStatus != 0 {
+                    let stderr = String(
+                        data: stderrData, encoding: .utf8
+                    )?.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ) ?? ""
+                    toggleError = stderr.isEmpty
+                        ? "Failed to fetch boards"
+                        : String(stderr.prefix(200))
+                }
             }
         }
     }

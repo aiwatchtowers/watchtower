@@ -246,3 +246,133 @@ func TestClearJiraData(t *testing.T) {
 	states, _ := db.GetJiraSyncStates()
 	assert.Empty(t, states)
 }
+
+func TestUpdateAndGetJiraBoardProfile(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
+
+	require.NoError(t, db.UpdateJiraBoardProfile(1, `[{"name":"col1"}]`, `{"columns":[]}`, `{"stages":[]}`, "scrum workflow", "abc123", "2026-04-01T00:00:00Z"))
+
+	board, err := db.GetJiraBoardProfile(1)
+	require.NoError(t, err)
+	require.NotNil(t, board)
+	assert.Equal(t, `[{"name":"col1"}]`, board.RawColumnsJSON)
+	assert.Equal(t, `{"columns":[]}`, board.RawConfigJSON)
+	assert.Equal(t, `{"stages":[]}`, board.LLMProfileJSON)
+	assert.Equal(t, "scrum workflow", board.WorkflowSummary)
+	assert.Equal(t, "abc123", board.ConfigHash)
+	assert.Equal(t, "2026-04-01T00:00:00Z", board.ProfileGeneratedAt)
+}
+
+func TestUpdateJiraBoardUserOverrides(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
+	require.NoError(t, db.UpdateJiraBoardUserOverrides(1, `{"stale_thresholds":{"Review":2}}`))
+
+	board, err := db.GetJiraBoardProfile(1)
+	require.NoError(t, err)
+	require.NotNil(t, board)
+	assert.Equal(t, `{"stale_thresholds":{"Review":2}}`, board.UserOverridesJSON)
+}
+
+func TestGetJiraBoardProfile_NotFound(t *testing.T) {
+	db := openTestDB(t)
+
+	board, err := db.GetJiraBoardProfile(999)
+	require.NoError(t, err)
+	assert.Nil(t, board)
+}
+
+func TestUpsertJiraBoard_DoesNotOverwriteProfile(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
+	require.NoError(t, db.UpdateJiraBoardProfile(1, "raw", "cfg", "profile", "summary", "hash", "time"))
+
+	// Re-upsert the board (sync scenario).
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Updated Board", ProjectKey: "P", SyncedAt: "now2"}))
+
+	board, err := db.GetJiraBoardProfile(1)
+	require.NoError(t, err)
+	require.NotNil(t, board)
+	assert.Equal(t, "Updated Board", board.Name)
+	assert.Equal(t, "profile", board.LLMProfileJSON, "profile should not be overwritten by UpsertJiraBoard")
+}
+
+func TestUpsertAndGetJiraSlackLink(t *testing.T) {
+	db := openTestDB(t)
+
+	link := JiraSlackLink{
+		IssueKey:  "PROJ-123",
+		ChannelID: "C1",
+		MessageTS: "1000.001",
+		LinkType:  "mention",
+	}
+	require.NoError(t, db.UpsertJiraSlackLink(link))
+
+	links, err := db.GetJiraSlackLinksByIssue("PROJ-123")
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+	assert.Equal(t, "PROJ-123", links[0].IssueKey)
+	assert.Equal(t, "C1", links[0].ChannelID)
+	assert.Equal(t, "mention", links[0].LinkType)
+
+	links, err = db.GetJiraSlackLinksByMessage("C1", "1000.001")
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+}
+
+func TestUpsertJiraSlackLink_OnConflict(t *testing.T) {
+	db := openTestDB(t)
+
+	link1 := JiraSlackLink{
+		IssueKey:  "PROJ-1",
+		ChannelID: "C1",
+		MessageTS: "100.001",
+		LinkType:  "mention",
+	}
+	require.NoError(t, db.UpsertJiraSlackLink(link1))
+
+	// Upsert with track_id.
+	trackID := 42
+	link2 := JiraSlackLink{
+		IssueKey:  "PROJ-1",
+		ChannelID: "C1",
+		MessageTS: "100.001",
+		TrackID:   &trackID,
+		LinkType:  "mention",
+	}
+	require.NoError(t, db.UpsertJiraSlackLink(link2))
+
+	links, err := db.GetJiraSlackLinksByIssue("PROJ-1")
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+	require.NotNil(t, links[0].TrackID)
+	assert.Equal(t, 42, *links[0].TrackID)
+}
+
+func TestGetKnownProjectKeys(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{Key: "PROJ-1", ProjectKey: "PROJ", Summary: "S", Status: "O", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Board", ProjectKey: "KAN", SyncedAt: "now"}))
+
+	keys, err := db.GetKnownProjectKeys()
+	require.NoError(t, err)
+	assert.Contains(t, keys, "PROJ")
+	assert.Contains(t, keys, "KAN")
+}
+
+func TestClearJiraData_IncludesSlackLinks(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "B", ProjectKey: "P", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraSlackLink(JiraSlackLink{IssueKey: "P-1", ChannelID: "C1", MessageTS: "100", LinkType: "mention"}))
+
+	require.NoError(t, db.ClearJiraData())
+
+	links, _ := db.GetJiraSlackLinksByIssue("P-1")
+	assert.Empty(t, links)
+}
