@@ -113,8 +113,21 @@ Existing Watchtower features start showing Jira data. No new screens — we enri
 - Tracks are automatically linked to Jira issues (by keys in source messages)
 - **Desktop App → Tracks view:** Jira badge on track card: key (clickable → Jira in browser), status with color, priority, sprint, due date. Overdue highlighted
 - **Desktop App → Tracks view:** filters "With Jira" / "Without Jira"
+- **CLI:** `watchtower tracks` shows Jira badge (key, status, priority) next to linked tracks. Graceful: no Jira → output as before
 - No duplication: one track = one issue
 - AI takes Jira context into account during extraction
+
+### 1.1b — Track ↔ Jira out-of-sync detection (TODO: design needed)
+
+> Dependency: 1.1
+
+*Problem:* Track marked done in Watchtower but linked Jira issue still In Progress (or vice versa). Need to detect and surface this.
+
+*Open questions:*
+- How to surface: badge on track? separate section in Briefing? notification?
+- Auto-resolve or manual? (e.g., track done + Jira done → auto-close?)
+- Which direction is source of truth? (Jira → Watchtower? bidirectional?)
+- Threshold: how long out-of-sync before flagging?
 
 ### 1.2 — Briefing → Jira signals
 
