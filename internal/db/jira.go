@@ -496,6 +496,7 @@ func (db *DB) GetJiraIssuesForTracks(trackIDs []int) (map[int][]JiraIssue, error
 		return nil, nil
 	}
 
+	// Step 1: Get track_id → issue_key mappings
 	placeholders := make([]string, len(trackIDs))
 	args := make([]interface{}, len(trackIDs))
 	for i, id := range trackIDs {
@@ -503,38 +504,53 @@ func (db *DB) GetJiraIssuesForTracks(trackIDs []int) (map[int][]JiraIssue, error
 		args[i] = id
 	}
 
-	rows, err := db.Query(`SELECT jira_slack_links.track_id, `+jiraIssueColumnsQualified+`
-		FROM jira_issues
-		JOIN jira_slack_links ON jira_slack_links.issue_key = jira_issues.key
-		WHERE jira_slack_links.track_id IN (`+strings.Join(placeholders, ",")+`)
-		ORDER BY jira_issues.updated_at DESC`, args...)
+	linkRows, err := db.Query(`SELECT DISTINCT track_id, issue_key FROM jira_slack_links
+		WHERE track_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("querying jira issues for tracks: %w", err)
+		return nil, fmt.Errorf("querying jira slack links for tracks: %w", err)
 	}
-	defer rows.Close()
+	defer linkRows.Close()
 
-	result := make(map[int][]JiraIssue)
-	for rows.Next() {
+	trackToKeys := make(map[int][]string)
+	allKeys := make(map[string]bool)
+	for linkRows.Next() {
 		var trackID int
-		var issue JiraIssue
-		err := rows.Scan(&trackID,
-			&issue.Key, &issue.ID, &issue.ProjectKey, &issue.BoardID,
-			&issue.Summary, &issue.DescriptionText,
-			&issue.IssueType, &issue.IssueTypeCategory, &issue.IsBug,
-			&issue.Status, &issue.StatusCategory, &issue.StatusCategoryChangedAt,
-			&issue.AssigneeAccountID, &issue.AssigneeEmail, &issue.AssigneeDisplayName, &issue.AssigneeSlackID,
-			&issue.ReporterAccountID, &issue.ReporterEmail, &issue.ReporterDisplayName, &issue.ReporterSlackID,
-			&issue.Priority, &issue.StoryPoints, &issue.DueDate,
-			&issue.SprintID, &issue.SprintName, &issue.EpicKey,
-			&issue.Labels, &issue.Components,
-			&issue.CreatedAt, &issue.UpdatedAt, &issue.ResolvedAt,
-			&issue.RawJSON, &issue.SyncedAt, &issue.IsDeleted)
-		if err != nil {
-			return nil, fmt.Errorf("scanning jira issue for tracks batch: %w", err)
+		var issueKey string
+		if err := linkRows.Scan(&trackID, &issueKey); err != nil {
+			return nil, fmt.Errorf("scanning jira slack link: %w", err)
 		}
-		result[trackID] = append(result[trackID], issue)
+		trackToKeys[trackID] = append(trackToKeys[trackID], issueKey)
+		allKeys[issueKey] = true
 	}
-	return result, rows.Err()
+	if err := linkRows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(allKeys) == 0 {
+		return nil, nil
+	}
+
+	// Step 2: Batch-load issues by keys (reuses scanJiraIssue)
+	issues, err := db.GetJiraIssuesByKeys(uniqueKeys(allKeys))
+	if err != nil {
+		return nil, fmt.Errorf("batch loading jira issues: %w", err)
+	}
+
+	issueMap := make(map[string]JiraIssue, len(issues))
+	for _, iss := range issues {
+		issueMap[iss.Key] = iss
+	}
+
+	// Step 3: Build result map
+	result := make(map[int][]JiraIssue)
+	for trackID, keys := range trackToKeys {
+		for _, key := range keys {
+			if iss, ok := issueMap[key]; ok {
+				result[trackID] = append(result[trackID], iss)
+			}
+		}
+	}
+	return result, nil
 }
 
 // GetJiraIssuesForDigest returns Jira issues linked to a digest via jira_slack_links.
@@ -879,4 +895,13 @@ func (db *DB) GetJiraDeliveryStats(slackID string, from, to string) (*DeliverySt
 	}
 
 	return stats, nil
+}
+
+// uniqueKeys converts a map[string]bool to a string slice.
+func uniqueKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }

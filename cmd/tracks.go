@@ -194,7 +194,11 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled boo
 		for i, item := range items {
 			trackIDs[i] = item.ID
 		}
-		jiraByTrack, _ = database.GetJiraIssuesForTracks(trackIDs)
+		var jiraErr error
+		jiraByTrack, jiraErr = database.GetJiraIssuesForTracks(trackIDs)
+		if jiraErr != nil {
+			log.Printf("warning: failed to load Jira issues for tracks: %v", jiraErr)
+		}
 		if jiraByTrack == nil {
 			jiraByTrack = make(map[int][]db.JiraIssue)
 		}
