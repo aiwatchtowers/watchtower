@@ -216,7 +216,7 @@ All existing Watchtower features are enriched with Jira data in Desktop App. Tra
 ### What we do
 Three new views in Desktop App: Workload Dashboard, Blocker Map, Write-Back Suggestions. Plus Epic Progress in Weekly Trends.
 
-### 2.1 — Workload Dashboard
+### 2.1 — Workload Dashboard ✅ DONE
 
 > See [feature-map: Workload Dashboard](jira-integration-feature-map.md#9-workload-dashboard-new-feature)
 
@@ -229,7 +229,7 @@ Three new views in Desktop App: Workload Dashboard, Blocker Map, Write-Back Sugg
 - Updates every 15 minutes (with sync)
 - **CLI:** `watchtower jira workload`
 
-### 2.2 — Blocker Map
+### 2.2 — Blocker Map ✅ DONE
 
 > See [feature-map: Blocker Map](jira-integration-feature-map.md#10-blocker-map-new-feature)
 
@@ -283,7 +283,7 @@ Three new views in Desktop App: Workload Dashboard, Blocker Map, Write-Back Sugg
 - Deduplication: no clutter
 - **CLI:** `watchtower jira suggestions / accept N / dismiss N`
 
-### 2.4 — Weekly Trends → Epic Progress & Forecast
+### 2.4 — Weekly Trends → Epic Progress & Forecast ✅ DONE
 
 > See [feature-map: Weekly Trends](jira-integration-feature-map.md#8-weekly-trends)
 

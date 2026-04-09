@@ -160,6 +160,60 @@ func TestUpsertJiraIssueLink(t *testing.T) {
 	require.NoError(t, db.UpsertJiraIssueLink(link))
 }
 
+func TestGetJiraIssueLinksByKey(t *testing.T) {
+	db := openTestDB(t)
+
+	// Insert several links.
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l1", SourceKey: "PROJ-1", TargetKey: "PROJ-2", LinkType: "Blocks", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l2", SourceKey: "PROJ-3", TargetKey: "PROJ-1", LinkType: "Relates to", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l3", SourceKey: "PROJ-4", TargetKey: "PROJ-5", LinkType: "Blocks", SyncedAt: "now"}))
+
+	// PROJ-1 appears as source in l1, target in l2 — should find both.
+	links, err := db.GetJiraIssueLinksByKey("PROJ-1")
+	require.NoError(t, err)
+	assert.Len(t, links, 2)
+	assert.Equal(t, "l1", links[0].ID)
+	assert.Equal(t, "l2", links[1].ID)
+
+	// PROJ-5 appears only as target in l3.
+	links, err = db.GetJiraIssueLinksByKey("PROJ-5")
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+	assert.Equal(t, "l3", links[0].ID)
+
+	// Non-existent key returns empty.
+	links, err = db.GetJiraIssueLinksByKey("PROJ-999")
+	require.NoError(t, err)
+	assert.Empty(t, links)
+}
+
+func TestGetJiraIssueLinksByKeys(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l1", SourceKey: "A-1", TargetKey: "A-2", LinkType: "Blocks", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l2", SourceKey: "A-3", TargetKey: "A-4", LinkType: "Relates to", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l3", SourceKey: "A-5", TargetKey: "A-6", LinkType: "Blocks", SyncedAt: "now"}))
+
+	// Batch: A-1 (source in l1) and A-4 (target in l2) → l1, l2.
+	links, err := db.GetJiraIssueLinksByKeys([]string{"A-1", "A-4"})
+	require.NoError(t, err)
+	assert.Len(t, links, 2)
+	linkIDs := []string{links[0].ID, links[1].ID}
+	assert.Contains(t, linkIDs, "l1")
+	assert.Contains(t, linkIDs, "l2")
+
+	// Empty input returns empty slice.
+	links, err = db.GetJiraIssueLinksByKeys([]string{})
+	require.NoError(t, err)
+	assert.Empty(t, links)
+
+	// Single key matching multiple links (A-2 is target in l1 only).
+	links, err = db.GetJiraIssueLinksByKeys([]string{"A-2"})
+	require.NoError(t, err)
+	assert.Len(t, links, 1)
+	assert.Equal(t, "l1", links[0].ID)
+}
+
 func TestUpsertAndGetJiraUserMap(t *testing.T) {
 	db := openTestDB(t)
 
@@ -245,6 +299,10 @@ func TestClearJiraData(t *testing.T) {
 
 	states, _ := db.GetJiraSyncStates()
 	assert.Empty(t, states)
+
+	// Verify issue links are also cleared.
+	issueLinks, _ := db.GetJiraIssueLinksByKey("P-1")
+	assert.Empty(t, issueLinks)
 }
 
 func TestUpdateAndGetJiraBoardProfile(t *testing.T) {
@@ -762,6 +820,107 @@ func TestSyncJiraTaskStatuses_MissingIssue(t *testing.T) {
 	synced, err := db.SyncJiraTaskStatuses()
 	require.NoError(t, err)
 	assert.Equal(t, 0, synced)
+}
+
+func TestGetJiraTeamWorkload(t *testing.T) {
+	db := openTestDB(t)
+
+	sp3 := 3.0
+	sp5 := 5.0
+
+	// User U1: 2 open issues (1 overdue, 1 blocked), 1 done issue.
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		Key: "P-1", ProjectKey: "P", Summary: "Open normal",
+		Status: "In Progress", StatusCategory: "in_progress",
+		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
+		StoryPoints: &sp3,
+		Labels:      `[]`, Components: `[]`,
+		CreatedAt: "2026-03-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
+	}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		Key: "P-2", ProjectKey: "P", Summary: "Overdue task",
+		Status: "Open", StatusCategory: "todo",
+		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
+		StoryPoints: &sp5,
+		DueDate:     "2025-01-01",
+		Labels:      `[]`, Components: `[]`,
+		CreatedAt: "2026-03-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
+	}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		Key: "P-3", ProjectKey: "P", Summary: "Blocked task",
+		Status: "Blocked", StatusCategory: "in_progress",
+		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
+		Labels: `[]`, Components: `[]`,
+		CreatedAt: "2026-03-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
+	}))
+	// Done issue for U1 (should NOT count as open/overdue/blocked, but contributes to avg cycle time).
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		Key: "P-4", ProjectKey: "P", Summary: "Done task",
+		Status: "Done", StatusCategory: "done",
+		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
+		Labels: `[]`, Components: `[]`,
+		CreatedAt:  "2026-03-20T00:00:00Z",
+		ResolvedAt: "2026-03-30T00:00:00Z",
+		UpdatedAt:  "2026-03-30T00:00:00Z", SyncedAt: "now",
+	}))
+
+	// User U2: 1 open issue, no overdue, no blocked.
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		Key: "P-5", ProjectKey: "P", Summary: "U2 open",
+		Status: "To Do", StatusCategory: "todo",
+		AssigneeSlackID: "U2", AssigneeDisplayName: "Bob",
+		Labels: `[]`, Components: `[]`,
+		CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
+	}))
+
+	// Issue with empty assignee_slack_id (should be filtered out).
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		Key: "P-6", ProjectKey: "P", Summary: "Unassigned",
+		Status: "Open", StatusCategory: "todo",
+		Labels: `[]`, Components: `[]`,
+		CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
+	}))
+
+	// Deleted issue (should be filtered out).
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		Key: "P-7", ProjectKey: "P", Summary: "Deleted",
+		Status: "Open", StatusCategory: "todo",
+		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
+		Labels: `[]`, Components: `[]`,
+		CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z",
+		SyncedAt: "now", IsDeleted: true,
+	}))
+
+	rows, err := db.GetJiraTeamWorkload()
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+
+	// Rows ordered by open_issues DESC, so U1 first.
+	u1 := rows[0]
+	assert.Equal(t, "U1", u1.SlackUserID)
+	assert.Equal(t, "Alice", u1.DisplayName)
+	assert.Equal(t, 3, u1.OpenIssues)       // P-1, P-2, P-3 (not P-4 done, not P-7 deleted)
+	assert.Equal(t, 8.0, u1.StoryPoints)    // 3 + 5 (P-3 has nil story_points)
+	assert.Equal(t, 1, u1.OverdueCount)     // P-2
+	assert.Equal(t, 1, u1.BlockedCount)     // P-3
+	assert.True(t, u1.AvgCycleTimeDays > 0) // P-4: 10 days
+
+	u2 := rows[1]
+	assert.Equal(t, "U2", u2.SlackUserID)
+	assert.Equal(t, "Bob", u2.DisplayName)
+	assert.Equal(t, 1, u2.OpenIssues)
+	assert.Equal(t, 0.0, u2.StoryPoints)
+	assert.Equal(t, 0, u2.OverdueCount)
+	assert.Equal(t, 0, u2.BlockedCount)
+	assert.Equal(t, 0.0, u2.AvgCycleTimeDays) // no resolved issues for U2
+}
+
+func TestGetJiraTeamWorkload_Empty(t *testing.T) {
+	db := openTestDB(t)
+
+	rows, err := db.GetJiraTeamWorkload()
+	require.NoError(t, err)
+	assert.Empty(t, rows)
 }
 
 func TestTaskSourceTypeJira(t *testing.T) {

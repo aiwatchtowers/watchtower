@@ -717,6 +717,17 @@ type DeliveryStats struct {
 	Labels               []string
 }
 
+// TeamWorkloadRow holds aggregated workload metrics for a single assignee.
+type TeamWorkloadRow struct {
+	SlackUserID      string
+	DisplayName      string
+	OpenIssues       int
+	StoryPoints      float64
+	OverdueCount     int
+	BlockedCount     int
+	AvgCycleTimeDays float64
+}
+
 // PromptHistory records a snapshot of a prompt at a specific version.
 type PromptHistory struct {
 	ID        int

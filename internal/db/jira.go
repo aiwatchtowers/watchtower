@@ -237,6 +237,58 @@ func (db *DB) UpsertJiraIssueLink(link JiraIssueLink) error {
 	return nil
 }
 
+// GetJiraIssueLinksByKey returns all issue links where source_key OR target_key matches the given key.
+func (db *DB) GetJiraIssueLinksByKey(key string) ([]JiraIssueLink, error) {
+	rows, err := db.Query(`SELECT id, source_key, target_key, link_type, synced_at
+		FROM jira_issue_links WHERE source_key = ? OR target_key = ? ORDER BY id`, key, key)
+	if err != nil {
+		return nil, fmt.Errorf("querying jira issue links by key %s: %w", key, err)
+	}
+	defer rows.Close()
+
+	var links []JiraIssueLink
+	for rows.Next() {
+		var l JiraIssueLink
+		if err := rows.Scan(&l.ID, &l.SourceKey, &l.TargetKey, &l.LinkType, &l.SyncedAt); err != nil {
+			return nil, fmt.Errorf("scanning jira issue link: %w", err)
+		}
+		links = append(links, l)
+	}
+	return links, rows.Err()
+}
+
+// GetJiraIssueLinksByKeys returns all issue links where source_key OR target_key matches any of the given keys.
+func (db *DB) GetJiraIssueLinksByKeys(keys []string) ([]JiraIssueLink, error) {
+	if len(keys) == 0 {
+		return []JiraIssueLink{}, nil
+	}
+	placeholders := strings.Repeat("?,", len(keys))
+	placeholders = placeholders[:len(placeholders)-1]
+
+	args := make([]any, len(keys)*2)
+	for i, k := range keys {
+		args[i] = k
+		args[len(keys)+i] = k
+	}
+
+	rows, err := db.Query(`SELECT id, source_key, target_key, link_type, synced_at
+		FROM jira_issue_links WHERE source_key IN (`+placeholders+`) OR target_key IN (`+placeholders+`) ORDER BY id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying jira issue links by keys: %w", err)
+	}
+	defer rows.Close()
+
+	var links []JiraIssueLink
+	for rows.Next() {
+		var l JiraIssueLink
+		if err := rows.Scan(&l.ID, &l.SourceKey, &l.TargetKey, &l.LinkType, &l.SyncedAt); err != nil {
+			return nil, fmt.Errorf("scanning jira issue link: %w", err)
+		}
+		links = append(links, l)
+	}
+	return links, rows.Err()
+}
+
 // UpsertJiraUserMap inserts or updates a Jira user mapping.
 func (db *DB) UpsertJiraUserMap(mapping JiraUserMap) error {
 	_, err := db.Exec(`INSERT INTO jira_user_map (jira_account_id, email, slack_user_id, display_name, match_method, match_confidence, resolved_at)
@@ -344,7 +396,8 @@ func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(issue_key, channel_id, message_ts) DO UPDATE SET
 			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
-			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id)`,
+			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
+			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`,
 		link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType)
 	if err != nil {
 		return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
@@ -897,6 +950,114 @@ func (db *DB) GetJiraDeliveryStats(slackID string, from, to string) (*DeliverySt
 	return stats, nil
 }
 
+// GetJiraTeamWorkload returns workload metrics grouped by assignee.
+// Only issues with a non-empty assignee_slack_id are included.
+func (db *DB) GetJiraTeamWorkload() ([]TeamWorkloadRow, error) {
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Format("2006-01-02")
+	today := time.Now().Format("2006-01-02")
+
+	rows, err := db.Query(`
+		SELECT
+			ji.assignee_slack_id,
+			ji.assignee_display_name,
+			COUNT(*) FILTER (WHERE ji.status_category != 'done') AS open_issues,
+			COALESCE(SUM(ji.story_points) FILTER (WHERE ji.status_category != 'done'), 0) AS story_points,
+			COUNT(*) FILTER (WHERE ji.status_category != 'done' AND ji.due_date != '' AND ji.due_date < ?) AS overdue_count,
+			COUNT(*) FILTER (WHERE ji.status_category != 'done' AND LOWER(ji.status) LIKE '%block%') AS blocked_count,
+			AVG(julianday(ji.resolved_at) - julianday(ji.created_at))
+				FILTER (WHERE ji.status_category = 'done' AND ji.resolved_at != '' AND ji.resolved_at >= ?) AS avg_cycle_time_days
+		FROM jira_issues ji
+		WHERE ji.assignee_slack_id != '' AND ji.is_deleted = 0
+		GROUP BY ji.assignee_slack_id
+		ORDER BY open_issues DESC
+	`, today, thirtyDaysAgo)
+	if err != nil {
+		return nil, fmt.Errorf("querying team workload: %w", err)
+	}
+	defer rows.Close()
+
+	var result []TeamWorkloadRow
+	for rows.Next() {
+		var r TeamWorkloadRow
+		var sp sql.NullFloat64
+		var avgCycle sql.NullFloat64
+		var displayName sql.NullString
+		if err := rows.Scan(&r.SlackUserID, &displayName, &r.OpenIssues, &sp, &r.OverdueCount, &r.BlockedCount, &avgCycle); err != nil {
+			return nil, fmt.Errorf("scanning team workload row: %w", err)
+		}
+		if displayName.Valid {
+			r.DisplayName = displayName.String
+		}
+		if sp.Valid {
+			r.StoryPoints = sp.Float64
+		}
+		if avgCycle.Valid {
+			r.AvgCycleTimeDays = math.Round(avgCycle.Float64*100) / 100
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// EpicAggRow holds aggregated issue counts for a single epic.
+type EpicAggRow struct {
+	EpicKey          string
+	Total            int
+	Done             int
+	InProgress       int
+	ResolvedLastWeek int
+	ResolvedLast4W   int
+}
+
+// GetJiraEpicAggregates returns aggregated issue counts per epic_key.
+// Only non-deleted issues with a non-empty epic_key are included.
+// The weekAgo and fourWeeksAgo parameters are ISO8601 datetime strings used to
+// count recently resolved issues.
+func (db *DB) GetJiraEpicAggregates(weekAgo, fourWeeksAgo string) ([]EpicAggRow, error) {
+	rows, err := db.Query(`
+		SELECT
+			epic_key,
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE LOWER(status_category) = 'done') AS done,
+			COUNT(*) FILTER (WHERE LOWER(status_category) = 'in_progress' OR LOWER(status_category) = 'in progress' OR LOWER(status_category) = 'indeterminate') AS in_progress,
+			COUNT(*) FILTER (WHERE LOWER(status_category) = 'done' AND resolved_at >= ?) AS resolved_last_week,
+			COUNT(*) FILTER (WHERE LOWER(status_category) = 'done' AND resolved_at >= ?) AS resolved_last_4w
+		FROM jira_issues
+		WHERE epic_key != '' AND is_deleted = 0
+		GROUP BY epic_key
+	`, weekAgo, fourWeeksAgo)
+	if err != nil {
+		return nil, fmt.Errorf("querying epic aggregates: %w", err)
+	}
+	defer rows.Close()
+
+	var result []EpicAggRow
+	for rows.Next() {
+		var r EpicAggRow
+		if err := rows.Scan(&r.EpicKey, &r.Total, &r.Done, &r.InProgress, &r.ResolvedLastWeek, &r.ResolvedLast4W); err != nil {
+			return nil, fmt.Errorf("scanning epic aggregate: %w", err)
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// GetJiraIssuesByKeysMap returns issues matching the given keys as a map keyed by issue key.
+func (db *DB) GetJiraIssuesByKeysMap(keys []string) (map[string]JiraIssue, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	issues, err := db.GetJiraIssuesByKeys(keys)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]JiraIssue, len(issues))
+	for _, issue := range issues {
+		m[issue.Key] = issue
+	}
+	return m, nil
+}
+
 // uniqueKeys converts a map[string]bool to a string slice.
 func uniqueKeys(m map[string]bool) []string {
 	keys := make([]string, 0, len(m))
@@ -904,4 +1065,56 @@ func uniqueKeys(m map[string]bool) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// GetUserMessageCount returns the number of messages sent by a user in a time range.
+// from and to are time.Time values converted to unix timestamps for the ts_unix column.
+func (db *DB) GetUserMessageCount(userID string, from, to time.Time) (int, error) {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM messages
+		WHERE user_id = ? AND ts_unix >= ? AND ts_unix < ?`,
+		userID, float64(from.Unix()), float64(to.Unix()),
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting messages for user %s: %w", userID, err)
+	}
+	return count, nil
+}
+
+// GetUserMeetingHours returns the total meeting hours for a Slack user in a time range.
+// It joins calendar_events with calendar_attendee_map to find events where the user
+// is an attendee. All-day events are excluded. Hours are computed from start_time/end_time.
+func (db *DB) GetUserMeetingHours(slackUserID string, from, to time.Time) (float64, error) {
+	fromStr := from.UTC().Format("2006-01-02T15:04:05Z")
+	toStr := to.UTC().Format("2006-01-02T15:04:05Z")
+
+	rows, err := db.Query(`
+		SELECT ce.start_time, ce.end_time
+		FROM calendar_events ce
+		JOIN calendar_attendee_map cam ON cam.slack_user_id = ?
+		WHERE ce.is_all_day = 0
+		  AND ce.start_time >= ? AND ce.start_time < ?
+		  AND ce.attendees LIKE '%' || cam.email || '%'`,
+		slackUserID, fromStr, toStr,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("querying meeting hours for user %s: %w", slackUserID, err)
+	}
+	defer rows.Close()
+
+	var totalHours float64
+	for rows.Next() {
+		var startStr, endStr string
+		if err := rows.Scan(&startStr, &endStr); err != nil {
+			return 0, fmt.Errorf("scanning meeting hours row: %w", err)
+		}
+		start, err1 := time.Parse(time.RFC3339, startStr)
+		end, err2 := time.Parse(time.RFC3339, endStr)
+		if err1 != nil || err2 != nil {
+			continue // skip unparseable events
+		}
+		totalHours += end.Sub(start).Hours()
+	}
+	return math.Round(totalHours*100) / 100, rows.Err()
 }

@@ -17,6 +17,7 @@ struct DigestDetailView: View {
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
     @State private var withoutJiraEnabled = false
+    @State private var epicProgressVM: EpicProgressViewModel?
 
     var body: some View {
         ScrollView {
@@ -50,6 +51,12 @@ struct DigestDetailView: View {
                 // Tracks
                 tracksSection
 
+                // Linked Jira Issues with dependencies
+                jiraLinkedIssuesSection
+
+                // Epic Progress (weekly digests only, when Jira connected)
+                epicProgressAndWarningsSection
+
                 Divider()
 
                 // Stats footer
@@ -74,6 +81,13 @@ struct DigestDetailView: View {
                 digestTopics = (try? dbManager.dbPool.read { db in
                     try DigestQueries.fetchTopics(db, digestID: digest.id)
                 }) ?? []
+
+                // Load epic progress for weekly digests
+                if jiraConnected && digest.type == "weekly" {
+                    let vm = EpicProgressViewModel(dbManager: dbManager)
+                    vm.load()
+                    epicProgressVM = vm
+                }
 
                 // Load Jira issues linked to this digest
                 if jiraConnected {
@@ -353,6 +367,52 @@ struct DigestDetailView: View {
         case "blocked": .red
         case "stale": .gray
         default: .blue
+        }
+    }
+
+    @ViewBuilder
+    private var jiraLinkedIssuesSection: some View {
+        if jiraConnected && !jiraIssues.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Jira Issues")
+                    .font(.headline)
+
+                ForEach(Array(jiraIssues.values).sorted(by: { $0.key < $1.key }), id: \.key) { issue in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            JiraBadgeView(
+                                issue: issue,
+                                siteURL: jiraSiteURL,
+                                isExpanded: true
+                            )
+                            Text(issue.summary)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+
+                        JiraLinkedIssuesView(
+                            issueKey: issue.key,
+                            siteURL: jiraSiteURL
+                        )
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.indigo.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var epicProgressAndWarningsSection: some View {
+        if digest.type == "weekly", jiraConnected, let vm = epicProgressVM {
+            EpicProgressSection(viewModel: vm)
+
+            if withoutJiraEnabled {
+                WithoutJiraWarningView(warnings: vm.withoutJiraWarnings)
+            }
         }
     }
 
