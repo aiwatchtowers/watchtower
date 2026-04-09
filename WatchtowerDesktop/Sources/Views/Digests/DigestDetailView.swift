@@ -13,6 +13,10 @@ struct DigestDetailView: View {
     @State private var showCreateTask = false
     @State private var taskPrefillText = ""
     @State private var taskPrefillSourceType = "digest"
+    @State private var jiraIssues: [String: JiraIssue] = [:]
+    @State private var jiraConnected = false
+    @State private var jiraSiteURL: String?
+    @State private var withoutJiraEnabled = false
 
     var body: some View {
         ScrollView {
@@ -62,10 +66,28 @@ struct DigestDetailView: View {
         }
         .navigationTitle(channelName.map { "#\($0)" } ?? "Digest")
         .task {
+            jiraConnected = JiraQueries.isConnected()
+            jiraSiteURL = JiraConfigHelper.readSiteURL()
+            withoutJiraEnabled = JiraConfigHelper.readWithoutJiraDetection()
+
             if let dbManager = appState.databaseManager {
                 digestTopics = (try? dbManager.dbPool.read { db in
                     try DigestQueries.fetchTopics(db, digestID: digest.id)
                 }) ?? []
+
+                // Load Jira issues linked to this digest
+                if jiraConnected {
+                    let issues = (try? dbManager.dbPool.read { db in
+                        try JiraQueries.fetchIssuesForDigest(
+                            db, digestID: digest.id
+                        )
+                    }) ?? []
+                    var map: [String: JiraIssue] = [:]
+                    for issue in issues {
+                        map[issue.key] = issue
+                    }
+                    jiraIssues = map
+                }
             }
         }
     }
@@ -246,9 +268,16 @@ struct DigestDetailView: View {
                                     viewModel.slackMessageURL(channelID: digest.channelID, messageTS: ts)
                                 },
                                 feedbackEntityID: "\(digest.id):\(topic.idx):\(idx)",
-                                dbManager: appState.databaseManager
+                                dbManager: appState.databaseManager,
+                                jiraIssues: jiraIssues,
+                                jiraSiteURL: jiraSiteURL
                             )
                         }
+                    }
+                    // Action items with Jira enrichment
+                    let actionItems = topic.parsedActionItems
+                    if !actionItems.isEmpty {
+                        actionItemsList(actionItems)
                     }
                 }
             }
@@ -347,7 +376,9 @@ struct DigestDetailView: View {
                                     )
                                 },
                                 feedbackEntityID: "\(digest.id):\(idx)",
-                                dbManager: appState.databaseManager
+                                dbManager: appState.databaseManager,
+                                jiraIssues: jiraIssues,
+                                jiraSiteURL: jiraSiteURL
                             )
                             HStack {
                                 Spacer()
@@ -378,22 +409,62 @@ struct DigestDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Tracks")
                     .font(.headline)
-                ForEach(tracks) { item in
-                    HStack(alignment: .top) {
-                        Image(systemName: item.status == "done" ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(item.status == "done" ? .green : .secondary)
+                actionItemsList(tracks)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actionItemsList(
+        _ items: [DigestTrack]
+    ) -> some View {
+        ForEach(items) { item in
+            HStack(alignment: .top) {
+                Image(
+                    systemName: item.status == "done"
+                        ? "checkmark.circle.fill"
+                        : "circle"
+                )
+                .foregroundStyle(
+                    item.status == "done" ? .green : .secondary
+                )
+                .font(.subheadline)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(item.text)
                             .font(.subheadline)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.text)
-                                .font(.subheadline)
-                            if let assignee = item.assignee {
-                                Text(assignee)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                        actionItemJiraBadges(for: item.text)
+                    }
+                    if let assignee = item.assignee {
+                        Text(assignee)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actionItemJiraBadges(
+        for text: String
+    ) -> some View {
+        let keys = text.extractJiraKeys()
+        if jiraConnected {
+            if !keys.isEmpty {
+                JiraKeyBadgesView(
+                    text: text,
+                    issues: jiraIssues,
+                    siteURL: jiraSiteURL,
+                    isConnected: jiraConnected
+                )
+            } else if withoutJiraEnabled {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .help(
+                        "This discussion is not tracked in Jira"
+                    )
             }
         }
     }

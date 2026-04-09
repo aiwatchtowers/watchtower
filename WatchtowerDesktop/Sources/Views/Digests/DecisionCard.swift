@@ -7,6 +7,8 @@ struct DecisionCard: View {
     var dbManager: DatabaseManager?
     var correctedImportance: String?
     var onImportanceChange: ((String) -> Void)?
+    var jiraIssues: [String: JiraIssue] = [:]  // key -> issue
+    var jiraSiteURL: String?
 
     private var effectiveImportance: String {
         correctedImportance ?? decision.resolvedImportance
@@ -31,6 +33,7 @@ struct DecisionCard: View {
                     Text(decision.text)
                         .textSelection(.enabled)
                     Spacer()
+                    jiraBadgesForDecision
                     if let onChange = onImportanceChange {
                         EditableImportanceBadge(
                             importance: effectiveImportance,
@@ -70,5 +73,16 @@ struct DecisionCard: View {
             .padding(12)
         }
         .background(accentColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    // MARK: - Jira Badges
+
+    private var jiraBadgesForDecision: some View {
+        JiraKeyBadgesView(
+            text: decision.text,
+            issues: jiraIssues,
+            siteURL: jiraSiteURL,
+            isConnected: !jiraIssues.isEmpty || jiraSiteURL != nil
+        )
     }
 }
