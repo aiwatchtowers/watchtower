@@ -9,6 +9,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case tracks
     case digests
     case people
+    case workload
+    case blockers
     case statistics
     case search
     case boards
@@ -27,6 +29,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .tracks: "Tracks"
         case .digests: "Digests"
         case .people: "People"
+        case .workload: "Workload"
+        case .blockers: "Blockers"
         case .statistics: "Statistics"
         case .search: "Search"
         case .boards: "Boards"
@@ -45,6 +49,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .tracks: "binoculars"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
+        case .workload: "gauge.with.dots.needle.33percent"
+        case .blockers: "exclamationmark.triangle"
         case .statistics: "chart.bar.xaxis"
         case .search: "magnifyingglass"
         case .boards: "rectangle.on.rectangle.angled"
@@ -55,7 +61,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Main navigation items (shown above the separator).
     static var mainItems: [Self] {
-        [.chat, .briefings, .inbox, .calendar, .tasks, .tracks, .digests, .people, .statistics, .search]
+        [.chat, .briefings, .inbox, .calendar, .tasks, .tracks, .digests, .people, .workload, .blockers, .statistics, .search]
     }
 
     /// Tool items (shown below the separator).
@@ -186,6 +192,10 @@ struct MainNavigationView: View {
             DigestListView()
         case .people:
             PeopleListView()
+        case .workload:
+            WorkloadView()
+        case .blockers:
+            BlockerMapView()
         case .statistics:
             StatisticsView()
         case .search:

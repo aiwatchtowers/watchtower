@@ -119,6 +119,18 @@ var jiraBoardsOverrideCmd = &cobra.Command{
 	RunE:  runJiraBoardsOverride,
 }
 
+var jiraWorkloadCmd = &cobra.Command{
+	Use:   "workload",
+	Short: "Show team workload dashboard",
+	RunE:  runJiraWorkload,
+}
+
+var jiraBlockersCmd = &cobra.Command{
+	Use:   "blockers",
+	Short: "Show blocker map",
+	RunE:  runJiraBlockers,
+}
+
 func init() {
 	rootCmd.AddCommand(jiraCmd)
 	jiraCmd.AddCommand(jiraLoginCmd)
@@ -136,7 +148,11 @@ func init() {
 	jiraFeaturesCmd.AddCommand(jiraFeaturesEnableCmd)
 	jiraFeaturesCmd.AddCommand(jiraFeaturesDisableCmd)
 	jiraFeaturesCmd.AddCommand(jiraFeaturesResetCmd)
+	jiraCmd.AddCommand(jiraWorkloadCmd)
+	jiraCmd.AddCommand(jiraBlockersCmd)
 
+	jiraWorkloadCmd.Flags().Bool("json", false, "Output as JSON")
+	jiraBlockersCmd.Flags().Bool("json", false, "Output as JSON")
 	jiraLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
 	jiraLoginCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
@@ -945,6 +961,201 @@ func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Board %d overrides updated.\n", boardID)
 	return nil
+}
+
+func runJiraWorkload(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	if !jira.IsFeatureEnabled(cfg, "team_workload") {
+		return fmt.Errorf("team_workload feature is disabled; enable with 'watchtower jira features enable team_workload'")
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	to := time.Now()
+	from := to.AddDate(0, 0, -30)
+
+	entries, err := jira.ComputeTeamWorkload(database, cfg, from, to)
+	if err != nil {
+		return fmt.Errorf("computing workload: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+
+	if len(entries) == 0 {
+		fmt.Fprintln(out, "No workload data. Make sure Jira is connected and synced.")
+		return nil
+	}
+
+	jsonFlag, _ := cmd.Flags().GetBool("json")
+	if jsonFlag {
+		data, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshalling JSON: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	// Table output.
+	fmt.Fprintln(out, "Team Workload")
+	fmt.Fprintln(out, strings.Repeat("\u2500", 95))
+	fmt.Fprintf(out, "%-14s %5s %6s %8s %8s %7s %6s %6s  %s\n",
+		"Name", "Open", "SP", "Overdue", "Blocked", "Cycle", "Slack", "Mtgs", "Signal")
+	fmt.Fprintln(out, strings.Repeat("\u2500", 95))
+
+	for _, e := range entries {
+		signal := formatWorkloadSignal(e.Signal)
+		name := truncate(e.DisplayName, 14)
+		if name == "" {
+			name = truncate(e.SlackUserID, 14)
+		}
+		fmt.Fprintf(out, "%-14s %5d %6.1f %8d %8d %6.1fd %6d %5.1fh  %s\n",
+			name, e.OpenIssues, e.StoryPoints,
+			e.OverdueCount, e.BlockedCount,
+			e.AvgCycleTimeDays, e.SlackMessageCount,
+			e.MeetingHours, signal)
+	}
+
+	return nil
+}
+
+func formatWorkloadSignal(s jira.WorkloadSignal) string {
+	switch s {
+	case jira.SignalOverload:
+		return "\u26a0\ufe0f  Overload"
+	case jira.SignalWatch:
+		return "\U0001f440 Watch"
+	case jira.SignalLow:
+		return "\U0001f4a4 Low"
+	default:
+		return "\u2705 Normal"
+	}
+}
+
+func runJiraBlockers(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	if !jira.IsFeatureEnabled(cfg, "blocker_map") {
+		return fmt.Errorf("blocker_map feature is disabled; enable with 'watchtower jira features enable blocker_map'")
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	entries, err := jira.ComputeBlockerMap(database, cfg)
+	if err != nil {
+		return fmt.Errorf("computing blocker map: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+
+	if len(entries) == 0 {
+		fmt.Fprintln(out, "No blocked or stale issues found. \U0001f389")
+		return nil
+	}
+
+	jsonFlag, _ := cmd.Flags().GetBool("json")
+	if jsonFlag {
+		data, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshalling JSON: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	// Card output.
+	fmt.Fprintf(out, "Blocker Map (%d issues)\n", len(entries))
+	fmt.Fprintln(out, strings.Repeat("\u2550", 50))
+	fmt.Fprintln(out)
+
+	for _, e := range entries {
+		icon := blockerUrgencyIcon(e.Urgency)
+		statusLabel := e.Status
+		if e.BlockerType == "stale" {
+			statusLabel = "Stale in " + e.Status
+		}
+		fmt.Fprintf(out, "%s %s %q [%s, %d days]\n", icon, e.IssueKey, e.Summary, statusLabel, e.BlockedDays)
+
+		// Chain.
+		if len(e.BlockingChain) > 1 {
+			fmt.Fprintf(out, "   Chain: %s (root cause)\n", formatBlockingChain(e.BlockingChain))
+		} else {
+			fmt.Fprintln(out, "   No blocking chain")
+		}
+
+		// Downstream.
+		if e.DownstreamCount > 0 {
+			fmt.Fprintf(out, "   Downstream: blocks %d issues\n", e.DownstreamCount)
+		}
+
+		// Who to ping.
+		if len(e.WhoToPing) > 0 {
+			pings := make([]string, len(e.WhoToPing))
+			for i, p := range e.WhoToPing {
+				name := p.DisplayName
+				if name == "" {
+					name = p.SlackUserID
+				}
+				pings[i] = fmt.Sprintf("@%s (%s)", name, p.Reason)
+			}
+			fmt.Fprintf(out, "   Who to ping: %s\n", strings.Join(pings, ", "))
+		}
+
+		// Slack context.
+		if e.SlackContext != "" {
+			snippet := e.SlackContext
+			if len(snippet) > 60 {
+				snippet = snippet[:60]
+			}
+			fmt.Fprintf(out, "   Slack: %q...\n", snippet)
+		}
+
+		fmt.Fprintln(out)
+	}
+
+	return nil
+}
+
+func blockerUrgencyIcon(u jira.BlockerUrgency) string {
+	switch u {
+	case jira.UrgencyRed:
+		return "\U0001f534"
+	case jira.UrgencyYellow:
+		return "\U0001f7e1"
+	default:
+		return "\u26aa"
+	}
+}
+
+func formatBlockingChain(chain []string) string {
+	return strings.Join(chain, " \u2190 ")
 }
 
 // truncate shortens a string to maxLen, appending "..." if needed.

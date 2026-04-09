@@ -22,6 +22,66 @@ struct JiraDeliveryStats {
     let labels: [String]
 }
 
+struct EpicProgressRow: Codable, FetchableRecord, Identifiable {
+    var id: String { epicKey }
+    var epicKey: String
+    var epicName: String
+    var totalIssues: Int
+    var doneIssues: Int
+    var inProgressIssues: Int
+    var progressPct: Double
+    var weeklyResolvedCount: Int
+    var monthlyResolvedCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case epicKey = "epic_key"
+        case epicName = "epic_name"
+        case totalIssues = "total_issues"
+        case doneIssues = "done_issues"
+        case inProgressIssues = "in_progress_issues"
+        case progressPct = "progress_pct"
+        case weeklyResolvedCount = "weekly_resolved_count"
+        case monthlyResolvedCount = "monthly_resolved_count"
+    }
+}
+
+struct WithoutJiraRow: Codable, FetchableRecord, Identifiable {
+    var id: String { channelID }
+    var channelID: String
+    var channelName: String
+    var digestCount: Int
+    var distinctDays: Int
+    var messageCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case channelID = "channel_id"
+        case channelName = "channel_name"
+        case digestCount = "digest_count"
+        case distinctDays = "distinct_days"
+        case messageCount = "message_count"
+    }
+}
+
+struct TeamWorkloadRow: Codable, FetchableRecord {
+    var slackUserID: String
+    var displayName: String
+    var openIssues: Int
+    var storyPoints: Double
+    var overdueCount: Int
+    var blockedCount: Int
+    var avgCycleTimeDays: Double
+
+    enum CodingKeys: String, CodingKey {
+        case slackUserID = "slack_user_id"
+        case displayName = "display_name"
+        case openIssues = "open_issues"
+        case storyPoints = "story_points"
+        case overdueCount = "overdue_count"
+        case blockedCount = "blocked_count"
+        case avgCycleTimeDays = "avg_cycle_time_days"
+    }
+}
+
 enum JiraQueries {
 
     // MARK: - Shared Formatters
@@ -29,6 +89,13 @@ enum JiraQueries {
     private static let isoFormatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fmt
+    }()
+
+    private static let dayFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
         return fmt
     }()
 
@@ -266,6 +333,25 @@ enum JiraQueries {
         )
     }
 
+    // MARK: - Issue Links
+
+    /// Fetch all issue links where source_key or target_key matches the given key.
+    static func fetchIssueLinks(
+        _ db: Database,
+        issueKey: String
+    ) throws -> [JiraIssueLink] {
+        try JiraIssueLink.fetchAll(
+            db,
+            sql: """
+                SELECT id, source_key, target_key, link_type, synced_at
+                FROM jira_issue_links
+                WHERE source_key = ? OR target_key = ?
+                ORDER BY id
+                """,
+            arguments: [issueKey, issueKey]
+        )
+    }
+
     // MARK: - Sprint Stats
 
     /// Compute stats for the active sprint on a board.
@@ -479,6 +565,284 @@ enum JiraQueries {
             components: components,
             labels: labels
         )
+    }
+
+    // MARK: - Team Workload
+
+    /// Aggregate workload metrics per assignee (mirrors Go GetJiraTeamWorkload).
+    static func fetchTeamWorkload(_ db: Database) throws -> [TeamWorkloadRow] {
+        let today = Self.dayFormatter.string(from: Date())
+        let thirtyDaysAgo = Self.dayFormatter.string(
+            from: Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+        )
+
+        let sql = """
+            SELECT
+                ji.assignee_slack_id AS slack_user_id,
+                ji.assignee_display_name AS display_name,
+                COUNT(*) FILTER (WHERE ji.status_category != 'done') AS open_issues,
+                COALESCE(SUM(ji.story_points) FILTER (WHERE ji.status_category != 'done'), 0) AS story_points,
+                COUNT(*) FILTER (WHERE ji.status_category != 'done' AND ji.due_date != '' AND ji.due_date < ?) AS overdue_count,
+                COUNT(*) FILTER (WHERE ji.status_category != 'done' AND LOWER(ji.status) LIKE '%block%') AS blocked_count,
+                COALESCE(AVG(julianday(ji.resolved_at) - julianday(ji.created_at))
+                    FILTER (WHERE ji.status_category = 'done' AND ji.resolved_at != '' AND ji.resolved_at >= ?), 0) AS avg_cycle_time_days
+            FROM jira_issues ji
+            WHERE ji.assignee_slack_id != '' AND ji.is_deleted = 0
+            GROUP BY ji.assignee_slack_id
+            ORDER BY open_issues DESC
+            """
+
+        return try TeamWorkloadRow.fetchAll(db, sql: sql, arguments: [today, thirtyDaysAgo])
+    }
+
+    /// Count Slack messages by a user in a time range.
+    static func fetchSlackMessageCount(_ db: Database, userID: String, from: Date, to: Date) throws -> Int {
+        let fromUnix = from.timeIntervalSince1970
+        let toUnix = to.timeIntervalSince1970
+        return try Int.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*)
+                FROM messages
+                WHERE user_id = ? AND ts_unix >= ? AND ts_unix < ?
+                """,
+            arguments: [userID, fromUnix, toUnix]
+        ) ?? 0
+    }
+
+    /// Sum meeting hours from calendar_events for a user in a time range.
+    /// Returns 0 if the table does not exist or is empty.
+    static func fetchMeetingHours(_ db: Database, userID: String, from: Date, to: Date) throws -> Double {
+        // Check if calendar_events table exists
+        let tableExists = try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*) > 0
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'calendar_events'
+                """
+        ) ?? false
+        guard tableExists else { return 0 }
+
+        let fromStr = isoFormatter.string(from: from)
+        let toStr = isoFormatter.string(from: to)
+
+        // Sum duration in hours. Attendees is JSON array — check if userID appears.
+        return try Double.fetchOne(
+            db,
+            sql: """
+                SELECT COALESCE(SUM(
+                    (julianday(end_time) - julianday(start_time)) * 24.0
+                ), 0)
+                FROM calendar_events
+                WHERE start_time >= ? AND end_time <= ?
+                  AND (attendees LIKE ? OR attendees LIKE '%' || ? || '%')
+                """,
+            arguments: [fromStr, toStr, "%\(userID)%", userID]
+        ) ?? 0
+    }
+
+    /// Fetch all issues (not done, not deleted) assigned to a given Slack user ID.
+    static func fetchIssuesByAssignee(_ db: Database, slackID: String) throws -> [JiraIssue] {
+        try JiraIssue.fetchAll(
+            db,
+            sql: """
+                SELECT *
+                FROM jira_issues
+                WHERE assignee_slack_id = ?
+                  AND is_deleted = 0
+                ORDER BY
+                  CASE status_category WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END,
+                  priority,
+                  updated_at DESC
+                """,
+            arguments: [slackID]
+        )
+    }
+
+    // MARK: - Blocker Map Queries
+
+    /// Fetch all blocked issues (status contains "block", not done).
+    static func fetchBlockedIssues(_ db: Database) throws -> [JiraIssue] {
+        try JiraIssue.fetchAll(
+            db,
+            sql: """
+                SELECT *
+                FROM jira_issues
+                WHERE LOWER(status) LIKE '%block%'
+                  AND status_category != 'done'
+                  AND is_deleted = 0
+                ORDER BY updated_at DESC
+                """
+        )
+    }
+
+    /// Fetch stale issues (in_progress, status_category_changed_at > staleDays ago).
+    static func fetchStaleIssues(
+        _ db: Database,
+        staleDays: Int = 7
+    ) throws -> [JiraIssue] {
+        try JiraIssue.fetchAll(
+            db,
+            sql: """
+                SELECT *
+                FROM jira_issues
+                WHERE status_category = 'in_progress'
+                  AND status_category_changed_at != ''
+                  AND julianday('now') - julianday(status_category_changed_at) > ?
+                  AND is_deleted = 0
+                ORDER BY status_category_changed_at ASC
+                """,
+            arguments: [staleDays]
+        )
+    }
+
+    /// Fetch issue links for a set of issue keys (for chain building).
+    static func fetchIssueLinksForKeys(
+        _ db: Database,
+        keys: [String]
+    ) throws -> [JiraIssueLink] {
+        guard !keys.isEmpty else { return [] }
+        let placeholders = keys.map { _ in "?" }.joined(separator: ",")
+        return try JiraIssueLink.fetchAll(
+            db,
+            sql: """
+                SELECT id, source_key, target_key, link_type, synced_at
+                FROM jira_issue_links
+                WHERE source_key IN (\(placeholders))
+                   OR target_key IN (\(placeholders))
+                ORDER BY id
+                """,
+            arguments: StatementArguments(keys + keys)
+        )
+    }
+
+    /// Fetch the latest Slack message text referencing an issue (via jira_slack_links).
+    static func fetchSlackContextForIssue(
+        _ db: Database,
+        issueKey: String
+    ) throws -> String? {
+        try String.fetchOne(
+            db,
+            sql: """
+                SELECT m.text
+                FROM jira_slack_links jsl
+                JOIN messages m ON m.channel_id = jsl.channel_id
+                                AND m.ts = jsl.message_ts
+                WHERE jsl.issue_key = ?
+                  AND jsl.message_ts != ''
+                ORDER BY m.ts DESC
+                LIMIT 1
+                """,
+            arguments: [issueKey]
+        )
+    }
+
+    // MARK: - Epic Progress
+
+    /// Aggregate epic progress: total/done/in-progress counts plus resolved in 7 and 28 days.
+    static func fetchEpicProgress(_ db: Database) throws -> [EpicProgressRow] {
+        let sevenDaysAgo = dayFormatter.string(
+            from: Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+        )
+        let twentyEightDaysAgo = dayFormatter.string(
+            from: Calendar.current.date(byAdding: .day, value: -28, to: Date()) ?? Date()
+        )
+
+        let sql = """
+            SELECT
+                ji.epic_key,
+                COALESCE(epic.summary, ji.epic_key) AS epic_name,
+                COUNT(*) AS total_issues,
+                COUNT(*) FILTER (WHERE ji.status_category = 'done') AS done_issues,
+                COUNT(*) FILTER (WHERE ji.status_category = 'in_progress') AS in_progress_issues,
+                CASE WHEN COUNT(*) > 0
+                     THEN CAST(COUNT(*) FILTER (WHERE ji.status_category = 'done') AS REAL) / COUNT(*)
+                     ELSE 0 END AS progress_pct,
+                COUNT(*) FILTER (WHERE ji.status_category = 'done' AND ji.resolved_at >= ?) AS weekly_resolved_count,
+                COUNT(*) FILTER (WHERE ji.status_category = 'done' AND ji.resolved_at >= ?) AS monthly_resolved_count
+            FROM jira_issues ji
+            LEFT JOIN jira_issues epic ON epic.key = ji.epic_key AND epic.is_deleted = 0
+            WHERE ji.epic_key != '' AND ji.is_deleted = 0
+            GROUP BY ji.epic_key
+            HAVING COUNT(*) >= 3
+            ORDER BY progress_pct DESC, total_issues DESC
+            """
+
+        return try EpicProgressRow.fetchAll(
+            db,
+            sql: sql,
+            arguments: [sevenDaysAgo, twentyEightDaysAgo]
+        )
+    }
+
+    // MARK: - Without Jira Detection
+
+    /// Channels that have digests in the period but no linked Jira issues.
+    static func fetchChannelsWithoutJira(
+        _ db: Database,
+        since: Date
+    ) throws -> [WithoutJiraRow] {
+        let sinceUnix = since.timeIntervalSince1970
+
+        let sql = """
+            SELECT
+                d.channel_id,
+                COALESCE(c.name, d.channel_id) AS channel_name,
+                COUNT(DISTINCT d.id) AS digest_count,
+                COUNT(DISTINCT DATE(d.created_at)) AS distinct_days,
+                SUM(d.message_count) AS message_count
+            FROM digests d
+            LEFT JOIN channels c ON c.id = d.channel_id
+            WHERE d.channel_id != ''
+              AND d.type = 'channel'
+              AND d.period_from >= ?
+              AND d.channel_id NOT IN (
+                  SELECT DISTINCT jsl.channel_id
+                  FROM jira_slack_links jsl
+                  WHERE jsl.channel_id != ''
+              )
+            GROUP BY d.channel_id
+            ORDER BY message_count DESC
+            """
+
+        return try WithoutJiraRow.fetchAll(db, sql: sql, arguments: [sinceUnix])
+    }
+
+    // MARK: - Linked Issues Grouped
+
+    /// Fetch linked issues grouped by relationship type for a given issue key.
+    static func fetchLinkedIssuesGrouped(
+        _ db: Database,
+        issueKey: String
+    ) throws -> (blocks: [JiraIssue], blockedBy: [JiraIssue], relatesTo: [JiraIssue]) {
+        let links = try fetchIssueLinks(db, issueKey: issueKey)
+
+        var blocks: [JiraIssue] = []
+        var blockedBy: [JiraIssue] = []
+        var relatesTo: [JiraIssue] = []
+
+        for link in links {
+            let isSource = link.sourceKey == issueKey
+            let otherKey = isSource ? link.targetKey : link.sourceKey
+            guard let issue = try JiraIssue
+                .filter(Column("key") == otherKey)
+                .filter(Column("is_deleted") == false)
+                .fetchOne(db) else { continue }
+
+            let linkType = link.linkType.lowercased()
+            if linkType.contains("block") {
+                if isSource {
+                    blocks.append(issue)
+                } else {
+                    blockedBy.append(issue)
+                }
+            } else {
+                relatesTo.append(issue)
+            }
+        }
+
+        return (blocks: blocks, blockedBy: blockedBy, relatesTo: relatesTo)
     }
 
     // MARK: - Helpers

@@ -524,36 +524,44 @@ struct TrackDetailView: View {
                     .font(.headline)
 
                 ForEach(jiraIssues, id: \.key) { issue in
-                    HStack(spacing: 10) {
-                        JiraBadgeView(
-                            issue: issue,
-                            siteURL: viewModel.jiraSiteURL,
-                            isExpanded: true
-                        )
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 10) {
+                            JiraBadgeView(
+                                issue: issue,
+                                siteURL: viewModel.jiraSiteURL,
+                                isExpanded: true
+                            )
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(issue.summary)
-                                .font(.subheadline)
-                                .lineLimit(2)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(issue.summary)
+                                    .font(.subheadline)
+                                    .lineLimit(2)
 
-                            HStack(spacing: 8) {
-                                if !issue.sprintName.isEmpty {
-                                    Label(issue.sprintName, systemImage: "arrow.triangle.2.circlepath")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
+                                HStack(spacing: 8) {
+                                    if !issue.sprintName.isEmpty {
+                                        Label(issue.sprintName, systemImage: "arrow.triangle.2.circlepath")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
 
-                                if let dueText = jiraIssueDueText(issue) {
-                                    Label(dueText, systemImage: "calendar")
-                                        .font(.caption2)
-                                        .foregroundStyle(
-                                            isJiraIssueOverdue(issue) ? .red : .secondary
-                                        )
+                                    if let dueText = jiraIssueDueText(issue) {
+                                        Label(dueText, systemImage: "calendar")
+                                            .font(.caption2)
+                                            .foregroundStyle(
+                                                isJiraIssueOverdue(issue) ? .red : .secondary
+                                            )
+                                    }
                                 }
                             }
+
+                            Spacer()
                         }
 
-                        Spacer()
+                        // Linked issues (blocks/blocked by/relates to)
+                        JiraLinkedIssuesView(
+                            issueKey: issue.key,
+                            siteURL: viewModel.jiraSiteURL
+                        )
                     }
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
