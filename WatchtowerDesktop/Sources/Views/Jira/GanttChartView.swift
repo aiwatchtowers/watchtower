@@ -3,17 +3,22 @@ import SwiftUI
 struct GanttChartView: View {
     let epics: [ProjectMapViewModel.EpicItem]
 
-    private let rowHeight: CGFloat = 32
+    @State private var collapsedEpics: Set<String> = []
+
+    private let epicRowHeight: CGFloat = 32
+    private let issueRowHeight: CGFloat = 28
     private let rowSpacing: CGFloat = 4
-    private let labelWidth: CGFloat = 180
+    private let labelWidth: CGFloat = 200
     private let dayWidth: CGFloat = 12
     private let headerHeight: CGFloat = 40
+    private let barHeight: CGFloat = 20
 
     private var today: Date { Date() }
     private var calendar: Calendar { Calendar.current }
 
     // MARK: - Timeline bounds
 
+    /// Epics that have at least one child with timeline data (start+end).
     private var timelineEpics: [ProjectMapViewModel.EpicItem] {
         epics.filter { $0.startDate != nil && $0.endDate != nil }
     }
@@ -23,16 +28,30 @@ struct GanttChartView: View {
     }
 
     private var timelineStart: Date {
-        let starts = timelineEpics.compactMap(\.startDate)
-        let earliest = starts.min() ?? today
-        // Round down to start of month
+        // Consider both epic-level and issue-level dates
+        var allStarts: [Date] = timelineEpics.compactMap(\.startDate)
+        for epic in timelineEpics {
+            for issue in epic.issues {
+                if let d = ProjectMapViewModel.EpicItem.parseDate(issue.createdAt) {
+                    allStarts.append(d)
+                }
+            }
+        }
+        let earliest = allStarts.min() ?? today
         return calendar.date(from: calendar.dateComponents([.year, .month], from: earliest)) ?? earliest
     }
 
     private var timelineEnd: Date {
-        let ends = timelineEpics.compactMap(\.endDate)
-        let latest = ends.max() ?? today
-        // Add 2 weeks buffer
+        var allEnds: [Date] = timelineEpics.compactMap(\.endDate)
+        for epic in timelineEpics {
+            for issue in epic.issues {
+                if !issue.dueDate.isEmpty,
+                   let d = ProjectMapViewModel.EpicItem.parseDayDate(issue.dueDate) {
+                    allEnds.append(d)
+                }
+            }
+        }
+        let latest = allEnds.max() ?? today
         return calendar.date(byAdding: .weekOfYear, value: 2, to: latest) ?? latest
     }
 
@@ -50,7 +69,6 @@ struct GanttChartView: View {
         if epics.isEmpty {
             emptyState
         } else if timelineEpics.isEmpty {
-            // No date data at all — show fallback bars
             fallbackView
         } else {
             VStack(spacing: 0) {
@@ -76,25 +94,21 @@ struct GanttChartView: View {
     private var timelineChart: some View {
         ScrollView(.horizontal, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 0) {
-                // Date header
                 dateHeader
                     .frame(height: headerHeight)
 
                 Divider()
 
-                // Rows
                 ScrollView(.vertical, showsIndicators: true) {
                     ZStack(alignment: .topLeading) {
-                        // Today marker
                         todayMarker
-
-                        // Month grid lines
+                            .frame(maxHeight: .infinity)
                         monthGridLines
+                            .frame(maxHeight: .infinity)
 
-                        // Epic rows
-                        VStack(spacing: rowSpacing) {
+                        VStack(spacing: 0) {
                             ForEach(timelineEpics) { epic in
-                                timelineRow(epic)
+                                epicGroup(epic)
                             }
                         }
                     }
@@ -106,14 +120,234 @@ struct GanttChartView: View {
         .padding(.horizontal, 8)
     }
 
+    // MARK: - Epic Group (header + child issues)
+
+    private func epicGroup(_ epic: ProjectMapViewModel.EpicItem) -> some View {
+        let isCollapsed = collapsedEpics.contains(epic.key)
+        return VStack(spacing: 0) {
+            // Epic header row
+            epicHeaderRow(epic, isCollapsed: isCollapsed)
+
+            // Child issue rows
+            if !isCollapsed {
+                ForEach(epic.issues, id: \.key) { issue in
+                    issueRow(issue)
+                }
+            }
+        }
+    }
+
+    private func epicHeaderRow(
+        _ epic: ProjectMapViewModel.EpicItem,
+        isCollapsed: Bool
+    ) -> some View {
+        HStack(spacing: 0) {
+            // Collapse toggle + epic name
+            HStack(spacing: 4) {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+
+                Text(epic.name)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Text("\(epic.doneIssues)/\(epic.totalIssues)")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(width: labelWidth, alignment: .leading)
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if collapsedEpics.contains(epic.key) {
+                        collapsedEpics.remove(epic.key)
+                    } else {
+                        collapsedEpics.insert(epic.key)
+                    }
+                }
+            }
+
+            // Aggregated epic bar
+            ZStack(alignment: .leading) {
+                Color.clear.frame(width: chartWidth, height: epicRowHeight)
+
+                if let start = epic.startDate, let end = epic.endDate {
+                    let startDays = max(
+                        0,
+                        calendar.dateComponents([.day], from: timelineStart, to: start).day ?? 0
+                    )
+                    let endDays = max(
+                        startDays + 1,
+                        calendar.dateComponents([.day], from: timelineStart, to: end).day ?? 0
+                    )
+                    let barOffset = CGFloat(startDays) * dayWidth
+                    let barWidth = max(20, CGFloat(endDays - startDays) * dayWidth)
+
+                    epicGanttBar(epic: epic, width: barWidth)
+                        .offset(x: barOffset)
+                }
+            }
+            .frame(width: chartWidth, height: epicRowHeight)
+        }
+        .frame(height: epicRowHeight)
+        .background(Color.secondary.opacity(0.04))
+    }
+
+    // MARK: - Issue Row
+
+    private func issueRow(_ issue: JiraIssue) -> some View {
+        let issueStart = issueStartDate(issue)
+        let issueEnd = issueEndDate(issue)
+
+        return HStack(spacing: 0) {
+            // Issue label (indented)
+            HStack(spacing: 4) {
+                Color.clear.frame(width: 16) // indent
+                Circle()
+                    .fill(statusColor(issue.statusCategory))
+                    .frame(width: 6, height: 6)
+                Text("\(issue.key)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(issue.summary)
+                    .font(.system(size: 10))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(width: labelWidth, alignment: .leading)
+            .padding(.horizontal, 4)
+
+            // Issue bar
+            ZStack(alignment: .leading) {
+                Color.clear.frame(width: chartWidth, height: issueRowHeight)
+
+                if let start = issueStart, let end = issueEnd {
+                    let startDays = max(
+                        0,
+                        calendar.dateComponents([.day], from: timelineStart, to: start).day ?? 0
+                    )
+                    let endDays = max(
+                        startDays + 1,
+                        calendar.dateComponents([.day], from: timelineStart, to: end).day ?? 0
+                    )
+                    let barOffset = CGFloat(startDays) * dayWidth
+                    let barWidth = max(16, CGFloat(endDays - startDays) * dayWidth)
+
+                    issueGanttBar(issue: issue, width: barWidth)
+                        .offset(x: barOffset)
+                } else if let start = issueStart {
+                    // No end date: show a dot marker at start
+                    let startDays = max(
+                        0,
+                        calendar.dateComponents([.day], from: timelineStart, to: start).day ?? 0
+                    )
+                    let markerOffset = CGFloat(startDays) * dayWidth
+
+                    Circle()
+                        .fill(statusColor(issue.statusCategory))
+                        .frame(width: 8, height: 8)
+                        .offset(x: markerOffset)
+                }
+            }
+            .frame(width: chartWidth, height: issueRowHeight)
+        }
+        .frame(height: issueRowHeight)
+    }
+
+    // MARK: - Issue date helpers
+
+    private func issueStartDate(_ issue: JiraIssue) -> Date? {
+        // Prefer statusCategoryChangedAt for in-progress items, fallback to createdAt
+        if !issue.statusCategoryChangedAt.isEmpty,
+           issue.statusCategory == "indeterminate" || issue.statusCategory == "in_progress" {
+            return ProjectMapViewModel.EpicItem.parseDate(issue.statusCategoryChangedAt)
+        }
+        return ProjectMapViewModel.EpicItem.parseDate(issue.createdAt)
+    }
+
+    private func issueEndDate(_ issue: JiraIssue) -> Date? {
+        guard !issue.dueDate.isEmpty else { return nil }
+        return ProjectMapViewModel.EpicItem.parseDayDate(issue.dueDate)
+    }
+
+    // MARK: - Gantt Bars
+
+    private func epicGanttBar(
+        epic: ProjectMapViewModel.EpicItem,
+        width: CGFloat
+    ) -> some View {
+        let color = badgeColor(epic.statusBadge)
+        let fillWidth = width * epic.progressPct
+
+        return ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(color.opacity(0.2))
+                .frame(width: width, height: barHeight)
+
+            if fillWidth > 0 {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(color.opacity(0.7))
+                    .frame(width: max(4, fillWidth), height: barHeight)
+            }
+
+            Text("\(Int(epic.progressPct * 100))%")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.primary)
+                .padding(.leading, 4)
+        }
+        .frame(width: width)
+    }
+
+    private func issueGanttBar(
+        issue: JiraIssue,
+        width: CGFloat
+    ) -> some View {
+        let color = statusColor(issue.statusCategory)
+        let isDone = issue.statusCategory == "done"
+
+        return ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(color.opacity(isDone ? 0.6 : 0.25))
+                .frame(width: width, height: barHeight - 4)
+
+            if isDone {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(color.opacity(0.8))
+                    .frame(width: width, height: barHeight - 4)
+            }
+
+            if width > 40 {
+                Text(issue.key)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(isDone ? .white : .primary)
+                    .padding(.leading, 3)
+            }
+        }
+        .frame(width: width)
+    }
+
+    // MARK: - Status color for child issues
+
+    private func statusColor(_ statusCategory: String) -> Color {
+        switch statusCategory {
+        case "done": .green
+        case "indeterminate", "in_progress": .blue
+        case "new": .secondary
+        default:
+            statusCategory.lowercased().contains("block") ? .red : .secondary
+        }
+    }
+
     // MARK: - Date Header
 
     private var dateHeader: some View {
         HStack(spacing: 0) {
-            // Label spacer
             Color.clear.frame(width: labelWidth)
 
-            // Month markers
             ZStack(alignment: .topLeading) {
                 ForEach(monthMarkers, id: \.offset) { marker in
                     Text(marker.label)
@@ -178,79 +412,7 @@ struct GanttChartView: View {
                     .offset(x: labelWidth + marker.offset)
             }
         }
-        .frame(
-            width: labelWidth + chartWidth,
-            height: CGFloat(timelineEpics.count) * (rowHeight + rowSpacing)
-        )
-    }
-
-    // MARK: - Timeline Row
-
-    private func timelineRow(_ epic: ProjectMapViewModel.EpicItem) -> some View {
-        HStack(spacing: 0) {
-            // Epic name
-            Text(epic.name)
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: labelWidth, alignment: .leading)
-                .padding(.horizontal, 4)
-
-            // Bar area
-            ZStack(alignment: .leading) {
-                // Background track
-                Color.clear.frame(width: chartWidth, height: rowHeight)
-
-                if let start = epic.startDate, let end = epic.endDate {
-                    let startDays = max(
-                        0,
-                        calendar.dateComponents([.day], from: timelineStart, to: start).day ?? 0
-                    )
-                    let endDays = max(
-                        startDays + 1,
-                        calendar.dateComponents([.day], from: timelineStart, to: end).day ?? 0
-                    )
-                    let barOffset = CGFloat(startDays) * dayWidth
-                    let barWidth = max(20, CGFloat(endDays - startDays) * dayWidth)
-
-                    ganttBar(epic: epic, width: barWidth)
-                        .offset(x: barOffset)
-                }
-            }
-            .frame(width: chartWidth, height: rowHeight)
-        }
-        .frame(height: rowHeight)
-    }
-
-    // MARK: - Gantt Bar
-
-    private func ganttBar(
-        epic: ProjectMapViewModel.EpicItem,
-        width: CGFloat
-    ) -> some View {
-        let color = badgeColor(epic.statusBadge)
-        let fillWidth = width * epic.progressPct
-
-        return ZStack(alignment: .leading) {
-            // Background
-            RoundedRectangle(cornerRadius: 4)
-                .fill(color.opacity(0.2))
-                .frame(width: width, height: 20)
-
-            // Progress fill
-            if fillWidth > 0 {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(color.opacity(0.7))
-                    .frame(width: max(4, fillWidth), height: 20)
-            }
-
-            // Percentage label
-            Text("\(Int(epic.progressPct * 100))%")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.primary)
-                .padding(.leading, 4)
-        }
-        .frame(width: width)
+        .frame(width: labelWidth + chartWidth)
     }
 
     // MARK: - Fallback Views
@@ -307,7 +469,7 @@ struct GanttChartView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 40, alignment: .trailing)
         }
-        .frame(height: rowHeight)
+        .frame(height: epicRowHeight)
     }
 
     // MARK: - Empty State

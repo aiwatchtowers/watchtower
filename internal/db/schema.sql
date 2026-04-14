@@ -332,6 +332,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     blocking        TEXT NOT NULL DEFAULT '',
     tags            TEXT NOT NULL DEFAULT '[]',
     sub_items       TEXT NOT NULL DEFAULT '[]',
+    notes           TEXT NOT NULL DEFAULT '[]',
     source_type     TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('track','digest','briefing','manual','chat','inbox','jira')),
     source_id       TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
@@ -808,6 +809,20 @@ CREATE TABLE IF NOT EXISTS jira_sync_state (
     issues_synced INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
     last_error_at TEXT NOT NULL DEFAULT ''
 );
+
+-- Meeting notes (questions + freeform notes linked to calendar events)
+CREATE TABLE IF NOT EXISTS meeting_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('question', 'note')),
+    text TEXT NOT NULL DEFAULT '',
+    is_checked INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    task_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_notes_event ON meeting_notes(event_id);
 
 -- Jira releases (fix versions)
 CREATE TABLE IF NOT EXISTS jira_releases (

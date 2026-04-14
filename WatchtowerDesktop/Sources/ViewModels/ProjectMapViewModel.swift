@@ -8,9 +8,20 @@ final class ProjectMapViewModel {
     var isLoading = false
     var errorMessage: String?
     var searchText: String = ""
+    var filterMode: FilterMode = .all
+    var currentUserID: String?
+    var reportIDs: [String] = []
 
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
+
+    // MARK: - Filter Mode
+
+    enum FilterMode: String, CaseIterable {
+        case all
+        case mine
+        case myReports
+    }
 
     // MARK: - Types
 
@@ -38,16 +49,38 @@ final class ProjectMapViewModel {
         // MARK: - Gantt dates
 
         var startDate: Date? {
+            // Use earliest child issue createdAt, fallback to epic createdAt
+            let childDates = issues.compactMap { Self.parseDate($0.createdAt) }
+            if let earliest = childDates.min() { return earliest }
             guard let raw = createdAt, !raw.isEmpty else { return nil }
             return Self.parseDate(raw)
         }
 
         var endDate: Date? {
-            computedEndDate
+            // Priority: max dueDate from children → computedEndDate (forecast) → nil
+            let childDueDates = issues.compactMap { issue -> Date? in
+                guard !issue.dueDate.isEmpty else { return nil }
+                return Self.parseDayDate(issue.dueDate)
+            }
+            if let latest = childDueDates.max() { return latest }
+            return computedEndDate
         }
 
-        private static func parseDate(_ s: String) -> Date? {
-            JiraHelpers.isoFormatter.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+        private static let fallbackISOFormatter = ISO8601DateFormatter()
+
+        static func parseDate(_ s: String) -> Date? {
+            JiraHelpers.isoFormatter.date(from: s) ?? fallbackISOFormatter.date(from: s)
+        }
+
+        private static let dayFormatter: DateFormatter = {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd"
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            return fmt
+        }()
+
+        static func parseDayDate(_ s: String) -> Date? {
+            dayFormatter.date(from: s)
         }
     }
 
@@ -76,12 +109,60 @@ final class ProjectMapViewModel {
     // MARK: - Computed
 
     var filteredEpics: [EpicItem] {
-        guard !searchText.isEmpty else { return epics }
-        let query = searchText.lowercased()
-        return epics.filter {
-            $0.key.lowercased().contains(query)
-            || $0.name.lowercased().contains(query)
+        var result = epics
+
+        // Apply filter mode
+        switch filterMode {
+        case .all:
+            break
+        case .mine:
+            guard let uid = currentUserID, !uid.isEmpty else { break }
+            result = result.compactMap { epic in
+                let epicMatches = epic.ownerSlackID == uid
+                let matchingIssues = epic.issues.filter { $0.assigneeSlackId == uid }
+                guard epicMatches || !matchingIssues.isEmpty else { return nil }
+                // Return epic with filtered issues but original stats
+                return EpicItem(
+                    key: epic.key, name: epic.name, ownerName: epic.ownerName,
+                    ownerSlackID: epic.ownerSlackID, progressPct: epic.progressPct,
+                    statusBadge: epic.statusBadge, totalIssues: epic.totalIssues,
+                    doneIssues: epic.doneIssues, inProgressIssues: epic.inProgressIssues,
+                    staleCount: epic.staleCount, blockedCount: epic.blockedCount,
+                    forecastWeeks: epic.forecastWeeks, issues: matchingIssues,
+                    participants: epic.participants, pingTargets: epic.pingTargets,
+                    createdAt: epic.createdAt, computedEndDate: epic.computedEndDate
+                )
+            }
+        case .myReports:
+            let reportSet = Set(reportIDs)
+            guard !reportSet.isEmpty else { break }
+            result = result.compactMap { epic in
+                let epicMatches = epic.ownerSlackID.map { reportSet.contains($0) } ?? false
+                let matchingIssues = epic.issues.filter { reportSet.contains($0.assigneeSlackId) }
+                guard epicMatches || !matchingIssues.isEmpty else { return nil }
+                return EpicItem(
+                    key: epic.key, name: epic.name, ownerName: epic.ownerName,
+                    ownerSlackID: epic.ownerSlackID, progressPct: epic.progressPct,
+                    statusBadge: epic.statusBadge, totalIssues: epic.totalIssues,
+                    doneIssues: epic.doneIssues, inProgressIssues: epic.inProgressIssues,
+                    staleCount: epic.staleCount, blockedCount: epic.blockedCount,
+                    forecastWeeks: epic.forecastWeeks, issues: matchingIssues,
+                    participants: epic.participants, pingTargets: epic.pingTargets,
+                    createdAt: epic.createdAt, computedEndDate: epic.computedEndDate
+                )
+            }
         }
+
+        // Apply search text filter
+        if !searchText.isEmpty {
+            let query = searchText.lowercased()
+            result = result.filter {
+                $0.key.lowercased().contains(query)
+                || $0.name.lowercased().contains(query)
+            }
+        }
+
+        return result
     }
 
     // MARK: - Init
@@ -124,6 +205,30 @@ final class ProjectMapViewModel {
     func load() async {
         isLoading = true
         do {
+            // Load current user and reports for filtering
+            let (uid, reports) = try await Task.detached { [dbManager] in
+                try dbManager.dbPool.read { db -> (String?, [String]) in
+                    let userID = try String.fetchOne(
+                        db, sql: "SELECT current_user_id FROM workspace LIMIT 1"
+                    )
+                    var reps: [String] = []
+                    if let uid = userID, !uid.isEmpty,
+                       let json = try String.fetchOne(
+                           db,
+                           sql: "SELECT reports FROM user_profile WHERE slack_user_id = ? LIMIT 1",
+                           arguments: [uid]
+                       ),
+                       let data = json.data(using: .utf8),
+                       let parsed = try? JSONDecoder().decode([String].self, from: data)
+                    {
+                        reps = parsed
+                    }
+                    return (userID, reps)
+                }
+            }.value
+            currentUserID = uid
+            reportIDs = reports
+
             let items = try await Task.detached { [dbManager] in
                 try dbManager.dbPool.read { db -> [EpicItem] in
                     // Batch-load all non-deleted issues to avoid N+1

@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 62"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 64"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -2210,7 +2210,12 @@ func (db *DB) migrate() error {
 		)`); err != nil {
 			return fmt.Errorf("migration v46 create tasks_new: %w", err)
 		}
-		if _, err := tx.Exec(`INSERT INTO tasks_new SELECT * FROM tasks`); err != nil {
+		if _, err := tx.Exec(`INSERT INTO tasks_new (id, text, intent, status, priority, ownership,
+			ball_on, due_date, snooze_until, blocking, tags, sub_items,
+			source_type, source_id, created_at, updated_at)
+			SELECT id, text, intent, status, priority, ownership,
+			ball_on, due_date, snooze_until, blocking, tags, sub_items,
+			source_type, source_id, created_at, updated_at FROM tasks`); err != nil {
 			return fmt.Errorf("migration v46 copy tasks: %w", err)
 		}
 		if _, err := tx.Exec(`DROP TABLE tasks`); err != nil {
@@ -2783,7 +2788,12 @@ func (db *DB) migrate() error {
 		)`); err != nil {
 			return fmt.Errorf("migration v60 create tasks_new: %w", err)
 		}
-		if _, err := tx.Exec(`INSERT INTO tasks_new SELECT * FROM tasks`); err != nil {
+		if _, err := tx.Exec(`INSERT INTO tasks_new (id, text, intent, status, priority, ownership,
+			ball_on, due_date, snooze_until, blocking, tags, sub_items,
+			source_type, source_id, created_at, updated_at)
+			SELECT id, text, intent, status, priority, ownership,
+			ball_on, due_date, snooze_until, blocking, tags, sub_items,
+			source_type, source_id, created_at, updated_at FROM tasks`); err != nil {
 			return fmt.Errorf("migration v60 copy tasks: %w", err)
 		}
 		if _, err := tx.Exec(`DROP TABLE tasks`); err != nil {
@@ -2895,6 +2905,62 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v62: %w", err)
 		}
 		version = 62
+	}
+
+	if version < 63 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v63: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS meeting_notes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id TEXT NOT NULL,
+			type TEXT NOT NULL CHECK(type IN ('question', 'note')),
+			text TEXT NOT NULL DEFAULT '',
+			is_checked INTEGER NOT NULL DEFAULT 0,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			task_id INTEGER,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v63 create meeting_notes: %w", err)
+		}
+
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_meeting_notes_event ON meeting_notes(event_id)`); err != nil {
+			return fmt.Errorf("migration v63 create idx_meeting_notes_event: %w", err)
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 63"); err != nil {
+			return fmt.Errorf("setting schema version v63: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v63: %w", err)
+		}
+		version = 63
+	}
+
+	if version < 64 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v64: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "tasks", "notes") {
+			if _, err := tx.Exec(`ALTER TABLE tasks ADD COLUMN notes TEXT NOT NULL DEFAULT '[]'`); err != nil {
+				return fmt.Errorf("migration v64 add notes column: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 64"); err != nil {
+			return fmt.Errorf("setting schema version v64: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v64: %w", err)
+		}
+		version = 64
 	}
 
 	_ = version // silence unused variable if this is the last migration

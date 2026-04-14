@@ -234,9 +234,13 @@ final class TracksViewModel {
         return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)")
     }
 
-    func slackMessageURL(channelID: String, messageTS: String) -> URL? {
+    func slackMessageURL(channelID: String, messageTS: String, threadTS: String? = nil) -> URL? {
         guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
-        return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)&message=\(messageTS)")
+        var urlString = "slack://channel?team=\(teamID)&id=\(channelID)&message=\(messageTS)"
+        if let threadTS, !threadTS.isEmpty {
+            urlString += "&thread_ts=\(threadTS)"
+        }
+        return URL(string: urlString)
     }
 
     func submitFeedback(trackID: Int, rating: Int) {

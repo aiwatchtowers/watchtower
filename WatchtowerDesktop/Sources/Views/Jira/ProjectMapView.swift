@@ -61,6 +61,11 @@ struct ProjectMapView: View {
 
                 Spacer()
 
+                // Filter chips
+                if let vm2 = viewModel {
+                    filterChips(vm2)
+                }
+
                 // Tab picker
                 Picker("View", selection: $selectedTab) {
                     ForEach(Tab.allCases, id: \.self) { tab in
@@ -87,6 +92,38 @@ struct ProjectMapView: View {
                 ganttContent(vm)
             }
         }
+    }
+
+    // MARK: - Filter Chips
+
+    private func filterChips(_ vm: ProjectMapViewModel) -> some View {
+        HStack(spacing: 6) {
+            filterChip("All", mode: .all, vm: vm)
+            filterChip("My Tasks", mode: .mine, vm: vm)
+            filterChip("My Reports", mode: .myReports, vm: vm)
+        }
+    }
+
+    private func filterChip(
+        _ label: String,
+        mode: ProjectMapViewModel.FilterMode,
+        vm: ProjectMapViewModel
+    ) -> some View {
+        let isActive = vm.filterMode == mode
+        return Button {
+            vm.filterMode = mode
+        } label: {
+            Text(label)
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .foregroundStyle(isActive ? .white : .primary)
+                .background(
+                    isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.secondary.opacity(0.12)),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Search Bar

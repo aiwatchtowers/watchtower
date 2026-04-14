@@ -5,6 +5,7 @@ struct EpicCardView: View {
     let epic: ProjectMapViewModel.EpicItem
     let dbPool: DatabasePool
     @State private var isExpanded = false
+    @State private var siteURL: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,6 +30,9 @@ struct EpicCardView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
         )
+        .onAppear {
+            siteURL = JiraConfigHelper.readSiteURL()
+        }
     }
 
     // MARK: - Compact View
@@ -43,13 +47,25 @@ struct EpicCardView: View {
             VStack(alignment: .leading, spacing: 6) {
                 // Row 1: Key badge + name + status badge
                 HStack(spacing: 8) {
-                    Text(epic.key)
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundStyle(.blue)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                    Group {
+                        if let url = JiraHelpers.browseURL(siteURL: siteURL, issueKey: epic.key) {
+                            Link(destination: url) {
+                                Text(epic.key)
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.blue)
+                            }
+                            .help("Open in Jira")
+                        } else {
+                            Text(epic.key)
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
 
                     Text(epic.name)
                         .font(.subheadline)
@@ -223,10 +239,22 @@ struct EpicCardView: View {
                 .foregroundStyle(statusIconColor(for: issue))
                 .frame(width: 16)
 
-            Text(issue.key)
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundStyle(.blue)
+            Group {
+                if let url = JiraHelpers.browseURL(siteURL: siteURL, issueKey: issue.key) {
+                    Link(destination: url) {
+                        Text(issue.key)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.blue)
+                    }
+                    .help("Open in Jira")
+                } else {
+                    Text(issue.key)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.blue)
+                }
+            }
 
             Text(issue.summary)
                 .font(.caption)

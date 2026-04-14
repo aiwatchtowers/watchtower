@@ -3,6 +3,7 @@ import SwiftUI
 struct ReleaseDetailView: View {
     let release: ReleaseDashboardViewModel.ReleaseItem
     @Environment(AppState.self) private var appState
+    @State private var siteURL: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -20,6 +21,9 @@ struct ReleaseDetailView: View {
             if release.scopeChanges.added > 0 || release.scopeChanges.removed > 0 {
                 scopeChangesSection
             }
+        }
+        .onAppear {
+            siteURL = JiraConfigHelper.readSiteURL()
         }
     }
 
@@ -40,10 +44,22 @@ struct ReleaseDetailView: View {
     private func epicRow(_ epic: ReleaseDashboardViewModel.EpicProgressItem) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(epic.key)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.blue)
+                Group {
+                    if let url = JiraHelpers.browseURL(siteURL: siteURL, issueKey: epic.key) {
+                        Link(destination: url) {
+                            Text(epic.key)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.blue)
+                        }
+                        .help("Open in Jira")
+                    } else {
+                        Text(epic.key)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.blue)
+                    }
+                }
 
                 Text(epic.name)
                     .font(.caption)
@@ -106,10 +122,22 @@ struct ReleaseDetailView: View {
             }
             ForEach(blockedIssues, id: \.key) { issue in
                 HStack(spacing: 6) {
-                    Text(issue.key)
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.blue)
+                    Group {
+                        if let url = JiraHelpers.browseURL(siteURL: siteURL, issueKey: issue.key) {
+                            Link(destination: url) {
+                                Text(issue.key)
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(.blue)
+                            }
+                            .help("Open in Jira")
+                        } else {
+                            Text(issue.key)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.blue)
+                        }
+                    }
 
                     Text(issue.summary)
                         .font(.caption)

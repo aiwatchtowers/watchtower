@@ -469,10 +469,17 @@ type Task struct {
 	Blocking    string
 	Tags        string // JSON
 	SubItems    string // JSON
+	Notes       string // JSON — [{"text":"...","created_at":"..."}]
 	SourceType  string // "track", "digest", "briefing", "manual", "chat"
 	SourceID    string
 	CreatedAt   string
 	UpdatedAt   string
+}
+
+// TaskNote represents a single note entry in a task's notes JSON array.
+type TaskNote struct {
+	Text      string `json:"text"`
+	CreatedAt string `json:"created_at"`
 }
 
 // TaskFilter specifies criteria for querying tasks.

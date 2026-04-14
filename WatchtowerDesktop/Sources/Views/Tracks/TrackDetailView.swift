@@ -385,7 +385,7 @@ struct TrackDetailView: View {
                         let refChannelID = ref.channelID ?? track.decodedChannelIDs.first
                         if let chID = refChannelID, !ref.ts.isEmpty {
                             if let url = viewModel.slackMessageURL(
-                                channelID: chID, messageTS: ref.ts
+                                channelID: chID, messageTS: ref.ts, threadTS: ref.threadTS
                             ) {
                                 Link(destination: url) {
                                     Image(systemName: "arrow.up.right.square")

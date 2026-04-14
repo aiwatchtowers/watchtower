@@ -27,10 +27,18 @@ enum JiraHelpers {
         return fmt
     }()
 
+    private static let fallbackISOFormatter = ISO8601DateFormatter()
+
+    static func browseURL(siteURL: String?, issueKey: String) -> URL? {
+        guard let site = siteURL, !site.isEmpty else { return nil }
+        let base = site.hasSuffix("/") ? String(site.dropLast()) : site
+        return URL(string: "\(base)/browse/\(issueKey)")
+    }
+
     static func daysSince(_ dateStr: String) -> Int {
         guard !dateStr.isEmpty else { return 0 }
         guard let date = isoFormatter.date(from: dateStr)
-                ?? ISO8601DateFormatter().date(from: dateStr) else {
+                ?? fallbackISOFormatter.date(from: dateStr) else {
             return 0
         }
         return max(
