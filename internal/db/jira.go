@@ -33,6 +33,12 @@ func (db *DB) UpdateJiraBoardProfile(boardID int, rawColumnsJSON, rawConfigJSON,
 	return nil
 }
 
+// UpdateJiraBoardIssueCount sets issue_count from the actual number of issues in the database.
+func (db *DB) UpdateJiraBoardIssueCount(boardID int) error {
+	_, err := db.Exec(`UPDATE jira_boards SET issue_count = (SELECT COUNT(*) FROM jira_issues WHERE board_id = ?) WHERE id = ?`, boardID, boardID)
+	return err
+}
+
 // UpdateJiraBoardUserOverrides updates user overrides for a board.
 func (db *DB) UpdateJiraBoardUserOverrides(boardID int, userOverridesJSON string) error {
 	_, err := db.Exec(`UPDATE jira_boards SET user_overrides_json=? WHERE id=?`, userOverridesJSON, boardID)
@@ -142,8 +148,8 @@ func (db *DB) UpsertJiraIssue(issue JiraIssue) error {
 		assignee_account_id, assignee_email, assignee_display_name, assignee_slack_id,
 		reporter_account_id, reporter_email, reporter_display_name, reporter_slack_id,
 		priority, story_points, due_date, sprint_id, sprint_name, epic_key,
-		labels, components, fix_versions, created_at, updated_at, resolved_at, raw_json, synced_at, is_deleted)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		labels, components, fix_versions, created_at, updated_at, resolved_at, raw_json, custom_fields_json, synced_at, is_deleted)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
 			id=excluded.id, project_key=excluded.project_key, board_id=excluded.board_id,
 			summary=excluded.summary, description_text=excluded.description_text,
@@ -159,7 +165,8 @@ func (db *DB) UpsertJiraIssue(issue JiraIssue) error {
 			epic_key=excluded.epic_key, labels=excluded.labels, components=excluded.components,
 			fix_versions=excluded.fix_versions,
 			created_at=excluded.created_at, updated_at=excluded.updated_at, resolved_at=excluded.resolved_at,
-			raw_json=excluded.raw_json, synced_at=excluded.synced_at, is_deleted=excluded.is_deleted`,
+			raw_json=excluded.raw_json, custom_fields_json=excluded.custom_fields_json,
+			synced_at=excluded.synced_at, is_deleted=excluded.is_deleted`,
 		issue.Key, issue.ID, issue.ProjectKey, issue.BoardID,
 		issue.Summary, issue.DescriptionText,
 		issue.IssueType, issue.IssueTypeCategory, issue.IsBug,
@@ -170,11 +177,76 @@ func (db *DB) UpsertJiraIssue(issue JiraIssue) error {
 		issue.SprintID, issue.SprintName, issue.EpicKey,
 		issue.Labels, issue.Components, issue.FixVersions,
 		issue.CreatedAt, issue.UpdatedAt, issue.ResolvedAt,
-		issue.RawJSON, issue.SyncedAt, issue.IsDeleted)
+		issue.RawJSON, issue.CustomFieldsJSON, issue.SyncedAt, issue.IsDeleted)
 	if err != nil {
 		return fmt.Errorf("upserting jira issue %s: %w", issue.Key, err)
 	}
 	return nil
+}
+
+// UpsertJiraIssueBatch inserts or updates multiple issues in a single transaction.
+func (db *DB) UpsertJiraIssueBatch(issues []JiraIssue, links []JiraIssueLink) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for i := range issues {
+		issue := &issues[i]
+		_, err := tx.Exec(`INSERT INTO jira_issues (key, id, project_key, board_id, summary, description_text,
+			issue_type, issue_type_category, is_bug, status, status_category, status_category_changed_at,
+			assignee_account_id, assignee_email, assignee_display_name, assignee_slack_id,
+			reporter_account_id, reporter_email, reporter_display_name, reporter_slack_id,
+			priority, story_points, due_date, sprint_id, sprint_name, epic_key,
+			labels, components, fix_versions, created_at, updated_at, resolved_at, raw_json, custom_fields_json, synced_at, is_deleted)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(key) DO UPDATE SET
+				id=excluded.id, project_key=excluded.project_key, board_id=excluded.board_id,
+				summary=excluded.summary, description_text=excluded.description_text,
+				issue_type=excluded.issue_type, issue_type_category=excluded.issue_type_category, is_bug=excluded.is_bug,
+				status=excluded.status, status_category=excluded.status_category,
+				status_category_changed_at=excluded.status_category_changed_at,
+				assignee_account_id=excluded.assignee_account_id, assignee_email=excluded.assignee_email,
+				assignee_display_name=excluded.assignee_display_name, assignee_slack_id=excluded.assignee_slack_id,
+				reporter_account_id=excluded.reporter_account_id, reporter_email=excluded.reporter_email,
+				reporter_display_name=excluded.reporter_display_name, reporter_slack_id=excluded.reporter_slack_id,
+				priority=excluded.priority, story_points=excluded.story_points,
+				due_date=excluded.due_date, sprint_id=excluded.sprint_id, sprint_name=excluded.sprint_name,
+				epic_key=excluded.epic_key, labels=excluded.labels, components=excluded.components,
+				fix_versions=excluded.fix_versions,
+				created_at=excluded.created_at, updated_at=excluded.updated_at, resolved_at=excluded.resolved_at,
+				raw_json=excluded.raw_json, custom_fields_json=excluded.custom_fields_json,
+				synced_at=excluded.synced_at, is_deleted=excluded.is_deleted`,
+			issue.Key, issue.ID, issue.ProjectKey, issue.BoardID,
+			issue.Summary, issue.DescriptionText,
+			issue.IssueType, issue.IssueTypeCategory, issue.IsBug,
+			issue.Status, issue.StatusCategory, issue.StatusCategoryChangedAt,
+			issue.AssigneeAccountID, issue.AssigneeEmail, issue.AssigneeDisplayName, issue.AssigneeSlackID,
+			issue.ReporterAccountID, issue.ReporterEmail, issue.ReporterDisplayName, issue.ReporterSlackID,
+			issue.Priority, issue.StoryPoints, issue.DueDate,
+			issue.SprintID, issue.SprintName, issue.EpicKey,
+			issue.Labels, issue.Components, issue.FixVersions,
+			issue.CreatedAt, issue.UpdatedAt, issue.ResolvedAt,
+			issue.RawJSON, issue.CustomFieldsJSON, issue.SyncedAt, issue.IsDeleted)
+		if err != nil {
+			return fmt.Errorf("upserting jira issue %s: %w", issue.Key, err)
+		}
+	}
+
+	for i := range links {
+		link := &links[i]
+		_, err := tx.Exec(`INSERT INTO jira_issue_links (id, source_key, target_key, link_type, synced_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET source_key=excluded.source_key, target_key=excluded.target_key,
+				link_type=excluded.link_type, synced_at=excluded.synced_at`,
+			link.ID, link.SourceKey, link.TargetKey, link.LinkType, link.SyncedAt)
+		if err != nil {
+			return fmt.Errorf("upserting jira issue link %s: %w", link.ID, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // GetJiraIssueByKey returns a Jira issue by its key.
@@ -310,6 +382,25 @@ func (db *DB) UpsertJiraUserMap(mapping JiraUserMap) error {
 		mapping.MatchMethod, mapping.MatchConfidence, mapping.ResolvedAt)
 	if err != nil {
 		return fmt.Errorf("upserting jira user map %s: %w", mapping.JiraAccountID, err)
+	}
+	return nil
+}
+
+// BackfillJiraSlackIDs updates assignee_slack_id and reporter_slack_id on existing issues from jira_user_map.
+func (db *DB) BackfillJiraSlackIDs() error {
+	_, err := db.Exec(`UPDATE jira_issues SET assignee_slack_id = COALESCE(
+		(SELECT jum.slack_user_id FROM jira_user_map jum
+		 WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != ''), '')
+		WHERE assignee_account_id != '' AND assignee_slack_id = ''`)
+	if err != nil {
+		return fmt.Errorf("backfilling assignee slack IDs: %w", err)
+	}
+	_, err = db.Exec(`UPDATE jira_issues SET reporter_slack_id = COALESCE(
+		(SELECT jum.slack_user_id FROM jira_user_map jum
+		 WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != ''), '')
+		WHERE reporter_account_id != '' AND reporter_slack_id = ''`)
+	if err != nil {
+		return fmt.Errorf("backfilling reporter slack IDs: %w", err)
 	}
 	return nil
 }
@@ -501,7 +592,7 @@ const jiraIssueColumns = `key, id, project_key, board_id, summary, description_t
 	assignee_account_id, assignee_email, assignee_display_name, assignee_slack_id,
 	reporter_account_id, reporter_email, reporter_display_name, reporter_slack_id,
 	priority, story_points, due_date, sprint_id, sprint_name, epic_key,
-	labels, components, fix_versions, created_at, updated_at, resolved_at, raw_json, synced_at, is_deleted`
+	labels, components, fix_versions, created_at, updated_at, resolved_at, raw_json, custom_fields_json, synced_at, is_deleted`
 
 // jiraIssueColumnsQualified is the same column list but qualified with table name (for JOINs).
 const jiraIssueColumnsQualified = `jira_issues.key, jira_issues.id, jira_issues.project_key, jira_issues.board_id,
@@ -512,7 +603,7 @@ const jiraIssueColumnsQualified = `jira_issues.key, jira_issues.id, jira_issues.
 	jira_issues.reporter_account_id, jira_issues.reporter_email, jira_issues.reporter_display_name, jira_issues.reporter_slack_id,
 	jira_issues.priority, jira_issues.story_points, jira_issues.due_date, jira_issues.sprint_id, jira_issues.sprint_name, jira_issues.epic_key,
 	jira_issues.labels, jira_issues.components, jira_issues.fix_versions, jira_issues.created_at, jira_issues.updated_at, jira_issues.resolved_at,
-	jira_issues.raw_json, jira_issues.synced_at, jira_issues.is_deleted`
+	jira_issues.raw_json, jira_issues.custom_fields_json, jira_issues.synced_at, jira_issues.is_deleted`
 
 func scanJiraIssue(scanner interface{ Scan(dest ...any) error }) (JiraIssue, error) {
 	var issue JiraIssue
@@ -526,7 +617,7 @@ func scanJiraIssue(scanner interface{ Scan(dest ...any) error }) (JiraIssue, err
 		&issue.SprintID, &issue.SprintName, &issue.EpicKey,
 		&issue.Labels, &issue.Components, &issue.FixVersions,
 		&issue.CreatedAt, &issue.UpdatedAt, &issue.ResolvedAt,
-		&issue.RawJSON, &issue.SyncedAt, &issue.IsDeleted)
+		&issue.RawJSON, &issue.CustomFieldsJSON, &issue.SyncedAt, &issue.IsDeleted)
 	return issue, err
 }
 
@@ -1450,4 +1541,104 @@ func (db *DB) GetUserMeetingHours(slackUserID string, from, to time.Time) (float
 		totalHours += end.Sub(start).Hours()
 	}
 	return math.Round(totalHours*100) / 100, rows.Err()
+}
+
+// UpsertJiraCustomField inserts or updates a custom field.
+func (db *DB) UpsertJiraCustomField(f JiraCustomField) error {
+	_, err := db.Exec(`INSERT INTO jira_custom_fields (id, name, field_type, items_type, is_useful, usage_hint, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, field_type=excluded.field_type,
+		items_type=excluded.items_type, synced_at=excluded.synced_at`,
+		f.ID, f.Name, f.FieldType, f.ItemsType, f.IsUseful, f.UsageHint, f.SyncedAt)
+	return err
+}
+
+// UpdateJiraCustomFieldClassification updates LLM classification for a field.
+func (db *DB) UpdateJiraCustomFieldClassification(id string, isUseful bool, usageHint string) error {
+	_, err := db.Exec(`UPDATE jira_custom_fields SET is_useful=?, usage_hint=? WHERE id=?`,
+		isUseful, usageHint, id)
+	return err
+}
+
+// GetJiraCustomFields returns all custom fields.
+func (db *DB) GetJiraCustomFields() ([]JiraCustomField, error) {
+	rows, err := db.Query(`SELECT id, name, field_type, items_type, is_useful, usage_hint, synced_at
+		FROM jira_custom_fields ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var fields []JiraCustomField
+	for rows.Next() {
+		var f JiraCustomField
+		if err := rows.Scan(&f.ID, &f.Name, &f.FieldType, &f.ItemsType, &f.IsUseful, &f.UsageHint, &f.SyncedAt); err != nil {
+			return nil, err
+		}
+		fields = append(fields, f)
+	}
+	return fields, rows.Err()
+}
+
+// GetUsefulJiraCustomFields returns only fields marked as useful by LLM.
+func (db *DB) GetUsefulJiraCustomFields() ([]JiraCustomField, error) {
+	rows, err := db.Query(`SELECT id, name, field_type, items_type, is_useful, usage_hint, synced_at
+		FROM jira_custom_fields WHERE is_useful = 1 ORDER BY usage_hint, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var fields []JiraCustomField
+	for rows.Next() {
+		var f JiraCustomField
+		if err := rows.Scan(&f.ID, &f.Name, &f.FieldType, &f.ItemsType, &f.IsUseful, &f.UsageHint, &f.SyncedAt); err != nil {
+			return nil, err
+		}
+		fields = append(fields, f)
+	}
+	return fields, rows.Err()
+}
+
+// GetJiraCustomFieldsSyncedAt returns the most recent synced_at for custom fields.
+func (db *DB) GetJiraCustomFieldsSyncedAt() (string, error) {
+	var syncedAt string
+	err := db.QueryRow(`SELECT COALESCE(MAX(synced_at), '') FROM jira_custom_fields`).Scan(&syncedAt)
+	return syncedAt, err
+}
+
+// UpsertJiraBoardFieldMap sets the field mapping for a board. Replaces all existing mappings.
+func (db *DB) UpsertJiraBoardFieldMap(boardID int, mappings []JiraBoardFieldMap) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM jira_board_field_map WHERE board_id = ?`, boardID); err != nil {
+		return err
+	}
+	for _, m := range mappings {
+		if _, err := tx.Exec(`INSERT INTO jira_board_field_map (board_id, field_id, role) VALUES (?, ?, ?)`,
+			boardID, m.FieldID, m.Role); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetJiraBoardFieldMap returns field mappings for a board.
+func (db *DB) GetJiraBoardFieldMap(boardID int) ([]JiraBoardFieldMap, error) {
+	rows, err := db.Query(`SELECT board_id, field_id, role FROM jira_board_field_map WHERE board_id = ?`, boardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var mappings []JiraBoardFieldMap
+	for rows.Next() {
+		var m JiraBoardFieldMap
+		if err := rows.Scan(&m.BoardID, &m.FieldID, &m.Role); err != nil {
+			return nil, err
+		}
+		mappings = append(mappings, m)
+	}
+	return mappings, rows.Err()
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -61,22 +62,32 @@ type IssueSample struct {
 
 // BoardRawData is the collected raw data for a board before LLM analysis.
 type BoardRawData struct {
-	BoardName   string          `json:"board_name"`
-	ProjectKey  string          `json:"project_key"`
-	BoardType   string          `json:"board_type"`
-	Config      BoardConfig     `json:"config"`
-	Sprints     []SprintSummary `json:"sprints"`
-	IssueSample IssueSample     `json:"issue_sample"`
+	BoardName    string               `json:"board_name"`
+	ProjectKey   string               `json:"project_key"`
+	BoardType    string               `json:"board_type"`
+	Config       BoardConfig          `json:"config"`
+	Sprints      []SprintSummary      `json:"sprints"`
+	IssueSample  IssueSample          `json:"issue_sample"`
+	CustomFields []CustomFieldContext `json:"custom_fields,omitempty"`
+}
+
+// CustomFieldContext provides custom field mapping info for LLM context.
+type CustomFieldContext struct {
+	FieldID string `json:"field_id"`
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+	Type    string `json:"type"`
 }
 
 // BoardProfile is the LLM-generated analysis of a board's workflow.
 type BoardProfile struct {
-	WorkflowStages     []WorkflowStage    `json:"workflow_stages"`
-	EstimationApproach EstimationApproach `json:"estimation_approach"`
-	IterationInfo      IterationInfo      `json:"iteration_info"`
-	WorkflowSummary    string             `json:"workflow_summary"`
-	StaleThresholds    map[string]int     `json:"stale_thresholds"`
-	HealthSignals      []string           `json:"health_signals"`
+	WorkflowStages     []WorkflowStage      `json:"workflow_stages"`
+	EstimationApproach EstimationApproach   `json:"estimation_approach"`
+	IterationInfo      IterationInfo        `json:"iteration_info"`
+	WorkflowSummary    string               `json:"workflow_summary"`
+	StaleThresholds    map[string]int       `json:"stale_thresholds"`
+	HealthSignals      []string             `json:"health_signals"`
+	CustomFields       []CustomFieldContext `json:"custom_fields,omitempty"`
 }
 
 // WorkflowStage represents a stage in the board's workflow.
@@ -103,7 +114,8 @@ type IterationInfo struct {
 
 // UserOverrides stores user-specified overrides for board analysis.
 type UserOverrides struct {
-	StaleThresholds map[string]int `json:"stale_thresholds,omitempty"`
+	StaleThresholds map[string]int  `json:"stale_thresholds,omitempty"`
+	TerminalStages  map[string]bool `json:"terminal_stages,omitempty"` // status name → is_terminal override
 }
 
 // BoardAnalyzer performs LLM-based analysis of Jira boards.
@@ -111,7 +123,13 @@ type BoardAnalyzer struct {
 	client     *Client
 	db         *db.DB
 	aiProvider ai.Provider
+	language   string
 	logger     *log.Logger
+
+	// Accumulated usage from LLM calls.
+	totalInputTokens  int
+	totalOutputTokens int
+	totalAPITokens    int
 }
 
 // NewBoardAnalyzer creates a new BoardAnalyzer.
@@ -120,7 +138,30 @@ func NewBoardAnalyzer(client *Client, database *db.DB, aiProvider ai.Provider) *
 		client:     client,
 		db:         database,
 		aiProvider: aiProvider,
+		language:   "English",
 		logger:     log.New(os.Stderr, "[jira-analyzer] ", log.LstdFlags),
+	}
+}
+
+// AccumulatedUsage returns token counts accumulated across all LLM calls.
+func (a *BoardAnalyzer) AccumulatedUsage() (inputTokens, outputTokens, totalAPITokens int) {
+	return a.totalInputTokens, a.totalOutputTokens, a.totalAPITokens
+}
+
+// addUsage accumulates token usage from an LLM call.
+func (a *BoardAnalyzer) addUsage(usage *ai.Usage) {
+	if usage == nil {
+		return
+	}
+	a.totalInputTokens += usage.InputTokens
+	a.totalOutputTokens += usage.OutputTokens
+	a.totalAPITokens += usage.TotalAPITokens
+}
+
+// SetLanguage sets the output language for board analysis.
+func (a *BoardAnalyzer) SetLanguage(lang string) {
+	if lang != "" {
+		a.language = lang
 	}
 }
 
@@ -133,7 +174,7 @@ func (a *BoardAnalyzer) FetchBoardRawData(ctx context.Context, board db.JiraBoar
 	}
 
 	// Fetch board configuration (columns + estimation).
-	config, err := a.fetchBoardConfig(ctx, board.ID)
+	config, err := a.fetchBoardConfig(ctx, board.ID, board.ProjectKey)
 	if err != nil {
 		a.logger.Printf("warning: could not fetch board config for %d: %v", board.ID, err)
 	} else {
@@ -170,12 +211,49 @@ func (a *BoardAnalyzer) AnalyzeBoard(ctx context.Context, board db.JiraBoard) (*
 
 	hash := ComputeConfigHash(rawData)
 
-	// Check if config is unchanged and profile already exists.
-	if board.ConfigHash == hash && board.LLMProfileJSON != "" {
-		a.logger.Printf("board %d config unchanged (hash=%s), skipping", board.ID, hash[:8])
+	// Check if config is unchanged and profile already exists and is valid.
+	if board.ConfigHash == hash && hash != "" && board.LLMProfileJSON != "" {
 		var existing BoardProfile
-		if err := json.Unmarshal([]byte(board.LLMProfileJSON), &existing); err == nil {
+		if err := json.Unmarshal([]byte(board.LLMProfileJSON), &existing); err == nil && len(existing.WorkflowStages) > 0 {
+			a.logger.Printf("board %d config unchanged (hash=%s), skipping", board.ID, hash[:8])
 			return &existing, nil
+		}
+	}
+
+	// Enrich with custom field context (best-effort).
+	fd := NewFieldDiscovery(a.client, a.db, a.aiProvider)
+	if fd.NeedsDiscovery() {
+		if discErr := fd.DiscoverAndClassify(ctx); discErr != nil {
+			a.logger.Printf("warning: field discovery failed: %v", discErr)
+		}
+	}
+	mappings, _ := a.db.GetJiraBoardFieldMap(board.ID)
+	if len(mappings) == 0 {
+		if mapped, mapErr := fd.MapFieldsForBoard(ctx, board); mapErr != nil {
+			a.logger.Printf("warning: field mapping failed for board %d: %v", board.ID, mapErr)
+		} else {
+			mappings = mapped
+		}
+	}
+	// Collect usage from field discovery LLM calls.
+	fdIn, fdOut, fdAPI := fd.AccumulatedUsage()
+	a.totalInputTokens += fdIn
+	a.totalOutputTokens += fdOut
+	a.totalAPITokens += fdAPI
+	if len(mappings) > 0 {
+		usefulFields, _ := a.db.GetUsefulJiraCustomFields()
+		fieldIndex := make(map[string]db.JiraCustomField)
+		for _, f := range usefulFields {
+			fieldIndex[f.ID] = f
+		}
+		for _, m := range mappings {
+			f := fieldIndex[m.FieldID]
+			rawData.CustomFields = append(rawData.CustomFields, CustomFieldContext{
+				FieldID: m.FieldID,
+				Name:    f.Name,
+				Role:    m.Role,
+				Type:    f.FieldType,
+			})
 		}
 	}
 
@@ -188,7 +266,13 @@ func (a *BoardAnalyzer) AnalyzeBoard(ctx context.Context, board db.JiraBoard) (*
 		// On LLM failure, use fallback.
 		a.logger.Printf("LLM analysis failed for board %d, using fallback: %v", board.ID, err)
 		profile = BuildFallbackProfile(rawData)
+	} else if len(profile.WorkflowStages) == 0 {
+		a.logger.Printf("LLM returned empty workflow for board %d, using fallback", board.ID)
+		profile = BuildFallbackProfile(rawData)
 	}
+
+	// Store custom field mappings in the profile.
+	profile.CustomFields = rawData.CustomFields
 
 	profileJSON, _ := json.Marshal(profile)
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -396,6 +480,23 @@ func (a *BoardAnalyzer) mergeUserOverrides(boardID int, profile *BoardProfile, o
 		board.WorkflowSummary, board.ConfigHash, board.ProfileGeneratedAt)
 }
 
+// inferPhaseFromName guesses the workflow phase from a status/column name.
+func inferPhaseFromName(name string) (phase string, isTerminal bool) {
+	lower := strings.ToLower(name)
+	switch {
+	case lower == "done" || lower == "closed" || lower == "resolved":
+		return "done", true
+	case lower == "backlog" || lower == "to do" || lower == "todo" || lower == "open":
+		return "backlog", false
+	case strings.Contains(lower, "review"):
+		return "review", false
+	case strings.Contains(lower, "test") || strings.Contains(lower, "qa"):
+		return "testing", false
+	default:
+		return "active_work", false
+	}
+}
+
 // BuildFallbackProfile creates a basic profile without LLM, from raw board data.
 func BuildFallbackProfile(rawData *BoardRawData) *BoardProfile {
 	profile := &BoardProfile{
@@ -405,15 +506,7 @@ func BuildFallbackProfile(rawData *BoardRawData) *BoardProfile {
 
 	// Map columns to workflow stages.
 	for _, col := range rawData.Config.Columns {
-		phase := "active_work"
-		isTerminal := false
-		nameLower := strings.ToLower(col.Name)
-		if nameLower == "done" || nameLower == "closed" || nameLower == "resolved" {
-			phase = "done"
-			isTerminal = true
-		} else if nameLower == "backlog" || nameLower == "to do" || nameLower == "todo" || nameLower == "open" {
-			phase = "backlog"
-		}
+		phase, isTerminal := inferPhaseFromName(col.Name)
 
 		var statuses []string
 		for _, s := range col.Statuses {
@@ -435,6 +528,30 @@ func BuildFallbackProfile(rawData *BoardRawData) *BoardProfile {
 		}
 	}
 
+	// Fallback: synthesize stages from local issue status distribution when API columns unavailable.
+	if len(profile.WorkflowStages) == 0 && len(rawData.IssueSample.StatusDistribution) > 0 {
+		var statusNames []string
+		for name := range rawData.IssueSample.StatusDistribution {
+			statusNames = append(statusNames, name)
+		}
+		sort.Strings(statusNames)
+
+		for _, name := range statusNames {
+			phase, isTerminal := inferPhaseFromName(name)
+			profile.WorkflowStages = append(profile.WorkflowStages, WorkflowStage{
+				Name:             name,
+				OriginalStatuses: []string{name},
+				Phase:            phase,
+				IsTerminal:       isTerminal,
+			})
+			if phase == "active_work" {
+				profile.StaleThresholds[name] = 3
+			} else if phase == "backlog" {
+				profile.StaleThresholds[name] = 7
+			}
+		}
+	}
+
 	// Estimation approach.
 	if rawData.Config.Estimation != nil {
 		profile.EstimationApproach = EstimationApproach{
@@ -443,6 +560,25 @@ func BuildFallbackProfile(rawData *BoardRawData) *BoardProfile {
 		}
 	} else {
 		profile.EstimationApproach = EstimationApproach{Type: "none"}
+	}
+
+	// Check field mapping for estimation if not found from config.
+	if profile.EstimationApproach.Type == "none" && len(rawData.CustomFields) > 0 {
+		for _, cf := range rawData.CustomFields {
+			if cf.Role == "story_points" {
+				profile.EstimationApproach = EstimationApproach{
+					Type:  "story_points",
+					Field: &cf.FieldID,
+				}
+				break
+			} else if cf.Role == "tshirt_size" {
+				profile.EstimationApproach = EstimationApproach{
+					Type:  "tshirt_size",
+					Field: &cf.FieldID,
+				}
+				break
+			}
+		}
 	}
 
 	// Iteration info.
@@ -511,16 +647,16 @@ func GetEffectiveStaleThresholds(board db.JiraBoard) (map[string]int, error) {
 }
 
 // fetchBoardConfig fetches board configuration from the Jira API.
-func (a *BoardAnalyzer) fetchBoardConfig(ctx context.Context, boardID int) (*BoardConfig, error) {
-	config := &BoardConfig{}
-
+// Falls back to project statuses API when board configuration endpoint is unavailable.
+func (a *BoardAnalyzer) fetchBoardConfig(ctx context.Context, boardID int, projectKey string) (*BoardConfig, error) {
 	// Fetch board configuration.
 	type columnConfigResp struct {
 		ColumnConfig struct {
 			Columns []struct {
 				Name     string `json:"name"`
 				Statuses []struct {
-					ID string `json:"id"`
+					ID   string `json:"id"`
+					Name string `json:"name"`
 				} `json:"statuses"`
 			} `json:"columns"`
 		} `json:"columnConfig"`
@@ -530,22 +666,104 @@ func (a *BoardAnalyzer) fetchBoardConfig(ctx context.Context, boardID int) (*Boa
 		} `json:"filter"`
 	}
 
-	var resp columnConfigResp
-	path := fmt.Sprintf("/rest/agile/1.0/board/%d/configuration", boardID)
-	if err := a.client.get(ctx, path, &resp); err != nil {
-		return nil, fmt.Errorf("fetching board configuration: %w", err)
+	// Primary: project statuses (always available with basic scopes).
+	config, err := a.fetchProjectStatuses(ctx, projectKey)
+	if err != nil {
+		return nil, err
 	}
 
-	for _, col := range resp.ColumnConfig.Columns {
-		bc := BoardColumn{Name: col.Name}
-		for _, s := range col.Statuses {
-			bc.Statuses = append(bc.Statuses, BoardColumnStatus{ID: s.ID})
+	// Try to enrich with board-specific config (estimation, filter, column grouping).
+	var resp columnConfigResp
+	path := fmt.Sprintf("/rest/agile/1.0/board/%d/configuration", boardID)
+	if err := a.client.get(ctx, path, &resp); err == nil {
+		// Override columns with board-specific grouping if available.
+		if len(resp.ColumnConfig.Columns) > 0 {
+			config.Columns = nil
+			for _, col := range resp.ColumnConfig.Columns {
+				bc := BoardColumn{Name: col.Name}
+				for _, s := range col.Statuses {
+					bc.Statuses = append(bc.Statuses, BoardColumnStatus{ID: s.ID, Name: s.Name})
+				}
+				config.Columns = append(config.Columns, bc)
+			}
+		}
+		config.Estimation = resp.Estimation
+		config.FilterJQL = resp.Filter.Query
+	}
+
+	return config, nil
+}
+
+// fetchProjectStatuses builds board config from /rest/api/2/project/{key}/statuses.
+func (a *BoardAnalyzer) fetchProjectStatuses(ctx context.Context, projectKey string) (*BoardConfig, error) {
+	if projectKey == "" {
+		return nil, fmt.Errorf("no project key for status fallback")
+	}
+
+	type statusEntry struct {
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		StatusCategory struct {
+			Key  string `json:"key"`
+			Name string `json:"name"`
+		} `json:"statusCategory"`
+	}
+	type issueTypeStatuses struct {
+		Statuses []statusEntry `json:"statuses"`
+	}
+
+	var resp []issueTypeStatuses
+	path := fmt.Sprintf("/rest/api/2/project/%s/statuses", url.PathEscape(projectKey))
+	if err := a.client.get(ctx, path, &resp); err != nil {
+		return nil, fmt.Errorf("fetching project statuses: %w", err)
+	}
+
+	// Deduplicate statuses and group by category.
+	type statusInfo struct {
+		ID          string
+		Name        string
+		CategoryKey string
+	}
+	seen := map[string]bool{}
+	categoryStatuses := map[string][]statusInfo{}
+	categoryOrder := []string{}
+	for _, it := range resp {
+		for _, s := range it.Statuses {
+			if seen[s.ID] {
+				continue
+			}
+			seen[s.ID] = true
+			catKey := s.StatusCategory.Key
+			if _, exists := categoryStatuses[catKey]; !exists {
+				categoryOrder = append(categoryOrder, catKey)
+			}
+			categoryStatuses[catKey] = append(categoryStatuses[catKey], statusInfo{
+				ID: s.ID, Name: s.Name, CategoryKey: catKey,
+			})
+		}
+	}
+
+	// Map category keys to columns in workflow order.
+	catColumnOrder := []struct{ key, name string }{
+		{"new", "To Do"},
+		{"indeterminate", "In Progress"},
+		{"done", "Done"},
+	}
+
+	config := &BoardConfig{}
+	for _, cat := range catColumnOrder {
+		statuses, ok := categoryStatuses[cat.key]
+		if !ok {
+			continue
+		}
+		bc := BoardColumn{Name: cat.name}
+		for _, s := range statuses {
+			bc.Statuses = append(bc.Statuses, BoardColumnStatus{
+				ID: s.ID, Name: s.Name, CategoryKey: s.CategoryKey,
+			})
 		}
 		config.Columns = append(config.Columns, bc)
 	}
-
-	config.Estimation = resp.Estimation
-	config.FilterJQL = resp.Filter.Query
 
 	return config, nil
 }
@@ -602,12 +820,18 @@ Guidelines:
 - Group similar statuses into workflow stages
 - Identify the phase for each stage: backlog, active_work, review, testing, done, other
 - Estimate reasonable stale thresholds (days) per stage
-- Suggest health signals relevant to this board's workflow`
+- Suggest health signals relevant to this board's workflow
+- If custom_fields are present, incorporate them into the analysis:
+  - Use estimation fields (story_points, tshirt_size) to set estimation_approach
+  - Mention relevant role fields (qa_assignee, developer) in workflow summary
+  - Note categorization fields (area, severity) as available dimensions for health signals
+- LANGUAGE: Write workflow_summary and health_signals in ` + a.language + `. Keep JSON keys and phase values in English.`
 
 	dataJSON, _ := json.Marshal(rawData)
 	userMessage := fmt.Sprintf("Analyze this Jira board:\n\n%s", string(dataJSON))
 
-	response, _, err := a.aiProvider.QuerySync(ctx, systemPrompt, userMessage, "board-analysis")
+	response, usage, err := a.aiProvider.QuerySync(ctx, systemPrompt, userMessage, "")
+	a.addUsage(usage)
 	if err != nil {
 		return nil, fmt.Errorf("LLM query: %w", err)
 	}

@@ -140,11 +140,14 @@ type ParentRef struct {
 }
 
 // SearchResult is a paginated response from the Jira search API.
+// The new /rest/api/3/search/jql endpoint returns `isLast` and `nextPageToken` instead of `total`.
 type SearchResult struct {
-	StartAt    int     `json:"startAt"`
-	MaxResults int     `json:"maxResults"`
-	Total      int     `json:"total"`
-	Issues     []Issue `json:"issues"`
+	StartAt       int     `json:"startAt"`
+	MaxResults    int     `json:"maxResults"`
+	Total         int     `json:"total"`
+	IsLast        bool    `json:"isLast"`
+	NextPageToken string  `json:"nextPageToken"`
+	Issues        []Issue `json:"issues"`
 }
 
 // SprintList is a paginated response from the Jira sprints API.

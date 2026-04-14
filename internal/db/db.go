@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 61"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 62"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -2852,6 +2852,49 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v61: %w", err)
 		}
 		version = 61
+	}
+
+	if version < 62 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v62: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS jira_custom_fields (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			field_type TEXT NOT NULL,
+			items_type TEXT NOT NULL DEFAULT '',
+			is_useful INTEGER NOT NULL DEFAULT 0,
+			usage_hint TEXT NOT NULL DEFAULT '',
+			synced_at TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+			return fmt.Errorf("migration v62 create jira_custom_fields: %w", err)
+		}
+
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS jira_board_field_map (
+			board_id INTEGER NOT NULL,
+			field_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			PRIMARY KEY (board_id, field_id)
+		)`); err != nil {
+			return fmt.Errorf("migration v62 create jira_board_field_map: %w", err)
+		}
+
+		if !hasColumn(tx, "jira_issues", "custom_fields_json") {
+			if _, err := tx.Exec(`ALTER TABLE jira_issues ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration v62 add custom_fields_json: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 62"); err != nil {
+			return fmt.Errorf("setting schema version v62: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v62: %w", err)
+		}
+		version = 62
 	}
 
 	_ = version // silence unused variable if this is the last migration

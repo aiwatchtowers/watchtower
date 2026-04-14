@@ -710,6 +710,25 @@ CREATE TABLE IF NOT EXISTS jira_boards (
     profile_generated_at TEXT NOT NULL DEFAULT ''
 );
 
+-- Jira custom fields (discovered from API, classified by LLM)
+CREATE TABLE IF NOT EXISTS jira_custom_fields (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    field_type TEXT NOT NULL,
+    items_type TEXT NOT NULL DEFAULT '',
+    is_useful INTEGER NOT NULL DEFAULT 0,
+    usage_hint TEXT NOT NULL DEFAULT '',
+    synced_at TEXT NOT NULL DEFAULT ''
+);
+
+-- Per-board custom field mapping
+CREATE TABLE IF NOT EXISTS jira_board_field_map (
+    board_id INTEGER NOT NULL,
+    field_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    PRIMARY KEY (board_id, field_id)
+);
+
 -- Jira issues
 CREATE TABLE IF NOT EXISTS jira_issues (
     key TEXT PRIMARY KEY, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
@@ -729,7 +748,8 @@ CREATE TABLE IF NOT EXISTS jira_issues (
     labels TEXT NOT NULL DEFAULT '[]', components TEXT NOT NULL DEFAULT '[]',
     fix_versions TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '',
-    raw_json TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0
+    raw_json TEXT NOT NULL DEFAULT '', custom_fields_json TEXT NOT NULL DEFAULT '',
+    synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jira_issues_project ON jira_issues(project_key);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee ON jira_issues(assignee_account_id);

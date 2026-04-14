@@ -651,8 +651,27 @@ type JiraIssue struct {
 	UpdatedAt               string
 	ResolvedAt              string
 	RawJSON                 string
+	CustomFieldsJSON        string
 	SyncedAt                string
 	IsDeleted               bool
+}
+
+// JiraCustomField represents a discovered Jira custom field.
+type JiraCustomField struct {
+	ID        string
+	Name      string
+	FieldType string
+	ItemsType string
+	IsUseful  bool
+	UsageHint string
+	SyncedAt  string
+}
+
+// JiraBoardFieldMap maps a custom field to a role on a specific board.
+type JiraBoardFieldMap struct {
+	BoardID int
+	FieldID string
+	Role    string
 }
 
 // JiraSprint represents a Jira sprint stored locally.

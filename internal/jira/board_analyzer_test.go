@@ -35,7 +35,7 @@ func TestBuildFallbackProfile(t *testing.T) {
 	assert.Len(t, profile.WorkflowStages, 4)
 	assert.Equal(t, "backlog", profile.WorkflowStages[0].Phase)
 	assert.Equal(t, "active_work", profile.WorkflowStages[1].Phase)
-	assert.Equal(t, "active_work", profile.WorkflowStages[2].Phase)
+	assert.Equal(t, "review", profile.WorkflowStages[2].Phase)
 	assert.Equal(t, "done", profile.WorkflowStages[3].Phase)
 	assert.True(t, profile.WorkflowStages[3].IsTerminal)
 

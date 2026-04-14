@@ -303,6 +303,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 					if cfg.Digest.Enabled {
 						aiProvider := newAIClient(cfg, cfg.DBPath())
 						analyzer := jira.NewBoardAnalyzer(jiraClient, database, aiProvider)
+						analyzer.SetLanguage(cfg.Digest.Language)
 						jiraSyncer.SetBoardAnalyzer(analyzer)
 						jiraSyncer.SetAutoRefresh(true)
 					}

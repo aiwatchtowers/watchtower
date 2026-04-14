@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import GRDB
 
-struct JiraBoard: Codable, FetchableRecord, TableRecord {
+struct JiraBoard: Codable, FetchableRecord, TableRecord, Hashable {
     static let databaseTableName = "jira_boards"
     let id: Int
     var name: String
@@ -46,6 +46,31 @@ struct BoardProfileDisplay: Codable {
     let workflowSummary: String
     let staleThresholds: [String: Int]
     let healthSignals: [String]
+    let customFields: [CustomFieldDisplay]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workflowStages = (try? container.decode([WorkflowStageDisplay].self, forKey: .workflowStages)) ?? []
+        estimationApproach = try container.decode(EstimationApproachDisplay.self, forKey: .estimationApproach)
+        iterationInfo = try container.decode(IterationInfoDisplay.self, forKey: .iterationInfo)
+        workflowSummary = (try? container.decode(String.self, forKey: .workflowSummary)) ?? ""
+        staleThresholds = (try? container.decode([String: Int].self, forKey: .staleThresholds)) ?? [:]
+        healthSignals = (try? container.decode([String].self, forKey: .healthSignals)) ?? []
+        customFields = (try? container.decode([CustomFieldDisplay].self, forKey: .customFields)) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case workflowStages, estimationApproach, iterationInfo
+        case workflowSummary, staleThresholds, healthSignals, customFields
+    }
+}
+
+struct CustomFieldDisplay: Codable, Identifiable {
+    var id: String { fieldId }
+    let fieldId: String
+    let name: String
+    let role: String
+    let type: String
 }
 
 struct WorkflowStageDisplay: Codable, Identifiable {

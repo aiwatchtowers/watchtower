@@ -222,6 +222,10 @@ struct TaskDetailView: View {
             let items = task.decodedSubItems
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+
                     Button {
                         viewModel.toggleSubItem(task, index: index)
                     } label: {
@@ -240,6 +244,9 @@ struct TaskDetailView: View {
                                 viewModel.editSubItem(task, index: index, newText: editingSubItemText)
                                 editingSubItemIndex = nil
                             }
+                            .onExitCommand {
+                                editingSubItemIndex = nil
+                            }
                     } else {
                         Text(item.text)
                             .font(.callout)
@@ -247,18 +254,44 @@ struct TaskDetailView: View {
                             .foregroundStyle(
                                 item.done ? .secondary : .primary
                             )
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                editingSubItemIndex = index
+                                editingSubItemText = item.text
+                            }
                     }
 
-                    Spacer()
-                }
-                .contextMenu {
-                    Button("Edit") {
-                        editingSubItemIndex = index
-                        editingSubItemText = item.text
-                    }
-                    Button("Delete", role: .destructive) {
+                    Spacer(minLength: 0)
+
+                    Button {
                         viewModel.removeSubItem(task, index: index)
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 2)
+                .draggable(String(index)) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.caption2)
+                        Text(item.text)
+                            .font(.callout)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 6))
+                }
+                .dropDestination(for: String.self) { droppedItems, _ in
+                    guard let fromStr = droppedItems.first,
+                          let from = Int(fromStr),
+                          from != index else { return false }
+                    let dest = from < index ? index + 1 : index
+                    viewModel.moveSubItem(task, from: IndexSet(integer: from), to: dest)
+                    return true
                 }
             }
 

@@ -178,16 +178,19 @@ func (c *Client) getWithQuery(ctx context.Context, path string, params url.Value
 	return c.get(ctx, path, result)
 }
 
-// SearchIssues executes a JQL search query.
-func (c *Client) SearchIssues(ctx context.Context, jql string, startAt, maxResults int) (*SearchResult, error) {
+// SearchIssues executes a JQL search query with cursor-based pagination.
+// Pass empty nextPageToken for the first page.
+func (c *Client) SearchIssues(ctx context.Context, jql string, maxResults int, nextPageToken string) (*SearchResult, error) {
 	params := url.Values{
 		"jql":        {jql},
-		"startAt":    {fmt.Sprintf("%d", startAt)},
 		"maxResults": {fmt.Sprintf("%d", maxResults)},
 		"fields":     {strings.Join(searchFields, ",")},
 	}
+	if nextPageToken != "" {
+		params.Set("nextPageToken", nextPageToken)
+	}
 	var result SearchResult
-	if err := c.getWithQuery(ctx, "/rest/api/3/search", params, &result); err != nil {
+	if err := c.getWithQuery(ctx, "/rest/api/3/search/jql", params, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

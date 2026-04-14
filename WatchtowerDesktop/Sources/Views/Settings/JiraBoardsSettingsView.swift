@@ -3,6 +3,7 @@ import GRDB
 
 struct JiraBoardsSettingsView: View {
     @Environment(AppState.self) private var appState
+    var onSelectBoard: (JiraBoard) -> Void = { _ in }
     @State private var boards: [JiraBoard] = []
     @State private var observationTask: Task<Void, Never>?
     @State private var toggleError: String?
@@ -11,6 +12,8 @@ struct JiraBoardsSettingsView: View {
     @State private var reAnalyzingBoardID: Int?
     // TODO: notifiedBoardIDs resets when the view is recreated. Consider @AppStorage or a static Set if persistent dedup is needed.
     @State private var notifiedBoardIDs: Set<Int> = []
+
+    private var syncManager: JiraBoardSyncManager { .shared }
 
     var body: some View {
         Section("Boards") {
@@ -40,12 +43,19 @@ struct JiraBoardsSettingsView: View {
                     .foregroundStyle(.red)
             }
         }
-        .onAppear { startObserving() }
+        .onAppear {
+            startObserving()
+            syncManager.onComplete = { [self] in
+                if let db = appState.databaseManager {
+                    loadBoards(db: db)
+                }
+            }
+        }
         .onDisappear { observationTask?.cancel() }
     }
 
     private func boardRow(_ board: JiraBoard) -> some View {
-        NavigationLink(destination: JiraBoardProfileView(board: board)) {
+        Button { onSelectBoard(board) } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(board.name)
@@ -75,9 +85,13 @@ struct JiraBoardsSettingsView: View {
                     reAnalyzeButton(board)
                 }
 
-                Text("\(board.issueCount) issues")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if syncManager.syncingBoardID == board.id {
+                    syncProgressView
+                } else {
+                    Text("\(board.issueCount) issues")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Toggle(
                     "",
@@ -90,12 +104,60 @@ struct JiraBoardsSettingsView: View {
                 )
                 .labelsHidden()
                 .toggleStyle(.switch)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .onAppear {
             checkAndNotifyConfigChange(board)
         }
     }
+
+    // MARK: - Sync Progress
+
+    private var syncProgressView: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+            VStack(alignment: .trailing, spacing: 1) {
+                if let p = syncManager.progress, p.done > 0 {
+                    Text("\(p.done) issues")
+                        .font(.caption)
+                        .monospacedDigit()
+                    HStack(spacing: 4) {
+                        Text(syncPhaseLabel(p.status))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let elapsed = syncManager.elapsedFormatted {
+                            Text(elapsed)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                } else {
+                    Text("Starting sync...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func syncPhaseLabel(_ status: String?) -> String {
+        switch status {
+        case "active": return "Active issues"
+        case "active_done": return "Active done"
+        case "closed": return "Closed issues"
+        case "issues": return "Syncing"
+        default: return "Syncing"
+        }
+    }
+
+    // MARK: - Badges
 
     @ViewBuilder
     private func analyzedBadge(_ board: JiraBoard) -> some View {
@@ -163,7 +225,7 @@ struct JiraBoardsSettingsView: View {
                 Constants.processWorkingDirectory()
 
             let stderrPipe = Pipe()
-            process.standardOutput = Pipe()
+            process.standardOutput = FileHandle.nullDevice
             process.standardError = stderrPipe
 
             do {
@@ -214,10 +276,17 @@ struct JiraBoardsSettingsView: View {
         }
     }
 
+    // MARK: - Toggle & Sync
+
     private func toggleBoard(_ board: JiraBoard, selected: Bool) {
         guard let cliPath = Constants.findCLIPath() else {
             toggleError = "Watchtower CLI not found"
             return
+        }
+
+        // Optimistically update local state so the toggle reflects immediately
+        if let idx = boards.firstIndex(where: { $0.id == board.id }) {
+            boards[idx].isSelected = selected
         }
 
         toggleError = nil
@@ -234,7 +303,7 @@ struct JiraBoardsSettingsView: View {
                 Constants.processWorkingDirectory()
 
             let stderrPipe = Pipe()
-            process.standardOutput = Pipe()
+            process.standardOutput = FileHandle.nullDevice
             process.standardError = stderrPipe
 
             do {
@@ -257,13 +326,24 @@ struct JiraBoardsSettingsView: View {
                     in: .whitespacesAndNewlines
                 ) ?? ""
                 await MainActor.run {
+                    // Revert optimistic update on failure
+                    if let idx = boards.firstIndex(where: { $0.id == board.id }) {
+                        boards[idx].isSelected = !selected
+                    }
                     toggleError = stderr.isEmpty
                         ? "Failed to \(action) board"
                         : String(stderr.prefix(200))
                 }
+            } else if selected {
+                // Board was enabled — trigger initial sync.
+                await MainActor.run {
+                    syncManager.startSync(boardID: board.id)
+                }
             }
         }
     }
+
+    // MARK: - Observation
 
     private func startObserving() {
         guard let db = appState.databaseManager else { return }
@@ -313,7 +393,7 @@ struct JiraBoardsSettingsView: View {
                 Constants.processWorkingDirectory()
 
             let stderrPipe = Pipe()
-            process.standardOutput = Pipe()
+            process.standardOutput = FileHandle.nullDevice
             process.standardError = stderrPipe
 
             do {

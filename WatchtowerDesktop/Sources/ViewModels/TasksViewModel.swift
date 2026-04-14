@@ -229,6 +229,12 @@ final class TasksViewModel {
         saveSubItems(task, items: items)
     }
 
+    func moveSubItem(_ task: TaskItem, from source: IndexSet, to destination: Int) {
+        var items = task.decodedSubItems
+        items.move(fromOffsets: source, toOffset: destination)
+        saveSubItems(task, items: items)
+    }
+
     private func saveSubItems(_ task: TaskItem, items: [TaskSubItem]) {
         guard let data = try? JSONEncoder().encode(items),
               let json = String(data: data, encoding: .utf8) else { return }
