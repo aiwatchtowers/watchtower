@@ -479,7 +479,6 @@ func (a *BoardAnalyzer) mergeUserOverrides(boardID int, profile *BoardProfile, o
 		board.WorkflowSummary, board.ConfigHash, board.ProfileGeneratedAt)
 }
 
-
 // ComputeConfigHash computes a SHA256 hash of the board configuration for change detection.
 func ComputeConfigHash(rawData *BoardRawData) string {
 	var parts []string

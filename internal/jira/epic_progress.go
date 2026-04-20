@@ -12,7 +12,7 @@ import (
 // EpicProgressEntry holds computed progress and forecast for a single epic.
 type EpicProgressEntry struct {
 	EpicKey          string
-	EpicName         string  // summary of the epic issue from jira_issues
+	EpicName         string // summary of the epic issue from jira_issues
 	TotalIssues      int
 	DoneIssues       int
 	InProgressIssues int
