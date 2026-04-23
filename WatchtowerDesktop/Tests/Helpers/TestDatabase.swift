@@ -991,6 +991,7 @@ enum TestDatabase {
         return db.lastInsertedRowID
     }
 
+    @discardableResult
     static func insertDayPlanItem(
         _ db: Database,
         dayPlanID: Int64 = 1,
@@ -1007,7 +1008,7 @@ enum TestDatabase {
         status: String = "pending",
         orderIndex: Int = 0,
         tags: String? = nil
-    ) throws {
+    ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO day_plan_items (day_plan_id, kind, source_type, source_id, title,
                 description, rationale, start_time, end_time, duration_min, priority,
@@ -1016,5 +1017,6 @@ enum TestDatabase {
             """, arguments: [dayPlanID, kind, sourceType, sourceID, title,
                              description, rationale, startTime, endTime, durationMin,
                              priority, status, orderIndex, tags])
+        return db.lastInsertedRowID
     }
 }
