@@ -100,6 +100,17 @@ type AnalysisConfig struct {
 	LegacyMode bool `mapstructure:"legacy_mode"` // enable legacy people analytics (default: false)
 }
 
+// DayPlanConfig holds settings for the daily plan generation pipeline.
+type DayPlanConfig struct {
+	Enabled           bool   `yaml:"enabled" mapstructure:"enabled"`
+	Hour              int    `yaml:"hour" mapstructure:"hour"`
+	WorkingHoursStart string `yaml:"working_hours_start" mapstructure:"working_hours_start"`
+	WorkingHoursEnd   string `yaml:"working_hours_end" mapstructure:"working_hours_end"`
+	MaxTimeblocks     int    `yaml:"max_timeblocks" mapstructure:"max_timeblocks"`
+	MinBacklog        int    `yaml:"min_backlog" mapstructure:"min_backlog"`
+	MaxBacklog        int    `yaml:"max_backlog" mapstructure:"max_backlog"`
+}
+
 type Config struct {
 	ActiveWorkspace string                      `mapstructure:"active_workspace"`
 	Workspaces      map[string]*WorkspaceConfig `mapstructure:"workspaces"`
@@ -112,6 +123,7 @@ type Config struct {
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
 	Jira            JiraConfig                  `mapstructure:"jira"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
+	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
 	ClaudePath      string                      `mapstructure:"claude_path"`
 	CodexPath       string                      `mapstructure:"codex_path"`
 }
@@ -149,6 +161,13 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("calendar.sync_days_ahead", DefaultCalendarSyncDaysAhead)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
+	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
+	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
+	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)
+	v.SetDefault("day_plan.working_hours_end", DefaultDayPlanWorkingHoursEnd)
+	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
+	v.SetDefault("day_plan.min_backlog", DefaultDayPlanMinBacklog)
+	v.SetDefault("day_plan.max_backlog", DefaultDayPlanMaxBacklog)
 	// Config file
 	v.SetConfigFile(configPath)
 

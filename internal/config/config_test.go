@@ -239,6 +239,44 @@ func TestValidate_NilWorkspaces(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestDayPlanConfig_Defaults(t *testing.T) {
+	path := writeTestConfig(t, "")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, DefaultDayPlanEnabled, cfg.DayPlan.Enabled)
+	assert.Equal(t, DefaultDayPlanHour, cfg.DayPlan.Hour)
+	assert.Equal(t, DefaultDayPlanWorkingHoursStart, cfg.DayPlan.WorkingHoursStart)
+	assert.Equal(t, DefaultDayPlanWorkingHoursEnd, cfg.DayPlan.WorkingHoursEnd)
+	assert.Equal(t, DefaultDayPlanMaxTimeblocks, cfg.DayPlan.MaxTimeblocks)
+	assert.Equal(t, DefaultDayPlanMinBacklog, cfg.DayPlan.MinBacklog)
+	assert.Equal(t, DefaultDayPlanMaxBacklog, cfg.DayPlan.MaxBacklog)
+}
+
+func TestDayPlanConfig_FromYAML(t *testing.T) {
+	yaml := `
+day_plan:
+  enabled: false
+  hour: 7
+  working_hours_start: "08:00"
+  working_hours_end: "18:00"
+  max_timeblocks: 5
+  min_backlog: 2
+  max_backlog: 10
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.DayPlan.Enabled)
+	assert.Equal(t, 7, cfg.DayPlan.Hour)
+	assert.Equal(t, "08:00", cfg.DayPlan.WorkingHoursStart)
+	assert.Equal(t, "18:00", cfg.DayPlan.WorkingHoursEnd)
+	assert.Equal(t, 5, cfg.DayPlan.MaxTimeblocks)
+	assert.Equal(t, 2, cfg.DayPlan.MinBacklog)
+	assert.Equal(t, 10, cfg.DayPlan.MaxBacklog)
+}
+
 func TestLoad_MultipleWorkspaces(t *testing.T) {
 	yaml := `
 active_workspace: prod
