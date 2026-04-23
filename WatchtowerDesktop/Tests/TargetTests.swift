@@ -41,7 +41,7 @@ final class TargetModelTests: XCTestCase {
         }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertEqual(target.level, "quarter")
-        XCTAssertEqual(target.aiLevelConfidence, 0.92, accuracy: 0.001)
+        XCTAssertEqual(target.aiLevelConfidence ?? 0, 0.92, accuracy: 0.001)
     }
 
     // MARK: - isActive
@@ -361,12 +361,12 @@ final class TargetQueryTests: XCTestCase {
     func testFetchAllSortedByLevelThenPriority() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try TestDatabase.insertTarget(db, text: "Day Low", level: "day", priority: "low",
-                                          periodStart: "2026-04-23", periodEnd: "2026-04-23")
-            try TestDatabase.insertTarget(db, text: "Quarter High", level: "quarter", priority: "high",
-                                          periodStart: "2026-01-01", periodEnd: "2026-03-31")
-            try TestDatabase.insertTarget(db, text: "Week Medium", level: "week", priority: "medium",
-                                          periodStart: "2026-04-20", periodEnd: "2026-04-26")
+            try TestDatabase.insertTarget(db, text: "Day Low", level: "day",
+                                          periodStart: "2026-04-23", periodEnd: "2026-04-23", priority: "low")
+            try TestDatabase.insertTarget(db, text: "Quarter High", level: "quarter",
+                                          periodStart: "2026-01-01", periodEnd: "2026-03-31", priority: "high")
+            try TestDatabase.insertTarget(db, text: "Week Medium", level: "week",
+                                          periodStart: "2026-04-20", periodEnd: "2026-04-26", priority: "medium")
         }
         let targets = try db.read { try TargetQueries.fetchAll($0) }
         XCTAssertEqual(targets[0].text, "Quarter High")
@@ -414,11 +414,13 @@ final class TargetQueryTests: XCTestCase {
         let todayStr = fmt.string(from: Date())
         let yesterdayStr = fmt.string(from: yesterday)
 
+        // Use mid-evening datetime for DueToday — after now but still today and before upper bound
+        let dueTodayStr = todayStr + "T22:00"
         try db.write { db in
             try TestDatabase.insertTarget(db, text: "Active1", status: "todo", priority: "medium")
             try TestDatabase.insertTarget(db, text: "Active2", status: "in_progress", priority: "high")
             try TestDatabase.insertTarget(db, text: "Overdue", status: "todo", priority: "medium", dueDate: yesterdayStr)
-            try TestDatabase.insertTarget(db, text: "DueToday", status: "todo", priority: "low", dueDate: todayStr)
+            try TestDatabase.insertTarget(db, text: "DueToday", status: "todo", priority: "low", dueDate: dueTodayStr)
             try TestDatabase.insertTarget(db, text: "Done", status: "done", priority: "high")
         }
         let counts = try db.read { try TargetQueries.fetchCounts($0) }
@@ -607,7 +609,7 @@ final class TargetQueryTests: XCTestCase {
             try TestDatabase.insertTarget(db, text: "Parent", level: "quarter",
                                           periodStart: "2026-01-01", periodEnd: "2026-03-31")
             try TestDatabase.insertTarget(db, text: "Child", level: "week",
-                                          parentId: 1, periodStart: "2026-01-06", periodEnd: "2026-01-12")
+                                          periodStart: "2026-01-06", periodEnd: "2026-01-12", parentId: 1)
         }
         try db.write { try TargetQueries.delete($0, id: 1) }
         let child = try XCTUnwrap(db.read { try TargetQueries.fetchByID($0, id: 2) })

@@ -479,7 +479,7 @@ enum TestDatabase {
         ai_reason       TEXT NOT NULL DEFAULT '',
         resolved_reason TEXT NOT NULL DEFAULT '',
         snooze_until    TEXT NOT NULL DEFAULT '',
-        task_id         INTEGER,
+        target_id       INTEGER,
         read_at         TEXT,
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
@@ -1011,13 +1011,13 @@ enum TestDatabase {
         aiReason: String = "",
         resolvedReason: String = "",
         snoozeUntil: String = "",
-        taskID: Int? = nil,
+        taskID: Int? = nil,       // kept for call-site compat; maps to target_id column
         readAt: String? = nil
     ) throws {
         try db.execute(sql: """
             INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
                 trigger_type, snippet, permalink, status, priority, ai_reason,
-                resolved_reason, snooze_until, task_id, read_at)
+                resolved_reason, snooze_until, target_id, read_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [channelID, messageTS, threadTS, senderUserID,
                              triggerType, snippet, permalink, status, priority, aiReason,
