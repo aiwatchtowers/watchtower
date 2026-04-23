@@ -10,10 +10,10 @@ Review each row's commit SHA with `git show <sha>`. For `DONE_WITH_CONCERNS`, re
 |------|--------|--------|---------|-------|
 | T1: Migration v65 — day_plans + day_plan_items | ✅ DONE | `3f2c678` | spec ✅ / quality APPROVED | Minor diagnostic note on test helper — no fix needed |
 | T2: Go models DayPlan + DayPlanItem | ✅ DONE | `ca9bbdb` | implementer only (trivial data decls) | go build + vet clean |
-| T3: DB CRUD + tests | ⚠️ fixing HIGH | `d0cee84` (+fix) | review APPROVED_WITH_CONCERNS | 2 HIGH: atomic upsert via ON CONFLICT + time parse fallback |
-| T4: Prompt template day_plan.generate | ✅ DONE | `5ae8557` | implementer only (trivial registration) | 14 placeholders confirmed |
-| T5: Config DayPlanConfig | ⏳ running | — | — | — |
-| T6: dayplan package skeleton | pending | — | — | — |
+| T3: DB CRUD + tests | ✅ DONE | `d0cee84`+`e340aec` | review APPROVED_WITH_CONCERNS + HIGH fixed | MEDIUM/LOW (dup scan helper, missing tests for IncrementRegenerateCount/MarkDayPlanRead/UpdateItemOrder, CreateDayPlanItems not transactional) **deferred** |
+| T4: Prompt template day_plan.generate | ✅ DONE | `5ae8557` | implementer only | 14 placeholders confirmed |
+| T5: Config DayPlanConfig | ✅ DONE | `9bdfee4` | implementer only | uses viper SetDefault pattern |
+| T6: dayplan package skeleton | ⏳ running | — | — | — |
 | T7: Gather module | pending | — | — | — |
 | T8: Pipeline.Run orchestration | pending | — | — | — |
 | T9: buildItems validation + merge | pending | — | — | — |
