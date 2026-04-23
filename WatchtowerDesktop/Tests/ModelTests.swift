@@ -29,27 +29,28 @@ final class ModelTests: XCTestCase {
     // MARK: - Decision
 
     func testDecisionResolvedImportanceWithValue() {
-        let decision = Decision(text: "Do X", by: nil, messageTS: nil, importance: "high")
+        let decision = Decision(text: "Do X", by: nil, messageTS: nil, channelID: nil, importance: "high")
         XCTAssertEqual(decision.resolvedImportance, "high")
     }
 
     func testDecisionResolvedImportanceNilDefaultsMedium() {
-        let decision = Decision(text: "Do X", by: nil, messageTS: nil, importance: nil)
+        let decision = Decision(text: "Do X", by: nil, messageTS: nil, channelID: nil, importance: nil)
         XCTAssertEqual(decision.resolvedImportance, "medium")
     }
 
     func testDecisionEquality() {
-        let d1 = Decision(text: "Do X", by: "Alice", messageTS: "123", importance: "high")
-        let d2 = Decision(text: "Do X", by: "Alice", messageTS: "123", importance: "high")
+        let d1 = Decision(text: "Do X", by: "Alice", messageTS: "123", channelID: nil, importance: "high")
+        let d2 = Decision(text: "Do X", by: "Alice", messageTS: "123", channelID: nil, importance: "high")
         XCTAssertEqual(d1, d2)
     }
 
     func testDecisionJSONDecoding() throws {
-        let json = #"{"text":"Deploy v2","by":"Alice","message_ts":"123.456","importance":"high"}"#
+        let json = #"{"text":"Deploy v2","by":"Alice","message_ts":"123.456","channel_id":"C123ABC","importance":"high"}"#
         let decision = try JSONDecoder().decode(Decision.self, from: try XCTUnwrap(json.data(using: .utf8)))
         XCTAssertEqual(decision.text, "Deploy v2")
         XCTAssertEqual(decision.by, "Alice")
         XCTAssertEqual(decision.messageTS, "123.456")
+        XCTAssertEqual(decision.channelID, "C123ABC")
         XCTAssertEqual(decision.importance, "high")
     }
 
@@ -59,6 +60,7 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(decision.text, "Do something")
         XCTAssertNil(decision.by)
         XCTAssertNil(decision.messageTS)
+        XCTAssertNil(decision.channelID)
         XCTAssertNil(decision.importance)
     }
 

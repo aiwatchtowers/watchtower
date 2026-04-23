@@ -246,6 +246,32 @@ final class DigestViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testContributingChannelsDeduplicates() throws {
+        // Same channel can have multiple channel digests within a daily/weekly window
+        // (e.g. one per sync cycle). The list must show each channel only once,
+        // sorted alphabetically.
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertChannel(db, id: "C001", name: "zeta")
+            try TestDatabase.insertChannel(db, id: "C002", name: "alpha")
+            // Three channel digests for C001, one for C002 — all in the daily window
+            try TestDatabase.insertDigest(db, channelID: "C001", periodFrom: 1700000000, periodTo: 1700020000, type: "channel", summary: "z1")
+            try TestDatabase.insertDigest(db, channelID: "C001", periodFrom: 1700020001, periodTo: 1700040000, type: "channel", summary: "z2")
+            try TestDatabase.insertDigest(db, channelID: "C001", periodFrom: 1700040001, periodTo: 1700060000, type: "channel", summary: "z3")
+            try TestDatabase.insertDigest(db, channelID: "C002", periodFrom: 1700000000, periodTo: 1700086400, type: "channel", summary: "a1")
+            try TestDatabase.insertDigest(db, channelID: "", periodFrom: 1700000000, periodTo: 1700086400, type: "daily", summary: "daily")
+        }
+
+        let vm = DigestViewModel(dbManager: dbManager)
+        vm.load()
+
+        let daily = try XCTUnwrap(vm.digests.first { $0.type == "daily" })
+        let contributing = vm.contributingChannels(for: daily)
+        XCTAssertEqual(contributing.count, 2, "C001 must collapse to a single entry")
+        XCTAssertEqual(contributing[0].name, "alpha", "results must be sorted by name")
+        XCTAssertEqual(contributing[1].name, "zeta")
+    }
+
+    @MainActor
     func testContributingChannelsEmptyForChannelDigest() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertDigest(db, channelID: "C001", type: "channel")

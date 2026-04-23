@@ -134,7 +134,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 {
   "summary": "3-5 sentence overview of the day's activity across all channels",
   "topics": ["cross-channel topic1", "topic2"],
-  "decisions": [{"text": "decision text", "by": "@username", "message_ts": "ts", "importance": "high"}],
+  "decisions": [{"text": "decision text", "by": "@username", "message_ts": "ts", "channel_id": "C123ABC", "importance": "high"}],
   "action_items": [{"text": "action text", "assignee": "@username", "status": "open"}],
   "key_messages": [],
   "running_summary": {"active_topics": [{"topic": "...", "status": "in_progress|resolved|stale", "started": "2026-03-18", "last_update": "2026-03-21", "key_participants": ["U123"], "summary": "..."}], "recent_decisions": [{"decision": "...", "date": "2026-03-20", "by": "U123", "status": "active"}], "channel_dynamics": "Brief cross-channel dynamics overview", "open_questions": ["..."]}
@@ -145,6 +145,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 Rules:
 - Highlight cross-channel connections (e.g., topics discussed in multiple channels)
 - decisions: Consolidate and DEDUPLICATE decisions from channel digests below. If the same decision appears in multiple channels, include it ONCE. A DECISION is a conscious choice between alternatives — NOT a status update, notification, or routine operation. Each decision must answer: "Who chose what, and what changed?"
+  ALWAYS include "channel_id" matching the source channel where the decision was made (use the channel_id from the per-channel digest section). This is required for traceability links back to Slack.
   importance levels:
   * "high" — changes architecture, strategy, budget, staffing, product direction, security posture, or has org-wide impact
   * "medium" — changes a process, workflow, or technical approach within a team/project
@@ -167,7 +168,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 {
   "summary": "5-7 sentence overview of the week's key developments",
   "topics": ["trending topic1", "trending topic2"],
-  "decisions": [{"text": "key decision", "by": "@username", "message_ts": "ts", "importance": "high"}],
+  "decisions": [{"text": "key decision", "by": "@username", "message_ts": "ts", "channel_id": "C123ABC", "importance": "high"}],
   "action_items": [{"text": "outstanding action", "assignee": "@username", "status": "open"}],
   "key_messages": [],
   "running_summary": {"active_topics": [{"topic": "...", "status": "in_progress|resolved|stale", "started": "2026-03-18", "last_update": "2026-03-21", "key_participants": ["U123"], "summary": "..."}], "recent_decisions": [{"decision": "...", "date": "2026-03-20", "by": "U123", "status": "active"}], "channel_dynamics": "Brief weekly dynamics overview", "open_questions": ["..."]}
@@ -178,6 +179,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 Rules:
 - Focus on trends: what topics gained momentum, what was resolved, what's still open
 - Highlight the most impactful decisions of the week. DEDUPLICATE: if the same decision appears across multiple days, include it only ONCE. Only include genuine choices/decisions, not status updates.
+  ALWAYS include "channel_id" matching the source channel where the decision originated (preserve from the daily digests). Required for Slack traceability links.
   importance: "high" (architectural, strategic, budget, org-wide), "medium" (process, workflow, team-level), "low" (tactical, minor)
 - Consolidate action items (remove completed, flag overdue)
 - running_summary: Updated weekly running context. Compress aggressively — max 2000 characters. Track major themes, decisions, trends, and open questions across the week.

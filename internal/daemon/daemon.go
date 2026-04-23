@@ -482,12 +482,11 @@ func (d *Daemon) saveLastPeople() {
 }
 
 // shouldRunBriefing checks if the daily briefing should run.
-// Runs at most once per day, after the configured briefing.hour.
+// Runs at most once per calendar day, after the configured briefing.hour.
 func (d *Daemon) shouldRunBriefing() bool {
 	now := time.Now()
 
-	// Already ran today?
-	if !d.lastBriefing.IsZero() && now.Sub(d.lastBriefing) < 24*time.Hour {
+	if !d.lastBriefing.IsZero() && sameCalendarDay(d.lastBriefing, now) {
 		return false
 	}
 
@@ -497,6 +496,12 @@ func (d *Daemon) shouldRunBriefing() bool {
 	}
 
 	return now.Hour() >= targetHour
+}
+
+func sameCalendarDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
 }
 
 func (d *Daemon) lastBriefingPath() string {

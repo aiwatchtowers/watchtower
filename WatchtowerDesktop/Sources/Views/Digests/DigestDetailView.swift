@@ -18,6 +18,7 @@ struct DigestDetailView: View {
     @State private var jiraSiteURL: String?
     @State private var withoutJiraEnabled = false
     @State private var epicProgressVM: EpicProgressViewModel?
+    @State private var channelsExpanded = false
 
     var body: some View {
         ScrollView {
@@ -219,9 +220,7 @@ struct DigestDetailView: View {
     private var contributingChannelsSection: some View {
         let contributing = viewModel.contributingChannels(for: digest)
         if !contributing.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Channels")
-                    .font(.headline)
+            DisclosureGroup(isExpanded: $channelsExpanded) {
                 FlowLayout(spacing: 6) {
                     ForEach(contributing, id: \.channelID) { item in
                         if let url = viewModel.slackChannelURL(channelID: item.channelID) {
@@ -242,6 +241,10 @@ struct DigestDetailView: View {
                         }
                     }
                 }
+                .padding(.top, 6)
+            } label: {
+                Text("Channels (\(contributing.count))")
+                    .font(.headline)
             }
         }
     }
@@ -278,9 +281,7 @@ struct DigestDetailView: View {
                         ForEach(Array(decisions.enumerated()), id: \.element.id) { idx, decision in
                             DecisionCard(
                                 decision: decision,
-                                slackURL: decision.messageTS.flatMap { ts in
-                                    viewModel.slackMessageURL(channelID: digest.channelID, messageTS: ts)
-                                },
+                                slackURL: slackURL(for: decision),
                                 feedbackEntityID: "\(digest.id):\(topic.idx):\(idx)",
                                 dbManager: appState.databaseManager,
                                 jiraIssues: jiraIssues,
@@ -429,12 +430,7 @@ struct DigestDetailView: View {
                         VStack(spacing: 0) {
                             DecisionCard(
                                 decision: decision,
-                                slackURL: decision.messageTS.flatMap { ts in
-                                    viewModel.slackMessageURL(
-                                        channelID: digest.channelID,
-                                        messageTS: ts
-                                    )
-                                },
+                                slackURL: slackURL(for: decision),
                                 feedbackEntityID: "\(digest.id):\(idx)",
                                 dbManager: appState.databaseManager,
                                 jiraIssues: jiraIssues,
@@ -544,6 +540,18 @@ struct DigestDetailView: View {
         }
         .font(.caption)
         .foregroundStyle(.tertiary)
+    }
+
+    /// Resolve Slack URL for a decision, preferring the decision's own channel_id
+    /// (set by AI for cross-channel rollups) over the digest's channelID.
+    /// Returns nil when neither a usable channel nor a message timestamp is available.
+    private func slackURL(for decision: Decision) -> URL? {
+        guard let ts = decision.messageTS, !ts.isEmpty else { return nil }
+        let channelID = decision.channelID?.isEmpty == false
+            ? decision.channelID!
+            : digest.channelID
+        guard !channelID.isEmpty else { return nil }
+        return viewModel.slackMessageURL(channelID: channelID, messageTS: ts)
     }
 
     private func markChannelRead() {

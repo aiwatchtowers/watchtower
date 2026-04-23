@@ -79,7 +79,8 @@ type Decision struct {
 	Text       string `json:"text"`
 	By         string `json:"by"`
 	MessageTS  string `json:"message_ts"`
-	Importance string `json:"importance"` // "high", "medium", "low"
+	ChannelID  string `json:"channel_id,omitempty"` // source channel for cross-channel digests
+	Importance string `json:"importance"`           // "high", "medium", "low"
 }
 
 // ActionItem represents an action item extracted from messages.
@@ -938,7 +939,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		name := p.channelName(d.ChannelID)
 		// Sanitize AI-generated values to prevent prompt injection via prior AI output
 		summary := sanitizePromptValue(d.Summary)
-		fmt.Fprintf(&sb, "### #%s (%d messages)\nSummary: %s\n", name, d.MessageCount, summary)
+		fmt.Fprintf(&sb, "### #%s [channel_id=%s] (%d messages)\nSummary: %s\n", name, d.ChannelID, d.MessageCount, summary)
 		// Include topics with their decisions for the rollup
 		topics, _ := p.db.GetDigestTopics(d.ID)
 		if len(topics) > 0 {

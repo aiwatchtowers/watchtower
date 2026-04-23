@@ -4,6 +4,7 @@ struct Decision: Codable, Identifiable, Equatable {
     let text: String
     let by: String?
     let messageTS: String?
+    let channelID: String?
     let importance: String?  // "high", "medium", "low" — nil defaults to "medium"
 
     // M2: stable ID using hash to avoid collisions from underscore separator
@@ -15,5 +16,6 @@ struct Decision: Codable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case text, by, importance
         case messageTS = "message_ts"
+        case channelID = "channel_id"
     }
 }
