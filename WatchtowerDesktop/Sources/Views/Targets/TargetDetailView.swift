@@ -25,7 +25,7 @@ struct TargetDetailView: View {
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
     @State private var links: [TargetLink] = []
-    @State private var suggestLinksToast: String?
+    // V1: suggestLinksToast removed — "Suggest links" button hidden pending Swift→Go CLI bridge
 
     enum Tab: String, CaseIterable {
         case details = "Details"
@@ -521,24 +521,7 @@ struct TargetDetailView: View {
                 }
             }
 
-            Divider()
-
-            Button {
-                suggestLinksToast = "Requires US-002 integration"
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    suggestLinksToast = nil
-                }
-            } label: {
-                Label("Suggest links", systemImage: "sparkles")
-            }
-            .buttonStyle(.bordered)
-
-            if let toast = suggestLinksToast {
-                Text(toast)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-            }
+            // V1: "Suggest links" button hidden — pending Swift→Go CLI bridge (see spec "Out of Scope V2")
         }
     }
 

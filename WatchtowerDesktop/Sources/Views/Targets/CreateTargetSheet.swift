@@ -19,8 +19,9 @@ struct CreateTargetSheet: View {
     @State private var subItems: [TargetSubItem] = []
     @State private var newSubItemText: String = ""
     @State private var errorMessage: String?
-    @State private var showExtractSheet = false
-    @State private var highlightExtract: Bool = false
+    // V1: hidden — pending Swift→Go CLI bridge (see spec "Out of Scope V2")
+    // @State private var showExtractSheet = false
+    // @State private var highlightExtract: Bool = false
 
     private let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
@@ -41,16 +42,6 @@ struct CreateTargetSheet: View {
         .onAppear {
             text = prefillText
             intent = prefillIntent
-            highlightExtract = prefillText.count > 200
-        }
-        .onChange(of: text) { _, newValue in
-            highlightExtract = newValue.count > 200
-        }
-        .sheet(isPresented: $showExtractSheet) {
-            // Placeholder — wired to US-002 extractor later
-            ExtractPreviewSheet(proposed: []) { _ in
-                // no-op stub: US-002 will provide real proposed items
-            }
         }
     }
 
@@ -69,7 +60,7 @@ struct CreateTargetSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 textField
-                pasteExtractButton
+                // V1: "Paste and extract" button hidden — pending Swift→Go CLI bridge (see spec "Out of Scope V2")
                 intentField
                 levelRow
                 priorityRow
@@ -90,29 +81,6 @@ struct CreateTargetSheet: View {
             TextField("Target description", text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
-        }
-    }
-
-    private var pasteExtractButton: some View {
-        HStack {
-            Button {
-                showExtractSheet = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                    Text("Paste and extract")
-                }
-            }
-            .buttonStyle(.bordered)
-            .help("Extract multiple targets from pasted text using AI (requires US-002 integration)")
-
-            Spacer()
-
-            if highlightExtract {
-                Text("Paste detected — try Extract!")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
