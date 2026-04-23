@@ -40,7 +40,7 @@ sync → inbox → channel_digests → tracks → rollups → people → briefin
 ```
 
 - **`internal/dayplan/`** (new Go package): pipeline, prompt, gather, merge, conflict detection.
-- **`internal/db/dayplans.go`** + migration `v47`: `day_plans` + `day_plan_items` tables.
+- **`internal/db/dayplans.go`** + migration `v65`: `day_plans` + `day_plan_items` tables.
 - **`internal/daemon/`**: new phase 7 (Day Plan) after briefing + phase 9 (Conflict Detection) after calendar sync.
 - **`cmd/day_plan.go`**: `watchtower day-plan {show|list|generate|reset|check-conflicts}`.
 - **`internal/prompts/`**: new `day_plan.generate` template registered in `defaults.go`.
@@ -50,7 +50,7 @@ Go handles all backend concerns (generation, persistence, CLI, daemon). Swift ha
 
 ## Data Model
 
-### Migration `0047_day_plan.sql`
+### Migration `migration v65 (inline in db.go, alongside schema.sql updates)`
 
 ```sql
 CREATE TABLE day_plans (
@@ -467,7 +467,7 @@ No UI snapshot tests in MVP (too brittle).
 
 - `internal/dayplan/` package.
 - `internal/db/dayplans.go`.
-- Migration `0047_day_plan.sql`.
+- Migration `migration v65 (inline in db.go, alongside schema.sql updates)`.
 - `cmd/day_plan.go`.
 - `internal/prompts/defaults_day_plan.go` (prompt template constant).
 - Swift: `Sources/Models/DayPlan.swift`, `DayPlanItem.swift`; `Sources/Queries/DayPlanQueries.swift`; `Sources/ViewModels/DayPlanViewModel.swift`; `Sources/Views/DayPlan/*.swift`.
