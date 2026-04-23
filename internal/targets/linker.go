@@ -101,6 +101,10 @@ func parseLinkResponse(raw string, snapshot []db.Target) (*LinkResult, error) {
 		if !validRelations[sl.Relation] {
 			continue
 		}
+		// Validate external_ref allowlist.
+		if sl.ExternalRef != "" && !IsValidExternalRef(sl.ExternalRef) {
+			continue // drop invalid external refs silently in AI path
+		}
 		pl := ProposedLink{
 			ExternalRef: sl.ExternalRef,
 			Relation:    sl.Relation,

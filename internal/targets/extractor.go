@@ -130,6 +130,11 @@ func buildExtractPrompt(req ExtractRequest, enrichments []Enrichment, activeSnap
 	)
 }
 
+// IsValidExternalRef reports whether ref has an allowed prefix ("jira:" or "slack:").
+func IsValidExternalRef(ref string) bool {
+	return strings.HasPrefix(ref, "jira:") || strings.HasPrefix(ref, "slack:")
+}
+
 // parseExtractResponse parses the JSON from the AI, enforces caps, validates ids.
 // On malformed JSON it returns an error (caller retries once).
 func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Logger) (*ExtractResult, error) {
@@ -221,6 +226,14 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 			if !validRelations[sl.Relation] {
 				if logger != nil {
 					logger.Printf("targets/extractor: unknown relation %q — dropping link", sl.Relation)
+				}
+				continue
+			}
+
+			// Validate external_ref allowlist before building the link.
+			if sl.ExternalRef != "" && !IsValidExternalRef(sl.ExternalRef) {
+				if logger != nil {
+					logger.Printf("targets/extractor: invalid external_ref %q (must start with jira: or slack:) — dropping link", sl.ExternalRef)
 				}
 				continue
 			}
