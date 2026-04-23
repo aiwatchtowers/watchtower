@@ -700,6 +700,18 @@ func (db *DB) ArchiveStaleActionable(threshold time.Duration) (int, error) {
 	return int(n), nil
 }
 
+// ListActionableOpen returns actionable pending non-archived items newest first (up to 100).
+func (db *DB) ListActionableOpen() ([]InboxItem, error) {
+	rows, err := db.Query(`SELECT `+inboxItemColumns+` FROM inbox_items
+		WHERE item_class='actionable' AND status='pending' AND archived_at IS NULL
+		ORDER BY created_at DESC LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanInboxItems(rows)
+}
+
 // ListInboxFeed returns non-pinned, non-archived, live items newest first.
 func (db *DB) ListInboxFeed(limit, offset int) ([]InboxItem, error) {
 	rows, err := db.Query(`SELECT `+inboxItemColumns+` FROM inbox_items
