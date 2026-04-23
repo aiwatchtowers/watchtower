@@ -507,27 +507,6 @@ func TestRunTargetsUpdate(t *testing.T) {
 	assert.Equal(t, "high", target.Priority)
 }
 
-// --- Period presets ---
-
-func TestPeriodPresetDates_ThisWeek(t *testing.T) {
-	start, end := periodPresetDates("this-week")
-	assert.NotEmpty(t, start)
-	assert.NotEmpty(t, end)
-	assert.LessOrEqual(t, start, end)
-}
-
-func TestPeriodPresetDates_All(t *testing.T) {
-	start, end := periodPresetDates("all")
-	assert.Empty(t, start)
-	assert.Empty(t, end)
-}
-
-func TestPeriodPresetDates_Range(t *testing.T) {
-	start, end := periodPresetDates("2026-04-01:2026-04-30")
-	assert.Equal(t, "2026-04-01", start)
-	assert.Equal(t, "2026-04-30", end)
-}
-
 // --- Config requirement ---
 
 func TestRunTargets_RequiresConfig(t *testing.T) {

@@ -36,7 +36,7 @@ var (
 	targetsFlagBlocking    string
 	targetsFlagSource      string
 	targetsFlagLevel       string
-	targetsFlagPeriod      string
+	// targetsFlagPeriod removed — period filtering returns in V2 (DB filter not yet wired)
 	targetsFlagPeriodStart string
 	targetsFlagPeriodEnd   string
 	targetsFlagParent      int
@@ -190,7 +190,7 @@ func init() {
 	targetsCmd.Flags().BoolVar(&targetsFlagJSON, "json", false, "output as JSON")
 	targetsCmd.Flags().StringVar(&targetsFlagSource, "source", "", "filter by source (all, jira, slack, manual, track, digest, inbox)")
 	targetsCmd.Flags().StringVar(&targetsFlagLevel, "level", "", "filter by level (quarter, month, week, day, custom)")
-	targetsCmd.Flags().StringVar(&targetsFlagPeriod, "period", "", "period preset: this-week, this-month, this-quarter, all, or YYYY-MM-DD:YYYY-MM-DD range")
+	// --period flag removed; period filtering not yet wired to DB query (V2)
 
 	// create flags
 	targetsCreateCmd.Flags().StringVar(&targetsFlagText, "text", "", "target text (required)")
@@ -242,40 +242,6 @@ func init() {
 	_ = targetsAIUpdateCmd.MarkFlagRequired("instruction")
 }
 
-// periodPresetDates resolves a --period preset to (start, end) date strings.
-// Returns ("", "") for "all" or unrecognised values (no filter applied).
-func periodPresetDates(preset string) (string, string) {
-	today := time.Now()
-	switch preset {
-	case "this-week":
-		weekday := int(today.Weekday())
-		if weekday == 0 {
-			weekday = 7
-		}
-		mon := today.AddDate(0, 0, -(weekday - 1))
-		sun := mon.AddDate(0, 0, 6)
-		return mon.Format("2006-01-02"), sun.Format("2006-01-02")
-	case "this-month":
-		first := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.Local)
-		last := first.AddDate(0, 1, -1)
-		return first.Format("2006-01-02"), last.Format("2006-01-02")
-	case "this-quarter":
-		q := (int(today.Month()) - 1) / 3
-		qStart := time.Date(today.Year(), time.Month(q*3+1), 1, 0, 0, 0, 0, time.Local)
-		qEnd := qStart.AddDate(0, 3, -1)
-		return qStart.Format("2006-01-02"), qEnd.Format("2006-01-02")
-	case "", "all":
-		return "", ""
-	default:
-		// Accept YYYY-MM-DD:YYYY-MM-DD range
-		parts := strings.SplitN(preset, ":", 2)
-		if len(parts) == 2 {
-			return parts[0], parts[1]
-		}
-		return "", ""
-	}
-}
-
 func runTargetsList(cmd *cobra.Command, _ []string) error {
 	database, err := openDBFromConfig()
 	if err != nil {
@@ -290,10 +256,7 @@ func runTargetsList(cmd *cobra.Command, _ []string) error {
 		sourceFilter = ""
 	}
 
-	periodStart, periodEnd := periodPresetDates(targetsFlagPeriod)
-
-	_ = periodStart // period filtering not yet in TargetFilter; used for future extension
-	_ = periodEnd
+	// Period filtering not yet wired to TargetFilter (V2); --period flag removed.
 	f := db.TargetFilter{
 		Status:      targetsFlagStatus,
 		Priority:    targetsFlagPriority,
