@@ -1,6 +1,9 @@
 package db
 
-import "database/sql"
+import (
+	"database/sql"
+	"time"
+)
 
 // Workspace represents a Slack workspace (team).
 type Workspace struct {
@@ -776,3 +779,66 @@ type PromptHistory struct {
 	Reason    string // "tuned: 12 negative feedbacks", "manual edit", "rollback to v3"
 	CreatedAt string
 }
+
+// DayPlan is the top-level day-planning record, one per user per date.
+type DayPlan struct {
+	ID                int64
+	UserID            string
+	PlanDate          string // YYYY-MM-DD, local date
+	Status            string // active | archived
+	HasConflicts      bool
+	ConflictSummary   sql.NullString
+	GeneratedAt       time.Time
+	LastRegeneratedAt sql.NullTime
+	RegenerateCount   int
+	FeedbackHistory   string // JSON []string
+	PromptVersion     sql.NullString
+	BriefingID        sql.NullInt64
+	ReadAt            sql.NullTime
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// DayPlanItem is an individual item inside a day plan.
+type DayPlanItem struct {
+	ID          int64
+	DayPlanID   int64
+	Kind        string // timeblock | backlog
+	SourceType  string // task | briefing_attention | jira | calendar | manual | focus
+	SourceID    sql.NullString
+	Title       string
+	Description sql.NullString
+	Rationale   sql.NullString
+	StartTime   sql.NullTime
+	EndTime     sql.NullTime
+	DurationMin sql.NullInt64
+	Priority    sql.NullString
+	Status      string // pending | done | skipped
+	OrderIndex  int
+	Tags        string // JSON, may be empty string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// Day plan status constants.
+const (
+	DayPlanStatusActive   = "active"
+	DayPlanStatusArchived = "archived"
+)
+
+// Day plan item kind / source / status constants.
+const (
+	DayPlanItemKindTimeblock = "timeblock"
+	DayPlanItemKindBacklog   = "backlog"
+
+	DayPlanItemSourceTask              = "task"
+	DayPlanItemSourceBriefingAttention = "briefing_attention"
+	DayPlanItemSourceJira              = "jira"
+	DayPlanItemSourceCalendar          = "calendar"
+	DayPlanItemSourceManual            = "manual"
+	DayPlanItemSourceFocus             = "focus"
+
+	DayPlanItemStatusPending = "pending"
+	DayPlanItemStatusDone    = "done"
+	DayPlanItemStatusSkipped = "skipped"
+)
