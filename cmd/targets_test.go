@@ -76,7 +76,7 @@ func TestTargetsFlags(t *testing.T) {
 	assert.NotNil(t, targetsCmd.Flags().Lookup("all"))
 	assert.NotNil(t, targetsCmd.Flags().Lookup("json"))
 	assert.NotNil(t, targetsCmd.Flags().Lookup("level"))
-	assert.NotNil(t, targetsCmd.Flags().Lookup("period"))
+	// --period removed in V1; period filtering not yet wired to DB query
 }
 
 // --- List ---
@@ -527,7 +527,6 @@ func resetTargetsFlags() {
 	targetsFlagAll = false
 	targetsFlagJSON = false
 	targetsFlagLevel = ""
-	targetsFlagPeriod = ""
 	targetsFlagSource = ""
 }
 
