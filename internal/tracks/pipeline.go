@@ -99,6 +99,11 @@ type Pipeline struct {
 	profile            *db.UserProfile
 	crossChannelCache  string     // pre-formatted cross-channel section
 	allActiveTracksRef []db.Track // cached active tracks for the run
+
+	// jiraKeyDetector, if set, detects Jira keys in extracted tracks.
+	jiraKeyDetector interface {
+		ProcessTrack(trackID int, text string, sourceRefs string, channelIDs string) (int, error)
+	}
 }
 
 // New creates a new tracks pipeline.
@@ -109,6 +114,13 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		generator: gen,
 		logger:    logger,
 	}
+}
+
+// SetJiraKeyDetector sets an optional Jira key detector for linking extracted tracks to Jira issues.
+func (p *Pipeline) SetJiraKeyDetector(detector interface {
+	ProcessTrack(trackID int, text string, sourceRefs string, channelIDs string) (int, error)
+}) {
+	p.jiraKeyDetector = detector
 }
 
 // SetPromptStore sets an optional prompt store for loading customized prompts.
@@ -684,7 +696,16 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			p.logger.Printf("tracks: error storing track: %v", err)
 			continue
 		}
-		_ = trackID
+
+		// Detect Jira keys in the stored track.
+		if p.jiraKeyDetector != nil {
+			if n, err := p.jiraKeyDetector.ProcessTrack(int(trackID), track.Text, track.SourceRefs, track.ChannelIDs); err != nil {
+				p.logger.Printf("tracks: jira key detection error for track %d: %v", trackID, err)
+			} else if n > 0 {
+				p.logger.Printf("tracks: detected %d Jira key(s) in track %d", n, trackID)
+			}
+		}
+
 		stored++
 	}
 
@@ -1068,6 +1089,7 @@ func (p *Pipeline) enrichKeyMessages(channelID, keyMessagesJSON string, fallback
 	type enrichedMsg struct {
 		TS        string `json:"ts"`
 		ChannelID string `json:"channel_id"`
+		ThreadTS  string `json:"thread_ts,omitempty"`
 		UserID    string `json:"user_id"`
 		Author    string `json:"author"`
 		Text      string `json:"text"`
@@ -1085,9 +1107,14 @@ func (p *Pipeline) enrichKeyMessages(channelID, keyMessagesJSON string, fallback
 			author = "@" + name
 		}
 		p.cacheMu.RUnlock()
+		threadTS := ""
+		if msg.ThreadTS.Valid {
+			threadTS = msg.ThreadTS.String
+		}
 		enriched = append(enriched, enrichedMsg{
 			TS:        msg.TS,
 			ChannelID: msg.ChannelID,
+			ThreadTS:  threadTS,
 			UserID:    msg.UserID,
 			Author:    author,
 			Text:      text,
@@ -1420,7 +1447,7 @@ func (p *Pipeline) languageInstruction() string {
 
 // textSimilarityThreshold is the minimum Jaccard similarity for text-based dedup.
 // Calibrated on production data: duplicates score 0.22-0.46, unrelated 0.00-0.04.
-const textSimilarityThreshold = 0.20
+const textSimilarityThreshold = 0.30
 
 // reWordTokenizer splits text into word tokens for similarity comparison.
 var reWordTokenizer = regexp.MustCompile(`[\p{L}\d]{3,}`)
@@ -1583,6 +1610,7 @@ func filterValidSourceRefs(raw string) string {
 	var refs []struct {
 		TS        string `json:"ts"`
 		ChannelID string `json:"channel_id,omitempty"`
+		ThreadTS  string `json:"thread_ts,omitempty"`
 		Author    string `json:"author,omitempty"`
 		Text      string `json:"text,omitempty"`
 	}

@@ -469,10 +469,17 @@ type Task struct {
 	Blocking    string
 	Tags        string // JSON
 	SubItems    string // JSON
+	Notes       string // JSON — [{"text":"...","created_at":"..."}]
 	SourceType  string // "track", "digest", "briefing", "manual", "chat"
 	SourceID    string
 	CreatedAt   string
 	UpdatedAt   string
+}
+
+// TaskNote represents a single note entry in a task's notes JSON array.
+type TaskNote struct {
+	Text      string `json:"text"`
+	CreatedAt string `json:"created_at"`
 }
 
 // TaskFilter specifies criteria for querying tasks.
@@ -584,6 +591,180 @@ type MeetingPrepCache struct {
 	ResultJSON  string
 	UserNotes   string
 	GeneratedAt string
+}
+
+// JiraBoard represents a Jira agile board stored locally.
+type JiraBoard struct {
+	ID                 int
+	Name               string
+	ProjectKey         string
+	BoardType          string
+	IsSelected         bool
+	IssueCount         int
+	SyncedAt           string
+	RawColumnsJSON     string `json:"raw_columns_json"`
+	RawConfigJSON      string `json:"raw_config_json"`
+	LLMProfileJSON     string `json:"llm_profile_json"`
+	WorkflowSummary    string `json:"workflow_summary"`
+	UserOverridesJSON  string `json:"user_overrides_json"`
+	ConfigHash         string `json:"config_hash"`
+	ProfileGeneratedAt string `json:"profile_generated_at"`
+}
+
+// JiraSlackLink represents a detected Jira key mention in Slack.
+type JiraSlackLink struct {
+	ID         int
+	IssueKey   string
+	ChannelID  string
+	MessageTS  string
+	TrackID    *int
+	DigestID   *int
+	LinkType   string
+	DetectedAt string
+}
+
+// JiraIssue represents a Jira issue stored locally.
+type JiraIssue struct {
+	Key                     string
+	ID                      string
+	ProjectKey              string
+	BoardID                 int
+	Summary                 string
+	DescriptionText         string
+	IssueType               string
+	IssueTypeCategory       string
+	IsBug                   bool
+	Status                  string
+	StatusCategory          string
+	StatusCategoryChangedAt string
+	AssigneeAccountID       string
+	AssigneeEmail           string
+	AssigneeDisplayName     string
+	AssigneeSlackID         string
+	ReporterAccountID       string
+	ReporterEmail           string
+	ReporterDisplayName     string
+	ReporterSlackID         string
+	Priority                string
+	StoryPoints             *float64
+	DueDate                 string
+	SprintID                int
+	SprintName              string
+	EpicKey                 string
+	Labels                  string // JSON array
+	Components              string // JSON array
+	FixVersions             string // JSON array of version names
+	CreatedAt               string
+	UpdatedAt               string
+	ResolvedAt              string
+	RawJSON                 string
+	CustomFieldsJSON        string
+	SyncedAt                string
+	IsDeleted               bool
+}
+
+// JiraCustomField represents a discovered Jira custom field.
+type JiraCustomField struct {
+	ID        string
+	Name      string
+	FieldType string
+	ItemsType string
+	IsUseful  bool
+	UsageHint string
+	SyncedAt  string
+}
+
+// JiraBoardFieldMap maps a custom field to a role on a specific board.
+type JiraBoardFieldMap struct {
+	BoardID int
+	FieldID string
+	Role    string
+}
+
+// JiraSprint represents a Jira sprint stored locally.
+type JiraSprint struct {
+	ID           int
+	BoardID      int
+	Name         string
+	State        string
+	Goal         string
+	StartDate    string
+	EndDate      string
+	CompleteDate string
+	SyncedAt     string
+}
+
+// JiraIssueLink represents a link between two Jira issues.
+type JiraIssueLink struct {
+	ID        string
+	SourceKey string
+	TargetKey string
+	LinkType  string
+	SyncedAt  string
+}
+
+// JiraUserMap maps a Jira account to a Slack user.
+type JiraUserMap struct {
+	JiraAccountID   string
+	Email           string
+	SlackUserID     string
+	DisplayName     string
+	MatchMethod     string
+	MatchConfidence float64
+	ResolvedAt      string
+}
+
+// JiraSyncState tracks the sync state for a Jira project.
+type JiraSyncState struct {
+	ProjectKey   string
+	LastSyncedAt string
+	IssuesSynced int
+	LastError    string
+	LastErrorAt  string
+}
+
+// JiraRelease represents a Jira fix version (release) stored locally.
+type JiraRelease struct {
+	ID          int    `json:"id"`
+	ProjectKey  string `json:"project_key"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	ReleaseDate string `json:"release_date"`
+	Released    bool   `json:"released"`
+	Archived    bool   `json:"archived"`
+	SyncedAt    string `json:"synced_at"`
+}
+
+// SprintStats holds aggregated issue counts for an active sprint.
+type SprintStats struct {
+	SprintName string
+	Total      int
+	Done       int
+	InProgress int
+	Todo       int
+	DaysLeft   int
+}
+
+// DeliveryStats holds delivery metrics for a user over a time range.
+type DeliveryStats struct {
+	IssuesClosed         int
+	AvgCycleTimeDays     float64
+	StoryPointsCompleted float64
+	OpenIssues           int
+	OverdueIssues        int
+	Components           []string
+	Labels               []string
+}
+
+// TeamWorkloadRow holds aggregated workload metrics for a single assignee.
+type TeamWorkloadRow struct {
+	SlackUserID      string
+	DisplayName      string
+	OpenIssues       int
+	StoryPoints      float64
+	OverdueCount     int
+	BlockedCount     int
+	AvgCycleTimeDays float64
 }
 
 // PromptHistory records a snapshot of a prompt at a specific version.

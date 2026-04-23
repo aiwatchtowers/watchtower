@@ -103,6 +103,10 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		"--allowedTools", "mcp__sqlite__*,Bash(sqlite3*)",
 		"--disallowedTools", "Edit,Write,NotebookEdit",
 	}
+	// Claude CLI requires --verbose for stream-json output format.
+	if outputFormat == "stream-json" {
+		args = append(args, "--verbose")
+	}
 	if c.dbPath != "" {
 		mcpConfig := c.buildMCPConfig()
 		args = append(args, "--mcp-config", mcpConfig)

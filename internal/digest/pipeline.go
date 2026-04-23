@@ -79,7 +79,8 @@ type Decision struct {
 	Text       string `json:"text"`
 	By         string `json:"by"`
 	MessageTS  string `json:"message_ts"`
-	Importance string `json:"importance"` // "high", "medium", "low"
+	ChannelID  string `json:"channel_id,omitempty"` // source channel for cross-channel digests
+	Importance string `json:"importance"`           // "high", "medium", "low"
 }
 
 // ActionItem represents an action item extracted from messages.
@@ -150,6 +151,18 @@ type Pipeline struct {
 	userNames    map[string]string
 	botUserIDs   map[string]bool // user IDs that are bots
 	profile      *db.UserProfile // loaded once per Run, nil if not available
+
+	// jiraKeyDetector, if set, detects Jira keys in digest decisions.
+	jiraKeyDetector interface {
+		ProcessDigestDecision(digestID int, channelID string, decisionText string) (int, error)
+	}
+}
+
+// SetJiraKeyDetector sets an optional Jira key detector for linking digest decisions to Jira issues.
+func (p *Pipeline) SetJiraKeyDetector(detector interface {
+	ProcessDigestDecision(digestID int, channelID string, decisionText string) (int, error)
+}) {
+	p.jiraKeyDetector = detector
 }
 
 // AccumulatedUsage returns the total token usage accumulated across all Generate calls.
@@ -926,7 +939,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		name := p.channelName(d.ChannelID)
 		// Sanitize AI-generated values to prevent prompt injection via prior AI output
 		summary := sanitizePromptValue(d.Summary)
-		fmt.Fprintf(&sb, "### #%s (%d messages)\nSummary: %s\n", name, d.MessageCount, summary)
+		fmt.Fprintf(&sb, "### #%s [channel_id=%s] (%d messages)\nSummary: %s\n", name, d.ChannelID, d.MessageCount, summary)
 		// Include topics with their decisions for the rollup
 		topics, _ := p.db.GetDigestTopics(d.ID)
 		if len(topics) > 0 {
@@ -1265,6 +1278,17 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 		}
 		if err := p.db.InsertDigestTopics(digestID, dbTopics); err != nil {
 			p.logger.Printf("warning: failed to store digest topics: %v", err)
+		}
+	}
+
+	// Detect Jira keys in digest decisions.
+	if p.jiraKeyDetector != nil {
+		for _, t := range result.Topics {
+			for _, dec := range t.Decisions {
+				if _, err := p.jiraKeyDetector.ProcessDigestDecision(int(digestID), channelID, dec.Text); err != nil {
+					p.logger.Printf("warning: jira key detection in decision failed: %v", err)
+				}
+			}
 		}
 	}
 

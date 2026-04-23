@@ -10,7 +10,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/digest"
+	"watchtower/internal/jira"
 	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
@@ -30,6 +30,7 @@ var (
 	tasksFlagTags       string
 	tasksFlagBallOn     string
 	tasksFlagBlocking   string
+	tasksFlagSource     string
 )
 
 var tasksCmd = &cobra.Command{
@@ -87,15 +88,46 @@ var tasksGenerateCmd = &cobra.Command{
 	RunE:  runTasksGenerate,
 }
 
+var tasksNoteCmd = &cobra.Command{
+	Use:   "note",
+	Short: "Manage task notes",
+}
+
+var tasksNoteAddCmd = &cobra.Command{
+	Use:   "add <id> <text>",
+	Short: "Add a note to a task",
+	Args:  cobra.ExactArgs(2),
+	RunE:  runTasksNoteAdd,
+}
+
+var tasksNoteListCmd = &cobra.Command{
+	Use:   "list <id>",
+	Short: "List notes for a task",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTasksNoteList,
+}
+
+var tasksAIUpdateCmd = &cobra.Command{
+	Use:   "ai-update <id>",
+	Short: "Update a task using AI based on your instruction",
+	Long:  "Reads current task state, sends it with your instruction to AI, and outputs the updated task as JSON to stdout. The caller is responsible for applying the changes.",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTasksAIUpdate,
+}
+
+var tasksFlagInstruction string
+
 func init() {
 	rootCmd.AddCommand(tasksCmd)
-	tasksCmd.AddCommand(tasksShowCmd, tasksCreateCmd, tasksDoneCmd, tasksDismissCmd, tasksSnoozeCmd, tasksUpdateCmd, tasksGenerateCmd)
+	tasksCmd.AddCommand(tasksShowCmd, tasksCreateCmd, tasksDoneCmd, tasksDismissCmd, tasksSnoozeCmd, tasksUpdateCmd, tasksGenerateCmd, tasksNoteCmd, tasksAIUpdateCmd)
+	tasksNoteCmd.AddCommand(tasksNoteAddCmd, tasksNoteListCmd)
 
 	tasksCmd.Flags().StringVar(&tasksFlagStatus, "status", "", "filter by status (todo, in_progress, blocked, done, dismissed, snoozed)")
 	tasksCmd.Flags().StringVar(&tasksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	tasksCmd.Flags().StringVar(&tasksFlagOwnership, "ownership", "", "filter by ownership (mine, delegated, watching)")
 	tasksCmd.Flags().BoolVar(&tasksFlagAll, "all", false, "include done and dismissed tasks")
 	tasksCmd.Flags().BoolVar(&tasksFlagJSON, "json", false, "output as JSON")
+	tasksCmd.Flags().StringVar(&tasksFlagSource, "source", "", "filter by source (all, jira, slack, manual, track, digest, inbox)")
 
 	tasksCreateCmd.Flags().StringVar(&tasksFlagText, "text", "", "task text (required)")
 	tasksCreateCmd.Flags().StringVar(&tasksFlagIntent, "intent", "", "task intent/context")
@@ -119,6 +151,9 @@ func init() {
 	tasksGenerateCmd.Flags().StringVar(&tasksFlagText, "text", "", "task description (required)")
 	tasksGenerateCmd.Flags().StringVar(&tasksFlagSourceType, "source-type", "", "source type for context (track, digest)")
 	tasksGenerateCmd.Flags().StringVar(&tasksFlagSourceID, "source-id", "", "source entity ID for context")
+
+	tasksAIUpdateCmd.Flags().StringVar(&tasksFlagInstruction, "instruction", "", "what to change (required)")
+	_ = tasksAIUpdateCmd.MarkFlagRequired("instruction")
 }
 
 func runTasks(cmd *cobra.Command, _ []string) error {
@@ -130,10 +165,16 @@ func runTasks(cmd *cobra.Command, _ []string) error {
 
 	out := cmd.OutOrStdout()
 
+	sourceFilter := tasksFlagSource
+	if sourceFilter == "all" {
+		sourceFilter = ""
+	}
+
 	f := db.TaskFilter{
 		Status:      tasksFlagStatus,
 		Priority:    tasksFlagPriority,
 		Ownership:   tasksFlagOwnership,
+		SourceType:  sourceFilter,
 		IncludeDone: tasksFlagAll,
 	}
 
@@ -180,6 +221,16 @@ func runTasks(cmd *cobra.Command, _ []string) error {
 		}
 
 		line := fmt.Sprintf(" %s  [#%d] %s", pLabel, item.ID, item.Text)
+
+		// Jira badge for tasks sourced from Jira.
+		if item.SourceType == "jira" && item.SourceID != "" {
+			issue, err := database.GetJiraIssueByKey(item.SourceID)
+			if err == nil && issue != nil {
+				line += "  " + jira.FormatJiraBadge(*issue)
+			} else {
+				line += fmt.Sprintf("  [%s]", item.SourceID)
+			}
+		}
 
 		if item.DueDate != "" {
 			line += fmt.Sprintf("    due: %s", item.DueDate)
@@ -241,8 +292,9 @@ func runTasksShow(cmd *cobra.Command, args []string) error {
 	// Sub-items
 	if task.SubItems != "" && task.SubItems != "[]" {
 		type subItem struct {
-			Text string `json:"text"`
-			Done bool   `json:"done"`
+			Text    string `json:"text"`
+			Done    bool   `json:"done"`
+			DueDate string `json:"due_date,omitempty"`
 		}
 		var subs []subItem
 		if json.Unmarshal([]byte(task.SubItems), &subs) == nil && len(subs) > 0 {
@@ -252,7 +304,26 @@ func runTasksShow(cmd *cobra.Command, args []string) error {
 				if s.Done {
 					check = "[x]"
 				}
-				fmt.Fprintf(out, "  %s %s\n", check, s.Text)
+				line := fmt.Sprintf("  %s %s", check, s.Text)
+				if s.DueDate != "" {
+					line += fmt.Sprintf(" (due %s)", s.DueDate)
+				}
+				fmt.Fprintln(out, line)
+			}
+		}
+	}
+
+	// Notes
+	if task.Notes != "" && task.Notes != "[]" {
+		var notes []db.TaskNote
+		if json.Unmarshal([]byte(task.Notes), &notes) == nil && len(notes) > 0 {
+			fmt.Fprintf(out, "\nNotes:\n")
+			for _, n := range notes {
+				ts := n.CreatedAt
+				if len(ts) > 16 {
+					ts = ts[:16]
+				}
+				fmt.Fprintf(out, "  [%s] %s\n", ts, n.Text)
 			}
 		}
 	}
@@ -460,9 +531,16 @@ func runTasksGenerate(cmd *cobra.Command, _ []string) error {
 		database.Close()
 	}
 
-	// Build prompt.
+	// Build prompt — use Store for user-customized prompts, fallback to defaults.
 	now := time.Now().Format("2006-01-02T15:04 (Monday)")
 	promptTmpl := prompts.Defaults[prompts.TasksGenerate]
+	if promptDB, dbErr := db.Open(cfg.DBPath()); dbErr == nil {
+		store := prompts.New(promptDB, nil)
+		if tmpl, _, err := store.Get(prompts.TasksGenerate); err == nil && tmpl != "" {
+			promptTmpl = tmpl
+		}
+		promptDB.Close()
+	}
 	systemPrompt := fmt.Sprintf(promptTmpl, now)
 
 	userMessage := tasksFlagText
@@ -471,7 +549,8 @@ func runTasksGenerate(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Call AI.
-	gen := digest.NewClaudeGenerator(digest.ModelSonnet, cfg.ClaudePath)
+	applyProviderOverride(cfg)
+	gen := cliGenerator(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -483,7 +562,7 @@ func runTasksGenerate(cmd *cobra.Command, _ []string) error {
 	// Record usage in pipeline_runs.
 	database, err := db.Open(cfg.DBPath())
 	if err == nil {
-		model := digest.ModelSonnet
+		model := cfg.AI.Provider + "/sonnet"
 		runID, runErr := database.CreatePipelineRun("tasks", "cli", model)
 		if runErr == nil {
 			inputTokens, outputTokens, totalAPI := 0, 0, 0
@@ -561,4 +640,140 @@ func extractJSON(s string) string {
 		}
 	}
 	return s
+}
+
+func runTasksNoteAdd(cmd *cobra.Command, args []string) error {
+	id, err := strconv.Atoi(args[0])
+	if err != nil || id <= 0 {
+		return fmt.Errorf("invalid task ID %q: must be a positive integer", args[0])
+	}
+
+	text := args[1]
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("note text cannot be empty")
+	}
+
+	database, err := openDBFromConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	if err := database.AddTaskNote(id, text); err != nil {
+		return fmt.Errorf("adding note: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Note added to task #%d\n", id)
+	return nil
+}
+
+func runTasksNoteList(cmd *cobra.Command, args []string) error {
+	id, err := strconv.Atoi(args[0])
+	if err != nil || id <= 0 {
+		return fmt.Errorf("invalid task ID %q: must be a positive integer", args[0])
+	}
+
+	database, err := openDBFromConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	task, err := database.GetTaskByID(id)
+	if err != nil {
+		return fmt.Errorf("task #%d not found: %w", id, err)
+	}
+
+	var notes []db.TaskNote
+	if task.Notes == "" || task.Notes == "[]" {
+		fmt.Fprintf(cmd.OutOrStdout(), "No notes for task #%d\n", id)
+		return nil
+	}
+	if err := json.Unmarshal([]byte(task.Notes), &notes); err != nil {
+		return fmt.Errorf("parsing notes: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Notes for task #%d (%d):\n\n", id, len(notes))
+	for _, n := range notes {
+		ts := n.CreatedAt
+		if len(ts) > 16 {
+			ts = ts[:16]
+		}
+		fmt.Fprintf(out, "  [%s] %s\n", ts, n.Text)
+	}
+	return nil
+}
+
+func runTasksAIUpdate(cmd *cobra.Command, args []string) error {
+	id, err := strconv.Atoi(args[0])
+	if err != nil || id <= 0 {
+		return fmt.Errorf("invalid task ID %q: must be a positive integer", args[0])
+	}
+
+	if tasksFlagInstruction == "" {
+		return fmt.Errorf("--instruction is required")
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	task, err := database.GetTaskByID(id)
+	if err != nil {
+		return fmt.Errorf("task #%d not found: %w", id, err)
+	}
+
+	// Build current task context for the prompt.
+	taskContext := fmt.Sprintf("Title: %s\nIntent: %s\nPriority: %s\nDue: %s\nStatus: %s\nSub-items: %s\nNotes: %s",
+		task.Text, task.Intent, task.Priority, task.DueDate, task.Status, task.SubItems, task.Notes)
+
+	now := time.Now().Format("2006-01-02T15:04 (Monday)")
+	store := prompts.New(database, nil)
+	promptTmpl, _, _ := store.Get(prompts.TasksUpdate)
+	if promptTmpl == "" {
+		promptTmpl = prompts.Defaults[prompts.TasksUpdate]
+	}
+	systemPrompt := fmt.Sprintf(promptTmpl, now, taskContext)
+
+	// Call AI.
+	applyProviderOverride(cfg)
+	gen := cliGenerator(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	result, usage, _, err := gen.Generate(ctx, systemPrompt, tasksFlagInstruction, "")
+	if err != nil {
+		return fmt.Errorf("AI update failed: %w", err)
+	}
+
+	// Record usage.
+	model := cfg.AI.Provider + "/sonnet"
+	runID, runErr := database.CreatePipelineRun("tasks", "cli", model)
+	if runErr == nil {
+		inputTokens, outputTokens, totalAPI := 0, 0, 0
+		if usage != nil {
+			inputTokens = usage.InputTokens
+			outputTokens = usage.OutputTokens
+			totalAPI = usage.TotalAPITokens
+		}
+		_ = database.CompletePipelineRun(runID, 1, inputTokens, outputTokens, 0, totalAPI, nil, nil, "")
+	}
+
+	jsonStr := extractJSON(result)
+	fmt.Fprintln(cmd.OutOrStdout(), jsonStr)
+	return nil
 }

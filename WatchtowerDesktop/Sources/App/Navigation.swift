@@ -9,8 +9,13 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case tracks
     case digests
     case people
+    case workload
+    case blockers
+    case projectMap
+    case releases
     case statistics
     case search
+    case boards
     case usage
     case training
 
@@ -26,8 +31,13 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .tracks: "Tracks"
         case .digests: "Digests"
         case .people: "People"
+        case .workload: "Workload"
+        case .blockers: "Blockers"
+        case .projectMap: "Project Map"
+        case .releases: "Releases"
         case .statistics: "Statistics"
         case .search: "Search"
+        case .boards: "Boards"
         case .usage: "Usage"
         case .training: "Training"
         }
@@ -43,8 +53,13 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .tracks: "binoculars"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
+        case .workload: "gauge.with.dots.needle.33percent"
+        case .blockers: "exclamationmark.triangle"
+        case .projectMap: "map"
+        case .releases: "shippingbox"
         case .statistics: "chart.bar.xaxis"
         case .search: "magnifyingglass"
+        case .boards: "rectangle.on.rectangle.angled"
         case .usage: "chart.bar"
         case .training: "brain.head.profile"
         }
@@ -52,12 +67,12 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Main navigation items (shown above the separator).
     static var mainItems: [Self] {
-        [.chat, .briefings, .inbox, .calendar, .tasks, .tracks, .digests, .people, .statistics, .search]
+        [.chat, .briefings, .inbox, .calendar, .tasks, .tracks, .digests, .people, .workload, .blockers, .projectMap, .releases, .statistics, .search]
     }
 
     /// Tool items (shown below the separator).
     static var toolItems: [Self] {
-        [.usage, .training]
+        [.boards, .usage, .training]
     }
 }
 
@@ -106,6 +121,16 @@ struct SplashView: View {
 struct MainNavigationView: View {
     @Environment(AppState.self) private var appState
     @State private var showMenu = true
+    @State private var googleAuth = GoogleAuthService()
+    @State private var dismissedAuthTimestamp: String = UserDefaults.standard.string(forKey: "dismissedCalendarAuthAt") ?? ""
+
+    /// Show the reconnect popup when the daemon has flagged the calendar auth as broken
+    /// AND the user hasn't already dismissed this specific revocation.
+    private var shouldShowReconnectAlert: Bool {
+        guard let auth = appState.calendarViewModel?.authState else { return false }
+        guard auth.status == "revoked" else { return false }
+        return auth.updatedAt != dismissedAuthTimestamp
+    }
 
     private var sidebarToggleRow: some View {
         HStack(spacing: 8) {
@@ -162,6 +187,44 @@ struct MainNavigationView: View {
             StatusBarView()
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .alert(
+            "Google Calendar disconnected",
+            isPresented: Binding(
+                get: { shouldShowReconnectAlert },
+                set: { newValue in
+                    if !newValue, let auth = appState.calendarViewModel?.authState {
+                        dismissedAuthTimestamp = auth.updatedAt
+                        UserDefaults.standard.set(auth.updatedAt, forKey: "dismissedCalendarAuthAt")
+                    }
+                }
+            )
+        ) {
+            Button("Reconnect") {
+                appState.selectedDestination = .calendar
+                reconnectAndRestartDaemon()
+            }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("Your Google authorization expired or was revoked. Reconnect to resume calendar sync.")
+        }
+    }
+
+    /// Runs the OAuth flow and, on success, restarts the daemon so the in-memory
+    /// refresh token is replaced with the freshly saved one.
+    private func reconnectAndRestartDaemon() {
+        googleAuth.connect()
+        Task {
+            while googleAuth.isAuthenticating {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard googleAuth.isConnected else { return }
+            let daemon = DaemonManager()
+            daemon.resolvePathIfNeeded()
+            guard DaemonManager.checkDaemonRunning() else { return }
+            await daemon.stopDaemon()
+            try? await Task.sleep(for: .milliseconds(500))
+            await daemon.startDaemon()
+        }
     }
 
     @ViewBuilder
@@ -183,10 +246,20 @@ struct MainNavigationView: View {
             DigestListView()
         case .people:
             PeopleListView()
+        case .workload:
+            WorkloadView()
+        case .blockers:
+            BlockerMapView()
+        case .projectMap:
+            ProjectMapView()
+        case .releases:
+            ReleaseDashboardView()
         case .statistics:
             StatisticsView()
         case .search:
             SearchView()
+        case .boards:
+            BoardsView()
         case .usage:
             UsageView()
         case .training:

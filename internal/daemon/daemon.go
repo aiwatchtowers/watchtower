@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
+	"watchtower/internal/jira"
 
 	"watchtower/internal/sync"
 	"watchtower/internal/tracks"
@@ -43,6 +44,8 @@ type Daemon struct {
 	briefingPipe   *briefing.Pipeline
 	inboxPipe      *inbox.Pipeline
 	calendarSyncer *calendar.Syncer
+	jiraSyncer     *jira.Syncer
+	lastJira       time.Time
 	lastPeople     time.Time // when people cards last ran (once per day)
 	lastBriefing   time.Time // when briefing last ran (once per day)
 }
@@ -89,6 +92,11 @@ func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
 // SetCalendarSyncer sets the calendar syncer for post-sync calendar fetch.
 func (d *Daemon) SetCalendarSyncer(s *calendar.Syncer) {
 	d.calendarSyncer = s
+}
+
+// SetJiraSyncer sets the Jira syncer for periodic sync.
+func (d *Daemon) SetJiraSyncer(s *jira.Syncer) {
+	d.jiraSyncer = s
 }
 
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
@@ -179,6 +187,46 @@ func (d *Daemon) runSync(ctx context.Context) {
 			d.logger.Printf("calendar sync error: %v", err)
 		} else if n > 0 {
 			d.logger.Printf("calendar: %d events synced", n)
+		}
+	}
+
+	// Jira sync — runs after calendar sync, before pipelines.
+	if d.jiraSyncer != nil {
+		interval := time.Duration(d.config.Jira.SyncIntervalMins) * time.Minute
+		if interval <= 0 {
+			interval = time.Duration(config.DefaultJiraSyncIntervalMins) * time.Minute
+		}
+		if d.lastJira.IsZero() || time.Since(d.lastJira) >= interval {
+			n, err := d.jiraSyncer.Sync(ctx)
+			if err != nil {
+				d.logger.Printf("jira sync error: %v", err)
+			} else if n > 0 {
+				d.logger.Printf("jira: %d issues synced", n)
+			}
+			d.lastJira = time.Now()
+
+			// Record board analyzer LLM usage if any boards were re-analyzed.
+			if d.db != nil {
+				inTok, outTok, totalAPI := d.jiraSyncer.BoardAnalyzerUsage()
+				if inTok > 0 || outTok > 0 {
+					if runID, runErr := d.db.CreatePipelineRun("jira-boards", "daemon", "auto"); runErr == nil {
+						errMsg := ""
+						if err != nil {
+							errMsg = err.Error()
+						}
+						_ = d.db.CompletePipelineRun(runID, 0, inTok, outTok, 0, totalAPI, nil, nil, errMsg)
+					}
+				}
+			}
+
+			// Sync task statuses from Jira issues after successful sync.
+			if err == nil && d.db != nil {
+				if synced, serr := d.db.SyncJiraTaskStatuses(); serr != nil {
+					d.logger.Printf("jira task status sync warning: %v", serr)
+				} else if synced > 0 {
+					d.logger.Printf("jira-tasks: synced %d task status(es)", synced)
+				}
+			}
 		}
 	}
 
@@ -434,12 +482,11 @@ func (d *Daemon) saveLastPeople() {
 }
 
 // shouldRunBriefing checks if the daily briefing should run.
-// Runs at most once per day, after the configured briefing.hour.
+// Runs at most once per calendar day, after the configured briefing.hour.
 func (d *Daemon) shouldRunBriefing() bool {
 	now := time.Now()
 
-	// Already ran today?
-	if !d.lastBriefing.IsZero() && now.Sub(d.lastBriefing) < 24*time.Hour {
+	if !d.lastBriefing.IsZero() && sameCalendarDay(d.lastBriefing, now) {
 		return false
 	}
 
@@ -449,6 +496,12 @@ func (d *Daemon) shouldRunBriefing() bool {
 	}
 
 	return now.Hour() >= targetHour
+}
+
+func sameCalendarDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
 }
 
 func (d *Daemon) lastBriefingPath() string {

@@ -7,6 +7,8 @@ struct BriefingDetailView: View {
     @State private var taskPrefillText = ""
     @State private var taskPrefillIntent = ""
     @State private var calendarEvents: [CalendarEvent] = []
+    @State private var jiraConnected = false
+    @State private var jiraSiteURL: String?
 
     var body: some View {
         ScrollView {
@@ -29,7 +31,11 @@ struct BriefingDetailView: View {
                 prefillSourceID: String(briefing.id)
             )
         }
-        .onAppear { loadCalendarEvents() }
+        .onAppear {
+            jiraConnected = JiraQueries.isConnected()
+            jiraSiteURL = JiraConfigHelper.readSiteURL()
+            loadCalendarEvents()
+        }
     }
 
     // MARK: - Calendar
@@ -122,8 +128,14 @@ struct BriefingDetailView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    if let sourceType = item.sourceType {
-                        sourceLabel(type: sourceType)
+                    HStack(spacing: 4) {
+                        if let sourceType = item.sourceType {
+                            sourceLabel(type: sourceType)
+                        }
+                        jiraKeyBadges(in: item.text)
+                        if let reason = item.reason {
+                            jiraKeyBadges(in: reason)
+                        }
                     }
                 }
 
@@ -224,6 +236,7 @@ struct BriefingDetailView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                        jiraKeyBadges(in: item.text)
                     }
                 }
 
@@ -556,5 +569,15 @@ struct BriefingDetailView: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
             .background(Color.pink.opacity(0.12), in: Capsule())
+    }
+
+    // MARK: - Jira Helpers
+
+    private func jiraKeyBadges(in text: String) -> some View {
+        JiraKeyLinkBadgesView(
+            text: text,
+            siteURL: jiraSiteURL,
+            isConnected: jiraConnected
+        )
     }
 }

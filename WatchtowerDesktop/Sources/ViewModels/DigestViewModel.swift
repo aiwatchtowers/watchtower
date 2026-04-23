@@ -85,8 +85,19 @@ final class DigestViewModel {
                     userNames[user.id] = name
                 }
 
-                // Pre-fetch channel names, resolving DMs to user names
+                // Pre-fetch channel names, resolving DMs to user names.
+                // Include channel_ids embedded in decisions (set by AI for cross-channel rollups)
+                // so the flat decisions list and View-in-Slack links can resolve them.
+                var decisionChannelIDs: Set<String> = []
+                for d in withDecisions {
+                    for decision in d.parsedDecisions {
+                        if let cid = decision.channelID, !cid.isEmpty {
+                            decisionChannelIDs.insert(cid)
+                        }
+                    }
+                }
                 let allChannelIDs = Set((digests + withDecisions).map(\.channelID).filter { !$0.isEmpty })
+                    .union(decisionChannelIDs)
                 var nameMap: [String: String] = [:]
                 for cid in allChannelIDs {
                     if let ch = try ChannelQueries.fetchByID(db, id: cid) {
@@ -204,7 +215,13 @@ final class DigestViewModel {
             } else {
                 date = Date(timeIntervalSince1970: digest.periodTo)
             }
-            let chName = digest.channelID.isEmpty ? nil : channelNameCache[digest.channelID]
+            // Prefer the decision's own channel_id (set by AI on cross-channel rollups)
+            // over the digest's channelID, which is empty for daily/weekly.
+            let resolvedChannelID: String = {
+                if let cid = decision.channelID, !cid.isEmpty { return cid }
+                return digest.channelID
+            }()
+            let chName = resolvedChannelID.isEmpty ? nil : channelNameCache[resolvedChannelID]
             let isRead = readIndices[digest.id]?.contains(idx) ?? false
             let correctionKey = "\(digest.id):\(idx)"
             let corrected = importanceCorrections[correctionKey]
@@ -212,7 +229,7 @@ final class DigestViewModel {
                 decision: decision,
                 digestID: digest.id,
                 decisionIdx: idx,
-                channelID: digest.channelID,
+                channelID: resolvedChannelID,
                 channelName: chName,
                 digestSummary: digest.summary,
                 digestType: digest.type,
@@ -474,7 +491,8 @@ final class DigestViewModel {
         return channelNameCache[digest.channelID]
     }
 
-    /// Returns contributing channel digests for a cross-channel digest (daily/weekly).
+    /// Returns unique contributing channels for a cross-channel digest (daily/weekly),
+    /// sorted alphabetically by channel name.
     func contributingChannels(for digest: Digest) -> [(name: String, channelID: String)] {
         guard digest.channelID.isEmpty, digest.type == "daily" || digest.type == "weekly" else {
             return []
@@ -484,11 +502,16 @@ final class DigestViewModel {
                 try DigestQueries.fetchAll(db, type: "channel")
                     .filter { $0.periodFrom >= digest.periodFrom && $0.periodTo <= digest.periodTo }
             }
-            return channels.compactMap { digest in
-                guard !digest.channelID.isEmpty else { return nil }
-                let name = channelNameCache[digest.channelID] ?? digest.channelID
-                return (name: name, channelID: digest.channelID)
+            var seen = Set<String>()
+            var unique: [(name: String, channelID: String)] = []
+            for d in channels {
+                let cid = d.channelID
+                guard !cid.isEmpty, seen.insert(cid).inserted else { continue }
+                let name = channelNameCache[cid] ?? cid
+                unique.append((name: name, channelID: cid))
             }
+            unique.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return unique
         } catch {
             return []
         }

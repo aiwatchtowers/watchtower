@@ -16,6 +16,25 @@ final class TasksViewModel {
     var priorityFilter: String?
     var ownershipFilter: String?
     var showDone: Bool = false
+    var sourceFilter: SourceFilter = .all
+
+    enum SourceFilter: String, CaseIterable {
+        case all = "All"
+        case jira = "Jira"
+        case slack = "Slack"
+        case manual = "Manual"
+
+        func matches(_ sourceType: String) -> Bool {
+            switch self {
+            case .all: return true
+            case .jira: return sourceType == "jira"
+            case .slack:
+                return ["track", "digest", "briefing", "chat", "inbox"]
+                    .contains(sourceType)
+            case .manual: return sourceType == "manual"
+            }
+        }
+    }
 
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
@@ -60,14 +79,19 @@ final class TasksViewModel {
             activeCount = result.1.active
             overdueCount = result.1.overdue
 
+            // Apply source filter
+            let filtered = sourceFilter == .all
+                ? tasks
+                : tasks.filter { sourceFilter.matches($0.sourceType) }
+
             // Today: overdue + due today + high priority active
-            todayTasks = tasks.filter { task in
+            todayTasks = filtered.filter { task in
                 task.isActive && (task.isOverdue || task.isDueToday || task.priority == "high")
             }
 
             // All: everything else (excluding what's in today)
             let todayIDs = Set(todayTasks.map(\.id))
-            allTasks = tasks.filter { !todayIDs.contains($0.id) }
+            allTasks = filtered.filter { !todayIDs.contains($0.id) }
 
             errorMessage = nil
         } catch {
@@ -205,6 +229,12 @@ final class TasksViewModel {
         saveSubItems(task, items: items)
     }
 
+    func moveSubItem(_ task: TaskItem, from source: IndexSet, to destination: Int) {
+        var items = task.decodedSubItems
+        items.move(fromOffsets: source, toOffset: destination)
+        saveSubItems(task, items: items)
+    }
+
     private func saveSubItems(_ task: TaskItem, items: [TaskSubItem]) {
         guard let data = try? JSONEncoder().encode(items),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -215,6 +245,54 @@ final class TasksViewModel {
             load()
         } catch {
             errorMessage = "Failed to update sub-items: \(error.localizedDescription)"
+        }
+    }
+
+    func replaceSubItems(_ task: TaskItem, items: [TaskSubItem]) {
+        saveSubItems(task, items: items)
+    }
+
+    func updateSubItemDueDate(_ task: TaskItem, index: Int, dueDate: String?) {
+        var items = task.decodedSubItems
+        guard index >= 0, index < items.count else { return }
+        items[index].dueDate = dueDate
+        saveSubItems(task, items: items)
+    }
+
+    // MARK: - Notes
+
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        return fmt
+    }()
+
+    func addNote(_ task: TaskItem, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var notes = task.decodedNotes
+        let now = Self.iso8601Formatter.string(from: Date())
+        notes.append(TaskNote(text: trimmed, createdAt: now))
+        saveNotes(task, notes: notes)
+    }
+
+    func removeNote(_ task: TaskItem, index: Int) {
+        var notes = task.decodedNotes
+        guard index >= 0, index < notes.count else { return }
+        notes.remove(at: index)
+        saveNotes(task, notes: notes)
+    }
+
+    private func saveNotes(_ task: TaskItem, notes: [TaskNote]) {
+        guard let data = try? JSONEncoder().encode(notes),
+              let json = String(data: data, encoding: .utf8) else { return }
+        do {
+            try dbManager.dbPool.write { db in
+                try TaskQueries.updateNotes(db, id: task.id, notes: json)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update notes: \(error.localizedDescription)"
         }
     }
 
@@ -248,6 +326,13 @@ final class TasksViewModel {
             load()
         } catch {
             errorMessage = "Failed to delete: \(error.localizedDescription)"
+        }
+    }
+
+    func fetchJiraIssue(key: String) -> JiraIssue? {
+        guard !key.isEmpty else { return nil }
+        return try? dbManager.dbPool.read { db in
+            try JiraQueries.fetchIssueByKey(db, key: key)
         }
     }
 

@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 57"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 65"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -2210,7 +2210,12 @@ func (db *DB) migrate() error {
 		)`); err != nil {
 			return fmt.Errorf("migration v46 create tasks_new: %w", err)
 		}
-		if _, err := tx.Exec(`INSERT INTO tasks_new SELECT * FROM tasks`); err != nil {
+		if _, err := tx.Exec(`INSERT INTO tasks_new (id, text, intent, status, priority, ownership,
+			ball_on, due_date, snooze_until, blocking, tags, sub_items,
+			source_type, source_id, created_at, updated_at)
+			SELECT id, text, intent, status, priority, ownership,
+			ball_on, due_date, snooze_until, blocking, tags, sub_items,
+			source_type, source_id, created_at, updated_at FROM tasks`); err != nil {
 			return fmt.Errorf("migration v46 copy tasks: %w", err)
 		}
 		if _, err := tx.Exec(`DROP TABLE tasks`); err != nil {
@@ -2593,6 +2598,397 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("committing migration v57: %w", err)
 		}
 		version = 57
+	}
+
+	if version < 58 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v58: %w", err)
+		}
+		defer tx.Rollback()
+
+		jiraTables := []string{
+			`CREATE TABLE IF NOT EXISTS jira_boards (
+				id INTEGER PRIMARY KEY, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
+				board_type TEXT NOT NULL DEFAULT '', is_selected INTEGER NOT NULL DEFAULT 0,
+				issue_count INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE TABLE IF NOT EXISTS jira_issues (
+				key TEXT PRIMARY KEY, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
+				board_id INTEGER,
+				summary TEXT NOT NULL, description_text TEXT NOT NULL DEFAULT '',
+				issue_type TEXT NOT NULL DEFAULT '', issue_type_category TEXT NOT NULL DEFAULT '',
+				is_bug INTEGER NOT NULL DEFAULT 0,
+				status TEXT NOT NULL, status_category TEXT NOT NULL,
+				status_category_changed_at TEXT NOT NULL DEFAULT '',
+				assignee_account_id TEXT NOT NULL DEFAULT '', assignee_email TEXT NOT NULL DEFAULT '',
+				assignee_display_name TEXT NOT NULL DEFAULT '', assignee_slack_id TEXT NOT NULL DEFAULT '',
+				reporter_account_id TEXT NOT NULL DEFAULT '', reporter_email TEXT NOT NULL DEFAULT '',
+				reporter_display_name TEXT NOT NULL DEFAULT '', reporter_slack_id TEXT NOT NULL DEFAULT '',
+				priority TEXT NOT NULL DEFAULT '', story_points REAL,
+				due_date TEXT NOT NULL DEFAULT '', sprint_id INTEGER, sprint_name TEXT NOT NULL DEFAULT '',
+				epic_key TEXT NOT NULL DEFAULT '',
+				labels TEXT NOT NULL DEFAULT '[]', components TEXT NOT NULL DEFAULT '[]',
+				created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '',
+				raw_json TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0
+			)`,
+			`CREATE TABLE IF NOT EXISTS jira_sprints (
+				id INTEGER PRIMARY KEY, board_id INTEGER NOT NULL, name TEXT NOT NULL,
+				state TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '',
+				start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL DEFAULT '',
+				complete_date TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE TABLE IF NOT EXISTS jira_issue_links (
+				id TEXT PRIMARY KEY, source_key TEXT NOT NULL, target_key TEXT NOT NULL,
+				link_type TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE TABLE IF NOT EXISTS jira_user_map (
+				jira_account_id TEXT PRIMARY KEY, email TEXT NOT NULL DEFAULT '',
+				slack_user_id TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
+				match_method TEXT NOT NULL DEFAULT '', match_confidence REAL NOT NULL DEFAULT 0,
+				resolved_at TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE TABLE IF NOT EXISTS jira_sync_state (
+				project_key TEXT PRIMARY KEY, last_synced_at TEXT NOT NULL DEFAULT '',
+				issues_synced INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
+				last_error_at TEXT NOT NULL DEFAULT ''
+			)`,
+		}
+		for _, stmt := range jiraTables {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration v58 create table: %w", err)
+			}
+		}
+
+		jiraIndexes := []string{
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_project ON jira_issues(project_key)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee ON jira_issues(assignee_account_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_status_cat ON jira_issues(status_category)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_sprint ON jira_issues(sprint_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_epic ON jira_issues(epic_key)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_updated ON jira_issues(updated_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_due ON jira_issues(due_date)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_board ON jira_issues(board_id)`,
+		}
+		for _, stmt := range jiraIndexes {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration v58 create index: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 58"); err != nil {
+			return fmt.Errorf("setting schema version v58: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v58: %w", err)
+		}
+		version = 58
+	}
+
+	if version < 59 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v59: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Add board profile columns.
+		boardProfileCols := []struct {
+			name string
+			def  string
+		}{
+			{"raw_columns_json", "TEXT NOT NULL DEFAULT ''"},
+			{"raw_config_json", "TEXT NOT NULL DEFAULT ''"},
+			{"llm_profile_json", "TEXT NOT NULL DEFAULT ''"},
+			{"workflow_summary", "TEXT NOT NULL DEFAULT ''"},
+			{"user_overrides_json", "TEXT NOT NULL DEFAULT ''"},
+			{"config_hash", "TEXT NOT NULL DEFAULT ''"},
+			{"profile_generated_at", "TEXT NOT NULL DEFAULT ''"},
+		}
+		for _, col := range boardProfileCols {
+			if !hasColumn(tx, "jira_boards", col.name) {
+				if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE jira_boards ADD COLUMN %s %s", col.name, col.def)); err != nil {
+					return fmt.Errorf("migration v59 add column %s: %w", col.name, err)
+				}
+			}
+		}
+
+		// Create jira_slack_links table.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS jira_slack_links (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			issue_key TEXT NOT NULL,
+			channel_id TEXT NOT NULL DEFAULT '',
+			message_ts TEXT NOT NULL DEFAULT '',
+			track_id INTEGER,
+			digest_id INTEGER,
+			link_type TEXT NOT NULL DEFAULT 'mention',
+			detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			UNIQUE(issue_key, channel_id, message_ts)
+		)`); err != nil {
+			return fmt.Errorf("migration v59 create jira_slack_links: %w", err)
+		}
+		slackLinksIndexes := []string{
+			`CREATE INDEX IF NOT EXISTS idx_jira_slack_links_issue ON jira_slack_links(issue_key)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_slack_links_channel ON jira_slack_links(channel_id, message_ts)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_slack_links_track ON jira_slack_links(track_id)`,
+		}
+		for _, stmt := range slackLinksIndexes {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration v59 create index: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 59"); err != nil {
+			return fmt.Errorf("setting schema version v59: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v59: %w", err)
+		}
+		version = 59
+	}
+
+	if version < 60 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v60 tx: %w", err)
+		}
+		defer tx.Rollback()
+
+		// New indexes for jira_slack_links and jira_issues.
+		indexes := []string{
+			`CREATE INDEX IF NOT EXISTS idx_jira_slack_links_digest ON jira_slack_links(digest_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_slack ON jira_issues(assignee_slack_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_status ON jira_issues(assignee_slack_id, status_category)`,
+		}
+		for _, stmt := range indexes {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration v60 create index: %w", err)
+			}
+		}
+
+		// Expand tasks.source_type CHECK to include 'jira'.
+		// SQLite does not support ALTER TABLE to modify CHECK constraints, so we recreate the table.
+		if _, err := tx.Exec(`CREATE TABLE tasks_new (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			text            TEXT NOT NULL,
+			intent          TEXT NOT NULL DEFAULT '',
+			status          TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
+			priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+			ownership       TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
+			ball_on         TEXT NOT NULL DEFAULT '',
+			due_date        TEXT NOT NULL DEFAULT '',
+			snooze_until    TEXT NOT NULL DEFAULT '',
+			blocking        TEXT NOT NULL DEFAULT '',
+			tags            TEXT NOT NULL DEFAULT '[]',
+			sub_items       TEXT NOT NULL DEFAULT '[]',
+			source_type     TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('track','digest','briefing','manual','chat','inbox','jira')),
+			source_id       TEXT NOT NULL DEFAULT '',
+			created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v60 create tasks_new: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO tasks_new (id, text, intent, status, priority, ownership,
+			ball_on, due_date, snooze_until, blocking, tags, sub_items,
+			source_type, source_id, created_at, updated_at)
+			SELECT id, text, intent, status, priority, ownership,
+			ball_on, due_date, snooze_until, blocking, tags, sub_items,
+			source_type, source_id, created_at, updated_at FROM tasks`); err != nil {
+			return fmt.Errorf("migration v60 copy tasks: %w", err)
+		}
+		if _, err := tx.Exec(`DROP TABLE tasks`); err != nil {
+			return fmt.Errorf("migration v60 drop tasks: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE tasks_new RENAME TO tasks`); err != nil {
+			return fmt.Errorf("migration v60 rename tasks: %w", err)
+		}
+		// Recreate indexes on tasks.
+		taskIndexes := []string{
+			`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source_type, source_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at DESC)`,
+		}
+		for _, stmt := range taskIndexes {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("migration v60 create task index: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 60"); err != nil {
+			return fmt.Errorf("setting schema version v60: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v60: %w", err)
+		}
+		version = 60
+	}
+
+	if version < 61 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v61: %w", err)
+		}
+		defer tx.Rollback()
+
+		// Create jira_releases table.
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS jira_releases (
+			id INTEGER NOT NULL,
+			project_key TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			release_date TEXT NOT NULL DEFAULT '',
+			released INTEGER NOT NULL DEFAULT 0,
+			archived INTEGER NOT NULL DEFAULT 0,
+			synced_at TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (id),
+			UNIQUE(project_key, name)
+		)`); err != nil {
+			return fmt.Errorf("migration v61 create jira_releases: %w", err)
+		}
+
+		// Add fix_versions column to jira_issues.
+		if !hasColumn(tx, "jira_issues", "fix_versions") {
+			if _, err := tx.Exec(`ALTER TABLE jira_issues ADD COLUMN fix_versions TEXT NOT NULL DEFAULT '[]'`); err != nil {
+				return fmt.Errorf("migration v61 add fix_versions: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 61"); err != nil {
+			return fmt.Errorf("setting schema version v61: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v61: %w", err)
+		}
+		version = 61
+	}
+
+	if version < 62 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v62: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS jira_custom_fields (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			field_type TEXT NOT NULL,
+			items_type TEXT NOT NULL DEFAULT '',
+			is_useful INTEGER NOT NULL DEFAULT 0,
+			usage_hint TEXT NOT NULL DEFAULT '',
+			synced_at TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+			return fmt.Errorf("migration v62 create jira_custom_fields: %w", err)
+		}
+
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS jira_board_field_map (
+			board_id INTEGER NOT NULL,
+			field_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			PRIMARY KEY (board_id, field_id)
+		)`); err != nil {
+			return fmt.Errorf("migration v62 create jira_board_field_map: %w", err)
+		}
+
+		if !hasColumn(tx, "jira_issues", "custom_fields_json") {
+			if _, err := tx.Exec(`ALTER TABLE jira_issues ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration v62 add custom_fields_json: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 62"); err != nil {
+			return fmt.Errorf("setting schema version v62: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v62: %w", err)
+		}
+		version = 62
+	}
+
+	if version < 63 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v63: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS meeting_notes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id TEXT NOT NULL,
+			type TEXT NOT NULL CHECK(type IN ('question', 'note')),
+			text TEXT NOT NULL DEFAULT '',
+			is_checked INTEGER NOT NULL DEFAULT 0,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			task_id INTEGER,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v63 create meeting_notes: %w", err)
+		}
+
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_meeting_notes_event ON meeting_notes(event_id)`); err != nil {
+			return fmt.Errorf("migration v63 create idx_meeting_notes_event: %w", err)
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 63"); err != nil {
+			return fmt.Errorf("setting schema version v63: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v63: %w", err)
+		}
+		version = 63
+	}
+
+	if version < 64 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v64: %w", err)
+		}
+		defer tx.Rollback()
+
+		if !hasColumn(tx, "tasks", "notes") {
+			if _, err := tx.Exec(`ALTER TABLE tasks ADD COLUMN notes TEXT NOT NULL DEFAULT '[]'`); err != nil {
+				return fmt.Errorf("migration v64 add notes column: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 64"); err != nil {
+			return fmt.Errorf("setting schema version v64: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v64: %w", err)
+		}
+		version = 64
+	}
+
+	if version < 65 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v65: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS calendar_auth_state (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			status TEXT NOT NULL DEFAULT 'ok',
+			error TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)`); err != nil {
+			return fmt.Errorf("migration v65 create calendar_auth_state: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO calendar_auth_state (id, status, error) VALUES (1, 'ok', '')`); err != nil {
+			return fmt.Errorf("migration v65 seed calendar_auth_state: %w", err)
+		}
+
+		if _, err := tx.Exec("PRAGMA user_version = 65"); err != nil {
+			return fmt.Errorf("setting schema version v65: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v65: %w", err)
+		}
+		version = 65
 	}
 
 	_ = version // silence unused variable if this is the last migration
