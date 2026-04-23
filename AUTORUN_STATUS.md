@@ -20,8 +20,8 @@ Review each row's commit SHA with `git show <sha>`. For `DONE_WITH_CONCERNS`, re
 | T10: SyncCalendarItems | ✅ DONE | `8cd8c3d` | implementer only | 14 tests; add/update/remove diff |
 | T11: DetectConflicts | ✅ DONE | `08212e2` | implementer only | 16 tests; reuses parseEventTime + timesOverlap |
 | T12: Daemon wiring — Phase 7 + 8 | ✅ DONE | `4d0fcf7` | implementer only | 3 new daemon tests; no notifier → uses logger |
-| T13+14+16: CLI show/list/reset/check-conflicts | ⏳ running (batched) | — | — | — |
-| T15: CLI day-plan generate | pending | — | — | — |
+| T13+14+16: CLI show/list/reset/check-conflicts | ✅ DONE | `a123bb7` | implementer only (batched) | 8 tests PASS; DeleteDayPlan via raw DELETE (no helper) |
+| T15: CLI day-plan generate | ⏳ running | — | — | — |
 | T17: Swift models | pending | — | — | — |
 | T18: Swift queries with cascade | pending | — | — | — |
 | T19: Swift DayPlanViewModel | pending | — | — | — |
