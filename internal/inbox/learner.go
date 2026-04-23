@@ -23,7 +23,8 @@ type dismissStat struct {
 // RunImplicitLearner scans inbox_items within the lookback window, computes
 // per-sender and per-channel dismiss rates, and upserts source_mute learned
 // rules when thresholds are exceeded. It never overwrites user_rule entries.
-func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Duration) error {
+// Returns the number of rules upserted and any error.
+func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Duration) (int, error) {
 	cutoff := time.Now().Add(-lookback).UTC().Format(time.RFC3339)
 
 	var rules []dismissStat
@@ -39,14 +40,14 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 		HAVING total >= ?
 	`, cutoff, minEvidence)
 	if err != nil {
-		return fmt.Errorf("sender query: %w", err)
+		return 0, fmt.Errorf("sender query: %w", err)
 	}
 	for senderRows.Next() {
 		var sender string
 		var total, dismisses int
 		if err := senderRows.Scan(&sender, &total, &dismisses); err != nil {
 			senderRows.Close()
-			return fmt.Errorf("sender scan: %w", err)
+			return 0, fmt.Errorf("sender scan: %w", err)
 		}
 		if float64(dismisses)/float64(total) >= muteRateSend {
 			rules = append(rules, dismissStat{key: "sender:" + sender, weight: -0.7, evidence: dismisses})
@@ -54,7 +55,7 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 	}
 	if err := senderRows.Err(); err != nil {
 		senderRows.Close()
-		return fmt.Errorf("sender rows: %w", err)
+		return 0, fmt.Errorf("sender rows: %w", err)
 	}
 	senderRows.Close()
 
@@ -69,14 +70,14 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 		HAVING total >= ?
 	`, cutoff, minEvidence)
 	if err != nil {
-		return fmt.Errorf("channel query: %w", err)
+		return 0, fmt.Errorf("channel query: %w", err)
 	}
 	for chanRows.Next() {
 		var ch string
 		var total, dismisses int
 		if err := chanRows.Scan(&ch, &total, &dismisses); err != nil {
 			chanRows.Close()
-			return fmt.Errorf("channel scan: %w", err)
+			return 0, fmt.Errorf("channel scan: %w", err)
 		}
 		if float64(dismisses)/float64(total) >= muteRateChan {
 			rules = append(rules, dismissStat{key: "channel:" + ch, weight: -0.5, evidence: dismisses})
@@ -84,11 +85,12 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 	}
 	if err := chanRows.Err(); err != nil {
 		chanRows.Close()
-		return fmt.Errorf("channel rows: %w", err)
+		return 0, fmt.Errorf("channel rows: %w", err)
 	}
 	chanRows.Close()
 
 	// Upsert all collected rules — cursor is closed, connection is free.
+	upserted := 0
 	for _, r := range rules {
 		if err := database.UpsertLearnedRuleImplicit(db.InboxLearnedRule{
 			RuleType:      "source_mute",
@@ -96,8 +98,9 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 			Weight:        r.weight,
 			EvidenceCount: r.evidence,
 		}); err != nil {
-			return err
+			return upserted, err
 		}
+		upserted++
 	}
-	return nil
+	return upserted, nil
 }

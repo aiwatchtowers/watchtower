@@ -3,13 +3,15 @@ package inbox
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"watchtower/internal/db"
 )
 
 // SubmitFeedback writes a feedback row and updates learned rules based on rating/reason.
 // rating: -1 negative, +1 positive. reason: one of source_noise, wrong_priority, wrong_class, never_show, ''.
-func SubmitFeedback(ctx context.Context, database *db.DB, itemID int64, rating int, reason string) error {
+// An optional logger may be passed as the last argument; if omitted, no rule-update log is emitted.
+func SubmitFeedback(ctx context.Context, database *db.DB, itemID int64, rating int, reason string, logger ...*log.Logger) error {
 	// 1. Write raw feedback row first.
 	if err := database.RecordInboxFeedback(itemID, rating, reason); err != nil {
 		return fmt.Errorf("record feedback: %w", err)
@@ -22,20 +24,24 @@ func SubmitFeedback(ctx context.Context, database *db.DB, itemID int64, rating i
 	}
 
 	// 3. Apply rule updates and item class adjustments based on rating+reason.
+	var ruleType, scopeKey string
+	var ruleWeight float64
 	switch {
 	case rating == -1 && reason == "never_show":
+		ruleType, scopeKey, ruleWeight = "source_mute", "sender:"+item.SenderUserID, -1.0
 		_ = database.UpsertLearnedRule(db.InboxLearnedRule{
-			RuleType:      "source_mute",
-			ScopeKey:      "sender:" + item.SenderUserID,
-			Weight:        -1.0,
+			RuleType:      ruleType,
+			ScopeKey:      scopeKey,
+			Weight:        ruleWeight,
 			Source:        "explicit_feedback",
 			EvidenceCount: 1,
 		})
 	case rating == -1 && reason == "source_noise":
+		ruleType, scopeKey, ruleWeight = "source_mute", "sender:"+item.SenderUserID, -0.8
 		_ = database.UpsertLearnedRule(db.InboxLearnedRule{
-			RuleType:      "source_mute",
-			ScopeKey:      "sender:" + item.SenderUserID,
-			Weight:        -0.8,
+			RuleType:      ruleType,
+			ScopeKey:      scopeKey,
+			Weight:        ruleWeight,
 			Source:        "explicit_feedback",
 			EvidenceCount: 1,
 		})
@@ -43,29 +49,38 @@ func SubmitFeedback(ctx context.Context, database *db.DB, itemID int64, rating i
 		if item.ItemClass == "actionable" {
 			_ = database.SetInboxItemClass(itemID, "ambient")
 		}
+		ruleType, scopeKey, ruleWeight = "trigger_downgrade", "trigger:"+item.TriggerType+":sender:"+item.SenderUserID, -0.6
 		_ = database.UpsertLearnedRule(db.InboxLearnedRule{
-			RuleType:      "trigger_downgrade",
-			ScopeKey:      "trigger:" + item.TriggerType + ":sender:" + item.SenderUserID,
-			Weight:        -0.6,
+			RuleType:      ruleType,
+			ScopeKey:      scopeKey,
+			Weight:        ruleWeight,
 			Source:        "explicit_feedback",
 			EvidenceCount: 1,
 		})
 	case rating == -1 && reason == "wrong_priority":
+		ruleType, scopeKey, ruleWeight = "trigger_downgrade", "sender:"+item.SenderUserID, -0.5
 		_ = database.UpsertLearnedRule(db.InboxLearnedRule{
-			RuleType:      "trigger_downgrade",
-			ScopeKey:      "sender:" + item.SenderUserID,
-			Weight:        -0.5,
+			RuleType:      ruleType,
+			ScopeKey:      scopeKey,
+			Weight:        ruleWeight,
 			Source:        "explicit_feedback",
 			EvidenceCount: 1,
 		})
 	case rating == 1:
+		ruleType, scopeKey, ruleWeight = "source_boost", "sender:"+item.SenderUserID, 0.6
 		_ = database.UpsertLearnedRule(db.InboxLearnedRule{
-			RuleType:      "source_boost",
-			ScopeKey:      "sender:" + item.SenderUserID,
-			Weight:        0.6,
+			RuleType:      ruleType,
+			ScopeKey:      scopeKey,
+			Weight:        ruleWeight,
 			Source:        "explicit_feedback",
 			EvidenceCount: 1,
 		})
 	}
+
+	if ruleType != "" && len(logger) > 0 && logger[0] != nil {
+		logger[0].Printf("inbox_feedback: item=%d rating=%+d reason=%s → rule %s %s weight=%.1f",
+			itemID, rating, reason, ruleType, scopeKey, ruleWeight)
+	}
+
 	return nil
 }

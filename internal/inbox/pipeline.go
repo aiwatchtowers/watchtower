@@ -234,29 +234,32 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	// Phase 1: Detection — Slack + external sources (all non-fatal).
 	stepStart := time.Now()
-	created, err := p.detectSlackTriggers(ctx, currentUserID, lastTS)
+	createdSlack, err := p.detectSlackTriggers(ctx, currentUserID, lastTS)
 	if err != nil {
 		p.logger.Printf("inbox: slack detect error: %v", err)
 	}
 
+	var createdJira, createdCalendar, createdWatchtower int
 	if n, err := DetectJira(ctx, p.db, currentUserID, sinceTime); err != nil {
 		p.logger.Printf("inbox: jira detect error: %v", err)
 	} else {
-		created += n
+		createdJira = n
 	}
 
 	currentUserEmail := p.currentUserEmail
 	if n, err := DetectCalendar(ctx, p.db, currentUserEmail, sinceTime); err != nil {
 		p.logger.Printf("inbox: calendar detect error: %v", err)
 	} else {
-		created += n
+		createdCalendar = n
 	}
 
 	if n, err := DetectWatchtowerInternal(ctx, p.db, sinceTime); err != nil {
 		p.logger.Printf("inbox: watchtower detect error: %v", err)
 	} else {
-		created += n
+		createdWatchtower = n
 	}
+
+	created := createdSlack + createdJira + createdCalendar + createdWatchtower
 
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 	p.progress(1, 6, fmt.Sprintf("Detected %d new items", created))
@@ -267,8 +270,11 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	}
 
 	// Phase 3: Implicit learning — update mute rules from dismiss patterns.
-	if err := RunImplicitLearner(ctx, p.db, 30*24*time.Hour); err != nil {
+	var learnedRuleUpdates int
+	if n, err := RunImplicitLearner(ctx, p.db, 30*24*time.Hour); err != nil {
 		p.logger.Printf("inbox: learner error: %v", err)
+	} else {
+		learnedRuleUpdates = n
 	}
 
 	// Phase 4: Auto-resolve — rule-based resolution for all source types.
@@ -309,18 +315,26 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	p.progress(4, 6, "Selecting pinned items...")
 
 	// Phase 4b: AI select pinned (separate AI call, non-fatal; skipped when no generator).
+	var pinned int
 	if p.pinnedSelector != nil && p.generator != nil {
-		if _, err := p.pinnedSelector.Run(ctx); err != nil {
+		if n, err := p.pinnedSelector.Run(ctx); err != nil {
 			p.logger.Printf("inbox: pinned selector error: %v", err)
+		} else {
+			pinned = n
 		}
 	}
 
 	// Phase 5: Auto-archive expired/stale items (non-fatal).
-	if _, err := p.db.ArchiveExpiredAmbient(7 * 24 * time.Hour); err != nil {
+	var archived int
+	if n, err := p.db.ArchiveExpiredAmbient(7 * 24 * time.Hour); err != nil {
 		p.logger.Printf("inbox: archive ambient error: %v", err)
+	} else {
+		archived += n
 	}
-	if _, err := p.db.ArchiveStaleActionable(14 * 24 * time.Hour); err != nil {
+	if n, err := p.db.ArchiveStaleActionable(14 * 24 * time.Hour); err != nil {
 		p.logger.Printf("inbox: archive stale error: %v", err)
+	} else {
+		archived += n
 	}
 
 	// Phase 6: Unsnooze expired snoozed items.
@@ -341,6 +355,10 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	}
 
 	p.progress(6, 6, fmt.Sprintf("Done — %d created, %d resolved", created, resolved))
+
+	p.logger.Printf("inbox: +%d new (S%d J%d C%d I%d), %d pinned, %d auto-resolved, %d auto-archived, %d learned-rule-updates",
+		created, createdSlack, createdJira, createdCalendar, createdWatchtower,
+		pinned, resolved, archived, learnedRuleUpdates)
 
 	return created, resolved, nil
 }
