@@ -3087,6 +3087,9 @@ afterV48:
 		if _, err := db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 			return fmt.Errorf("migration v67 disable FK: %w", err)
 		}
+		// Re-enable FK unconditionally on exit from this block, even on early-return errors.
+		defer func() { _, _ = db.Exec("PRAGMA foreign_keys = ON") }()
+
 		tx, err := db.Begin()
 		if err != nil {
 			return fmt.Errorf("beginning migration v67: %w", err)
@@ -3263,6 +3266,15 @@ afterV48:
 		}
 
 		// 6. Drop tasks table (clean-slate migration — existing tasks are discarded).
+		var taskCount int
+		_ = tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tasks'`).Scan(&taskCount)
+		if taskCount > 0 {
+			var rowCount int
+			_ = tx.QueryRow(`SELECT COUNT(*) FROM tasks`).Scan(&rowCount)
+			if rowCount > 0 {
+				log.Printf("migration v67: dropping %d rows from tasks table", rowCount)
+			}
+		}
 		if _, err := tx.Exec(`DROP TABLE IF EXISTS tasks`); err != nil {
 			return fmt.Errorf("migration v67 drop tasks: %w", err)
 		}
@@ -3273,9 +3285,7 @@ afterV48:
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("committing migration v67: %w", err)
 		}
-		if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-			return fmt.Errorf("migration v67 re-enable FK: %w", err)
-		}
+		// FK re-enable is handled by the defer above.
 		version = 67
 	}
 
