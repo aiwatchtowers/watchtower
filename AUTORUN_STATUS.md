@@ -21,8 +21,8 @@ Review each row's commit SHA with `git show <sha>`. For `DONE_WITH_CONCERNS`, re
 | T11: DetectConflicts | ✅ DONE | `08212e2` | implementer only | 16 tests; reuses parseEventTime + timesOverlap |
 | T12: Daemon wiring — Phase 7 + 8 | ✅ DONE | `4d0fcf7` | implementer only | 3 new daemon tests; no notifier → uses logger |
 | T13+14+16: CLI show/list/reset/check-conflicts | ✅ DONE | `a123bb7` | implementer only (batched) | 8 tests PASS; DeleteDayPlan via raw DELETE (no helper) |
-| T15: CLI day-plan generate | ⏳ running | — | — | — |
-| T17: Swift models | pending | — | — | — |
+| T15: CLI day-plan generate | ✅ DONE | `662fa12` | implementer only | factory seam newDayPlanPipelineFactory for test injection |
+| T17: Swift models | ⏳ running | — | — | — |
 | T18: Swift queries with cascade | pending | — | — | — |
 | T19: Swift DayPlanViewModel | pending | — | — | — |
 | T20: Swift DayPlanView + Timeline | pending | — | — | — |
