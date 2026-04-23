@@ -17,28 +17,28 @@ func TestExtract_SlackURLs(t *testing.T) {
 		text      string
 		wantCount int
 		wantChan  string
-		wantTs    string
+		wantTS    string
 	}{
 		{
 			name:      "basic slack permalink",
 			text:      "see https://myworkspace.slack.com/archives/C12345678/p1714567890123456",
 			wantCount: 1,
 			wantChan:  "C12345678",
-			wantTs:    "1714567890.123456",
+			wantTS:    "1714567890.123456",
 		},
 		{
 			name:      "slack permalink with thread param",
 			text:      "https://team.slack.com/archives/C0ABC1234/p1714999000111222?thread_ts=1714998000.111111&cid=C0ABC1234",
 			wantCount: 1,
 			wantChan:  "C0ABC1234",
-			wantTs:    "1714999000.111222",
+			wantTS:    "1714999000.111222",
 		},
 		{
 			name:      "DM channel ID",
 			text:      "https://ws.slack.com/archives/D123ABC/p1710000000000001",
 			wantCount: 1,
 			wantChan:  "D123ABC",
-			wantTs:    "1710000000.000001",
+			wantTS:    "1710000000.000001",
 		},
 		{
 			name:      "no slack URLs",
@@ -64,8 +64,8 @@ func TestExtract_SlackURLs(t *testing.T) {
 				if tc.wantChan != "" && got[0].ChannelID != tc.wantChan {
 					t.Errorf("want channelID=%q, got %q", tc.wantChan, got[0].ChannelID)
 				}
-				if tc.wantTs != "" && got[0].TS != tc.wantTs {
-					t.Errorf("want ts=%q, got %q", tc.wantTs, got[0].TS)
+				if tc.wantTS != "" && got[0].TS != tc.wantTS {
+					t.Errorf("want ts=%q, got %q", tc.wantTS, got[0].TS)
 				}
 			}
 		})

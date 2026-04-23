@@ -187,8 +187,8 @@ func (s *SlackResolver) Resolve(ctx context.Context, m URLMatch) (*Enrichment, e
 	).Scan(&row.Text, &row.UserID, &row.ChannelID, &row.ThreadTS)
 
 	if err != nil {
-		// Not found — annotate gracefully; no error returned to caller.
-		return &Enrichment{
+		// Not found — annotate gracefully; nil error is intentional (non-fatal enrichment miss).
+		return &Enrichment{ //nolint:nilerr
 			Ref:    ref,
 			Body:   "[slack url not in local DB]",
 			Source: "local",
