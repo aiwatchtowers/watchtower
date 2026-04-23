@@ -64,8 +64,8 @@ func TestExtract_SlackURLs(t *testing.T) {
 				if tc.wantChan != "" && got[0].ChannelID != tc.wantChan {
 					t.Errorf("want channelID=%q, got %q", tc.wantChan, got[0].ChannelID)
 				}
-				if tc.wantTs != "" && got[0].Ts != tc.wantTs {
-					t.Errorf("want ts=%q, got %q", tc.wantTs, got[0].Ts)
+				if tc.wantTs != "" && got[0].TS != tc.wantTs {
+					t.Errorf("want ts=%q, got %q", tc.wantTs, got[0].TS)
 				}
 			}
 		})
@@ -160,7 +160,7 @@ func TestSlackResolver_LocalHit(t *testing.T) {
 	}
 
 	r := &SlackResolver{db: d}
-	m := URLMatch{Source: "slack", RawURL: "https://ws.slack.com/archives/C001/p1714567890123456", ChannelID: "C001", Ts: "1714567890.123456"}
+	m := URLMatch{Source: "slack", RawURL: "https://ws.slack.com/archives/C001/p1714567890123456", ChannelID: "C001", TS: "1714567890.123456"}
 	e, err := r.Resolve(context.Background(), m)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -183,7 +183,7 @@ func TestSlackResolver_LocalMiss(t *testing.T) {
 	d := newTestDB(t)
 
 	r := &SlackResolver{db: d}
-	m := URLMatch{Source: "slack", RawURL: "https://ws.slack.com/archives/C999/p1714999999999999", ChannelID: "C999", Ts: "1714999999.999999"}
+	m := URLMatch{Source: "slack", RawURL: "https://ws.slack.com/archives/C999/p1714999999999999", ChannelID: "C999", TS: "1714999999.999999"}
 	e, err := r.Resolve(context.Background(), m)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
