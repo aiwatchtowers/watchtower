@@ -17,8 +17,8 @@ Review each row's commit SHA with `git show <sha>`. For `DONE_WITH_CONCERNS`, re
 | T7: Gather module | ✅ DONE | `d7b16b9` | implementer only | 4 tests PASS; graceful degradation for jira/people |
 | T8: Pipeline.Run orchestration | ✅ DONE | `34fc976` | implementer only | 9 tests PASS; stubs: syncCalendarItems (T10), DetectConflicts (T11), buildItems full validation (T9) |
 | T9: buildItems validation + merge | ✅ DONE | `98ba470` | implementer only | 13 tests; discovered CalendarEvent.Start/End are ISO strings (not time.Time) — added parseEventTime |
-| T10: SyncCalendarItems | ⏳ running | — | — | — |
-| T11: DetectConflicts | pending | — | — | — |
+| T10: SyncCalendarItems | ✅ DONE | `8cd8c3d` | implementer only | 14 tests; add/update/remove diff |
+| T11: DetectConflicts | ⏳ running | — | — | — |
 | T12: Daemon wiring — Phase 7 + 8 | pending | — | — | — |
 | T13: CLI day-plan show | pending | — | — | — |
 | T14: CLI day-plan list | pending | — | — | — |
