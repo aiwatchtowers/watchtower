@@ -735,6 +735,10 @@ func (f *fakeDayPlanRunner) SyncCalendarItemsForDate(_ context.Context, _, _ str
 	return nil
 }
 
+func (f *fakeDayPlanRunner) AccumulatedUsage() (int, int, float64, int) {
+	return 0, 0, 0, 0
+}
+
 func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 

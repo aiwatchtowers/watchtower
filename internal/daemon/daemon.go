@@ -33,6 +33,7 @@ type DayPlanRunner interface {
 	Run(ctx context.Context, opts dayplan.RunOptions) (*db.DayPlan, error)
 	DetectConflicts(ctx context.Context, userID, date string) error
 	SyncCalendarItemsForDate(ctx context.Context, userID, date string) error
+	AccumulatedUsage() (int, int, float64, int)
 }
 
 // minPollInterval is the minimum allowed poll interval. Values below this
@@ -599,7 +600,21 @@ func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	date := now.Format("2006-01-02")
-	if _, err := d.dayPlanPipeline.Run(ctx, dayplan.RunOptions{UserID: userID, Date: date}); err != nil {
+	runID, _ := d.db.CreatePipelineRun("day_plan", "daemon", "auto")
+	plan, err := d.dayPlanPipeline.Run(ctx, dayplan.RunOptions{UserID: userID, Date: date})
+	if runID > 0 {
+		var errMsg string
+		if err != nil {
+			errMsg = err.Error()
+		}
+		items := 0
+		if plan != nil {
+			items = 1
+		}
+		inTok, outTok, cost, totalAPI := d.dayPlanPipeline.AccumulatedUsage()
+		_ = d.db.CompletePipelineRun(runID, items, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
+	}
+	if err != nil {
 		d.logger.Printf("dayplan: generation failed: %v", err)
 		return
 	}

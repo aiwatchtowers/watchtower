@@ -21,6 +21,11 @@ type Pipeline struct {
 	generator   digest.Generator
 	logger      *log.Logger
 	promptStore *prompts.Store
+
+	// Accumulated usage from the last Run call.
+	lastInputTokens    int
+	lastOutputTokens   int
+	lastTotalAPITokens int
 }
 
 // New constructs a Pipeline.
@@ -30,6 +35,13 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 
 // SetPromptStore wires an optional customisable prompt store.
 func (p *Pipeline) SetPromptStore(store *prompts.Store) { p.promptStore = store }
+
+// AccumulatedUsage returns the token usage from the last Run call.
+// Returns (inputTokens, outputTokens, costUSD, totalAPITokens). costUSD is
+// always 0 — cost is not tracked for the day-plan pipeline.
+func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
+	return p.lastInputTokens, p.lastOutputTokens, 0, p.lastTotalAPITokens
+}
 
 // Run generates or regenerates the day plan for the target date.
 // It is idempotent by default: if a plan already exists and neither Force nor
@@ -100,11 +112,22 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 
 	systemPrompt, promptVer := p.buildPrompt(inputs)
 
-	resp, _, _, err := p.generator.Generate(
+	// Reset per-Run accumulators before the AI call so short-circuited paths
+	// (missing enabled flag, existing plan) report zero tokens.
+	p.lastInputTokens = 0
+	p.lastOutputTokens = 0
+	p.lastTotalAPITokens = 0
+
+	resp, usage, _, err := p.generator.Generate(
 		digest.WithSource(ctx, "day_plan.generate"),
 		systemPrompt, "Generate the day plan.", "")
 	if err != nil {
 		return nil, fmt.Errorf("ai generate: %w", err)
+	}
+	if usage != nil {
+		p.lastInputTokens = usage.InputTokens
+		p.lastOutputTokens = usage.OutputTokens
+		p.lastTotalAPITokens = usage.InputTokens + usage.OutputTokens
 	}
 
 	// ── parse and validate ────────────────────────────────────────────────────
