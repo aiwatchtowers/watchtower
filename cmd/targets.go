@@ -588,9 +588,15 @@ func runTargetsExtract(cmd *cobra.Command, _ []string) error {
 
 	applyProviderOverride(cfg)
 	gen := cliGenerator(cfg)
-	pipe := targets.New(database, &cfg.Targets, gen, nil, nil)
+	// Construct resolver with local DB lookups; MCP client stays nil in V1.
+	// URL enrichment (Slack/Jira permalinks) runs through the extract pipeline.
+	// Timeout governed by config targets.extract.timeout_seconds (no outer wrap needed).
+	resolver := targets.NewResolver(database, nil,
+		time.Duration(cfg.Targets.Resolver.MCPTimeoutSeconds)*time.Second)
+	pipe := targets.New(database, &cfg.Targets, gen, resolver, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// extract respects config targets.extract.timeout_seconds internally.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	result, err := pipe.Extract(ctx, targets.ExtractRequest{
