@@ -28,7 +28,19 @@ Review each row's commit SHA with `git show <sha>`. For `DONE_WITH_CONCERNS`, re
 | T20+T21+T22: all Swift views | ✅ DONE | `6e4e07a` | implementer only (batched) | 6 view files, 649 LOC; all 37 prior tests still pass |
 | T23: Settings panel | ✅ DONE | `43116fc` | implementer only | stored-property pattern matching briefing |
 | T24: Sidebar tab + route | ✅ DONE | `3d631f7` | implementer + manual fix | T20/T24 init conflict — DayPlanView now takes vm as Bindable param, AppState owns VM |
-| T25: E2E verification + PR | ⏳ running | — | — | — |
+| T25: E2E verification + PR | ✅ DONE | (final) | E2E: Go tests 22 pkgs OK; Swift 528/528 passed; build clean | PR URL in last commit |
+
+## Final test summary
+
+- `go test ./...` — all packages pass (cached)
+- `swift test` — Executed 528 tests, with 0 failures (0 unexpected) in 5.339s
+
+## Deferred items (see T3 code review)
+
+- `IncrementRegenerateCount` / `MarkDayPlanRead` / `UpdateItemOrder` — no direct tests (covered indirectly by pipeline tests)
+- `scanDayPlan` / `scanDayPlanRows` — duplicate scan bodies, could share a scanner interface
+- `CreateDayPlanItems` — not transactional; partial failure leaves orphans (low risk — caller is the pipeline)
+- Swift UI snapshot tests — intentionally skipped per spec "Non-Goals"
 
 ## Legend
 
