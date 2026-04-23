@@ -216,10 +216,7 @@ func (s *SlackResolver) Resolve(ctx context.Context, m URLMatch) (*Enrichment, e
 		displayTime = time.Unix(sec, 0).UTC().Format("2006-01-02 15:04")
 	}
 
-	body := row.Text
-	if len(body) > 500 {
-		body = body[:500]
-	}
+	body := truncateRunes(row.Text, 500)
 
 	formatted := fmt.Sprintf("#%s by @%s at %s\n%s", channelName, userName, displayTime, body)
 	return &Enrichment{
@@ -305,10 +302,19 @@ func (j *JiraResolver) Resolve(ctx context.Context, m URLMatch) (*Enrichment, er
 	}, nil
 }
 
-// truncate returns s truncated to max characters.
-func truncate(s string, max int) string {
-	if len(s) <= max {
+// truncateRunes returns s truncated to at most n runes, safe for multi-byte UTF-8.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:max] + "..."
+	return string(runes[:n])
+}
+
+// truncate returns s truncated to max runes with "..." appended if cut.
+func truncate(s string, max int) string {
+	if len([]rune(s)) <= max {
+		return s
+	}
+	return truncateRunes(s, max) + "..."
 }
