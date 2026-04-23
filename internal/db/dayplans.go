@@ -24,16 +24,20 @@ func nullTimeStr(nt sql.NullTime) sql.NullString {
 	return sql.NullString{Valid: true, String: nt.Time.UTC().Format(time.RFC3339)}
 }
 
-// parseTimeOrZero parses an RFC3339 string, returning zero Time on failure.
+// parseTimeOrZero parses a timestamp string, returning zero Time on failure.
+// Accepts RFC3339 ("2006-01-02T15:04:05Z") and SQLite datetime format
+// ("2006-01-02 15:04:05") which is what datetime('now') produces.
 func parseTimeOrZero(s string) time.Time {
 	if s == "" {
 		return time.Time{}
 	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return time.Time{}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
 	}
-	return t
+	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+		return t.UTC()
+	}
+	return time.Time{}
 }
 
 // ── scan helpers ──────────────────────────────────────────────────────────────
@@ -199,38 +203,53 @@ func (db *DB) CreateDayPlan(p *DayPlan) (int64, error) {
 }
 
 // UpsertDayPlan inserts or updates a day plan keyed on (user_id, plan_date).
-// Returns the id of the row either way.
+// Returns the id of the row either way. The operation is a single atomic
+// INSERT ... ON CONFLICT DO UPDATE SET statement (no read-modify-write race).
 func (db *DB) UpsertDayPlan(p *DayPlan) (int64, error) {
-	existing, err := db.GetDayPlan(p.UserID, p.PlanDate)
-	if err != nil {
-		return 0, err
+	if p.FeedbackHistory == "" {
+		p.FeedbackHistory = "[]"
 	}
-	if existing != nil {
-		// Update in place.
-		if p.FeedbackHistory == "" {
-			p.FeedbackHistory = "[]"
-		}
-		generatedAt := p.GeneratedAt.UTC().Format(time.RFC3339)
-		lastRegen := nullTimeStr(p.LastRegeneratedAt)
-		readAt := nullTimeStr(p.ReadAt)
+	generatedAt := p.GeneratedAt.UTC().Format(time.RFC3339)
+	lastRegen := nullTimeStr(p.LastRegeneratedAt)
+	readAt := nullTimeStr(p.ReadAt)
 
-		_, err = db.Exec(`UPDATE day_plans SET
-			status = ?, has_conflicts = ?, conflict_summary = ?,
-			generated_at = ?, last_regenerated_at = ?, regenerate_count = ?,
-			feedback_history = ?, prompt_version = ?, briefing_id = ?, read_at = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-			WHERE user_id = ? AND plan_date = ?`,
-			p.Status, boolToInt(p.HasConflicts), p.ConflictSummary,
-			generatedAt, lastRegen, p.RegenerateCount,
-			p.FeedbackHistory, p.PromptVersion, p.BriefingID, readAt,
-			p.UserID, p.PlanDate,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("updating day_plan: %w", err)
-		}
-		return existing.ID, nil
+	var conflictSummary sql.NullString
+	if p.ConflictSummary.Valid {
+		conflictSummary = p.ConflictSummary
 	}
-	return db.CreateDayPlan(p)
+
+	_, err := db.Exec(`INSERT INTO day_plans
+		(user_id, plan_date, status, has_conflicts, conflict_summary,
+		 generated_at, last_regenerated_at, regenerate_count,
+		 feedback_history, prompt_version, briefing_id, read_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, plan_date) DO UPDATE SET
+			status             = excluded.status,
+			has_conflicts      = excluded.has_conflicts,
+			conflict_summary   = excluded.conflict_summary,
+			generated_at       = excluded.generated_at,
+			last_regenerated_at = excluded.last_regenerated_at,
+			regenerate_count   = excluded.regenerate_count,
+			feedback_history   = excluded.feedback_history,
+			prompt_version     = excluded.prompt_version,
+			briefing_id        = excluded.briefing_id,
+			read_at            = excluded.read_at,
+			updated_at         = strftime('%Y-%m-%dT%H:%M:%SZ','now')`,
+		p.UserID, p.PlanDate, p.Status, boolToInt(p.HasConflicts), conflictSummary,
+		generatedAt, lastRegen, p.RegenerateCount,
+		p.FeedbackHistory, p.PromptVersion, p.BriefingID, readAt,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("upserting day_plan: %w", err)
+	}
+
+	var id int64
+	err = db.QueryRow(`SELECT id FROM day_plans WHERE user_id = ? AND plan_date = ?`,
+		p.UserID, p.PlanDate).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("getting day_plan id after upsert: %w", err)
+	}
+	return id, nil
 }
 
 // ── DayPlan reads ─────────────────────────────────────────────────────────────
@@ -437,11 +456,22 @@ func (db *DB) SetHasConflicts(planID int64, hasConflicts bool, summary string) e
 
 // IncrementRegenerateCount prepends feedback into the feedback_history JSON
 // array (keeping last 5 entries), increments regenerate_count, and sets
-// last_regenerated_at to now.
+// last_regenerated_at to now. The SELECT and UPDATE are wrapped in a single
+// transaction to prevent lost increments under concurrent writes.
 func (db *DB) IncrementRegenerateCount(planID int64, feedback string) error {
-	// Load current history.
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction for day_plan %d: %w", planID, err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// Load current history inside the transaction.
 	var raw sql.NullString
-	err := db.QueryRow(`SELECT feedback_history FROM day_plans WHERE id = ?`, planID).Scan(&raw)
+	err = tx.QueryRow(`SELECT feedback_history FROM day_plans WHERE id = ?`, planID).Scan(&raw)
 	if err != nil {
 		return fmt.Errorf("reading feedback_history for day_plan %d: %w", planID, err)
 	}
@@ -465,13 +495,14 @@ func (db *DB) IncrementRegenerateCount(planID int64, feedback string) error {
 		history = history[:5]
 	}
 
-	updated, err := json.Marshal(history)
-	if err != nil {
-		return fmt.Errorf("marshalling feedback_history: %w", err)
+	updated, merr := json.Marshal(history)
+	if merr != nil {
+		err = fmt.Errorf("marshalling feedback_history: %w", merr)
+		return err
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = db.Exec(`UPDATE day_plans SET
+	_, err = tx.Exec(`UPDATE day_plans SET
 		feedback_history = ?,
 		regenerate_count = regenerate_count + 1,
 		last_regenerated_at = ?,
@@ -479,6 +510,10 @@ func (db *DB) IncrementRegenerateCount(planID int64, feedback string) error {
 		WHERE id = ?`, string(updated), now, planID)
 	if err != nil {
 		return fmt.Errorf("incrementing regenerate_count for day_plan %d: %w", planID, err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("committing IncrementRegenerateCount for day_plan %d: %w", planID, err)
 	}
 	return nil
 }

@@ -266,6 +266,46 @@ func TestListDayPlans(t *testing.T) {
 	assert.Equal(t, "2026-04-21", list[2].PlanDate)
 }
 
+func TestUpsertDayPlan_ConcurrentSafe(t *testing.T) {
+	db := dayPlanTestDB(t)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	p1 := &DayPlan{
+		UserID:          "U1",
+		PlanDate:        "2026-04-23",
+		Status:          DayPlanStatusActive,
+		GeneratedAt:     now,
+		FeedbackHistory: "[]",
+	}
+
+	id1, err := db.UpsertDayPlan(p1)
+	require.NoError(t, err)
+	assert.Greater(t, id1, int64(0))
+
+	// Second upsert for the same (user_id, plan_date) with updated fields.
+	p2 := &DayPlan{
+		UserID:          "U1",
+		PlanDate:        "2026-04-23",
+		Status:          DayPlanStatusArchived,
+		GeneratedAt:     now,
+		FeedbackHistory: `["feedback1"]`,
+	}
+
+	id2, err := db.UpsertDayPlan(p2)
+	require.NoError(t, err)
+
+	// Must return the same row id — no duplicate inserted.
+	assert.Equal(t, id1, id2, "upsert must return the same id on conflict")
+
+	// Row must reflect the latest values.
+	got, err := db.GetDayPlan("U1", "2026-04-23")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, id1, got.ID)
+	assert.Equal(t, DayPlanStatusArchived, got.Status)
+	assert.Equal(t, `["feedback1"]`, got.FeedbackHistory)
+}
+
 func TestSetHasConflicts(t *testing.T) {
 	db := dayPlanTestDB(t)
 
