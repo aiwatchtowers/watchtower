@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -169,8 +170,8 @@ func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 		args = append(args, f.SourceID)
 	}
 	if f.Search != "" {
-		conditions = append(conditions, "(text LIKE ? OR intent LIKE ?)")
-		like := "%" + f.Search + "%"
+		conditions = append(conditions, `(text LIKE ? ESCAPE '\' OR intent LIKE ? ESCAPE '\')`+``)
+		like := "%" + escapeLike(f.Search) + "%"
 		args = append(args, like, like)
 	}
 
@@ -296,40 +297,75 @@ func (db *DB) GetTargetsForBriefing() ([]Target, error) {
 	return targets, rows.Err()
 }
 
-// RecomputeParentProgress updates parent.progress to AVG of non-dismissed children's progress.
-// If the parent has no non-dismissed children, progress is derived from its own status.
+// recomputeParentProgressMaxDepth caps the ancestor walk to prevent infinite
+// loops from cycles or unexpectedly deep hierarchies.
+const recomputeParentProgressMaxDepth = 20
+
+// RecomputeParentProgress updates parent.progress to AVG of non-dismissed children's progress,
+// then walks up the ancestor chain iteratively (max 20 levels). Cycles are detected via a
+// visited set; exceeding max depth logs a warning and stops without returning an error.
 func (db *DB) RecomputeParentProgress(parentID int64) error {
-	var avg sql.NullFloat64
-	err := db.QueryRow(`SELECT AVG(progress) FROM targets
-		WHERE parent_id = ? AND status != 'dismissed'`, parentID).Scan(&avg)
-	if err != nil {
-		return fmt.Errorf("averaging children progress for target %d: %w", parentID, err)
-	}
+	visited := make(map[int64]bool)
+	current := parentID
 
-	var newProgress float64
-	if avg.Valid {
-		newProgress = avg.Float64
-	} else {
-		// No non-dismissed children: derive from own status.
-		var status string
-		if serr := db.QueryRow(`SELECT status FROM targets WHERE id = ?`, parentID).Scan(&status); serr == nil {
-			newProgress = statusToProgress(status)
+	for depth := 0; depth < recomputeParentProgressMaxDepth; depth++ {
+		if visited[current] {
+			log.Printf("db: RecomputeParentProgress detected cycle at target %d — stopping", current)
+			return nil
 		}
+		visited[current] = true
+
+		var avg sql.NullFloat64
+		err := db.QueryRow(`SELECT AVG(progress) FROM targets
+			WHERE parent_id = ? AND status != 'dismissed'`, current).Scan(&avg)
+		if err != nil {
+			return fmt.Errorf("averaging children progress for target %d: %w", current, err)
+		}
+
+		var newProgress float64
+		if avg.Valid {
+			newProgress = avg.Float64
+		} else {
+			// No non-dismissed children: derive from own status.
+			var status string
+			if serr := db.QueryRow(`SELECT status FROM targets WHERE id = ?`, current).Scan(&status); serr == nil {
+				newProgress = statusToProgress(status)
+			}
+		}
+
+		_, err = db.Exec(`UPDATE targets SET progress = ?,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			WHERE id = ?`, newProgress, current)
+		if err != nil {
+			return fmt.Errorf("updating parent %d progress: %w", current, err)
+		}
+
+		// Walk up to the next ancestor.
+		var nextParent sql.NullInt64
+		if gerr := db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, current).Scan(&nextParent); gerr != nil || !nextParent.Valid {
+			break // reached the root or target not found
+		}
+		current = nextParent.Int64
 	}
 
-	_, err = db.Exec(`UPDATE targets SET progress = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ?`, newProgress, parentID)
-	if err != nil {
-		return fmt.Errorf("updating parent %d progress: %w", parentID, err)
+	if visited[current] {
+		// Already handled the cycle case above; nothing more to do.
+		return nil
 	}
-
-	// Propagate one level up if parent also has a parent.
-	var grandparentID sql.NullInt64
-	if gerr := db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, parentID).Scan(&grandparentID); gerr == nil && grandparentID.Valid {
-		_ = db.RecomputeParentProgress(grandparentID.Int64)
+	// If we exhausted max depth without a cycle, log a warning.
+	if len(visited) >= recomputeParentProgressMaxDepth {
+		log.Printf("db: RecomputeParentProgress reached max depth (%d) at target %d — stopping", recomputeParentProgressMaxDepth, current)
 	}
 	return nil
+}
+
+// escapeLike escapes backslash, percent, and underscore in s so it is safe
+// to embed in a SQLite LIKE pattern with ESCAPE '\'.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 // statusToProgress maps a target status to a leaf-level progress value.
