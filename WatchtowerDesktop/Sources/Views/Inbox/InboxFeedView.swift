@@ -55,16 +55,12 @@ struct InboxFeedView: View {
         newVM.startObserving()
     }
 
-    // MARK: - Learned Tab Placeholder
+    // MARK: - Learned Tab
 
     @ViewBuilder
     private var learnedContent: some View {
-        // InboxLearnedRulesView is implemented by a parallel agent (Task 24).
-        // This placeholder compiles and will be wired up in Task 26.
-        if appState.databaseManager?.dbPool != nil {
-            Text("Learned rules — coming soon")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if let dbPool = appState.databaseManager?.dbPool {
+            InboxLearnedRulesView(db: dbPool)
         } else {
             Text("Database unavailable")
                 .foregroundStyle(.secondary)
