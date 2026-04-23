@@ -369,6 +369,99 @@ func TestRecomputeParentProgress_AllDismissedChildren(t *testing.T) {
 	assert.InDelta(t, 0.5, parent.Progress, 0.001)
 }
 
+// ── Three-level hierarchy progress rollup (fix #11) ─────────────────────────
+
+func TestRecomputeParentProgress_ThreeLevel(t *testing.T) {
+	db := openTestDB(t)
+
+	// quarter → week → day (leaf)
+	quarterID, err := db.CreateTarget(makeTarget("Quarter", "todo", "high"))
+	require.NoError(t, err)
+
+	week := makeTarget("Week", "todo", "medium")
+	week.Level = "week"
+	week.ParentID = sql.NullInt64{Int64: quarterID, Valid: true}
+	weekID, err := db.CreateTarget(week)
+	require.NoError(t, err)
+
+	day := makeTarget("Day leaf", "todo", "medium")
+	day.Level = "day"
+	day.ParentID = sql.NullInt64{Int64: weekID, Valid: true}
+	dayID, err := db.CreateTarget(day)
+	require.NoError(t, err)
+
+	// Mark the leaf as done; RecomputeParentProgress should walk all the way up.
+	require.NoError(t, db.UpdateTargetStatus(int(dayID), "done"))
+
+	week2, err := db.GetTargetByID(int(weekID))
+	require.NoError(t, err)
+	assert.InDelta(t, 1.0, week2.Progress, 0.001, "week should be 100% when only child is done")
+
+	quarter2, err := db.GetTargetByID(int(quarterID))
+	require.NoError(t, err)
+	assert.InDelta(t, 1.0, quarter2.Progress, 0.001, "quarter should be 100% when week is 100%")
+}
+
+func TestRecomputeParentProgress_DismissedMidLevel(t *testing.T) {
+	db := openTestDB(t)
+
+	// quarter → week (dismissed) → day (done)
+	quarterID, err := db.CreateTarget(makeTarget("Quarter", "todo", "high"))
+	require.NoError(t, err)
+
+	week := makeTarget("Week", "in_progress", "medium")
+	week.Level = "week"
+	week.ParentID = sql.NullInt64{Int64: quarterID, Valid: true}
+	weekID, err := db.CreateTarget(week)
+	require.NoError(t, err)
+
+	day := makeTarget("Day leaf", "done", "medium")
+	day.Level = "day"
+	day.ParentID = sql.NullInt64{Int64: weekID, Valid: true}
+	_, err = db.CreateTarget(day)
+	require.NoError(t, err)
+
+	// Dismiss the week; quarter should no longer count it in its average.
+	require.NoError(t, db.UpdateTargetStatus(int(weekID), "dismissed"))
+
+	quarter2, err := db.GetTargetByID(int(quarterID))
+	require.NoError(t, err)
+	// No non-dismissed children of quarter → fallback to quarter's own status (todo=0.0).
+	assert.InDelta(t, 0.0, quarter2.Progress, 0.001,
+		"quarter progress should fall back to its own status when only child is dismissed")
+}
+
+// ── Cycle / depth guard in RecomputeParentProgress (fix #12) ────────────────
+
+func TestRecomputeParentProgress_CycleGuard(t *testing.T) {
+	db := openTestDB(t)
+
+	// Create two targets normally.
+	aID, err := db.CreateTarget(makeTarget("A", "todo", "medium"))
+	require.NoError(t, err)
+	bID, err := db.CreateTarget(makeTarget("B", "todo", "medium"))
+	require.NoError(t, err)
+
+	// Manufacture a cycle by directly setting parent_id bypassing FK (FK is ON in tests,
+	// but the self-referential structure is: A→B and B→A).
+	// We set B.parent_id = A first (valid), then corrupt A.parent_id = B via raw Exec
+	// while FK is off so we can test the cycle detection path.
+	_, err = db.Exec("PRAGMA foreign_keys = OFF")
+	require.NoError(t, err)
+	_, err = db.Exec("UPDATE targets SET parent_id = ? WHERE id = ?", bID, aID)
+	require.NoError(t, err)
+	_, err = db.Exec("UPDATE targets SET parent_id = ? WHERE id = ?", aID, bID)
+	require.NoError(t, err)
+	_, err = db.Exec("PRAGMA foreign_keys = ON")
+	require.NoError(t, err)
+
+	// RecomputeParentProgress must return without panicking or looping infinitely.
+	err = db.RecomputeParentProgress(aID)
+	// No error required — the function logs and returns nil on cycle detection.
+	// The important thing is it terminates.
+	_ = err
+}
+
 // ── UpdateTarget / progress recompute ───────────────────────────────────────
 
 func TestUpdateTarget_RecomputesParentProgress(t *testing.T) {
