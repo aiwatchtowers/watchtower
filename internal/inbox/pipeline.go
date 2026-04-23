@@ -271,31 +271,19 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 		p.logger.Printf("inbox: learner error: %v", err)
 	}
 
-	// Phase 4: Auto-resolve — find pending items where user has replied.
+	// Phase 4: Auto-resolve — rule-based resolution for all source types.
 	stepStart = time.Now()
-	pendingItems, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
-	if err != nil {
-		return created, 0, fmt.Errorf("loading pending items: %w", err)
-	}
-
-	resolved := 0
-	for _, item := range pendingItems {
-		replied, err := p.db.CheckUserReplied(currentUserID, item.ChannelID, item.MessageTS, item.ThreadTS)
-		if err != nil {
-			p.logger.Printf("inbox: error checking reply for item %d: %v", item.ID, err)
-			continue
-		}
-		if replied {
-			if err := p.db.ResolveInboxItem(item.ID, "User replied"); err != nil {
-				p.logger.Printf("inbox: error resolving item %d: %v", item.ID, err)
-				continue
-			}
-			resolved++
-		}
-	}
+	resolved := p.autoResolveByRules(ctx, currentUserID)
 
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
-	p.progress(2, 6, fmt.Sprintf("Checked %d pending, %d resolved", len(pendingItems), resolved))
+
+	// Reload pending items after rule-based resolution for AI prioritization.
+	pendingItems, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
+	if err != nil {
+		return created, resolved, fmt.Errorf("loading pending items for AI: %w", err)
+	}
+
+	p.progress(2, 6, fmt.Sprintf("Checked pending, %d resolved", resolved))
 
 	// Phase 4a: AI prioritize — only new unprioritized items.
 	var newItems []db.InboxItem
@@ -738,6 +726,152 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 		}
 	}
 	return prompts.Defaults[id], 0
+}
+
+// autoResolveByRules runs all rule-based auto-resolve checks across Slack,
+// Jira, and Calendar sources. Returns the total number of items resolved.
+func (p *Pipeline) autoResolveByRules(ctx context.Context, currentUserID string) int {
+	resolved := 0
+	resolved += p.autoResolveSlack(ctx, currentUserID)
+	resolved += p.autoResolveJira(ctx)
+	resolved += p.autoResolveCalendar(ctx)
+	return resolved
+}
+
+// autoResolveSlack resolves pending Slack inbox items where the current user
+// has already replied in the thread or channel.
+func (p *Pipeline) autoResolveSlack(ctx context.Context, currentUserID string) int {
+	items, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveSlack: loading items: %v", err)
+		return 0
+	}
+	resolved := 0
+	for _, item := range items {
+		// Only Slack-sourced items: trigger types that come from Slack messages.
+		switch item.TriggerType {
+		case "mention", "dm", "thread_reply", "reaction_request":
+		default:
+			continue
+		}
+		replied, err := p.db.CheckUserReplied(currentUserID, item.ChannelID, item.MessageTS, item.ThreadTS)
+		if err != nil {
+			p.logger.Printf("inbox: error checking reply for item %d: %v", item.ID, err)
+			continue
+		}
+		if replied {
+			if err := p.db.ResolveInboxItem(item.ID, "User replied"); err != nil {
+				p.logger.Printf("inbox: error resolving item %d: %v", item.ID, err)
+				continue
+			}
+			resolved++
+		}
+	}
+	return resolved
+}
+
+// autoResolveJira resolves pending jira_comment_mention and jira_assigned items
+// when the current user has authored a comment on the issue after the item was created.
+// If the jira_comments table does not exist, this method is a no-op.
+func (p *Pipeline) autoResolveJira(_ context.Context) int {
+	if !jiraCommentsTableExists(p.db) {
+		return 0
+	}
+	if p.currentUserID == "" {
+		return 0
+	}
+
+	// Drain cursor before any secondary queries (SQLite single-connection deadlock).
+	rows, err := p.db.Query(`SELECT id, channel_id, created_at FROM inbox_items
+		WHERE trigger_type IN ('jira_comment_mention','jira_assigned') AND status='pending'`)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveJira: query: %v", err)
+		return 0
+	}
+	type candidate struct {
+		id        int64
+		issueKey  string
+		createdAt string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.issueKey, &c.createdAt); err != nil {
+			rows.Close() //nolint:errcheck
+			p.logger.Printf("inbox: autoResolveJira: scan: %v", err)
+			return 0
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close() //nolint:errcheck
+
+	resolved := 0
+	for _, c := range candidates {
+		var n int
+		p.db.QueryRow(`SELECT COUNT(*) FROM jira_comments
+			WHERE issue_key=? AND author_id=? AND created_at >= ?`,
+			c.issueKey, p.currentUserID, c.createdAt).Scan(&n) //nolint:errcheck
+		if n > 0 {
+			if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User commented on issue', updated_at=? WHERE id=?`,
+				time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
+				p.logger.Printf("inbox: autoResolveJira: update item %d: %v", c.id, err)
+				continue
+			}
+			resolved++
+		}
+	}
+	return resolved
+}
+
+// autoResolveCalendar resolves pending calendar_invite and calendar_time_change
+// items when the current user's RSVP status is no longer 'needsAction'.
+func (p *Pipeline) autoResolveCalendar(_ context.Context) int {
+	if p.currentUserEmail == "" {
+		return 0
+	}
+
+	// Drain cursor before any secondary queries (SQLite single-connection deadlock).
+	rows, err := p.db.Query(`SELECT id, channel_id FROM inbox_items
+		WHERE trigger_type IN ('calendar_invite','calendar_time_change') AND status='pending'`)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveCalendar: query: %v", err)
+		return 0
+	}
+	type candidate struct {
+		id      int64
+		eventID string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.eventID); err != nil {
+			rows.Close() //nolint:errcheck
+			p.logger.Printf("inbox: autoResolveCalendar: scan: %v", err)
+			return 0
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close() //nolint:errcheck
+
+	resolved := 0
+	for _, c := range candidates {
+		var att string
+		p.db.QueryRow(`SELECT attendees FROM calendar_events WHERE id=?`, c.eventID).Scan(&att) //nolint:errcheck
+		var list []calAttendee
+		_ = json.Unmarshal([]byte(att), &list)
+		for _, a := range list {
+			if a.Email == p.currentUserEmail && a.RSVPStatus != "needsAction" && a.RSVPStatus != "" {
+				if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User responded to invite', updated_at=? WHERE id=?`,
+					time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
+					p.logger.Printf("inbox: autoResolveCalendar: update item %d: %v", c.id, err)
+				} else {
+					resolved++
+				}
+				break
+			}
+		}
+	}
+	return resolved
 }
 
 // parseAIResult parses the JSON response from the AI.

@@ -80,9 +80,53 @@ func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinc
 		}
 	}
 
-	// --- jira_comment_mention: no-op until jira_comments table is added ---
-	// TODO(inbox-pulse v2): detect [~currentUserID] mentions in jira_comments.body
-	// once the jira_comments table is added to the schema.
+	// --- jira_comment_mention: detect when jira_comments table is available ---
+	// The jira_comments table is not part of the core schema but may be created by
+	// the Jira sync extension or by tests. We check for its existence at runtime and
+	// skip gracefully if it is absent.
+	if jiraCommentsTableExists(database) {
+		type commentCandidate struct {
+			issueKey, commentID, body, createdAt string
+		}
+		var commentCandidates []commentCandidate
+		// Look for comments that mention ~currentUserID in the body.
+		mentionPattern := "%[~" + currentUserID + "]%"
+		cRows, err := database.Query(`
+			SELECT issue_key, id, body, created_at
+			FROM jira_comments
+			WHERE body LIKE ?
+			  AND created_at > ?`,
+			mentionPattern, sinceISO)
+		if err == nil {
+			for cRows.Next() {
+				var c commentCandidate
+				if scanErr := cRows.Scan(&c.issueKey, &c.commentID, &c.body, &c.createdAt); scanErr != nil {
+					cRows.Close() //nolint:errcheck
+					break
+				}
+				commentCandidates = append(commentCandidates, c)
+			}
+			cRows.Close() //nolint:errcheck
+		}
+		for _, c := range commentCandidates {
+			if jiraInboxExists(database, c.issueKey, c.createdAt, "jira_comment_mention") {
+				continue
+			}
+			item := db.InboxItem{
+				ChannelID:    c.issueKey,
+				MessageTS:    c.createdAt,
+				SenderUserID: c.issueKey,
+				TriggerType:  "jira_comment_mention",
+				Snippet:      c.body,
+				ItemClass:    DefaultItemClass("jira_comment_mention"),
+				Status:       "pending",
+				Priority:     "medium",
+			}
+			if _, err := database.CreateInboxItem(item); err == nil {
+				created++
+			}
+		}
+	}
 
 	// --- jira_status_change: no-op until jira_issue_history table is added ---
 	// TODO(inbox-pulse v2): detect status changes on issues assigned to currentUserID
@@ -96,6 +140,15 @@ func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinc
 	// using jira_watchers once that table is added to the schema.
 
 	return created, nil
+}
+
+// jiraCommentsTableExists returns true if the jira_comments table is present
+// in the SQLite database. The table is not part of the core schema and may be
+// absent when the Jira sync extension has not run yet.
+func jiraCommentsTableExists(d *db.DB) bool {
+	var n int
+	d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='jira_comments'`).Scan(&n) //nolint:errcheck
+	return n > 0
 }
 
 // jiraInboxExists returns true if an inbox_item already exists for the given
