@@ -71,7 +71,6 @@ private struct CLIExtractedItem: Decodable {
     let period_start: String
     let period_end: String
     let priority: String
-    let due_date: String
     let parent_id: Int64?
     let ai_level_confidence: Double?
     let secondary_links: [CLISecondaryLink]?
@@ -81,5 +80,4 @@ private struct CLISecondaryLink: Decodable {
     let target_id: Int64?
     let external_ref: String
     let relation: String
-    let confidence: Double?
 }

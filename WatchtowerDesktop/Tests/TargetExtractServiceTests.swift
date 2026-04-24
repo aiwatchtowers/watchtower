@@ -26,7 +26,7 @@ final class TargetExtractServiceTests: XCTestCase {
           "notes": "skipped duplicates"
         }
         """
-        let runner = StubCLIRunner(stdout: Data(json.utf8))
+        let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let service = TargetExtractService(runner: runner)
 
         let result = try await service.extract(text: "sample")
@@ -42,34 +42,35 @@ final class TargetExtractServiceTests: XCTestCase {
 
     func testExtractPassesTextAndSourceRefToRunner() async throws {
         let json = "{\"extracted\": [], \"omitted_count\": 0, \"notes\": \"\"}"
-        let runner = StubCLIRunner(stdout: Data(json.utf8))
+        let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let service = TargetExtractService(runner: runner)
 
         _ = try await service.extract(text: "hello world", sourceRef: "inbox:42")
 
-        XCTAssertTrue(runner.capturedArgs.contains("targets"))
-        XCTAssertTrue(runner.capturedArgs.contains("extract"))
-        XCTAssertTrue(runner.capturedArgs.contains("--json"))
-        XCTAssertTrue(runner.capturedArgs.contains("--text"))
-        XCTAssertTrue(runner.capturedArgs.contains("hello world"))
-        XCTAssertTrue(runner.capturedArgs.contains("--source-ref"))
-        XCTAssertTrue(runner.capturedArgs.contains("inbox:42"))
+        let lastArgs = runner.invocations.last ?? []
+        XCTAssertTrue(lastArgs.contains("targets"))
+        XCTAssertTrue(lastArgs.contains("extract"))
+        XCTAssertTrue(lastArgs.contains("--json"))
+        XCTAssertTrue(lastArgs.contains("--text"))
+        XCTAssertTrue(lastArgs.contains("hello world"))
+        XCTAssertTrue(lastArgs.contains("--source-ref"))
+        XCTAssertTrue(lastArgs.contains("inbox:42"))
     }
 
     func testExtractOmitsSourceRefWhenEmpty() async throws {
         let json = "{\"extracted\": [], \"omitted_count\": 0, \"notes\": \"\"}"
-        let runner = StubCLIRunner(stdout: Data(json.utf8))
+        let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let service = TargetExtractService(runner: runner)
 
         _ = try await service.extract(text: "hello")
 
-        XCTAssertFalse(runner.capturedArgs.contains("--source-ref"))
+        XCTAssertFalse((runner.invocations.last ?? []).contains("--source-ref"))
     }
 
     // MARK: - CLI failure
 
     func testExtractPropagatesCLIError() async {
-        let runner = StubCLIRunner(
+        let runner = FakeCLIRunner(
             error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
         )
         let service = TargetExtractService(runner: runner)
@@ -84,7 +85,7 @@ final class TargetExtractServiceTests: XCTestCase {
     // MARK: - Malformed JSON
 
     func testExtractThrowsOnMalformedJSON() async {
-        let runner = StubCLIRunner(stdout: Data("not json".utf8))
+        let runner = FakeCLIRunner(stdout: Data("not json".utf8))
         let service = TargetExtractService(runner: runner)
         do {
             _ = try await service.extract(text: "sample")
@@ -121,7 +122,7 @@ final class TargetExtractServiceTests: XCTestCase {
           "notes": ""
         }
         """
-        let runner = StubCLIRunner(stdout: Data(json.utf8))
+        let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let service = TargetExtractService(runner: runner)
 
         let result = try await service.extract(text: "sample")
@@ -136,21 +137,3 @@ final class TargetExtractServiceTests: XCTestCase {
     }
 }
 
-// MARK: - Stub runner
-
-final class StubCLIRunner: CLIRunnerProtocol {
-    let stdout: Data
-    let error: Error?
-    var capturedArgs: [String] = []
-
-    init(stdout: Data = Data(), error: Error? = nil) {
-        self.stdout = stdout
-        self.error = error
-    }
-
-    func run(args: [String]) async throws -> Data {
-        capturedArgs = args
-        if let error { throw error }
-        return stdout
-    }
-}
