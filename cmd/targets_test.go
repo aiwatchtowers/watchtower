@@ -334,6 +334,57 @@ func TestRunTargetsDismiss(t *testing.T) {
 	assert.Equal(t, "dismissed", target.Status)
 }
 
+// --- Delete ---
+
+func TestRunTargetsDelete(t *testing.T) {
+	cleanup := setupTargetsTestEnv(t)
+	defer cleanup()
+
+	createTestTarget(t, "To delete", "medium", "todo")
+
+	buf := new(bytes.Buffer)
+	targetsDeleteCmd.SetOut(buf)
+
+	err := targetsDeleteCmd.RunE(targetsDeleteCmd, []string{"1"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Target #1 removed")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	target, _ := database.GetTargetByID(1)
+	assert.Nil(t, target, "target should be gone after delete")
+}
+
+func TestRunTargetsDelete_NotFound(t *testing.T) {
+	cleanup := setupTargetsTestEnv(t)
+	defer cleanup()
+
+	err := targetsDeleteCmd.RunE(targetsDeleteCmd, []string{"999999"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestRunTargetsDelete_JSON(t *testing.T) {
+	cleanup := setupTargetsTestEnv(t)
+	defer cleanup()
+
+	createTestTarget(t, "To delete json", "medium", "todo")
+
+	buf := new(bytes.Buffer)
+	targetsDeleteCmd.SetOut(buf)
+
+	require.NoError(t, targetsDeleteCmd.Flags().Set("json", "true"))
+	defer func() { _ = targetsDeleteCmd.Flags().Set("json", "false") }()
+
+	err := targetsDeleteCmd.RunE(targetsDeleteCmd, []string{"1"})
+	require.NoError(t, err)
+
+	out := buf.String()
+	assert.Contains(t, out, `"id":1`)
+	assert.Contains(t, out, `"removed":true`)
+}
+
 // --- Snooze ---
 
 func TestRunTargetsSnooze(t *testing.T) {

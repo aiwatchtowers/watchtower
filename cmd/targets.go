@@ -56,6 +56,9 @@ var (
 
 	// suggest-links subcommand flags
 	targetsFlagSuggestLinksJSON bool
+
+	// delete subcommand flags
+	targetsFlagDeleteJSON bool
 )
 
 var targetsCmd = &cobra.Command{
@@ -119,6 +122,14 @@ var targetsDismissCmd = &cobra.Command{
 	RunE:  runTargetsDismiss,
 }
 
+var targetsDeleteCmd = &cobra.Command{
+	Use:   "delete <id>",
+	Short: "Delete a target permanently",
+	Long:  "Removes a target by ID. Children orphan to the root; linked rows cascade. This cannot be undone.",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTargetsDelete,
+}
+
 var targetsSnoozeCmd = &cobra.Command{
 	Use:   "snooze <id> <date>",
 	Short: "Snooze a target until a date",
@@ -178,6 +189,7 @@ func init() {
 		targetsSuggestLinksCmd,
 		targetsDoneCmd,
 		targetsDismissCmd,
+		targetsDeleteCmd,
 		targetsSnoozeCmd,
 		targetsUpdateCmd,
 		targetsGenerateCmd,
@@ -218,6 +230,9 @@ func init() {
 
 	// suggest-links flags
 	targetsSuggestLinksCmd.Flags().BoolVar(&targetsFlagSuggestLinksJSON, "json", false, "output suggested links as JSON (non-interactive; caller is responsible for persistence)")
+
+	// delete flags
+	targetsDeleteCmd.Flags().BoolVar(&targetsFlagDeleteJSON, "json", false, "output result as JSON")
 
 	// link flags
 	targetsLinkCmd.Flags().IntVar(&targetsFlagLinkParent, "parent", 0, "set parent target ID")
@@ -964,6 +979,39 @@ func runTargetsDismiss(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Target #%d dismissed\n", id)
+	return nil
+}
+
+func runTargetsDelete(cmd *cobra.Command, args []string) error {
+	id, err := strconv.Atoi(args[0])
+	if err != nil || id <= 0 {
+		return fmt.Errorf("invalid target ID %q: must be a positive integer", args[0])
+	}
+
+	database, err := openDBFromConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	if _, err := database.GetTargetByID(id); err != nil {
+		return fmt.Errorf("target #%d not found: %w", id, err)
+	}
+
+	if err := database.DeleteTarget(id); err != nil {
+		return fmt.Errorf("deleting target #%d: %w", id, err)
+	}
+
+	if targetsFlagDeleteJSON {
+		payload := map[string]any{"id": id, "removed": true}
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		if err := enc.Encode(payload); err != nil {
+			return fmt.Errorf("encoding JSON: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Target #%d removed\n", id)
 	return nil
 }
 
