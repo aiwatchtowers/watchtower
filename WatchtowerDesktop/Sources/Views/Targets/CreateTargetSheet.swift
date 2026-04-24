@@ -19,9 +19,9 @@ struct CreateTargetSheet: View {
     @State private var subItems: [TargetSubItem] = []
     @State private var newSubItemText: String = ""
     @State private var errorMessage: String?
-    // V1: hidden — pending Swift→Go CLI bridge (see spec "Out of Scope V2")
-    // @State private var showExtractSheet = false
-    // @State private var highlightExtract: Bool = false
+    @State private var showExtractSheet = false
+    @State private var extractedResult: TargetExtractResult?
+    @State private var isExtracting = false
 
     private let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
@@ -43,6 +43,18 @@ struct CreateTargetSheet: View {
             text = prefillText
             intent = prefillIntent
         }
+        .sheet(isPresented: $showExtractSheet) {
+            if let result = extractedResult {
+                ExtractPreviewSheet(
+                    proposed: result.extracted,
+                    omittedCount: result.omittedCount,
+                    notes: result.notes,
+                    onCreateSelected: { _ in
+                        dismiss()
+                    }
+                )
+            }
+        }
     }
 
     private var sheetHeader: some View {
@@ -60,7 +72,7 @@ struct CreateTargetSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 textField
-                // V1: "Paste and extract" button hidden — pending Swift→Go CLI bridge (see spec "Out of Scope V2")
+                extractButton
                 intentField
                 levelRow
                 priorityRow
@@ -81,6 +93,26 @@ struct CreateTargetSheet: View {
             TextField("Target description", text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
+        }
+    }
+
+    @ViewBuilder
+    private var extractButton: some View {
+        HStack {
+            Button {
+                Task { await runExtract() }
+            } label: {
+                if isExtracting {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Extracting…")
+                    }
+                } else {
+                    Label("Paste and extract", systemImage: "sparkles")
+                }
+            }
+            .disabled(isExtracting || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Spacer()
         }
     }
 
@@ -277,6 +309,28 @@ struct CreateTargetSheet: View {
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func runExtract() async {
+        guard let runner = ProcessCLIRunner.makeDefault() else {
+            errorMessage = "watchtower CLI not found in PATH"
+            return
+        }
+        isExtracting = true
+        errorMessage = nil
+        defer { isExtracting = false }
+        do {
+            let service = TargetExtractService(runner: runner)
+            let result = try await service.extract(text: text)
+            if result.extracted.isEmpty {
+                errorMessage = "AI returned no extracted targets"
+                return
+            }
+            extractedResult = result
+            showExtractSheet = true
+        } catch {
+            errorMessage = "Extract failed: \(error.localizedDescription)"
         }
     }
 }
