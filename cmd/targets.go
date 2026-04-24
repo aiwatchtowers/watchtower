@@ -670,17 +670,18 @@ func runTargetsExtract(cmd *cobra.Command, _ []string) error {
 // jsonProposedTarget is the JSON wire format for a proposed target (Swift Decodable).
 // It is a cmd-layer adapter — do NOT merge into internal/targets.
 type jsonProposedTarget struct {
-	Text              string             `json:"text"`
-	Intent            string             `json:"intent"`
-	Level             string             `json:"level"`
-	CustomLabel       string             `json:"custom_label"`
-	PeriodStart       string             `json:"period_start"`
-	PeriodEnd         string             `json:"period_end"`
-	Priority          string             `json:"priority"`
-	DueDate           string             `json:"due_date"`
-	ParentID          *int64             `json:"parent_id"`
-	AILevelConfidence *float64           `json:"ai_level_confidence"`
-	SecondaryLinks    []jsonProposedLink `json:"secondary_links"`
+	Text              string                `json:"text"`
+	Intent            string                `json:"intent"`
+	Level             string                `json:"level"`
+	CustomLabel       string                `json:"custom_label"`
+	PeriodStart       string                `json:"period_start"`
+	PeriodEnd         string                `json:"period_end"`
+	Priority          string                `json:"priority"`
+	DueDate           string                `json:"due_date"`
+	ParentID          *int64                `json:"parent_id"`
+	AILevelConfidence *float64              `json:"ai_level_confidence"`
+	SecondaryLinks    []jsonProposedLink    `json:"secondary_links"`
+	SubItems          []jsonProposedSubItem `json:"sub_items"`
 }
 
 type jsonProposedLink struct {
@@ -688,6 +689,10 @@ type jsonProposedLink struct {
 	ExternalRef string   `json:"external_ref"`
 	Relation    string   `json:"relation"`
 	Confidence  *float64 `json:"confidence"`
+}
+
+type jsonProposedSubItem struct {
+	Text string `json:"text"`
 }
 
 func toJSONProposedTargets(items []targets.ProposedTarget) []jsonProposedTarget {
@@ -725,6 +730,9 @@ func toJSONProposedTargets(items []targets.ProposedTarget) []jsonProposedTarget 
 				jl.Confidence = &c
 			}
 			j.SecondaryLinks = append(j.SecondaryLinks, jl)
+		}
+		for _, s := range pt.SubItems {
+			j.SubItems = append(j.SubItems, jsonProposedSubItem{Text: s.Text})
 		}
 		out = append(out, j)
 	}

@@ -95,6 +95,77 @@ final class TargetExtractServiceTests: XCTestCase {
         }
     }
 
+    // MARK: - Sub-items (single-goal-with-steps grouping)
+
+    func testExtractDecodesSubItems() async throws {
+        let json = """
+        {
+          "extracted": [
+            {
+              "text": "Актуализировать и согласовать план найма",
+              "intent": "",
+              "level": "week",
+              "custom_label": "",
+              "period_start": "2026-04-21",
+              "period_end": "2026-04-27",
+              "priority": "high",
+              "due_date": "",
+              "parent_id": null,
+              "ai_level_confidence": 0.8,
+              "secondary_links": [],
+              "sub_items": [
+                {"text": "Пообщаться со всеми хедами"},
+                {"text": "Подготовить план от разработки"},
+                {"text": "Учесть LLM Dev Pipelines"}
+              ]
+            }
+          ],
+          "omitted_count": 0,
+          "notes": ""
+        }
+        """
+        let runner = FakeCLIRunner(stdout: Data(json.utf8))
+        let service = TargetExtractService(runner: runner)
+
+        let result = try await service.extract(text: "sample")
+
+        XCTAssertEqual(result.extracted.count, 1)
+        XCTAssertEqual(result.extracted[0].subItems.count, 3)
+        XCTAssertEqual(result.extracted[0].subItems[0].text, "Пообщаться со всеми хедами")
+        XCTAssertFalse(result.extracted[0].subItems[0].done)
+    }
+
+    func testExtractHandlesMissingSubItemsField() async throws {
+        // Existing JSON without sub_items must still decode (backward-compat).
+        let json = """
+        {
+          "extracted": [
+            {
+              "text": "legacy target",
+              "intent": "",
+              "level": "day",
+              "custom_label": "",
+              "period_start": "2026-04-24",
+              "period_end": "2026-04-24",
+              "priority": "medium",
+              "due_date": "",
+              "parent_id": null,
+              "ai_level_confidence": null,
+              "secondary_links": []
+            }
+          ],
+          "omitted_count": 0,
+          "notes": ""
+        }
+        """
+        let runner = FakeCLIRunner(stdout: Data(json.utf8))
+        let service = TargetExtractService(runner: runner)
+
+        let result = try await service.extract(text: "sample")
+
+        XCTAssertEqual(result.extracted[0].subItems.count, 0)
+    }
+
     // MARK: - Secondary links
 
     func testExtractDecodesSecondaryLinks() async throws {

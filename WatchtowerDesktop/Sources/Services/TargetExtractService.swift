@@ -24,31 +24,39 @@ struct TargetExtractService {
         let data = try await runner.run(args: args)
         let decoded = try JSONDecoder().decode(CLIExtractResponse.self, from: data)
 
-        let proposed = decoded.extracted.map { item in
-            ProposedTarget(
-                text: item.text,
-                intent: item.intent,
-                level: item.level,
-                customLabel: item.custom_label,
-                levelConfidence: item.ai_level_confidence,
-                periodStart: item.period_start,
-                periodEnd: item.period_end,
-                priority: item.priority.isEmpty ? "medium" : item.priority,
-                parentId: item.parent_id.map { Int($0) },
-                secondaryLinks: (item.secondary_links ?? []).map { l in
-                    ProposedLink(
-                        targetId: l.target_id.map { Int($0) },
-                        externalRef: l.external_ref,
-                        relation: l.relation
-                    )
-                }
-            )
-        }
+        let proposed = decoded.extracted.map { Self.proposedFrom($0) }
 
         return TargetExtractResult(
             extracted: proposed,
             omittedCount: decoded.omitted_count,
             notes: decoded.notes
+        )
+    }
+
+    // Split out to keep Swift's type-checker happy (SE-0286 complexity limit).
+    private static func proposedFrom(_ item: CLIExtractedItem) -> ProposedTarget {
+        let links: [ProposedLink] = (item.secondary_links ?? []).map { l in
+            ProposedLink(
+                targetId: l.target_id.map { Int($0) },
+                externalRef: l.external_ref,
+                relation: l.relation
+            )
+        }
+        let subs: [TargetSubItem] = (item.sub_items ?? []).map { s in
+            TargetSubItem(text: s.text, done: false, dueDate: nil)
+        }
+        return ProposedTarget(
+            text: item.text,
+            intent: item.intent,
+            level: item.level,
+            customLabel: item.custom_label,
+            levelConfidence: item.ai_level_confidence,
+            periodStart: item.period_start,
+            periodEnd: item.period_end,
+            priority: item.priority.isEmpty ? "medium" : item.priority,
+            parentId: item.parent_id.map { Int($0) },
+            secondaryLinks: links,
+            subItems: subs
         )
     }
 }
@@ -74,10 +82,15 @@ private struct CLIExtractedItem: Decodable {
     let parent_id: Int64?
     let ai_level_confidence: Double?
     let secondary_links: [CLISecondaryLink]?
+    let sub_items: [CLISubItem]?
 }
 
 private struct CLISecondaryLink: Decodable {
     let target_id: Int64?
     let external_ref: String
     let relation: String
+}
+
+private struct CLISubItem: Decodable {
+    let text: String
 }
