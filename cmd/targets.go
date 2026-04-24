@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -995,7 +996,10 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 	defer database.Close()
 
 	if _, err := database.GetTargetByID(id); err != nil {
-		return fmt.Errorf("target #%d not found: %w", id, err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("target #%d not found", id)
+		}
+		return fmt.Errorf("looking up target #%d: %w", id, err)
 	}
 
 	if err := database.DeleteTarget(id); err != nil {

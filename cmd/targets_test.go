@@ -59,7 +59,7 @@ func TestTargetsCommandRegistered(t *testing.T) {
 
 func TestTargetsSubcommandsRegistered(t *testing.T) {
 	expected := []string{"show", "create", "extract", "link", "unlink", "suggest-links",
-		"done", "dismiss", "snooze", "update", "generate", "note", "ai-update"}
+		"done", "dismiss", "delete", "snooze", "update", "generate", "note", "ai-update"}
 	registered := map[string]bool{}
 	for _, sub := range targetsCmd.Commands() {
 		registered[sub.Name()] = true
@@ -352,8 +352,8 @@ func TestRunTargetsDelete(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	defer database.Close()
-	target, _ := database.GetTargetByID(1)
-	assert.Nil(t, target, "target should be gone after delete")
+	_, err = database.GetTargetByID(1)
+	require.Error(t, err, "target should be gone after delete")
 }
 
 func TestRunTargetsDelete_NotFound(t *testing.T) {
