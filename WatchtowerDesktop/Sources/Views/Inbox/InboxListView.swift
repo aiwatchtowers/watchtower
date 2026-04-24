@@ -266,7 +266,7 @@ struct InboxListView: View {
                         Text(timeAgo(item.messageDate))
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                        if item.hasLinkedTask {
+                        if item.hasLinkedTarget {
                             Image(systemName: "checkmark.circle")
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
@@ -348,8 +348,8 @@ struct InboxListView: View {
                 Button("3 days") { vm.snooze(item, until: snoozeDate(days: 3)) }
                 Button("1 week") { vm.snooze(item, until: snoozeDate(days: 7)) }
             }
-            if !item.hasLinkedTask {
-                Button("Create Task") { vm.createTask(from: item) }
+            if !item.hasLinkedTarget {
+                Button("Create Target") { vm.createTask(from: item) }
             }
             Divider()
         }
