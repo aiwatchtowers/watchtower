@@ -3,9 +3,10 @@ import SwiftUI
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case chat
     case briefings
+    case dayPlan
     case inbox
     case calendar
-    case tasks
+    case targets
     case tracks
     case digests
     case people
@@ -25,9 +26,10 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         switch self {
         case .chat: "AI Chat"
         case .briefings: "Briefings"
+        case .dayPlan: "Day Plan"
         case .inbox: "Inbox"
         case .calendar: "Calendar"
-        case .tasks: "Tasks"
+        case .targets: "Targets"
         case .tracks: "Tracks"
         case .digests: "Digests"
         case .people: "People"
@@ -47,9 +49,10 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         switch self {
         case .chat: "bubble.left.and.bubble.right"
         case .briefings: "sun.max"
+        case .dayPlan: "calendar.day.timeline.left"
         case .inbox: "tray"
         case .calendar: "calendar"
-        case .tasks: "checkmark.circle"
+        case .targets: "scope"
         case .tracks: "binoculars"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
@@ -67,7 +70,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Main navigation items (shown above the separator).
     static var mainItems: [Self] {
-        [.chat, .briefings, .inbox, .calendar, .tasks, .tracks, .digests, .people, .workload, .blockers, .projectMap, .releases, .statistics, .search]
+        [.chat, .briefings, .dayPlan, .inbox, .calendar, .targets, .tracks, .digests, .people, .workload, .blockers, .projectMap, .releases, .statistics, .search]
     }
 
     /// Tool items (shown below the separator).
@@ -234,12 +237,20 @@ struct MainNavigationView: View {
             ChatView()
         case .briefings:
             BriefingsListView()
+        case .dayPlan:
+            if let vm = appState.dayPlanViewModel {
+                DayPlanView(vm: vm)
+            } else {
+                Text("Day Plan unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .inbox:
             InboxListView()
         case .calendar:
             CalendarEventsView()
-        case .tasks:
-            TasksListView()
+        case .targets:
+            TargetsListView()
         case .tracks:
             TracksListView()
         case .digests:

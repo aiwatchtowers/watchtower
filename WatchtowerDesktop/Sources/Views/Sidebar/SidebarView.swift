@@ -131,33 +131,41 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func badgeCount(for item: SidebarDestination) -> some View {
-        let count: Int = {
-            switch item {
-            case .briefings: return unreadBriefingCount
-            case .inbox: return inboxPendingCount
-            case .tasks: return overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
-            case .tracks: return updatedTrackCount
-            case .digests: return unreadDigestCount
-            case .statistics: return recommendationCount
-            default: return 0
+        if item == .dayPlan {
+            if appState.dayPlanViewModel?.hasConflicts == true {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 6, height: 6)
             }
-        }()
-        if count > 0 {
-            Text("\(count)")
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(
-                    item == .tracks ? .orange
-                        : item == .inbox && inboxHighPriorityCount > 0 ? .red
-                        : item == .inbox ? .blue
-                        : item == .tasks && overdueTaskCount > 0 ? .red
-                        : item == .tasks ? .blue
-                        : .red,
-                    in: Capsule()
-                )
+        } else {
+            let count: Int = {
+                switch item {
+                case .briefings: return unreadBriefingCount
+                case .inbox: return inboxPendingCount
+                case .targets: return overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
+                case .tracks: return updatedTrackCount
+                case .digests: return unreadDigestCount
+                case .statistics: return recommendationCount
+                default: return 0
+                }
+            }()
+            if count > 0 {
+                Text("\(count)")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(
+                        item == .tracks ? .orange
+                            : item == .inbox && inboxHighPriorityCount > 0 ? .red
+                            : item == .inbox ? .blue
+                            : item == .targets && overdueTaskCount > 0 ? .red
+                            : item == .targets ? .blue
+                            : .red,
+                        in: Capsule()
+                    )
+            }
         }
     }
 
@@ -173,9 +181,9 @@ struct SidebarView: View {
                 let briefings = try Int.fetchOne(
                     db, sql: "SELECT COUNT(*) FROM briefings"
                 ) ?? 0
-                let tasks = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks") ?? 0
+                let targets = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0
                 let inbox = (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items")) ?? 0
-                return (tracks, briefings, tasks, inbox)
+                return (tracks, briefings, targets, inbox)
             }
             do {
                 for try await _ in observation.values(in: dbPool).dropFirst() {
@@ -218,7 +226,7 @@ struct SidebarView: View {
                 }
 
                 let trackCounts = try TrackQueries.fetchCounts(db)
-                let taskCounts = try TaskQueries.fetchCounts(db)
+                let taskCounts = try TargetQueries.fetchCounts(db)
                 let inboxCounts = (try? InboxQueries.fetchCounts(db)) ?? (pending: 0, unread: 0, highPriority: 0)
 
                 let recCount: Int

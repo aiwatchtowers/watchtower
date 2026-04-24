@@ -44,6 +44,26 @@ const (
 
 	// DefaultJiraFeaturesRole is the default role for Jira feature toggles.
 	DefaultJiraFeaturesRole = "ic"
+
+	// DayPlan defaults
+	DefaultDayPlanEnabled           = true
+	DefaultDayPlanHour              = 8
+	DefaultDayPlanWorkingHoursStart = "09:00"
+	DefaultDayPlanWorkingHoursEnd   = "19:00"
+	DefaultDayPlanMaxTimeblocks     = 3
+	DefaultDayPlanMinBacklog        = 3
+	DefaultDayPlanMaxBacklog        = 8
+
+	// Targets defaults
+	DefaultTargetsExtractEnabled        = true
+	DefaultTargetsExtractMaxPerCall     = 10
+	DefaultTargetsExtractTimeoutSeconds = 30
+	DefaultTargetsExtractModel          = "" // empty → provider default
+
+	DefaultTargetsResolverSlackEnabled        = true
+	DefaultTargetsResolverJiraEnabled         = true
+	DefaultTargetsResolverMCPTimeoutSeconds   = 10
+	DefaultTargetsResolverActiveSnapshotLimit = 100
 )
 
 // RoleDisplayNames maps role keys to human-readable display names.

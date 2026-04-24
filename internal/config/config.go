@@ -100,6 +100,39 @@ type AnalysisConfig struct {
 	LegacyMode bool `mapstructure:"legacy_mode"` // enable legacy people analytics (default: false)
 }
 
+// TargetsExtractConfig holds settings for the targets extraction phase.
+type TargetsExtractConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	MaxPerCall     int    `mapstructure:"max_per_call"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+	Model          string `mapstructure:"model"`
+}
+
+// TargetsResolverConfig holds settings for the targets resolver phase.
+type TargetsResolverConfig struct {
+	SlackEnabled        bool `mapstructure:"slack_enabled"`
+	JiraEnabled         bool `mapstructure:"jira_enabled"`
+	MCPTimeoutSeconds   int  `mapstructure:"mcp_timeout_seconds"`
+	ActiveSnapshotLimit int  `mapstructure:"active_snapshot_limit"`
+}
+
+// TargetsConfig holds settings for the targets extraction and resolution pipeline.
+type TargetsConfig struct {
+	Extract  TargetsExtractConfig  `mapstructure:"extract"`
+	Resolver TargetsResolverConfig `mapstructure:"resolver"`
+}
+
+// DayPlanConfig holds settings for the daily plan generation pipeline.
+type DayPlanConfig struct {
+	Enabled           bool   `yaml:"enabled" mapstructure:"enabled"`
+	Hour              int    `yaml:"hour" mapstructure:"hour"`
+	WorkingHoursStart string `yaml:"working_hours_start" mapstructure:"working_hours_start"`
+	WorkingHoursEnd   string `yaml:"working_hours_end" mapstructure:"working_hours_end"`
+	MaxTimeblocks     int    `yaml:"max_timeblocks" mapstructure:"max_timeblocks"`
+	MinBacklog        int    `yaml:"min_backlog" mapstructure:"min_backlog"`
+	MaxBacklog        int    `yaml:"max_backlog" mapstructure:"max_backlog"`
+}
+
 type Config struct {
 	ActiveWorkspace string                      `mapstructure:"active_workspace"`
 	Workspaces      map[string]*WorkspaceConfig `mapstructure:"workspaces"`
@@ -112,6 +145,8 @@ type Config struct {
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
 	Jira            JiraConfig                  `mapstructure:"jira"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
+	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
+	Targets         TargetsConfig               `mapstructure:"targets"`
 	ClaudePath      string                      `mapstructure:"claude_path"`
 	CodexPath       string                      `mapstructure:"codex_path"`
 }
@@ -149,6 +184,21 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("calendar.sync_days_ahead", DefaultCalendarSyncDaysAhead)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
+	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
+	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
+	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)
+	v.SetDefault("day_plan.working_hours_end", DefaultDayPlanWorkingHoursEnd)
+	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
+	v.SetDefault("day_plan.min_backlog", DefaultDayPlanMinBacklog)
+	v.SetDefault("day_plan.max_backlog", DefaultDayPlanMaxBacklog)
+	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
+	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
+	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)
+	v.SetDefault("targets.extract.model", DefaultTargetsExtractModel)
+	v.SetDefault("targets.resolver.slack_enabled", DefaultTargetsResolverSlackEnabled)
+	v.SetDefault("targets.resolver.jira_enabled", DefaultTargetsResolverJiraEnabled)
+	v.SetDefault("targets.resolver.mcp_timeout_seconds", DefaultTargetsResolverMCPTimeoutSeconds)
+	v.SetDefault("targets.resolver.active_snapshot_limit", DefaultTargetsResolverActiveSnapshotLimit)
 	// Config file
 	v.SetConfigFile(configPath)
 

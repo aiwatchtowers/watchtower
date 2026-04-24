@@ -239,6 +239,100 @@ func TestValidate_NilWorkspaces(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestDayPlanConfig_Defaults(t *testing.T) {
+	path := writeTestConfig(t, "")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, DefaultDayPlanEnabled, cfg.DayPlan.Enabled)
+	assert.Equal(t, DefaultDayPlanHour, cfg.DayPlan.Hour)
+	assert.Equal(t, DefaultDayPlanWorkingHoursStart, cfg.DayPlan.WorkingHoursStart)
+	assert.Equal(t, DefaultDayPlanWorkingHoursEnd, cfg.DayPlan.WorkingHoursEnd)
+	assert.Equal(t, DefaultDayPlanMaxTimeblocks, cfg.DayPlan.MaxTimeblocks)
+	assert.Equal(t, DefaultDayPlanMinBacklog, cfg.DayPlan.MinBacklog)
+	assert.Equal(t, DefaultDayPlanMaxBacklog, cfg.DayPlan.MaxBacklog)
+}
+
+func TestDayPlanConfig_FromYAML(t *testing.T) {
+	yaml := `
+day_plan:
+  enabled: false
+  hour: 7
+  working_hours_start: "08:00"
+  working_hours_end: "18:00"
+  max_timeblocks: 5
+  min_backlog: 2
+  max_backlog: 10
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.DayPlan.Enabled)
+	assert.Equal(t, 7, cfg.DayPlan.Hour)
+	assert.Equal(t, "08:00", cfg.DayPlan.WorkingHoursStart)
+	assert.Equal(t, "18:00", cfg.DayPlan.WorkingHoursEnd)
+	assert.Equal(t, 5, cfg.DayPlan.MaxTimeblocks)
+	assert.Equal(t, 2, cfg.DayPlan.MinBacklog)
+	assert.Equal(t, 10, cfg.DayPlan.MaxBacklog)
+}
+
+func TestTargetsConfigDefaults(t *testing.T) {
+	path := writeTestConfig(t, "")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Targets.Extract.Enabled)
+	assert.Equal(t, DefaultTargetsExtractMaxPerCall, cfg.Targets.Extract.MaxPerCall)
+	assert.Equal(t, DefaultTargetsExtractTimeoutSeconds, cfg.Targets.Extract.TimeoutSeconds)
+	assert.Equal(t, DefaultTargetsExtractModel, cfg.Targets.Extract.Model)
+	assert.True(t, cfg.Targets.Resolver.SlackEnabled)
+	assert.True(t, cfg.Targets.Resolver.JiraEnabled)
+	assert.Equal(t, DefaultTargetsResolverMCPTimeoutSeconds, cfg.Targets.Resolver.MCPTimeoutSeconds)
+	assert.Equal(t, DefaultTargetsResolverActiveSnapshotLimit, cfg.Targets.Resolver.ActiveSnapshotLimit)
+}
+
+func TestTargetsConfigOverride(t *testing.T) {
+	yaml := `
+targets:
+  extract:
+    enabled: true
+    max_per_call: 5
+    timeout_seconds: 60
+    model: "claude-haiku-4-5"
+  resolver:
+    slack_enabled: false
+    jira_enabled: true
+    mcp_timeout_seconds: 20
+    active_snapshot_limit: 50
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Targets.Extract.Enabled)
+	assert.Equal(t, 5, cfg.Targets.Extract.MaxPerCall)
+	assert.Equal(t, 60, cfg.Targets.Extract.TimeoutSeconds)
+	assert.Equal(t, "claude-haiku-4-5", cfg.Targets.Extract.Model)
+	assert.False(t, cfg.Targets.Resolver.SlackEnabled)
+	assert.True(t, cfg.Targets.Resolver.JiraEnabled)
+	assert.Equal(t, 20, cfg.Targets.Resolver.MCPTimeoutSeconds)
+	assert.Equal(t, 50, cfg.Targets.Resolver.ActiveSnapshotLimit)
+}
+
+func TestTargetsConfigDisabled(t *testing.T) {
+	yaml := `
+targets:
+  extract:
+    enabled: false
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Targets.Extract.Enabled)
+}
+
 func TestLoad_MultipleWorkspaces(t *testing.T) {
 	yaml := `
 active_workspace: prod
