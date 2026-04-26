@@ -61,8 +61,18 @@ var (
 	// delete subcommand flags
 	targetsFlagDeleteJSON bool
 
-	// promote-subitem subcommand flags
-	targetsFlagPromoteJSON bool
+	// promote-subitem subcommand flags (dedicated, NOT shared with create/update,
+	// to avoid cross-subcommand state leaks between command invocations and tests).
+	targetsFlagPromoteJSON        bool
+	targetsFlagPromoteText        string
+	targetsFlagPromoteIntent      string
+	targetsFlagPromoteLevel       string
+	targetsFlagPromotePriority    string
+	targetsFlagPromoteOwnership   string
+	targetsFlagPromoteDue         string
+	targetsFlagPromotePeriodStart string
+	targetsFlagPromotePeriodEnd   string
+	targetsFlagPromoteTags        string
 )
 
 var targetsCmd = &cobra.Command{
@@ -186,8 +196,12 @@ var targetsPromoteSubItemCmd = &cobra.Command{
 	Use:   "promote-subitem <target-id> <sub-item-index>",
 	Short: "Convert a sub-item into a standalone child target",
 	Long: "Promotes the sub-item at the given index of the target to a new child target with parent_id set. " +
-		"The sub-item is removed from the parent's checklist. By default fields are inherited from the parent " +
-		"(level, period, priority, ownership, tags, intent) and from the sub-item (text, due_date); flags override.",
+		"The sub-item is removed from the parent's checklist and parent.progress is recomputed. " +
+		"Field defaults: text and due_date come from the sub-item itself (due_date falls back to the parent " +
+		"when the sub-item has none); intent, level, priority, ownership, period and tags come from the parent. " +
+		"ball_on is inherited from the parent; blocking and snooze_until are cleared. " +
+		"Status mirrors the sub-item's done flag (done sub-item -> done child) so parent progress stays stable. " +
+		"Any flag overrides the corresponding default.",
 	Args: cobra.ExactArgs(2),
 	RunE: runTargetsPromoteSubItem,
 }
@@ -280,15 +294,17 @@ func init() {
 	_ = targetsAIUpdateCmd.MarkFlagRequired("instruction")
 
 	// promote-subitem flags — every flag is optional; presence (Changed) toggles the override.
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagText, "text", "", "override the child target text (default: sub-item text)")
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagIntent, "intent", "", "override the child intent (default: parent intent)")
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagLevel, "level", "", "override the child level (quarter, month, week, day, custom)")
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPriority, "priority", "", "override the child priority (high, medium, low)")
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagOwnership, "ownership", "", "override the child ownership (mine, delegated, watching)")
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagDue, "due", "", "override the child due date (YYYY-MM-DDTHH:MM)")
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPeriodStart, "period-start", "", "override the child period start (YYYY-MM-DD)")
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPeriodEnd, "period-end", "", "override the child period end (YYYY-MM-DD)")
-	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagTags, "tags", "", "override comma-separated tags (default: parent tags)")
+	// Bound to dedicated targetsFlagPromote* vars so they never collide with
+	// create/update defaults (Conventional Commits scope: promote-subitem).
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromoteText, "text", "", "override the child target text (default: sub-item text)")
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromoteIntent, "intent", "", "override the child intent (default: parent intent)")
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromoteLevel, "level", "", "override the child level (quarter, month, week, day, custom)")
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromotePriority, "priority", "", "override the child priority (high, medium, low)")
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromoteOwnership, "ownership", "", "override the child ownership (mine, delegated, watching)")
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromoteDue, "due", "", "override the child due date (default: sub-item.due_date if set, else parent.due_date; YYYY-MM-DDTHH:MM)")
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromotePeriodStart, "period-start", "", "override the child period start (YYYY-MM-DD)")
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromotePeriodEnd, "period-end", "", "override the child period end (YYYY-MM-DD)")
+	targetsPromoteSubItemCmd.Flags().StringVar(&targetsFlagPromoteTags, "tags", "", "override comma-separated tags (default: parent tags; pass empty string to clear)")
 	targetsPromoteSubItemCmd.Flags().BoolVar(&targetsFlagPromoteJSON, "json", false, "output the new child target as JSON")
 }
 
@@ -1449,57 +1465,57 @@ func runTargetsPromoteSubItem(cmd *cobra.Command, args []string) error {
 
 	overrides := db.PromoteOverrides{}
 	if cmd.Flags().Changed("text") {
-		v := targetsFlagText
+		v := targetsFlagPromoteText
 		overrides.Text = &v
 	}
 	if cmd.Flags().Changed("intent") {
-		v := targetsFlagIntent
+		v := targetsFlagPromoteIntent
 		overrides.Intent = &v
 	}
 	if cmd.Flags().Changed("level") {
-		v := targetsFlagLevel
+		v := targetsFlagPromoteLevel
 		overrides.Level = &v
 	}
 	if cmd.Flags().Changed("priority") {
-		v := targetsFlagPriority
+		v := targetsFlagPromotePriority
 		overrides.Priority = &v
 	}
 	if cmd.Flags().Changed("ownership") {
-		v := targetsFlagOwnership
+		v := targetsFlagPromoteOwnership
 		overrides.Ownership = &v
 	}
 	if cmd.Flags().Changed("due") {
-		v := targetsFlagDue
+		v := targetsFlagPromoteDue
 		overrides.DueDate = &v
 	}
 	if cmd.Flags().Changed("period-start") {
-		v := targetsFlagPeriodStart
+		v := targetsFlagPromotePeriodStart
 		overrides.PeriodStart = &v
 	}
 	if cmd.Flags().Changed("period-end") {
-		v := targetsFlagPeriodEnd
+		v := targetsFlagPromotePeriodEnd
 		overrides.PeriodEnd = &v
 	}
 	if cmd.Flags().Changed("tags") {
 		// Comma-separated input → JSON array. Empty input → empty array (clears tags).
-		var parts []string
-		if trimmed := strings.TrimSpace(targetsFlagTags); trimmed != "" {
-			for _, p := range strings.Split(targetsFlagTags, ",") {
+		parts := []string{}
+		if trimmed := strings.TrimSpace(targetsFlagPromoteTags); trimmed != "" {
+			for _, p := range strings.Split(targetsFlagPromoteTags, ",") {
 				p = strings.TrimSpace(p)
 				if p != "" {
 					parts = append(parts, p)
 				}
 			}
 		}
-		if parts == nil {
-			parts = []string{}
+		buf, err := json.Marshal(parts)
+		if err != nil {
+			return fmt.Errorf("encoding tags: %w", err)
 		}
-		buf, _ := json.Marshal(parts)
 		s := string(buf)
 		overrides.Tags = &s
 	}
 
-	childID, err := database.PromoteSubItemToChild(parentID, idx, overrides)
+	childID, err := database.PromoteSubItemToChild(int64(parentID), idx, overrides)
 	if err != nil {
 		return fmt.Errorf("promoting sub-item: %w", err)
 	}

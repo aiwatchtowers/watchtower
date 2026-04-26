@@ -13,8 +13,8 @@ struct PromoteSubItemOverrides {
     var dueDate: String?       // "YYYY-MM-DDTHH:MM"
     var periodStart: String?   // "YYYY-MM-DD"
     var periodEnd: String?     // "YYYY-MM-DD"
-    /// Comma-separated tag list. Empty string clears the parent tags.
-    var tagsCSV: String?
+    /// Tag list. `nil` inherits parent tags; an empty array clears them.
+    var tags: [String]?
 }
 
 // MARK: - Result
@@ -74,8 +74,9 @@ struct TargetPromoteSubItemService {
         if let v = overrides.periodEnd {
             args.append(contentsOf: ["--period-end", v])
         }
-        if let v = overrides.tagsCSV {
-            args.append(contentsOf: ["--tags", v])
+        if let tags = overrides.tags {
+            // Empty array → empty CLI value, which the Go side reads as "clear tags".
+            args.append(contentsOf: ["--tags", tags.joined(separator: ",")])
         }
 
         let data = try await runner.run(args: args)
@@ -87,12 +88,12 @@ struct TargetPromoteSubItemService {
             level: decoded.level,
             priority: decoded.priority,
             status: decoded.status,
-            dueDate: decoded.due_date,
-            periodStart: decoded.period_start,
-            periodEnd: decoded.period_end,
-            parentID: decoded.parent_id,
-            sourceType: decoded.source_type,
-            sourceID: decoded.source_id
+            dueDate: decoded.dueDate ?? "",
+            periodStart: decoded.periodStart ?? "",
+            periodEnd: decoded.periodEnd ?? "",
+            parentID: decoded.parentID,
+            sourceType: decoded.sourceType,
+            sourceID: decoded.sourceID
         )
     }
 }
@@ -101,16 +102,28 @@ struct TargetPromoteSubItemService {
 
 /// Mirrors the JSON emitted by `watchtower targets promote-subitem --json`.
 /// See `cmd/targets.go` `runTargetsPromoteSubItem` for the Go side.
+/// String fields that the Go side may render as `""` are decoded as `String?`
+/// to harden against future schema drift (e.g. `omitempty` on the Go side).
 private struct CLIPromoteResponse: Decodable {
     let id: Int
     let text: String
     let level: String
     let priority: String
     let status: String
-    let due_date: String
-    let period_start: String
-    let period_end: String
-    let parent_id: Int
-    let source_type: String
-    let source_id: String
+    let dueDate: String?
+    let periodStart: String?
+    let periodEnd: String?
+    let parentID: Int
+    let sourceType: String
+    let sourceID: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, text, level, priority, status
+        case dueDate     = "due_date"
+        case periodStart = "period_start"
+        case periodEnd   = "period_end"
+        case parentID    = "parent_id"
+        case sourceType  = "source_type"
+        case sourceID    = "source_id"
+    }
 }

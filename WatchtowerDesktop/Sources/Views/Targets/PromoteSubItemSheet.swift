@@ -21,13 +21,6 @@ struct PromoteSubItemSheet: View {
     @State private var isPromoting = false
     @State private var errorMessage: String?
 
-    private static let dateOnlyFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        return fmt
-    }()
-
     init(parent: Target, subItem: TargetSubItem, subItemIndex: Int, viewModel: TargetsViewModel) {
         self.parent = parent
         self.subItem = subItem
@@ -53,7 +46,8 @@ struct PromoteSubItemSheet: View {
             Divider()
             footer
         }
-        .frame(width: 460, height: 480)
+        // Match CreateTargetSheet width so the two sheets in the same flow look consistent.
+        .frame(width: 520, height: 480)
     }
 
     // MARK: - Sections
@@ -64,10 +58,13 @@ struct PromoteSubItemSheet: View {
                 .font(.headline)
             Spacer()
             Button("Cancel") { dismiss() }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
                 .keyboardShortcut(.cancelAction)
                 .disabled(isPromoting)
         }
-        .padding()
+        .padding(.horizontal)
+        .padding(.vertical, 12)
     }
 
     @ViewBuilder

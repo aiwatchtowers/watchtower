@@ -407,24 +407,18 @@ struct CreateTargetSheet: View {
             return
         }
 
-        // 2. If the user marked any sub-items for promotion, batch-promote
-        //    them via the CLI in descending index order so removals on the Go
-        //    side do not invalidate the remaining indices.
+        // 2. If the user marked any sub-items for promotion, delegate to the
+        //    canonical batch-promote on TargetsViewModel — single source of
+        //    truth for the descending-index contract.
         if !pendingPromotions.isEmpty {
-            guard let runner = ProcessCLIRunner.makeDefault() else {
-                errorMessage = "Target created but promotion failed: watchtower CLI not found"
-                dismiss()
-                return
-            }
-            let service = TargetPromoteSubItemService(runner: runner)
-            let sortedIndices = pendingPromotions.sorted(by: >)
+            let vm = TargetsViewModel(dbManager: db)
+            let items = pendingPromotions.map { (index: $0, overrides: PromoteSubItemOverrides()) }
             do {
-                for idx in sortedIndices {
-                    _ = try await service.promote(parentID: newID, index: idx)
-                }
+                try await vm.promoteSubItemsAfterCreate(parentID: newID, items: items)
             } catch {
+                // Parent persisted; surface the partial failure and keep the
+                // sheet open so the user can retry or close manually.
                 errorMessage = "Target created but some sub-items failed to promote: \(error.localizedDescription)"
-                dismiss()
                 return
             }
         }

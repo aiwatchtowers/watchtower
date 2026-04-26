@@ -48,7 +48,7 @@ func TestPromoteSubItemToChild_DefaultsInherited(t *testing.T) {
 
 	parentID := makeParentWithSubItems(t, db, "first", "second", "third")
 
-	childID, err := db.PromoteSubItemToChild(int(parentID), 1, PromoteOverrides{})
+	childID, err := db.PromoteSubItemToChild(parentID, 1, PromoteOverrides{})
 	require.NoError(t, err)
 	require.Greater(t, childID, int64(0))
 
@@ -76,7 +76,7 @@ func TestPromoteSubItemToChild_RemovesSubItemFromParent(t *testing.T) {
 
 	parentID := makeParentWithSubItems(t, db, "alpha", "beta", "gamma")
 
-	_, err := db.PromoteSubItemToChild(int(parentID), 1, PromoteOverrides{})
+	_, err := db.PromoteSubItemToChild(parentID, 1, PromoteOverrides{})
 	require.NoError(t, err)
 
 	parent, err := db.GetTargetByID(int(parentID))
@@ -111,7 +111,7 @@ func TestPromoteSubItemToChild_SubItemDueDateInherited(t *testing.T) {
 	parentID, err := db.CreateTarget(parent)
 	require.NoError(t, err)
 
-	childID, err := db.PromoteSubItemToChild(int(parentID), 1, PromoteOverrides{})
+	childID, err := db.PromoteSubItemToChild(parentID, 1, PromoteOverrides{})
 	require.NoError(t, err)
 	child, err := db.GetTargetByID(int(childID))
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestPromoteSubItemToChild_DoneSubItemBecomesDoneChild(t *testing.T) {
 	parentID, err := db.CreateTarget(parent)
 	require.NoError(t, err)
 
-	childID, err := db.PromoteSubItemToChild(int(parentID), 0, PromoteOverrides{})
+	childID, err := db.PromoteSubItemToChild(parentID, 0, PromoteOverrides{})
 	require.NoError(t, err)
 	child, err := db.GetTargetByID(int(childID))
 	require.NoError(t, err)
@@ -152,7 +152,7 @@ func TestPromoteSubItemToChild_OverridesApplied(t *testing.T) {
 
 	parentID := makeParentWithSubItems(t, db, "rough text")
 
-	childID, err := db.PromoteSubItemToChild(int(parentID), 0, PromoteOverrides{
+	childID, err := db.PromoteSubItemToChild(parentID, 0, PromoteOverrides{
 		Text:        strPtr("polished text"),
 		Intent:      strPtr("custom intent"),
 		Level:       strPtr("day"),
@@ -180,12 +180,13 @@ func TestPromoteSubItemToChild_OverridesApplied(t *testing.T) {
 
 // ── Integration: all three effects in a single happy path ───────────────────
 
-// TestPromoteSubItemToChild_FullEffectsAtomic asserts that a successful
-// promote produces all three side effects atomically:
+// TestPromoteSubItemToChild_FullEffectsHappyPath asserts that a successful
+// promote produces all three side effects together (atomicity-as-rollback is
+// covered separately by TestPromoteSubItemToChild_RollbackOnRecomputeFailure):
 //  1. the parent's sub_items shrinks by one (the promoted item removed),
 //  2. a child target with parent_id = parentID and the right source ref appears,
 //  3. the parent's progress is recomputed against the new child average.
-func TestPromoteSubItemToChild_FullEffectsAtomic(t *testing.T) {
+func TestPromoteSubItemToChild_FullEffectsHappyPath(t *testing.T) {
 	db := openTestDB(t)
 
 	items := []promoteSubItem{{Text: "alpha"}, {Text: "beta", Done: true}, {Text: "gamma"}}
@@ -202,7 +203,7 @@ func TestPromoteSubItemToChild_FullEffectsAtomic(t *testing.T) {
 	parentID, err := db.CreateTarget(parent)
 	require.NoError(t, err)
 
-	childID, err := db.PromoteSubItemToChild(int(parentID), 1, PromoteOverrides{})
+	childID, err := db.PromoteSubItemToChild(parentID, 1, PromoteOverrides{})
 	require.NoError(t, err)
 	require.Greater(t, childID, int64(0))
 
@@ -263,7 +264,7 @@ func TestPromoteSubItemToChild_RecomputesParentProgress(t *testing.T) {
 	assert.InDelta(t, 0.5, got.Progress, 0.001)
 
 	// Promote with status=todo → child.progress = 0.0 → AVG = 0.0.
-	_, err = db.PromoteSubItemToChild(int(parentID), 0, PromoteOverrides{})
+	_, err = db.PromoteSubItemToChild(parentID, 0, PromoteOverrides{})
 	require.NoError(t, err)
 
 	got, err = db.GetTargetByID(int(parentID))
@@ -279,10 +280,10 @@ func TestPromoteSubItemToChild_InvalidIndex(t *testing.T) {
 
 	parentID := makeParentWithSubItems(t, db, "only one")
 
-	_, err := db.PromoteSubItemToChild(int(parentID), 5, PromoteOverrides{})
+	_, err := db.PromoteSubItemToChild(parentID, 5, PromoteOverrides{})
 	assert.Error(t, err, "out-of-range index must error")
 
-	_, err = db.PromoteSubItemToChild(int(parentID), -1, PromoteOverrides{})
+	_, err = db.PromoteSubItemToChild(parentID, -1, PromoteOverrides{})
 	assert.Error(t, err, "negative index must error")
 }
 
@@ -303,7 +304,7 @@ func TestPromoteSubItemToChild_EmptySubItems(t *testing.T) {
 	parentID, err := db.CreateTarget(parent)
 	require.NoError(t, err)
 
-	_, err = db.PromoteSubItemToChild(int(parentID), 0, PromoteOverrides{})
+	_, err = db.PromoteSubItemToChild(parentID, 0, PromoteOverrides{})
 	assert.Error(t, err, "empty sub_items must error on any index")
 }
 
@@ -337,7 +338,7 @@ func TestPromoteSubItemToChild_CustomLabel(t *testing.T) {
 	require.NoError(t, err)
 
 	// Default: keep level=custom → custom_label inherited.
-	childID, err := db.PromoteSubItemToChild(int(parentID), 0, PromoteOverrides{})
+	childID, err := db.PromoteSubItemToChild(parentID, 0, PromoteOverrides{})
 	require.NoError(t, err)
 	child, err := db.GetTargetByID(int(childID))
 	require.NoError(t, err)
@@ -350,7 +351,7 @@ func TestPromoteSubItemToChild_CustomLabel(t *testing.T) {
 	parent2ID, err := db.CreateTarget(parent2)
 	require.NoError(t, err)
 	dayLevel := "day"
-	child2ID, err := db.PromoteSubItemToChild(int(parent2ID), 0, PromoteOverrides{Level: &dayLevel})
+	child2ID, err := db.PromoteSubItemToChild(parent2ID, 0, PromoteOverrides{Level: &dayLevel})
 	require.NoError(t, err)
 	child2, err := db.GetTargetByID(int(child2ID))
 	require.NoError(t, err)
@@ -365,7 +366,7 @@ func TestPromoteSubItemToChild_LastItemLeavesEmptyArray(t *testing.T) {
 
 	parentID := makeParentWithSubItems(t, db, "only one")
 
-	_, err := db.PromoteSubItemToChild(int(parentID), 0, PromoteOverrides{})
+	_, err := db.PromoteSubItemToChild(parentID, 0, PromoteOverrides{})
 	require.NoError(t, err)
 
 	parent, err := db.GetTargetByID(int(parentID))

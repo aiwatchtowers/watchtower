@@ -789,4 +789,5 @@ func TestPromoteSubItem_ParentNotFound(t *testing.T) {
 
 	err := targetsPromoteSubItemCmd.RunE(targetsPromoteSubItemCmd, []string{"99999", "0"})
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
 }

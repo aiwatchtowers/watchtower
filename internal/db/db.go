@@ -3447,6 +3447,14 @@ afterV48:
 		// v69: extend targets.source_type CHECK to allow 'promoted_subitem'
 		// (used when a sub-item is promoted to a standalone child target).
 		// SQLite cannot ALTER a CHECK constraint, so we rebuild the table.
+		// Disable FKs around the rebuild so DROP TABLE targets does not
+		// cascade-delete target_links rows that reference the soon-to-be-replaced
+		// targets table (same hazard as v67's tasks→targets rebuild).
+		if _, err := db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("migration v69 disable FK: %w", err)
+		}
+		defer func() { _, _ = db.Exec("PRAGMA foreign_keys = ON") }()
+
 		tx, err := db.Begin()
 		if err != nil {
 			return fmt.Errorf("beginning migration v69: %w", err)
@@ -3460,8 +3468,8 @@ afterV48:
 			level               TEXT NOT NULL DEFAULT 'day'
 			                    CHECK(level IN ('quarter','month','week','day','custom')),
 			custom_label        TEXT NOT NULL DEFAULT '',
-			period_start        TEXT NOT NULL DEFAULT '',
-			period_end          TEXT NOT NULL DEFAULT '',
+			period_start        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d','now')),
+			period_end          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d','now')),
 			parent_id           INTEGER REFERENCES targets(id) ON DELETE SET NULL,
 			status              TEXT NOT NULL DEFAULT 'todo'
 			                    CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),

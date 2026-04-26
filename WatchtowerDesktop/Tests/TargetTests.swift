@@ -772,7 +772,7 @@ final class TargetsViewModelTests: XCTestCase {
                                           subItems: #"[{"text":"first","done":false}]"#)
         }
         let runner = FakeCLIRunner(stdout: Data(samplePromoteResponseJSON(id: 99).utf8))
-        let vm = TargetsViewModel(dbManager: mgr, cliRunnerProvider: { runner })
+        let vm = TargetsViewModel(dbManager: mgr, cliRunner: runner)
         let fetched = try await mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) }
         let parent = try XCTUnwrap(fetched)
 
@@ -793,7 +793,7 @@ final class TargetsViewModelTests: XCTestCase {
                                           subItems: #"[{"text":"x"}]"#)
         }
         let runner = FakeCLIRunner(stdout: Data(samplePromoteResponseJSON().utf8))
-        let vm = TargetsViewModel(dbManager: mgr, cliRunnerProvider: { runner })
+        let vm = TargetsViewModel(dbManager: mgr, cliRunner: runner)
         let fetched = try await mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) }
         let parent = try XCTUnwrap(fetched)
 
@@ -809,7 +809,7 @@ final class TargetsViewModelTests: XCTestCase {
         XCTAssertTrue(args.contains("low"))
     }
 
-    func testPromoteSubItemSetsErrorMessageOnFailure() async throws {
+    func testPromoteSubItemThrowsOnCLIFailure() async throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         _ = try await mgr.dbPool.write { db in
@@ -819,7 +819,7 @@ final class TargetsViewModelTests: XCTestCase {
         let runner = FakeCLIRunner(
             error: CLIRunnerError.nonZeroExit(code: 1, stderr: "out of range")
         )
-        let vm = TargetsViewModel(dbManager: mgr, cliRunnerProvider: { runner })
+        let vm = TargetsViewModel(dbManager: mgr, cliRunner: runner)
         let fetched = try await mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) }
         let parent = try XCTUnwrap(fetched)
 
@@ -827,9 +827,12 @@ final class TargetsViewModelTests: XCTestCase {
             _ = try await vm.promoteSubItem(parent, index: 99)
             XCTFail("expected error")
         } catch {
-            // OK
+            // OK — caller (sheet) is responsible for surfacing the error.
         }
-        XCTAssertNotNil(vm.errorMessage)
+        // `errorMessage` is intentionally NOT set on failure to avoid the
+        // double-channel signaling that would surface the same error twice
+        // (banner from VM + alert from the sheet's own catch).
+        XCTAssertNil(vm.errorMessage)
     }
 
     func testPromoteSubItemsAfterCreateInvokesInDescendingIndexOrder() async throws {
@@ -837,20 +840,23 @@ final class TargetsViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         _ = try await mgr.dbPool.write { db in
             try TestDatabase.insertTarget(db, text: "P",
-                                          subItems: #"[{"text":"a"},{"text":"b"},{"text":"c"}]"#)
+                                          subItems: #"[{"text":"a"},{"text":"b"},{"text":"c"},{"text":"d"}]"#)
         }
         let runner = FakeCLIRunner(stdout: Data(samplePromoteResponseJSON().utf8))
-        let vm = TargetsViewModel(dbManager: mgr, cliRunnerProvider: { runner })
+        let vm = TargetsViewModel(dbManager: mgr, cliRunner: runner)
 
+        // Inputs are intentionally in non-monotonic order so a buggy "reverse"
+        // implementation would fail to produce the strict descending sequence.
         try await vm.promoteSubItemsAfterCreate(parentID: 1, items: [
+            (index: 1, overrides: PromoteSubItemOverrides()),
+            (index: 3, overrides: PromoteSubItemOverrides()),
             (index: 0, overrides: PromoteSubItemOverrides()),
-            (index: 2, overrides: PromoteSubItemOverrides()),
         ])
 
-        XCTAssertEqual(runner.invocations.count, 2)
-        // First call should target index=2 (descending), second index=0.
-        XCTAssertEqual(runner.invocations[0][3], "2", "first batch call must use the highest index")
-        XCTAssertEqual(runner.invocations[1][3], "0", "second batch call must use the next-lower index")
+        XCTAssertEqual(runner.invocations.count, 3)
+        XCTAssertEqual(runner.invocations[0][3], "3", "first batch call must use the highest index")
+        XCTAssertEqual(runner.invocations[1][3], "1", "second batch call must use the next-lower index")
+        XCTAssertEqual(runner.invocations[2][3], "0", "third batch call must use the lowest index")
     }
 
     func testPromoteSubItemsAfterCreateNoOpOnEmpty() async throws {
@@ -858,7 +864,7 @@ final class TargetsViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         _ = try await mgr.dbPool.write { try TestDatabase.insertTarget($0) }
         let runner = FakeCLIRunner(stdout: Data(samplePromoteResponseJSON().utf8))
-        let vm = TargetsViewModel(dbManager: mgr, cliRunnerProvider: { runner })
+        let vm = TargetsViewModel(dbManager: mgr, cliRunner: runner)
 
         try await vm.promoteSubItemsAfterCreate(parentID: 1, items: [])
 

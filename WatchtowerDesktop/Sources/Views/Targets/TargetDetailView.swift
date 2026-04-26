@@ -39,8 +39,12 @@ struct TargetDetailView: View {
     }
 
     /// Identifies a sub-item the user is currently promoting via `PromoteSubItemSheet`.
+    /// Uses a fresh UUID per presentation so SwiftUI's `.sheet(item:)` always
+    /// re-presents — even when the user dismisses and immediately reopens at
+    /// the same sub-item position.
     struct PromotingSubItemContext: Identifiable {
-        let id: Int          // sub-item index, doubles as Identifiable id
+        let id = UUID()
+        let index: Int
         let item: TargetSubItem
     }
 
@@ -113,7 +117,7 @@ struct TargetDetailView: View {
             PromoteSubItemSheet(
                 parent: target,
                 subItem: ctx.item,
-                subItemIndex: ctx.id,
+                subItemIndex: ctx.index,
                 viewModel: viewModel
             )
         }
@@ -414,7 +418,7 @@ struct TargetDetailView: View {
             Spacer(minLength: 0)
 
             Button {
-                promotingSubItem = PromotingSubItemContext(id: index, item: item)
+                promotingSubItem = PromotingSubItemContext(index: index, item: item)
             } label: {
                 Image(systemName: "arrow.up.right.square")
                     .font(.caption)
@@ -433,13 +437,6 @@ struct TargetDetailView: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 2)
-        .contextMenu {
-            Button {
-                promotingSubItem = PromotingSubItemContext(id: index, item: item)
-            } label: {
-                Label("Convert to sub-target", systemImage: "arrow.up.right.square")
-            }
-        }
     }
 
     // MARK: - Notes

@@ -74,7 +74,7 @@ final class TargetPromoteSubItemServiceTests: XCTestCase {
             dueDate: "2026-05-01T10:00",
             periodStart: "2026-04-30",
             periodEnd: "2026-04-30",
-            tagsCSV: "x,y"
+            tags: ["x", "y"]
         )
         _ = try await service.promote(parentID: 1, index: 0, overrides: overrides)
 
@@ -103,9 +103,10 @@ final class TargetPromoteSubItemServiceTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Data(minimalJSON().utf8))
         let service = TargetPromoteSubItemService(runner: runner)
 
+        // Empty array (not nil) tells the CLI to clear parent tags.
         _ = try await service.promote(
             parentID: 1, index: 0,
-            overrides: PromoteSubItemOverrides(tagsCSV: "")
+            overrides: PromoteSubItemOverrides(tags: [])
         )
 
         let args = runner.invocations.last ?? []

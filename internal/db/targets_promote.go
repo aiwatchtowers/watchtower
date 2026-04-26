@@ -3,12 +3,29 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
 // PromoteOverrides controls which inherited fields are overridden when
 // promoting a sub-item to a standalone child target. A nil pointer means
 // "inherit the default" (from the parent or the sub-item itself for text/due_date).
+//
+// Inheritance rules used by PromoteSubItemToChild:
+//   - text       — sub-item.text (override beats it)
+//   - intent     — parent.intent (override beats it)
+//   - level      — parent.level (override beats it; switching away from "custom"
+//                  also clears custom_label)
+//   - priority   — parent.priority (override beats it)
+//   - ownership  — parent.ownership (override beats it)
+//   - period     — parent.period_start / period_end (override beats it)
+//   - tags       — parent.tags (override beats it; pass empty JSON array to clear)
+//   - due_date   — sub-item.due_date when set, else parent.due_date (override beats both)
+//   - ball_on    — parent.ball_on (no override knob; the new child carries the same ball)
+//   - blocking   — always cleared on the child
+//   - snooze_until — always cleared on the child
+//   - status     — "done" if the sub-item was already marked done, else "todo"
+//                  (keeps parent progress stable across the promote)
 type PromoteOverrides struct {
 	Text        *string
 	Intent      *string
@@ -18,7 +35,7 @@ type PromoteOverrides struct {
 	PeriodStart *string
 	PeriodEnd   *string
 	Ownership   *string
-	Tags        *string // raw JSON string, e.g. `["a","b"]`
+	Tags        *string // raw JSON string, e.g. `["a","b"]`; pass `"[]"` to clear
 }
 
 // promoteSubItem mirrors the JSON shape persisted in targets.sub_items.
@@ -30,19 +47,19 @@ type promoteSubItem struct {
 
 // PromoteSubItemToChild atomically converts the sub-item at index idx of the
 // parent target into a standalone child target with parent_id = parentID. The
-// sub-item is removed from the parent's sub_items JSON. Defaults are inherited
-// from the parent (level, period, priority, ownership, tags) and from the
-// sub-item (text, due_date); any non-nil PromoteOverrides field overrides the
-// default. The new child has source_type="promoted_subitem" and
-// source_id="<parentID>:<originalIdx>".
+// sub-item is removed from the parent's sub_items JSON and the parent's
+// progress is recomputed against the new child set. All side effects (insert
+// child, update parent.sub_items, recompute progress) execute inside a single
+// transaction; any failure rolls every step back.
 //
-// Parent progress is recomputed after the new child is inserted.
+// The new child has source_type="promoted_subitem" and
+// source_id="<parentID>:<originalIdx>" for audit.
 //
 // Returns the new child target's ID. Errors:
 //   - parent not found: returns sql.ErrNoRows wrapped
 //   - idx out of range: returns a descriptive error
 //   - parent.sub_items not valid JSON: returns a parse error
-func (db *DB) PromoteSubItemToChild(parentID int, idx int, overrides PromoteOverrides) (int64, error) {
+func (db *DB) PromoteSubItemToChild(parentID int64, idx int, overrides PromoteOverrides) (int64, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("beginning promote tx: %w", err)
@@ -51,7 +68,6 @@ func (db *DB) PromoteSubItemToChild(parentID int, idx int, overrides PromoteOver
 
 	// Load parent state needed for inheritance and validation.
 	var (
-		parentText        string
 		parentIntent      string
 		parentLevel       string
 		parentCustomLabel string
@@ -60,19 +76,20 @@ func (db *DB) PromoteSubItemToChild(parentID int, idx int, overrides PromoteOver
 		parentPriority    string
 		parentOwnership   string
 		parentBallOn      string
+		parentDueDate     string
 		parentTags        string
 		parentSubItems    string
 	)
-	err = tx.QueryRow(`SELECT text, intent, level, custom_label, period_start, period_end,
-		priority, ownership, ball_on, tags, sub_items
+	err = tx.QueryRow(`SELECT intent, level, custom_label, period_start, period_end,
+		priority, ownership, ball_on, due_date, tags, sub_items
 		FROM targets WHERE id = ?`, parentID).Scan(
-		&parentText, &parentIntent, &parentLevel, &parentCustomLabel,
+		&parentIntent, &parentLevel, &parentCustomLabel,
 		&parentPeriodStart, &parentPeriodEnd,
-		&parentPriority, &parentOwnership, &parentBallOn,
+		&parentPriority, &parentOwnership, &parentBallOn, &parentDueDate,
 		&parentTags, &parentSubItems,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return 0, fmt.Errorf("parent target %d not found: %w", parentID, err)
 		}
 		return 0, fmt.Errorf("loading parent target %d: %w", parentID, err)
@@ -119,16 +136,16 @@ func (db *DB) PromoteSubItemToChild(parentID int, idx int, overrides PromoteOver
 	if overrides.PeriodEnd != nil {
 		childPeriodEnd = *overrides.PeriodEnd
 	}
-	// Due date: sub-item's own due_date wins over parent (sub-items often carry
-	// their own deadlines); explicit override beats both.
+	// Due date precedence: sub-item's own due_date > parent's due_date >
+	// override. The override beats either inherited value when set.
 	childDueDate := original.DueDate
+	if childDueDate == "" {
+		childDueDate = parentDueDate
+	}
 	if overrides.DueDate != nil {
 		childDueDate = *overrides.DueDate
 	}
 	childTags := parentTags
-	if childTags == "" {
-		childTags = "[]"
-	}
 	if overrides.Tags != nil {
 		childTags = *overrides.Tags
 	}
@@ -188,13 +205,16 @@ func (db *DB) PromoteSubItemToChild(parentID int, idx int, overrides PromoteOver
 		return 0, fmt.Errorf("updating parent sub_items: %w", err)
 	}
 
+	// Recompute parent progress *inside* the same transaction so any failure
+	// rolls back the child INSERT and the sub_items UPDATE together with the
+	// progress write — true atomicity, not best-effort fixup after commit.
+	if err := recomputeParentProgressOn(tx, parentID); err != nil {
+		return 0, fmt.Errorf("recomputing parent progress: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("committing promote tx: %w", err)
 	}
-
-	// Recompute parent progress now that the child counts in the AVG.
-	// Non-fatal — any error is logged inside RecomputeParentProgress.
-	_ = db.RecomputeParentProgress(int64(parentID))
 
 	return childID, nil
 }

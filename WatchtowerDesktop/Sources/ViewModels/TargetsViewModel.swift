@@ -21,14 +21,15 @@ final class TargetsViewModel {
 
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
-    private let cliRunnerProvider: (() -> CLIRunnerProtocol?)?
+    /// Optional injected runner for tests; production uses ProcessCLIRunner.makeDefault().
+    private let cliRunner: CLIRunnerProtocol?
 
     init(
         dbManager: DatabaseManager,
-        cliRunnerProvider: (() -> CLIRunnerProtocol?)? = nil
+        cliRunner: CLIRunnerProtocol? = nil
     ) {
         self.dbManager = dbManager
-        self.cliRunnerProvider = cliRunnerProvider
+        self.cliRunner = cliRunner
     }
 
     func startObserving() {
@@ -377,46 +378,41 @@ final class TargetsViewModel {
 
     // MARK: - Promote sub-item to child target
 
-    /// Resolves a CLIRunner via the injected provider or, in production, by
-    /// locating the bundled `watchtower` binary.
+    /// Resolves a CLIRunner via the injected `cliRunner` or, in production, by
+    /// locating the bundled `watchtower` binary via `ProcessCLIRunner.makeDefault()`.
     private func resolveCLIRunner() throws -> CLIRunnerProtocol {
-        if let runner = cliRunnerProvider?() {
+        if let runner = cliRunner {
             return runner
         }
         if let runner = ProcessCLIRunner.makeDefault() {
             return runner
         }
-        throw PromoteSubItemViewModelError.cliNotFound
+        throw PromoteSubItemError.cliNotFound
     }
 
     /// Converts the sub-item at `index` of `target` into a standalone child
     /// target with `parent_id = target.id`. Returns the new child's ID.
+    ///
+    /// On failure: throws to the caller — the caller decides how to surface
+    /// the error (sheet typically displays it inline). `errorMessage` is *not*
+    /// also set here, to avoid double-channel signaling that would surface the
+    /// same error twice (banner + sheet alert).
     @discardableResult
     func promoteSubItem(
         _ target: Target,
         index: Int,
         overrides: PromoteSubItemOverrides = PromoteSubItemOverrides()
     ) async throws -> Int {
-        let runner: CLIRunnerProtocol
-        do {
-            runner = try resolveCLIRunner()
-        } catch {
-            errorMessage = error.localizedDescription
-            throw error
-        }
+        let runner = try resolveCLIRunner()
         let svc = TargetPromoteSubItemService(runner: runner)
-        do {
-            let result = try await svc.promote(
-                parentID: target.id,
-                index: index,
-                overrides: overrides
-            )
-            load()
-            return result.id
-        } catch {
-            errorMessage = "Failed to promote sub-item: \(error.localizedDescription)"
-            throw error
-        }
+        let result = try await svc.promote(
+            parentID: target.id,
+            index: index,
+            overrides: overrides
+        )
+        // GRDB ValueObservation will fire load() when the CLI subprocess writes
+        // to the targets table, so an explicit load() here would duplicate it.
+        return result.id
     }
 
     /// Batch-promote sub-items of a freshly created parent. Iterates in
@@ -427,39 +423,28 @@ final class TargetsViewModel {
         items: [(index: Int, overrides: PromoteSubItemOverrides)]
     ) async throws {
         guard !items.isEmpty else { return }
-        let runner: CLIRunnerProtocol
-        do {
-            runner = try resolveCLIRunner()
-        } catch {
-            errorMessage = error.localizedDescription
-            throw error
-        }
+        let runner = try resolveCLIRunner()
         let svc = TargetPromoteSubItemService(runner: runner)
         let sorted = items.sorted { $0.index > $1.index }
-        do {
-            for item in sorted {
-                _ = try await svc.promote(
-                    parentID: parentID,
-                    index: item.index,
-                    overrides: item.overrides
-                )
-            }
-            load()
-        } catch {
-            errorMessage = "Failed to promote sub-items: \(error.localizedDescription)"
-            throw error
+        for item in sorted {
+            _ = try await svc.promote(
+                parentID: parentID,
+                index: item.index,
+                overrides: item.overrides
+            )
         }
+        // Same rationale as promoteSubItem: rely on ValueObservation.
     }
 }
 
 /// Errors emitted by promote-related ViewModel methods.
-enum PromoteSubItemViewModelError: LocalizedError {
+enum PromoteSubItemError: LocalizedError {
     case cliNotFound
 
     var errorDescription: String? {
         switch self {
         case .cliNotFound:
-            return "watchtower CLI not found in PATH"
+            return "watchtower CLI not found"
         }
     }
 }
