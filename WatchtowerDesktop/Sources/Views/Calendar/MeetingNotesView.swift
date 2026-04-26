@@ -10,6 +10,9 @@ struct MeetingNotesView: View {
     @State private var creatingTaskForID: Int64?
     @State private var errorMessage: String?
     @State private var showExtractSheet = false
+    @State private var recap: MeetingRecap?
+    @State private var showRecapSheet = false
+    @State private var addedActionItems: Set<Int> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -19,6 +22,7 @@ struct MeetingNotesView: View {
                     .foregroundStyle(.red)
                     .padding(.horizontal)
             }
+            recapSection
             questionsSection
             notesSection
         }
@@ -28,6 +32,13 @@ struct MeetingNotesView: View {
                 eventID: eventID,
                 existingTopicSortOrderCeiling: questions.last?.sortOrder ?? -1,
                 onCreated: { loadNotes() }
+            )
+        }
+        .sheet(isPresented: $showRecapSheet) {
+            GenerateRecapSheet(
+                eventID: eventID,
+                prefilledText: recap?.sourceText ?? "",
+                onCompleted: { loadNotes() }
             )
         }
     }
@@ -124,6 +135,15 @@ struct MeetingNotesView: View {
                     .foregroundStyle(.blue)
                 Text("Meeting Notes")
                     .font(.headline)
+                Spacer()
+                Button {
+                    showRecapSheet = true
+                } label: {
+                    Label("Recap from text", systemImage: "sparkles")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             .padding(.top, 4)
 
@@ -221,6 +241,132 @@ struct MeetingNotesView: View {
         notes.filter { $0.type == .note }
     }
 
+    // MARK: - Recap Section
+
+    @ViewBuilder
+    private var recapSection: some View {
+        if let recap, let content = recap.parsed {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(.purple)
+                    Text("AI Recap")
+                        .font(.headline)
+                    Spacer()
+                    Button {
+                        showRecapSheet = true
+                    } label: {
+                        Label("Re-generate", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                if !content.summary.isEmpty {
+                    Text(content.summary)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                }
+
+                if !content.keyDecisions.isEmpty {
+                    recapSubsection(title: "Decisions", items: content.keyDecisions)
+                }
+
+                if !content.actionItems.isEmpty {
+                    actionItemsSubsection(items: content.actionItems)
+                }
+
+                if !content.openQuestions.isEmpty {
+                    recapSubsection(title: "Open questions", items: content.openQuestions)
+                }
+
+                Text("Generated \(formattedTime(recap.updatedAt))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .background(Color.purple.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private func recapSubsection(title: String, items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.medium)
+            ForEach(Array(items.enumerated()), id: \.offset) { _, text in
+                HStack(alignment: .top, spacing: 6) {
+                    Text("•").foregroundStyle(.secondary)
+                    Text(text)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func actionItemsSubsection(items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Action items")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            ForEach(Array(items.enumerated()), id: \.offset) { idx, text in
+                HStack(alignment: .top, spacing: 6) {
+                    Text("•").foregroundStyle(.secondary)
+                    Text(text)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if addedActionItems.contains(idx) {
+                        Label("Added", systemImage: "checkmark")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    } else {
+                        Button {
+                            addActionItemToNotes(idx: idx, text: text)
+                        } label: {
+                            Label("+ to notes", systemImage: "plus")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+    }
+
+    private func formattedTime(_ iso: String) -> String {
+        let f = ISO8601DateFormatter()
+        guard let date = f.date(from: iso) else { return iso }
+        let rel = RelativeDateTimeFormatter()
+        rel.unitsStyle = .abbreviated
+        return rel.localizedString(for: date, relativeTo: Date())
+    }
+
+    private func addActionItemToNotes(idx: Int, text: String) {
+        guard let db = appState.databaseManager else { return }
+        do {
+            let nextSort = (freeformNotes.last?.sortOrder ?? -1) + 1
+            _ = try db.dbPool.write { dbConn in
+                try MeetingNoteQueries.create(
+                    dbConn,
+                    eventID: eventID,
+                    type: .note,
+                    text: text,
+                    sortOrder: nextSort
+                )
+            }
+            addedActionItems.insert(idx)
+            loadNotes()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     // MARK: - Data Operations
 
     private func loadNotes() {
@@ -229,6 +375,10 @@ struct MeetingNotesView: View {
             notes = try db.dbPool.read { dbConn in
                 try MeetingNoteQueries.fetchForEvent(dbConn, eventID: eventID)
             }
+            recap = try? db.dbPool.read { dbConn in
+                try MeetingRecapQueries.fetch(dbConn, eventID: eventID)
+            }
+            addedActionItems = []
         } catch {
             // Silent: table may not exist yet on older DB schema versions
         }
