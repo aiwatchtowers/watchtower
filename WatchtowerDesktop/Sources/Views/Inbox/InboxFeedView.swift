@@ -7,7 +7,8 @@ struct InboxFeedView: View {
     @Environment(AppState.self) private var appState
     @State private var vm: InboxViewModel?
     @State private var feedbackItem: InboxItem?
-    @State private var detailItem: InboxItem?
+    @State private var expandedItemID: InboxItem.ID?
+    @State private var conversationCache: [InboxItem.ID: [InboxConversationMessage]] = [:]
     @State private var tab: Tab = .feed
 
     enum Tab { case feed, learned }
@@ -49,14 +50,6 @@ struct InboxFeedView: View {
                     vm.submitFeedback(item, rating: rating, reason: reason)
                     feedbackItem = nil
                 }
-            }
-        }
-        .sheet(item: $detailItem) { item in
-            if let vm {
-                InboxDetailView(item: item, viewModel: vm) {
-                    detailItem = nil
-                }
-                .frame(minWidth: 560, idealWidth: 640, minHeight: 480, idealHeight: 640)
             }
         }
     }
@@ -101,7 +94,10 @@ struct InboxFeedView: View {
                             size: .pinned,
                             senderName: vm.senderName(for: item),
                             userNames: vm.senderNames,
-                            onOpen: { openItem(item, vm: vm) },
+                            isExpanded: expandedItemID == item.id,
+                            conversation: conversationCache[item.id] ?? [],
+                            conversationLoaded: conversationCache[item.id] != nil,
+                            onToggle: { toggleExpansion(item, vm: vm) },
                             onSnooze: { option in snoozeItem(item, option: option, vm: vm) },
                             onDismiss: { vm.dismiss(item) },
                             onCreateTask: { vm.createTask(from: item) },
@@ -136,7 +132,10 @@ struct InboxFeedView: View {
                             size: cardSize(for: item),
                             senderName: vm.senderName(for: item),
                             userNames: vm.senderNames,
-                            onOpen: { openItem(item, vm: vm) },
+                            isExpanded: expandedItemID == item.id,
+                            conversation: conversationCache[item.id] ?? [],
+                            conversationLoaded: conversationCache[item.id] != nil,
+                            onToggle: { toggleExpansion(item, vm: vm) },
                             onSnooze: { option in snoozeItem(item, option: option, vm: vm) },
                             onDismiss: { vm.dismiss(item) },
                             onCreateTask: { vm.createTask(from: item) },
@@ -169,9 +168,20 @@ struct InboxFeedView: View {
         item.itemClass == .ambient ? .compact : .medium
     }
 
-    private func openItem(_ item: InboxItem, vm: InboxViewModel) {
+    private func toggleExpansion(_ item: InboxItem, vm: InboxViewModel) {
+        if expandedItemID == item.id {
+            expandedItemID = nil
+            return
+        }
+        // Lazy-load the live conversation on first expand; cache so collapsing and
+        // re-expanding doesn't re-hit the DB. Cross-process daemon writes won't
+        // refresh this cache — that's fine; the snippet/context fallback covers
+        // the gap until the user expands again after a sync.
+        if conversationCache[item.id] == nil {
+            conversationCache[item.id] = vm.loadConversation(for: item)
+        }
         vm.markSeen(item)
-        detailItem = item
+        expandedItemID = item.id
     }
 
     private func snoozeItem(_ item: InboxItem, option: InboxCardView.SnoozeOption, vm: InboxViewModel) {

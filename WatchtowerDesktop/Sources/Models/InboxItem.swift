@@ -10,7 +10,7 @@ enum ItemClass: String, Codable, Equatable {
 
 // MARK: - InboxConversationMessage
 
-/// A single message in the live conversation view rendered by `InboxDetailView`.
+/// A single message in the live conversation rendered inline inside an expanded `InboxCardView`.
 /// Loaded on demand from the local `messages` table — represents the current state
 /// of the thread/channel, not the snapshot frozen into `inbox_items.context` at detect time.
 struct InboxConversationMessage: Identifiable, Equatable {
