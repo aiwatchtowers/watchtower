@@ -20,6 +20,10 @@ var (
 	meetingExtractTopicsFlagText    string
 	meetingExtractTopicsFlagEventID string
 	meetingExtractTopicsFlagJSON    bool
+
+	meetingRecapFlagEventID string
+	meetingRecapFlagText    string
+	meetingRecapFlagJSON    bool
 )
 
 var meetingPrepCmd = &cobra.Command{
@@ -37,6 +41,13 @@ var meetingExtractTopicsCmd = &cobra.Command{
 	RunE:  runMeetingExtractTopics,
 }
 
+var meetingRecapCmd = &cobra.Command{
+	Use:   "recap",
+	Short: "Generate AI-structured recap from raw meeting notes",
+	Long:  "Reads pasted text plus event metadata and existing meeting_notes, produces a JSON summary (summary, decisions, action items, open questions), and persists it in meeting_recaps. Re-running overwrites.",
+	RunE:  runMeetingRecap,
+}
+
 func init() {
 	rootCmd.AddCommand(meetingPrepCmd)
 	meetingPrepCmd.Flags().BoolVar(&meetingPrepFlagJSON, "json", false, "output as JSON")
@@ -47,6 +58,11 @@ func init() {
 	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagText, "text", "", "raw text to split into topics (required)")
 	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagEventID, "event-id", "", "optional event id for title context")
 	meetingExtractTopicsCmd.Flags().BoolVar(&meetingExtractTopicsFlagJSON, "json", false, "output as JSON (default format is also JSON — kept for symmetry)")
+
+	meetingPrepCmd.AddCommand(meetingRecapCmd)
+	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagEventID, "event-id", "", "calendar event id (required)")
+	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagText, "text", "", "raw recap text (required)")
+	meetingRecapCmd.Flags().BoolVar(&meetingRecapFlagJSON, "json", true, "output as JSON (default true)")
 }
 
 func runMeetingPrep(cmd *cobra.Command, args []string) error {
@@ -175,6 +191,67 @@ func runMeetingPrep(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func runMeetingRecap(cmd *cobra.Command, _ []string) error {
+	if meetingRecapFlagEventID == "" {
+		return fmt.Errorf("--event-id is required")
+	}
+	if meetingRecapFlagText == "" {
+		return fmt.Errorf("--text is required")
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	gen := cliGenerator(cfg)
+	pipe := meeting.New(database, cfg, gen, nil)
+
+	result, err := pipe.GenerateRecap(cmd.Context(), meetingRecapFlagEventID, meetingRecapFlagText)
+	if err != nil {
+		return err
+	}
+
+	recapBytes, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshalling recap: %w", err)
+	}
+	if err := database.UpsertMeetingRecap(meetingRecapFlagEventID, meetingRecapFlagText, string(recapBytes)); err != nil {
+		return fmt.Errorf("persisting recap: %w", err)
+	}
+
+	// Refetch for authoritative timestamps in the envelope.
+	saved, err := database.GetMeetingRecap(meetingRecapFlagEventID)
+	if err != nil || saved == nil {
+		return fmt.Errorf("re-loading saved recap: %w", err)
+	}
+
+	envelope := map[string]any{
+		"event_id":       saved.EventID,
+		"summary":        result.Summary,
+		"key_decisions":  result.KeyDecisions,
+		"action_items":   result.ActionItems,
+		"open_questions": result.OpenQuestions,
+		"created_at":     saved.CreatedAt,
+		"updated_at":     saved.UpdatedAt,
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(envelope)
 }
 
 func runMeetingExtractTopics(cmd *cobra.Command, args []string) error {

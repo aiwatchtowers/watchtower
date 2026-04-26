@@ -31,3 +31,31 @@ func TestMeetingExtractTopicsRejectsEmptyText(t *testing.T) {
 		t.Fatal("expected error when --text is empty")
 	}
 }
+
+func TestMeetingRecapCmdHasRequiredFlags(t *testing.T) {
+	if meetingRecapCmd.Flags().Lookup("event-id") == nil {
+		t.Error("meeting-prep recap should have --event-id flag")
+	}
+	if meetingRecapCmd.Flags().Lookup("text") == nil {
+		t.Error("meeting-prep recap should have --text flag")
+	}
+}
+
+func TestMeetingRecapCmdRequiresEventID(t *testing.T) {
+	// Reset flags to default and run with only --text
+	meetingRecapFlagText = "some text"
+	meetingRecapFlagEventID = ""
+	err := runMeetingRecap(meetingRecapCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when --event-id is missing")
+	}
+}
+
+func TestMeetingRecapCmdRequiresText(t *testing.T) {
+	meetingRecapFlagText = ""
+	meetingRecapFlagEventID = "evt-1"
+	err := runMeetingRecap(meetingRecapCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when --text is missing")
+	}
+}
