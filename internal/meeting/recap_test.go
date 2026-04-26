@@ -8,18 +8,6 @@ import (
 	"watchtower/internal/digest"
 )
 
-// mockGenWithErr is a test generator that can simulate errors.
-// (mockGenerator in pipeline_test.go does not support errors, so we add
-// a separate type here rather than modifying the existing one.)
-type mockGenWithErr struct {
-	response string
-	err      error
-}
-
-func (m *mockGenWithErr) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
-	return m.response, nil, "", m.err
-}
-
 // newTestPipelineForRecap builds a Pipeline with a nil DB (event/notes loading
 // is non-fatal) and the provided generator. Pass nil for gen to get a
 // zero-response mock.
@@ -56,7 +44,7 @@ func TestGenerateRecap_HappyPath(t *testing.T) {
       "action_items": ["Vadym to draft launch post"],
       "open_questions": ["Pricing tier?"]
     }`
-	p := newTestPipelineForRecap(t, &mockGenWithErr{response: aiResponse})
+	p := newTestPipelineForRecap(t, &mockGenerator{response: aiResponse})
 
 	res, err := p.GenerateRecap(context.Background(), "evt-1", "raw notes")
 	if err != nil {
@@ -78,7 +66,7 @@ func TestGenerateRecap_HappyPath(t *testing.T) {
 
 func TestGenerateRecap_StripsMarkdownFences(t *testing.T) {
 	aiResponse := "```json\n" + `{"summary":"x","key_decisions":[],"action_items":[],"open_questions":[]}` + "\n```"
-	p := newTestPipelineForRecap(t, &mockGenWithErr{response: aiResponse})
+	p := newTestPipelineForRecap(t, &mockGenerator{response: aiResponse})
 
 	res, err := p.GenerateRecap(context.Background(), "evt-1", "raw")
 	if err != nil {
@@ -91,7 +79,7 @@ func TestGenerateRecap_StripsMarkdownFences(t *testing.T) {
 
 func TestGenerateRecap_MalformedJSONErrorsWithSnippet(t *testing.T) {
 	aiResponse := "not json at all, full of garbage and other text"
-	p := newTestPipelineForRecap(t, &mockGenWithErr{response: aiResponse})
+	p := newTestPipelineForRecap(t, &mockGenerator{response: aiResponse})
 
 	_, err := p.GenerateRecap(context.Background(), "evt-1", "raw")
 	if err == nil {
@@ -109,7 +97,7 @@ func TestGenerateRecap_TrimsAndDropsEmptyArrayEntries(t *testing.T) {
       "action_items": [],
       "open_questions": []
     }`
-	p := newTestPipelineForRecap(t, &mockGenWithErr{response: aiResponse})
+	p := newTestPipelineForRecap(t, &mockGenerator{response: aiResponse})
 
 	res, err := p.GenerateRecap(context.Background(), "evt-1", "raw")
 	if err != nil {
