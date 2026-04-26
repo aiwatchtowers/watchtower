@@ -33,6 +33,12 @@ final class InboxViewModel {
     private let dbManager: DatabaseManager
     private let feedbackQueries: InboxFeedbackQueries
     private var observationTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
+
+    /// Interval for the safety-net poll. GRDB ValueObservation cannot see writes
+    /// from the Go daemon (separate process, separate SQLite update hooks), so
+    /// the feed needs a periodic reload to surface daemon-inserted items.
+    private let pollInterval: Duration = .seconds(30)
 
     struct SenderGroup: Identifiable {
         let senderUserID: String
@@ -78,6 +84,25 @@ final class InboxViewModel {
                     self?.load()
                 }
             } catch {}
+        }
+        startPolling()
+    }
+
+    /// Force an immediate reload from disk. Called on view-appear so daemon
+    /// inserts surface even when the user takes no action in the inbox.
+    func refresh() {
+        load()
+    }
+
+    private func startPolling() {
+        guard pollTask == nil else { return }
+        let interval = pollInterval
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled else { break }
+                self?.load()
+            }
         }
     }
 

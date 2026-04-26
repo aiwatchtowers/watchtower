@@ -34,7 +34,13 @@ struct InboxFeedView: View {
                 learnedContent
             }
         }
-        .onAppear { initViewModel() }
+        .onAppear {
+            initViewModel()
+            // Cross-process daemon writes don't fire GRDB ValueObservation,
+            // so reload on every tab-appear to pick up items inserted while
+            // the inbox tab was inactive.
+            vm?.refresh()
+        }
         .onChange(of: appState.isDBAvailable) { initViewModel() }
         .sheet(item: $feedbackItem) { item in
             if let vm {
@@ -84,6 +90,8 @@ struct InboxFeedView: View {
                         InboxCardView(
                             item: item,
                             size: .pinned,
+                            senderName: vm.senderName(for: item),
+                            userNames: vm.senderNames,
                             onOpen: { openItem(item, vm: vm) },
                             onSnooze: { option in snoozeItem(item, option: option, vm: vm) },
                             onDismiss: { vm.dismiss(item) },
@@ -117,6 +125,8 @@ struct InboxFeedView: View {
                         InboxCardView(
                             item: item,
                             size: cardSize(for: item),
+                            senderName: vm.senderName(for: item),
+                            userNames: vm.senderNames,
                             onOpen: { openItem(item, vm: vm) },
                             onSnooze: { option in snoozeItem(item, option: option, vm: vm) },
                             onDismiss: { vm.dismiss(item) },
