@@ -15,7 +15,7 @@ import (
 //   - text       — sub-item.text (override beats it)
 //   - intent     — parent.intent (override beats it)
 //   - level      — parent.level (override beats it; switching away from "custom"
-//                  also clears custom_label)
+//     also clears custom_label)
 //   - priority   — parent.priority (override beats it)
 //   - ownership  — parent.ownership (override beats it)
 //   - period     — parent.period_start / period_end (override beats it)
@@ -25,7 +25,7 @@ import (
 //   - blocking   — always cleared on the child
 //   - snooze_until — always cleared on the child
 //   - status     — "done" if the sub-item was already marked done, else "todo"
-//                  (keeps parent progress stable across the promote)
+//     (keeps parent progress stable across the promote)
 type PromoteOverrides struct {
 	Text        *string
 	Intent      *string
