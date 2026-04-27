@@ -606,10 +606,16 @@ func TestTargetsSuggestLinksCmdHasJSONFlag(t *testing.T) {
 
 // --- promote-subitem ---
 
-// resetPromoteSubItemFlags clears Changed state on every flag of the
-// promote-subitem command so tests stay isolated.
+// resetPromoteSubItemFlags clears Changed state on the promote-subitem command's
+// local non-persistent flags so tests stay isolated. Must NOT touch inherited
+// persistent flags from rootCmd (e.g. --config, --workspace, --provider): once
+// any earlier test in the package calls cmd.ParseFlags() or cmd.Execute(),
+// cobra merges those into cmd.Flags(), and a blind reset would clobber the
+// flagConfig path that setupWatchTestEnv just wired up — leaving subsequent
+// openDBFromConfig() calls reading the init-time default path (which doesn't
+// exist on a clean CI runner).
 func resetPromoteSubItemFlags() {
-	targetsPromoteSubItemCmd.Flags().VisitAll(func(f *pflag.Flag) {
+	targetsPromoteSubItemCmd.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) {
 		f.Changed = false
 		_ = f.Value.Set(f.DefValue)
 	})
