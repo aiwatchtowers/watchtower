@@ -41,4 +41,46 @@ enum TargetPrefillBuilder {
             parentID: parent.id
         )
     }
+
+    // MARK: - fromTrack
+
+    static func fromTrack(_ track: Track, db: DatabaseManager) async throws -> TargetPrefill {
+        let channelIDs = Array(track.decodedChannelIDs.prefix(3))
+        let names = try await db.dbPool.read { dbConn -> [String] in
+            try channelIDs.map { id in
+                if let ch = try ChannelQueries.fetchByID(dbConn, id: id) {
+                    return ch.name
+                }
+                return id
+            }
+        }
+
+        var lines: [String] = []
+        let context = track.context.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !context.isEmpty { lines.append(context) }
+
+        let decision = track.decisionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !decision.isEmpty { lines.append("Decision: \(decision)") }
+
+        let blocking = track.blocking.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !blocking.isEmpty { lines.append("Blocking: \(blocking)") }
+
+        if !names.isEmpty {
+            let pretty = names.map { "#\($0)" }.joined(separator: ", ")
+            lines.append("In channels: \(pretty)")
+        }
+
+        let links = channelIDs.map {
+            TargetPrefillLink(externalRef: "slack:\($0)", relation: "related")
+        }
+
+        return TargetPrefill(
+            text: track.text,
+            intent: lines.joined(separator: "\n"),
+            sourceType: "track",
+            sourceID: String(track.id),
+            secondaryLinks: links,
+            parentID: nil
+        )
+    }
 }

@@ -47,7 +47,69 @@ final class TargetPrefillBuilderTests: XCTestCase {
         XCTAssertFalse(prefill.intent.contains("Sibling sub-items:"))
     }
 
+    // MARK: - fromTrack
+
+    func testFromTrack_HappyPath() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertChannel(db, id: "C001", name: "general")
+            try TestDatabase.insertChannel(db, id: "C002", name: "engineering")
+            try TestDatabase.insertTrack(
+                db,
+                text: "Migrate auth service",
+                context: "We need to swap the legacy IDP for the new one.",
+                priority: "high",
+                channelIDs: #"["C001","C002"]"#,
+                blocking: "Waiting on infra",
+                decisionSummary: "Going with provider X"
+            )
+        }
+        let track = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Track.fetchOne(db, sql: "SELECT * FROM tracks WHERE id = 1"))
+        }
+        let prefill = try await TargetPrefillBuilder.fromTrack(track, db: mgr)
+
+        XCTAssertEqual(prefill.text, "Migrate auth service")
+        XCTAssertEqual(prefill.sourceType, "track")
+        XCTAssertEqual(prefill.sourceID, "1")
+        XCTAssertNil(prefill.parentID)
+        XCTAssertTrue(prefill.intent.contains("We need to swap the legacy IDP"))
+        XCTAssertTrue(prefill.intent.contains("Decision: Going with provider X"))
+        XCTAssertTrue(prefill.intent.contains("Blocking: Waiting on infra"))
+        XCTAssertTrue(prefill.intent.contains("In channels: #general, #engineering"))
+        XCTAssertEqual(prefill.secondaryLinks.count, 2)
+        XCTAssertEqual(prefill.secondaryLinks[0].externalRef, "slack:C001")
+        XCTAssertEqual(prefill.secondaryLinks[0].relation, "related")
+    }
+
+    func testFromTrack_UnknownChannelFallsBackToID() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertTrack(
+                db,
+                text: "Track with orphan channel",
+                channelIDs: #"["C999"]"#
+            )
+        }
+        let track = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Track.fetchOne(db, sql: "SELECT * FROM tracks WHERE id = 1"))
+        }
+        let prefill = try await TargetPrefillBuilder.fromTrack(track, db: mgr)
+        XCTAssertTrue(prefill.intent.contains("In channels: #C999"))
+        XCTAssertEqual(prefill.secondaryLinks.first?.externalRef, "slack:C999")
+    }
+
     // MARK: - Helpers
+
+    /// Creates a file-backed `DatabaseManager` (DatabasePool requires a path),
+    /// applies the schema, runs the seed closure. The OS reaps the temp file.
+    static func makeManagerSeededWith(_ seed: (Database) throws -> Void) throws -> DatabaseManager {
+        let path = NSTemporaryDirectory() + "twtest_\(UUID().uuidString).db"
+        let pool = try DatabasePool(path: path)
+        try pool.write { db in
+            try db.execute(sql: TestDatabase.schema)
+            try seed(db)
+        }
+        return DatabaseManager(pool: pool)
+    }
 
     static func makeTarget(
         id: Int,
