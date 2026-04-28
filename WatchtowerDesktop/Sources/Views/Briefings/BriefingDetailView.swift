@@ -5,6 +5,8 @@ struct BriefingDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var showCreateTarget = false
     @State private var targetPrefill: TargetPrefill?
+    @State private var targetPrefillError: String?
+    @State private var isBuildingPrefill = false
     @State private var calendarEvents: [CalendarEvent] = []
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
@@ -13,6 +15,12 @@ struct BriefingDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let msg = targetPrefillError {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                }
                 header
                 calendarSection
                 attentionSection
@@ -66,6 +74,25 @@ struct BriefingDetailView: View {
         calendarEvents = (try? db.dbPool.read { db in
             try CalendarQueries.fetchTodayEvents(db)
         }) ?? []
+    }
+
+    private func openCreateTarget(for item: AttentionItem) {
+        guard let db = appState.databaseManager else {
+            targetPrefillError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingPrefill = true
+            defer { isBuildingPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromBriefingItem(item, briefing: briefing, db: db)
+                targetPrefill = pf
+                targetPrefillError = nil
+                showCreateTarget = true
+            } catch {
+                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
+        }
     }
 
     // MARK: - Header
@@ -180,14 +207,14 @@ struct BriefingDetailView: View {
             HStack {
                 Spacer()
                 Button {
-                    targetPrefill = nil
-                    showCreateTarget = true
+                    openCreateTarget(for: item)
                 } label: {
                     Label("Create target", systemImage: "plus.circle")
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .disabled(isBuildingPrefill)
             }
             .padding(.trailing, 4)
             .padding(.top, 2)
