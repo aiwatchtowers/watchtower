@@ -16,3 +16,13 @@
 - `inbox_feedback` table records raw 👍/👎 + reason; `inbox.SubmitFeedback` in Go maps (rating, reason) → rule upsert or class downgrade.
 - Desktop: `InboxFeedView` (replaces the removed `InboxListView`) with pinned section + chronological feed + "Learned" tab for rules management.
 - Desktop feedback path: Swift `InboxFeedbackQueries.record(...)` mirrors the Go rule derivation logic so UI is immediately consistent.
+
+---
+
+## Killer Features Inventory
+
+Behavioral contracts that must not be modified without explicit owner approval are catalogued in `docs/inventory/`. Before touching code in any module covered by inventory, read the corresponding file and treat each entry as load-bearing.
+
+Module → file mapping is in [docs/inventory/README.md](docs/inventory/README.md).
+
+If a proposed change would weaken or break a guard test, **stop and ask the owner** before proceeding. Do not "improve" a guard test by relaxing its assertions, renaming it out of the `Test<Module>NN_` convention, or splitting it into multiple weaker tests.
