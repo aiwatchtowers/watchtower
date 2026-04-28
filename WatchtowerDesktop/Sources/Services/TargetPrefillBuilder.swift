@@ -83,4 +83,57 @@ enum TargetPrefillBuilder {
             parentID: nil
         )
     }
+
+    // MARK: - fromDigest
+
+    static func fromDigest(_ digest: Digest, topic: DigestTopic?, db: DatabaseManager) async throws -> TargetPrefill {
+        let channelName = try await db.dbPool.read { dbConn -> String in
+            if let ch = try ChannelQueries.fetchByID(dbConn, id: digest.channelID) {
+                return ch.name
+            }
+            return digest.channelID
+        }
+
+        let title: String
+        if let t = topic {
+            title = t.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? Self.firstLine(digest.summary)
+                : t.title
+        } else {
+            title = Self.firstLine(digest.summary)
+        }
+
+        var lines: [String] = []
+        lines.append("From digest in #\(channelName):")
+
+        let body = (topic?.summary).flatMap { s -> String? in
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } ?? digest.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !body.isEmpty { lines.append(body) }
+
+        if let topic, !topic.parsedKeyMessages.isEmpty {
+            let bulleted = topic.parsedKeyMessages.prefix(5).map { "  • \($0)" }.joined(separator: "\n")
+            lines.append("Key messages:\n\(bulleted)")
+        }
+
+        let links: [TargetPrefillLink] = digest.channelID.isEmpty
+            ? []
+            : [TargetPrefillLink(externalRef: "slack:\(digest.channelID)", relation: "related")]
+
+        return TargetPrefill(
+            text: title.isEmpty ? digest.summary : title,
+            intent: lines.joined(separator: "\n"),
+            sourceType: "digest",
+            sourceID: String(digest.id),
+            secondaryLinks: links,
+            parentID: nil
+        )
+    }
+
+    // MARK: - Helpers
+
+    private static func firstLine(_ s: String) -> String {
+        s.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? s
+    }
 }

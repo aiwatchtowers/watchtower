@@ -97,6 +97,70 @@ final class TargetPrefillBuilderTests: XCTestCase {
         XCTAssertEqual(prefill.secondaryLinks.first?.externalRef, "slack:C999")
     }
 
+    // MARK: - fromDigest
+
+    func testFromDigest_WithTopic() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertChannel(db, id: "C100", name: "deals")
+            try TestDatabase.insertDigest(
+                db,
+                channelID: "C100",
+                summary: "Channel-level summary"
+            )
+            try TestDatabase.insertDigestTopic(
+                db,
+                digestID: 1,
+                idx: 0,
+                title: "Q2 pipeline review",
+                summary: "Three deals at risk; Acme is committed.",
+                keyMessages: #"["Acme signed the NDA","Beta wants a 10% discount"]"#
+            )
+        }
+        let digest = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Digest.fetchOne(db, sql: "SELECT * FROM digests WHERE id = 1"))
+        }
+        let topic = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try DigestTopic.fetchOne(db, sql: "SELECT * FROM digest_topics WHERE id = 1"))
+        }
+
+        let prefill = try await TargetPrefillBuilder.fromDigest(digest, topic: topic, db: mgr)
+        XCTAssertEqual(prefill.text, "Q2 pipeline review")
+        XCTAssertEqual(prefill.sourceType, "digest")
+        XCTAssertEqual(prefill.sourceID, "1")
+        XCTAssertTrue(prefill.intent.contains("From digest in #deals"))
+        XCTAssertTrue(prefill.intent.contains("Three deals at risk"))
+        XCTAssertTrue(prefill.intent.contains("Acme signed the NDA"))
+        XCTAssertEqual(prefill.secondaryLinks, [
+            TargetPrefillLink(externalRef: "slack:C100", relation: "related")
+        ])
+    }
+
+    func testFromDigest_NoTopic_FallsBackToSummary() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertChannel(db, id: "C200", name: "ops")
+            try TestDatabase.insertDigest(db, channelID: "C200", summary: "Plain summary")
+        }
+        let digest = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Digest.fetchOne(db, sql: "SELECT * FROM digests WHERE id = 1"))
+        }
+        let prefill = try await TargetPrefillBuilder.fromDigest(digest, topic: nil, db: mgr)
+        XCTAssertTrue(prefill.text.contains("Plain summary"))
+        XCTAssertTrue(prefill.intent.contains("From digest in #ops"))
+        XCTAssertTrue(prefill.intent.contains("Plain summary"))
+        XCTAssertFalse(prefill.intent.contains("Key messages:"))
+    }
+
+    func testFromDigest_UnknownChannelFallsBackToID() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertDigest(db, channelID: "C404", summary: "Orphan digest")
+        }
+        let digest = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Digest.fetchOne(db, sql: "SELECT * FROM digests WHERE id = 1"))
+        }
+        let prefill = try await TargetPrefillBuilder.fromDigest(digest, topic: nil, db: mgr)
+        XCTAssertTrue(prefill.intent.contains("From digest in #C404"))
+    }
+
     // MARK: - Helpers
 
     /// Creates a file-backed `DatabaseManager` (DatabasePool requires a path),

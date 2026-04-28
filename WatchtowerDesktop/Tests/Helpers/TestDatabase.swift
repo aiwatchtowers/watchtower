@@ -1023,6 +1023,25 @@ enum TestDatabase {
         return db.lastInsertedRowID
     }
 
+    @discardableResult
+    static func insertDigestTopic(
+        _ db: Database,
+        digestID: Int = 1,
+        idx: Int = 0,
+        title: String = "Sample topic",
+        summary: String = "Topic summary",
+        decisions: String = "[]",
+        actionItems: String = "[]",
+        situations: String = "[]",
+        keyMessages: String = "[]"
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [digestID, idx, title, summary, decisions, actionItems, situations, keyMessages])
+        return db.lastInsertedRowID
+    }
+
     // MARK: - Inbox Fixtures
 
     static func insertInboxItem(
