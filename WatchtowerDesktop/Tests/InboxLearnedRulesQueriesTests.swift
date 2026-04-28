@@ -75,7 +75,10 @@ final class InboxLearnedRulesQueriesTests: XCTestCase {
         XCTAssertEqual(all[0].source, "user_rule")
     }
 
-    func testUpsertManualOverridesImplicitSource() throws {
+    func test_INBOX_06_manual_rule_overrides_implicit() throws {
+        // KILLER FEATURE INBOX-06 — see docs/inventory/inbox-pulse.md
+        // Manual rule upsert overrides an existing implicit rule on the same scope.
+        // Do not weaken or remove without explicit owner approval.
         let pool = try makePool()
         let q = InboxLearnedRulesQueries(dbPool: pool)
         // Insert an implicit rule first

@@ -69,7 +69,10 @@ func TestInbox04_NoRuleBelowEvidenceThreshold(t *testing.T) {
 	}
 }
 
-func TestLearner_DoesNotOverwriteUserRule(t *testing.T) {
+func TestInbox06_UserRuleProtectedFromImplicitOverwrite(t *testing.T) {
+	// KILLER FEATURE INBOX-06 — see docs/inventory/inbox-pulse.md
+	// source='user_rule' is never overwritten by the implicit learner.
+	// Do not weaken or remove without explicit owner approval.
 	d := testDB(t)
 	_ = d.UpsertLearnedRule(db.InboxLearnedRule{RuleType: "source_mute", ScopeKey: "sender:U3", Weight: -0.4, Source: "user_rule"})
 	for i := 0; i < 10; i++ {

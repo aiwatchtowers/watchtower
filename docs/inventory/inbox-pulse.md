@@ -88,6 +88,20 @@
 
 **Locked since:** 2026-04-27
 
+## INBOX-06 — Manual rules outrank statistics
+
+**Status:** Enforced
+
+**Observable:** Any rule I author by hand in the "Learned" tab (`source='user_rule'`) is never overwritten by the automatic implicit learner. If I say "mute @bob," statistics across the next month do not silently undo me.
+
+**Why locked:** Without this, the "Learned" tab is theatre — the user edits a rule, walks away, and the aggregator overrides them. Explicit user intent must beat statistical aggregates.
+
+**Test guards:**
+- `internal/inbox/learner_test.go::TestInbox06_UserRuleProtectedFromImplicitOverwrite`
+- `WatchtowerDesktop/Tests/InboxLearnedRulesQueriesTests.swift::test_INBOX_06_manual_rule_overrides_implicit`
+
+**Locked since:** 2026-04-27
+
 <!-- Contracts will be inserted here in subsequent commits. -->
 
 ## Changelog
