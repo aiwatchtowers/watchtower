@@ -9,6 +9,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Module | Inventory file | Code paths |
 |---|---|---|
 | Inbox Pulse | [inbox-pulse.md](inbox-pulse.md) | `internal/inbox/`, `WatchtowerDesktop/Sources/Views/Inbox/`, `WatchtowerDesktop/Sources/ViewModels/Inbox*.swift` |
+| Tracks | [tracks.md](tracks.md) | `internal/tracks/`, `internal/db/tracks.go`, `WatchtowerDesktop/Sources/Views/Tracks/`, `WatchtowerDesktop/Sources/ViewModels/TracksViewModel.swift` |
 
 (Other modules will be added as their inventories are written.)
 

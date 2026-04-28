@@ -99,7 +99,8 @@ func (db *DB) UpsertTrack(t Track) (int64, error) {
 
 // UpdateTrackFromExtraction updates a track's content fields from AI re-extraction.
 // Preserves ID, created_at, read_at. Sets has_updates=1 if track was already read.
-// Also merges channel_ids (adds new channel if not already present).
+// Merges channel_ids and related_digest_ids with the freshest values first so the
+// UI's "Open in Slack" fallback points at the most recently confirmed channel.
 func (db *DB) UpdateTrackFromExtraction(id int, t Track) (int64, error) {
 	// Apply defaults for CHECK-constrained fields.
 	if t.Ownership == "" {
@@ -443,25 +444,35 @@ func (db *DB) UpdateTrackSubItems(id int, subItems string) error {
 }
 
 // mergeJSONArrays merges two JSON arrays (strings or ints), deduplicating.
+// Fresh elements are placed first, followed by existing elements not already
+// present in the fresh set. This keeps the most recent channel/digest at the
+// front so UI fallbacks that use index 0 (e.g. "Open in Slack") point at the
+// channel from the latest extraction rather than the historical origin.
 func mergeJSONArrays(existingJSON, newJSON string) string {
 	var existing, newArr []json.RawMessage
 	_ = json.Unmarshal([]byte(existingJSON), &existing)
 	_ = json.Unmarshal([]byte(newJSON), &newArr)
 
+	merged := make([]json.RawMessage, 0, len(newArr)+len(existing))
 	seen := make(map[string]bool)
-	for _, e := range existing {
-		seen[string(e)] = true
-	}
 	for _, n := range newArr {
-		if !seen[string(n)] {
-			existing = append(existing, n)
-			seen[string(n)] = true
+		key := string(n)
+		if !seen[key] {
+			merged = append(merged, n)
+			seen[key] = true
 		}
 	}
-	if len(existing) == 0 {
+	for _, e := range existing {
+		key := string(e)
+		if !seen[key] {
+			merged = append(merged, e)
+			seen[key] = true
+		}
+	}
+	if len(merged) == 0 {
 		return "[]"
 	}
-	data, _ := json.Marshal(existing)
+	data, _ := json.Marshal(merged)
 	return string(data)
 }
 

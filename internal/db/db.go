@@ -3,10 +3,12 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -3562,6 +3564,24 @@ afterV48:
 		version = 70
 	}
 
+	if version < 71 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v71 tx: %w", err)
+		}
+		defer tx.Rollback()
+		if err := backfillTrackChannelOrder(tx); err != nil {
+			return fmt.Errorf("v71 backfill: %w", err)
+		}
+		if _, err := tx.Exec("PRAGMA user_version = 71"); err != nil {
+			return fmt.Errorf("setting schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v71: %w", err)
+		}
+		version = 71
+	}
+
 	if version < 72 {
 		tx, err := db.Begin()
 		if err != nil {
@@ -3572,8 +3592,11 @@ afterV48:
 		// They were derived under instant-feedback logic that violated
 		// the gradual-learning contract. New rules emerge from the
 		// learner's unified pool on subsequent daemon cycles.
-		if _, err := tx.Exec(`DELETE FROM inbox_learned_rules WHERE source = 'explicit_feedback'`); err != nil {
-			return fmt.Errorf("v72 drop legacy: %w", err)
+		// Guard: table may not exist on very old DBs that never ran v67.
+		if hasColumn(tx, "inbox_learned_rules", "source") {
+			if _, err := tx.Exec(`DELETE FROM inbox_learned_rules WHERE source = 'explicit_feedback'`); err != nil {
+				return fmt.Errorf("v72 drop legacy: %w", err)
+			}
 		}
 		if _, err := tx.Exec("PRAGMA user_version = 72"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
@@ -3585,6 +3608,111 @@ afterV48:
 	}
 
 	_ = version // silence unused variable if this is the last migration
+	return nil
+}
+
+// backfillTrackChannelOrder reorders each track's channel_ids JSON array so the
+// channel of the most recent related digest is first. This compensates for the
+// pre-v71 mergeJSONArrays behavior, which appended new channels to the tail and
+// left the historical "origin" channel at index 0 — which UI fallbacks treat as
+// the primary Slack target.
+func backfillTrackChannelOrder(tx *sql.Tx) error {
+	// Skip silently when the tracks table doesn't exist — this happens in
+	// minimal/test databases that pre-date the tracks pipeline.
+	var name string
+	if err := tx.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'`,
+	).Scan(&name); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("checking tracks table: %w", err)
+	}
+
+	rows, err := tx.Query(`SELECT id, channel_ids, related_digest_ids FROM tracks
+		WHERE channel_ids LIKE '[%,%]' AND related_digest_ids != '[]'`)
+	if err != nil {
+		return fmt.Errorf("querying tracks: %w", err)
+	}
+
+	type trackRow struct {
+		id               int
+		channelIDs       string
+		relatedDigestIDs string
+	}
+	var pending []trackRow
+	for rows.Next() {
+		var tr trackRow
+		if err := rows.Scan(&tr.id, &tr.channelIDs, &tr.relatedDigestIDs); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning track: %w", err)
+		}
+		pending = append(pending, tr)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating tracks: %w", err)
+	}
+
+	for _, tr := range pending {
+		var chIDs []string
+		if err := json.Unmarshal([]byte(tr.channelIDs), &chIDs); err != nil || len(chIDs) <= 1 {
+			continue
+		}
+		var digestIDs []int
+		if err := json.Unmarshal([]byte(tr.relatedDigestIDs), &digestIDs); err != nil || len(digestIDs) == 0 {
+			continue
+		}
+
+		placeholders := strings.Repeat(",?", len(digestIDs))[1:]
+		args := make([]any, len(digestIDs))
+		for i, id := range digestIDs {
+			args[i] = id
+		}
+		var latestChannel string
+		err := tx.QueryRow(`SELECT channel_id FROM digests WHERE id IN (`+placeholders+`)
+			ORDER BY created_at DESC, id DESC LIMIT 1`, args...).Scan(&latestChannel)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("finding latest digest channel for track %d: %w", tr.id, err)
+		}
+		if latestChannel == "" || chIDs[0] == latestChannel {
+			continue
+		}
+
+		reordered := make([]string, 0, len(chIDs))
+		seen := make(map[string]bool, len(chIDs))
+		// Move latest channel to front (only if it's already in the list — we
+		// don't add channels that aren't related to the track).
+		hasLatest := false
+		for _, id := range chIDs {
+			if id == latestChannel {
+				hasLatest = true
+				break
+			}
+		}
+		if !hasLatest {
+			continue
+		}
+		reordered = append(reordered, latestChannel)
+		seen[latestChannel] = true
+		for _, id := range chIDs {
+			if !seen[id] {
+				reordered = append(reordered, id)
+				seen[id] = true
+			}
+		}
+
+		data, err := json.Marshal(reordered)
+		if err != nil {
+			return fmt.Errorf("marshaling reordered channels for track %d: %w", tr.id, err)
+		}
+		if _, err := tx.Exec(`UPDATE tracks SET channel_ids = ? WHERE id = ?`, string(data), tr.id); err != nil {
+			return fmt.Errorf("updating track %d: %w", tr.id, err)
+		}
+	}
 	return nil
 }
 

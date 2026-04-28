@@ -295,25 +295,26 @@ func TestUpdateTrackOwnership(t *testing.T) {
 }
 
 func TestMergeJSONArrays(t *testing.T) {
-	// Merge string arrays
-	result := mergeJSONArrays(`["a","b"]`, `["b","c"]`)
-	assert.Contains(t, result, `"a"`)
-	assert.Contains(t, result, `"b"`)
-	assert.Contains(t, result, `"c"`)
+	// Fresh elements come first, then existing-only elements.
+	// "c" is fresh-only → first; "b" exists in both → second (kept from fresh); "a" is existing-only → last.
+	result := mergeJSONArrays(`["a","b"]`, `["c","b"]`)
+	assert.Equal(t, `["c","b","a"]`, result)
 
-	// Merge int arrays
-	result = mergeJSONArrays(`[1,2]`, `[2,3]`)
-	assert.Contains(t, result, "1")
-	assert.Contains(t, result, "2")
-	assert.Contains(t, result, "3")
+	// Fresh int arrays — same ordering rule.
+	result = mergeJSONArrays(`[1,2]`, `[3,2]`)
+	assert.Equal(t, `[3,2,1]`, result)
 
 	// Empty arrays
 	result = mergeJSONArrays(`[]`, `[]`)
 	assert.Equal(t, "[]", result)
 
-	// One empty
+	// Existing empty: only fresh remain.
 	result = mergeJSONArrays(`[]`, `["a"]`)
-	assert.Contains(t, result, `"a"`)
+	assert.Equal(t, `["a"]`, result)
+
+	// Fresh empty: existing preserved as-is.
+	result = mergeJSONArrays(`["a","b"]`, `[]`)
+	assert.Equal(t, `["a","b"]`, result)
 }
 
 func TestMarkTrackRead_CascadeDigests(t *testing.T) {
