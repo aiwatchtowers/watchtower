@@ -83,7 +83,7 @@ func (db *DB) migrate() error {
 		if _, err := tx.Exec(Schema); err != nil {
 			return fmt.Errorf("executing schema: %w", err)
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 70"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 72"); err != nil {
 			return fmt.Errorf("setting schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -3560,6 +3560,28 @@ afterV48:
 			return fmt.Errorf("committing migration v70: %w", err)
 		}
 		version = 70
+	}
+
+	if version < 72 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning migration v72 tx: %w", err)
+		}
+		defer tx.Rollback()
+		// INBOX-04 — drop legacy source='explicit_feedback' rules.
+		// They were derived under instant-feedback logic that violated
+		// the gradual-learning contract. New rules emerge from the
+		// learner's unified pool on subsequent daemon cycles.
+		if _, err := tx.Exec(`DELETE FROM inbox_learned_rules WHERE source = 'explicit_feedback'`); err != nil {
+			return fmt.Errorf("v72 drop legacy: %w", err)
+		}
+		if _, err := tx.Exec("PRAGMA user_version = 72"); err != nil {
+			return fmt.Errorf("setting schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing migration v72: %w", err)
+		}
+		version = 72
 	}
 
 	_ = version // silence unused variable if this is the last migration

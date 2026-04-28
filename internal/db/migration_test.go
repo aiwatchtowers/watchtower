@@ -90,7 +90,7 @@ func TestMigrationFromV20_CreatesChains(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 70, v)
+	assert.Equal(t, 72, v)
 
 	// Verify chains/chain_refs tables are DROPPED by v43
 	var n string
@@ -133,7 +133,7 @@ func TestMigrationFromV21_ChainsAndInteractions(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 70, v)
+	assert.Equal(t, 72, v)
 
 	// After v43: chains/chain_refs dropped, user_interactions should exist
 	var n string
@@ -166,7 +166,7 @@ func TestMigrationFromV22_UserInteractions(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 70, v)
+	assert.Equal(t, 72, v)
 
 	// Insert and query to verify table structure
 	err = db2.UpsertUserInteractions([]UserInteraction{
@@ -205,7 +205,7 @@ func TestMigrationIdempotent_V21HasColumn(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 70, v)
+	assert.Equal(t, 72, v)
 
 	// v45 creates new tracks table — should be usable
 	_, err = db2.UpsertTrack(Track{Text: "new track", Priority: "high"})
@@ -236,7 +236,7 @@ func TestMigrationIdempotent_V22HasColumn(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 70, v)
+	assert.Equal(t, 72, v)
 
 	// After v43: chains table should not exist
 	var n string
@@ -269,7 +269,7 @@ func TestMigrationIdempotent_V23HasColumn(t *testing.T) {
 
 	v, err := db2.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 70, v)
+	assert.Equal(t, 72, v)
 
 	// Data should survive
 	interactions, err := db2.GetUserInteractions("U1", 1000, 2000)
@@ -284,7 +284,7 @@ func TestUserVersion(t *testing.T) {
 
 	v, err := db.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 70, v)
+	assert.Equal(t, 72, v)
 }
 
 // TestMigrationV66_DayPlans verifies that migration v66 creates day_plans and
@@ -620,7 +620,7 @@ PRAGMA user_version = 1;
 	// Verify schema version is now at latest
 	v, err := db.UserVersion()
 	require.NoError(t, err)
-	assert.Equal(t, 70, v)
+	assert.Equal(t, 72, v)
 
 	// Verify data survived all migrations
 	var wsName string
@@ -821,4 +821,62 @@ func TestMigrationPreservesDataAcrossVersions(t *testing.T) {
 	tracks, err := db2.GetAllActiveTracks()
 	require.NoError(t, err)
 	assert.Len(t, tracks, 0)
+}
+
+// TestMigrationV72_DropsLegacyExplicitFeedback verifies migration v72 removes
+// any legacy inbox_learned_rules rows whose source is 'explicit_feedback'.
+//
+// KILLER FEATURE INBOX-04 — see docs/inventory/inbox-pulse.md
+// Migration v72 removes legacy source='explicit_feedback' rules.
+// Do not weaken or remove without explicit owner approval.
+func TestMigrationV72_DropsLegacyExplicitFeedback(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Open the DB (latest schema, user_version = 72).
+	db1, err := Open(dbPath)
+	require.NoError(t, err)
+
+	// Seed three rules with different sources.
+	_, err = db1.Exec(`INSERT INTO inbox_learned_rules
+		(rule_type, scope_key, weight, source, evidence_count, last_updated)
+		VALUES ('source_mute', 'sender:U_legacy', -0.8, 'explicit_feedback', 1, '2026-01-01T00:00:00Z')`)
+	require.NoError(t, err)
+	_, err = db1.Exec(`INSERT INTO inbox_learned_rules
+		(rule_type, scope_key, weight, source, evidence_count, last_updated)
+		VALUES ('source_mute', 'sender:U_implicit', -0.7, 'implicit', 6, '2026-01-01T00:00:00Z')`)
+	require.NoError(t, err)
+	_, err = db1.Exec(`INSERT INTO inbox_learned_rules
+		(rule_type, scope_key, weight, source, evidence_count, last_updated)
+		VALUES ('source_mute', 'sender:U_user', -0.5, 'user_rule', 0, '2026-01-01T00:00:00Z')`)
+	require.NoError(t, err)
+
+	// Roll user_version back to 71 so the v72 migration block fires on reopen.
+	setUserVersion(t, db1, 71)
+	db1.Close()
+
+	// Reopen — migrate() runs v72 which DELETEs explicit_feedback rules.
+	db2, err := Open(dbPath)
+	require.NoError(t, err)
+	defer db2.Close()
+
+	v, err := db2.UserVersion()
+	require.NoError(t, err)
+	assert.Equal(t, 72, v)
+
+	rows, err := db2.Query(`SELECT scope_key, source FROM inbox_learned_rules ORDER BY scope_key`)
+	require.NoError(t, err)
+	defer rows.Close()
+	type pair struct{ key, src string }
+	var got []pair
+	for rows.Next() {
+		var k, s string
+		require.NoError(t, rows.Scan(&k, &s))
+		got = append(got, pair{k, s})
+	}
+	want := []pair{
+		{"sender:U_implicit", "implicit"},
+		{"sender:U_user", "user_rule"},
+	}
+	assert.Equal(t, want, got)
 }
