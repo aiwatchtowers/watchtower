@@ -9,48 +9,77 @@ import (
 )
 
 const (
-	minEvidence  = 5
-	muteRateSend = 0.8
-	muteRateChan = 0.7
+	minEvidence   = 5
+	rateThreshold = 0.70
+	senderMute    = -0.7
+	senderBoost   = 0.7
+	channelMute   = -0.5
+	muteRateChan  = 0.7
 )
 
-type dismissStat struct {
-	key      string // "sender:X" or "channel:X"
+type ruleStat struct {
+	key      string
 	weight   float64
 	evidence int
 }
 
-// RunImplicitLearner scans inbox_items within the lookback window, computes
-// per-sender and per-channel dismiss rates, and upserts source_mute learned
-// rules when thresholds are exceeded. It never overwrites user_rule entries.
-// Returns the number of rules upserted and any error.
+// RunImplicitLearner aggregates implicit dismissals from inbox_items and
+// explicit ratings from inbox_feedback over the lookback window. It
+// produces source_mute / source_boost rules with source='implicit' when
+// thresholds are crossed (evidence >= 5, rate > 0.70). user_rule scopes
+// are protected by UpsertLearnedRuleImplicit.
 func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Duration) (int, error) {
 	cutoff := time.Now().Add(-lookback).UTC().Format(time.RFC3339)
 
-	var rules []dismissStat
+	var rules []ruleStat
 
-	// Per-sender dismiss rate — collect all rows before issuing any further queries.
+	// Per-sender unified pool.
 	senderRows, err := database.Query(`
-		SELECT sender_user_id,
+		WITH events AS (
+			SELECT sender_user_id AS sender, -1 AS sign
+			  FROM inbox_items
+			 WHERE status='dismissed' AND created_at > ?
+			UNION ALL
+			SELECT i.sender_user_id AS sender, -1 AS sign
+			  FROM inbox_feedback f
+			  JOIN inbox_items i ON i.id = f.inbox_item_id
+			 WHERE f.rating = -1 AND f.reason != 'never_show' AND f.created_at > ?
+			UNION ALL
+			SELECT i.sender_user_id AS sender, +1 AS sign
+			  FROM inbox_feedback f
+			  JOIN inbox_items i ON i.id = f.inbox_item_id
+			 WHERE f.rating = 1 AND f.created_at > ?
+			UNION ALL
+			SELECT sender_user_id AS sender, 0 AS sign
+			  FROM inbox_items
+			 WHERE status != 'dismissed' AND created_at > ?
+			   AND id NOT IN (SELECT inbox_item_id FROM inbox_feedback WHERE created_at > ?)
+		)
+		SELECT sender,
 		       COUNT(*) AS total,
-		       SUM(CASE WHEN status='dismissed' THEN 1 ELSE 0 END) AS dismisses
-		FROM inbox_items
-		WHERE created_at > ?
-		GROUP BY sender_user_id
+		       SUM(CASE WHEN sign = -1 THEN 1 ELSE 0 END) AS negatives,
+		       SUM(CASE WHEN sign = +1 THEN 1 ELSE 0 END) AS positives
+		FROM events
+		GROUP BY sender
 		HAVING total >= ?
-	`, cutoff, minEvidence)
+	`, cutoff, cutoff, cutoff, cutoff, cutoff, minEvidence)
 	if err != nil {
 		return 0, fmt.Errorf("sender query: %w", err)
 	}
 	for senderRows.Next() {
 		var sender string
-		var total, dismisses int
-		if err := senderRows.Scan(&sender, &total, &dismisses); err != nil {
+		var total, negatives, positives int
+		if err := senderRows.Scan(&sender, &total, &negatives, &positives); err != nil {
 			senderRows.Close()
 			return 0, fmt.Errorf("sender scan: %w", err)
 		}
-		if float64(dismisses)/float64(total) >= muteRateSend {
-			rules = append(rules, dismissStat{key: "sender:" + sender, weight: -0.7, evidence: dismisses})
+		negRate := float64(negatives) / float64(total)
+		posRate := float64(positives) / float64(total)
+		switch {
+		case negRate > rateThreshold:
+			rules = append(rules, ruleStat{key: "sender:" + sender, weight: senderMute, evidence: negatives})
+		case posRate > rateThreshold:
+			rules = append(rules, ruleStat{key: "sender:" + sender, weight: senderBoost, evidence: positives})
 		}
 	}
 	if err := senderRows.Err(); err != nil {
@@ -59,28 +88,42 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 	}
 	senderRows.Close()
 
-	// Per-channel dismiss rate — collect all rows before issuing any further queries.
+	// Per-channel unified pool — negatives only (no boost on channel side).
 	chanRows, err := database.Query(`
-		SELECT channel_id,
+		WITH events AS (
+			SELECT channel_id AS ch, -1 AS sign
+			  FROM inbox_items
+			 WHERE status='dismissed' AND created_at > ?
+			UNION ALL
+			SELECT i.channel_id AS ch, -1 AS sign
+			  FROM inbox_feedback f
+			  JOIN inbox_items i ON i.id = f.inbox_item_id
+			 WHERE f.rating = -1 AND f.reason != 'never_show' AND f.created_at > ?
+			UNION ALL
+			SELECT i.channel_id AS ch, 0 AS sign
+			  FROM inbox_items i
+			 WHERE i.status != 'dismissed' AND i.created_at > ?
+			   AND i.id NOT IN (SELECT inbox_item_id FROM inbox_feedback WHERE created_at > ?)
+		)
+		SELECT ch,
 		       COUNT(*) AS total,
-		       SUM(CASE WHEN status='dismissed' THEN 1 ELSE 0 END) AS dismisses
-		FROM inbox_items
-		WHERE created_at > ?
-		GROUP BY channel_id
+		       SUM(CASE WHEN sign = -1 THEN 1 ELSE 0 END) AS negatives
+		FROM events
+		GROUP BY ch
 		HAVING total >= ?
-	`, cutoff, minEvidence)
+	`, cutoff, cutoff, cutoff, cutoff, minEvidence)
 	if err != nil {
 		return 0, fmt.Errorf("channel query: %w", err)
 	}
 	for chanRows.Next() {
 		var ch string
-		var total, dismisses int
-		if err := chanRows.Scan(&ch, &total, &dismisses); err != nil {
+		var total, negatives int
+		if err := chanRows.Scan(&ch, &total, &negatives); err != nil {
 			chanRows.Close()
 			return 0, fmt.Errorf("channel scan: %w", err)
 		}
-		if float64(dismisses)/float64(total) >= muteRateChan {
-			rules = append(rules, dismissStat{key: "channel:" + ch, weight: -0.5, evidence: dismisses})
+		if float64(negatives)/float64(total) > muteRateChan {
+			rules = append(rules, ruleStat{key: "channel:" + ch, weight: channelMute, evidence: negatives})
 		}
 	}
 	if err := chanRows.Err(); err != nil {
@@ -89,11 +132,15 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 	}
 	chanRows.Close()
 
-	// Upsert all collected rules — cursor is closed, connection is free.
+	// Upsert all collected rules.
 	upserted := 0
 	for _, r := range rules {
+		ruleType := "source_mute"
+		if r.weight > 0 {
+			ruleType = "source_boost"
+		}
 		if err := database.UpsertLearnedRuleImplicit(db.InboxLearnedRule{
-			RuleType:      "source_mute",
+			RuleType:      ruleType,
 			ScopeKey:      r.key,
 			Weight:        r.weight,
 			EvidenceCount: r.evidence,
