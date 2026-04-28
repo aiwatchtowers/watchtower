@@ -136,48 +136,69 @@ enum InboxQueries {
         )
     }
 
-    @discardableResult
-    static func createTask(_ db: Database, from item: InboxItem) throws -> Int64 {
-        let text = item.snippet.isEmpty ? "Follow up on message" : item.snippet
-        let today = TargetQueries.todayDateString()
-        let targetID = try TargetQueries.create(
-            db,
-            text: text,
-            level: "day",
-            periodStart: today,
-            periodEnd: today,
-            sourceType: "inbox",
-            sourceID: String(item.id)
-        )
-        try linkTarget(db, inboxID: item.id, targetID: targetID)
-        return Int64(targetID)
-    }
-
     // MARK: - Pinned / Feed / Seen
 
     /// Returns pinned pending items that are not archived, ordered by priority then created_at DESC.
-    static func fetchPinned(_ db: Database) throws -> [InboxItem] {
-        try InboxItem.fetchAll(db, sql: """
+    /// When `unreadOnly` is true, hides items with a non-empty `read_at` unless their id is in `keepIDs`
+    /// (the session-sticky set so just-read items don't vanish under the user's cursor).
+    static func fetchPinned(
+        _ db: Database,
+        unreadOnly: Bool = false,
+        keepIDs: Set<Int> = []
+    ) throws -> [InboxItem] {
+        var sql = """
             SELECT * FROM inbox_items
             WHERE pinned = 1
               AND status = 'pending'
               AND archived_at IS NULL
-            ORDER BY
+            """
+        var args: [any DatabaseValueConvertible] = []
+        if unreadOnly {
+            if !keepIDs.isEmpty {
+                let placeholders = keepIDs.map { _ in "?" }.joined(separator: ", ")
+                sql += " AND ((read_at IS NULL OR read_at = '') OR id IN (\(placeholders)))"
+                args.append(contentsOf: keepIDs.map { $0 as any DatabaseValueConvertible })
+            } else {
+                sql += " AND (read_at IS NULL OR read_at = '')"
+            }
+        }
+        sql += """
+             ORDER BY
               CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 1 END,
               created_at DESC
-            """)
+            """
+        return try InboxItem.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
     /// Returns non-pinned, non-archived, active items ordered by created_at DESC with pagination.
-    static func fetchFeed(_ db: Database, limit: Int, offset: Int) throws -> [InboxItem] {
-        try InboxItem.fetchAll(db, sql: """
+    /// `unreadOnly` and `keepIDs` work the same as in `fetchPinned`.
+    static func fetchFeed(
+        _ db: Database,
+        limit: Int,
+        offset: Int,
+        unreadOnly: Bool = false,
+        keepIDs: Set<Int> = []
+    ) throws -> [InboxItem] {
+        var sql = """
             SELECT * FROM inbox_items
             WHERE pinned = 0
               AND archived_at IS NULL
               AND status NOT IN ('resolved', 'dismissed', 'snoozed')
-            ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
-            """, arguments: [limit, offset])
+            """
+        var args: [any DatabaseValueConvertible] = []
+        if unreadOnly {
+            if !keepIDs.isEmpty {
+                let placeholders = keepIDs.map { _ in "?" }.joined(separator: ", ")
+                sql += " AND ((read_at IS NULL OR read_at = '') OR id IN (\(placeholders)))"
+                args.append(contentsOf: keepIDs.map { $0 as any DatabaseValueConvertible })
+            } else {
+                sql += " AND (read_at IS NULL OR read_at = '')"
+            }
+        }
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        args.append(limit)
+        args.append(offset)
+        return try InboxItem.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
     /// Returns true if any pinned item has high priority and is pending.

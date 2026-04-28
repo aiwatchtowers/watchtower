@@ -24,6 +24,16 @@ final class InboxViewModel {
     var triggerTypeFilter: String?
     var showResolved: Bool = false
 
+    /// When true, hide items the user has already read. Toggled from the feed header.
+    var unreadOnly: Bool = true {
+        didSet { if oldValue != unreadOnly { load() } }
+    }
+
+    /// Items that the user just marked read in this session — kept visible in the
+    /// unread-filtered feed so they don't disappear out from under the cursor.
+    /// Cleared on app restart (lives only as long as the VM).
+    private var sessionStickyIDs: Set<Int> = []
+
     // Name caches
     private(set) var senderNames: [String: String] = [:]
     private(set) var channelNames: [String: String] = [:]
@@ -118,8 +128,18 @@ final class InboxViewModel {
                     triggerType: self.triggerTypeFilter,
                     includeResolved: self.showResolved
                 )
-                let pinned = try InboxQueries.fetchPinned(db)
-                let feed = try InboxQueries.fetchFeed(db, limit: self.feedPageSize, offset: 0)
+                let pinned = try InboxQueries.fetchPinned(
+                    db,
+                    unreadOnly: self.unreadOnly,
+                    keepIDs: self.sessionStickyIDs
+                )
+                let feed = try InboxQueries.fetchFeed(
+                    db,
+                    limit: self.feedPageSize,
+                    offset: 0,
+                    unreadOnly: self.unreadOnly,
+                    keepIDs: self.sessionStickyIDs
+                )
                 let highPriorityPinned = try InboxQueries.hasHighPriorityPinned(db)
                 return (ws?.domain, ws?.id, all, counts, pinned, feed, highPriorityPinned)
             }
@@ -176,7 +196,13 @@ final class InboxViewModel {
     func loadMore() {
         do {
             let next = try dbManager.dbPool.read { db in
-                try InboxQueries.fetchFeed(db, limit: feedPageSize, offset: feedOffset)
+                try InboxQueries.fetchFeed(
+                    db,
+                    limit: feedPageSize,
+                    offset: feedOffset,
+                    unreadOnly: self.unreadOnly,
+                    keepIDs: self.sessionStickyIDs
+                )
             }
             feedItems.append(contentsOf: next)
             feedOffset += next.count
@@ -186,12 +212,16 @@ final class InboxViewModel {
     }
 
     /// Marks an inbox item as seen (sets read_at) if it hasn't been seen before.
+    /// Adds the id to the session-sticky set so the now-read item stays visible
+    /// in the unread-filtered feed until the user navigates away or refreshes.
     func markSeen(_ item: InboxItem) {
         guard item.readAt.isEmpty else { return }
+        sessionStickyIDs.insert(item.id)
         do {
             try dbManager.dbPool.write { db in
                 try InboxQueries.markSeen(db, itemID: Int64(item.id))
             }
+            load()
         } catch {
             errorMessage = "Failed to mark seen: \(error.localizedDescription)"
         }
@@ -241,6 +271,7 @@ final class InboxViewModel {
     }
 
     func markRead(_ item: InboxItem) {
+        sessionStickyIDs.insert(item.id)
         do {
             try dbManager.dbPool.write { db in
                 try InboxQueries.markRead(db, id: item.id)
@@ -248,17 +279,6 @@ final class InboxViewModel {
             load()
         } catch {
             errorMessage = "Failed to mark read: \(error.localizedDescription)"
-        }
-    }
-
-    func createTask(from item: InboxItem) {
-        do {
-            _ = try dbManager.dbPool.write { db in
-                try InboxQueries.createTask(db, from: item)
-            }
-            load()
-        } catch {
-            errorMessage = "Failed to create task: \(error.localizedDescription)"
         }
     }
 
