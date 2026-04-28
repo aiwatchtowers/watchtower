@@ -2,7 +2,10 @@ package inbox
 
 import "testing"
 
-func TestClassifier_DefaultForTriggerType(t *testing.T) {
+func TestInbox01_DefaultClassByTrigger(t *testing.T) {
+	// KILLER FEATURE INBOX-01 — see docs/inventory/inbox-pulse.md
+	// Default class assignment per trigger_type. Do not weaken or remove
+	// without explicit owner approval.
 	cases := []struct {
 		trig  string
 		class string
@@ -31,7 +34,10 @@ func TestClassifier_DefaultForTriggerType(t *testing.T) {
 	}
 }
 
-func TestClassifier_ApplyAIOverride_DowngradeOnly(t *testing.T) {
+func TestInbox01_AINeverUpgrades(t *testing.T) {
+	// KILLER FEATURE INBOX-01 — see docs/inventory/inbox-pulse.md
+	// AI may downgrade actionable→ambient but never the reverse.
+	// Do not weaken or remove without explicit owner approval.
 	// AI can downgrade actionable → ambient
 	got := ApplyAIOverride("actionable", "ambient")
 	if got != "ambient" {
