@@ -32,6 +32,7 @@ func (p *Pipeline) buildPrompt(in *promptInputs) (string, string) {
 		}
 	}
 	return fmt.Sprintf(tmpl,
+		prompts.Directive(p.cfg.Digest.Language),
 		in.Date, in.Weekday, in.NowLocal, in.UserRole,
 		in.WorkingHoursStart, in.WorkingHoursEnd,
 		in.CalendarEvents, in.Targets, in.Briefing,

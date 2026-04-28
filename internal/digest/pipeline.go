@@ -1780,13 +1780,7 @@ func (p *Pipeline) formatProfileContext() string {
 }
 
 func (p *Pipeline) languageInstruction() string {
-	if lang := p.cfg.Digest.Language; lang != "" && !strings.EqualFold(lang, "English") {
-		return fmt.Sprintf("IMPORTANT: You MUST write ALL text values (summary, topics, decisions, action_items) in %s. Do NOT use English for any text content.", lang)
-	}
-	if lang := p.cfg.Digest.Language; lang != "" {
-		return "Write all text values in English"
-	}
-	return "Write in the language most commonly used in the messages"
+	return prompts.Directive(p.cfg.Digest.Language)
 }
 
 func (p *Pipeline) channelName(id string) string {

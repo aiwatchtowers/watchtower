@@ -177,7 +177,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	// Build prompt.
 	userName := p.userName(currentUserID)
 	promptTmpl, promptVersion := p.getPrompt(prompts.BriefingDaily, role)
-	langDirective := fmt.Sprintf("Respond in %s", p.cfg.Digest.Language)
+	langDirective := prompts.Directive(p.cfg.Digest.Language)
 
 	systemPrompt := fmt.Sprintf(promptTmpl,
 		userName, date, role,

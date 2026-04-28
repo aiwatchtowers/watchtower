@@ -211,14 +211,13 @@ func TestProgressCallback(t *testing.T) {
 
 func TestLanguageInstruction(t *testing.T) {
 	pipe := &Pipeline{cfg: &config.Config{}}
-	// Default (empty language)
-	assert.Contains(t, pipe.languageInstruction(), "language most commonly used")
+	// languageInstruction now delegates to prompts.Directive: empty falls back
+	// to the default language (Russian); explicit values pass through verbatim.
+	assert.Contains(t, pipe.languageInstruction(), "Respond ONLY in Russian")
 
-	// English (should also use default)
 	pipe.cfg.Digest.Language = "English"
-	assert.Contains(t, pipe.languageInstruction(), "language most commonly used")
+	assert.Contains(t, pipe.languageInstruction(), "Respond ONLY in English")
 
-	// Non-English
 	pipe.cfg.Digest.Language = "Russian"
 	assert.Contains(t, pipe.languageInstruction(), "Russian")
 	assert.Contains(t, pipe.languageInstruction(), "IMPORTANT")

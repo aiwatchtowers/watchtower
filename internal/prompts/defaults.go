@@ -75,14 +75,14 @@ var DefaultVersions = map[string]int{
 	PeopleReduce:       1,
 	PeopleTeam:         1,
 	BriefingDaily:      5, // v5: jira integration
-	InboxPrioritize:    3, // v3: closing signal resolution rules
+	InboxPrioritize:    4, // v4: mandatory language directive
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
 	TasksGenerate:      1, // v1: AI task generation with checklist and due date
 	TasksUpdate:        1, // v1: AI task update from user instruction
 	MeetingPrep:        3, // v3: Jira context for attendees (workload, shared issues)
 	MeetingRecap:       1, // v1: initial meeting recap template
-	DayPlanGenerate:    1, // v1: initial day plan template
+	DayPlanGenerate:    2, // v2: mandatory language directive at top
 	TargetsExtract:     1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:        1, // v1: single-target link proposal against active snapshot
 }
@@ -671,6 +671,9 @@ Rules:
 %s`
 
 const defaultInboxPrioritize = `You are prioritizing Slack messages that may need the user's response.
+
+%s
+
 User role: %s
 
 You will receive two lists:

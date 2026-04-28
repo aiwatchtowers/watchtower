@@ -1437,10 +1437,7 @@ func (p *Pipeline) progress(done, total int, status string) {
 }
 
 func (p *Pipeline) languageInstruction() string {
-	if lang := p.cfg.Digest.Language; lang != "" && !strings.EqualFold(lang, "English") {
-		return fmt.Sprintf("IMPORTANT: Write ALL text values (text, context) in %s.", lang)
-	}
-	return "Write in the language most commonly used in the messages"
+	return prompts.Directive(p.cfg.Digest.Language)
 }
 
 // --- helpers: fingerprint & dedup ---

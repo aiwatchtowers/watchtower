@@ -160,7 +160,7 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		cfg:            cfg,
 		generator:      gen,
 		logger:         logger,
-		pinnedSelector: NewPinnedSelector(database, gen),
+		pinnedSelector: NewPinnedSelector(database, gen, cfg.Digest.Language),
 	}
 }
 
@@ -637,7 +637,7 @@ func (p *Pipeline) aiPrioritizeNewItems(ctx context.Context, currentUserID strin
 		if userPrefs != "" {
 			itemsBlock = userPrefs + "\n" + itemsBlock
 		}
-		systemPrompt := fmt.Sprintf(promptTmpl, role, itemsBlock)
+		systemPrompt := fmt.Sprintf(promptTmpl, prompts.Directive(p.cfg.Digest.Language), role, itemsBlock)
 		response, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "inbox.prioritize"), systemPrompt, "Prioritize these items.", "")
 		if err != nil {
 			p.logger.Printf("inbox: AI batch %d error: %v", i+1, err)

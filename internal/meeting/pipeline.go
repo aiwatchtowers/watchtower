@@ -183,11 +183,8 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 		}
 	}
 
-	// Language directive.
-	langDirective := ""
-	if p.cfg.Digest.Language != "" {
-		langDirective = fmt.Sprintf("Respond in %s", p.cfg.Digest.Language)
-	}
+	// Language directive — always present, falls back to default when unset.
+	langDirective := prompts.Directive(p.cfg.Digest.Language)
 
 	// Load prompt template.
 	promptTmpl := p.loadPromptTemplate()

@@ -1186,14 +1186,16 @@ func TestLanguageInstruction(t *testing.T) {
 	database := testDB(t)
 	gen := &mockGenerator{}
 
+	// languageInstruction now delegates to prompts.Directive — empty falls back
+	// to the configured default language (Russian).
 	tests := []struct {
 		name     string
 		lang     string
 		expected string
 	}{
-		{"empty language", "", "Write in the language most commonly used"},
-		{"english", "English", "Write all text values in English"},
-		{"russian", "Russian", "You MUST write ALL text values"},
+		{"empty language", "", "Respond ONLY in Russian"},
+		{"english", "English", "Respond ONLY in English"},
+		{"russian", "Russian", "Respond ONLY in Russian"},
 	}
 
 	for _, tt := range tests {
@@ -1210,12 +1212,12 @@ func TestLanguageInstruction(t *testing.T) {
 func TestLanguageInstruction_CaseInsensitive(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
-	cfg.Digest.Language = "english" // lowercase
+	cfg.Digest.Language = "english" // lowercase passes through unchanged
 	gen := &mockGenerator{}
 	p := New(database, cfg, gen, testLogger())
 
 	result := p.languageInstruction()
-	assert.Contains(t, result, "Write all text values in English")
+	assert.Contains(t, result, "Respond ONLY in english")
 }
 
 func TestSanitizePromptValue(t *testing.T) {
