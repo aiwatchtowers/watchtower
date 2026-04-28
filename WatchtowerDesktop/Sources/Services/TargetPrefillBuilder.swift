@@ -165,6 +165,72 @@ enum TargetPrefillBuilder {
         )
     }
 
+    // MARK: - fromBriefingItem
+
+    static func fromBriefingItem(_ item: AttentionItem,
+                                 briefing: Briefing,
+                                 db dbMgr: DatabaseManager) async throws -> TargetPrefill {
+        let prefix = briefingPrefix(item: item, briefing: briefing)
+
+        // Delegate path: upstream entity present.
+        if let sourceType = item.sourceType, let sourceID = item.sourceID,
+           let id = Int(sourceID), !sourceType.isEmpty {
+            switch sourceType {
+            case "track":
+                if let track = try await dbMgr.dbPool.read({ db in
+                    try Track.fetchOne(db, sql: "SELECT * FROM tracks WHERE id = ?", arguments: [id])
+                }) {
+                    var pf = try await fromTrack(track, db: dbMgr)
+                    pf.text = item.text
+                    pf.intent = prefix + "\n\n" + pf.intent
+                    return pf
+                }
+            case "digest":
+                if let digest = try await dbMgr.dbPool.read({ db in
+                    try Digest.fetchOne(db, sql: "SELECT * FROM digests WHERE id = ?", arguments: [id])
+                }) {
+                    var pf = try await fromDigest(digest, topic: nil, db: dbMgr)
+                    pf.text = item.text
+                    pf.intent = prefix + "\n\n" + pf.intent
+                    return pf
+                }
+            case "inbox":
+                if let inbox = try await dbMgr.dbPool.read({ db in
+                    try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [id])
+                }) {
+                    var pf = try await fromInbox(inbox, db: dbMgr)
+                    pf.text = item.text
+                    pf.intent = prefix + "\n\n" + pf.intent
+                    return pf
+                }
+            default:
+                break
+            }
+        }
+
+        // Fallback path.
+        let reason = item.reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return TargetPrefill(
+            text: item.text,
+            intent: reason.isEmpty ? prefix : "\(prefix)\n\nReason: \(reason)",
+            sourceType: "briefing",
+            sourceID: String(briefing.id),
+            secondaryLinks: [],
+            parentID: nil
+        )
+    }
+
+    private static func briefingPrefix(item: AttentionItem, briefing: Briefing) -> String {
+        var lines: [String] = ["Surfaced in briefing on \(briefing.date)."]
+        if let r = item.reason, !r.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("Reason: \(r.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        if let p = item.priority, !p.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("Briefing flag: \(p.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - Helpers
 
     private static func firstLine(_ s: String) -> String {

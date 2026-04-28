@@ -214,6 +214,77 @@ final class TargetPrefillBuilderTests: XCTestCase {
         XCTAssertFalse(prefill.intent.contains("Why it matters:"))
     }
 
+    // MARK: - fromBriefingItem
+
+    func testFromBriefingItem_TrackUpstream_PassThrough() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertChannel(db, id: "C001", name: "general")
+            try TestDatabase.insertTrack(
+                db,
+                text: "Migrate auth",
+                context: "Auth context narrative.",
+                channelIDs: #"["C001"]"#
+            )
+            try TestDatabase.insertBriefing(db, userID: "U001", date: "2026-04-28")
+        }
+        let briefing = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Briefing.fetchOne(db, sql: "SELECT * FROM briefings LIMIT 1"))
+        }
+        let itemJSON = #"""
+        {"text":"Push auth migration this week","source_type":"track","source_id":"1","priority":"high","reason":"behind schedule"}
+        """#
+        let item = try JSONDecoder().decode(AttentionItem.self, from: Data(itemJSON.utf8))
+
+        let prefill = try await TargetPrefillBuilder.fromBriefingItem(item, briefing: briefing, db: mgr)
+        XCTAssertEqual(prefill.sourceType, "track")
+        XCTAssertEqual(prefill.sourceID, "1")
+        XCTAssertEqual(prefill.text, "Push auth migration this week")
+        XCTAssertTrue(prefill.intent.hasPrefix("Surfaced in briefing on 2026-04-28."))
+        XCTAssertTrue(prefill.intent.contains("Reason: behind schedule"))
+        XCTAssertTrue(prefill.intent.contains("Briefing flag: high"))
+        XCTAssertTrue(prefill.intent.contains("Auth context narrative."))
+        XCTAssertTrue(prefill.intent.contains("In channels: #general"))
+        XCTAssertEqual(prefill.secondaryLinks.first?.externalRef, "slack:C001")
+    }
+
+    func testFromBriefingItem_NoUpstream_FallbackToBriefing() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertBriefing(db, userID: "U001", date: "2026-04-28")
+        }
+        let briefing = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Briefing.fetchOne(db, sql: "SELECT * FROM briefings LIMIT 1"))
+        }
+        let itemJSON = #"""
+        {"text":"Adhoc reminder","reason":"because I said so"}
+        """#
+        let item = try JSONDecoder().decode(AttentionItem.self, from: Data(itemJSON.utf8))
+
+        let prefill = try await TargetPrefillBuilder.fromBriefingItem(item, briefing: briefing, db: mgr)
+        XCTAssertEqual(prefill.sourceType, "briefing")
+        XCTAssertEqual(prefill.sourceID, String(briefing.id))
+        XCTAssertEqual(prefill.text, "Adhoc reminder")
+        XCTAssertTrue(prefill.intent.contains("because I said so"))
+        XCTAssertTrue(prefill.secondaryLinks.isEmpty)
+    }
+
+    func testFromBriefingItem_UpstreamMissing_FallsBackToBriefing() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertBriefing(db, userID: "U001", date: "2026-04-28")
+            // No track inserted; sourceID="999" will not resolve.
+        }
+        let briefing = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Briefing.fetchOne(db, sql: "SELECT * FROM briefings LIMIT 1"))
+        }
+        let itemJSON = #"""
+        {"text":"Stale ref","source_type":"track","source_id":"999"}
+        """#
+        let item = try JSONDecoder().decode(AttentionItem.self, from: Data(itemJSON.utf8))
+
+        let prefill = try await TargetPrefillBuilder.fromBriefingItem(item, briefing: briefing, db: mgr)
+        XCTAssertEqual(prefill.sourceType, "briefing")
+        XCTAssertEqual(prefill.sourceID, String(briefing.id))
+    }
+
     // MARK: - Helpers
 
     /// Creates a file-backed `DatabaseManager` (DatabasePool requires a path),
