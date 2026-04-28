@@ -15,7 +15,10 @@ final class InboxLearnedRulesQueriesTests: XCTestCase {
 
     // MARK: - listAll
 
-    func testListAllOrderedByAbsWeight() throws {
+    func test_INBOX_05_list_rules_ordered_by_weight() throws {
+        // KILLER FEATURE INBOX-05 — see docs/inventory/inbox-pulse.md
+        // Learned tab lists rules ordered so the most impactful are visible first.
+        // Do not weaken or remove without explicit owner approval.
         let pool = try makePool()
         let q = InboxLearnedRulesQueries(dbPool: pool)
         try pool.write { db in

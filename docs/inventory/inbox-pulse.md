@@ -73,6 +73,21 @@
 
 **Locked since:** 2026-04-27
 
+## INBOX-05 — I can see and edit what Inbox has learned about me
+
+**Status:** Enforced
+
+**Observable:** The "Learned" tab inside Inbox shows the system's current model of me — mutes, boosts, manual rules — with weight, source ("learned from 12 dismissals" / "I added this manually"), and an inline remove/edit. I can add a rule, remove a rule, change a weight; changes persist and reflect in subsequent pinned/feed cycles.
+
+**Why locked:** Without visibility, the learning system is a black box and trust collapses. Without editability, users cannot recover from misclassifications — feedback becomes a one-way street.
+
+**Test guards:**
+- `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_add_manual_rule`
+- `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_remove_rule`
+- `WatchtowerDesktop/Tests/InboxLearnedRulesQueriesTests.swift::test_INBOX_05_list_rules_ordered_by_weight`
+
+**Locked since:** 2026-04-27
+
 <!-- Contracts will be inserted here in subsequent commits. -->
 
 ## Changelog
