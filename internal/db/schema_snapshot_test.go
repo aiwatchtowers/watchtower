@@ -66,6 +66,7 @@ func dumpSchema(t *testing.T, db *DB) string {
 		SELECT type, name, COALESCE(sql, '') AS sql
 		FROM sqlite_master
 		WHERE name NOT LIKE 'sqlite_%'
+		  AND name != 'goose_db_version'
 		ORDER BY type, name
 	`)
 	require.NoError(t, err)
