@@ -594,4 +594,3 @@ func TestGetTargetsForBriefing(t *testing.T) {
 }
 
 // ── Migration v67: v65→v67 on a fixture DB ───────────────────────────────────
-

@@ -70,6 +70,7 @@ func dumpSchema(t *testing.T, db *DB) string {
 		ORDER BY type, name
 	`)
 	require.NoError(t, err)
+	defer rows.Close()
 	type entry struct{ Type, Name, SQL string }
 	var entries []entry
 	for rows.Next() {
@@ -77,7 +78,7 @@ func dumpSchema(t *testing.T, db *DB) string {
 		require.NoError(t, rows.Scan(&e.Type, &e.Name, &e.SQL))
 		entries = append(entries, e)
 	}
-	require.NoError(t, rows.Close())
+	require.NoError(t, rows.Err())
 
 	for _, e := range entries {
 		fmt.Fprintf(&b, "%s\t%s\n%s\n\n", e.Type, e.Name, normalizeWhitespace(e.SQL))
@@ -95,29 +96,37 @@ func dumpSchema(t *testing.T, db *DB) string {
 
 	for _, table := range tables {
 		fmt.Fprintf(&b, "## %s\n", table)
-		ti, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-		require.NoError(t, err)
-		for ti.Next() {
-			var (
-				cid     int
-				name    string
-				ctype   string
-				notnull int
-				dflt    *string
-				pk      int
-			)
-			require.NoError(t, ti.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk))
-			dfltStr := "NULL"
-			if dflt != nil {
-				dfltStr = *dflt
-			}
-			fmt.Fprintf(&b, "%d\t%s\t%s\tnotnull=%d\tdflt=%s\tpk=%d\n", cid, name, ctype, notnull, dfltStr, pk)
-		}
-		require.NoError(t, ti.Close())
+		dumpTableInfo(t, db, table, &b)
 		b.WriteString("\n")
 	}
 
 	return b.String()
+}
+
+// dumpTableInfo writes pragma table_info(table) rows to b, deferring Close
+// so sqlclosecheck stays happy.
+func dumpTableInfo(t *testing.T, db *DB, table string, b *strings.Builder) {
+	t.Helper()
+	ti, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	require.NoError(t, err)
+	defer ti.Close()
+	for ti.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    *string
+			pk      int
+		)
+		require.NoError(t, ti.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk))
+		dfltStr := "NULL"
+		if dflt != nil {
+			dfltStr = *dflt
+		}
+		fmt.Fprintf(b, "%d\t%s\t%s\tnotnull=%d\tdflt=%s\tpk=%d\n", cid, name, ctype, notnull, dfltStr, pk)
+	}
+	require.NoError(t, ti.Err())
 }
 
 // normalizeWhitespace collapses indentation whitespace inside CREATE
@@ -141,11 +150,11 @@ func normalizeWhitespace(s string) string {
 func firstDiff(want, got string) string {
 	wantLines := strings.Split(want, "\n")
 	gotLines := strings.Split(got, "\n")
-	max := len(wantLines)
-	if len(gotLines) > max {
-		max = len(gotLines)
+	limit := len(wantLines)
+	if len(gotLines) > limit {
+		limit = len(gotLines)
 	}
-	for i := 0; i < max; i++ {
+	for i := 0; i < limit; i++ {
 		var w, g string
 		if i < len(wantLines) {
 			w = wantLines[i]
@@ -159,8 +168,8 @@ func firstDiff(want, got string) string {
 				start = 0
 			}
 			end := i + 4
-			if end > max {
-				end = max
+			if end > limit {
+				end = limit
 			}
 			var b strings.Builder
 			for j := start; j < end; j++ {

@@ -2,7 +2,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -35,7 +37,10 @@ var rootCmd = &cobra.Command{
 // the flag in config. Skips silently when no config / no DB exists.
 func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 	if _, err := os.Stat(flagConfig); err != nil {
-		return nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking config file: %w", err)
 	}
 
 	cfg, err := config.Load(flagConfig)
@@ -47,7 +52,7 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 	}
 
 	dbPath := cfg.DBPath()
-	if _, err := os.Stat(dbPath); err == nil {
+	if _, statErr := os.Stat(dbPath); statErr == nil {
 		if err := db.RunSchemaUpgrade(dbPath); err != nil {
 			return fmt.Errorf("schema upgrade: %w", err)
 		}

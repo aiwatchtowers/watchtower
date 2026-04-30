@@ -74,7 +74,6 @@ func TestPragmas(t *testing.T) {
 	assert.Equal(t, 1, sync) // NORMAL = 1
 }
 
-
 func TestMigrationIdempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "watchtower.db")
@@ -429,7 +428,6 @@ func TestUnicodeMessage(t *testing.T) {
 	assert.Equal(t, text, got)
 }
 
-
 func TestNullableFields(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
@@ -496,8 +494,5 @@ func tableExists(t *testing.T, database *DB, table string) bool {
 	return cnt > 0
 }
 
-
-
 // TestMigration_v67_Backfill verifies the migration backfill logic by directly
 // creating a pre-v67 inbox_items table (without item_class) and running the v67 migration SQL.
-

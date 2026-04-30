@@ -585,28 +585,28 @@ const trackStateHistoryCap = 30
 // captured BEFORE a mutating call (extraction or manual edit) overwrites
 // those fields. See docs/inventory/tracks.md TRACKS-06.
 type TrackState struct {
-	ID                int
-	TrackID           int
-	Text              string
-	Context           string
-	Category          string
-	Ownership         string
-	BallOn            string
-	OwnerUserID       string
-	RequesterName     string
-	RequesterUserID   string
-	Blocking          string
-	DecisionSummary   string
-	DecisionOptions   string
-	SubItems          string
-	Participants      string
-	Tags              string
-	Priority          string
-	DueDate           float64
-	Source            string // 'extraction' | 'manual'
-	Model             string
-	PromptVersion     int
-	CreatedAt         string
+	ID              int
+	TrackID         int
+	Text            string
+	Context         string
+	Category        string
+	Ownership       string
+	BallOn          string
+	OwnerUserID     string
+	RequesterName   string
+	RequesterUserID string
+	Blocking        string
+	DecisionSummary string
+	DecisionOptions string
+	SubItems        string
+	Participants    string
+	Tags            string
+	Priority        string
+	DueDate         float64
+	Source          string // 'extraction' | 'manual'
+	Model           string
+	PromptVersion   int
+	CreatedAt       string
 }
 
 // narrativeFieldsDiffer returns true if any user-visible narrative field
