@@ -273,6 +273,18 @@ func TestRunDigestResetContext_AllChannels(t *testing.T) {
 	assert.Contains(t, buf.String(), "all channels")
 }
 
+func TestRunDigestResetContext_UnknownChannel(t *testing.T) {
+	setupTempWorkspace(t)
+
+	c := &cobra.Command{}
+	var buf bytes.Buffer
+	c.SetOut(&buf)
+
+	err := runDigestResetContext(c, []string{"#nonexistent"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
 func TestRunDigestResetContext_KnownChannel(t *testing.T) {
 	wsDir := setupTempWorkspace(t)
 
@@ -323,4 +335,65 @@ func TestRunDayPlanCheckConflicts_NoPlan(t *testing.T) {
 
 	require.NoError(t, runDayPlanCheckConflicts(c, nil))
 	assert.Contains(t, buf.String(), "No day plan")
+}
+
+func TestRunBriefing_NoUser(t *testing.T) {
+	setupTempWorkspace(t)
+
+	c := &cobra.Command{}
+	var buf bytes.Buffer
+	c.SetOut(&buf)
+
+	require.NoError(t, runBriefing(c, nil))
+	assert.Contains(t, buf.String(), "No current user")
+}
+
+func TestRunBriefing_NoBriefingForToday(t *testing.T) {
+	wsDir := setupTempWorkspace(t)
+
+	dbPath := filepath.Join(wsDir, "watchtower.db")
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	defer database.Close()
+
+	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
+	require.NoError(t, err)
+	require.NoError(t, database.SetCurrentUserID("U1"))
+
+	c := &cobra.Command{}
+	var buf bytes.Buffer
+	c.SetOut(&buf)
+
+	require.NoError(t, runBriefing(c, nil))
+	assert.Contains(t, buf.String(), "No briefing for today")
+}
+
+func TestRunJiraStatus_NotConnected(t *testing.T) {
+	setupTempWorkspace(t)
+
+	c := &cobra.Command{}
+	var buf bytes.Buffer
+	c.SetOut(&buf)
+
+	require.NoError(t, runJiraStatus(c, nil))
+	out := buf.String()
+	assert.Contains(t, out, "not connected")
+	assert.Contains(t, out, "jira login")
+}
+
+func TestRunJiraStatus_Connected(t *testing.T) {
+	wsDir := setupTempWorkspace(t)
+
+	tokenPath := filepath.Join(wsDir, "jira_token.json")
+	require.NoError(t, os.WriteFile(tokenPath, []byte(`{"access_token":"x"}`), 0o600))
+
+	c := &cobra.Command{}
+	var buf bytes.Buffer
+	c.SetOut(&buf)
+
+	require.NoError(t, runJiraStatus(c, nil))
+	out := buf.String()
+	assert.Contains(t, out, "connected")
+	assert.Contains(t, out, tokenPath)
+	assert.Contains(t, out, "Issues synced:")
 }
