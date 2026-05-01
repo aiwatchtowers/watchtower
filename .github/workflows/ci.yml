@@ -55,7 +55,7 @@ jobs:
         run: brew install swiftlint
 
       - name: SwiftLint
-        run: swiftlint lint
+        run: swiftlint lint --strict --baseline .swiftlint-baseline.json
 
   swift-test:
     name: Swift Test

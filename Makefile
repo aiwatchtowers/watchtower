@@ -40,7 +40,7 @@ lint:
 	golangci-lint run ./...
 
 lint-swift:
-	cd WatchtowerDesktop && swiftlint lint --strict
+	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 
 lint-all: lint lint-swift
 
