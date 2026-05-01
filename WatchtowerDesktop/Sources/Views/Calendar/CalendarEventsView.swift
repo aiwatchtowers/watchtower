@@ -21,9 +21,8 @@ struct CalendarEventsView: View {
                         MeetingPrepDetailView(
                             eventID: eventID,
                             viewModel: meetingPrepVM,
-                            userNotes: $userNotes,
-                            onClose: { selectedEventID = nil }
-                        )
+                            userNotes: $userNotes
+                        )                            { selectedEventID = nil }
                         .id(eventID)
                         .frame(minWidth: 400, idealWidth: 500)
                         .transition(
@@ -246,8 +245,8 @@ struct CalendarEventsView: View {
                     .padding(.top, 2)
             }
 
-            if !event.htmlLink.isEmpty {
-                Link(destination: URL(string: event.htmlLink) ?? URL(string: "https://calendar.google.com")!) {
+            if let eventURL = URL(string: event.htmlLink), !event.htmlLink.isEmpty {
+                Link(destination: eventURL) {
                     Label("Open in Google Calendar", systemImage: "arrow.up.right.square")
                         .font(.caption)
                 }

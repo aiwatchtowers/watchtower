@@ -381,7 +381,7 @@ struct DigestDetailView: View {
                 Text("Jira Issues")
                     .font(.headline)
 
-                ForEach(Array(jiraIssues.values).sorted(by: { $0.key < $1.key }), id: \.key) { issue in
+                ForEach(Array(jiraIssues.values).sorted { $0.key < $1.key }, id: \.key) { issue in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
                             JiraBadgeView(
@@ -549,9 +549,7 @@ struct DigestDetailView: View {
     /// Returns nil when neither a usable channel nor a message timestamp is available.
     private func slackURL(for decision: Decision) -> URL? {
         guard let ts = decision.messageTS, !ts.isEmpty else { return nil }
-        let channelID = decision.channelID?.isEmpty == false
-            ? decision.channelID!
-            : digest.channelID
+        let channelID = decision.channelID.flatMap { $0.isEmpty ? nil : $0 } ?? digest.channelID
         guard !channelID.isEmpty else { return nil }
         return viewModel.slackMessageURL(channelID: channelID, messageTS: ts)
     }

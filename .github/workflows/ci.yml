@@ -39,6 +39,9 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Coverage gate
+        run: make test-cover
+
   swift-lint:
     name: Swift Lint
     runs-on: macos-15

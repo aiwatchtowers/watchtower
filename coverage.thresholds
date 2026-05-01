@@ -1,0 +1,29 @@
+# Coverage floor per Go package.
+# Format: <package-path> <minimum-percent>
+# A 2pp slack vs current observed coverage absorbs run-to-run noise
+# without letting silent regressions slip in. Bump thresholds upward
+# whenever a package's real coverage rises so the floor tracks intent.
+
+watchtower/cmd                40
+watchtower/internal/ai        83
+watchtower/internal/auth      79
+watchtower/internal/briefing  68
+watchtower/internal/calendar  51
+watchtower/internal/claude    82
+watchtower/internal/codex     78
+watchtower/internal/config    89
+watchtower/internal/daemon    71
+watchtower/internal/dayplan   66
+watchtower/internal/db        64
+watchtower/internal/digest    77
+watchtower/internal/guide     77
+watchtower/internal/inbox     76
+watchtower/internal/jira      53
+watchtower/internal/meeting   59
+watchtower/internal/prompts   87
+watchtower/internal/repl      82
+watchtower/internal/sessions  95
+watchtower/internal/slack     85
+watchtower/internal/sync      79
+watchtower/internal/targets   74
+watchtower/internal/tracks    66
