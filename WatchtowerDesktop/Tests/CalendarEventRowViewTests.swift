@@ -35,7 +35,7 @@ final class CalendarEventRowViewTests: XCTestCase {
             "html_link": "",
             "raw_json": "{}",
             "synced_at": "",
-            "updated_at": "",
+            "updated_at": ""
         ]
         return CalendarEvent(row: row)
     }

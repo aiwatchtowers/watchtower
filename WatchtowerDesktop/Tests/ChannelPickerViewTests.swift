@@ -49,7 +49,7 @@ final class ChannelPickerViewTests: XCTestCase {
             title: "Watch",
             allChannels: [
                 makeChannel(id: "C1", name: "general"),
-                makeChannel(id: "C2", name: "random"),
+                makeChannel(id: "C2", name: "random")
             ],
             selectedIDs: Binding(get: { ids }, set: { ids = $0 })
         )

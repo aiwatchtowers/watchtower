@@ -34,9 +34,8 @@ final class DayPlanItemRowViewTests: XCTestCase {
     func testCheckboxToggleInvokesCallback() throws {
         var toggled = 0
         let view = makeView(
-            item: .stub(),
-            onToggle: { toggled += 1 }
-        )
+            item: .stub()
+        )            { toggled += 1 }
 
         // Первая кнопка в иерархии — чекбокс.
         let buttons = try view.inspect().findAll(ViewType.Button.self)

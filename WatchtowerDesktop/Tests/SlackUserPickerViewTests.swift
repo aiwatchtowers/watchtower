@@ -52,7 +52,7 @@ final class SlackUserPickerViewTests: XCTestCase {
         let view = SlackUserPicker(
             title: "Pick",
             allUsers: [
-                makeUser(id: "U1", name: "alice", displayName: "Alice Wonder"),
+                makeUser(id: "U1", name: "alice", displayName: "Alice Wonder")
             ],
             selectedIDs: Binding(get: { ids }, set: { ids = $0 })
         )

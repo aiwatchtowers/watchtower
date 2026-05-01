@@ -101,7 +101,7 @@ struct CLIRunnerTests {
         struct FakeRunner: CLIRunnerProtocol {
             let payload: Data
             func run(args: [String]) async throws -> Data {
-                return payload
+                payload
             }
         }
         let r = FakeRunner(payload: Data("ok".utf8))

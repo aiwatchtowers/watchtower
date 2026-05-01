@@ -26,9 +26,8 @@ final class ErrorViewTests: XCTestCase {
         let view = ErrorView(
             title: "Err",
             message: "x",
-            actionTitle: "Retry",
-            action: { tapped = true }
-        )
+            actionTitle: "Retry"
+        )            { tapped = true }
 
         try view.inspect().find(button: "Retry").tap()
         XCTAssertTrue(tapped)

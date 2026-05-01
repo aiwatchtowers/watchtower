@@ -52,7 +52,7 @@ final class WithoutJiraWarningViewTests: XCTestCase {
     func testMultipleRowsRendered() throws {
         let view = WithoutJiraWarningView(warnings: [
             makeRow(channelID: "C1", channelName: "alpha"),
-            makeRow(channelID: "C2", channelName: "beta"),
+            makeRow(channelID: "C2", channelName: "beta")
         ])
         XCTAssertNoThrow(try view.inspect().find(text: "#alpha"))
         XCTAssertNoThrow(try view.inspect().find(text: "#beta"))
