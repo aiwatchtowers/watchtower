@@ -168,6 +168,7 @@ struct InboxCardView: View {
         case "calendar_cancelled":    return "Cancelled"
         case "decision_made":         return "Decision"
         case "briefing_ready":        return "Briefing"
+        case "target_due":            return "Reminder"
         default:                      return item.triggerType.capitalized
         }
     }
@@ -185,6 +186,7 @@ struct InboxCardView: View {
         case "calendar_cancelled":    return "calendar.badge.minus"
         case "decision_made":         return "paperplane"
         case "briefing_ready":        return "sun.max"
+        case "target_due":            return "bell.badge"
         default:                      return "circle"
         }
     }
@@ -202,6 +204,7 @@ struct InboxCardView: View {
              "calendar_cancelled":   return .teal
         case "decision_made":        return .indigo
         case "briefing_ready":       return .yellow
+        case "target_due":           return .pink
         default:                     return .secondary
         }
     }
