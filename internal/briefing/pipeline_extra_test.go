@@ -24,9 +24,9 @@ func TestAccumulatedUsage_ZeroByDefault(t *testing.T) {
 
 func TestAccumulatedUsage_AfterUpdate(t *testing.T) {
 	p := &Pipeline{
-		lastInputTokens:     10,
-		lastOutputTokens:    20,
-		lastTotalAPITokens:  30,
+		lastInputTokens:    10,
+		lastOutputTokens:   20,
+		lastTotalAPITokens: 30,
 	}
 	in, out, _, total := p.AccumulatedUsage()
 	assert.Equal(t, 10, in)
@@ -131,8 +131,8 @@ func newTestPipeline(t *testing.T) *Pipeline {
 
 func TestGatherInbox_Empty(t *testing.T) {
 	p := newTestPipeline(t)
-	got, real := p.gatherInbox()
-	assert.False(t, real)
+	got, hasItems := p.gatherInbox()
+	assert.False(t, hasItems)
 	assert.Contains(t, got, "No pending inbox items")
 }
 
@@ -152,8 +152,8 @@ func TestGatherInbox_WithItems(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, real := p.gatherInbox()
-	assert.True(t, real)
+	got, hasItems := p.gatherInbox()
+	assert.True(t, hasItems)
 	assert.Contains(t, got, "@mention")
 	assert.Contains(t, got, "PR review needed")
 	assert.Contains(t, got, "blocking deploy")
@@ -174,16 +174,16 @@ func TestGatherInbox_DMTriggerType(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, real := p.gatherInbox()
-	assert.True(t, real)
+	got, hasItems := p.gatherInbox()
+	assert.True(t, hasItems)
 	assert.Contains(t, got, "DM")
 	assert.Contains(t, got, "Got a sec?")
 }
 
 func TestGatherTracks_Empty(t *testing.T) {
 	p := newTestPipeline(t)
-	got, real := p.gatherTracks()
-	assert.False(t, real)
+	got, hasTracks := p.gatherTracks()
+	assert.False(t, hasTracks)
 	assert.Contains(t, got, "No active tracks yet")
 }
 
@@ -242,8 +242,8 @@ func TestGatherTracks_TruncatesLongContext(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, real := p.gatherTracks()
-	assert.True(t, real)
+	got, hasTracks := p.gatherTracks()
+	assert.True(t, hasTracks)
 	assert.Contains(t, got, "Track A")
 	assert.Contains(t, got, "...")
 }

@@ -9,17 +9,17 @@ import (
 
 func makeGuide(userID string, from, to float64) CommunicationGuide {
 	return CommunicationGuide{
-		UserID:           userID,
-		PeriodFrom:       from,
-		PeriodTo:         to,
-		MessageCount:     50,
-		ChannelsActive:   3,
-		ActiveHoursJSON:  "{}",
-		Summary:          "communicate clearly with " + userID,
-		Recommendations:  "[]",
-		SituationalTactics: "[]",
+		UserID:              userID,
+		PeriodFrom:          from,
+		PeriodTo:            to,
+		MessageCount:        50,
+		ChannelsActive:      3,
+		ActiveHoursJSON:     "{}",
+		Summary:             "communicate clearly with " + userID,
+		Recommendations:     "[]",
+		SituationalTactics:  "[]",
 		EffectiveApproaches: "[]",
-		Model:            "haiku",
+		Model:               "haiku",
 	}
 }
 

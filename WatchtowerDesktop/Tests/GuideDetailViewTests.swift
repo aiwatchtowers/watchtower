@@ -47,6 +47,7 @@ final class GuideDetailViewTests: XCTestCase {
           "created_at": "2026-04-23T10:00:00Z"
         }
         """
+        // swiftlint:disable:next force_try
         return try! JSONDecoder().decode(CommunicationGuide.self, from: Data(json.utf8))
     }
 
@@ -158,9 +159,10 @@ final class GuideDetailViewTests: XCTestCase {
         var closed = 0
         let view = GuideDetailView(
             guide: makeGuide(),
-            userName: "alice",
-            onClose: { closed += 1 }
-        )
+            userName: "alice"
+        ) {
+            closed += 1
+        }
 
         try view.inspect().find(ViewType.Button.self).tap()
         XCTAssertEqual(closed, 1)

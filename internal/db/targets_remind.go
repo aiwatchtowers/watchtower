@@ -17,33 +17,37 @@ import (
 func (db *DB) NotifyDueTargets(now time.Time) (int, error) {
 	cutoff := now.UTC().Format("2006-01-02T15:04")
 
-	rows, err := db.Query(`
-		SELECT id, text, priority
-		FROM targets
-		WHERE due_date != ''
-		  AND due_date <= ?
-		  AND notified_at = ''
-		  AND status IN ('todo','in_progress','blocked')`, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("scanning due targets: %w", err)
-	}
 	type due struct {
 		id       int64
 		text     string
 		priority string
 	}
 	var pending []due
-	for rows.Next() {
-		var d due
-		if err := rows.Scan(&d.id, &d.text, &d.priority); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("reading due target: %w", err)
+	if err := func() error {
+		rows, err := db.Query(`
+			SELECT id, text, priority
+			FROM targets
+			WHERE due_date != ''
+			  AND due_date <= ?
+			  AND notified_at = ''
+			  AND status IN ('todo','in_progress','blocked')`, cutoff)
+		if err != nil {
+			return fmt.Errorf("scanning due targets: %w", err)
 		}
-		pending = append(pending, d)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterating due targets: %w", err)
+		defer rows.Close()
+		for rows.Next() {
+			var d due
+			if err := rows.Scan(&d.id, &d.text, &d.priority); err != nil {
+				return fmt.Errorf("reading due target: %w", err)
+			}
+			pending = append(pending, d)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterating due targets: %w", err)
+		}
+		return nil
+	}(); err != nil {
+		return 0, err
 	}
 
 	if len(pending) == 0 {
@@ -93,4 +97,3 @@ func normalizePriority(p string) string {
 		return "medium"
 	}
 }
-

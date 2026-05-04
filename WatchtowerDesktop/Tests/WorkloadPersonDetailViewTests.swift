@@ -124,7 +124,7 @@ final class WorkloadPersonDetailViewTests: XCTestCase {
     /// onClose задан → кнопка есть и тап срабатывает.
     func testCloseButtonInvokesCallback() throws {
         var closed = 0
-        let (view, path) = try makeView(onClose: { closed += 1 })
+        let (view, path) = try makeView { closed += 1 }
         defer { TestDatabase.cleanup(path: path) }
 
         try view.inspect().find(ViewType.Button.self).tap()

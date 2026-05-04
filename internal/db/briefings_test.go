@@ -9,16 +9,16 @@ import (
 
 func makeBriefing(userID, date string) Briefing {
 	return Briefing{
-		WorkspaceID:   "WS1",
-		UserID:        userID,
-		Date:          date,
-		Role:          "EM",
-		Attention:     "[]",
-		YourDay:       "[]",
+		WorkspaceID:  "WS1",
+		UserID:       userID,
+		Date:         date,
+		Role:         "EM",
+		Attention:    "[]",
+		YourDay:      "[]",
 		WhatHappened: "[]",
-		TeamPulse:     "[]",
-		Coaching:      "[]",
-		Model:         "haiku",
+		TeamPulse:    "[]",
+		Coaching:     "[]",
+		Model:        "haiku",
 	}
 }
 

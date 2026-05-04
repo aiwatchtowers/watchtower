@@ -67,7 +67,7 @@ func TestGetInboxItem_Int64(t *testing.T) {
 
 	got, err := db.GetInboxItem(id)
 	require.NoError(t, err)
-	assert.Equal(t, int64(id), int64(got.ID))
+	assert.Equal(t, id, int64(got.ID))
 	assert.Equal(t, "needs reply", got.Snippet)
 }
 
