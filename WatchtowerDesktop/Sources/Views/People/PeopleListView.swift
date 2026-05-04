@@ -59,6 +59,16 @@ struct PeopleListView: View {
                 viewModel = PeopleViewModel(dbManager: db)
                 viewModel?.startObserving()
             }
+            if let userID = appState.pendingPersonUserID {
+                selectedUserID = userID
+                appState.pendingPersonUserID = nil
+            }
+        }
+        .onChange(of: appState.pendingPersonUserID) { _, newID in
+            if let userID = newID {
+                selectedUserID = userID
+                appState.pendingPersonUserID = nil
+            }
         }
     }
 

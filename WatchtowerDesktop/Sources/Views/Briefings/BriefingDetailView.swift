@@ -568,7 +568,11 @@ struct BriefingDetailView: View {
         guard let type else { return }
         switch type {
         case "track":
-            appState.selectedDestination = .tracks
+            if let id, let intID = Int(id) {
+                appState.navigateToTrack(intID)
+            } else {
+                appState.selectedDestination = .tracks
+            }
         case "digest":
             if let id, let intID = Int(id) {
                 appState.navigateToDigest(intID)
@@ -576,7 +580,11 @@ struct BriefingDetailView: View {
                 appState.selectedDestination = .digests
             }
         case "people":
-            appState.selectedDestination = .people
+            if let userID = userID ?? id {
+                appState.navigateToPerson(userID)
+            } else {
+                appState.selectedDestination = .people
+            }
         default:
             break
         }

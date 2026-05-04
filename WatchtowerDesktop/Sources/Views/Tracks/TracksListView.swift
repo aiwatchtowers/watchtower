@@ -29,12 +29,22 @@ struct TracksListView: View {
                 viewModel = vm
                 vm.startObserving()
             }
+            if let id = appState.pendingTrackID {
+                selectedItemID = id
+                appState.pendingTrackID = nil
+            }
         }
         .onChange(of: appState.isDBAvailable) {
             if viewModel == nil, let db = appState.databaseManager {
                 let vm = TracksViewModel(dbManager: db)
                 viewModel = vm
                 vm.startObserving()
+            }
+        }
+        .onChange(of: appState.pendingTrackID) { _, newID in
+            if let id = newID {
+                selectedItemID = id
+                appState.pendingTrackID = nil
             }
         }
         .onChange(of: selectedItemID) { _, newID in
