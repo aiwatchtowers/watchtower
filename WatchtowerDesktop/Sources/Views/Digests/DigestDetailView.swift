@@ -11,8 +11,9 @@ struct DigestDetailView: View {
     @State private var markReadError: String?
     @State private var digestTopics: [DigestTopic] = []
     @State private var showCreateTask = false
-    @State private var taskPrefillText = ""
-    @State private var taskPrefillSourceType = "digest"
+    @State private var targetPrefill: TargetPrefill?
+    @State private var targetPrefillError: String?
+    @State private var isBuildingPrefill = false
     @State private var jiraIssues: [String: JiraIssue] = [:]
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
@@ -23,6 +24,13 @@ struct DigestDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let msg = targetPrefillError {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                }
+
                 // Header
                 header
 
@@ -66,11 +74,7 @@ struct DigestDetailView: View {
             .padding()
         }
         .sheet(isPresented: $showCreateTask) {
-            CreateTargetSheet(
-                prefillText: taskPrefillText,
-                prefillSourceType: taskPrefillSourceType,
-                prefillSourceID: String(digest.id)
-            )
+            CreateTargetSheet(prefill: targetPrefill)
         }
         .navigationTitle(channelName.map { "#\($0)" } ?? "Digest")
         .task {
@@ -260,15 +264,14 @@ struct DigestDetailView: View {
                             .font(.headline)
                         Spacer()
                         Button {
-                            taskPrefillText = topic.title + (topic.summary.isEmpty ? "" : ": \(topic.summary)")
-                            taskPrefillSourceType = "digest"
-                            showCreateTask = true
+                            openCreateTarget()
                         } label: {
                             Image(systemName: "plus.circle")
                                 .foregroundStyle(.secondary)
                                 .font(.caption)
                         }
                         .buttonStyle(.plain)
+                        .disabled(isBuildingPrefill)
                         .help("Create task from topic")
                     }
                     if !topic.summary.isEmpty {
@@ -378,7 +381,7 @@ struct DigestDetailView: View {
                 Text("Jira Issues")
                     .font(.headline)
 
-                ForEach(Array(jiraIssues.values).sorted(by: { $0.key < $1.key }), id: \.key) { issue in
+                ForEach(Array(jiraIssues.values).sorted { $0.key < $1.key }, id: \.key) { issue in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
                             JiraBadgeView(
@@ -439,14 +442,13 @@ struct DigestDetailView: View {
                             HStack {
                                 Spacer()
                                 Button {
-                                    taskPrefillText = decision.text
-                                    taskPrefillSourceType = "digest"
-                                    showCreateTask = true
+                                    openCreateTarget()
                                 } label: {
                                     Label("Create task", systemImage: "plus.circle")
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(isBuildingPrefill)
                                 .foregroundStyle(.secondary)
                             }
                             .padding(.trailing, 4)
@@ -547,11 +549,28 @@ struct DigestDetailView: View {
     /// Returns nil when neither a usable channel nor a message timestamp is available.
     private func slackURL(for decision: Decision) -> URL? {
         guard let ts = decision.messageTS, !ts.isEmpty else { return nil }
-        let channelID = decision.channelID?.isEmpty == false
-            ? decision.channelID!
-            : digest.channelID
+        let channelID = decision.channelID.flatMap { $0.isEmpty ? nil : $0 } ?? digest.channelID
         guard !channelID.isEmpty else { return nil }
         return viewModel.slackMessageURL(channelID: channelID, messageTS: ts)
+    }
+
+    private func openCreateTarget() {
+        guard let db = appState.databaseManager else {
+            targetPrefillError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingPrefill = true
+            defer { isBuildingPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromDigest(digest, topic: nil, db: db)
+                targetPrefill = pf
+                targetPrefillError = nil
+                showCreateTask = true
+            } catch {
+                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func markChannelRead() {

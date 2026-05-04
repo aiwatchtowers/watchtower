@@ -7,8 +7,13 @@ struct TrackDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var chatVM: TrackChatViewModel?
     @State private var showCreateTarget = false
+    @State private var targetPrefill: TargetPrefill?
+    @State private var targetPrefillError: String?
+    @State private var isBuildingPrefill = false
     @State private var linkedTargets: [Target] = []
     @State private var jiraIssues: [JiraIssue] = []
+    @State private var trackStates: [TrackState] = []
+    @State private var expandedTrackStateIDs: Set<Int> = []
 
     var body: some View {
         VSplitView {
@@ -23,6 +28,7 @@ struct TrackDetailView: View {
                     decisionSection
                     decisionOptionsSection
                     participantsSection
+                    historySection
                     sourceRefsSection
                     relatedDigestsSection
                     linkedTasksSection
@@ -49,6 +55,7 @@ struct TrackDetailView: View {
                 )
                 loadLinkedTargets(db: db)
                 loadJiraIssues(db: db)
+                loadTrackStates(db: db)
             }
         }
         .onChange(of: showCreateTarget) { _, isShowing in
@@ -488,19 +495,21 @@ struct TrackDetailView: View {
                 .buttonStyle(.borderedProminent)
             }
 
+            if let msg = targetPrefillError {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             Button {
-                showCreateTarget = true
+                openCreateTarget()
             } label: {
                 Label("Create Target", systemImage: "scope")
             }
             .buttonStyle(.bordered)
+            .disabled(isBuildingPrefill)
             .sheet(isPresented: $showCreateTarget) {
-                CreateTargetSheet(
-                    prefillText: track.text,
-                    prefillIntent: track.context,
-                    prefillSourceType: "track",
-                    prefillSourceID: String(track.id)
-                )
+                CreateTargetSheet(prefill: targetPrefill)
             }
 
             if track.isDismissed {
@@ -699,6 +708,100 @@ struct TrackDetailView: View {
         }) ?? []
     }
 
+    /// Loads the narrative-state history for this track. See TRACKS-06.
+    private func loadTrackStates(db: DatabaseManager) {
+        trackStates = (try? db.dbPool.read { database in
+            try TrackStateQueries.fetchByTrackID(database, trackID: track.id)
+        }) ?? []
+    }
+
+    // MARK: - History (TRACKS-06)
+
+    private var historySection: some View {
+        Group {
+            if !trackStates.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("History")
+                            .font(.headline)
+                        Text("(\(trackStates.count))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(trackStates) { state in
+                        trackStateRow(state)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func trackStateRow(_ state: TrackState) -> some View {
+        let isExpanded = expandedTrackStateIDs.contains(state.id)
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                if isExpanded {
+                    expandedTrackStateIDs.remove(state.id)
+                } else {
+                    expandedTrackStateIDs.insert(state.id)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(state.createdAgo)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(state.sourceLabel)
+                        .font(.caption)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(state.isManual ? Color.blue.opacity(0.15) : Color.purple.opacity(0.15))
+                        .foregroundStyle(state.isManual ? .blue : .purple)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !state.text.isEmpty {
+                        Text(state.text)
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
+                    if !state.context.isEmpty {
+                        Text(state.context)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    HStack(spacing: 12) {
+                        Label(state.priority, systemImage: "flag")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Label(state.ownership, systemImage: "person")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Label(state.category, systemImage: "tag")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, 18)
+                .padding(.top, 2)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     private func taskStatusColor(_ status: String) -> Color {
         switch status {
         case "todo": .secondary
@@ -826,6 +929,25 @@ struct TrackDetailView: View {
         case "reviewer": .purple
         case "neutral": .secondary
         default: .secondary
+        }
+    }
+
+    private func openCreateTarget() {
+        guard let db = appState.databaseManager else {
+            targetPrefillError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingPrefill = true
+            defer { isBuildingPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromTrack(track, db: db)
+                targetPrefill = pf
+                targetPrefillError = nil
+                showCreateTarget = true
+            } catch {
+                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
         }
     }
 }

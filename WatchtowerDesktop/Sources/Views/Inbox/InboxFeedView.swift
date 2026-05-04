@@ -10,20 +10,26 @@ struct InboxFeedView: View {
     @State private var expandedItemID: InboxItem.ID?
     @State private var conversationCache: [InboxItem.ID: [InboxConversationMessage]] = [:]
     @State private var tab: Tab = .feed
+    @State private var pendingInboxItem: InboxItem?
+    @State private var inboxTargetPrefill: TargetPrefill?
+    @State private var showCreateInboxTarget = false
+    @State private var inboxPrefillError: String?
+    @State private var isBuildingInboxPrefill = false
 
     enum Tab { case feed, learned }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                Text("Feed").tag(Tab.feed)
-                Text("Learned").tag(Tab.learned)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
-            .padding(.vertical, 8)
+            toolbar
 
             Divider()
+
+            if let msg = inboxPrefillError {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+            }
 
             if tab == .feed {
                 if let vm {
@@ -52,6 +58,62 @@ struct InboxFeedView: View {
                 }
             }
         }
+        .sheet(isPresented: $showCreateInboxTarget) {
+            CreateTargetSheet(
+                prefill: inboxTargetPrefill,
+                onCreated: { newID in
+                    guard let item = pendingInboxItem,
+                          let db = appState.databaseManager else { return }
+                    Task.detached {
+                        try? await db.dbPool.write { dbConn in
+                            try InboxQueries.linkTarget(dbConn, inboxID: item.id, targetID: newID)
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    // MARK: - Toolbar (Tracks-style: title + count badge + filters)
+
+    private var toolbar: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Inbox")
+                    .font(.title2)
+                    .fontWeight(.bold)
+
+                if let vm, vm.unreadCount > 0 {
+                    Text("\(vm.unreadCount)")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.orange, in: Capsule())
+                }
+
+                Spacer()
+
+                if tab == .feed, let vm {
+                    Toggle("Unread only", isOn: Binding(
+                        get: { vm.unreadOnly },
+                        set: { vm.unreadOnly = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help("Hide items you've already read")
+                }
+            }
+
+            Picker("", selection: $tab) {
+                Text("Feed").tag(Tab.feed)
+                Text("Learned").tag(Tab.learned)
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     // MARK: - Init
@@ -80,86 +142,126 @@ struct InboxFeedView: View {
 
     @ViewBuilder
     private func feedContent(_ vm: InboxViewModel) -> some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 6) {
-                // Pinned section
-                if !vm.pinnedItems.isEmpty {
-                    Text("Pinned")
-                        .font(.headline)
-                        .padding(.horizontal)
+        if vm.pinnedItems.isEmpty && vm.feedItems.isEmpty {
+            emptyState
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    if !vm.pinnedItems.isEmpty {
+                        sectionHeader("Pinned", count: vm.pinnedItems.count, color: .orange)
+                        ForEach(vm.pinnedItems) { item in
+                            inboxRow(item, vm: vm, size: .pinned)
+                        }
+                    }
 
-                    ForEach(vm.pinnedItems) { item in
-                        InboxCardView(
-                            item: item,
-                            size: .pinned,
-                            senderName: vm.senderName(for: item),
-                            userNames: vm.senderNames,
-                            isExpanded: expandedItemID == item.id,
-                            conversation: conversationCache[item.id] ?? [],
-                            conversationLoaded: conversationCache[item.id] != nil,
-                            onToggle: { toggleExpansion(item, vm: vm) },
-                            onSnooze: { option in snoozeItem(item, option: option, vm: vm) },
-                            onDismiss: { vm.dismiss(item) },
-                            onCreateTask: { vm.createTask(from: item) },
-                            onFeedback: { rating, _ in
-                                if rating == -1 {
-                                    feedbackItem = item
-                                } else {
-                                    vm.submitFeedback(item, rating: rating, reason: "")
-                                }
-                            }
-                        )
-                        .padding(.horizontal)
+                    ForEach(groupedByDay(vm.feedItems), id: \.day) { group in
+                        sectionHeader(group.day, count: group.items.count, color: .secondary)
+                        ForEach(group.items) { item in
+                            inboxRow(item, vm: vm, size: cardSize(for: item))
+                        }
+                    }
+
+                    if !vm.feedItems.isEmpty {
+                        Button("Load more") { vm.loadMore() }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
                     }
                 }
+                .padding(.vertical, 4)
+            }
+        }
+    }
 
-                // Feed section grouped by day
-                Text("Feed")
-                    .font(.headline)
-                    .padding(.horizontal)
-                    .padding(.top, vm.pinnedItems.isEmpty ? 0 : 8)
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "tray")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("Inbox is clear")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            Text("Mentions, DMs, and other items requiring your attention will appear here")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
-                ForEach(groupedByDay(vm.feedItems), id: \.day) { group in
-                    Text(group.day)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal)
-                        .padding(.top, 4)
+    // MARK: - Row Wrapper (background tint by state, like TracksListView.trackRow)
 
-                    ForEach(group.items) { item in
-                        InboxCardView(
-                            item: item,
-                            size: cardSize(for: item),
-                            senderName: vm.senderName(for: item),
-                            userNames: vm.senderNames,
-                            isExpanded: expandedItemID == item.id,
-                            conversation: conversationCache[item.id] ?? [],
-                            conversationLoaded: conversationCache[item.id] != nil,
-                            onToggle: { toggleExpansion(item, vm: vm) },
-                            onSnooze: { option in snoozeItem(item, option: option, vm: vm) },
-                            onDismiss: { vm.dismiss(item) },
-                            onCreateTask: { vm.createTask(from: item) },
-                            onFeedback: { rating, _ in
-                                if rating == -1 {
-                                    feedbackItem = item
-                                } else {
-                                    vm.submitFeedback(item, rating: rating, reason: "")
-                                }
-                            }
-                        )
-                        .padding(.horizontal)
-                        .onAppear { vm.markSeen(item) }
-                    }
-                }
+    private func inboxRow(_ item: InboxItem, vm: InboxViewModel, size: CardSize) -> some View {
+        let isExpanded = expandedItemID == item.id
+        let bgColor: Color = isExpanded
+            ? Color.accentColor.opacity(0.12)
+            : item.isUnread
+                ? Color.blue.opacity(0.06)
+                : Color.clear
 
-                // Load more
-                if !vm.feedItems.isEmpty {
-                    Button("Load more") { vm.loadMore() }
-                        .padding()
+        return InboxCardView(
+            item: item,
+            size: size,
+            senderName: vm.senderName(for: item),
+            userNames: vm.senderNames,
+            channelName: vm.channelName(for: item),
+            isExpanded: isExpanded,
+            conversation: conversationCache[item.id] ?? [],
+            conversationLoaded: conversationCache[item.id] != nil,
+            slackURL: vm.slackMessageURL(for: item),
+            onToggle: { toggleExpansion(item, vm: vm) },
+            onSnooze: { option in snoozeItem(item, option: option, vm: vm) },
+            onDismiss: { vm.dismiss(item) },
+            onCreateTask: { openCreateTargetForInbox(item) },
+            onMarkRead: { vm.markRead(item) },
+            onFeedback: { rating, _ in
+                if rating == -1 {
+                    feedbackItem = item
+                } else {
+                    vm.submitFeedback(item, rating: rating, reason: "")
                 }
             }
-            .padding(.vertical)
+        )
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(bgColor, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            size == .pinned
+                ? RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(pinnedStrokeColor(item), lineWidth: 1)
+                : nil
+        )
+        .padding(.horizontal, 4)
+    }
+
+    private func pinnedStrokeColor(_ item: InboxItem) -> Color {
+        switch item.priority {
+        case "high":   return .red.opacity(0.5)
+        case "medium": return .orange.opacity(0.5)
+        default:       return .secondary.opacity(0.3)
         }
+    }
+
+    // MARK: - Section Header (matches TracksListView.sectionHeader)
+
+    private func sectionHeader(_ title: String, count: Int, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(color)
+            Text("\(count)")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(color, in: Capsule())
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
     }
 
     // MARK: - Helpers
@@ -207,6 +309,26 @@ struct InboxFeedView: View {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime]
         return fmt.string(from: date)
+    }
+
+    private func openCreateTargetForInbox(_ item: InboxItem) {
+        guard let db = appState.databaseManager else {
+            inboxPrefillError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingInboxPrefill = true
+            defer { isBuildingInboxPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromInbox(item, db: db)
+                inboxTargetPrefill = pf
+                pendingInboxItem = item
+                inboxPrefillError = nil
+                showCreateInboxTarget = true
+            } catch {
+                inboxPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
+        }
     }
 
     // MARK: - Day Grouping

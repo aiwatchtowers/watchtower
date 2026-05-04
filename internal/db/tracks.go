@@ -48,6 +48,10 @@ func (db *DB) UpsertTrack(t Track) (int64, error) {
 	}
 
 	if t.ID > 0 {
+		// BEHAVIOR TRACKS-06: snapshot prior state before manual full update.
+		if cur, err := db.GetTrackByID(t.ID); err == nil {
+			_ = db.snapshotTrackState(cur, t, "manual")
+		}
 		_, err := db.Exec(`UPDATE tracks SET
 			assignee_user_id = ?, text = ?, context = ?, category = ?,
 			ownership = ?, ball_on = ?, owner_user_id = ?,
@@ -99,7 +103,8 @@ func (db *DB) UpsertTrack(t Track) (int64, error) {
 
 // UpdateTrackFromExtraction updates a track's content fields from AI re-extraction.
 // Preserves ID, created_at, read_at. Sets has_updates=1 if track was already read.
-// Also merges channel_ids (adds new channel if not already present).
+// Merges channel_ids and related_digest_ids with the freshest values first so the
+// UI's "Open in Slack" fallback points at the most recently confirmed channel.
 func (db *DB) UpdateTrackFromExtraction(id int, t Track) (int64, error) {
 	// Apply defaults for CHECK-constrained fields.
 	if t.Ownership == "" {
@@ -117,6 +122,9 @@ func (db *DB) UpdateTrackFromExtraction(id int, t Track) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("loading existing track %d for merge: %w", id, err)
 	}
+	// BEHAVIOR TRACKS-06: snapshot prior state before extraction overwrites narrative fields.
+	_ = db.snapshotTrackState(existing, t, "extraction")
+
 	mergedChannelIDs := mergeJSONArrays(existing.ChannelIDs, t.ChannelIDs)
 	mergedDigestIDs := mergeJSONArrays(existing.RelatedDigestIDs, t.RelatedDigestIDs)
 
@@ -426,42 +434,70 @@ func (db *DB) FindTracksByFingerprint(assigneeUserID string, fp []string) ([]Tra
 
 // UpdateTrackOwnership updates the ownership field for a track.
 func (db *DB) UpdateTrackOwnership(id int, ownership string) error {
+	// BEHAVIOR TRACKS-06: snapshot prior state before manual ownership change.
+	if cur, err := db.GetTrackByID(id); err == nil {
+		proposed := *cur
+		proposed.Ownership = ownership
+		_ = db.snapshotTrackState(cur, proposed, "manual")
+	}
 	_, err := db.Exec(`UPDATE tracks SET ownership = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, ownership, id)
 	return err
 }
 
 // UpdateTrackPriority updates the priority field for a track.
 func (db *DB) UpdateTrackPriority(id int, priority string) error {
+	// BEHAVIOR TRACKS-06: snapshot prior state before manual priority change.
+	if cur, err := db.GetTrackByID(id); err == nil {
+		proposed := *cur
+		proposed.Priority = priority
+		_ = db.snapshotTrackState(cur, proposed, "manual")
+	}
 	_, err := db.Exec(`UPDATE tracks SET priority = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, priority, id)
 	return err
 }
 
 // UpdateTrackSubItems updates the sub_items JSON for a track.
 func (db *DB) UpdateTrackSubItems(id int, subItems string) error {
+	// BEHAVIOR TRACKS-06: snapshot prior state before manual sub_items change.
+	if cur, err := db.GetTrackByID(id); err == nil {
+		proposed := *cur
+		proposed.SubItems = subItems
+		_ = db.snapshotTrackState(cur, proposed, "manual")
+	}
 	_, err := db.Exec(`UPDATE tracks SET sub_items = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, subItems, id)
 	return err
 }
 
 // mergeJSONArrays merges two JSON arrays (strings or ints), deduplicating.
+// Fresh elements are placed first, followed by existing elements not already
+// present in the fresh set. This keeps the most recent channel/digest at the
+// front so UI fallbacks that use index 0 (e.g. "Open in Slack") point at the
+// channel from the latest extraction rather than the historical origin.
 func mergeJSONArrays(existingJSON, newJSON string) string {
 	var existing, newArr []json.RawMessage
 	_ = json.Unmarshal([]byte(existingJSON), &existing)
 	_ = json.Unmarshal([]byte(newJSON), &newArr)
 
+	merged := make([]json.RawMessage, 0, len(newArr)+len(existing))
 	seen := make(map[string]bool)
-	for _, e := range existing {
-		seen[string(e)] = true
-	}
 	for _, n := range newArr {
-		if !seen[string(n)] {
-			existing = append(existing, n)
-			seen[string(n)] = true
+		key := string(n)
+		if !seen[key] {
+			merged = append(merged, n)
+			seen[key] = true
 		}
 	}
-	if len(existing) == 0 {
+	for _, e := range existing {
+		key := string(e)
+		if !seen[key] {
+			merged = append(merged, e)
+			seen[key] = true
+		}
+	}
+	if len(merged) == 0 {
 		return "[]"
 	}
-	data, _ := json.Marshal(existing)
+	data, _ := json.Marshal(merged)
 	return string(data)
 }
 
@@ -537,4 +573,130 @@ func (db *DB) GetUnlinkedTopics(sinceUnix float64) ([]UnlinkedTopic, error) {
 		result[i].ChannelName, _ = db.ChannelNameByID(result[i].ChannelID)
 	}
 	return result, nil
+}
+
+// --- TRACKS-06: per-track narrative-state history ---
+
+// trackStateHistoryCap is the maximum number of state snapshots retained
+// per track. Older rows are trimmed at insert time.
+const trackStateHistoryCap = 30
+
+// TrackState is a snapshot of a track's narrative fields at a point in time,
+// captured BEFORE a mutating call (extraction or manual edit) overwrites
+// those fields. See docs/inventory/tracks.md TRACKS-06.
+type TrackState struct {
+	ID              int
+	TrackID         int
+	Text            string
+	Context         string
+	Category        string
+	Ownership       string
+	BallOn          string
+	OwnerUserID     string
+	RequesterName   string
+	RequesterUserID string
+	Blocking        string
+	DecisionSummary string
+	DecisionOptions string
+	SubItems        string
+	Participants    string
+	Tags            string
+	Priority        string
+	DueDate         float64
+	Source          string // 'extraction' | 'manual'
+	Model           string
+	PromptVersion   int
+	CreatedAt       string
+}
+
+// narrativeFieldsDiffer returns true if any user-visible narrative field
+// differs between two Track values. Bookkeeping fields (model, tokens,
+// fingerprint, channel_ids, related_digest_ids, read_at, has_updates,
+// dismissed_at) are intentionally excluded — they are tracked elsewhere.
+func narrativeFieldsDiffer(a, b Track) bool {
+	return a.Text != b.Text ||
+		a.Context != b.Context ||
+		a.Category != b.Category ||
+		a.Ownership != b.Ownership ||
+		a.BallOn != b.BallOn ||
+		a.OwnerUserID != b.OwnerUserID ||
+		a.RequesterName != b.RequesterName ||
+		a.RequesterUserID != b.RequesterUserID ||
+		a.Blocking != b.Blocking ||
+		a.DecisionSummary != b.DecisionSummary ||
+		a.DecisionOptions != b.DecisionOptions ||
+		a.SubItems != b.SubItems ||
+		a.Participants != b.Participants ||
+		a.Tags != b.Tags ||
+		a.Priority != b.Priority ||
+		a.DueDate != b.DueDate
+}
+
+// snapshotTrackState writes a snapshot of `cur` (the pre-update state) into
+// track_states with the given source iff `incoming` would change any
+// narrative field. Trims to the most recent trackStateHistoryCap rows per
+// track. Errors are returned but callers conventionally discard them —
+// history loss is recoverable; the caller's UPDATE is not.
+func (db *DB) snapshotTrackState(cur *Track, incoming Track, source string) error {
+	if cur == nil || cur.ID == 0 {
+		return nil
+	}
+	if !narrativeFieldsDiffer(*cur, incoming) {
+		return nil
+	}
+	if _, err := db.Exec(`INSERT INTO track_states (
+		track_id, text, context, category, ownership, ball_on, owner_user_id,
+		requester_name, requester_user_id, blocking,
+		decision_summary, decision_options, sub_items,
+		participants, tags, priority, due_date,
+		source, model, prompt_version
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, 0), ?, ?, ?)`,
+		cur.ID, cur.Text, cur.Context, cur.Category, cur.Ownership, cur.BallOn, cur.OwnerUserID,
+		cur.RequesterName, cur.RequesterUserID, cur.Blocking,
+		cur.DecisionSummary, cur.DecisionOptions, cur.SubItems,
+		cur.Participants, cur.Tags, cur.Priority, cur.DueDate,
+		source, cur.Model, cur.PromptVersion,
+	); err != nil {
+		return fmt.Errorf("inserting track_states: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM track_states
+		WHERE track_id = ?
+		  AND id NOT IN (
+		      SELECT id FROM track_states
+		       WHERE track_id = ?
+		       ORDER BY created_at DESC, id DESC
+		       LIMIT ?
+		  )`, cur.ID, cur.ID, trackStateHistoryCap); err != nil {
+		return fmt.Errorf("trimming track_states: %w", err)
+	}
+	return nil
+}
+
+// GetTrackStates returns the history of narrative-state snapshots for a
+// track, most recent first. Empty slice if no history.
+func (db *DB) GetTrackStates(trackID int) ([]TrackState, error) {
+	rows, err := db.Query(`SELECT id, track_id, text, context, category, ownership,
+		ball_on, owner_user_id, requester_name, requester_user_id, blocking,
+		decision_summary, decision_options, sub_items, participants, tags,
+		priority, COALESCE(due_date, 0), source, model, prompt_version, created_at
+		FROM track_states WHERE track_id = ? ORDER BY created_at DESC, id DESC`, trackID)
+	if err != nil {
+		return nil, fmt.Errorf("querying track_states: %w", err)
+	}
+	defer rows.Close()
+
+	var states []TrackState
+	for rows.Next() {
+		var s TrackState
+		if err := rows.Scan(
+			&s.ID, &s.TrackID, &s.Text, &s.Context, &s.Category, &s.Ownership,
+			&s.BallOn, &s.OwnerUserID, &s.RequesterName, &s.RequesterUserID, &s.Blocking,
+			&s.DecisionSummary, &s.DecisionOptions, &s.SubItems, &s.Participants, &s.Tags,
+			&s.Priority, &s.DueDate, &s.Source, &s.Model, &s.PromptVersion, &s.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning track_state: %w", err)
+		}
+		states = append(states, s)
+	}
+	return states, rows.Err()
 }

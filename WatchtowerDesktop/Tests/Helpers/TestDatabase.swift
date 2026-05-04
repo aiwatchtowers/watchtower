@@ -441,6 +441,31 @@ enum TestDatabase {
         created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS track_states (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        track_id           INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+        text               TEXT NOT NULL,
+        context            TEXT NOT NULL DEFAULT '',
+        category           TEXT NOT NULL,
+        ownership          TEXT NOT NULL,
+        ball_on            TEXT NOT NULL DEFAULT '',
+        owner_user_id      TEXT NOT NULL DEFAULT '',
+        requester_name     TEXT NOT NULL DEFAULT '',
+        requester_user_id  TEXT NOT NULL DEFAULT '',
+        blocking           TEXT NOT NULL DEFAULT '',
+        decision_summary   TEXT NOT NULL DEFAULT '',
+        decision_options   TEXT NOT NULL DEFAULT '[]',
+        sub_items          TEXT NOT NULL DEFAULT '[]',
+        participants       TEXT NOT NULL DEFAULT '[]',
+        tags               TEXT NOT NULL DEFAULT '[]',
+        priority           TEXT NOT NULL,
+        due_date           REAL,
+        source             TEXT NOT NULL CHECK(source IN ('extraction','manual')),
+        model              TEXT NOT NULL DEFAULT '',
+        prompt_version     INTEGER NOT NULL DEFAULT 0,
+        created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_track_states_track ON track_states(track_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS tasks (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         text            TEXT NOT NULL,
@@ -1023,6 +1048,25 @@ enum TestDatabase {
         return db.lastInsertedRowID
     }
 
+    @discardableResult
+    static func insertDigestTopic(
+        _ db: Database,
+        digestID: Int = 1,
+        idx: Int = 0,
+        title: String = "Sample topic",
+        summary: String = "Topic summary",
+        decisions: String = "[]",
+        actionItems: String = "[]",
+        situations: String = "[]",
+        keyMessages: String = "[]"
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [digestID, idx, title, summary, decisions, actionItems, situations, keyMessages])
+        return db.lastInsertedRowID
+    }
+
     // MARK: - Inbox Fixtures
 
     static func insertInboxItem(
@@ -1040,16 +1084,17 @@ enum TestDatabase {
         resolvedReason: String = "",
         snoozeUntil: String = "",
         taskID: Int? = nil,       // kept for call-site compat; maps to target_id column
-        readAt: String? = nil
+        readAt: String? = nil,
+        archivedAt: String? = nil
     ) throws {
         try db.execute(sql: """
             INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
                 trigger_type, snippet, permalink, status, priority, ai_reason,
-                resolved_reason, snooze_until, target_id, read_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resolved_reason, snooze_until, target_id, read_at, archived_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [channelID, messageTS, threadTS, senderUserID,
                              triggerType, snippet, permalink, status, priority, aiReason,
-                             resolvedReason, snoozeUntil, taskID, readAt])
+                             resolvedReason, snoozeUntil, taskID, readAt, archivedAt])
     }
 
     // MARK: - Inbox Learned Rules Fixtures

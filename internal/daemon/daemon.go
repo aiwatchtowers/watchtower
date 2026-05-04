@@ -186,68 +186,9 @@ func (d *Daemon) wakeChannel() <-chan struct{} {
 }
 
 func (d *Daemon) runSync(ctx context.Context) {
-	opts := sync.SyncOptions{}
-	syncErr := d.orchestrator.Run(ctx, opts)
-	if syncErr != nil {
-		d.logger.Printf("sync error: %v", syncErr)
-	}
-
-	// Persist last sync result for `watchtower status`.
-	snap := d.orchestrator.Progress().Snapshot()
-	resultPath := filepath.Join(d.config.WorkspaceDir(), "last_sync.json")
-	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshot(snap, syncErr)); err != nil {
-		d.logger.Printf("failed to write sync result: %v", err)
-	}
-
-	// Calendar sync — lightweight, runs after Slack sync, before pipelines.
-	if d.calendarSyncer != nil {
-		n, err := d.calendarSyncer.Sync(ctx)
-		if err != nil {
-			d.logger.Printf("calendar sync error: %v", err)
-		} else if n > 0 {
-			d.logger.Printf("calendar: %d events synced", n)
-		}
-	}
-
-	// Jira sync — runs after calendar sync, before pipelines.
-	if d.jiraSyncer != nil {
-		interval := time.Duration(d.config.Jira.SyncIntervalMins) * time.Minute
-		if interval <= 0 {
-			interval = time.Duration(config.DefaultJiraSyncIntervalMins) * time.Minute
-		}
-		if d.lastJira.IsZero() || time.Since(d.lastJira) >= interval {
-			n, err := d.jiraSyncer.Sync(ctx)
-			if err != nil {
-				d.logger.Printf("jira sync error: %v", err)
-			} else if n > 0 {
-				d.logger.Printf("jira: %d issues synced", n)
-			}
-			d.lastJira = time.Now()
-
-			// Record board analyzer LLM usage if any boards were re-analyzed.
-			if d.db != nil {
-				inTok, outTok, totalAPI := d.jiraSyncer.BoardAnalyzerUsage()
-				if inTok > 0 || outTok > 0 {
-					if runID, runErr := d.db.CreatePipelineRun("jira-boards", "daemon", "auto"); runErr == nil {
-						errMsg := ""
-						if err != nil {
-							errMsg = err.Error()
-						}
-						_ = d.db.CompletePipelineRun(runID, 0, inTok, outTok, 0, totalAPI, nil, nil, errMsg)
-					}
-				}
-			}
-
-			// Sync target statuses from Jira issues after successful sync.
-			if err == nil && d.db != nil {
-				if synced, serr := d.db.SyncJiraTargetStatuses(); serr != nil {
-					d.logger.Printf("jira target status sync warning: %v", serr)
-				} else if synced > 0 {
-					d.logger.Printf("jira-targets: synced %d target status(es)", synced)
-				}
-			}
-		}
-	}
+	syncErr := d.phaseSlackSync(ctx)
+	d.phaseCalendarSync(ctx)
+	d.phaseJiraSync(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
 	// partial fetch). The DB still has messages that need processing.
@@ -256,147 +197,27 @@ func (d *Daemon) runSync(ctx context.Context) {
 		d.logger.Printf("context cancelled, skipping pipelines")
 		return
 	}
-
 	if syncErr != nil {
 		d.logger.Printf("sync had errors, but running pipelines on existing data")
 	}
 
-	// Phase 1: Channel digests (generates people_signals in MAP phase).
-	if d.digestPipe != nil {
-		var runID int64
-		if d.db != nil {
-			runID, _ = d.db.CreatePipelineRun("digests", "daemon", "auto")
-		}
-		n, usage, err := d.digestPipe.RunChannelDigestsOnly(ctx)
-		if err != nil {
-			d.logger.Printf("digest error: %v", err)
-		} else if n > 0 {
-			if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
-				d.logger.Printf("generated %d digest(s) (%d+%d tokens)",
-					n, usage.InputTokens, usage.OutputTokens)
-			} else {
-				d.logger.Printf("generated %d digest(s)", n)
-			}
-		}
-		if runID > 0 {
-			var errMsg string
-			if err != nil {
-				errMsg = err.Error()
-			}
-			inTok, outTok, totalAPI := 0, 0, 0
-			if usage != nil {
-				inTok, outTok, totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
-			}
-			_ = d.db.CompletePipelineRun(runID, n, inTok, outTok, 0, totalAPI, nil, nil, errMsg)
-		}
-	}
-
-	// Note: auto-mark read runs once after all analysis phases complete (below).
-
-	// Unsnooze targets whose snooze_until date has passed.
-	if d.db != nil {
-		if n, err := d.db.UnsnoozeExpiredTargets(); err != nil {
-			d.logger.Printf("unsnooze targets error: %v", err)
-		} else if n > 0 {
-			d.logger.Printf("unsnoozed %d target(s)", n)
-		}
-		if n, err := d.db.UnsnoozeExpiredInboxItems(); err != nil {
-			d.logger.Printf("unsnooze inbox error: %v", err)
-		} else if n > 0 {
-			d.logger.Printf("unsnoozed %d inbox item(s)", n)
-		}
-	}
+	d.phaseFastInbox(ctx)
+	d.phaseChannelDigests(ctx)
+	d.phaseUnsnooze()
 
 	// Phases 2-4 run in parallel where possible:
 	//   Group A: Tracks → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
 	var phasesWg gosync.WaitGroup
-
-	// Group A: Tracks → inject track context → Rollups → auto-mark rollups.
-	phasesWg.Add(1)
+	phasesWg.Add(2)
 	go func() {
 		defer phasesWg.Done()
-
-		// Phase 2: Tracks (auto-create/update from unlinked topics).
-		if d.tracksPipe != nil {
-			var trackRunID int64
-			if d.db != nil {
-				trackRunID, _ = d.db.CreatePipelineRun("tracks", "daemon", "auto")
-			}
-			n, updated, err := d.tracksPipe.Run(ctx)
-			if err != nil {
-				d.logger.Printf("tracks error: %v", err)
-			} else if n > 0 || updated > 0 {
-				d.logger.Printf("tracks: created %d, updated %d", n, updated)
-			}
-			if trackRunID > 0 {
-				var errMsg string
-				if err != nil {
-					errMsg = err.Error()
-				}
-				inTok, outTok, cost, totalAPI := d.tracksPipe.AccumulatedUsage()
-				var pFrom, pTo *float64
-				if d.tracksPipe.LastFrom > 0 {
-					pFrom = &d.tracksPipe.LastFrom
-				}
-				if d.tracksPipe.LastTo > 0 {
-					pTo = &d.tracksPipe.LastTo
-				}
-				_ = d.db.CompletePipelineRun(trackRunID, n+updated, inTok, outTok, cost, totalAPI, pFrom, pTo, errMsg)
-			}
-
-			// Inject track context into digest pipeline for track-aware rollups.
-			if trackCtx, err := d.tracksPipe.FormatActiveTracksForPrompt(); err == nil && trackCtx != "" {
-				if d.digestPipe != nil {
-					d.digestPipe.TrackContext = trackCtx
-				}
-			}
-		}
-
-		// Phase 3: Daily/weekly rollups (track-aware).
-		if d.digestPipe != nil {
-			if err := d.digestPipe.RunRollups(ctx); err != nil {
-				d.logger.Printf("rollup error: %v", err)
-			}
-		}
-
-		// Note: auto-mark read runs once after all analysis phases complete (below).
+		d.phaseTracksAndRollups(ctx)
 	}()
-
-	// Group B: People REDUCE (reads signals from Phase 1, generates people_cards).
-	phasesWg.Add(1)
 	go func() {
 		defer phasesWg.Done()
-
-		if d.peoplePipe != nil {
-			now := time.Now()
-			if d.lastPeople.IsZero() || now.Sub(d.lastPeople) >= 24*time.Hour {
-				var peopleRunID int64
-				if d.db != nil {
-					peopleRunID, _ = d.db.CreatePipelineRun("people", "daemon", "auto")
-				}
-				n, err := d.peoplePipe.Run(ctx)
-				if err != nil {
-					d.logger.Printf("people cards error: %v", err)
-				} else {
-					if n > 0 {
-						d.logger.Printf("generated %d people card(s)", n)
-					}
-					d.lastPeople = now
-					d.saveLastPeople()
-				}
-				if peopleRunID > 0 {
-					var errMsg string
-					if err != nil {
-						errMsg = err.Error()
-					}
-					inTok, outTok, cost, totalAPI := d.peoplePipe.AccumulatedUsage()
-					_ = d.db.CompletePipelineRun(peopleRunID, n, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
-				}
-			}
-		}
+		d.phasePeopleCards(ctx)
 	}()
-
 	phasesWg.Wait()
 
 	// Auto-mark digests and tracks as read based on Slack read cursors.
@@ -404,49 +225,280 @@ func (d *Daemon) runSync(ctx context.Context) {
 	// are all available for marking.
 	d.autoMarkRead()
 
-	// Phase 5: Inbox detection (runs after digest/tracks/people so that
-	// decision_made detector sees fresh digests; runs before briefing).
-	if d.inboxPipe != nil {
-		// Resolve current user identity so the pipeline can filter mentions/DMs.
-		if d.db != nil {
-			if uid, err := d.db.GetCurrentUserID(); err == nil && uid != "" {
-				email := ""
-				if u, uerr := d.db.GetUserByID(uid); uerr == nil && u != nil {
-					email = u.Email
-				}
-				d.inboxPipe.SetCurrentUser(uid, email)
+	d.phaseInbox(ctx)
+	d.phaseBriefing(ctx)
+
+	now := time.Now()
+	d.runDayPlanPhase(ctx, now)
+	d.runDayPlanConflictPhase(ctx, now)
+}
+
+// pipelineRunStats are the bookkeeping metrics recorded for a daemon-managed
+// pipeline run. Period bounds (pFrom/pTo) are only set by tracks.
+type pipelineRunStats struct {
+	items    int
+	inTok    int
+	outTok   int
+	cost     float64
+	totalAPI int
+	pFrom    *float64
+	pTo      *float64
+	err      error
+}
+
+// trackedPipelineRun creates a pipeline_runs row, runs the work closure, then
+// records the completion. fn always runs (even when DB is unavailable) so the
+// caller sees consistent semantics. Idempotent on CreatePipelineRun failure.
+func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
+	if d.db == nil {
+		fn()
+		return
+	}
+	runID, _ := d.db.CreatePipelineRun(name, "daemon", "auto")
+	stats := fn()
+	if runID <= 0 {
+		return
+	}
+	errMsg := ""
+	if stats.err != nil {
+		errMsg = stats.err.Error()
+	}
+	_ = d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg)
+}
+
+// phaseSlackSync runs the orchestrator and persists last_sync.json. The
+// returned error is non-nil for non-fatal sync issues; pipelines still run.
+func (d *Daemon) phaseSlackSync(ctx context.Context) error {
+	syncErr := d.orchestrator.Run(ctx, sync.SyncOptions{})
+	if syncErr != nil {
+		d.logger.Printf("sync error: %v", syncErr)
+	}
+	snap := d.orchestrator.Progress().Snapshot()
+	resultPath := filepath.Join(d.config.WorkspaceDir(), "last_sync.json")
+	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshot(snap, syncErr)); err != nil {
+		d.logger.Printf("failed to write sync result: %v", err)
+	}
+	return syncErr
+}
+
+// phaseCalendarSync pulls Google Calendar events. Lightweight, runs every cycle.
+func (d *Daemon) phaseCalendarSync(ctx context.Context) {
+	if d.calendarSyncer == nil {
+		return
+	}
+	n, err := d.calendarSyncer.Sync(ctx)
+	if err != nil {
+		d.logger.Printf("calendar sync error: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("calendar: %d events synced", n)
+	}
+}
+
+// phaseJiraSync pulls Jira issues respecting the configured interval, then
+// records board-analyzer LLM usage and reflects target statuses.
+func (d *Daemon) phaseJiraSync(ctx context.Context) {
+	if d.jiraSyncer == nil {
+		return
+	}
+	interval := time.Duration(d.config.Jira.SyncIntervalMins) * time.Minute
+	if interval <= 0 {
+		interval = time.Duration(config.DefaultJiraSyncIntervalMins) * time.Minute
+	}
+	if !d.lastJira.IsZero() && time.Since(d.lastJira) < interval {
+		return
+	}
+	n, err := d.jiraSyncer.Sync(ctx)
+	if err != nil {
+		d.logger.Printf("jira sync error: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("jira: %d issues synced", n)
+	}
+	d.lastJira = time.Now()
+
+	// Record board analyzer LLM usage if any boards were re-analyzed.
+	if d.db != nil {
+		inTok, outTok, totalAPI := d.jiraSyncer.BoardAnalyzerUsage()
+		if inTok > 0 || outTok > 0 {
+			d.trackedPipelineRun("jira-boards", func() pipelineRunStats {
+				return pipelineRunStats{inTok: inTok, outTok: outTok, totalAPI: totalAPI, err: err}
+			})
+		}
+	}
+
+	// Sync target statuses from Jira issues after successful sync.
+	if err == nil && d.db != nil {
+		if synced, serr := d.db.SyncJiraTargetStatuses(); serr != nil {
+			d.logger.Printf("jira target status sync warning: %v", serr)
+		} else if synced > 0 {
+			d.logger.Printf("jira-targets: synced %d target status(es)", synced)
+		}
+	}
+}
+
+// phaseFastInbox surfaces Slack/Jira/Calendar mentions in the UI immediately,
+// before the LLM-heavy digest pipeline. Phase 5 (phaseInbox) still runs later
+// to detect decision_made/briefing_ready from fresh digests.
+func (d *Daemon) phaseFastInbox(ctx context.Context) {
+	if d.inboxPipe == nil {
+		return
+	}
+	d.applyInboxCurrentUser()
+	if err := d.inboxPipe.RunFastDetection(ctx); err != nil {
+		d.logger.Printf("inbox fast detect error: %v", err)
+	}
+}
+
+// phaseChannelDigests generates per-channel digests (MAP phase that produces
+// people_signals consumed later by phasePeopleCards).
+func (d *Daemon) phaseChannelDigests(ctx context.Context) {
+	if d.digestPipe == nil {
+		return
+	}
+	d.trackedPipelineRun("digests", func() pipelineRunStats {
+		n, usage, err := d.digestPipe.RunChannelDigestsOnly(ctx)
+		switch {
+		case err != nil:
+			d.logger.Printf("digest error: %v", err)
+		case n > 0 && usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0):
+			d.logger.Printf("generated %d digest(s) (%d+%d tokens)", n, usage.InputTokens, usage.OutputTokens)
+		case n > 0:
+			d.logger.Printf("generated %d digest(s)", n)
+		}
+		stats := pipelineRunStats{items: n, err: err}
+		if usage != nil {
+			stats.inTok = usage.InputTokens
+			stats.outTok = usage.OutputTokens
+			stats.totalAPI = usage.TotalAPITokens
+		}
+		return stats
+	})
+}
+
+// phaseUnsnooze releases snoozed targets and inbox items whose snooze_until
+// has passed, then surfaces any newly-overdue targets to the inbox so they
+// reach the user through the same channel as Slack/Jira/Calendar reminders.
+func (d *Daemon) phaseUnsnooze() {
+	if d.db == nil {
+		return
+	}
+	if n, err := d.db.UnsnoozeExpiredTargets(); err != nil {
+		d.logger.Printf("unsnooze targets error: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("unsnoozed %d target(s)", n)
+	}
+	if n, err := d.db.UnsnoozeExpiredInboxItems(); err != nil {
+		d.logger.Printf("unsnooze inbox error: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("unsnoozed %d inbox item(s)", n)
+	}
+	if n, err := d.db.NotifyDueTargets(time.Now().UTC()); err != nil {
+		d.logger.Printf("notify due targets error: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("surfaced %d due target(s) to inbox", n)
+	}
+}
+
+// phaseTracksAndRollups (group A) runs the tracks pipeline, injects active
+// track context into the digest pipeline, then runs daily/weekly rollups.
+func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
+	if d.tracksPipe != nil {
+		d.trackedPipelineRun("tracks", func() pipelineRunStats {
+			n, updated, err := d.tracksPipe.Run(ctx)
+			if err != nil {
+				d.logger.Printf("tracks error: %v", err)
+			} else if n > 0 || updated > 0 {
+				d.logger.Printf("tracks: created %d, updated %d", n, updated)
+			}
+			inTok, outTok, cost, totalAPI := d.tracksPipe.AccumulatedUsage()
+			stats := pipelineRunStats{
+				items: n + updated, inTok: inTok, outTok: outTok,
+				cost: cost, totalAPI: totalAPI, err: err,
+			}
+			if d.tracksPipe.LastFrom > 0 {
+				stats.pFrom = &d.tracksPipe.LastFrom
+			}
+			if d.tracksPipe.LastTo > 0 {
+				stats.pTo = &d.tracksPipe.LastTo
+			}
+			return stats
+		})
+
+		// Inject track context into digest pipeline for track-aware rollups.
+		if trackCtx, err := d.tracksPipe.FormatActiveTracksForPrompt(); err == nil && trackCtx != "" {
+			if d.digestPipe != nil {
+				d.digestPipe.TrackContext = trackCtx
 			}
 		}
-		var inboxRunID int64
-		if d.db != nil {
-			inboxRunID, _ = d.db.CreatePipelineRun("inbox", "daemon", "auto")
+	}
+
+	// Phase 3: Daily/weekly rollups (track-aware).
+	if d.digestPipe != nil {
+		if err := d.digestPipe.RunRollups(ctx); err != nil {
+			d.logger.Printf("rollup error: %v", err)
 		}
+	}
+}
+
+// phasePeopleCards (group B) generates per-user people cards from people_signals
+// produced by phaseChannelDigests. Throttled to once per 24h.
+func (d *Daemon) phasePeopleCards(ctx context.Context) {
+	if d.peoplePipe == nil {
+		return
+	}
+	now := time.Now()
+	if !d.lastPeople.IsZero() && now.Sub(d.lastPeople) < 24*time.Hour {
+		return
+	}
+
+	d.trackedPipelineRun("people", func() pipelineRunStats {
+		n, err := d.peoplePipe.Run(ctx)
+		if err != nil {
+			d.logger.Printf("people cards error: %v", err)
+		} else {
+			if n > 0 {
+				d.logger.Printf("generated %d people card(s)", n)
+			}
+			d.lastPeople = now
+			d.saveLastPeople()
+		}
+		inTok, outTok, cost, totalAPI := d.peoplePipe.AccumulatedUsage()
+		return pipelineRunStats{items: n, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
+	})
+}
+
+// phaseInbox runs the full inbox pipeline (decision_made/briefing_ready from
+// fresh digests, AI-prioritize, pinned selector). Runs after digest/tracks/
+// people so detectors see fresh data.
+func (d *Daemon) phaseInbox(ctx context.Context) {
+	if d.inboxPipe == nil {
+		return
+	}
+	d.applyInboxCurrentUser()
+
+	d.trackedPipelineRun("inbox", func() pipelineRunStats {
 		created, resolved, err := d.inboxPipe.Run(ctx)
 		if err != nil {
 			d.logger.Printf("inbox error: %v", err)
 		} else if created > 0 || resolved > 0 {
 			d.logger.Printf("inbox: %d new, %d resolved", created, resolved)
 		}
-		if inboxRunID > 0 {
-			var errMsg string
-			if err != nil {
-				errMsg = err.Error()
-			}
-			inTok, outTok, cost, totalAPI := d.inboxPipe.AccumulatedUsage()
-			if inTok > 0 || outTok > 0 {
-				d.logger.Printf("inbox: %d+%d tokens", inTok, outTok)
-			}
-			_ = d.db.CompletePipelineRun(inboxRunID, created+resolved, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
+		inTok, outTok, cost, totalAPI := d.inboxPipe.AccumulatedUsage()
+		if inTok > 0 || outTok > 0 {
+			d.logger.Printf("inbox: %d+%d tokens", inTok, outTok)
 		}
-	}
+		return pipelineRunStats{
+			items: created + resolved, inTok: inTok, outTok: outTok,
+			cost: cost, totalAPI: totalAPI, err: err,
+		}
+	})
+}
 
-	// Phase 6: Daily briefing (depends on digests + tracks + people cards).
-	// Throttled to run at most once per day, triggered by schedule time.
-	if d.briefingPipe != nil && d.shouldRunBriefing() {
-		var briefingRunID int64
-		if d.db != nil {
-			briefingRunID, _ = d.db.CreatePipelineRun("briefing", "daemon", "auto")
-		}
+// phaseBriefing generates the daily briefing once per scheduled day.
+func (d *Daemon) phaseBriefing(ctx context.Context) {
+	if d.briefingPipe == nil || !d.shouldRunBriefing() {
+		return
+	}
+	d.trackedPipelineRun("briefing", func() pipelineRunStats {
 		id, err := d.briefingPipe.Run(ctx)
 		if err != nil {
 			d.logger.Printf("briefing error: %v", err)
@@ -455,26 +507,33 @@ func (d *Daemon) runSync(ctx context.Context) {
 			d.lastBriefing = time.Now()
 			d.saveLastBriefing()
 		}
-		if briefingRunID > 0 {
-			var errMsg string
-			if err != nil {
-				errMsg = err.Error()
-			}
-			items := 0
-			if id > 0 {
-				items = 1
-			}
-			inTok, outTok, cost, totalAPI := d.briefingPipe.AccumulatedUsage()
-			_ = d.db.CompletePipelineRun(briefingRunID, items, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
+		items := 0
+		if id > 0 {
+			items = 1
 		}
+		inTok, outTok, cost, totalAPI := d.briefingPipe.AccumulatedUsage()
+		return pipelineRunStats{
+			items: items, inTok: inTok, outTok: outTok,
+			cost: cost, totalAPI: totalAPI, err: err,
+		}
+	})
+}
+
+// applyInboxCurrentUser populates the inbox pipeline with the current user's
+// id+email so it can filter mentions/DMs. No-op when DB is unavailable.
+func (d *Daemon) applyInboxCurrentUser() {
+	if d.db == nil || d.inboxPipe == nil {
+		return
 	}
-
-	// Phase 7: Day plan generation (once per day, after briefing).
-	now := time.Now()
-	d.runDayPlanPhase(ctx, now)
-
-	// Phase 8: Sync calendar items + detect conflicts on today's plan (every cycle).
-	d.runDayPlanConflictPhase(ctx, now)
+	uid, err := d.db.GetCurrentUserID()
+	if err != nil || uid == "" {
+		return
+	}
+	email := ""
+	if u, uerr := d.db.GetUserByID(uid); uerr == nil && u != nil {
+		email = u.Email
+	}
+	d.inboxPipe.SetCurrentUser(uid, email)
 }
 
 // autoMarkRead marks digests as read based on Slack read cursors.
@@ -608,26 +667,21 @@ func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	date := now.Format("2006-01-02")
-	runID, _ := d.db.CreatePipelineRun("day_plan", "daemon", "auto")
-	plan, err := d.dayPlanPipeline.Run(ctx, dayplan.RunOptions{UserID: userID, Date: date})
-	if runID > 0 {
-		var errMsg string
-		if err != nil {
-			errMsg = err.Error()
-		}
+	d.trackedPipelineRun("day_plan", func() pipelineRunStats {
+		plan, err := d.dayPlanPipeline.Run(ctx, dayplan.RunOptions{UserID: userID, Date: date})
 		items := 0
 		if plan != nil {
 			items = 1
 		}
 		inTok, outTok, cost, totalAPI := d.dayPlanPipeline.AccumulatedUsage()
-		_ = d.db.CompletePipelineRun(runID, items, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
-	}
-	if err != nil {
-		d.logger.Printf("dayplan: generation failed: %v", err)
-		return
-	}
-	d.lastDayPlanDate = date
-	d.logger.Printf("dayplan: generated plan for %s", date)
+		if err != nil {
+			d.logger.Printf("dayplan: generation failed: %v", err)
+		} else {
+			d.lastDayPlanDate = date
+			d.logger.Printf("dayplan: generated plan for %s", date)
+		}
+		return pipelineRunStats{items: items, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
+	})
 }
 
 // runDayPlanConflictPhase is Phase 8: every cycle, sync calendar items and

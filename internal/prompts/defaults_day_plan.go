@@ -2,6 +2,8 @@ package prompts
 
 const defaultDayPlanGenerate = `You are a personal day-planner. Produce a realistic, actionable plan for TODAY.
 
+%s
+
 === TODAY ===
 Date: %s (%s)
 Current local time: %s

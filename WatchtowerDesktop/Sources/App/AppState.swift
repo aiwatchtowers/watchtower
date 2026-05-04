@@ -51,6 +51,12 @@ final class AppState {
     /// Set to navigate to the day plan for a specific date from anywhere in the app.
     var pendingDayPlanDate: String?
 
+    /// Set to focus a specific track from anywhere in the app.
+    var pendingTrackID: Int?
+
+    /// Set to focus a specific person card from anywhere in the app.
+    var pendingPersonUserID: String?
+
     /// Watches for new digests and sends notifications.
     private(set) var digestWatcher: DigestWatcher?
 
@@ -122,6 +128,16 @@ final class AppState {
     func navigateToDayPlan(_ date: String? = nil) {
         pendingDayPlanDate = date
         selectedDestination = .dayPlan
+    }
+
+    func navigateToTrack(_ trackID: Int) {
+        pendingTrackID = trackID
+        selectedDestination = .tracks
+    }
+
+    func navigateToPerson(_ userID: String) {
+        pendingPersonUserID = userID
+        selectedDestination = .people
     }
 
     private var isInitializing = false

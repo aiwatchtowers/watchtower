@@ -775,7 +775,10 @@ func runDigestResetContext(cmd *cobra.Command, args []string) error {
 		channelName := strings.TrimPrefix(args[0], "#")
 		ch, err := database.GetChannelByName(channelName)
 		if err != nil {
-			return fmt.Errorf("channel %q not found: %w", channelName, err)
+			return fmt.Errorf("looking up channel %q: %w", channelName, err)
+		}
+		if ch == nil {
+			return fmt.Errorf("channel %q not found", channelName)
 		}
 		channelID = ch.ID
 	}

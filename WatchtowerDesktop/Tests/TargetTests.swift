@@ -850,7 +850,7 @@ final class TargetsViewModelTests: XCTestCase {
         try await vm.promoteSubItemsAfterCreate(parentID: 1, items: [
             (index: 1, overrides: PromoteSubItemOverrides()),
             (index: 3, overrides: PromoteSubItemOverrides()),
-            (index: 0, overrides: PromoteSubItemOverrides()),
+            (index: 0, overrides: PromoteSubItemOverrides())
         ])
 
         XCTAssertEqual(runner.invocations.count, 3)
@@ -909,7 +909,7 @@ final class ExtractPreviewSheetTests: XCTestCase {
                 text: "B", intent: "", level: "week", customLabel: "",
                 levelConfidence: 0.7, periodStart: "2026-04-20", periodEnd: "2026-04-26",
                 priority: "high", parentId: nil, secondaryLinks: [], isSelected: true
-            ),
+            )
         ]
         // Toggle off item B
         proposed[1].isSelected = false
@@ -924,7 +924,7 @@ final class ExtractPreviewSheetTests: XCTestCase {
                 text: "X", intent: "", level: "day", customLabel: "",
                 levelConfidence: nil, periodStart: "2026-04-23", periodEnd: "2026-04-23",
                 priority: "low", parentId: nil, secondaryLinks: [], isSelected: true
-            ),
+            )
         ]
         proposed[0].isSelected = false
         XCTAssertTrue(proposed.filter(\.isSelected).isEmpty)

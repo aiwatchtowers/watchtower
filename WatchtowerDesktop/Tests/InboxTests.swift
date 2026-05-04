@@ -280,6 +280,36 @@ final class InboxQueryTests: XCTestCase {
         XCTAssertEqual(counts.highPriority, 1)
     }
 
+    func testFetchCountsExcludesArchived() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertInboxItem(
+                db,
+                messageTS: "2.1",
+                status: "pending",
+                priority: "high"
+            )
+            try TestDatabase.insertInboxItem(
+                db,
+                messageTS: "2.2",
+                status: "pending",
+                priority: "high",
+                archivedAt: "2026-04-01T10:00:00Z"
+            )
+            try TestDatabase.insertInboxItem(
+                db,
+                messageTS: "2.3",
+                status: "pending",
+                priority: "medium",
+                archivedAt: "2026-04-01T10:00:00Z"
+            )
+        }
+        let counts = try db.read { try InboxQueries.fetchCounts($0) }
+        XCTAssertEqual(counts.pending, 1, "archived items must not count as pending")
+        XCTAssertEqual(counts.unread, 1, "archived items must not inflate the unread badge")
+        XCTAssertEqual(counts.highPriority, 1, "archived high-priority items must not count")
+    }
+
     // MARK: - resolve
 
     func testResolve() throws {
@@ -343,27 +373,31 @@ final class InboxQueryTests: XCTestCase {
         XCTAssertFalse(item.readAt.isEmpty)
     }
 
-    // MARK: - createTask
-
-    func testCreateTask() throws {
-        let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertInboxItem($0, snippet: "Please review PR") }
-        let item = try XCTUnwrap(db.read { try InboxQueries.fetchByID($0, id: 1) })
-        let taskID = try db.write {
-            try InboxQueries.createTask($0, from: item)
+    func testLinkTargetSetsTargetID() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try TestDatabase.insertInboxItem(db, snippet: "ping")
         }
-        XCTAssertGreaterThan(taskID, 0)
-
-        // Verify target was created
-        let target = try XCTUnwrap(db.read { try TargetQueries.fetchByID($0, id: Int(taskID)) })
-        XCTAssertEqual(target.text, "Please review PR")
-        XCTAssertEqual(target.sourceType, "inbox")
-        XCTAssertEqual(target.sourceID, "1")
-
-        // Verify inbox item was linked
-        let updated = try XCTUnwrap(db.read { try InboxQueries.fetchByID($0, id: 1) })
-        XCTAssertEqual(updated.targetID, Int(taskID))
-        XCTAssertTrue(updated.hasLinkedTarget)
+        let item = try queue.read { db in
+            try XCTUnwrap(try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1"))
+        }
+        let newTargetID = try queue.write { db -> Int in
+            try TargetQueries.create(
+                db,
+                text: "ping",
+                periodStart: "2026-04-28",
+                periodEnd: "2026-04-28",
+                sourceType: "inbox",
+                sourceID: String(item.id)
+            )
+        }
+        try queue.write { db in
+            try InboxQueries.linkTarget(db, inboxID: item.id, targetID: newTargetID)
+        }
+        let updated = try queue.read { db in
+            try XCTUnwrap(try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [item.id]))
+        }
+        XCTAssertEqual(updated.targetID, newTargetID)
     }
 }
 
@@ -466,25 +500,6 @@ final class InboxViewModelTests: XCTestCase {
         let item = try XCTUnwrap(vm.allItems.first)
         vm.markRead(item)
         XCTAssertEqual(vm.unreadCount, 0)
-    }
-
-    @MainActor
-    func testCreateTask() throws {
-        let (dbManager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertInboxItem(db, snippet: "Review this")
-        }
-
-        let vm = InboxViewModel(dbManager: dbManager)
-        vm.load()
-
-        let item = try XCTUnwrap(vm.allItems.first)
-        vm.createTask(from: item)
-
-        let updated = try XCTUnwrap(vm.itemByID(item.id))
-        XCTAssertTrue(updated.hasLinkedTarget)
     }
 
     @MainActor
