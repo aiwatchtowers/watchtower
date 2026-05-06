@@ -161,7 +161,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		// inherits a parent CWD inside ~/Documents or ~/Desktop, which would
 		// trigger macOS Files & Folders prompts attributed to Watchtower.
 		cmd.Dir = os.TempDir()
-		cmd.Env = append(os.Environ(), "PATH="+claude.RichPATH())
+		cmd.Env = append(os.Environ(),
+			"PATH="+claude.RichPATH(),
+			"CLAUDE_CONFIG_DIR="+claude.IsolatedConfigDir(),
+		)
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -239,7 +242,10 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	cmd.WaitDelay = 5 * time.Second
 	// See Query() for rationale on cmd.Dir.
 	cmd.Dir = os.TempDir()
-	cmd.Env = append(os.Environ(), "PATH="+claude.RichPATH())
+	cmd.Env = append(os.Environ(),
+		"PATH="+claude.RichPATH(),
+		"CLAUDE_CONFIG_DIR="+claude.IsolatedConfigDir(),
+	)
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}

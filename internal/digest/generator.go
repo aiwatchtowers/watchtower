@@ -70,6 +70,10 @@ func (g *ClaudeGenerator) ValidateModel() error {
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = os.TempDir()
+	cmd.Env = append(os.Environ(),
+		"PATH="+claude.RichPATH(),
+		"CLAUDE_CONFIG_DIR="+claude.IsolatedConfigDir(),
+	)
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -182,7 +186,11 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	// - Enrich PATH so `#!/usr/bin/env node` resolves from macOS .app bundles.
 	// - Remove CLAUDECODE to avoid "nested session" detection when launched
 	//   from a parent process that is itself a Claude Code session.
+	// - Override CLAUDE_CONFIG_DIR to an isolated empty directory so Claude
+	//   Code skips loading the user's plugins/hooks/settings — those probe
+	//   protected dirs (~/Desktop) on startup and trigger TCC prompts.
 	richPATH := "PATH=" + claude.RichPATH()
+	configDirEnv := "CLAUDE_CONFIG_DIR=" + claude.IsolatedConfigDir()
 	var env []string
 	for _, e := range os.Environ() {
 		if strings.HasPrefix(e, "CLAUDECODE=") {
@@ -191,9 +199,12 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 		if strings.HasPrefix(e, "PATH=") {
 			continue
 		}
+		if strings.HasPrefix(e, "CLAUDE_CONFIG_DIR=") {
+			continue
+		}
 		env = append(env, e)
 	}
-	cmd.Env = append(env, richPATH)
+	cmd.Env = append(env, richPATH, configDirEnv)
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
