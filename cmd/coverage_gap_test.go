@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -606,24 +605,9 @@ func TestDbMigrate_SuccessfulMigration(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// --- catchup with no workspace ---
+// --- catchup unread rollup with empty backlog ---
 
-func TestRunCatchup_NoWorkspaceData(t *testing.T) {
-	cleanup := setupWatchTestEnv(t)
-	defer cleanup()
-
-	catchupFlagSince = 0
-	catchupFlagWatchedOnly = false
-	catchupFlagChannel = ""
-
-	err := catchupCmd.RunE(catchupCmd, nil)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no workspace data")
-}
-
-// --- catchup with workspace but no messages ---
-
-func TestRunCatchup_WorkspaceButNoMessages(t *testing.T) {
+func TestRunCatchup_EmptyBacklog(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
 
@@ -632,74 +616,15 @@ func TestRunCatchup_WorkspaceButNoMessages(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
 	database.Close()
 
-	catchupFlagSince = 2 * time.Hour
-	catchupFlagWatchedOnly = false
-	catchupFlagChannel = ""
-	defer func() { catchupFlagSince = 0 }()
+	catchupFlagJSON = true
+	defer func() { catchupFlagJSON = false }()
 
 	buf := new(bytes.Buffer)
 	catchupCmd.SetOut(buf)
 
 	err = catchupCmd.RunE(catchupCmd, nil)
 	require.NoError(t, err)
-	assert.Contains(t, buf.String(), "No new activity")
-}
-
-// --- catchup with workspace and messages (fast path) ---
-
-func TestRunCatchup_WithDigestAndMessages(t *testing.T) {
-	cleanup := setupWatchTestEnv(t)
-	defer cleanup()
-
-	database, err := openDBFromConfig()
-	require.NoError(t, err)
-	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-
-	now := time.Now()
-	fromUnix := float64(now.Add(-2 * time.Hour).Unix())
-	toUnix := float64(now.Unix())
-
-	// Insert messages within the catchup window using proper Slack TS format
-	for i := 0; i < 5; i++ {
-		msgTime := now.Add(-time.Duration(30+i) * time.Minute)
-		msgTS := fmt.Sprintf("%d.%06d", msgTime.Unix(), 0)
-		require.NoError(t, database.UpsertMessage(db.Message{
-			TS:        msgTS,
-			ChannelID: "C001",
-			UserID:    "U001",
-			Text:      fmt.Sprintf("Recent message %d", i),
-		}))
-	}
-
-	// Insert a daily digest covering this period
-	_, err = database.UpsertDigest(db.Digest{
-		PeriodFrom:   fromUnix,
-		PeriodTo:     toUnix,
-		Type:         "daily",
-		Summary:      "Daily catchup summary",
-		Topics:       `["topic1"]`,
-		Decisions:    `[{"text":"Decision A","by":"alice"}]`,
-		ActionItems:  `[{"text":"Task 1","assignee":"bob"}]`,
-		MessageCount: 50,
-		Model:        "haiku",
-	})
-	require.NoError(t, err)
-	database.Close()
-
-	catchupFlagSince = 2 * time.Hour
-	catchupFlagWatchedOnly = false
-	catchupFlagChannel = ""
-	defer func() { catchupFlagSince = 0 }()
-
-	buf := new(bytes.Buffer)
-	catchupCmd.SetOut(buf)
-
-	err = catchupCmd.RunE(catchupCmd, nil)
-	if err != nil {
-		// If it falls through to AI path, it will error - that's OK
-		// The fast path should work if messages are found
-		t.Logf("catchup error (may be expected if AI not available): %v", err)
-	}
+	assert.Contains(t, buf.String(), "total_unread")
 }
 
 // --- runDigestSummary with --hours ---

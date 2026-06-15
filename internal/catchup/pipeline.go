@@ -74,7 +74,9 @@ func (p *Pipeline) Run(ctx context.Context) (*Result, error) {
 	user := buildUserMessage(sections, p.targetsLine())
 	raw, _, _, err := p.gen.Generate(ctx, systemPrompt, user, "")
 	if err != nil {
-		return res, nil // degrade: sections still clearable
+		// Degrade gracefully: the AI rollup is optional; the gathered sections
+		// are still ground truth and remain clearable without stories.
+		return res, nil //nolint:nilerr
 	}
 	if ai, perr := parseAIOutput(raw); perr == nil {
 		res.TLDR = ai.TLDR

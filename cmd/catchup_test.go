@@ -33,9 +33,7 @@ func TestCatchupCommandRequiresConfig(t *testing.T) {
 func TestCatchupCommandFlags(t *testing.T) {
 	f := catchupCmd.Flags()
 
-	assert.NotNil(t, f.Lookup("since"))
-	assert.NotNil(t, f.Lookup("watched-only"))
-	assert.NotNil(t, f.Lookup("channel"))
+	assert.NotNil(t, f.Lookup("json"))
 }
 
 func TestDetermineSinceTimeExplicitDuration(t *testing.T) {
