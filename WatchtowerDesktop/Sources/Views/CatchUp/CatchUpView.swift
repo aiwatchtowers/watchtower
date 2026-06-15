@@ -82,7 +82,8 @@ struct CatchUpView: View {
                 if story.needsYou {
                     Text("needs you")
                         .font(.caption2.bold())
-                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                         .background(Color.orange.opacity(0.2))
                         .clipShape(Capsule())
                 }

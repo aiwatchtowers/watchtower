@@ -73,7 +73,10 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Main navigation items (shown above the separator).
     static var mainItems: [Self] {
-        [.chat, .catchUp, .briefings, .dayPlan, .inbox, .calendar, .targets, .tracks, .digests, .people, .workload, .blockers, .projectMap, .releases, .statistics, .search]
+        [
+            .chat, .catchUp, .briefings, .dayPlan, .inbox, .calendar, .targets, .tracks,
+            .digests, .people, .workload, .blockers, .projectMap, .releases, .statistics, .search
+        ]
     }
 
     /// Tool items (shown below the separator).
