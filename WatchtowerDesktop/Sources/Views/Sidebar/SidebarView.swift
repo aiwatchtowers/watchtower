@@ -4,16 +4,17 @@ import GRDB
 struct SidebarView: View {
     @Binding var selection: SidebarDestination
     @Environment(AppState.self) private var appState
-    @State private var updatedTrackCount: Int = 0
-    @State private var totalTrackCount: Int = 0
-    @State private var unreadDigestCount: Int = 0
-    @State private var unreadBriefingCount: Int = 0
-    @State private var recommendationCount: Int = 0
-    @State private var activeTaskCount: Int = 0
-    @State private var overdueTaskCount: Int = 0
-    @State private var inboxPendingCount: Int = 0
-    @State private var inboxHighPriorityCount: Int = 0
-    @State private var countsObservationTask: Task<Void, Never>?
+
+    private var counts: SidebarCountsViewModel? { appState.sidebarCountsViewModel }
+    private var updatedTrackCount: Int { counts?.updatedTrackCount ?? 0 }
+    private var unreadDigestCount: Int { counts?.unreadDigestCount ?? 0 }
+    private var unreadBriefingCount: Int { counts?.unreadBriefingCount ?? 0 }
+    private var recommendationCount: Int { counts?.recommendationCount ?? 0 }
+    private var activeTaskCount: Int { counts?.activeTaskCount ?? 0 }
+    private var overdueTaskCount: Int { counts?.overdueTaskCount ?? 0 }
+    private var inboxPendingCount: Int { counts?.inboxPendingCount ?? 0 }
+    private var inboxHighPriorityCount: Int { counts?.inboxHighPriorityCount ?? 0 }
+    private var catchUpTotalCount: Int { counts?.catchUpTotalCount ?? 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -96,8 +97,6 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { startObservingCounts() }
-        .onDisappear { countsObservationTask?.cancel() }
     }
 
     // MARK: - Main Sidebar Button
@@ -140,6 +139,7 @@ struct SidebarView: View {
         } else {
             let count: Int = {
                 switch item {
+                case .catchUp: return catchUpTotalCount
                 case .briefings: return unreadBriefingCount
                 case .inbox: return inboxPendingCount
                 case .targets: return overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
@@ -169,95 +169,4 @@ struct SidebarView: View {
         }
     }
 
-    // MARK: - Data Loading
-
-    private func startObservingCounts() {
-        guard countsObservationTask == nil, let db = appState.databaseManager else { return }
-        loadCounts(db: db)
-        let dbPool = db.dbPool
-        countsObservationTask = Task {
-            let observation = ValueObservation.tracking { db -> (Int, Int, Int, Int) in
-                let tracks = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks") ?? 0
-                let briefings = try Int.fetchOne(
-                    db, sql: "SELECT COUNT(*) FROM briefings"
-                ) ?? 0
-                let targets = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0
-                let inbox = (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items")) ?? 0
-                return (tracks, briefings, targets, inbox)
-            }
-            do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled, let dbMgr = appState.databaseManager else { break }
-                    loadCounts(db: dbMgr)
-                }
-            } catch {}
-        }
-    }
-
-    private struct SidebarCounts {
-        let updatedTrackCount: Int
-        let totalTrackCount: Int
-        let unreadDigestCount: Int
-        let unreadBriefingCount: Int
-        let recommendationCount: Int
-        let activeTaskCount: Int
-        let overdueTaskCount: Int
-        let inboxPendingCount: Int
-        let inboxHighPriorityCount: Int
-    }
-
-    private func loadCounts(db: DatabaseManager) {
-        Task {
-            let result = try? await db.dbPool.read { db -> SidebarCounts in
-                let uid = try TrackQueries.fetchCurrentUserID(db)
-
-                guard let uid else {
-                    return SidebarCounts(
-                        updatedTrackCount: 0,
-                        totalTrackCount: 0,
-                        unreadDigestCount: 0,
-                        unreadBriefingCount: 0,
-                        recommendationCount: 0,
-                        activeTaskCount: 0,
-                        overdueTaskCount: 0,
-                        inboxPendingCount: 0,
-                        inboxHighPriorityCount: 0
-                    )
-                }
-
-                let trackCounts = try TrackQueries.fetchCounts(db)
-                let taskCounts = try TargetQueries.fetchCounts(db)
-                let inboxCounts = (try? InboxQueries.fetchCounts(db)) ?? (pending: 0, unread: 0, highPriority: 0)
-
-                let recCount: Int
-                if let allStats = try? ChannelStatsQueries.fetchAll(db, currentUserID: uid) {
-                    recCount = ChannelStatsQueries.computeRecommendations(from: allStats).count
-                } else {
-                    recCount = 0
-                }
-                return SidebarCounts(
-                    updatedTrackCount: trackCounts.updated,
-                    totalTrackCount: trackCounts.total,
-                    unreadDigestCount: try DigestQueries.unreadDigestCount(db),
-                    unreadBriefingCount: try BriefingQueries.unreadCount(db),
-                    recommendationCount: recCount,
-                    activeTaskCount: taskCounts.active,
-                    overdueTaskCount: taskCounts.overdue,
-                    inboxPendingCount: inboxCounts.unread,
-                    inboxHighPriorityCount: inboxCounts.highPriority
-                )
-            }
-            if let r = result {
-                self.updatedTrackCount = r.updatedTrackCount
-                self.totalTrackCount = r.totalTrackCount
-                self.unreadDigestCount = r.unreadDigestCount
-                self.unreadBriefingCount = r.unreadBriefingCount
-                self.recommendationCount = r.recommendationCount
-                self.activeTaskCount = r.activeTaskCount
-                self.overdueTaskCount = r.overdueTaskCount
-                self.inboxPendingCount = r.inboxPendingCount
-                self.inboxHighPriorityCount = r.inboxHighPriorityCount
-            }
-        }
-    }
 }

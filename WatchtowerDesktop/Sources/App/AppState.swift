@@ -33,6 +33,13 @@ final class AppState {
     /// Day Plan ViewModel — persists across tab switches.
     private(set) var dayPlanViewModel: DayPlanViewModel?
 
+    /// Catch-Up ViewModel — persists across tab switches.
+    private(set) var catchUpViewModel: CatchUpViewModel?
+
+    /// Sidebar badge counts — created during initialize() before the splash hides,
+    /// so badges are visible the moment the main UI appears.
+    private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -177,6 +184,14 @@ final class AppState {
                 needsOnboarding = onboarding.currentStep != .complete
                 profileComplete = !needsOnboarding
                 analysisLegacyMode = ConfigService().analysisLegacyMode
+                // Pre-load sidebar badge counts so they're already visible when the splash hides.
+                // Skipped when onboarding is needed — the OnboardingView replaces the sidebar entirely.
+                if !needsOnboarding {
+                    let countsVM = SidebarCountsViewModel(dbPool: manager.dbPool)
+                    await countsVM.loadInitial()
+                    countsVM.startObserving()
+                    sidebarCountsViewModel = countsVM
+                }
                 // Hold splash for at least 2 seconds
                 let elapsed = ContinuousClock.now - splashStart
                 if elapsed < .seconds(2) {
@@ -186,6 +201,7 @@ final class AppState {
                 loadCustomEmoji(from: manager)
                 initCalendar(dbPool: manager.dbPool)
                 initDayPlan(dbPool: manager.dbPool)
+                initCatchUp(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -289,6 +305,10 @@ final class AppState {
     private func initDayPlan(dbPool: DatabasePool) {
         guard let runner = ProcessCLIRunner.makeDefault() else { return }
         dayPlanViewModel = DayPlanViewModel(databasePool: dbPool, cliRunner: runner)
+    }
+
+    private func initCatchUp(dbPool: DatabasePool) {
+        catchUpViewModel = CatchUpViewModel(dbPool: dbPool)
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

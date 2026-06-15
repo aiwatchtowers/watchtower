@@ -156,6 +156,14 @@ struct MainNavigationView: View {
         switch appState.selectedDestination {
         case .chat:
             ChatView()
+        case .catchUp:
+            if let vm = appState.catchUpViewModel {
+                CatchUpView(vm: vm)
+            } else {
+                Text("Catch Up unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .briefings:
             BriefingsListView()
         case .dayPlan:
