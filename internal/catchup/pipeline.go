@@ -28,20 +28,21 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator) *Pipeline {
 // sections-only result; it never blocks the rollup.
 func (p *Pipeline) Run(ctx context.Context) (*Result, error) {
 	caps := p.cfg.Catchup.Caps
+	maxAge := p.cfg.Catchup.MaxAgeDays
 
-	dItems, dTotal, err := p.db.GetUnreadDigests(caps.Digests)
+	dItems, dTotal, err := p.db.GetUnreadDigests(caps.Digests, maxAge)
 	if err != nil {
 		return nil, err
 	}
-	tItems, tTotal, err := p.db.GetUnreadTracks(caps.Tracks)
+	tItems, tTotal, err := p.db.GetUnreadTracks(caps.Tracks, maxAge)
 	if err != nil {
 		return nil, err
 	}
-	iItems, iTotal, err := p.db.GetUnreadInboxItems(caps.Inbox)
+	iItems, iTotal, err := p.db.GetUnreadInboxItems(caps.Inbox, maxAge)
 	if err != nil {
 		return nil, err
 	}
-	bItems, bTotal, err := p.db.GetUnreadBriefings(caps.Briefings)
+	bItems, bTotal, err := p.db.GetUnreadBriefings(caps.Briefings, maxAge)
 	if err != nil {
 		return nil, err
 	}

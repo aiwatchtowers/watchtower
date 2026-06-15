@@ -11,7 +11,11 @@ import (
 	"watchtower/internal/db"
 )
 
-var catchupFlagJSON bool
+var (
+	catchupFlagJSON   bool
+	catchupFlagMaxAge int
+	catchupFlagLimit  int
+)
 
 var catchupCmd = &cobra.Command{
 	Use:   "catchup",
@@ -22,6 +26,8 @@ var catchupCmd = &cobra.Command{
 
 func init() {
 	catchupCmd.Flags().BoolVar(&catchupFlagJSON, "json", false, "output result as JSON")
+	catchupCmd.Flags().IntVar(&catchupFlagMaxAge, "max-age", 0, "override max age in days for unread items (0 = use config)")
+	catchupCmd.Flags().IntVar(&catchupFlagLimit, "limit", 0, "override per-area cap; when >0 sets all area caps to this value (0 = use config)")
 	rootCmd.AddCommand(catchupCmd)
 }
 
@@ -36,6 +42,18 @@ func runCatchup(cmd *cobra.Command, _ []string) error {
 	applyProviderOverride(cfg)
 	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
+	}
+
+	if catchupFlagMaxAge > 0 {
+		cfg.Catchup.MaxAgeDays = catchupFlagMaxAge
+	}
+	if catchupFlagLimit > 0 {
+		cfg.Catchup.Caps = config.CatchupCaps{
+			Digests:   catchupFlagLimit,
+			Tracks:    catchupFlagLimit,
+			Inbox:     catchupFlagLimit,
+			Briefings: catchupFlagLimit,
+		}
 	}
 
 	database, err := db.Open(cfg.DBPath())
