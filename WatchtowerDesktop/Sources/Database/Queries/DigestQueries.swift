@@ -86,6 +86,21 @@ enum DigestQueries {
         )
     }
 
+    /// Marks multiple digests read in one write. No-op on empty input.
+    static func markRead(_ db: Database, ids: [Int]) throws {
+        guard !ids.isEmpty else { return }
+        let columns = try db.columns(in: "digests")
+        guard columns.contains(where: { $0.name == "read_at" }) else { return }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        try db.execute(
+            sql: """
+                UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id IN (\(placeholders)) AND read_at IS NULL
+                """,
+            arguments: StatementArguments(ids)
+        )
+    }
+
     static func markDecisionRead(_ db: Database, digestID: Int, decisionIdx: Int) throws {
         guard try db.tableExists("decision_reads") else { return }
         try db.execute(

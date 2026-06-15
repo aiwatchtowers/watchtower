@@ -124,6 +124,19 @@ enum InboxQueries {
         )
     }
 
+    /// Marks multiple inbox items read in one write. No-op on empty input.
+    static func markRead(_ db: Database, ids: [Int]) throws {
+        guard !ids.isEmpty else { return }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        try db.execute(
+            sql: """
+                UPDATE inbox_items SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id IN (\(placeholders)) AND (read_at IS NULL OR read_at = '')
+                """,
+            arguments: StatementArguments(ids)
+        )
+    }
+
     // MARK: - Target
 
     static func linkTarget(_ db: Database, inboxID: Int, targetID: Int) throws {

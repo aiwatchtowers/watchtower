@@ -115,6 +115,13 @@ enum TrackQueries {
         }
     }
 
+    /// Marks multiple tracks read in one write, cascading to related digests per track.
+    static func markRead(_ db: Database, ids: [Int]) throws {
+        for id in ids {
+            try markRead(db, id: id)
+        }
+    }
+
     // MARK: - Priority
 
     static func updatePriority(_ db: Database, id: Int, priority: String) throws {
