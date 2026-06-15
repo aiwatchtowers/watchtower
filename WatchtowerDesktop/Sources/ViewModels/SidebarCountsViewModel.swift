@@ -39,12 +39,11 @@ final class SidebarCountsViewModel {
         guard observationTask == nil else { return }
         let pool = dbPool
         observationTask = Task { [weak self] in
-            let observation = ValueObservation.tracking { db -> (Int, Int, Int, Int) in
-                let tracks = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks") ?? 0
-                let briefings = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM briefings") ?? 0
-                let targets = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0
-                let inbox = (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items")) ?? 0
-                return (tracks, briefings, targets, inbox)
+            // Observe row counts of every source table so any write (including
+            // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
+            let observation = ValueObservation.tracking { db -> [Int] in
+                let tables = ["tracks", "briefings", "targets", "inbox_items", "digests"]
+                return try tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {
                 for try await _ in observation.values(in: pool).dropFirst() {
@@ -74,7 +73,7 @@ final class SidebarCountsViewModel {
         let inboxPendingCount: Int
         let inboxHighPriorityCount: Int
 
-        static let zero = Counts(
+        static let zero = Self(
             updatedTrackCount: 0,
             totalTrackCount: 0,
             unreadDigestCount: 0,

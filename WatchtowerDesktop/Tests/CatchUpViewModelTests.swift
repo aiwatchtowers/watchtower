@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import WatchtowerDesktop
 
 @MainActor
@@ -39,5 +40,132 @@ final class CatchUpViewModelTests: XCTestCase {
         XCTAssertEqual(result.ids(for: "digests"), [7, 8])
         XCTAssertEqual(result.ids(for: "tracks"), [42])
         XCTAssertEqual(result.ids(for: "inbox"), [])
+    }
+
+    // MARK: - Snapshot clearing (real DB)
+
+    /// markSectionRead must clear exactly the snapshot IDs for that area and leave
+    /// non-snapshot rows (including rows that arrived after the snapshot) unread.
+    func testMarkSectionReadClearsOnlySnapshotIDs() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let ids = try await pool.write { db -> (snap: Int, other: Int) in
+            let snap = try Self.insertDigest(db)
+            let other = try Self.insertDigest(db)
+            return (snap, other)
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        vm.result = Self.makeResult(sections: [Self.section(area: "digests", ids: [ids.snap])])
+
+        await vm.markSectionRead("digests")
+
+        let unread = try await pool.read { try Self.unreadDigestIDs($0) }
+        XCTAssertEqual(unread, [ids.other], "only the non-snapshot digest stays unread")
+        // The cleared section drops out of the in-memory result.
+        XCTAssertTrue(vm.result?.sections.contains { $0.area == "digests" } == false)
+    }
+
+    /// markAllRead clears the snapshot IDs across every area, leaving non-snapshot rows untouched.
+    func testMarkAllReadClearsSnapshotAcrossAreas() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let seeded = try await pool.write { db -> Seeded in
+            Seeded(
+                digSnap: try Self.insertDigest(db),
+                digOther: try Self.insertDigest(db),
+                trkSnap: try Self.insertTrack(db),
+                inbSnap: try Self.insertInbox(db),
+                brfSnap: try Self.insertBriefing(db)
+            )
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        vm.result = Self.makeResult(sections: [
+            Self.section(area: "digests", ids: [seeded.digSnap]),
+            Self.section(area: "tracks", ids: [seeded.trkSnap]),
+            Self.section(area: "inbox", ids: [seeded.inbSnap]),
+            Self.section(area: "briefings", ids: [seeded.brfSnap])
+        ])
+
+        await vm.markAllRead()
+
+        try await pool.read { db in
+            XCTAssertEqual(try Self.unreadDigestIDs(db), [seeded.digOther], "non-snapshot digest stays unread")
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE read_at IS NULL"), 0)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items WHERE read_at IS NULL OR read_at = ''"), 0
+            )
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM briefings WHERE read_at IS NULL"), 0)
+        }
+        XCTAssertNil(vm.result, "result is cleared after marking everything read")
+    }
+
+    // MARK: - Seeding helpers
+
+    private struct Seeded {
+        let digSnap: Int
+        let digOther: Int
+        let trkSnap: Int
+        let inbSnap: Int
+        let brfSnap: Int
+    }
+
+    nonisolated private static func insertDigest(_ db: Database) throws -> Int {
+        // Distinct period bounds keep the UNIQUE(channel_id,type,period_from,period_to) happy.
+        let next = (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests") ?? 0) + 1
+        try db.execute(
+            sql: """
+                INSERT INTO digests (channel_id, period_from, period_to, type, summary, read_at)
+                VALUES ('C1', ?, ?, 'channel', 's', NULL)
+                """,
+            arguments: [Double(next), Double(next + 1)]
+        )
+        return Int(db.lastInsertedRowID)
+    }
+
+    nonisolated private static func insertTrack(_ db: Database) throws -> Int {
+        try db.execute(sql: "INSERT INTO tracks (text, has_updates, read_at) VALUES ('t', 1, NULL)")
+        return Int(db.lastInsertedRowID)
+    }
+
+    nonisolated private static func insertInbox(_ db: Database) throws -> Int {
+        try db.execute(sql: """
+            INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, status, read_at)
+            VALUES ('C1', '1.0', 'U1', 'mention', 'pending', NULL)
+            """)
+        return Int(db.lastInsertedRowID)
+    }
+
+    nonisolated private static func insertBriefing(_ db: Database) throws -> Int {
+        try db.execute(sql: "INSERT INTO briefings (user_id, date, read_at) VALUES ('U1', '2026-06-16', NULL)")
+        return Int(db.lastInsertedRowID)
+    }
+
+    nonisolated private static func unreadDigestIDs(_ db: Database) throws -> [Int] {
+        try Int.fetchAll(db, sql: "SELECT id FROM digests WHERE read_at IS NULL ORDER BY id")
+    }
+
+    private static func section(area: String, ids: [Int]) -> CatchUpSection {
+        CatchUpSection(
+            area: area, total: ids.count, included: ids.count,
+            items: ids.map { CatchUpSectionItem(id: $0, title: "t", snippet: "") }
+        )
+    }
+
+    private static func makeResult(sections: [CatchUpSection]) -> CatchUpResult {
+        let zero = CatchUpAreaCount(included: 0, total: 0)
+        return CatchUpResult(
+            tldr: "",
+            counts: CatchUpCounts(
+                digests: zero, tracks: zero, inbox: zero, briefings: zero,
+                totalUnread: 0, totalIncluded: 0
+            ),
+            truncated: false, stories: [], sections: sections
+        )
     }
 }
