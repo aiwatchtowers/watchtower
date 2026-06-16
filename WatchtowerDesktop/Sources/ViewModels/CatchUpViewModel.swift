@@ -27,6 +27,24 @@ struct CatchUpStory: Codable, Identifiable, Equatable {
         case title, narrative, priority, refs
         case needsYou = "needs_you"
     }
+
+    init(title: String, narrative: String, priority: String, needsYou: Bool, refs: [CatchUpRef]) {
+        self.title = title
+        self.narrative = narrative
+        self.priority = priority
+        self.needsYou = needsYou
+        self.refs = refs
+    }
+
+    // Tolerate null / missing refs (older payloads, or a model omitting the key).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        narrative = try container.decodeIfPresent(String.self, forKey: .narrative) ?? ""
+        priority = try container.decodeIfPresent(String.self, forKey: .priority) ?? "medium"
+        needsYou = try container.decodeIfPresent(Bool.self, forKey: .needsYou) ?? false
+        refs = try container.decodeIfPresent([CatchUpRef].self, forKey: .refs) ?? []
+    }
 }
 
 struct CatchUpSectionItem: Codable, Identifiable, Equatable {
@@ -41,6 +59,26 @@ struct CatchUpSection: Codable, Identifiable, Equatable {
     let total: Int
     let included: Int
     let items: [CatchUpSectionItem]
+
+    enum CodingKeys: String, CodingKey {
+        case area, total, included, items
+    }
+
+    init(area: String, total: Int, included: Int, items: [CatchUpSectionItem]) {
+        self.area = area
+        self.total = total
+        self.included = included
+        self.items = items
+    }
+
+    // Tolerate null / missing items.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        area = try container.decodeIfPresent(String.self, forKey: .area) ?? ""
+        total = try container.decodeIfPresent(Int.self, forKey: .total) ?? 0
+        included = try container.decodeIfPresent(Int.self, forKey: .included) ?? 0
+        items = try container.decodeIfPresent([CatchUpSectionItem].self, forKey: .items) ?? []
+    }
 }
 
 struct CatchUpAreaCount: Codable, Equatable {
@@ -69,6 +107,34 @@ struct CatchUpResult: Codable, Equatable {
     let truncated: Bool
     let stories: [CatchUpStory]
     let sections: [CatchUpSection]
+
+    enum CodingKeys: String, CodingKey {
+        case tldr, counts, truncated, stories, sections
+    }
+
+    init(
+        tldr: String,
+        counts: CatchUpCounts,
+        truncated: Bool,
+        stories: [CatchUpStory],
+        sections: [CatchUpSection]
+    ) {
+        self.tldr = tldr
+        self.counts = counts
+        self.truncated = truncated
+        self.stories = stories
+        self.sections = sections
+    }
+
+    // Tolerate null / missing stories and sections (Go sends [], but be defensive).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tldr = try container.decodeIfPresent(String.self, forKey: .tldr) ?? ""
+        counts = try container.decode(CatchUpCounts.self, forKey: .counts)
+        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+        stories = try container.decodeIfPresent([CatchUpStory].self, forKey: .stories) ?? []
+        sections = try container.decodeIfPresent([CatchUpSection].self, forKey: .sections) ?? []
+    }
 
     /// The snapshot item IDs for one area — the authoritative set to clear.
     func ids(for area: String) -> [Int] {
@@ -121,16 +187,22 @@ final class CatchUpViewModel {
         guard let result else { return }
         let ids = result.ids(for: area)
         guard !ids.isEmpty else { return }
-        try? await dbPool.write { db in
-            switch area {
-            case "digests": try DigestQueries.markRead(db, ids: ids)
-            case "tracks": try TrackQueries.markRead(db, ids: ids)
-            case "inbox": try InboxQueries.markRead(db, ids: ids)
-            case "briefings": try BriefingQueries.markRead(db, ids: ids)
-            default: break
+        do {
+            try await dbPool.write { db in
+                switch area {
+                case "digests": try DigestQueries.markRead(db, ids: ids)
+                case "tracks": try TrackQueries.markRead(db, ids: ids)
+                case "inbox": try InboxQueries.markRead(db, ids: ids)
+                case "briefings": try BriefingQueries.markRead(db, ids: ids)
+                default: break
+                }
             }
+            // Only drop the section from the UI once the write actually succeeded.
+            clearSectionLocally(area)
+        } catch {
+            self.error = "Failed to mark \(area) read: \(error.localizedDescription)"
+            print("CatchUp markSectionRead(\(area)) failed: \(error)")
         }
-        clearSectionLocally(area)
     }
 
     /// Marks every snapshot ID across all areas read.
@@ -140,13 +212,19 @@ final class CatchUpViewModel {
         let trackIDs = result.ids(for: "tracks")
         let inboxIDs = result.ids(for: "inbox")
         let briefingIDs = result.ids(for: "briefings")
-        try? await dbPool.write { db in
-            try DigestQueries.markRead(db, ids: digestIDs)
-            try TrackQueries.markRead(db, ids: trackIDs)
-            try InboxQueries.markRead(db, ids: inboxIDs)
-            try BriefingQueries.markRead(db, ids: briefingIDs)
+        do {
+            try await dbPool.write { db in
+                try DigestQueries.markRead(db, ids: digestIDs)
+                try TrackQueries.markRead(db, ids: trackIDs)
+                try InboxQueries.markRead(db, ids: inboxIDs)
+                try BriefingQueries.markRead(db, ids: briefingIDs)
+            }
+            // Only clear the rollup once the write actually succeeded.
+            self.result = nil
+        } catch {
+            self.error = "Failed to mark everything read: \(error.localizedDescription)"
+            print("CatchUp markAllRead failed: \(error)")
         }
-        self.result = nil
     }
 
     private func clearSectionLocally(_ area: String) {

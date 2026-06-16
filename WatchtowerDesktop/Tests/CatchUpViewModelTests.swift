@@ -42,6 +42,48 @@ final class CatchUpViewModelTests: XCTestCase {
         XCTAssertEqual(result.ids(for: "inbox"), [])
     }
 
+    // MARK: - Decode tolerance (null / missing array fields)
+
+    /// Explicit null on stories/sections (and nested items/refs) must decode to empty arrays, not throw.
+    func testDecodesNullArraysAsEmpty() throws {
+        let json = """
+        {"tldr":"x","truncated":false,
+         "counts":{"digests":{"included":0,"total":0},"tracks":{"included":0,"total":0},
+                   "inbox":{"included":0,"total":0},"briefings":{"included":0,"total":0},
+                   "total_unread":0,"total_included":0},
+         "stories":null,"sections":null}
+        """
+        let result = try JSONDecoder().decode(CatchUpResult.self, from: Data(json.utf8))
+        XCTAssertTrue(result.stories.isEmpty)
+        XCTAssertTrue(result.sections.isEmpty)
+    }
+
+    /// Missing stories/sections keys (and nested items/refs) must decode to empty arrays, not throw.
+    func testDecodesMissingArrayKeysAsEmpty() throws {
+        let json = """
+        {"tldr":"x","truncated":false,
+         "counts":{"digests":{"included":0,"total":0},"tracks":{"included":0,"total":0},
+                   "inbox":{"included":0,"total":0},"briefings":{"included":0,"total":0},
+                   "total_unread":0,"total_included":0}}
+        """
+        let result = try JSONDecoder().decode(CatchUpResult.self, from: Data(json.utf8))
+        XCTAssertTrue(result.stories.isEmpty)
+        XCTAssertTrue(result.sections.isEmpty)
+
+        // A story with null refs and a section with null items also tolerate the absence.
+        let nested = """
+        {"tldr":"x","truncated":false,
+         "counts":{"digests":{"included":1,"total":1},"tracks":{"included":0,"total":0},
+                   "inbox":{"included":0,"total":0},"briefings":{"included":0,"total":0},
+                   "total_unread":1,"total_included":1},
+         "stories":[{"title":"S","narrative":"N","priority":"high","needs_you":true}],
+         "sections":[{"area":"digests","total":1,"included":1}]}
+        """
+        let nestedResult = try JSONDecoder().decode(CatchUpResult.self, from: Data(nested.utf8))
+        XCTAssertEqual(nestedResult.stories.first?.refs.count, 0)
+        XCTAssertEqual(nestedResult.sections.first?.items.count, 0)
+    }
+
     // MARK: - Snapshot clearing (real DB)
 
     /// markSectionRead must clear exactly the snapshot IDs for that area and leave
