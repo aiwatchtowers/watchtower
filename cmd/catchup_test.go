@@ -34,6 +34,16 @@ func TestCatchupCommandFlags(t *testing.T) {
 	f := catchupCmd.Flags()
 
 	assert.NotNil(t, f.Lookup("json"))
+	assert.NotNil(t, f.Lookup("max-age"))
+	assert.NotNil(t, f.Lookup("limit"))
+
+	// Deprecated flags from the old command are kept but hidden so scripts get a
+	// clear notice instead of an "unknown flag" error (F3).
+	for _, name := range []string{"since", "watched-only", "channel"} {
+		flag := f.Lookup(name)
+		require.NotNil(t, flag, "deprecated flag --%s should still be registered", name)
+		assert.True(t, flag.Hidden, "deprecated flag --%s should be hidden", name)
+	}
 }
 
 func TestDetermineSinceTimeExplicitDuration(t *testing.T) {

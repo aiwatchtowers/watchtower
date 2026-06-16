@@ -425,35 +425,6 @@ func TestRunDigest_FullDigestOutput(t *testing.T) {
 	assert.Contains(t, output, "Deployment planning")
 }
 
-// --- showDigestCatchup with daily digest ---
-
-func TestShowDigestCatchup_DailyDigest2(t *testing.T) {
-	tmpDir := t.TempDir()
-	database, err := db.Open(tmpDir + "/test.db")
-	require.NoError(t, err)
-	defer database.Close()
-
-	now := float64(time.Now().Unix())
-	_, err = database.UpsertDigest(db.Digest{
-		PeriodFrom:   now - 86400,
-		PeriodTo:     now,
-		Type:         "daily",
-		Summary:      "Busy day with lots of decisions",
-		Topics:       `[]`,
-		Decisions:    `[{"text":"Ship v2","by":"PM"}]`,
-		ActionItems:  `[{"text":"Tag release","assignee":"eng"}]`,
-		MessageCount: 200,
-		Model:        "haiku",
-	})
-	require.NoError(t, err)
-
-	buf := new(bytes.Buffer)
-	shown := showDigestCatchup(buf, database, now-100000)
-	assert.True(t, shown)
-	output := buf.String()
-	assert.NotEmpty(t, output)
-}
-
 // --- dbFileSize ---
 
 func TestDbFileSize_ExistingFile(t *testing.T) {

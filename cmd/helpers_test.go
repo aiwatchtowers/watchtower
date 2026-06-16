@@ -211,27 +211,3 @@ func TestPrintLastLines(t *testing.T) {
 func TestDbFileSize_Nonexistent(t *testing.T) {
 	assert.Equal(t, int64(0), dbFileSize("/nonexistent/file/path"))
 }
-
-func TestPrintDigestDetails_Empty(t *testing.T) {
-	buf := new(bytes.Buffer)
-	d := db.Digest{Decisions: "[]", ActionItems: "[]"}
-	printDigestDetails(buf, d)
-	assert.Empty(t, buf.String())
-}
-
-func TestPrintDigestDetails_WithContent(t *testing.T) {
-	buf := new(bytes.Buffer)
-	d := db.Digest{
-		Decisions:   `[{"text":"Use Go for backend","by":"Alice"},{"text":"No breaking changes"}]`,
-		ActionItems: `[{"text":"Deploy by Friday","assignee":"Bob"},{"text":"Review PR"}]`,
-	}
-	printDigestDetails(buf, d)
-
-	output := buf.String()
-	assert.Contains(t, output, "Use Go for backend")
-	assert.Contains(t, output, "(by Alice)")
-	assert.Contains(t, output, "No breaking changes")
-	assert.Contains(t, output, "Deploy by Friday")
-	assert.Contains(t, output, "-> Bob")
-	assert.Contains(t, output, "Review PR")
-}

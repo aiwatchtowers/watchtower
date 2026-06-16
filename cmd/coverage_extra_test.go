@@ -232,35 +232,6 @@ func TestPrintTracks_ChannelLookup(t *testing.T) {
 	assert.Contains(t, buf.String(), "#general")
 }
 
-// --- ShowDigestCatchup with channel digest and unknown channel ---
-func TestShowDigestCatchup_ChannelUnknownID(t *testing.T) {
-	tmpDir := t.TempDir()
-	database, err := db.Open(tmpDir + "/test.db")
-	require.NoError(t, err)
-	defer database.Close()
-
-	now := float64(time.Now().Unix())
-	_, err = database.UpsertDigest(db.Digest{
-		ChannelID:    "CUNKNOWN",
-		PeriodFrom:   now - 3600,
-		PeriodTo:     now,
-		Type:         "channel",
-		Summary:      "Discussion in unknown channel",
-		Topics:       `[]`,
-		Decisions:    `[]`,
-		ActionItems:  `[]`,
-		MessageCount: 5,
-		Model:        "haiku",
-	})
-	require.NoError(t, err)
-
-	buf := new(bytes.Buffer)
-	shown := showDigestCatchup(buf, database, now-100000)
-	assert.True(t, shown)
-	// Should show the raw channel ID since it can't be resolved
-	assert.NotEmpty(t, buf.String())
-}
-
 // --- ConfigShow with all fields ---
 func TestConfigShow_AllFields(t *testing.T) {
 	tmpDir := t.TempDir()
