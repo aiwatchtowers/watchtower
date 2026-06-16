@@ -187,10 +187,7 @@ final class AppState {
                 // Pre-load sidebar badge counts so they're already visible when the splash hides.
                 // Skipped when onboarding is needed — the OnboardingView replaces the sidebar entirely.
                 if !needsOnboarding {
-                    let countsVM = SidebarCountsViewModel(dbPool: manager.dbPool)
-                    await countsVM.loadInitial()
-                    countsVM.startObserving()
-                    sidebarCountsViewModel = countsVM
+                    await initSidebarCounts(dbPool: manager.dbPool)
                 }
                 // Hold splash for at least 2 seconds
                 let elapsed = ContinuousClock.now - splashStart
@@ -247,6 +244,19 @@ final class AppState {
         onboarding.markComplete()
         needsOnboarding = false
         profileComplete = true
+        // The initialize() path skips sidebar counts while onboarding is pending, so build
+        // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
+        if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
+            Task { await initSidebarCounts(dbPool: pool) }
+        }
+    }
+
+    /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
+    private func initSidebarCounts(dbPool: DatabasePool) async {
+        let countsVM = SidebarCountsViewModel(dbPool: dbPool)
+        await countsVM.loadInitial()
+        countsVM.startObserving()
+        sidebarCountsViewModel = countsVM
     }
 
     /// Re-triggers the onboarding flow (from Settings).
