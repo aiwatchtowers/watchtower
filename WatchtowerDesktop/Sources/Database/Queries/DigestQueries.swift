@@ -89,8 +89,6 @@ enum DigestQueries {
     /// Marks multiple digests read in one write. No-op on empty input.
     static func markRead(_ db: Database, ids: [Int]) throws {
         guard !ids.isEmpty else { return }
-        let columns = try db.columns(in: "digests")
-        guard columns.contains(where: { $0.name == "read_at" }) else { return }
         let placeholders = ids.map { _ in "?" }.joined(separator: ",")
         try db.execute(
             sql: """
