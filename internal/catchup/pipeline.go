@@ -120,6 +120,7 @@ func toSection(area string, items []db.UnreadItem, total int) Section {
 func (p *Pipeline) targetsLine() string {
 	active, overdue, err := p.db.GetTargetCounts()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "catchup: targets line unavailable: %v\n", err)
 		return ""
 	}
 	return fmt.Sprintf("%d active targets, %d overdue", active, overdue)
