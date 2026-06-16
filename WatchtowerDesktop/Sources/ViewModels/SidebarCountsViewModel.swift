@@ -53,7 +53,9 @@ final class SidebarCountsViewModel {
                     if Task.isCancelled { break }
                     self.apply(counts)
                 }
-            } catch {}
+            } catch {
+                print("SidebarCounts observation error: \(error)")
+            }
         }
     }
 
@@ -87,34 +89,38 @@ final class SidebarCountsViewModel {
     }
 
     private func fetch() async -> Counts {
-        let result = try? await dbPool.read { db -> Counts in
-            guard let uid = try TrackQueries.fetchCurrentUserID(db) else {
-                return Counts.zero
-            }
-            let trackCounts = try TrackQueries.fetchCounts(db)
-            let taskCounts = try TargetQueries.fetchCounts(db)
-            let inboxCounts = (try? InboxQueries.fetchCounts(db)) ?? (pending: 0, unread: 0, highPriority: 0)
+        do {
+            return try await dbPool.read { db -> Counts in
+                guard let uid = try TrackQueries.fetchCurrentUserID(db) else {
+                    return Counts.zero
+                }
+                let trackCounts = try TrackQueries.fetchCounts(db)
+                let taskCounts = try TargetQueries.fetchCounts(db)
+                let inboxCounts = (try? InboxQueries.fetchCounts(db)) ?? (pending: 0, unread: 0, highPriority: 0)
 
-            let recCount: Int
-            if let allStats = try? ChannelStatsQueries.fetchAll(db, currentUserID: uid) {
-                recCount = ChannelStatsQueries.computeRecommendations(from: allStats).count
-            } else {
-                recCount = 0
-            }
+                let recCount: Int
+                if let allStats = try? ChannelStatsQueries.fetchAll(db, currentUserID: uid) {
+                    recCount = ChannelStatsQueries.computeRecommendations(from: allStats).count
+                } else {
+                    recCount = 0
+                }
 
-            return Counts(
-                updatedTrackCount: trackCounts.updated,
-                totalTrackCount: trackCounts.total,
-                unreadDigestCount: try DigestQueries.unreadDigestCount(db),
-                unreadBriefingCount: try BriefingQueries.unreadCount(db),
-                recommendationCount: recCount,
-                activeTaskCount: taskCounts.active,
-                overdueTaskCount: taskCounts.overdue,
-                inboxPendingCount: inboxCounts.unread,
-                inboxHighPriorityCount: inboxCounts.highPriority
-            )
+                return Counts(
+                    updatedTrackCount: trackCounts.updated,
+                    totalTrackCount: trackCounts.total,
+                    unreadDigestCount: try DigestQueries.unreadDigestCount(db),
+                    unreadBriefingCount: try BriefingQueries.unreadCount(db),
+                    recommendationCount: recCount,
+                    activeTaskCount: taskCounts.active,
+                    overdueTaskCount: taskCounts.overdue,
+                    inboxPendingCount: inboxCounts.unread,
+                    inboxHighPriorityCount: inboxCounts.highPriority
+                )
+            }
+        } catch {
+            print("SidebarCounts fetch failed: \(error)")
+            return .zero
         }
-        return result ?? .zero
     }
 
     private func apply(_ c: Counts) {
