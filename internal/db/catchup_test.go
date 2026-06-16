@@ -39,40 +39,35 @@ func TestCatchup01_GetUnreadDigestsCapAndTotal(t *testing.T) {
 
 func itoa(i int) string { return string(rune('0' + i)) }
 
-func TestCatchup02_MarkDigestsReadOnlySnapshot(t *testing.T) {
+func TestCatchup02_InboxEmptyStringReadAtIsUnread(t *testing.T) {
 	d := openTestDB(t)
-	var ids []int
-	for i := 0; i < 3; i++ {
-		res, err := d.Exec(
-			`INSERT INTO digests (channel_id, period_from, period_to, type, summary, read_at)
-			 VALUES ('C1', ?, ?, 'channel', 'x', NULL)`, float64(i), float64(i+1))
-		if err != nil {
-			t.Fatal(err)
-		}
-		id, _ := res.LastInsertId()
-		ids = append(ids, int(id))
+	// Inbox uniquely treats read_at='' (not just NULL) as unread.
+	if _, err := d.Exec(
+		`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, status, priority, read_at)
+		 VALUES ('C1', '1.1', 'U1', 'mention', 'pending', 'medium', '')`); err != nil {
+		t.Fatal(err)
 	}
-
-	// Mark only the first two; the third must stay unread.
-	if err := d.MarkDigestsRead(ids[:2]); err != nil {
+	if _, err := d.Exec(
+		`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, status, priority, read_at)
+		 VALUES ('C1', '2.2', 'U1', 'mention', 'pending', 'medium', NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	// An already-read item must be excluded.
+	if _, err := d.Exec(
+		`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, status, priority, read_at)
+		 VALUES ('C1', '3.3', 'U1', 'mention', 'pending', 'medium', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 
-	_, total, err := d.GetUnreadDigests(100, 0)
+	items, total, err := d.GetUnreadInboxItems(100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 1 {
-		t.Fatalf("unread total = %d, want 1 (third untouched)", total)
+	if total != 2 {
+		t.Fatalf("unread inbox total = %d, want 2 (empty-string and NULL read_at)", total)
 	}
-
-	// Idempotent: re-marking already-read IDs is a no-op, not an error.
-	if err := d.MarkDigestsRead(ids[:2]); err != nil {
-		t.Fatalf("re-mark errored: %v", err)
-	}
-	// Empty slice is a safe no-op.
-	if err := d.MarkDigestsRead(nil); err != nil {
-		t.Fatalf("nil slice errored: %v", err)
+	if len(items) != 2 {
+		t.Fatalf("len(items) = %d, want 2", len(items))
 	}
 }
 

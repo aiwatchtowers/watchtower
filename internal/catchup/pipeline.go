@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"watchtower/internal/config"
@@ -56,6 +57,7 @@ func (p *Pipeline) Run(ctx context.Context) (*Result, error) {
 
 	res := &Result{
 		Sections: sections,
+		Stories:  []Story{},
 		Counts: Counts{
 			Digests:   AreaCount{Included: len(dItems), Total: dTotal},
 			Tracks:    AreaCount{Included: len(tItems), Total: tTotal},
@@ -76,18 +78,37 @@ func (p *Pipeline) Run(ctx context.Context) (*Result, error) {
 	raw, _, _, err := p.gen.Generate(ctx, systemPrompt, user, "")
 	if err != nil {
 		// Degrade gracefully: the AI rollup is optional; the gathered sections
-		// are still ground truth and remain clearable without stories.
+		// are still ground truth and remain clearable without stories. Log so a
+		// persistent AI outage is diagnosable rather than silently story-less.
+		fmt.Fprintf(os.Stderr, "catchup: AI rollup failed, degrading to sections-only: %v\n", err)
 		return res, nil //nolint:nilerr
 	}
-	if ai, perr := parseAIOutput(raw); perr == nil {
-		res.TLDR = ai.TLDR
+	ai, perr := parseAIOutput(raw)
+	if perr != nil {
+		// Same degradation as an AI error: a malformed response yields no stories,
+		// but log it so unparseable model output is not indistinguishable from
+		// "the AI found nothing to cluster".
+		fmt.Fprintf(os.Stderr, "catchup: AI output unparseable, degrading to sections-only: %v\n", perr)
+		return res, nil
+	}
+	res.TLDR = ai.TLDR
+	if ai.Stories != nil {
 		res.Stories = ai.Stories
+	}
+	// Ensure each story's Refs is non-nil so it never serializes to JSON null
+	// (the Swift decoder declares refs as a non-optional array).
+	for i := range res.Stories {
+		if res.Stories[i].Refs == nil {
+			res.Stories[i].Refs = []Ref{}
+		}
 	}
 	return res, nil
 }
 
 func toSection(area string, items []db.UnreadItem, total int) Section {
-	sec := Section{Area: area, Total: total, Included: len(items)}
+	// Items is initialized non-nil so an empty area serializes as [] not null —
+	// the Swift decoder declares items as a non-optional array.
+	sec := Section{Area: area, Total: total, Included: len(items), Items: []SectionItem{}}
 	for _, it := range items {
 		sec.Items = append(sec.Items, SectionItem{ID: it.ID, Title: it.Title, Snippet: it.Snippet})
 	}

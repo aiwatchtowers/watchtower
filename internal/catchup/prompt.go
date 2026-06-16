@@ -21,7 +21,7 @@ For each story:
 Also write a "tldr": 2-3 sentences capturing the most important things overall. If a targets line is provided, fold its counts into the tldr verbatim.
 
 Respond with ONLY a JSON object, no markdown fences:
-{"tldr": "...", "stories": [{"title": "...", "narrative": "...", "priority": "high", "needs_you": true, "refs": [{"area": "track", "id": 1, "label": "..."}]}]}`
+{"tldr": "...", "stories": [{"title": "...", "narrative": "...", "priority": "high", "needs_you": true, "refs": [{"area": "tracks", "id": 1, "label": "..."}]}]}`
 
 // buildUserMessage renders the gathered sections (and optional targets context)
 // into the user message for the model.

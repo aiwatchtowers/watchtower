@@ -2,73 +2,8 @@ package db
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
-
-// inClause builds a "?,?,?" placeholder string and the matching args slice.
-func inClause(ids []int) (string, []any) {
-	ph := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		ph[i] = "?"
-		args[i] = id
-	}
-	return strings.Join(ph, ","), args
-}
-
-// MarkDigestsRead marks the given digests read. No-op on empty input. Idempotent.
-func (db *DB) MarkDigestsRead(ids []int) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	ph, args := inClause(ids)
-	q := `UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-	      WHERE id IN (` + ph + `) AND read_at IS NULL`
-	if _, err := db.Exec(q, args...); err != nil {
-		return fmt.Errorf("bulk marking digests read: %w", err)
-	}
-	return nil
-}
-
-// MarkTracksRead marks the given tracks read (read_at set, has_updates cleared)
-// and cascades to each track's related digests via MarkTrackRead. No-op on empty input.
-func (db *DB) MarkTracksRead(ids []int) error {
-	for _, id := range ids {
-		if err := db.MarkTrackRead(id); err != nil {
-			return fmt.Errorf("bulk marking track %d: %w", id, err)
-		}
-	}
-	return nil
-}
-
-// MarkInboxReadBulk marks the given inbox items read. No-op on empty input. Idempotent.
-func (db *DB) MarkInboxReadBulk(ids []int) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	ph, args := inClause(ids)
-	q := `UPDATE inbox_items SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-	      WHERE id IN (` + ph + `) AND (read_at IS NULL OR read_at = '')`
-	if _, err := db.Exec(q, args...); err != nil {
-		return fmt.Errorf("bulk marking inbox read: %w", err)
-	}
-	return nil
-}
-
-// MarkBriefingsRead marks the given briefings read. No-op on empty input. Idempotent.
-func (db *DB) MarkBriefingsRead(ids []int) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	ph, args := inClause(ids)
-	q := `UPDATE briefings SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-	      WHERE id IN (` + ph + `) AND read_at IS NULL`
-	if _, err := db.Exec(q, args...); err != nil {
-		return fmt.Errorf("bulk marking briefings read: %w", err)
-	}
-	return nil
-}
 
 // UnreadItem is a compact representation of one unread row for the catch-up rollup.
 type UnreadItem struct {
