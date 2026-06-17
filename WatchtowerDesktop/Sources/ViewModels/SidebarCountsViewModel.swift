@@ -43,7 +43,7 @@ final class SidebarCountsViewModel {
             // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
             let observation = ValueObservation.tracking { db -> [Int] in
                 let tables = ["tracks", "briefings", "targets", "inbox_items", "digests"]
-                return try tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
+                return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {
                 for try await _ in observation.values(in: pool).dropFirst() {
