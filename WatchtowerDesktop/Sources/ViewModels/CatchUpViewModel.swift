@@ -251,6 +251,19 @@ final class CatchUpViewModel {
     nonisolated private static func runCLI(
         path: String, arguments: [String]
     ) async -> (exitCode: Int32, stdout: String, stderr: String) {
+        // The Process I/O below is synchronous and blocking, so run it off the
+        // cooperative pool via a continuation — this also lets us use DispatchGroup.wait()
+        // outside an async context (which is a hard error under Swift 6).
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: runCLIBlocking(path: path, arguments: arguments))
+            }
+        }
+    }
+
+    nonisolated private static func runCLIBlocking(
+        path: String, arguments: [String]
+    ) -> (exitCode: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
@@ -265,9 +278,18 @@ final class CatchUpViewModel {
         } catch {
             return (-1, "", error.localizedDescription)
         }
-        // Read pipe data BEFORE waitUntilExit to avoid deadlock when output exceeds 64KB.
+        // Drain stdout and stderr CONCURRENTLY before waitUntilExit: if stderr fills its
+        // ~64KB pipe buffer while we block on stdout (or vice versa), the child stalls and
+        // we deadlock. Reading both in parallel keeps both buffers flowing.
+        var stderrData = Data()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        group.wait()
         process.waitUntilExit()
         let stdout = String(data: stdoutData, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
