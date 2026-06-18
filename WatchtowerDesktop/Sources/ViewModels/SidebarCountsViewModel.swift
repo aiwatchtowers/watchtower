@@ -96,12 +96,21 @@ final class SidebarCountsViewModel {
                 }
                 let trackCounts = try TrackQueries.fetchCounts(db)
                 let taskCounts = try TargetQueries.fetchCounts(db)
-                let inboxCounts = (try? InboxQueries.fetchCounts(db)) ?? (pending: 0, unread: 0, highPriority: 0)
+
+                let inboxCounts: (pending: Int, unread: Int, highPriority: Int)
+                do {
+                    inboxCounts = try InboxQueries.fetchCounts(db)
+                } catch {
+                    print("SidebarCounts inbox count failed: \(error)")
+                    inboxCounts = (pending: 0, unread: 0, highPriority: 0)
+                }
 
                 let recCount: Int
-                if let allStats = try? ChannelStatsQueries.fetchAll(db, currentUserID: uid) {
+                do {
+                    let allStats = try ChannelStatsQueries.fetchAll(db, currentUserID: uid)
                     recCount = ChannelStatsQueries.computeRecommendations(from: allStats).count
-                } else {
+                } catch {
+                    print("SidebarCounts recommendations count failed: \(error)")
                     recCount = 0
                 }
 
