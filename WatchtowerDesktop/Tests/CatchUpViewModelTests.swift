@@ -147,6 +147,66 @@ final class CatchUpViewModelTests: XCTestCase {
         XCTAssertNil(vm.result, "result is cleared after marking everything read")
     }
 
+    // MARK: - Truncation honesty
+
+    /// When a section is truncated (included < total), marking it read must NOT silently
+    /// drop the section to "all caught up" — the snapshot is still cleared in the DB, and
+    /// the rollup is not left falsely empty (it re-runs to pull the next batch).
+    func testMarkSectionReadTruncatedDoesNotFalselyClear() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let ids = try await pool.write { db -> (snap: Int, other: Int) in
+            let snap = try Self.insertDigest(db)
+            let other = try Self.insertDigest(db)
+            return (snap, other)
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        // Snapshot shows 1 of 2 → truncated section.
+        vm.result = Self.makeResult(
+            sections: [Self.section(area: "digests", ids: [ids.snap], total: 2)]
+        )
+
+        await vm.markSectionRead("digests")
+
+        // The snapshot ID was still marked read in the DB.
+        let unread = try await pool.read { try Self.unreadDigestIDs($0) }
+        XCTAssertEqual(unread, [ids.other], "only the snapshot digest was cleared")
+        // It did NOT take the clearSectionLocally path that would falsely empty the rollup.
+        XCTAssertFalse(
+            vm.result?.sections.isEmpty ?? true,
+            "truncated section must not be silently dropped to 'all caught up'"
+        )
+    }
+
+    /// markAllRead on a truncated rollup must not leave result=nil ("all caught up");
+    /// the snapshot is still cleared, but the rollup re-runs for the next batch.
+    func testMarkAllReadTruncatedDoesNotFalselyClear() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let ids = try await pool.write { db -> (snap: Int, other: Int) in
+            let snap = try Self.insertDigest(db)
+            let other = try Self.insertDigest(db)
+            return (snap, other)
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        vm.result = Self.makeResult(
+            sections: [Self.section(area: "digests", ids: [ids.snap], total: 2)],
+            truncated: true
+        )
+
+        await vm.markAllRead()
+
+        let unread = try await pool.read { try Self.unreadDigestIDs($0) }
+        XCTAssertEqual(unread, [ids.other], "snapshot digest was cleared, the other stays unread")
+        XCTAssertNotNil(vm.result, "truncated rollup must not be nilled to 'all caught up'")
+    }
+
     // MARK: - Seeding helpers
 
     private struct Seeded {
@@ -192,14 +252,16 @@ final class CatchUpViewModelTests: XCTestCase {
         try Int.fetchAll(db, sql: "SELECT id FROM digests WHERE read_at IS NULL ORDER BY id")
     }
 
-    private static func section(area: String, ids: [Int]) -> CatchUpSection {
+    /// Builds a section. `total` defaults to the snapshot size (not truncated); pass a
+    /// larger value to simulate a truncated "+N not shown" section.
+    private static func section(area: String, ids: [Int], total: Int? = nil) -> CatchUpSection {
         CatchUpSection(
-            area: area, total: ids.count, included: ids.count,
+            area: area, total: total ?? ids.count, included: ids.count,
             items: ids.map { CatchUpSectionItem(id: $0, title: "t", snippet: "") }
         )
     }
 
-    private static func makeResult(sections: [CatchUpSection]) -> CatchUpResult {
+    private static func makeResult(sections: [CatchUpSection], truncated: Bool = false) -> CatchUpResult {
         let zero = CatchUpAreaCount(included: 0, total: 0)
         return CatchUpResult(
             tldr: "",
@@ -207,7 +269,7 @@ final class CatchUpViewModelTests: XCTestCase {
                 digests: zero, tracks: zero, inbox: zero, briefings: zero,
                 totalUnread: 0, totalIncluded: 0
             ),
-            truncated: false, stories: [], sections: sections
+            truncated: truncated, stories: [], sections: sections
         )
     }
 }

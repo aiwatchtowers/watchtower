@@ -187,6 +187,8 @@ final class CatchUpViewModel {
         guard let result else { return }
         let ids = result.ids(for: area)
         guard !ids.isEmpty else { return }
+        let section = result.sections.first { $0.area == area }
+        let hasMore = (section?.included ?? 0) < (section?.total ?? 0)
         do {
             try await dbPool.write { db in
                 switch area {
@@ -197,8 +199,14 @@ final class CatchUpViewModel {
                 default: break
                 }
             }
-            // Only drop the section from the UI once the write actually succeeded.
-            clearSectionLocally(area)
+            // The write succeeded. If this section was truncated, the "+N not shown"
+            // items are still unread — re-run to pull the next batch instead of
+            // falsely dropping the section. Otherwise clear it locally.
+            if hasMore {
+                generate()
+            } else {
+                clearSectionLocally(area)
+            }
         } catch {
             self.error = "Failed to mark \(area) read: \(error.localizedDescription)"
             print("CatchUp markSectionRead(\(area)) failed: \(error)")
@@ -212,6 +220,7 @@ final class CatchUpViewModel {
         let trackIDs = result.ids(for: "tracks")
         let inboxIDs = result.ids(for: "inbox")
         let briefingIDs = result.ids(for: "briefings")
+        let wasTruncated = result.truncated
         do {
             try await dbPool.write { db in
                 try DigestQueries.markRead(db, ids: digestIDs)
@@ -219,8 +228,14 @@ final class CatchUpViewModel {
                 try InboxQueries.markRead(db, ids: inboxIDs)
                 try BriefingQueries.markRead(db, ids: briefingIDs)
             }
-            // Only clear the rollup once the write actually succeeded.
-            self.result = nil
+            // The write succeeded. If the rollup was truncated, unread items beyond the
+            // snapshot remain — re-run to surface the next batch instead of falsely
+            // showing "all caught up". Otherwise the backlog is fully cleared.
+            if wasTruncated {
+                generate()
+            } else {
+                self.result = nil
+            }
         } catch {
             self.error = "Failed to mark everything read: \(error.localizedDescription)"
             print("CatchUp markAllRead failed: \(error)")
