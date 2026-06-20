@@ -116,6 +116,17 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 	}
 }
 
+// learnedPrefs loads this pipeline's learned rules (derived from catch-up
+// review feedback) and formats them for the prompt. Best-effort: empty on error.
+func (p *Pipeline) learnedPrefs() string {
+	rules, err := p.db.ListLearnedRulesByPipeline("tracks", 20)
+	if err != nil {
+		p.logger.Printf("tracks: failed to load learned rules: %v", err)
+		return ""
+	}
+	return digest.LearnedPreferencesBlock(rules)
+}
+
 // SetJiraKeyDetector sets an optional Jira key detector for linking extracted tracks to Jira issues.
 func (p *Pipeline) SetJiraKeyDetector(detector interface {
 	ProcessTrack(trackID int, text string, sourceRefs string, channelIDs string) (int, error)
@@ -892,6 +903,10 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 		crossChannelSection,
 		channelBlocks.String(),
 	)
+
+	if prefs := p.learnedPrefs(); prefs != "" {
+		prompt = prefs + "\n\n" + prompt
+	}
 
 	p.logger.Printf("tracks: batch prompt sizes: template=%d profile=%d roles=%d cross=%d channels=%d total=%d chars",
 		len(tmpl), len(profileSection), len(roleRules),

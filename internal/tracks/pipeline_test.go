@@ -1041,3 +1041,82 @@ func TestTopicDedupBySourceRefs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, tracks, 2) // 1 existing + 1 new
 }
+
+// capturingGenerator records the system + user message of the most recent call.
+type capturingGenerator struct {
+	response   string
+	systemSeen string
+	userSeen   string
+}
+
+func (m *capturingGenerator) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
+	m.systemSeen = system
+	m.userSeen = user
+	return m.response, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0}, "mock-session", nil
+}
+
+// TestTracksLearnedPrefsInPrompt verifies a "tracks" learned rule is formatted
+// into the assembled batch prompt that reaches the generator.
+func TestTracksLearnedPrefsInPrompt(t *testing.T) {
+	database := testDB(t)
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
+
+	now := time.Now()
+	from := float64(now.Add(-2 * time.Hour).Unix())
+	to := float64(now.Unix())
+
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: from, PeriodTo: to,
+		Summary: "Backend review discussions", MessageCount: 10, Model: "test",
+	})
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+			VALUES (1, ?, ?, 'Topic summary', '[]', '[{"text":"review code"}]', '[]', '[]')`, i, fmt.Sprintf("Backend topic %d", i))
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, database.UpsertLearnedRule(db.InboxLearnedRule{
+		Pipeline:      "tracks",
+		RuleType:      "source_mute",
+		ScopeKey:      "tracks:channel:Ctest",
+		Weight:        -1.0,
+		Source:        "explicit_feedback",
+		EvidenceCount: 1,
+	}))
+
+	gen := &capturingGenerator{response: `[]`}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	_, _, err = pipe.Run(context.Background())
+	require.NoError(t, err)
+
+	combined := gen.systemSeen + "\n" + gen.userSeen
+	assert.Contains(t, combined, "LEARNED PREFERENCES")
+	assert.Contains(t, combined, "tracks:channel:Ctest")
+}
+
+// TestTracksLearnedPrefsHelper verifies learnedPrefs returns the formatted block.
+func TestTracksLearnedPrefsHelper(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertLearnedRule(db.InboxLearnedRule{
+		Pipeline:      "tracks",
+		RuleType:      "source_mute",
+		ScopeKey:      "tracks:channel:Ctest",
+		Weight:        -1.0,
+		Source:        "explicit_feedback",
+		EvidenceCount: 1,
+	}))
+
+	pipe := New(database, testConfig(), &mockGenerator{}, log.Default())
+	prefs := pipe.learnedPrefs()
+	assert.Contains(t, prefs, "LEARNED PREFERENCES")
+	assert.Contains(t, prefs, "tracks:channel:Ctest")
+}
