@@ -101,6 +101,20 @@ type TrackLinker interface {
 type ProgressFunc func(done, total int, status string)
 
 // Pipeline generates and stores AI digests for Slack channels.
+// learnedPrefs loads this pipeline's learned rules (derived from catch-up
+// review feedback) and formats them for the prompt. Best-effort: returns "" on
+// error so digest generation is never blocked by rule lookup failures.
+func (p *Pipeline) learnedPrefs() string {
+	rules, err := p.db.ListLearnedRulesByPipeline("digest", 20)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Printf("digest: warning: load learned rules failed: %v", err)
+		}
+		return ""
+	}
+	return LearnedPreferencesBlock(rules)
+}
+
 type Pipeline struct {
 	db          *db.DB
 	cfg         *config.Config
@@ -1011,6 +1025,9 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 	dateStr := dayStart.Format("2006-01-02")
 	tmpl, pv := p.getPrompt(prompts.DigestDaily, dailyRollupPrompt)
 	fullPrompt := fmt.Sprintf(tmpl, dateStr, p.formatProfileContext(), p.languageInstruction(), previousContext, channelInput)
+	if prefs := p.learnedPrefs(); prefs != "" {
+		fullPrompt = prefs + "\n\n" + fullPrompt
+	}
 	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
 	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.daily"), systemPrompt, userMessage, "")
@@ -1075,6 +1092,9 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 	toStr := now.Format("2006-01-02")
 	tmpl, pv := p.getPrompt(prompts.DigestWeekly, weeklyTrendsPrompt)
 	fullPrompt := fmt.Sprintf(tmpl, now.Format("2006-01-02"), fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), previousContext, sb.String())
+	if prefs := p.learnedPrefs(); prefs != "" {
+		fullPrompt = prefs + "\n\n" + fullPrompt
+	}
 	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
 	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.weekly"), systemPrompt, userMessage, "")
@@ -1148,6 +1168,9 @@ func (p *Pipeline) RunPeriodSummary(ctx context.Context, from, to time.Time) (*D
 	toStr := to.Format("2006-01-02")
 	tmpl, _ := p.getPrompt(prompts.DigestPeriod, periodSummaryPrompt)
 	fullPrompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), sb.String())
+	if prefs := p.learnedPrefs(); prefs != "" {
+		fullPrompt = prefs + "\n\n" + fullPrompt
+	}
 	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
 	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.period"), systemPrompt, userMessage, "")
@@ -1234,6 +1257,9 @@ func (p *Pipeline) generateChannelDigest(ctx context.Context, channelID, channel
 
 	tmpl, pv := p.getPrompt(prompts.DigestChannel, channelDigestPrompt)
 	fullPrompt := fmt.Sprintf(tmpl, channelName, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), previousContext, formatted)
+	if prefs := p.learnedPrefs(); prefs != "" {
+		fullPrompt = prefs + "\n\n" + fullPrompt
+	}
 
 	// Split into system prompt (instructions) and user message (data).
 	// This enables Claude API prompt caching for the instruction part.
@@ -1525,6 +1551,9 @@ func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry
 
 	tmpl, pv := p.getPrompt(prompts.DigestChannelBatch, channelBatchDigestPrompt)
 	fullPrompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), prevCtxNote, channelBlocks.String())
+	if prefs := p.learnedPrefs(); prefs != "" {
+		fullPrompt = prefs + "\n\n" + fullPrompt
+	}
 
 	systemPrompt, userMessage := SplitPromptAtData(fullPrompt)
 
