@@ -84,6 +84,58 @@ func buildExpandUserMessage(theme db.CatchupTheme, sources []expandSource, comme
 	return b.String()
 }
 
+// learnSystemPrompt drives the learning interpreter: given a theme the operator
+// reviewed plus their free-text comment and rating, derive targeted learned-rules
+// addressed to whichever pipeline(s) produced the theme's sources.
+const learnSystemPrompt = `You are the learning interpreter for a chief-of-staff catch-up review tool.
+
+The operator just reviewed ONE theme (a cross-source cluster of unread items) and left a rating (+1 like / -1 dislike) and a free-text comment. The theme's source refs tell you which underlying pipeline produced each item:
+- area "digests"   → pipeline "digest"
+- area "tracks"    → pipeline "tracks"
+- area "inbox"     → pipeline "inbox"
+- area "briefings" → pipeline "briefing"
+A correction about how the theme itself was clustered, titled, or phrased belongs to pipeline "catchup".
+
+Your job is to turn the comment into durable, targeted learned-rules so the right system surfaces things better next time. Be conservative: only derive a rule when the comment expresses a clear, generalizable preference (e.g. "this channel is noise", "always show me anything from Jane"). Vague approval/disapproval with no actionable signal yields no rules.
+
+For each rule produce:
+- pipeline: "digest" | "tracks" | "inbox" | "briefing" | "catchup".
+- rule_type: "source_mute" (suppress/down-rank) or "source_boost" (surface/up-rank).
+- scope_key: a stable, pipeline-prefixed key identifying the target, e.g. "digest:channel:Cxxx", "inbox:sender:Uxxx". Prefix with the pipeline to keep keys unique across pipelines.
+- weight: a float in [-1.0, 1.0]; negative mutes, positive boosts; magnitude = confidence.
+- reason: one short sentence grounding the rule in the comment.
+
+Also decide "regenerate": true only when the comment is a presentation correction about THIS theme (wrong title/narrative/priority/grouping) that should be re-rendered now; false when the comment is purely a forward-looking preference.
+
+Respond with ONLY a JSON object, no markdown fences:
+{"rules": [{"pipeline": "digest", "rule_type": "source_mute", "scope_key": "digest:channel:Cxxx", "weight": -1.0, "reason": "..."}], "regenerate": false}`
+
+// buildLearnUserMessage renders a reviewed theme (title, narrative, refs with
+// their areas) plus the operator's rating and comment into the learn user
+// message.
+func buildLearnUserMessage(theme db.CatchupTheme, refs []db.CatchupRef, rating int, comment string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "THEME: %s\n", theme.Title)
+	if strings.TrimSpace(theme.Narrative) != "" {
+		fmt.Fprintf(&b, "NARRATIVE: %s\n", oneLine(theme.Narrative))
+	}
+	fmt.Fprintf(&b, "THEME PRIORITY: %s\n", theme.Priority)
+	b.WriteString("SOURCE REFS:\n")
+	if len(refs) == 0 {
+		b.WriteString("(none)\n")
+	}
+	for _, r := range refs {
+		fmt.Fprintf(&b, "- area=%s id=%d label=%s\n", r.Area, r.ID, r.Label)
+	}
+	verdict := "dislike"
+	if rating > 0 {
+		verdict = "like"
+	}
+	fmt.Fprintf(&b, "\nOPERATOR RATING: %s\n", verdict)
+	fmt.Fprintf(&b, "OPERATOR COMMENT: %s\n", strings.TrimSpace(comment))
+	return b.String()
+}
+
 // expandSource is one resolved source record for a theme's expand call.
 type expandSource struct {
 	Area    string

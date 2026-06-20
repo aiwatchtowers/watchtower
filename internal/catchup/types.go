@@ -35,6 +35,32 @@ type expandResult struct {
 	SuggestedAction string `json:"suggested_action"`
 }
 
+// learnResult is the shape the learning interpreter returns: the derived rules
+// addressed to specific pipelines plus whether this theme should be regenerated.
+type learnResult struct {
+	Rules      []learnRule `json:"rules"`
+	Regenerate bool        `json:"regenerate"`
+}
+
+// learnRule is one targeted learned-rule derived from operator feedback.
+type learnRule struct {
+	Pipeline string  `json:"pipeline"`
+	RuleType string  `json:"rule_type"`
+	ScopeKey string  `json:"scope_key"`
+	Weight   float64 `json:"weight"`
+	Reason   string  `json:"reason"`
+}
+
+// parseLearn extracts the learning-interpreter object, tolerating markdown fences.
+func parseLearn(raw string) (learnResult, error) {
+	var out learnResult
+	s := trimToJSONObject(raw)
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return learnResult{}, fmt.Errorf("parsing catchup learn output: %w", err)
+	}
+	return out, nil
+}
+
 // parseExpand extracts the expand object, tolerating markdown fences.
 func parseExpand(raw string) (expandResult, error) {
 	var out expandResult
