@@ -83,7 +83,7 @@ func TestCatchupAcknowledgeCascade(t *testing.T) {
 	inboxID, err := res.LastInsertId()
 	require.NoError(t, err)
 
-	sessionID, err := d.CreateCatchupSession("")
+	sessionID, err := d.CreateCatchupSession()
 	require.NoError(t, err)
 	themeID, err := d.InsertCatchupTheme(db.CatchupTheme{
 		SessionID: sessionID,

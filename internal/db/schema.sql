@@ -480,7 +480,6 @@ CREATE TABLE IF NOT EXISTS catchup_sessions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at     TEXT NOT NULL,
     status         TEXT NOT NULL CHECK(status IN ('building','active','done','failed')),
-    oldest_unread  TEXT NOT NULL DEFAULT '',
     total_themes   INTEGER NOT NULL DEFAULT 0,
     reviewed_count INTEGER NOT NULL DEFAULT 0
 );

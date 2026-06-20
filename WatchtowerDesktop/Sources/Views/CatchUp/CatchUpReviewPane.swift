@@ -266,13 +266,16 @@ struct CatchUpReviewPane: View {
 
     // MARK: - Source navigation
 
+    // Ref areas are persisted plural by the Go pipeline (digests/tracks/inbox/
+    // briefings); these switches must match that contract or source rows fall to
+    // the default branch (broken navigation + generic label/icon).
     private func navigate(to ref: CatchUpRef) {
         switch ref.area {
-        case "digest":
+        case "digests":
             appState.navigateToDigest(ref.id)
-        case "track":
+        case "tracks":
             appState.navigateToTrack(ref.id)
-        case "briefing":
+        case "briefings":
             appState.navigateToBriefing(ref.id)
         case "inbox":
             appState.selectedDestination = .inbox
@@ -283,30 +286,30 @@ struct CatchUpReviewPane: View {
 
     private func areaLabel(_ area: String) -> String {
         switch area {
-        case "digest": return "Digest"
-        case "track": return "Track"
+        case "digests": return "Digest"
+        case "tracks": return "Track"
         case "inbox": return "Inbox"
-        case "briefing": return "Briefing"
+        case "briefings": return "Briefing"
         default: return area.capitalized
         }
     }
 
     private func sourceSymbol(_ area: String) -> String {
         switch area {
-        case "digest": return "doc.text"
-        case "track": return "point.topleft.down.curvedto.point.bottomright.up"
+        case "digests": return "doc.text"
+        case "tracks": return "point.topleft.down.curvedto.point.bottomright.up"
         case "inbox": return "tray"
-        case "briefing": return "sun.max"
+        case "briefings": return "sun.max"
         default: return "circle"
         }
     }
 
     private func sourceColor(_ area: String) -> Color {
         switch area {
-        case "digest": return .blue
-        case "track": return .purple
+        case "digests": return .blue
+        case "tracks": return .purple
         case "inbox": return .green
-        case "briefing": return .yellow
+        case "briefings": return .yellow
         default: return .secondary
         }
     }

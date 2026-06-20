@@ -38,7 +38,6 @@ struct CatchUpSession: FetchableRecord, Identifiable, Equatable {
     let id: Int
     let createdAt: String
     let status: String
-    let oldestUnread: String
     let totalThemes: Int
     let reviewedCount: Int
 
@@ -46,7 +45,6 @@ struct CatchUpSession: FetchableRecord, Identifiable, Equatable {
         id = row["id"]
         createdAt = row["created_at"] ?? ""
         status = row["status"] ?? ""
-        oldestUnread = row["oldest_unread"] ?? ""
         totalThemes = row["total_themes"] ?? 0
         reviewedCount = row["reviewed_count"] ?? 0
     }

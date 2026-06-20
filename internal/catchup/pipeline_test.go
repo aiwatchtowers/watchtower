@@ -173,7 +173,7 @@ func TestCatchup12_OutlineInjectsLearnedPreferences(t *testing.T) {
 
 func TestCatchup24_AcknowledgeReviewedCountIsIdempotent(t *testing.T) {
 	d := db.OpenTestDB(t)
-	sid, err := d.CreateCatchupSession("")
+	sid, err := d.CreateCatchupSession()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +198,31 @@ func TestCatchup24_AcknowledgeReviewedCountIsIdempotent(t *testing.T) {
 	}
 	if sess == nil || sess.ReviewedCount != 1 {
 		t.Fatalf("reviewed_count = %v, want 1 (re-ack must not double-count)", sess)
+	}
+}
+
+func TestCatchup25_RegenThemePropagatesExpandFailure(t *testing.T) {
+	d := db.OpenTestDB(t)
+	seedUnreadDigest(t, d)
+	// Outline succeeds; every expand returns garbage so it fails to parse.
+	gen := &mockGenerator{fn: func(system, _ string) string {
+		if system == outlineSystemPrompt {
+			return twoThemeOutline
+		}
+		return "not json at all"
+	}}
+	p := New(d, newCfg(), gen, testLogger())
+	sessionID, err := p.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	themes, err := d.ListCatchupThemes(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A user-initiated regen must surface the failure, not report success.
+	if err := p.RegenTheme(context.Background(), themes[0].ID, "fix it"); err == nil {
+		t.Fatal("RegenTheme must return an error when the expand call fails")
 	}
 }
 

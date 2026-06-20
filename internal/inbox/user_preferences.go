@@ -30,43 +30,10 @@ func buildUserPreferencesBlock(database *db.DB, items []db.InboxItem) (string, e
 	if len(scopes) == 0 {
 		return "", nil
 	}
-	return BuildPreferencesBlock(database, "inbox", scopes)
-}
 
-// BuildPreferencesBlock returns a formatted "=== USER PREFERENCES ===" section of
-// learned rules addressed to the given pipeline, capped at maxPrefsInPrompt and
-// ordered by absolute weight. When scopeKeys is non-empty only rules matching one
-// of those scopes are included (the inbox sender/channel case); when scopeKeys is
-// empty all of the pipeline's rules are included (other pipelines inject their
-// full rule set). Returns an empty string when no matching rules exist. It is
-// shared across pipelines so each can inject its own learned rules into its prompt.
-func BuildPreferencesBlock(database *db.DB, pipeline string, scopeKeys []string) (string, error) {
-	var (
-		rules []db.InboxLearnedRule
-		err   error
-	)
-	if len(scopeKeys) > 0 {
-		rules, err = database.ListLearnedRulesByScope(scopeKeys, maxPrefsInPrompt)
-	} else {
-		rules, err = database.ListLearnedRulesByPipeline(pipeline, maxPrefsInPrompt)
-	}
+	rules, err := database.ListLearnedRulesByScope(scopes, maxPrefsInPrompt)
 	if err != nil {
 		return "", err
-	}
-	// When scoping by key, keep only the rules addressed to this pipeline so an
-	// identically-scoped rule owned by another pipeline never leaks in.
-	if len(scopeKeys) > 0 {
-		filtered := rules[:0]
-		for _, r := range rules {
-			rp := r.Pipeline
-			if rp == "" {
-				rp = "inbox"
-			}
-			if rp == pipeline {
-				filtered = append(filtered, r)
-			}
-		}
-		rules = filtered
 	}
 	if len(rules) == 0 {
 		return "", nil

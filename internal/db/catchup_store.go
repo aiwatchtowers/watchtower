@@ -12,7 +12,6 @@ type CatchupSession struct {
 	ID            int64
 	CreatedAt     string
 	Status        string
-	OldestUnread  string
 	TotalThemes   int
 	ReviewedCount int
 }
@@ -37,12 +36,12 @@ type CatchupTheme struct {
 }
 
 // CreateCatchupSession inserts a new session in status='building' and returns its id.
-func (db *DB) CreateCatchupSession(oldestUnread string) (int64, error) {
+func (db *DB) CreateCatchupSession() (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := db.Exec(`
-		INSERT INTO catchup_sessions (created_at, status, oldest_unread)
-		VALUES (?, 'building', ?)
-	`, now, oldestUnread)
+		INSERT INTO catchup_sessions (created_at, status)
+		VALUES (?, 'building')
+	`, now)
 	if err != nil {
 		return 0, fmt.Errorf("creating catchup session: %w", err)
 	}
@@ -81,11 +80,11 @@ func (db *DB) IncrementReviewed(sessionID int64) error {
 func (db *DB) GetActiveCatchupSession() (*CatchupSession, error) {
 	var s CatchupSession
 	err := db.QueryRow(`
-		SELECT id, created_at, status, oldest_unread, total_themes, reviewed_count
+		SELECT id, created_at, status, total_themes, reviewed_count
 		FROM catchup_sessions
 		WHERE status NOT IN ('done','failed')
 		ORDER BY id DESC LIMIT 1
-	`).Scan(&s.ID, &s.CreatedAt, &s.Status, &s.OldestUnread, &s.TotalThemes, &s.ReviewedCount)
+	`).Scan(&s.ID, &s.CreatedAt, &s.Status, &s.TotalThemes, &s.ReviewedCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

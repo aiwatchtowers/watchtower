@@ -40,8 +40,8 @@ final class SidebarCountsViewModelTests: XCTestCase {
         try await manager.dbPool.write { db in
             try db.execute(
                 sql: """
-                    INSERT INTO catchup_sessions (id, created_at, status, oldest_unread, total_themes, reviewed_count)
-                    VALUES (1, '2026-06-20T00:00:00Z', 'active', '', 4, 1)
+                    INSERT INTO catchup_sessions (id, created_at, status, total_themes, reviewed_count)
+                    VALUES (1, '2026-06-20T00:00:00Z', 'active', 4, 1)
                     """
             )
             // 3 pending + 1 reviewed theme; badge must be 3.

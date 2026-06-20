@@ -136,7 +136,17 @@ func runCatchupRun(cmd *cobra.Command, _ []string) error {
 		return enc.Encode(themes)
 	}
 
-	fmt.Fprintf(out, "Catch-Up — %d themes\n\n", len(themes))
+	failed := 0
+	for _, t := range themes {
+		if t.GenState == "failed" {
+			failed++
+		}
+	}
+	if failed > 0 {
+		fmt.Fprintf(out, "Catch-Up — %d themes (%d failed to expand)\n\n", len(themes), failed)
+	} else {
+		fmt.Fprintf(out, "Catch-Up — %d themes\n\n", len(themes))
+	}
 	for _, t := range themes {
 		flag := ""
 		if t.NeedsYou {

@@ -15,10 +15,10 @@ final class CatchUpViewModelTests: XCTestCase {
     ) throws -> Int {
         try db.execute(
             sql: """
-                INSERT INTO catchup_sessions (created_at, status, oldest_unread, total_themes, reviewed_count)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO catchup_sessions (created_at, status, total_themes, reviewed_count)
+                VALUES (?, ?, ?, ?)
                 """,
-            arguments: ["2026-06-20T00:00:00Z", status, "2026-06-01T00:00:00Z", totalThemes, reviewedCount]
+            arguments: ["2026-06-20T00:00:00Z", status, totalThemes, reviewedCount]
         )
         return Int(db.lastInsertedRowID)
     }

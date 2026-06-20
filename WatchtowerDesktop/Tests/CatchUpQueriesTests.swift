@@ -9,16 +9,15 @@ final class CatchUpQueriesTests: XCTestCase {
     private func insertSession(
         _ db: Database,
         status: String = "active",
-        oldestUnread: String = "2026-06-01T00:00:00Z",
         totalThemes: Int = 0,
         reviewedCount: Int = 0
     ) throws -> Int64 {
         try db.execute(
             sql: """
-                INSERT INTO catchup_sessions (created_at, status, oldest_unread, total_themes, reviewed_count)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO catchup_sessions (created_at, status, total_themes, reviewed_count)
+                VALUES (?, ?, ?, ?)
                 """,
-            arguments: ["2026-06-20T00:00:00Z", status, oldestUnread, totalThemes, reviewedCount]
+            arguments: ["2026-06-20T00:00:00Z", status, totalThemes, reviewedCount]
         )
         return db.lastInsertedRowID
     }

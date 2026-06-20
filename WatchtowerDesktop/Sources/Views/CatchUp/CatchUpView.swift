@@ -70,11 +70,6 @@ struct CatchUpView: View {
                 Text("\(session.reviewedCount) of \(session.totalThemes) reviewed")
                     .font(.caption)
                     .fontWeight(.medium)
-                if !session.oldestUnread.isEmpty {
-                    Text("Since \(session.oldestUnread)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)

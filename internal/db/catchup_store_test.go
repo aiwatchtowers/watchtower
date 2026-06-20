@@ -12,7 +12,7 @@ func TestCatchupStore_SessionAndThemeRoundTrip(t *testing.T) {
 	defer database.Close()
 
 	// Create a session — starts in 'building'.
-	sessionID, err := database.CreateCatchupSession("2026-06-13T00:00:00Z")
+	sessionID, err := database.CreateCatchupSession()
 	if err != nil {
 		t.Fatalf("CreateCatchupSession: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestCatchupStore_ActiveSessionLifecycle(t *testing.T) {
 		t.Fatalf("expected nil active session, got %+v", got)
 	}
 
-	sessionID, err := database.CreateCatchupSession("2026-06-13T00:00:00Z")
+	sessionID, err := database.CreateCatchupSession()
 	if err != nil {
 		t.Fatalf("CreateCatchupSession: %v", err)
 	}
@@ -143,9 +143,6 @@ func TestCatchupStore_ActiveSessionLifecycle(t *testing.T) {
 	}
 	if got.Status != "building" {
 		t.Errorf("status = %q, want building", got.Status)
-	}
-	if got.OldestUnread != "2026-06-13T00:00:00Z" {
-		t.Errorf("oldest_unread = %q, want round-trip", got.OldestUnread)
 	}
 
 	// Flip to active via SetCatchupSessionStatus — still active.

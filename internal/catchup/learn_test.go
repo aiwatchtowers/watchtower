@@ -14,7 +14,7 @@ func seedReadyTheme(t *testing.T, d *db.DB) (sessionID, themeID int64) {
 	t.Helper()
 	seedUnreadDigest(t, d)
 	var err error
-	sessionID, err = d.CreateCatchupSession("")
+	sessionID, err = d.CreateCatchupSession()
 	if err != nil {
 		t.Fatal(err)
 	}

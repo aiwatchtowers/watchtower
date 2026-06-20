@@ -337,7 +337,6 @@ CREATE TABLE catchup_sessions (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 created_at TEXT NOT NULL,
 status TEXT NOT NULL CHECK(status IN ('building','active','done','failed')),
-oldest_unread TEXT NOT NULL DEFAULT '',
 total_themes INTEGER NOT NULL DEFAULT 0,
 reviewed_count INTEGER NOT NULL DEFAULT 0
 )
@@ -1283,9 +1282,8 @@ END
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	created_at	TEXT	notnull=1	dflt=NULL	pk=0
 2	status	TEXT	notnull=1	dflt=NULL	pk=0
-3	oldest_unread	TEXT	notnull=1	dflt=''	pk=0
-4	total_themes	INTEGER	notnull=1	dflt=0	pk=0
-5	reviewed_count	INTEGER	notnull=1	dflt=0	pk=0
+3	total_themes	INTEGER	notnull=1	dflt=0	pk=0
+4	reviewed_count	INTEGER	notnull=1	dflt=0	pk=0
 
 ## catchup_themes
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

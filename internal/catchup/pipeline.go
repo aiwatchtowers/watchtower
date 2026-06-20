@@ -27,12 +27,6 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 	return &Pipeline{db: database, cfg: cfg, gen: gen, logger: logger}
 }
 
-// gatheredItem is one unread source row plus its area.
-type gatheredItem struct {
-	db.UnreadItem
-	area string
-}
-
 // gatheredSection is the unread set for one area, with its uncapped total.
 type gatheredSection struct {
 	area  string
@@ -40,10 +34,11 @@ type gatheredSection struct {
 	total int
 }
 
-// gatherResult is the full unread snapshot driving an outline pass.
+// gatherResult is the full unread snapshot driving an outline pass. byRef indexes
+// every gathered item by (area, id) so outline refs can be validated and labeled.
 type gatherResult struct {
 	sections   []gatheredSection
-	byRef      map[refKey]gatheredItem
+	byRef      map[refKey]db.UnreadItem
 	totalCount int
 }
 
@@ -71,7 +66,7 @@ func (p *Pipeline) Run(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 
-	sessionID, err := p.db.CreateCatchupSession(p.oldestUnread(g))
+	sessionID, err := p.db.CreateCatchupSession()
 	if err != nil {
 		return 0, err
 	}
@@ -130,10 +125,10 @@ func (p *Pipeline) gather() (gatherResult, error) {
 		{area: "briefings", items: bItems, total: bTotal},
 	}
 
-	byRef := make(map[refKey]gatheredItem)
+	byRef := make(map[refKey]db.UnreadItem)
 	for _, s := range sections {
 		for _, it := range s.items {
-			byRef[refKey{area: s.area, id: it.ID}] = gatheredItem{UnreadItem: it, area: s.area}
+			byRef[refKey{area: s.area, id: it.ID}] = it
 		}
 	}
 
@@ -168,10 +163,7 @@ func (p *Pipeline) outline(ctx context.Context, sessionID int64, g gatherResult)
 		if err != nil {
 			return nil, fmt.Errorf("encoding theme refs: %w", err)
 		}
-		priority := ot.Priority
-		if priority != "high" && priority != "medium" && priority != "low" {
-			priority = "medium"
-		}
+		priority := normalizePriority(ot.Priority, "medium")
 		t := db.CatchupTheme{
 			SessionID: sessionID,
 			OrderIdx:  i,
@@ -201,7 +193,7 @@ func (p *Pipeline) validateRefs(refs []db.CatchupRef, g gatherResult) []db.Catch
 			continue
 		}
 		if r.Label == "" {
-			r.Label = refLabel(r.Area, item.UnreadItem)
+			r.Label = refLabel(r.Area, item)
 		}
 		out = append(out, r)
 	}
@@ -230,7 +222,10 @@ func (p *Pipeline) expand(ctx context.Context, themes []db.CatchupTheme) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			p.expandOne(ctx, theme, "", prefs)
+			// Per-theme failure is already logged + marked gen_state='failed' by
+			// expandOne; the batch never aborts on it. The CLI/UI surface the
+			// failed count by reading gen_state, so the error is not lost.
+			_ = p.expandOne(ctx, theme, "", prefs)
 		}(t)
 	}
 	wg.Wait()
@@ -239,7 +234,7 @@ func (p *Pipeline) expand(ctx context.Context, themes []db.CatchupTheme) {
 // expandOne runs the single-theme expand AI call and persists the result. On any
 // error (mark expanding, AI call, parse) it sets gen_state='failed' and logs.
 // An optional operator correction is appended to the prompt for regen.
-func (p *Pipeline) expandOne(ctx context.Context, theme db.CatchupTheme, comment, prefs string) {
+func (p *Pipeline) expandOne(ctx context.Context, theme db.CatchupTheme, comment, prefs string) error {
 	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, theme.Narrative, theme.Priority, theme.NeedsYou, theme.SuggestedAction, "expanding"); err != nil {
 		p.logf("catchup: marking theme %d expanding: %v", theme.ID, err)
 	}
@@ -252,33 +247,39 @@ func (p *Pipeline) expandOne(ctx context.Context, theme db.CatchupTheme, comment
 	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.expand"), expandSystemPrompt, user, "")
 	if err != nil {
 		p.failTheme(theme, "expand AI call", err)
-		return
+		return fmt.Errorf("catchup expand theme %d: %w", theme.ID, err)
 	}
 	parsed, err := parseExpand(raw)
 	if err != nil {
 		p.failTheme(theme, "expand parse", err)
-		return
+		return fmt.Errorf("catchup expand theme %d: %w", theme.ID, err)
 	}
 
-	priority := parsed.Priority
-	if priority != "high" && priority != "medium" && priority != "low" {
-		priority = theme.Priority
-	}
+	priority := normalizePriority(parsed.Priority, theme.Priority)
 	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, parsed.Narrative, priority, parsed.NeedsYou, parsed.SuggestedAction, "ready"); err != nil {
 		p.logf("catchup: writing expansion for theme %d: %v", theme.ID, err)
+		return fmt.Errorf("catchup write expansion theme %d: %w", theme.ID, err)
 	}
+	return nil
 }
 
 // failTheme marks a theme gen_state='failed' and logs the cause, best-effort.
 // Existing fields are preserved (priority must stay a valid CHECK value).
 func (p *Pipeline) failTheme(theme db.CatchupTheme, stage string, cause error) {
 	p.logf("catchup: theme %d %s failed: %v", theme.ID, stage, cause)
-	priority := theme.Priority
-	if priority != "high" && priority != "medium" && priority != "low" {
-		priority = "medium"
-	}
+	priority := normalizePriority(theme.Priority, "medium")
 	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, theme.Narrative, priority, theme.NeedsYou, theme.SuggestedAction, "failed"); err != nil {
 		p.logf("catchup: marking theme %d failed: %v", theme.ID, err)
+	}
+}
+
+// normalizePriority returns p when it is a valid CHECK value, else fallback.
+func normalizePriority(p, fallback string) string {
+	switch p {
+	case "high", "medium", "low":
+		return p
+	default:
+		return fallback
 	}
 }
 
@@ -314,8 +315,9 @@ func (p *Pipeline) RegenTheme(ctx context.Context, themeID int64, comment string
 	if err != nil {
 		return err
 	}
-	p.expandOne(ctx, *theme, comment, p.catchupPrefs())
-	return nil
+	// Unlike the batch fan-out, a regen is an explicit single-theme action: the
+	// caller (CLI/UI) must learn if it failed, so propagate the error.
+	return p.expandOne(ctx, *theme, comment, p.catchupPrefs())
 }
 
 // maxCatchupPrefs caps how many learned rules are injected into a prompt.
@@ -383,13 +385,6 @@ func (p *Pipeline) Acknowledge(themeID int64) error {
 		}
 	}
 	return nil
-}
-
-// oldestUnread returns a display-only window-start hint. Best-effort; empty when
-// no items carry a usable marker (the gather items are compact and timestamp-free
-// here, so it stays empty until a later task surfaces timestamps).
-func (p *Pipeline) oldestUnread(_ gatherResult) string {
-	return ""
 }
 
 // targetsLine renders a read-only summary of active targets. Best-effort: any
