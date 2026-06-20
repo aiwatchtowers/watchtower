@@ -44,7 +44,19 @@ func (p *Pipeline) SubmitThemeFeedback(ctx context.Context, themeID int64, ratin
 		refs = nil
 	}
 
-	user := buildLearnUserMessage(*theme, refs, rating, comment)
+	// Resolve each ref's real Slack ids so the interpreter can build scope keys
+	// the consuming pipelines actually match on. A ref only carries the table row
+	// id, which is useless as a channel/sender key.
+	lrefs := make([]learnRef, 0, len(refs))
+	for _, r := range refs {
+		channelID, senderID, herr := p.db.FetchItemScopeHints(r.Area, r.ID)
+		if herr != nil {
+			p.logf("catchup: theme %d scope hints for %s#%d: %v", themeID, r.Area, r.ID, herr)
+		}
+		lrefs = append(lrefs, learnRef{Area: r.Area, ChannelID: channelID, SenderID: senderID, Label: r.Label})
+	}
+
+	user := buildLearnUserMessage(*theme, lrefs, rating, comment)
 	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.learn"), learnSystemPrompt, user, "")
 	if err != nil {
 		return fmt.Errorf("catchup learn: %w", err)

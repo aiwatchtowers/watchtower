@@ -161,6 +161,32 @@ func (db *DB) GetUnreadBriefings(limit, maxAgeDays int) ([]UnreadItem, int, erro
 	return items, total, rows.Err()
 }
 
+// FetchItemScopeHints returns the Slack identifiers usable to form learned-rule
+// scope keys for one source item: the channel id (digests, inbox) and the sender
+// user id (inbox). Empty strings when the area carries no such identifier (tracks,
+// briefings) or the row is gone. The learn interpreter needs these real ids — a
+// theme ref only carries the table row id, from which a channel/sender scope key
+// cannot otherwise be derived.
+func (db *DB) FetchItemScopeHints(area string, id int) (channelID, senderID string, err error) {
+	switch area {
+	case "digests":
+		err = db.QueryRow(`SELECT channel_id FROM digests WHERE id=?`, id).Scan(&channelID)
+	case "inbox":
+		err = db.QueryRow(`SELECT channel_id, sender_user_id FROM inbox_items WHERE id=?`, id).Scan(&channelID, &senderID)
+	case "tracks", "briefings":
+		return "", "", nil
+	default:
+		return "", "", fmt.Errorf("fetching scope hints: unknown area %q", area)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil // item gone → no hints; best-effort, not an error
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("fetching %s#%d scope hints: %w", area, id, err)
+	}
+	return channelID, senderID, nil
+}
+
 // FetchItemSnippet resolves one source item back to a display title + snippet by
 // (area, id), regardless of its read state. It powers the catch-up expand pass,
 // which works from a theme's snapshot refs rather than re-gathering. Returns

@@ -14,6 +14,10 @@ struct CatchUpRef: Codable, Identifiable, Equatable {
     let id: Int
     let label: String
 
+    /// Stable identity for SwiftUI lists: the row `id` is per-table autoincrement,
+    /// so two refs in different areas can share it — key by area+id instead.
+    var compositeID: String { "\(area):\(id)" }
+
     enum CodingKeys: String, CodingKey {
         case area, id, label
     }

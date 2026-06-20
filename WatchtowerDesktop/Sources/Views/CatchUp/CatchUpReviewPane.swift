@@ -147,7 +147,7 @@ struct CatchUpReviewPane: View {
                 Text("Sources")
                     .font(.headline)
 
-                ForEach(refs) { ref in
+                ForEach(refs, id: \.compositeID) { ref in
                     Button {
                         navigate(to: ref)
                     } label: {

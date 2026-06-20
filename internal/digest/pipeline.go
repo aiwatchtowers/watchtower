@@ -100,7 +100,6 @@ type TrackLinker interface {
 // ProgressFunc is called during digest generation to report progress.
 type ProgressFunc func(done, total int, status string)
 
-// Pipeline generates and stores AI digests for Slack channels.
 // learnedPrefs loads this pipeline's learned rules (derived from catch-up
 // review feedback) and formats them for the prompt. Best-effort: returns "" on
 // error so digest generation is never blocked by rule lookup failures.
@@ -115,6 +114,7 @@ func (p *Pipeline) learnedPrefs() string {
 	return LearnedPreferencesBlock(rules)
 }
 
+// Pipeline generates and stores AI digests for Slack channels.
 type Pipeline struct {
 	db          *db.DB
 	cfg         *config.Config

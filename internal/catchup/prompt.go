@@ -101,7 +101,7 @@ Your job is to turn the comment into durable, targeted learned-rules so the righ
 For each rule produce:
 - pipeline: "digest" | "tracks" | "inbox" | "briefing" | "catchup".
 - rule_type: "source_mute" (suppress/down-rank) or "source_boost" (surface/up-rank).
-- scope_key: a stable key identifying the target. For the "inbox" pipeline use a BARE key — exactly "sender:Uxxx" or "channel:Cxxx" (the id from the ref) — so it matches how inbox looks rules up. For every other pipeline ("digest"/"tracks"/"briefing"/"catchup") PREFIX the key with the pipeline, e.g. "digest:channel:Cxxx", "tracks:topic:foo", to keep keys distinct across pipelines.
+- scope_key: build it ONLY from the channel_id / sender_user_id supplied with the relevant ref below — never invent ids. For the "inbox" pipeline use a BARE key, exactly "sender:<sender_user_id>" or "channel:<channel_id>", so it matches how inbox looks rules up. For every other pipeline ("digest"/"tracks"/"briefing"/"catchup") PREFIX the key with the pipeline, e.g. "digest:channel:<channel_id>". If no usable id is supplied for a target, emit no rule for it rather than guessing.
 - weight: a float in [-1.0, 1.0]; negative mutes, positive boosts; magnitude = confidence.
 - reason: one short sentence grounding the rule in the comment.
 
@@ -113,19 +113,29 @@ Respond with ONLY a JSON object, no markdown fences:
 // buildLearnUserMessage renders a reviewed theme (title, narrative, refs with
 // their areas) plus the operator's rating and comment into the learn user
 // message.
-func buildLearnUserMessage(theme db.CatchupTheme, refs []db.CatchupRef, rating int, comment string) string {
+func buildLearnUserMessage(theme db.CatchupTheme, refs []learnRef, rating int, comment string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "THEME: %s\n", theme.Title)
 	if strings.TrimSpace(theme.Narrative) != "" {
 		fmt.Fprintf(&b, "NARRATIVE: %s\n", oneLine(theme.Narrative))
 	}
 	fmt.Fprintf(&b, "THEME PRIORITY: %s\n", theme.Priority)
-	b.WriteString("SOURCE REFS:\n")
+	b.WriteString("SOURCE REFS (use the supplied ids to build scope keys):\n")
 	if len(refs) == 0 {
 		b.WriteString("(none)\n")
 	}
 	for _, r := range refs {
-		fmt.Fprintf(&b, "- area=%s id=%d label=%s\n", r.Area, r.ID, r.Label)
+		b.WriteString("- area=" + r.Area)
+		if r.ChannelID != "" {
+			b.WriteString(" channel_id=" + r.ChannelID)
+		}
+		if r.SenderID != "" {
+			b.WriteString(" sender_user_id=" + r.SenderID)
+		}
+		if r.Label != "" {
+			b.WriteString(" label=" + r.Label)
+		}
+		b.WriteString("\n")
 	}
 	verdict := "dislike"
 	if rating > 0 {
@@ -134,6 +144,15 @@ func buildLearnUserMessage(theme db.CatchupTheme, refs []db.CatchupRef, rating i
 	fmt.Fprintf(&b, "\nOPERATOR RATING: %s\n", verdict)
 	fmt.Fprintf(&b, "OPERATOR COMMENT: %s\n", strings.TrimSpace(comment))
 	return b.String()
+}
+
+// learnRef is a theme ref enriched with the source item's real Slack ids, so the
+// learning interpreter can form scope keys the consuming pipelines match on.
+type learnRef struct {
+	Area      string
+	ChannelID string
+	SenderID  string
+	Label     string
 }
 
 // expandSource is one resolved source record for a theme's expand call.
