@@ -120,6 +120,61 @@ func TestPipelineRunForDate(t *testing.T) {
 	assert.Equal(t, id, id2)
 }
 
+// capturingGenerator records the system prompt it was asked to generate from.
+type capturingGenerator struct {
+	response  string
+	systemMsg string
+}
+
+func (m *capturingGenerator) Generate(_ context.Context, systemPrompt, _, _ string) (string, *digest.Usage, string, error) {
+	m.systemMsg = systemPrompt
+	return m.response, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0}, "mock-session", nil
+}
+
+func TestPipelineRunForDate_InjectsLearnedPreferences(t *testing.T) {
+	database := testDB(t)
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U001"))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
+
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day()-1, 0, 0, 0, 0, now.Location())
+	dayEnd := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID:    "C1",
+		Type:         "channel",
+		PeriodFrom:   float64(dayStart.Unix()),
+		PeriodTo:     float64(dayEnd.Unix()),
+		Summary:      "Discussion about new feature release",
+		Topics:       `["release"]`,
+		Decisions:    `[]`,
+		ActionItems:  `[]`,
+		MessageCount: 15,
+	})
+	require.NoError(t, err)
+
+	// A learned rule addressed to the briefing pipeline must reach the prompt.
+	require.NoError(t, database.UpsertLearnedRule(db.InboxLearnedRule{
+		Pipeline:      "briefing",
+		RuleType:      "source_mute",
+		ScopeKey:      "briefing:channel:Ctest",
+		Weight:        -1.0,
+		Source:        "explicit_feedback",
+		EvidenceCount: 1,
+	}))
+
+	gen := &capturingGenerator{response: `{"attention":[],"your_day":[],"what_happened":[],"team_pulse":[],"coaching":[]}`}
+	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
+
+	today := time.Now().Format("2006-01-02")
+	_, err = pipe.RunForDate(context.Background(), today)
+	require.NoError(t, err)
+
+	assert.Contains(t, gen.systemMsg, "LEARNED PREFERENCES")
+	assert.Contains(t, gen.systemMsg, "briefing:channel:Ctest")
+}
+
 func TestPipelineRunDisabled(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
