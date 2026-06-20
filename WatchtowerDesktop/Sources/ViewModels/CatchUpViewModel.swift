@@ -20,6 +20,12 @@ final class CatchUpViewModel {
 
     private let dbPool: DatabasePool
     private var observationTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
+
+    /// Poll cadence while `catchup run` is building. GRDB ValueObservation cannot
+    /// see writes from the separate CLI process, so the streaming list needs a
+    /// periodic reload to surface themes as the CLI persists them.
+    private let pollInterval: Duration = .seconds(1)
 
     init(dbPool: DatabasePool) {
         self.dbPool = dbPool
@@ -38,18 +44,54 @@ final class CatchUpViewModel {
         isLoading = true
         error = nil
         startObserving()
+        startPolling() // CLI runs in a separate process; observation can't see its writes.
 
         Task.detached {
             let result = await Self.runCLI(path: cliPath, arguments: ["catchup", "run"])
             await MainActor.run {
                 self.isLoading = false
+                self.stopPolling()
                 if result.exitCode != 0 {
                     self.error = result.stderr.isEmpty
                         ? "Catch-up failed (exit \(result.exitCode))"
                         : String(result.stderr.prefix(300))
                 }
+                // Authoritative final load once the CLI has finished writing.
+                Task { await self.reload() }
             }
         }
+    }
+
+    /// One-shot reload of the active session's themes from disk, applied the same
+    /// way the observation does. Used by the build-time poll and the final load,
+    /// because the CLI's cross-process writes are invisible to ValueObservation.
+    func reload() async {
+        do {
+            let themes = try await dbPool.read { db -> [CatchUpTheme] in
+                guard let session = try CatchUpQueries.fetchActiveSession(db) else { return [] }
+                return try CatchUpQueries.fetchThemes(db, sessionID: session.id)
+            }
+            await apply(themes: themes)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func startPolling() {
+        guard pollTask == nil else { return }
+        let interval = pollInterval
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { break }
+                await self.reload()
+            }
+        }
+    }
+
+    private func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
     }
 
     /// Observes the active session's themes. Updates `session`/`themes` live and
@@ -112,7 +154,11 @@ final class CatchUpViewModel {
         }
     }
 
-    /// Creates a target from the theme and links it back via `task_id`.
+    /// Creates a target from the theme and links the theme back to it via
+    /// `task_id`. source_type is "manual" (the operator created it during review):
+    /// the targets.source_type CHECK has no 'catchup' value, and the theme→target
+    /// link lives on catchup_themes.task_id, so a target→theme backlink onto an
+    /// ephemeral session theme would add nothing.
     func createTask(_ theme: CatchUpTheme) async {
         let today = Self.dayFormatter.string(from: Date())
         let text = theme.suggestedAction.isEmpty ? theme.title : theme.suggestedAction
@@ -125,8 +171,8 @@ final class CatchUpViewModel {
                     periodStart: today,
                     periodEnd: today,
                     priority: theme.priority,
-                    sourceType: "catchup",
-                    sourceID: String(theme.id)
+                    sourceType: "manual",
+                    sourceID: ""
                 )
                 try CatchUpQueries.setTask(db, id: theme.id, taskID: taskID)
             }

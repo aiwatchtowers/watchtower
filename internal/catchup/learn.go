@@ -16,6 +16,13 @@ import (
 // correction. A bare like/dislike (no comment) is stored as a low-confidence
 // signal only — no rule is derived and no AI call is made.
 func (p *Pipeline) SubmitThemeFeedback(ctx context.Context, themeID int64, rating int, comment string) error {
+	// Validate the theme exists before writing anything, so a mistyped/deleted id
+	// never leaves an orphan feedback row (and never reports false success).
+	theme, err := p.db.GetCatchupTheme(themeID)
+	if err != nil {
+		return err
+	}
+
 	// Always record the raw signal.
 	if _, err := p.db.AddFeedback(db.Feedback{
 		EntityType: "catchup_theme",
@@ -31,10 +38,6 @@ func (p *Pipeline) SubmitThemeFeedback(ctx context.Context, themeID int64, ratin
 		return nil
 	}
 
-	theme, err := p.db.GetCatchupTheme(themeID)
-	if err != nil {
-		return err
-	}
 	refs, err := parseRefs(theme.RefsJSON)
 	if err != nil {
 		p.logf("catchup: theme %d refs unparseable for learning: %v", themeID, err)
