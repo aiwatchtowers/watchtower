@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-// InboxLearnedRule represents a learned rule for inbox item classification.
+// InboxLearnedRule represents a learned rule for a pipeline's prioritization.
+// Despite the name, it is shared across pipelines: the Pipeline field addresses
+// the rule to the system whose prompt should consume it (inbox/digest/tracks/...).
 type InboxLearnedRule struct {
 	ID            int64
 	RuleType      string
@@ -15,20 +17,31 @@ type InboxLearnedRule struct {
 	Source        string
 	EvidenceCount int
 	LastUpdated   string
+	// Pipeline addresses the rule to a system (default "inbox"). The UNIQUE
+	// constraint remains (rule_type, scope_key): a scope_key is conceptually owned
+	// by one pipeline. If two pipelines could share a scope_key, prefix the
+	// scope_key per pipeline at the caller (e.g. "digest:channel:Cxxx") rather than
+	// widening the UNIQUE constraint.
+	Pipeline string
 }
 
 // UpsertLearnedRule inserts or updates a learned rule unconditionally.
 func (db *DB) UpsertLearnedRule(r InboxLearnedRule) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+	pipeline := r.Pipeline
+	if pipeline == "" {
+		pipeline = "inbox"
+	}
 	_, err := db.Exec(`
-		INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, evidence_count, last_updated)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, evidence_count, last_updated, pipeline)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(rule_type, scope_key) DO UPDATE SET
 			weight = excluded.weight,
 			source = excluded.source,
 			evidence_count = excluded.evidence_count,
-			last_updated = excluded.last_updated
-	`, r.RuleType, r.ScopeKey, r.Weight, r.Source, r.EvidenceCount, now)
+			last_updated = excluded.last_updated,
+			pipeline = excluded.pipeline
+	`, r.RuleType, r.ScopeKey, r.Weight, r.Source, r.EvidenceCount, now, pipeline)
 	return err
 }
 
@@ -46,9 +59,9 @@ func (db *DB) UpsertLearnedRuleImplicit(r InboxLearnedRule) error {
 func (db *DB) GetLearnedRule(ruleType, scopeKey string) (InboxLearnedRule, error) {
 	var r InboxLearnedRule
 	err := db.QueryRow(`
-		SELECT id, rule_type, scope_key, weight, source, evidence_count, last_updated
+		SELECT id, rule_type, scope_key, weight, source, evidence_count, last_updated, pipeline
 		FROM inbox_learned_rules WHERE rule_type=? AND scope_key=?
-	`, ruleType, scopeKey).Scan(&r.ID, &r.RuleType, &r.ScopeKey, &r.Weight, &r.Source, &r.EvidenceCount, &r.LastUpdated)
+	`, ruleType, scopeKey).Scan(&r.ID, &r.RuleType, &r.ScopeKey, &r.Weight, &r.Source, &r.EvidenceCount, &r.LastUpdated, &r.Pipeline)
 	if err != nil {
 		return r, fmt.Errorf("get learned rule: %w", err)
 	}
@@ -57,7 +70,7 @@ func (db *DB) GetLearnedRule(ruleType, scopeKey string) (InboxLearnedRule, error
 
 // ListAllLearnedRules returns all learned rules ordered by last_updated descending.
 func (db *DB) ListAllLearnedRules() ([]InboxLearnedRule, error) {
-	rows, err := db.Query(`SELECT id, rule_type, scope_key, weight, source, evidence_count, last_updated FROM inbox_learned_rules ORDER BY last_updated DESC`)
+	rows, err := db.Query(`SELECT id, rule_type, scope_key, weight, source, evidence_count, last_updated, pipeline FROM inbox_learned_rules ORDER BY last_updated DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +78,33 @@ func (db *DB) ListAllLearnedRules() ([]InboxLearnedRule, error) {
 	var out []InboxLearnedRule
 	for rows.Next() {
 		var r InboxLearnedRule
-		if err := rows.Scan(&r.ID, &r.RuleType, &r.ScopeKey, &r.Weight, &r.Source, &r.EvidenceCount, &r.LastUpdated); err != nil {
+		if err := rows.Scan(&r.ID, &r.RuleType, &r.ScopeKey, &r.Weight, &r.Source, &r.EvidenceCount, &r.LastUpdated, &r.Pipeline); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListLearnedRulesByPipeline returns rules addressed to the given pipeline, up to
+// limit rows, ordered by absolute weight descending. Non-inbox pipelines use this
+// to inject their own learned rules into their prompts.
+func (db *DB) ListLearnedRulesByPipeline(pipeline string, limit int) ([]InboxLearnedRule, error) {
+	rows, err := db.Query(`
+		SELECT id, rule_type, scope_key, weight, source, evidence_count, last_updated, pipeline
+		FROM inbox_learned_rules
+		WHERE pipeline = ?
+		ORDER BY ABS(weight) DESC, last_updated DESC
+		LIMIT ?
+	`, pipeline, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InboxLearnedRule
+	for rows.Next() {
+		var r InboxLearnedRule
+		if err := rows.Scan(&r.ID, &r.RuleType, &r.ScopeKey, &r.Weight, &r.Source, &r.EvidenceCount, &r.LastUpdated, &r.Pipeline); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -87,7 +126,7 @@ func (db *DB) ListLearnedRulesByScope(scopeKeys []string, limit int) ([]InboxLea
 	}
 	args[len(scopeKeys)] = limit
 	q := fmt.Sprintf(`
-		SELECT id, rule_type, scope_key, weight, source, evidence_count, last_updated
+		SELECT id, rule_type, scope_key, weight, source, evidence_count, last_updated, pipeline
 		FROM inbox_learned_rules
 		WHERE scope_key IN (%s)
 		ORDER BY ABS(weight) DESC, last_updated DESC
@@ -101,7 +140,7 @@ func (db *DB) ListLearnedRulesByScope(scopeKeys []string, limit int) ([]InboxLea
 	var out []InboxLearnedRule
 	for rows.Next() {
 		var r InboxLearnedRule
-		if err := rows.Scan(&r.ID, &r.RuleType, &r.ScopeKey, &r.Weight, &r.Source, &r.EvidenceCount, &r.LastUpdated); err != nil {
+		if err := rows.Scan(&r.ID, &r.RuleType, &r.ScopeKey, &r.Weight, &r.Source, &r.EvidenceCount, &r.LastUpdated, &r.Pipeline); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

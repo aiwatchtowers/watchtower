@@ -79,6 +79,67 @@ func TestInboxLearnedRules_ListByRelevance(t *testing.T) {
 	}
 }
 
+func TestInboxLearnedRules_PipelineScope(t *testing.T) {
+	database := openTestDB(t)
+
+	// A rule addressed to the digest pipeline.
+	if err := database.UpsertLearnedRule(InboxLearnedRule{
+		RuleType: "source_mute", ScopeKey: "digest:channel:Cnoise", Weight: -1.0,
+		Source: "explicit_feedback", Pipeline: "digest",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	digestRules, err := database.ListLearnedRulesByPipeline("digest", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(digestRules) != 1 || digestRules[0].ScopeKey != "digest:channel:Cnoise" {
+		t.Fatalf("expected digest rule, got %+v", digestRules)
+	}
+	if digestRules[0].Pipeline != "digest" {
+		t.Errorf("pipeline=%q want digest", digestRules[0].Pipeline)
+	}
+
+	inboxRules, err := database.ListLearnedRulesByPipeline("inbox", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inboxRules) != 0 {
+		t.Errorf("expected no inbox rules, got %+v", inboxRules)
+	}
+
+	// Existing-style upsert with empty Pipeline defaults to "inbox".
+	if err := database.UpsertLearnedRule(InboxLearnedRule{
+		RuleType: "source_boost", ScopeKey: "sender:U9", Weight: 0.5, Source: "implicit",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.GetLearnedRule("source_boost", "sender:U9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Pipeline != "inbox" {
+		t.Errorf("empty pipeline should default to inbox, got %q", got.Pipeline)
+	}
+	inboxRules, err = database.ListLearnedRulesByPipeline("inbox", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inboxRules) != 1 || inboxRules[0].ScopeKey != "sender:U9" {
+		t.Errorf("expected inbox-defaulted rule, got %+v", inboxRules)
+	}
+
+	// ListLearnedRulesByScope scans pipeline too.
+	scoped, err := database.ListLearnedRulesByScope([]string{"digest:channel:Cnoise"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 1 || scoped[0].Pipeline != "digest" {
+		t.Errorf("ListLearnedRulesByScope should carry pipeline, got %+v", scoped)
+	}
+}
+
 func TestInboxLearnedRules_Delete(t *testing.T) {
 	database := openTestDB(t)
 	_ = database.UpsertLearnedRule(InboxLearnedRule{RuleType: "source_mute", ScopeKey: "x", Weight: -1, Source: "user_rule"})
