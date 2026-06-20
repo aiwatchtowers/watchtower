@@ -531,6 +531,7 @@ enum TestDatabase {
         source         TEXT NOT NULL CHECK(source IN ('implicit','explicit_feedback','user_rule')),
         evidence_count INTEGER NOT NULL DEFAULT 0,
         last_updated   TEXT NOT NULL,
+        pipeline       TEXT NOT NULL DEFAULT 'inbox',
         UNIQUE(rule_type, scope_key)
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, scope_key);
@@ -584,7 +585,7 @@ enum TestDatabase {
 
     CREATE TABLE IF NOT EXISTS feedback (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox')),
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox', 'catchup_theme')),
         entity_id   TEXT NOT NULL,
         rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
         comment     TEXT NOT NULL DEFAULT '',
@@ -849,6 +850,34 @@ enum TestDatabase {
     );
     CREATE INDEX IF NOT EXISTS idx_target_links_source ON target_links(source_target_id);
     CREATE INDEX IF NOT EXISTS idx_target_links_target ON target_links(target_target_id);
+
+    CREATE TABLE IF NOT EXISTS catchup_sessions (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at     TEXT NOT NULL,
+        status         TEXT NOT NULL CHECK(status IN ('building','active','done','failed')),
+        oldest_unread  TEXT NOT NULL DEFAULT '',
+        total_themes   INTEGER NOT NULL DEFAULT 0,
+        reviewed_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS catchup_themes (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id       INTEGER NOT NULL REFERENCES catchup_sessions(id) ON DELETE CASCADE,
+        order_idx        INTEGER NOT NULL DEFAULT 0,
+        title            TEXT NOT NULL DEFAULT '',
+        narrative        TEXT NOT NULL DEFAULT '',
+        priority         TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+        needs_you        INTEGER NOT NULL DEFAULT 0,
+        suggested_action TEXT NOT NULL DEFAULT '',
+        refs             TEXT NOT NULL DEFAULT '[]',
+        gen_state        TEXT NOT NULL DEFAULT 'skeleton' CHECK(gen_state IN ('skeleton','expanding','ready','failed')),
+        review_state     TEXT NOT NULL DEFAULT 'pending' CHECK(review_state IN ('pending','reviewed','snoozed')),
+        snooze_until     TEXT NOT NULL DEFAULT '',
+        task_id          INTEGER NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_catchup_themes_session ON catchup_themes(session_id, order_idx);
     """
 
     // MARK: - Briefing Fixtures

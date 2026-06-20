@@ -2,18 +2,9 @@ import Foundation
 import GRDB
 
 // MARK: - Catch-Up Result (matches Go catchup.Result)
-
-struct CatchUpRef: Codable, Identifiable, Equatable {
-    var id: String { "\(area)-\(refID)" }
-    let area: String
-    let refID: Int
-    let label: String
-
-    enum CodingKeys: String, CodingKey {
-        case area, label
-        case refID = "id"
-    }
-}
+//
+// `CatchUpRef` now lives in Models/CatchUpModels.swift (review-mode model);
+// the v1 rollup types below reuse it for backward-compatible JSON decoding.
 
 struct CatchUpStory: Codable, Identifiable, Equatable {
     var id: String { title }
