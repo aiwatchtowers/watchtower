@@ -1,265 +1,211 @@
 import Foundation
 import GRDB
 
-// MARK: - Catch-Up Result (matches Go catchup.Result)
+// MARK: - Catch-Up v2 review-mode ViewModel
 //
-// `CatchUpRef` now lives in Models/CatchUpModels.swift (review-mode model);
-// the v1 rollup types below reuse it for backward-compatible JSON decoding.
-
-struct CatchUpStory: Codable, Identifiable, Equatable {
-    var id: String { title }
-    let title: String
-    let narrative: String
-    let priority: String
-    let needsYou: Bool
-    let refs: [CatchUpRef]
-
-    enum CodingKeys: String, CodingKey {
-        case title, narrative, priority, refs
-        case needsYou = "needs_you"
-    }
-
-    init(title: String, narrative: String, priority: String, needsYou: Bool, refs: [CatchUpRef]) {
-        self.title = title
-        self.narrative = narrative
-        self.priority = priority
-        self.needsYou = needsYou
-        self.refs = refs
-    }
-
-    // Tolerate null / missing refs (older payloads, or a model omitting the key).
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
-        narrative = try container.decodeIfPresent(String.self, forKey: .narrative) ?? ""
-        priority = try container.decodeIfPresent(String.self, forKey: .priority) ?? "medium"
-        needsYou = try container.decodeIfPresent(Bool.self, forKey: .needsYou) ?? false
-        refs = try container.decodeIfPresent([CatchUpRef].self, forKey: .refs) ?? []
-    }
-}
-
-struct CatchUpSectionItem: Codable, Identifiable, Equatable {
-    let id: Int
-    let title: String
-    let snippet: String
-}
-
-struct CatchUpSection: Codable, Identifiable, Equatable {
-    var id: String { area }
-    let area: String
-    let total: Int
-    let included: Int
-    let items: [CatchUpSectionItem]
-
-    enum CodingKeys: String, CodingKey {
-        case area, total, included, items
-    }
-
-    init(area: String, total: Int, included: Int, items: [CatchUpSectionItem]) {
-        self.area = area
-        self.total = total
-        self.included = included
-        self.items = items
-    }
-
-    // Tolerate null / missing items.
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        area = try container.decodeIfPresent(String.self, forKey: .area) ?? ""
-        total = try container.decodeIfPresent(Int.self, forKey: .total) ?? 0
-        included = try container.decodeIfPresent(Int.self, forKey: .included) ?? 0
-        items = try container.decodeIfPresent([CatchUpSectionItem].self, forKey: .items) ?? []
-    }
-}
-
-struct CatchUpAreaCount: Codable, Equatable {
-    let included: Int
-    let total: Int
-}
-
-struct CatchUpCounts: Codable, Equatable {
-    let digests: CatchUpAreaCount
-    let tracks: CatchUpAreaCount
-    let inbox: CatchUpAreaCount
-    let briefings: CatchUpAreaCount
-    let totalUnread: Int
-    let totalIncluded: Int
-
-    enum CodingKeys: String, CodingKey {
-        case digests, tracks, inbox, briefings
-        case totalUnread = "total_unread"
-        case totalIncluded = "total_included"
-    }
-}
-
-struct CatchUpResult: Codable, Equatable {
-    let tldr: String
-    let counts: CatchUpCounts
-    let truncated: Bool
-    let stories: [CatchUpStory]
-    let sections: [CatchUpSection]
-
-    enum CodingKeys: String, CodingKey {
-        case tldr, counts, truncated, stories, sections
-    }
-
-    init(
-        tldr: String,
-        counts: CatchUpCounts,
-        truncated: Bool,
-        stories: [CatchUpStory],
-        sections: [CatchUpSection]
-    ) {
-        self.tldr = tldr
-        self.counts = counts
-        self.truncated = truncated
-        self.stories = stories
-        self.sections = sections
-    }
-
-    // Tolerate null / missing stories and sections (Go sends [], but be defensive).
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        tldr = try container.decodeIfPresent(String.self, forKey: .tldr) ?? ""
-        counts = try container.decode(CatchUpCounts.self, forKey: .counts)
-        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
-        stories = try container.decodeIfPresent([CatchUpStory].self, forKey: .stories) ?? []
-        sections = try container.decodeIfPresent([CatchUpSection].self, forKey: .sections) ?? []
-    }
-
-    /// The snapshot item IDs for one area — the authoritative set to clear.
-    func ids(for area: String) -> [Int] {
-        sections.first { $0.area == area }?.items.map(\.id) ?? []
-    }
-}
-
-// MARK: - ViewModel
+// Drives the two-panel review UX. Themes/sessions live in the DB (written by
+// `watchtower catchup run`); the VM streams them in via a GRDB ValueObservation
+// on the active session's themes and lets the operator review one theme at a
+// time. Per-theme feedback / regen are delegated to the CLI; acknowledge and
+// snooze are direct DB writes via `CatchUpQueries`.
 
 @MainActor
 @Observable
 final class CatchUpViewModel {
-    var result: CatchUpResult?
+    var session: CatchUpSession?
+    var themes: [CatchUpTheme] = []
+    var selected: CatchUpTheme?
     var isLoading = false
     var error: String?
 
     private let dbPool: DatabasePool
+    private var observationTask: Task<Void, Never>?
 
     init(dbPool: DatabasePool) {
         self.dbPool = dbPool
     }
 
-    /// Runs `watchtower catchup --json` and parses the rollup.
-    func generate() {
+    // MARK: - Session lifecycle
+
+    /// Starts a fresh review pass: runs `watchtower catchup run` (which writes the
+    /// session + themes to the DB), then begins observing so the list streams in
+    /// as expand completes.
+    func startSession() {
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"
             return
         }
         isLoading = true
         error = nil
+        startObserving()
 
         Task.detached {
-            let cliResult = await Self.runCLI(path: cliPath, arguments: ["catchup", "--json"])
+            let result = await Self.runCLI(path: cliPath, arguments: ["catchup", "run"])
             await MainActor.run {
                 self.isLoading = false
-                if cliResult.exitCode == 0, !cliResult.stdout.isEmpty {
-                    self.parse(cliResult.stdout)
-                } else {
-                    self.error = cliResult.stderr.isEmpty
-                        ? "Catch-up failed (exit \(cliResult.exitCode))"
-                        : String(cliResult.stderr.prefix(300))
+                if result.exitCode != 0 {
+                    self.error = result.stderr.isEmpty
+                        ? "Catch-up failed (exit \(result.exitCode))"
+                        : String(result.stderr.prefix(300))
                 }
             }
         }
     }
 
-    /// Marks one area's snapshot IDs read, then refreshes the in-memory result
-    /// so that section drops out of the UI.
-    func markSectionRead(_ area: String) async {
-        guard let result else { return }
-        let ids = result.ids(for: area)
-        guard !ids.isEmpty else { return }
-        let section = result.sections.first { $0.area == area }
-        let hasMore = (section?.included ?? 0) < (section?.total ?? 0)
-        do {
-            try await dbPool.write { db in
-                switch area {
-                case "digests": try DigestQueries.markRead(db, ids: ids)
-                case "tracks": try TrackQueries.markRead(db, ids: ids)
-                case "inbox": try InboxQueries.markRead(db, ids: ids)
-                case "briefings": try BriefingQueries.markRead(db, ids: ids)
-                default: break
+    /// Observes the active session's themes. Updates `session`/`themes` live and
+    /// auto-selects the first pending theme when nothing is selected yet.
+    func startObserving() {
+        guard observationTask == nil else { return }
+        let dbPool = self.dbPool
+        observationTask = Task { [weak self] in
+            let observation = CatchUpQueries.observeActiveThemes()
+            do {
+                for try await themes in observation.values(in: dbPool) {
+                    guard !Task.isCancelled else { break }
+                    await self?.apply(themes: themes)
                 }
+            } catch {
+                await MainActor.run { self?.error = error.localizedDescription }
             }
-            // The write succeeded. If this section was truncated, the "+N not shown"
-            // items are still unread — re-run to pull the next batch instead of
-            // falsely dropping the section. Otherwise clear it locally.
-            if hasMore {
-                generate()
-            } else {
-                clearSectionLocally(area)
-            }
-        } catch {
-            self.error = "Failed to mark \(area) read: \(error.localizedDescription)"
-            print("CatchUp markSectionRead(\(area)) failed: \(error)")
         }
     }
 
-    /// Marks every snapshot ID across all areas read.
-    func markAllRead() async {
-        guard let result else { return }
-        let digestIDs = result.ids(for: "digests")
-        let trackIDs = result.ids(for: "tracks")
-        let inboxIDs = result.ids(for: "inbox")
-        let briefingIDs = result.ids(for: "briefings")
-        let wasTruncated = result.truncated
+    private func apply(themes: [CatchUpTheme]) async {
+        self.themes = themes
+        self.session = try? await dbPool.read { db in try CatchUpQueries.fetchActiveSession(db) }
+
+        // Re-point the selection at the freshest copy of the selected row, then
+        // auto-advance to the first pending theme when there is no live selection.
+        if let current = selected, let fresh = themes.first(where: { $0.id == current.id }) {
+            selected = fresh
+        }
+        if selected == nil || !(selected?.isPending ?? false) {
+            selected = themes.first { $0.isPending }
+        }
+    }
+
+    // MARK: - Per-theme actions
+
+    /// Acknowledges a theme: cascade mark-read over its refs, flip review_state to
+    /// reviewed, bump the session count, then advance selection to the next pending.
+    func acknowledge(_ theme: CatchUpTheme) async {
         do {
             try await dbPool.write { db in
-                try DigestQueries.markRead(db, ids: digestIDs)
-                try TrackQueries.markRead(db, ids: trackIDs)
-                try InboxQueries.markRead(db, ids: inboxIDs)
-                try BriefingQueries.markRead(db, ids: briefingIDs)
+                try CatchUpQueries.acknowledge(db, theme: theme)
             }
-            // The write succeeded. If the rollup was truncated, unread items beyond the
-            // snapshot remain — re-run to surface the next batch instead of falsely
-            // showing "all caught up". Otherwise the backlog is fully cleared.
-            if wasTruncated {
-                generate()
-            } else {
-                self.result = nil
-            }
+            advanceSelection(after: theme)
         } catch {
-            self.error = "Failed to mark everything read: \(error.localizedDescription)"
-            print("CatchUp markAllRead failed: \(error)")
+            self.error = "Failed to acknowledge: \(error.localizedDescription)"
         }
     }
 
-    private func clearSectionLocally(_ area: String) {
-        guard let current = result else { return }
-        let remaining = current.sections.filter { $0.area != area }
-        result = CatchUpResult(
-            tldr: current.tldr, counts: current.counts, truncated: current.truncated,
-            stories: current.stories, sections: remaining
-        )
+    /// Snoozes a theme until the given date; it leaves the current pass.
+    func snooze(_ theme: CatchUpTheme, until: Date) async {
+        let stamp = Self.isoFormatter.string(from: until)
+        do {
+            try await dbPool.write { db in
+                try CatchUpQueries.setReview(db, id: theme.id, state: "snoozed", snoozeUntil: stamp)
+            }
+            advanceSelection(after: theme)
+        } catch {
+            self.error = "Failed to snooze: \(error.localizedDescription)"
+        }
     }
 
-    private func parse(_ output: String) {
-        guard let data = output.data(using: .utf8) else {
-            error = "Invalid CLI output encoding"
+    /// Creates a target from the theme and links it back via `task_id`.
+    func createTask(_ theme: CatchUpTheme) async {
+        let today = Self.dayFormatter.string(from: Date())
+        let text = theme.suggestedAction.isEmpty ? theme.title : theme.suggestedAction
+        do {
+            try await dbPool.write { db in
+                let taskID = try TargetQueries.create(
+                    db,
+                    text: text,
+                    intent: theme.title,
+                    periodStart: today,
+                    periodEnd: today,
+                    priority: theme.priority,
+                    sourceType: "catchup",
+                    sourceID: String(theme.id)
+                )
+                try CatchUpQueries.setTask(db, id: theme.id, taskID: taskID)
+            }
+        } catch {
+            self.error = "Failed to create task: \(error.localizedDescription)"
+        }
+    }
+
+    /// Records 👍/👎 (+ optional comment) via the CLI, which runs the learning
+    /// interpreter and derives targeted rules when a comment is present.
+    func submitFeedback(_ theme: CatchUpTheme, rating: Int, comment: String) {
+        guard let cliPath = Constants.findCLIPath() else {
+            error = "Watchtower CLI not found"
             return
         }
-        do {
-            result = try JSONDecoder().decode(CatchUpResult.self, from: data)
-        } catch {
-            self.error = "Failed to parse catch-up: \(error.localizedDescription)"
+        var args = ["catchup", "feedback", String(theme.id), "--rating", rating >= 0 ? "up" : "down"]
+        if !comment.isEmpty {
+            args.append(contentsOf: ["--comment", comment])
+        }
+        Task.detached {
+            let result = await Self.runCLI(path: cliPath, arguments: args)
+            if result.exitCode != 0 {
+                await MainActor.run {
+                    self.error = result.stderr.isEmpty
+                        ? "Feedback failed (exit \(result.exitCode))"
+                        : String(result.stderr.prefix(300))
+                }
+            }
         }
     }
+
+    /// Regenerates a single theme with an operator correction comment via the CLI;
+    /// the row is overwritten in place and picked up by the observation.
+    func regenerate(_ theme: CatchUpTheme, comment: String) {
+        guard let cliPath = Constants.findCLIPath() else {
+            error = "Watchtower CLI not found"
+            return
+        }
+        var args = ["catchup", "regen", String(theme.id)]
+        if !comment.isEmpty {
+            args.append(contentsOf: ["--comment", comment])
+        }
+        Task.detached {
+            let result = await Self.runCLI(path: cliPath, arguments: args)
+            if result.exitCode != 0 {
+                await MainActor.run {
+                    self.error = result.stderr.isEmpty
+                        ? "Regenerate failed (exit \(result.exitCode))"
+                        : String(result.stderr.prefix(300))
+                }
+            }
+        }
+    }
+
+    // MARK: - Selection
+
+    /// Advances selection to the next pending theme after the given one (by
+    /// order), wrapping to the first pending if none follow.
+    private func advanceSelection(after theme: CatchUpTheme) {
+        let pending = themes.filter { $0.isPending && $0.id != theme.id }
+        selected = pending.first { $0.orderIdx > theme.orderIdx } ?? pending.first
+    }
+
+    // MARK: - Formatters
+
+    private static let isoFormatter = ISO8601DateFormatter()
+
+    private static let dayFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.timeZone = TimeZone(identifier: "UTC")
+        return fmt
+    }()
+
+    // MARK: - CLI (detached, drains stdout+stderr concurrently)
 
     nonisolated private static func runCLI(
         path: String, arguments: [String]
     ) async -> (exitCode: Int32, stdout: String, stderr: String) {
-        // The Process I/O below is synchronous and blocking, so run it off the
-        // cooperative pool via a continuation — this also lets us use DispatchGroup.wait()
-        // outside an async context (which is a hard error under Swift 6).
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
                 continuation.resume(returning: runCLIBlocking(path: path, arguments: arguments))

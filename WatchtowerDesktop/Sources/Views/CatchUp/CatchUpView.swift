@@ -1,134 +1,114 @@
 import SwiftUI
 
+// NOTE: This is the interim review-mode shell wired to the v2 `CatchUpViewModel`.
+// Task 11 replaces it with the full two-panel master-detail UX
+// (CatchUpThemeRow + CatchUpReviewPane). It is kept minimal here only so the
+// target builds after the ViewModel rewrite (Task 10).
 struct CatchUpView: View {
     @Bindable var vm: CatchUpViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                if vm.isLoading {
-                    ProgressView("Summarizing everything you missed…")
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, 40)
-                } else if let error = vm.error {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                } else if let result = vm.result {
-                    content(result)
-                } else {
-                    emptyState
+        Group {
+            if vm.themes.isEmpty {
+                emptyState
+            } else {
+                HSplitView {
+                    themeList
+                        .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
+                    reviewPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .padding(20)
         }
         .navigationTitle("Catch Up")
-        .onAppear { if vm.result == nil { vm.generate() } }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    vm.startSession()
+                } label: {
+                    Label("Start review", systemImage: "arrow.clockwise")
+                }
+                .disabled(vm.isLoading)
+            }
+        }
+        .onAppear { vm.startObserving() }
     }
 
-    private var header: some View {
-        HStack {
-            Text("Catch Up").font(.largeTitle.bold())
-            Spacer()
-            Button {
-                vm.generate()
-            } label: {
-                Label("Regenerate", systemImage: "arrow.clockwise")
+    private var themeList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let session = vm.session {
+                Text("\(session.reviewedCount) of \(session.totalThemes) reviewed")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
             }
-            .disabled(vm.isLoading)
+            List(selection: Binding(
+                get: { vm.selected?.id },
+                set: { id in vm.selected = vm.themes.first { $0.id == id } }
+            )) {
+                ForEach(vm.themes) { theme in
+                    themeRow(theme).tag(theme.id)
+                }
+            }
+        }
+    }
+
+    private func themeRow(_ theme: CatchUpTheme) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(priorityColor(theme.priority)).frame(width: 8, height: 8)
+            Text(theme.title.isEmpty ? "Untitled" : theme.title)
+                .lineLimit(1)
+            Spacer()
+            if theme.isExpanding {
+                ProgressView().controlSize(.small)
+            } else if theme.isReviewed {
+                Image(systemName: "checkmark").foregroundStyle(.secondary)
+            } else if theme.needsYou {
+                Image(systemName: "person.fill.questionmark").foregroundStyle(.orange)
+            }
         }
     }
 
     @ViewBuilder
-    private func content(_ result: CatchUpResult) -> some View {
-        if result.counts.totalUnread == 0 {
-            emptyState
+    private var reviewPane: some View {
+        if let theme = vm.selected {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(theme.title).font(.largeTitle.bold())
+                    if !theme.narrative.isEmpty {
+                        Text(theme.narrative).font(.body)
+                    }
+                    if !theme.suggestedAction.isEmpty {
+                        Label(theme.suggestedAction, systemImage: "lightbulb")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Button("Done") { Task { await vm.acknowledge(theme) } }
+                        Button("👍") { vm.submitFeedback(theme, rating: 1, comment: "") }
+                        Button("👎") { vm.submitFeedback(theme, rating: -1, comment: "") }
+                    }
+                    .padding(.top, 8)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         } else {
-            if !result.tldr.isEmpty {
-                Text(result.tldr)
-                    .font(.body)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.accentColor.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-
-            if !result.stories.isEmpty {
-                Text("What you missed").font(.title2.bold())
-                ForEach(result.stories) { story in
-                    storyCard(story)
-                }
-            }
-
-            Text("By source").font(.title2.bold()).padding(.top, 8)
-            ForEach(result.sections.filter { !$0.items.isEmpty }) { section in
-                sectionCard(section)
-            }
-
-            Button(role: .destructive) {
-                Task { await vm.markAllRead() }
-            } label: {
-                Label("Mark everything read", systemImage: "checkmark.circle.fill")
-            }
-            .padding(.top, 8)
+            Text("Select a theme to review")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-
-    private func storyCard(_ story: CatchUpStory) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Circle().fill(priorityColor(story.priority)).frame(width: 8, height: 8)
-                Text(story.title).font(.headline)
-                if story.needsYou {
-                    Text("needs you")
-                        .font(.caption2.bold())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.2))
-                        .clipShape(Capsule())
-                }
-            }
-            Text(story.narrative).font(.subheadline).foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func sectionCard(_ section: CatchUpSection) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(section.area.capitalized).font(.headline)
-                if section.included < section.total {
-                    Text("+\(section.total - section.included) not shown")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Mark read") {
-                    Task { await vm.markSectionRead(section.area) }
-                }
-                .controlSize(.small)
-            }
-            ForEach(section.items) { item in
-                Text("• \(item.title)").font(.subheadline)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "checkmark.circle").font(.system(size: 40)).foregroundStyle(.green)
             Text("All caught up").font(.title3)
-            Text("No unread digests, tracks, inbox, or briefings.")
+            Text("Start a review to cluster everything you missed into themes.")
                 .font(.subheadline).foregroundStyle(.secondary)
+            Button("Start review") { vm.startSession() }
+                .disabled(vm.isLoading)
+                .padding(.top, 8)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 60)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func priorityColor(_ priority: String) -> Color {

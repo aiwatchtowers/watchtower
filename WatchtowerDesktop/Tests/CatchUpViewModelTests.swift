@@ -4,234 +4,48 @@ import GRDB
 
 @MainActor
 final class CatchUpViewModelTests: XCTestCase {
-    func testParsesResultJSON() throws {
-        let json = """
-        {"tldr":"Caught up.","truncated":true,
-         "counts":{"digests":{"included":1,"total":3},"tracks":{"included":0,"total":0},
-                   "inbox":{"included":0,"total":0},"briefings":{"included":0,"total":0},
-                   "total_unread":3,"total_included":1},
-         "stories":[{"title":"S","narrative":"N","priority":"high","needs_you":true,
-                     "refs":[{"area":"digests","id":1,"label":"x"}]}],
-         "sections":[{"area":"digests","total":3,"included":1,
-                      "items":[{"id":1,"title":"t","snippet":"s"}]}]}
-        """
-        let result = try JSONDecoder().decode(CatchUpResult.self, from: Data(json.utf8))
-        XCTAssertEqual(result.tldr, "Caught up.")
-        XCTAssertTrue(result.truncated)
-        XCTAssertEqual(result.stories.count, 1)
-        XCTAssertEqual(result.stories[0].priority, "high")
-        XCTAssertEqual(result.sections.first?.items.first?.id, 1)
-        XCTAssertEqual(result.counts.totalUnread, 3)
-    }
-
-    func testSnapshotIDsPerArea() throws {
-        let json = """
-        {"tldr":"","truncated":false,
-         "counts":{"digests":{"included":2,"total":2},"tracks":{"included":1,"total":1},
-                   "inbox":{"included":0,"total":0},"briefings":{"included":0,"total":0},
-                   "total_unread":3,"total_included":3},
-         "stories":[],
-         "sections":[{"area":"digests","total":2,"included":2,
-                      "items":[{"id":7,"title":"a","snippet":""},{"id":8,"title":"b","snippet":""}]},
-                     {"area":"tracks","total":1,"included":1,
-                      "items":[{"id":42,"title":"c","snippet":""}]}]}
-        """
-        let result = try JSONDecoder().decode(CatchUpResult.self, from: Data(json.utf8))
-        XCTAssertEqual(result.ids(for: "digests"), [7, 8])
-        XCTAssertEqual(result.ids(for: "tracks"), [42])
-        XCTAssertEqual(result.ids(for: "inbox"), [])
-    }
-
-    // MARK: - Decode tolerance (null / missing array fields)
-
-    /// Explicit null on stories/sections (and nested items/refs) must decode to empty arrays, not throw.
-    func testDecodesNullArraysAsEmpty() throws {
-        let json = """
-        {"tldr":"x","truncated":false,
-         "counts":{"digests":{"included":0,"total":0},"tracks":{"included":0,"total":0},
-                   "inbox":{"included":0,"total":0},"briefings":{"included":0,"total":0},
-                   "total_unread":0,"total_included":0},
-         "stories":null,"sections":null}
-        """
-        let result = try JSONDecoder().decode(CatchUpResult.self, from: Data(json.utf8))
-        XCTAssertTrue(result.stories.isEmpty)
-        XCTAssertTrue(result.sections.isEmpty)
-    }
-
-    /// Missing stories/sections keys (and nested items/refs) must decode to empty arrays, not throw.
-    func testDecodesMissingArrayKeysAsEmpty() throws {
-        let json = """
-        {"tldr":"x","truncated":false,
-         "counts":{"digests":{"included":0,"total":0},"tracks":{"included":0,"total":0},
-                   "inbox":{"included":0,"total":0},"briefings":{"included":0,"total":0},
-                   "total_unread":0,"total_included":0}}
-        """
-        let result = try JSONDecoder().decode(CatchUpResult.self, from: Data(json.utf8))
-        XCTAssertTrue(result.stories.isEmpty)
-        XCTAssertTrue(result.sections.isEmpty)
-
-        // A story with null refs and a section with null items also tolerate the absence.
-        let nested = """
-        {"tldr":"x","truncated":false,
-         "counts":{"digests":{"included":1,"total":1},"tracks":{"included":0,"total":0},
-                   "inbox":{"included":0,"total":0},"briefings":{"included":0,"total":0},
-                   "total_unread":1,"total_included":1},
-         "stories":[{"title":"S","narrative":"N","priority":"high","needs_you":true}],
-         "sections":[{"area":"digests","total":1,"included":1}]}
-        """
-        let nestedResult = try JSONDecoder().decode(CatchUpResult.self, from: Data(nested.utf8))
-        XCTAssertEqual(nestedResult.stories.first?.refs.count, 0)
-        XCTAssertEqual(nestedResult.sections.first?.items.count, 0)
-    }
-
-    // MARK: - Snapshot clearing (real DB)
-
-    /// markSectionRead must clear exactly the snapshot IDs for that area and leave
-    /// non-snapshot rows (including rows that arrived after the snapshot) unread.
-    func testMarkSectionReadClearsOnlySnapshotIDs() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let pool = manager.dbPool
-
-        let ids = try await pool.write { db -> (snap: Int, other: Int) in
-            let snap = try Self.insertDigest(db)
-            let other = try Self.insertDigest(db)
-            return (snap, other)
-        }
-
-        let vm = CatchUpViewModel(dbPool: pool)
-        vm.result = Self.makeResult(sections: [Self.section(area: "digests", ids: [ids.snap])])
-
-        await vm.markSectionRead("digests")
-
-        let unread = try await pool.read { try Self.unreadDigestIDs($0) }
-        XCTAssertEqual(unread, [ids.other], "only the non-snapshot digest stays unread")
-        // The cleared section drops out of the in-memory result.
-        XCTAssertTrue(vm.result?.sections.contains { $0.area == "digests" } == false)
-    }
-
-    /// markAllRead clears the snapshot IDs across every area, leaving non-snapshot rows untouched.
-    func testMarkAllReadClearsSnapshotAcrossAreas() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let pool = manager.dbPool
-
-        let seeded = try await pool.write { db -> Seeded in
-            Seeded(
-                digSnap: try Self.insertDigest(db),
-                digOther: try Self.insertDigest(db),
-                trkSnap: try Self.insertTrack(db),
-                inbSnap: try Self.insertInbox(db),
-                brfSnap: try Self.insertBriefing(db)
-            )
-        }
-
-        let vm = CatchUpViewModel(dbPool: pool)
-        vm.result = Self.makeResult(sections: [
-            Self.section(area: "digests", ids: [seeded.digSnap]),
-            Self.section(area: "tracks", ids: [seeded.trkSnap]),
-            Self.section(area: "inbox", ids: [seeded.inbSnap]),
-            Self.section(area: "briefings", ids: [seeded.brfSnap])
-        ])
-
-        await vm.markAllRead()
-
-        try await pool.read { db in
-            XCTAssertEqual(try Self.unreadDigestIDs(db), [seeded.digOther], "non-snapshot digest stays unread")
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE read_at IS NULL"), 0)
-            XCTAssertEqual(
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items WHERE read_at IS NULL OR read_at = ''"), 0
-            )
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM briefings WHERE read_at IS NULL"), 0)
-        }
-        XCTAssertNil(vm.result, "result is cleared after marking everything read")
-    }
-
-    // MARK: - Truncation honesty
-
-    /// When a section is truncated (included < total), marking it read must NOT silently
-    /// drop the section to "all caught up" — the snapshot is still cleared in the DB, and
-    /// the rollup is not left falsely empty (it re-runs to pull the next batch).
-    func testMarkSectionReadTruncatedDoesNotFalselyClear() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let pool = manager.dbPool
-
-        let ids = try await pool.write { db -> (snap: Int, other: Int) in
-            let snap = try Self.insertDigest(db)
-            let other = try Self.insertDigest(db)
-            return (snap, other)
-        }
-
-        let vm = CatchUpViewModel(dbPool: pool)
-        // Snapshot shows 1 of 2 → truncated section.
-        vm.result = Self.makeResult(
-            sections: [Self.section(area: "digests", ids: [ids.snap], total: 2)]
-        )
-
-        await vm.markSectionRead("digests")
-
-        // The snapshot ID was still marked read in the DB.
-        let unread = try await pool.read { try Self.unreadDigestIDs($0) }
-        XCTAssertEqual(unread, [ids.other], "only the snapshot digest was cleared")
-        // It did NOT take the clearSectionLocally path that would falsely empty the rollup.
-        XCTAssertFalse(
-            vm.result?.sections.isEmpty ?? true,
-            "truncated section must not be silently dropped to 'all caught up'"
-        )
-    }
-
-    /// markAllRead on a truncated rollup must not leave result=nil ("all caught up");
-    /// the snapshot is still cleared, but the rollup re-runs for the next batch.
-    func testMarkAllReadTruncatedDoesNotFalselyClear() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let pool = manager.dbPool
-
-        let ids = try await pool.write { db -> (snap: Int, other: Int) in
-            let snap = try Self.insertDigest(db)
-            let other = try Self.insertDigest(db)
-            return (snap, other)
-        }
-
-        let vm = CatchUpViewModel(dbPool: pool)
-        vm.result = Self.makeResult(
-            sections: [Self.section(area: "digests", ids: [ids.snap], total: 2)],
-            truncated: true
-        )
-
-        await vm.markAllRead()
-
-        let unread = try await pool.read { try Self.unreadDigestIDs($0) }
-        XCTAssertEqual(unread, [ids.other], "snapshot digest was cleared, the other stays unread")
-        XCTAssertNotNil(vm.result, "truncated rollup must not be nilled to 'all caught up'")
-    }
 
     // MARK: - Seeding helpers
 
-    private struct Seeded {
-        let digSnap: Int
-        let digOther: Int
-        let trkSnap: Int
-        let inbSnap: Int
-        let brfSnap: Int
-    }
-
-    nonisolated private static func insertDigest(_ db: Database) throws -> Int {
-        // Distinct period bounds keep the UNIQUE(channel_id,type,period_from,period_to) happy.
-        let next = (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests") ?? 0) + 1
+    nonisolated private static func insertSession(
+        _ db: Database,
+        status: String = "active",
+        totalThemes: Int = 0,
+        reviewedCount: Int = 0
+    ) throws -> Int {
         try db.execute(
             sql: """
-                INSERT INTO digests (channel_id, period_from, period_to, type, summary, read_at)
-                VALUES ('C1', ?, ?, 'channel', 's', NULL)
+                INSERT INTO catchup_sessions (created_at, status, oldest_unread, total_themes, reviewed_count)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-            arguments: [Double(next), Double(next + 1)]
+            arguments: ["2026-06-20T00:00:00Z", status, "2026-06-01T00:00:00Z", totalThemes, reviewedCount]
         )
         return Int(db.lastInsertedRowID)
     }
 
-    nonisolated private static func insertTrack(_ db: Database) throws -> Int {
-        try db.execute(sql: "INSERT INTO tracks (text, has_updates, read_at) VALUES ('t', 1, NULL)")
+    @discardableResult
+    nonisolated private static func insertTheme(
+        _ db: Database,
+        sessionID: Int,
+        orderIdx: Int = 0,
+        title: String = "Theme",
+        priority: String = "medium",
+        refs: String = "[]",
+        genState: String = "ready",
+        reviewState: String = "pending"
+    ) throws -> Int {
+        try db.execute(
+            sql: """
+                INSERT INTO catchup_themes
+                    (session_id, order_idx, title, narrative, priority, needs_you,
+                     suggested_action, refs, gen_state, review_state, created_at, updated_at)
+                VALUES (?, ?, ?, 'n', ?, 0, '', ?, ?, ?, ?, ?)
+                """,
+            arguments: [
+                sessionID, orderIdx, title, priority, refs, genState, reviewState,
+                "2026-06-20T00:00:00Z", "2026-06-20T00:00:00Z"
+            ]
+        )
         return Int(db.lastInsertedRowID)
     }
 
@@ -243,33 +57,73 @@ final class CatchUpViewModelTests: XCTestCase {
         return Int(db.lastInsertedRowID)
     }
 
-    nonisolated private static func insertBriefing(_ db: Database) throws -> Int {
-        try db.execute(sql: "INSERT INTO briefings (user_id, date, read_at) VALUES ('U1', '2026-06-16', NULL)")
-        return Int(db.lastInsertedRowID)
+    /// Pumps the run loop so the VM's ValueObservation Task can deliver its first value.
+    private func waitFor(
+        _ predicate: @escaping () -> Bool, timeout: TimeInterval = 2.0
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !predicate(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
     }
 
-    nonisolated private static func unreadDigestIDs(_ db: Database) throws -> [Int] {
-        try Int.fetchAll(db, sql: "SELECT id FROM digests WHERE read_at IS NULL ORDER BY id")
+    // MARK: - Observation populates themes and auto-selects first pending
+
+    func testStartObservingPopulatesThemesAndSelectsFirstPending() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        try await pool.write { db in
+            let sid = try Self.insertSession(db, totalThemes: 3)
+            // order_idx 0 already reviewed → should be skipped by auto-select.
+            try Self.insertTheme(db, sessionID: sid, orderIdx: 0, title: "Done", reviewState: "reviewed")
+            try Self.insertTheme(db, sessionID: sid, orderIdx: 1, title: "First pending")
+            try Self.insertTheme(db, sessionID: sid, orderIdx: 2, title: "Second pending")
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        vm.startObserving()
+
+        await waitFor { vm.themes.count == 3 }
+        XCTAssertEqual(vm.themes.count, 3)
+        XCTAssertEqual(vm.session?.totalThemes, 3)
+        XCTAssertEqual(vm.selected?.title, "First pending", "auto-selects the first pending theme")
     }
 
-    /// Builds a section. `total` defaults to the snapshot size (not truncated); pass a
-    /// larger value to simulate a truncated "+N not shown" section.
-    private static func section(area: String, ids: [Int], total: Int? = nil) -> CatchUpSection {
-        CatchUpSection(
-            area: area, total: total ?? ids.count, included: ids.count,
-            items: ids.map { CatchUpSectionItem(id: $0, title: "t", snippet: "") }
-        )
-    }
+    // MARK: - Acknowledge advances to next pending
 
-    private static func makeResult(sections: [CatchUpSection], truncated: Bool = false) -> CatchUpResult {
-        let zero = CatchUpAreaCount(included: 0, total: 0)
-        return CatchUpResult(
-            tldr: "",
-            counts: CatchUpCounts(
-                digests: zero, tracks: zero, inbox: zero, briefings: zero,
-                totalUnread: 0, totalIncluded: 0
-            ),
-            truncated: truncated, stories: [], sections: sections
-        )
+    func testAcknowledgeAdvancesToNextPending() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let inboxID = try await pool.write { db -> Int in
+            let sid = try Self.insertSession(db, totalThemes: 2)
+            let iid = try Self.insertInbox(db)
+            try Self.insertTheme(
+                db, sessionID: sid, orderIdx: 0, title: "First",
+                refs: "[{\"area\":\"inbox\",\"id\":\(iid),\"label\":\"Ping\"}]"
+            )
+            try Self.insertTheme(db, sessionID: sid, orderIdx: 1, title: "Second")
+            return iid
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        vm.startObserving()
+        await waitFor { vm.selected?.title == "First" }
+        let first = try XCTUnwrap(vm.selected)
+
+        await vm.acknowledge(first)
+
+        // The acknowledged theme's referenced inbox item is marked read.
+        let readAt = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT read_at FROM inbox_items WHERE id = ?", arguments: [inboxID])
+        }
+        XCTAssertFalse((readAt ?? "").isEmpty, "referenced inbox item is marked read")
+
+        // Selection advances to the next pending theme.
+        await waitFor { vm.selected?.title == "Second" }
+        XCTAssertEqual(vm.selected?.title, "Second", "selection advances to next pending theme")
     }
 }
