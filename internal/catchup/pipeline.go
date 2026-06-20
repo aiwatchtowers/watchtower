@@ -333,7 +333,7 @@ func (p *Pipeline) catchupPrefs() string {
 		p.logf("catchup: learned preferences unavailable: %v", err)
 		return ""
 	}
-	return buildPreferencesBlock(rules)
+	return digest.LearnedPreferencesBlock(rules)
 }
 
 // Acknowledge marks a theme reviewed and cascades mark-read over exactly the

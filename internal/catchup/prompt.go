@@ -101,7 +101,7 @@ Your job is to turn the comment into durable, targeted learned-rules so the righ
 For each rule produce:
 - pipeline: "digest" | "tracks" | "inbox" | "briefing" | "catchup".
 - rule_type: "source_mute" (suppress/down-rank) or "source_boost" (surface/up-rank).
-- scope_key: a stable, pipeline-prefixed key identifying the target, e.g. "digest:channel:Cxxx", "inbox:sender:Uxxx". Prefix with the pipeline to keep keys unique across pipelines.
+- scope_key: a stable key identifying the target. For the "inbox" pipeline use a BARE key — exactly "sender:Uxxx" or "channel:Cxxx" (the id from the ref) — so it matches how inbox looks rules up. For every other pipeline ("digest"/"tracks"/"briefing"/"catchup") PREFIX the key with the pipeline, e.g. "digest:channel:Cxxx", "tracks:topic:foo", to keep keys distinct across pipelines.
 - weight: a float in [-1.0, 1.0]; negative mutes, positive boosts; magnitude = confidence.
 - reason: one short sentence grounding the rule in the comment.
 
@@ -133,34 +133,6 @@ func buildLearnUserMessage(theme db.CatchupTheme, refs []db.CatchupRef, rating i
 	}
 	fmt.Fprintf(&b, "\nOPERATOR RATING: %s\n", verdict)
 	fmt.Fprintf(&b, "OPERATOR COMMENT: %s\n", strings.TrimSpace(comment))
-	return b.String()
-}
-
-// buildPreferencesBlock formats catchup-pipeline learned rules (derived from the
-// operator's review feedback) into a prompt block so the outline/expand passes
-// honor accumulated preferences. Returns "" when there are no rules. Kept local
-// to the catchup package so it depends only on the db rule type, not on inbox.
-func buildPreferencesBlock(rules []db.InboxLearnedRule) string {
-	if len(rules) == 0 {
-		return ""
-	}
-	var mutes, boosts []string
-	for _, r := range rules {
-		line := fmt.Sprintf("%s (weight=%.1f)", r.ScopeKey, r.Weight)
-		if r.Weight < 0 {
-			mutes = append(mutes, line)
-		} else {
-			boosts = append(boosts, line)
-		}
-	}
-	var b strings.Builder
-	b.WriteString("=== LEARNED PREFERENCES (apply when clustering, ranking, and phrasing) ===\n")
-	if len(mutes) > 0 {
-		b.WriteString("Down-rank / suppress: " + strings.Join(mutes, "; ") + "\n")
-	}
-	if len(boosts) > 0 {
-		b.WriteString("Surface / boost: " + strings.Join(boosts, "; ") + "\n")
-	}
 	return b.String()
 }
 
