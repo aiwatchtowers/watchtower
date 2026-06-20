@@ -308,6 +308,52 @@ func (p *Pipeline) RegenTheme(ctx context.Context, themeID int64, comment string
 	return nil
 }
 
+// Acknowledge marks a theme reviewed and cascades mark-read over exactly the
+// items captured in its snapshot refs (digests/tracks/inbox/briefings). The
+// cascade is best-effort and idempotent: a per-item error is logged and skipped
+// (already-read or newly-arrived items are safely untouched). After the cascade
+// the theme's review_state becomes 'reviewed' and the session's reviewed_count
+// is incremented.
+func (p *Pipeline) Acknowledge(themeID int64) error {
+	theme, err := p.db.GetCatchupTheme(themeID)
+	if err != nil {
+		return err
+	}
+	refs, err := parseRefs(theme.RefsJSON)
+	if err != nil {
+		p.logf("catchup: theme %d refs unparseable for ack: %v", themeID, err)
+		refs = nil
+	}
+
+	for _, r := range refs {
+		var markErr error
+		switch r.Area {
+		case "digests":
+			markErr = p.db.MarkDigestRead(r.ID)
+		case "tracks":
+			markErr = p.db.MarkTrackRead(r.ID)
+		case "inbox":
+			markErr = p.db.MarkInboxRead(r.ID)
+		case "briefings":
+			markErr = p.db.MarkBriefingRead(r.ID)
+		default:
+			p.logf("catchup: theme %d ack skipping unknown area %q", themeID, r.Area)
+			continue
+		}
+		if markErr != nil {
+			p.logf("catchup: theme %d ack mark-read %s#%d: %v", themeID, r.Area, r.ID, markErr)
+		}
+	}
+
+	if err := p.db.SetCatchupThemeReview(themeID, "reviewed", ""); err != nil {
+		return err
+	}
+	if err := p.db.IncrementReviewed(theme.SessionID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // oldestUnread returns a display-only window-start hint. Best-effort; empty when
 // no items carry a usable marker (the gather items are compact and timestamp-free
 // here, so it stays empty until a later task surfaces timestamps).

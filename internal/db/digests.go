@@ -226,6 +226,16 @@ func (db *DB) GetDigestByID(id int) (*Digest, error) {
 	return &d, nil
 }
 
+// MarkDigestRead sets a single digest's read_at to now, idempotently (already-read
+// rows are left untouched). Used by the catch-up acknowledge cascade.
+func (db *DB) MarkDigestRead(id int) error {
+	_, err := db.Exec(`UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND read_at IS NULL`, id)
+	if err != nil {
+		return fmt.Errorf("marking digest %d read: %w", id, err)
+	}
+	return nil
+}
+
 // DeleteDigestsOlderThan removes digests with period_to before the given Unix timestamp.
 func (db *DB) DeleteDigestsOlderThan(beforeUnix float64) (int64, error) {
 	res, err := db.Exec(`DELETE FROM digests WHERE period_to < ?`, beforeUnix)

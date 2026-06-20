@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -14,93 +15,108 @@ import (
 )
 
 var (
-	catchupFlagJSON   bool
-	catchupFlagMaxAge int
-	catchupFlagLimit  int
-
-	// Deprecated flags from the old digest-since-checkpoint catchup command.
-	// Kept hidden so a script using them gets a clear message instead of a bare
-	// "unknown flag" error. They no longer affect behaviour.
-	catchupFlagSince       string
-	catchupFlagWatchedOnly bool
-	catchupFlagChannel     string
+	catchupRunFlagJSON      bool
+	catchupRegenFlagComment string
+	catchupFeedbackRating   string
+	catchupFeedbackComment  string
 )
 
 var catchupCmd = &cobra.Command{
 	Use:   "catchup",
-	Short: "Summarize everything unread across digests, tracks, inbox, and briefings",
-	Long: "Builds an on-demand AI rollup of exactly the currently-unread items across digests, " +
-		"tracks, inbox, and briefings, clustered into cross-source thematic stories.\n\n" +
-		"NOTE: this command changed semantics — it used to summarize Slack activity since a " +
-		"timestamp (--since/--watched-only/--channel). Those flags are removed; it now reports " +
-		"unread items. Use --max-age/--limit to bound the rollup.",
-	RunE: runCatchup,
+	Short: "Review everything unread one theme at a time",
+	Long: "Catch-Up builds a persisted review session that clusters the currently-unread " +
+		"items across digests, tracks, inbox, and briefings into cross-source themes, then " +
+		"lets you review them one at a time. Per-theme feedback trains every pipeline.\n\n" +
+		"Subcommands:\n" +
+		"  run                build a new review session (gather → outline → expand)\n" +
+		"  regen <theme-id>   regenerate a single theme with an operator correction\n" +
+		"  feedback <theme-id> record 👍/👎 (+ optional comment that derives learned rules)\n" +
+		"  ack <theme-id>     acknowledge a theme (cascade mark-read over its sources)",
+}
+
+var catchupRunCmd = &cobra.Command{
+	Use:   "run",
+	Short: "Build a new catch-up review session",
+	RunE:  runCatchupRun,
+}
+
+var catchupRegenCmd = &cobra.Command{
+	Use:   "regen <theme-id>",
+	Short: "Regenerate a single theme with a correction comment",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runCatchupRegen,
+}
+
+var catchupFeedbackCmd = &cobra.Command{
+	Use:   "feedback <theme-id>",
+	Short: "Record feedback on a theme (--rating up|down [--comment])",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runCatchupFeedback,
+}
+
+var catchupAckCmd = &cobra.Command{
+	Use:   "ack <theme-id>",
+	Short: "Acknowledge a theme and mark its sources read",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runCatchupAck,
 }
 
 func init() {
-	catchupCmd.Flags().BoolVar(&catchupFlagJSON, "json", false, "output result as JSON")
-	catchupCmd.Flags().IntVar(&catchupFlagMaxAge, "max-age", 0, "override max age in days for unread items (0 = use config)")
-	catchupCmd.Flags().IntVar(&catchupFlagLimit, "limit", 0, "override per-area cap; when >0 sets all area caps to this value (0 = use config)")
-
-	// Hidden deprecated flags — accepted but inert, with a stderr notice (F3).
-	catchupCmd.Flags().StringVar(&catchupFlagSince, "since", "", "deprecated: removed (catchup now reports unread items)")
-	catchupCmd.Flags().BoolVar(&catchupFlagWatchedOnly, "watched-only", false, "deprecated: removed (catchup now reports unread items)")
-	catchupCmd.Flags().StringVar(&catchupFlagChannel, "channel", "", "deprecated: removed (catchup now reports unread items)")
-	_ = catchupCmd.Flags().MarkHidden("since")
-	_ = catchupCmd.Flags().MarkHidden("watched-only")
-	_ = catchupCmd.Flags().MarkHidden("channel")
-
 	rootCmd.AddCommand(catchupCmd)
+	catchupCmd.AddCommand(catchupRunCmd, catchupRegenCmd, catchupFeedbackCmd, catchupAckCmd)
+
+	catchupRunCmd.Flags().BoolVar(&catchupRunFlagJSON, "json", false, "output the resulting themes as JSON")
+	catchupRegenCmd.Flags().StringVar(&catchupRegenFlagComment, "comment", "", "operator correction to apply when regenerating")
+	catchupFeedbackCmd.Flags().StringVar(&catchupFeedbackRating, "rating", "", "up or down")
+	catchupFeedbackCmd.Flags().StringVar(&catchupFeedbackComment, "comment", "", "free-text reason; a comment derives targeted learned rules")
 }
 
-func runCatchup(cmd *cobra.Command, _ []string) error {
-	for _, name := range []string{"since", "watched-only", "channel"} {
-		if cmd.Flags().Changed(name) {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"warning: --%s is removed; catchup now reports currently-unread items. See 'watchtower catchup --help'.\n", name)
-		}
-	}
-
+// catchupPipeline loads config + DB and constructs a pooled-generator pipeline so
+// the per-theme expand fan-out is bounded. It returns the pipeline, the database,
+// and a cleanup func that closes the DB and the generator pool.
+func catchupPipeline() (*catchup.Pipeline, *db.DB, func(), error) {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	applyProviderOverride(cfg)
 	if err := cfg.ValidateWorkspace(); err != nil {
-		return err
-	}
-
-	if catchupFlagMaxAge > 0 {
-		cfg.Catchup.MaxAgeDays = catchupFlagMaxAge
-	}
-	if catchupFlagLimit > 0 {
-		cfg.Catchup.Caps = config.CatchupCaps{
-			Digests:   catchupFlagLimit,
-			Tracks:    catchupFlagLimit,
-			Inbox:     catchupFlagLimit,
-			Briefings: catchupFlagLimit,
-		}
+		return nil, nil, nil, err
 	}
 
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
+		return nil, nil, nil, fmt.Errorf("opening database: %w", err)
 	}
-	defer database.Close()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	gen := cliGenerator(cfg)
-	sessionID, err := catchup.New(database, cfg, gen, logger).Run(cmd.Context())
+	gen, closeGen := cliPooledGenerator(cfg, logger)
+	p := catchup.New(database, cfg, gen, logger)
+	cleanup := func() {
+		closeGen()
+		_ = database.Close()
+	}
+	return p, database, cleanup, nil
+}
+
+func runCatchupRun(cmd *cobra.Command, _ []string) error {
+	p, database, cleanup, err := catchupPipeline()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	sessionID, err := p.Run(cmd.Context())
 	if err != nil {
 		return err
 	}
 
 	out := cmd.OutOrStdout()
 	if sessionID == 0 {
-		if catchupFlagJSON {
+		if catchupRunFlagJSON {
 			enc := json.NewEncoder(out)
 			enc.SetIndent("", "  ")
 			return enc.Encode([]db.CatchupTheme{})
@@ -114,7 +130,7 @@ func runCatchup(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if catchupFlagJSON {
+	if catchupRunFlagJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(themes)
@@ -126,7 +142,85 @@ func runCatchup(cmd *cobra.Command, _ []string) error {
 		if t.NeedsYou {
 			flag = " [needs you]"
 		}
-		fmt.Fprintf(out, "• (%s)%s %s\n  %s\n", t.Priority, flag, t.Title, t.Narrative)
+		fmt.Fprintf(out, "[%d] (%s)%s %s\n  %s\n", t.ID, t.Priority, flag, t.Title, t.Narrative)
 	}
 	return nil
+}
+
+func runCatchupRegen(cmd *cobra.Command, args []string) error {
+	themeID, err := parseThemeID(args[0])
+	if err != nil {
+		return err
+	}
+	p, _, cleanup, err := catchupPipeline()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if err := p.RegenTheme(cmd.Context(), themeID, catchupRegenFlagComment); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Regenerated theme %d.\n", themeID)
+	return nil
+}
+
+func runCatchupFeedback(cmd *cobra.Command, args []string) error {
+	themeID, err := parseThemeID(args[0])
+	if err != nil {
+		return err
+	}
+	rating, err := parseRating(catchupFeedbackRating)
+	if err != nil {
+		return err
+	}
+	p, _, cleanup, err := catchupPipeline()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if err := p.SubmitThemeFeedback(cmd.Context(), themeID, rating, catchupFeedbackComment); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Recorded feedback on theme %d.\n", themeID)
+	return nil
+}
+
+func runCatchupAck(cmd *cobra.Command, args []string) error {
+	themeID, err := parseThemeID(args[0])
+	if err != nil {
+		return err
+	}
+	p, _, cleanup, err := catchupPipeline()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if err := p.Acknowledge(themeID); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Acknowledged theme %d.\n", themeID)
+	return nil
+}
+
+func parseThemeID(s string) (int64, error) {
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid theme id %q: %w", s, err)
+	}
+	return id, nil
+}
+
+// parseRating maps the CLI's up/down to the feedback rating (+1 / -1).
+func parseRating(s string) (int, error) {
+	switch s {
+	case "up":
+		return 1, nil
+	case "down":
+		return -1, nil
+	default:
+		return 0, fmt.Errorf("invalid --rating %q: must be up or down", s)
+	}
 }

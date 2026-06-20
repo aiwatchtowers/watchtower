@@ -616,13 +616,13 @@ func TestRunCatchup_EmptyBacklog(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
 	database.Close()
 
-	catchupFlagJSON = true
-	defer func() { catchupFlagJSON = false }()
+	catchupRunFlagJSON = true
+	defer func() { catchupRunFlagJSON = false }()
 
 	buf := new(bytes.Buffer)
-	catchupCmd.SetOut(buf)
+	catchupRunCmd.SetOut(buf)
 
-	err = catchupCmd.RunE(catchupCmd, nil)
+	err = catchupRunCmd.RunE(catchupRunCmd, nil)
 	require.NoError(t, err)
 	// Catch-Up v2: an empty backlog creates no session and emits an empty
 	// themes array (the v1 counts/total_unread rollup shape is gone).
