@@ -11,6 +11,9 @@ CREATE INDEX idx_calendar_events_end ON calendar_events(end_time)
 index	idx_calendar_events_start
 CREATE INDEX idx_calendar_events_start ON calendar_events(start_time)
 
+index	idx_catchup_themes_session
+CREATE INDEX idx_catchup_themes_session ON catchup_themes(session_id, order_idx)
+
 index	idx_channels_is_archived
 CREATE INDEX idx_channels_is_archived ON channels(is_archived)
 
@@ -329,6 +332,35 @@ synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT ''
 )
 
+table	catchup_sessions
+CREATE TABLE catchup_sessions (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+created_at TEXT NOT NULL,
+status TEXT NOT NULL CHECK(status IN ('building','active','done','failed')),
+oldest_unread TEXT NOT NULL DEFAULT '',
+total_themes INTEGER NOT NULL DEFAULT 0,
+reviewed_count INTEGER NOT NULL DEFAULT 0
+)
+
+table	catchup_themes
+CREATE TABLE catchup_themes (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+session_id INTEGER NOT NULL REFERENCES catchup_sessions(id) ON DELETE CASCADE,
+order_idx INTEGER NOT NULL DEFAULT 0,
+title TEXT NOT NULL DEFAULT '',
+narrative TEXT NOT NULL DEFAULT '',
+priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+needs_you INTEGER NOT NULL DEFAULT 0,
+suggested_action TEXT NOT NULL DEFAULT '',
+refs TEXT NOT NULL DEFAULT '[]',
+gen_state TEXT NOT NULL DEFAULT 'skeleton' CHECK(gen_state IN ('skeleton','expanding','ready','failed')),
+review_state TEXT NOT NULL DEFAULT 'pending' CHECK(review_state IN ('pending','reviewed','snoozed')),
+snooze_until TEXT NOT NULL DEFAULT '',
+task_id INTEGER NOT NULL DEFAULT 0,
+created_at TEXT NOT NULL,
+updated_at TEXT NOT NULL
+)
+
 table	channel_settings
 CREATE TABLE channel_settings (
 channel_id TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
@@ -507,11 +539,11 @@ UNIQUE(channel_id, type, period_from, period_to)
 )
 
 table	feedback
-CREATE TABLE feedback (
+CREATE TABLE "feedback" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
-entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'target', 'inbox')),
-entity_id TEXT NOT NULL, -- digest.id, tracks.id, or "digest_id:decision_idx"
-rating INTEGER NOT NULL CHECK(rating IN (-1, 1)), -- -1 = bad, +1 = good
+entity_type TEXT NOT NULL CHECK(entity_type IN ('digest','track','decision','user_analysis','briefing','target','inbox','catchup_theme')),
+entity_id TEXT NOT NULL,
+rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
 comment TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
@@ -595,7 +627,7 @@ scope_key TEXT NOT NULL,
 weight REAL NOT NULL,
 source TEXT NOT NULL CHECK(source IN ('implicit','explicit_feedback','user_rule')),
 evidence_count INTEGER NOT NULL DEFAULT 0,
-last_updated TEXT NOT NULL,
+last_updated TEXT NOT NULL, pipeline TEXT NOT NULL DEFAULT 'inbox',
 UNIQUE(rule_type, scope_key)
 )
 
@@ -1247,6 +1279,31 @@ END
 15	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 16	updated_at	TEXT	notnull=1	dflt=''	pk=0
 
+## catchup_sessions
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+2	status	TEXT	notnull=1	dflt=NULL	pk=0
+3	oldest_unread	TEXT	notnull=1	dflt=''	pk=0
+4	total_themes	INTEGER	notnull=1	dflt=0	pk=0
+5	reviewed_count	INTEGER	notnull=1	dflt=0	pk=0
+
+## catchup_themes
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	session_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	order_idx	INTEGER	notnull=1	dflt=0	pk=0
+3	title	TEXT	notnull=1	dflt=''	pk=0
+4	narrative	TEXT	notnull=1	dflt=''	pk=0
+5	priority	TEXT	notnull=1	dflt='medium'	pk=0
+6	needs_you	INTEGER	notnull=1	dflt=0	pk=0
+7	suggested_action	TEXT	notnull=1	dflt=''	pk=0
+8	refs	TEXT	notnull=1	dflt='[]'	pk=0
+9	gen_state	TEXT	notnull=1	dflt='skeleton'	pk=0
+10	review_state	TEXT	notnull=1	dflt='pending'	pk=0
+11	snooze_until	TEXT	notnull=1	dflt=''	pk=0
+12	task_id	INTEGER	notnull=1	dflt=0	pk=0
+13	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+14	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## channel_settings
 0	channel_id	TEXT	notnull=0	dflt=NULL	pk=1
 1	is_muted_for_llm	INTEGER	notnull=1	dflt=0	pk=0
@@ -1462,6 +1519,7 @@ END
 4	source	TEXT	notnull=1	dflt=NULL	pk=0
 5	evidence_count	INTEGER	notnull=1	dflt=0	pk=0
 6	last_updated	TEXT	notnull=1	dflt=NULL	pk=0
+7	pipeline	TEXT	notnull=1	dflt='inbox'	pk=0
 
 ## jira_board_field_map
 0	board_id	INTEGER	notnull=1	dflt=NULL	pk=1
