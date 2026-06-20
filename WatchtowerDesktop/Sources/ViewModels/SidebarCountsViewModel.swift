@@ -14,9 +14,17 @@ final class SidebarCountsViewModel {
     var inboxPendingCount: Int = 0
     var inboxHighPriorityCount: Int = 0
 
-    /// Total unread feeding the Catch-Up badge: digests + tracks + inbox + briefings.
+    /// Pending themes of the active Catch-Up review session, or nil when no
+    /// session is active. When present, it drives the Catch-Up badge.
+    var pendingThemeCount: Int?
+
+    /// The Catch-Up badge: pending themes of the active review session when one
+    /// exists, otherwise the unread source sum (digests + tracks + inbox + briefings).
     var catchUpTotalCount: Int {
-        unreadDigestCount + updatedTrackCount + inboxPendingCount + unreadBriefingCount
+        if let pending = pendingThemeCount {
+            return pending
+        }
+        return unreadDigestCount + updatedTrackCount + inboxPendingCount + unreadBriefingCount
     }
 
     private let dbPool: DatabasePool
@@ -42,7 +50,8 @@ final class SidebarCountsViewModel {
             // Observe row counts of every source table so any write (including
             // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
             let observation = ValueObservation.tracking { db -> [Int] in
-                let tables = ["tracks", "briefings", "targets", "inbox_items", "digests"]
+                let tables = ["tracks", "briefings", "targets", "inbox_items", "digests",
+                              "catchup_sessions", "catchup_themes"]
                 return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {
@@ -74,6 +83,7 @@ final class SidebarCountsViewModel {
         let overdueTaskCount: Int
         let inboxPendingCount: Int
         let inboxHighPriorityCount: Int
+        var pendingThemeCount: Int?
 
         static let zero = Self(
             updatedTrackCount: 0,
@@ -84,15 +94,34 @@ final class SidebarCountsViewModel {
             activeTaskCount: 0,
             overdueTaskCount: 0,
             inboxPendingCount: 0,
-            inboxHighPriorityCount: 0
+            inboxHighPriorityCount: 0,
+            pendingThemeCount: nil
         )
+    }
+
+    /// Count of pending themes in the active Catch-Up session, or nil when no
+    /// session is active (badge then falls back to the unread source sum).
+    nonisolated private static func pendingThemeCount(_ db: Database) throws -> Int? {
+        guard let session = try CatchUpQueries.fetchActiveSession(db) else { return nil }
+        return try Int.fetchOne(
+            db,
+            sql: "SELECT COUNT(*) FROM catchup_themes WHERE session_id = ? AND review_state = 'pending'",
+            arguments: [session.id]
+        ) ?? 0
     }
 
     private func fetch() async -> Counts {
         do {
             return try await dbPool.read { db -> Counts in
+                // Pending themes of the active Catch-Up session, when one exists.
+                // Computed independently of the current user so the badge works
+                // even before a workspace user is resolved.
+                let activeThemeCount = try Self.pendingThemeCount(db)
+
                 guard let uid = try TrackQueries.fetchCurrentUserID(db) else {
-                    return Counts.zero
+                    var zero = Counts.zero
+                    zero.pendingThemeCount = activeThemeCount
+                    return zero
                 }
                 let trackCounts = try TrackQueries.fetchCounts(db)
                 let taskCounts = try TargetQueries.fetchCounts(db)
@@ -123,7 +152,8 @@ final class SidebarCountsViewModel {
                     activeTaskCount: taskCounts.active,
                     overdueTaskCount: taskCounts.overdue,
                     inboxPendingCount: inboxCounts.unread,
-                    inboxHighPriorityCount: inboxCounts.highPriority
+                    inboxHighPriorityCount: inboxCounts.highPriority,
+                    pendingThemeCount: activeThemeCount
                 )
             }
         } catch {
@@ -142,5 +172,6 @@ final class SidebarCountsViewModel {
         overdueTaskCount = c.overdueTaskCount
         inboxPendingCount = c.inboxPendingCount
         inboxHighPriorityCount = c.inboxHighPriorityCount
+        pendingThemeCount = c.pendingThemeCount
     }
 }
