@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -89,29 +91,42 @@ func runCatchup(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
+	logger := log.New(os.Stderr, "", log.LstdFlags)
 	gen := cliGenerator(cfg)
-	result, err := catchup.New(database, cfg, gen).Run(cmd.Context())
+	sessionID, err := catchup.New(database, cfg, gen, logger).Run(cmd.Context())
 	if err != nil {
 		return err
 	}
 
 	out := cmd.OutOrStdout()
+	if sessionID == 0 {
+		if catchupFlagJSON {
+			enc := json.NewEncoder(out)
+			enc.SetIndent("", "  ")
+			return enc.Encode([]db.CatchupTheme{})
+		}
+		fmt.Fprintln(out, "All caught up — nothing unread.")
+		return nil
+	}
+
+	themes, err := database.ListCatchupThemes(sessionID)
+	if err != nil {
+		return err
+	}
+
 	if catchupFlagJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		return enc.Encode(result)
+		return enc.Encode(themes)
 	}
 
-	fmt.Fprintf(out, "Catch-Up — %d unread (%d shown)\n\n", result.Counts.TotalUnread, result.Counts.TotalIncluded)
-	if result.TLDR != "" {
-		fmt.Fprintf(out, "%s\n\n", result.TLDR)
-	}
-	for _, s := range result.Stories {
+	fmt.Fprintf(out, "Catch-Up — %d themes\n\n", len(themes))
+	for _, t := range themes {
 		flag := ""
-		if s.NeedsYou {
+		if t.NeedsYou {
 			flag = " [needs you]"
 		}
-		fmt.Fprintf(out, "• (%s)%s %s\n  %s\n", s.Priority, flag, s.Title, s.Narrative)
+		fmt.Fprintf(out, "• (%s)%s %s\n  %s\n", t.Priority, flag, t.Title, t.Narrative)
 	}
 	return nil
 }

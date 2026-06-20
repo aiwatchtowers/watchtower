@@ -1,66 +1,61 @@
-// Package catchup builds an on-demand AI rollup of currently-unread items
-// across digests, tracks, inbox, and briefings, clustered into thematic stories.
+// Package catchup builds an on-demand, persisted review session over the
+// currently-unread items across digests, tracks, inbox, and briefings. A cheap
+// outline pass clusters them into thematic skeletons; a per-theme expand pass
+// fills in the narrative. Themes/sessions persist in SQLite and stream to the
+// SwiftUI app via GRDB observation.
 package catchup
 
-// Ref links a story back to a source item.
-type Ref struct {
-	Area  string `json:"area"` // digests|tracks|inbox|briefings
-	ID    int    `json:"id"`
-	Label string `json:"label"`
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"watchtower/internal/db"
+)
+
+// outlineResult is the shape the outline AI call returns: a clustered set of
+// theme skeletons referencing only the ids that were supplied as input.
+type outlineResult struct {
+	Themes []outlineTheme `json:"themes"`
 }
 
-// Story is a cross-source thematic cluster of unread items.
-type Story struct {
-	Title     string `json:"title"`
-	Narrative string `json:"narrative"`
-	Priority  string `json:"priority"` // high|medium|low
-	NeedsYou  bool   `json:"needs_you"`
-	Refs      []Ref  `json:"refs"`
+// outlineTheme is one skeleton theme from the outline pass.
+type outlineTheme struct {
+	Title    string          `json:"title"`
+	Priority string          `json:"priority"`
+	Refs     []db.CatchupRef `json:"refs"`
 }
 
-// SectionItem is one clearable unread row.
-type SectionItem struct {
-	ID      int    `json:"id"`
-	Title   string `json:"title"`
-	Snippet string `json:"snippet"`
+// parseOutline extracts the {themes:[...]} object, tolerating markdown fences.
+func parseOutline(raw string) (outlineResult, error) {
+	var out outlineResult
+	s := trimToJSONObject(raw)
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return outlineResult{}, fmt.Errorf("parsing catchup outline output: %w", err)
+	}
+	return out, nil
 }
 
-// Section is the raw per-area unread set; its item IDs drive clearing.
-type Section struct {
-	Area     string        `json:"area"`
-	Total    int           `json:"total"`
-	Included int           `json:"included"`
-	Items    []SectionItem `json:"items"`
+// parseRefs decodes a theme's refs JSON column into typed refs.
+func parseRefs(raw string) ([]db.CatchupRef, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var refs []db.CatchupRef
+	if err := json.Unmarshal([]byte(raw), &refs); err != nil {
+		return nil, fmt.Errorf("parsing catchup refs: %w", err)
+	}
+	return refs, nil
 }
 
-// AreaCount reports included vs uncapped totals per area.
-type AreaCount struct {
-	Included int `json:"included"`
-	Total    int `json:"total"`
-}
-
-// Counts aggregates per-area and overall unread totals.
-type Counts struct {
-	Digests       AreaCount `json:"digests"`
-	Tracks        AreaCount `json:"tracks"`
-	Inbox         AreaCount `json:"inbox"`
-	Briefings     AreaCount `json:"briefings"`
-	TotalUnread   int       `json:"total_unread"`
-	TotalIncluded int       `json:"total_included"`
-}
-
-// Result is the full catch-up rollup emitted as JSON by the CLI.
-type Result struct {
-	TLDR      string    `json:"tldr"`
-	Counts    Counts    `json:"counts"`
-	Truncated bool      `json:"truncated"`
-	Stories   []Story   `json:"stories"`
-	Sections  []Section `json:"sections"`
-}
-
-// aiOutput is the narrow shape the model returns; sections come from the DB,
-// not the model, so the model only produces the reading layer.
-type aiOutput struct {
-	TLDR    string  `json:"tldr"`
-	Stories []Story `json:"stories"`
+// trimToJSONObject narrows a model response to the outermost {...} so leading
+// prose or markdown fences do not break json.Unmarshal.
+func trimToJSONObject(raw string) string {
+	s := raw
+	if i := strings.Index(s, "{"); i >= 0 {
+		if j := strings.LastIndex(s, "}"); j >= i {
+			s = s[i : j+1]
+		}
+	}
+	return s
 }

@@ -624,7 +624,9 @@ func TestRunCatchup_EmptyBacklog(t *testing.T) {
 
 	err = catchupCmd.RunE(catchupCmd, nil)
 	require.NoError(t, err)
-	assert.Contains(t, buf.String(), "total_unread")
+	// Catch-Up v2: an empty backlog creates no session and emits an empty
+	// themes array (the v1 counts/total_unread rollup shape is gone).
+	assert.Contains(t, buf.String(), "[]")
 }
 
 // --- runDigestSummary with --hours ---
