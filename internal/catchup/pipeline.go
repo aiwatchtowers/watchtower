@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -88,10 +89,10 @@ func (p *Pipeline) Run(ctx context.Context) (int64, error) {
 		return sessionID, err
 	}
 
-	// Task 5 replaces this stub with a bounded-concurrency per-theme AI expand.
-	// For now, promote skeletons to ready using the outline data so the session
-	// is reviewable end-to-end.
-	p.expand(ctx, sessionID, themes)
+	// Per-theme AI expand: a bounded-concurrency fan-out writes each narrative
+	// independently so the UI streams themes in as they become ready. A failed
+	// theme is marked and skipped; it never fails the whole run.
+	p.expand(ctx, themes)
 
 	if err := p.db.SetCatchupSessionStatus(sessionID, "active"); err != nil {
 		return sessionID, err
@@ -204,15 +205,107 @@ func (p *Pipeline) validateRefs(refs []db.CatchupRef, g gatherResult) []db.Catch
 	return out
 }
 
-// expand promotes skeleton themes to ready. This is a stub for Task 4: it copies
-// the outline data into the expanded fields without a per-theme AI call. Task 5
-// replaces it with a bounded-concurrency fan-out that writes real narratives.
-func (p *Pipeline) expand(_ context.Context, _ int64, themes []db.CatchupTheme) {
-	for _, t := range themes {
-		if err := p.db.UpdateCatchupThemeExpansion(t.ID, t.Narrative, t.Priority, t.NeedsYou, t.SuggestedAction, "ready"); err != nil {
-			p.logf("catchup: promoting theme %d to ready: %v", t.ID, err)
-		}
+// expand writes each theme's narrative with a bounded-concurrency fan-out: one
+// AI call per theme, at most cfg.AI.Workers in flight. Each theme is persisted
+// independently (the UI streams them in via observation). A per-theme error
+// marks that row gen_state='failed' and is logged; it never aborts the run.
+func (p *Pipeline) expand(ctx context.Context, themes []db.CatchupTheme) {
+	workers := p.cfg.AI.Workers
+	if workers <= 0 {
+		workers = config.DefaultAIWorkers
 	}
+
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for _, t := range themes {
+		wg.Add(1)
+		go func(theme db.CatchupTheme) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			p.expandOne(ctx, theme, "")
+		}(t)
+	}
+	wg.Wait()
+}
+
+// expandOne runs the single-theme expand AI call and persists the result. On any
+// error (mark expanding, AI call, parse) it sets gen_state='failed' and logs.
+// An optional operator correction is appended to the prompt for regen.
+func (p *Pipeline) expandOne(ctx context.Context, theme db.CatchupTheme, comment string) {
+	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, theme.Narrative, theme.Priority, theme.NeedsYou, theme.SuggestedAction, "expanding"); err != nil {
+		p.logf("catchup: marking theme %d expanding: %v", theme.ID, err)
+	}
+
+	sources := p.resolveExpandSources(theme)
+	user := buildExpandUserMessage(theme, sources, comment)
+	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.expand"), expandSystemPrompt, user, "")
+	if err != nil {
+		p.failTheme(theme, "expand AI call", err)
+		return
+	}
+	parsed, err := parseExpand(raw)
+	if err != nil {
+		p.failTheme(theme, "expand parse", err)
+		return
+	}
+
+	priority := parsed.Priority
+	if priority != "high" && priority != "medium" && priority != "low" {
+		priority = theme.Priority
+	}
+	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, parsed.Narrative, priority, parsed.NeedsYou, parsed.SuggestedAction, "ready"); err != nil {
+		p.logf("catchup: writing expansion for theme %d: %v", theme.ID, err)
+	}
+}
+
+// failTheme marks a theme gen_state='failed' and logs the cause, best-effort.
+// Existing fields are preserved (priority must stay a valid CHECK value).
+func (p *Pipeline) failTheme(theme db.CatchupTheme, stage string, cause error) {
+	p.logf("catchup: theme %d %s failed: %v", theme.ID, stage, cause)
+	priority := theme.Priority
+	if priority != "high" && priority != "medium" && priority != "low" {
+		priority = "medium"
+	}
+	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, theme.Narrative, priority, theme.NeedsYou, theme.SuggestedAction, "failed"); err != nil {
+		p.logf("catchup: marking theme %d failed: %v", theme.ID, err)
+	}
+}
+
+// resolveExpandSources turns a theme's snapshot refs back into source records
+// (title + snippet) for the expand prompt. Refs whose items can no longer be
+// resolved are skipped, so a deleted source never aborts expansion.
+func (p *Pipeline) resolveExpandSources(theme db.CatchupTheme) []expandSource {
+	refs, err := parseRefs(theme.RefsJSON)
+	if err != nil {
+		p.logf("catchup: theme %d refs unparseable: %v", theme.ID, err)
+		return nil
+	}
+	var out []expandSource
+	for _, r := range refs {
+		title, snippet, err := p.db.FetchItemSnippet(r.Area, r.ID)
+		if err != nil {
+			p.logf("catchup: theme %d source %s#%d unavailable: %v", theme.ID, r.Area, r.ID, err)
+			if r.Label != "" {
+				out = append(out, expandSource{Area: r.Area, ID: r.ID, Title: r.Label})
+			}
+			continue
+		}
+		out = append(out, expandSource{Area: r.Area, ID: r.ID, Title: title, Snippet: snippet})
+	}
+	return out
+}
+
+// RegenTheme re-runs the expand pass for a single theme with the operator's
+// comment appended as a correction, overwriting the row in place. The theme's
+// review_state is preserved (regen rebuilds only the catch-up layer).
+func (p *Pipeline) RegenTheme(ctx context.Context, themeID int64, comment string) error {
+	theme, err := p.db.GetCatchupTheme(themeID)
+	if err != nil {
+		return err
+	}
+	p.expandOne(ctx, *theme, comment)
+	return nil
 }
 
 // oldestUnread returns a display-only window-start hint. Best-effort; empty when

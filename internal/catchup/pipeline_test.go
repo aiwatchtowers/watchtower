@@ -3,6 +3,8 @@ package catchup
 import (
 	"context"
 	"log"
+	"strings"
+	"sync"
 	"testing"
 
 	"watchtower/internal/config"
@@ -10,17 +12,29 @@ import (
 	"watchtower/internal/digest"
 )
 
-// mockGenerator returns canned output and records that it was called.
+// mockGenerator returns canned output and records that it was called. When fn is
+// set it is used to compute the response from the (system, user) messages so a
+// test can return different output for the outline vs expand passes (or for a
+// regen correction); otherwise the static out is returned.
 type mockGenerator struct {
 	out    string
+	fn     func(system, user string) string
 	called bool
 	calls  int
+	mu     sync.Mutex
 }
 
-func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+func (m *mockGenerator) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
+	m.mu.Lock()
 	m.called = true
 	m.calls++
-	return m.out, &digest.Usage{}, "", nil
+	fn := m.fn
+	out := m.out
+	m.mu.Unlock()
+	if fn != nil {
+		out = fn(system, user)
+	}
+	return out, &digest.Usage{}, "", nil
 }
 
 func newCfg() *config.Config {
@@ -123,4 +137,170 @@ func TestCatchup11_ZeroUnreadCreatesNoSession(t *testing.T) {
 
 func decodeRefs(raw string) ([]db.CatchupRef, error) {
 	return parseRefs(raw)
+}
+
+// twoThemeOutline is an outline JSON with two themes, each referencing the one
+// seeded digest so expand has a source record to work from.
+const twoThemeOutline = `{"themes":[
+	{"title":"Alpha","priority":"high","refs":[{"area":"digests","id":1,"label":"d1"}]},
+	{"title":"Beta","priority":"low","refs":[{"area":"digests","id":1,"label":"d1"}]}
+]}`
+
+func TestCatchup20_ExpandFillsNarrativesAndActivatesSession(t *testing.T) {
+	d := db.OpenTestDB(t)
+	seedUnreadDigest(t, d)
+	gen := &mockGenerator{fn: func(system, _ string) string {
+		if system == outlineSystemPrompt {
+			return twoThemeOutline
+		}
+		return `{"narrative":"expanded story","priority":"high","needs_you":true,"suggested_action":"reply soon"}`
+	}}
+
+	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	themes, err := d.ListCatchupThemes(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(themes) != 2 {
+		t.Fatalf("got %d themes, want 2", len(themes))
+	}
+	for _, th := range themes {
+		if th.GenState != "ready" {
+			t.Fatalf("theme %d gen_state = %q, want ready", th.ID, th.GenState)
+		}
+		if th.Narrative != "expanded story" {
+			t.Fatalf("theme %d narrative = %q, want expanded story", th.ID, th.Narrative)
+		}
+		if th.Priority != "high" {
+			t.Fatalf("theme %d priority = %q, want high", th.ID, th.Priority)
+		}
+		if !th.NeedsYou {
+			t.Fatalf("theme %d needs_you = false, want true", th.ID)
+		}
+		if th.SuggestedAction != "reply soon" {
+			t.Fatalf("theme %d suggested_action = %q", th.ID, th.SuggestedAction)
+		}
+	}
+
+	sess, err := d.GetActiveCatchupSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess == nil || sess.Status != "active" {
+		t.Fatalf("session = %+v, want status active", sess)
+	}
+}
+
+func TestCatchup21_PerThemeExpandFailureDoesNotFailRun(t *testing.T) {
+	d := db.OpenTestDB(t)
+	seedUnreadDigest(t, d)
+	var expandCalls int
+	gen := &mockGenerator{}
+	gen.fn = func(system, _ string) string {
+		if system == outlineSystemPrompt {
+			return twoThemeOutline
+		}
+		gen.mu.Lock()
+		expandCalls++
+		n := expandCalls
+		gen.mu.Unlock()
+		// First expand call returns garbage (parse failure) → that theme fails.
+		if n == 1 {
+			return "not json at all"
+		}
+		return `{"narrative":"good story","priority":"medium","needs_you":false,"suggested_action":""}`
+	}
+
+	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run must not fail on a per-theme expand error: %v", err)
+	}
+
+	themes, err := d.ListCatchupThemes(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed, ready int
+	for _, th := range themes {
+		switch th.GenState {
+		case "failed":
+			failed++
+		case "ready":
+			ready++
+		}
+	}
+	if failed != 1 || ready != 1 {
+		t.Fatalf("got failed=%d ready=%d, want 1 and 1 (themes=%+v)", failed, ready, themes)
+	}
+
+	sess, err := d.GetActiveCatchupSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess == nil || sess.Status != "active" {
+		t.Fatalf("session = %+v, want status active", sess)
+	}
+}
+
+func TestCatchup22_RegenThemeOverwritesNarrativeWithCorrection(t *testing.T) {
+	d := db.OpenTestDB(t)
+	seedUnreadDigest(t, d)
+	gen := &mockGenerator{fn: func(system, user string) string {
+		if system == outlineSystemPrompt {
+			return twoThemeOutline
+		}
+		if strings.Contains(user, "OPERATOR CORRECTION") {
+			return `{"narrative":"corrected story","priority":"low","needs_you":false,"suggested_action":"none"}`
+		}
+		return `{"narrative":"original story","priority":"high","needs_you":true,"suggested_action":"reply"}`
+	}}
+
+	p := New(d, newCfg(), gen, testLogger())
+	sessionID, err := p.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	themes, err := d.ListCatchupThemes(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(themes) == 0 {
+		t.Fatal("no themes produced")
+	}
+	target := themes[0]
+	other := themes[1]
+	if target.Narrative != "original story" {
+		t.Fatalf("pre-regen narrative = %q, want original story", target.Narrative)
+	}
+
+	if err := p.RegenTheme(context.Background(), target.ID, "be more concise"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.GetCatchupTheme(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Narrative != "corrected story" {
+		t.Fatalf("post-regen narrative = %q, want corrected story", got.Narrative)
+	}
+	if got.GenState != "ready" {
+		t.Fatalf("post-regen gen_state = %q, want ready", got.GenState)
+	}
+	if got.ReviewState != "pending" {
+		t.Fatalf("post-regen review_state = %q, want pending (preserved)", got.ReviewState)
+	}
+
+	// The other theme is untouched by a targeted regen.
+	otherGot, err := d.GetCatchupTheme(other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherGot.Narrative != "original story" {
+		t.Fatalf("other theme narrative = %q, want original story (untouched)", otherGot.Narrative)
+	}
 }

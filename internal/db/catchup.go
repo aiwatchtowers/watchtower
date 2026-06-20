@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -157,4 +159,48 @@ func (db *DB) GetUnreadBriefings(limit, maxAgeDays int) ([]UnreadItem, int, erro
 		items = append(items, it)
 	}
 	return items, total, rows.Err()
+}
+
+// FetchItemSnippet resolves one source item back to a display title + snippet by
+// (area, id), regardless of its read state. It powers the catch-up expand pass,
+// which works from a theme's snapshot refs rather than re-gathering. Returns
+// sql.ErrNoRows when the item no longer exists.
+func (db *DB) FetchItemSnippet(area string, id int) (title, snippet string, err error) {
+	switch area {
+	case "digests":
+		var dtype, channel string
+		err = db.QueryRow(
+			`SELECT type, channel_id, substr(summary, 1, 280) FROM digests WHERE id=?`, id,
+		).Scan(&dtype, &channel, &snippet)
+		if err == nil {
+			title = dtype + " digest " + channel
+		}
+	case "tracks":
+		err = db.QueryRow(
+			`SELECT text, substr(context, 1, 280) FROM tracks WHERE id=?`, id,
+		).Scan(&title, &snippet)
+	case "inbox":
+		var trigger string
+		err = db.QueryRow(
+			`SELECT trigger_type, substr(snippet, 1, 280) FROM inbox_items WHERE id=?`, id,
+		).Scan(&trigger, &snippet)
+		if err == nil {
+			title = trigger
+		}
+	case "briefings":
+		var date string
+		err = db.QueryRow(`SELECT date FROM briefings WHERE id=?`, id).Scan(&date)
+		if err == nil {
+			title = "Briefing " + date
+		}
+	default:
+		return "", "", fmt.Errorf("fetching item snippet: unknown area %q", area)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", err
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("fetching %s#%d snippet: %w", area, id, err)
+	}
+	return title, snippet, nil
 }

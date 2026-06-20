@@ -26,6 +26,25 @@ type outlineTheme struct {
 	Refs     []db.CatchupRef `json:"refs"`
 }
 
+// expandResult is the shape the per-theme expand AI call returns: the rich
+// narrative plus the review hints for a single theme.
+type expandResult struct {
+	Narrative       string `json:"narrative"`
+	Priority        string `json:"priority"`
+	NeedsYou        bool   `json:"needs_you"`
+	SuggestedAction string `json:"suggested_action"`
+}
+
+// parseExpand extracts the expand object, tolerating markdown fences.
+func parseExpand(raw string) (expandResult, error) {
+	var out expandResult
+	s := trimToJSONObject(raw)
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return expandResult{}, fmt.Errorf("parsing catchup expand output: %w", err)
+	}
+	return out, nil
+}
+
 // parseOutline extracts the {themes:[...]} object, tolerating markdown fences.
 func parseOutline(raw string) (outlineResult, error) {
 	var out outlineResult
