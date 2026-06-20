@@ -168,6 +168,38 @@ final class CatchUpQueriesTests: XCTestCase {
         }
     }
 
+    func testAcknowledgeReviewedCountIsIdempotent() throws {
+        let dbQueue = try TestDatabase.create()
+        let ctx = try dbQueue.write { db -> (sid: Int64, themeID: Int64) in
+            let sid = try insertSession(db, totalThemes: 1, reviewedCount: 0)
+            let themeID = try insertTheme(db, sessionID: sid, refs: "[]")
+            return (sid, themeID)
+        }
+
+        // First ack: pending → reviewed, count becomes 1.
+        let pending = try dbQueue.read { db in
+            try CatchUpQueries.fetchTheme(db, id: Int(ctx.themeID))
+        }
+        try dbQueue.write { db in
+            try CatchUpQueries.acknowledge(db, theme: try XCTUnwrap(pending))
+        }
+
+        // Re-ack with the now-reviewed row: count must not advance past 1.
+        let reviewed = try dbQueue.read { db in
+            try CatchUpQueries.fetchTheme(db, id: Int(ctx.themeID))
+        }
+        try dbQueue.write { db in
+            try CatchUpQueries.acknowledge(db, theme: try XCTUnwrap(reviewed))
+        }
+
+        let count = try dbQueue.read { db in
+            try Int.fetchOne(
+                db, sql: "SELECT reviewed_count FROM catchup_sessions WHERE id = ?", arguments: [ctx.sid]
+            )
+        }
+        XCTAssertEqual(count, 1, "re-acking a reviewed theme must not double-count")
+    }
+
     func testSetReviewAndSetTask() throws {
         let dbQueue = try TestDatabase.create()
         let themeID = try dbQueue.write { db -> Int64 in

@@ -89,10 +89,15 @@ enum CatchUpQueries {
             }
         }
 
+        let wasReviewed = theme.isReviewed
         try setReview(db, id: theme.id, state: "reviewed", snoozeUntil: "")
-        try db.execute(
-            sql: "UPDATE catchup_sessions SET reviewed_count = reviewed_count + 1 WHERE id = ?",
-            arguments: [theme.sessionID]
-        )
+        // Only count the first transition into 'reviewed' so re-acking a theme
+        // never pushes reviewed_count past total_themes.
+        if !wasReviewed {
+            try db.execute(
+                sql: "UPDATE catchup_sessions SET reviewed_count = reviewed_count + 1 WHERE id = ?",
+                arguments: [theme.sessionID]
+            )
+        }
     }
 }

@@ -139,6 +139,68 @@ func decodeRefs(raw string) ([]db.CatchupRef, error) {
 	return parseRefs(raw)
 }
 
+func TestCatchup12_OutlineInjectsLearnedPreferences(t *testing.T) {
+	d := db.OpenTestDB(t)
+	seedUnreadDigest(t, d)
+	// A catchup-pipeline rule derived from prior feedback must reach the prompt,
+	// otherwise the learning loop is write-only.
+	if err := d.UpsertLearnedRule(db.InboxLearnedRule{
+		Pipeline: "catchup", RuleType: "source_mute",
+		ScopeKey: "catchup:topic:standup-noise", Weight: -1.0,
+		Source: "explicit_feedback", EvidenceCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var outlineUser string
+	gen := &mockGenerator{fn: func(system, user string) string {
+		if system == outlineSystemPrompt {
+			outlineUser = user
+			return twoThemeOutline
+		}
+		return `{"narrative":"x","priority":"low","needs_you":false,"suggested_action":""}`
+	}}
+	if _, err := New(d, newCfg(), gen, testLogger()).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(outlineUser, "LEARNED PREFERENCES") {
+		t.Fatalf("outline prompt missing preferences header; got:\n%s", outlineUser)
+	}
+	if !strings.Contains(outlineUser, "catchup:topic:standup-noise") {
+		t.Fatalf("outline prompt missing learned rule scope; got:\n%s", outlineUser)
+	}
+}
+
+func TestCatchup24_AcknowledgeReviewedCountIsIdempotent(t *testing.T) {
+	d := db.OpenTestDB(t)
+	sid, err := d.CreateCatchupSession("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tid, err := d.InsertCatchupTheme(db.CatchupTheme{
+		SessionID: sid, Title: "T", Priority: "medium", RefsJSON: "[]", GenState: "ready",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := New(d, newCfg(), &mockGenerator{}, testLogger())
+	if err := p.Acknowledge(tid); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Acknowledge(tid); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := d.GetActiveCatchupSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess == nil || sess.ReviewedCount != 1 {
+		t.Fatalf("reviewed_count = %v, want 1 (re-ack must not double-count)", sess)
+	}
+}
+
 // twoThemeOutline is an outline JSON with two themes, each referencing the one
 // seeded digest so expand has a source record to work from.
 const twoThemeOutline = `{"themes":[

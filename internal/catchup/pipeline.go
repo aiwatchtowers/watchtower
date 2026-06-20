@@ -149,6 +149,9 @@ func (p *Pipeline) gather() (gatherResult, error) {
 // never introduce ids that are not in the input.
 func (p *Pipeline) outline(ctx context.Context, sessionID int64, g gatherResult) ([]db.CatchupTheme, error) {
 	user := buildOutlineUserMessage(g.sections, p.targetsLine())
+	if prefs := p.catchupPrefs(); prefs != "" {
+		user = prefs + "\n" + user
+	}
 	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.outline"), outlineSystemPrompt, user, "")
 	if err != nil {
 		return nil, fmt.Errorf("catchup outline: %w", err)
@@ -215,6 +218,10 @@ func (p *Pipeline) expand(ctx context.Context, themes []db.CatchupTheme) {
 		workers = config.DefaultAIWorkers
 	}
 
+	// Load the learned preferences once for the whole fan-out rather than per
+	// theme — they are identical across themes in a run.
+	prefs := p.catchupPrefs()
+
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	for _, t := range themes {
@@ -223,7 +230,7 @@ func (p *Pipeline) expand(ctx context.Context, themes []db.CatchupTheme) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			p.expandOne(ctx, theme, "")
+			p.expandOne(ctx, theme, "", prefs)
 		}(t)
 	}
 	wg.Wait()
@@ -232,13 +239,16 @@ func (p *Pipeline) expand(ctx context.Context, themes []db.CatchupTheme) {
 // expandOne runs the single-theme expand AI call and persists the result. On any
 // error (mark expanding, AI call, parse) it sets gen_state='failed' and logs.
 // An optional operator correction is appended to the prompt for regen.
-func (p *Pipeline) expandOne(ctx context.Context, theme db.CatchupTheme, comment string) {
+func (p *Pipeline) expandOne(ctx context.Context, theme db.CatchupTheme, comment, prefs string) {
 	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, theme.Narrative, theme.Priority, theme.NeedsYou, theme.SuggestedAction, "expanding"); err != nil {
 		p.logf("catchup: marking theme %d expanding: %v", theme.ID, err)
 	}
 
 	sources := p.resolveExpandSources(theme)
 	user := buildExpandUserMessage(theme, sources, comment)
+	if prefs != "" {
+		user = prefs + "\n" + user
+	}
 	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.expand"), expandSystemPrompt, user, "")
 	if err != nil {
 		p.failTheme(theme, "expand AI call", err)
@@ -304,8 +314,24 @@ func (p *Pipeline) RegenTheme(ctx context.Context, themeID int64, comment string
 	if err != nil {
 		return err
 	}
-	p.expandOne(ctx, *theme, comment)
+	p.expandOne(ctx, *theme, comment, p.catchupPrefs())
 	return nil
+}
+
+// maxCatchupPrefs caps how many learned rules are injected into a prompt.
+const maxCatchupPrefs = 20
+
+// catchupPrefs loads the catchup-pipeline learned rules (derived from the
+// operator's review feedback) and formats them for the outline/expand prompts so
+// the model honors accumulated preferences. Best-effort: any error yields an
+// empty block so a rules-load failure never blocks a run.
+func (p *Pipeline) catchupPrefs() string {
+	rules, err := p.db.ListLearnedRulesByPipeline("catchup", maxCatchupPrefs)
+	if err != nil {
+		p.logf("catchup: learned preferences unavailable: %v", err)
+		return ""
+	}
+	return buildPreferencesBlock(rules)
 }
 
 // Acknowledge marks a theme reviewed and cascades mark-read over exactly the
@@ -319,6 +345,7 @@ func (p *Pipeline) Acknowledge(themeID int64) error {
 	if err != nil {
 		return err
 	}
+	alreadyReviewed := theme.ReviewState == "reviewed"
 	refs, err := parseRefs(theme.RefsJSON)
 	if err != nil {
 		p.logf("catchup: theme %d refs unparseable for ack: %v", themeID, err)
@@ -348,8 +375,12 @@ func (p *Pipeline) Acknowledge(themeID int64) error {
 	if err := p.db.SetCatchupThemeReview(themeID, "reviewed", ""); err != nil {
 		return err
 	}
-	if err := p.db.IncrementReviewed(theme.SessionID); err != nil {
-		return err
+	// Only count the first transition into 'reviewed' so re-acking a theme never
+	// pushes reviewed_count past total_themes (the "N of M reviewed" header).
+	if !alreadyReviewed {
+		if err := p.db.IncrementReviewed(theme.SessionID); err != nil {
+			return err
+		}
 	}
 	return nil
 }

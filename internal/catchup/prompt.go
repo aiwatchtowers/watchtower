@@ -136,6 +136,34 @@ func buildLearnUserMessage(theme db.CatchupTheme, refs []db.CatchupRef, rating i
 	return b.String()
 }
 
+// buildPreferencesBlock formats catchup-pipeline learned rules (derived from the
+// operator's review feedback) into a prompt block so the outline/expand passes
+// honor accumulated preferences. Returns "" when there are no rules. Kept local
+// to the catchup package so it depends only on the db rule type, not on inbox.
+func buildPreferencesBlock(rules []db.InboxLearnedRule) string {
+	if len(rules) == 0 {
+		return ""
+	}
+	var mutes, boosts []string
+	for _, r := range rules {
+		line := fmt.Sprintf("%s (weight=%.1f)", r.ScopeKey, r.Weight)
+		if r.Weight < 0 {
+			mutes = append(mutes, line)
+		} else {
+			boosts = append(boosts, line)
+		}
+	}
+	var b strings.Builder
+	b.WriteString("=== LEARNED PREFERENCES (apply when clustering, ranking, and phrasing) ===\n")
+	if len(mutes) > 0 {
+		b.WriteString("Down-rank / suppress: " + strings.Join(mutes, "; ") + "\n")
+	}
+	if len(boosts) > 0 {
+		b.WriteString("Surface / boost: " + strings.Join(boosts, "; ") + "\n")
+	}
+	return b.String()
+}
+
 // expandSource is one resolved source record for a theme's expand call.
 type expandSource struct {
 	Area    string
