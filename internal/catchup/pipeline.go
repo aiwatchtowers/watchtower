@@ -10,11 +10,12 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
-// Pipeline assembles a persisted catch-up review session: gather → outline
-// (skeletons) → expand (per-theme narrative). Themes are written incrementally
-// so the UI streams them in via observation.
+// Pipeline assembles a persisted catch-up review session: gather → peel (one
+// theme skeleton per round) → expand (per-theme narrative). Themes are written
+// incrementally so the UI streams them in via observation.
 type Pipeline struct {
 	db     *db.DB
 	cfg    *config.Config
@@ -25,6 +26,14 @@ type Pipeline struct {
 // New constructs a catch-up Pipeline.
 func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.Logger) *Pipeline {
 	return &Pipeline{db: database, cfg: cfg, gen: gen, logger: logger}
+}
+
+// withLanguage appends the workspace response-language directive to a base
+// system prompt. Every catch-up AI call routes through this so the model
+// answers in the operator's configured language instead of defaulting to
+// English.
+func (p *Pipeline) withLanguage(base string) string {
+	return base + "\n\n" + prompts.Directive(p.cfg.Digest.Language)
 }
 
 // gatheredSection is the unread set for one area, with its uncapped total.
@@ -49,9 +58,9 @@ type refKey struct {
 
 // Run builds a new review session over the currently-unread items. It closes any
 // open session, gathers unread items, and—if anything is unread—creates a
-// session, asks the AI for a theme outline, and persists skeleton themes. When
-// nothing is unread it returns (0, nil) and creates no session. Returns the new
-// session id.
+// session and runs the peel loop (one theme per round, expand dispatched
+// concurrently). When nothing is unread it returns (0, nil) and creates no
+// session. Returns the new session id.
 func (p *Pipeline) Run(ctx context.Context) (int64, error) {
 	if err := p.db.CloseOpenCatchupSessions(); err != nil {
 		return 0, err
@@ -71,10 +80,10 @@ func (p *Pipeline) Run(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 
-	themes, err := p.outline(ctx, sessionID, g)
+	themes, leftover, stoppedClean, err := p.peel(ctx, sessionID, g)
 	if err != nil {
-		// Outline is mandatory: without it there are no themes to review. Mark
-		// the session failed so the UI can offer a retry rather than spin.
+		// A peel round errored before any theme was found: there is nothing to
+		// review. Mark the session failed so the UI can offer a retry.
 		if serr := p.db.SetCatchupSessionStatus(sessionID, "failed"); serr != nil {
 			p.logf("catchup: marking session %d failed: %v", sessionID, serr)
 		}
@@ -83,11 +92,13 @@ func (p *Pipeline) Run(ctx context.Context) (int64, error) {
 	if err := p.db.SetCatchupSessionTotals(sessionID, len(themes)); err != nil {
 		return sessionID, err
 	}
-
-	// Per-theme AI expand: a bounded-concurrency fan-out writes each narrative
-	// independently so the UI streams themes in as they become ready. A failed
-	// theme is marked and skipped; it never fails the whole run.
-	p.expand(ctx, themes)
+	// On a clean exit (model said done or the pool drained) the leftover pool is
+	// model-judged noise — mark it read so catch-up actually clears the backlog.
+	// On an error/safety-cap exit the leftover is unprocessed, so it is left
+	// untouched (still unread).
+	if stoppedClean {
+		p.markLeftoverRead(leftover)
+	}
 
 	if err := p.db.SetCatchupSessionStatus(sessionID, "active"); err != nil {
 		return sessionID, err
@@ -139,57 +150,128 @@ func (p *Pipeline) gather() (gatherResult, error) {
 	}, nil
 }
 
-// outline runs the cheap clustering AI call and persists skeleton themes in the
-// AI's order. Refs are validated against the gathered items so the model can
-// never introduce ids that are not in the input.
-func (p *Pipeline) outline(ctx context.Context, sessionID int64, g gatherResult) ([]db.CatchupTheme, error) {
-	user := buildOutlineUserMessage(g.sections, p.targetsLine())
-	if prefs := p.catchupPrefs(); prefs != "" {
-		user = prefs + "\n" + user
-	}
-	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.outline"), outlineSystemPrompt, user, "")
-	if err != nil {
-		return nil, fmt.Errorf("catchup outline: %w", err)
-	}
-	parsed, err := parseOutline(raw)
-	if err != nil {
-		return nil, err
-	}
+// maxPeelRounds bounds the sequential peel loop. It is a runaway guard, not a
+// theme ceiling: the loop normally stops when the model returns {"done":true}.
+const maxPeelRounds = 25
 
-	var themes []db.CatchupTheme
-	for i, ot := range parsed.Themes {
-		refs := p.validateRefs(ot.Refs, g)
+// peel runs the sequential peel-off loop. Each round sends the remaining unread
+// pool to the light model, which returns the single most important theme or
+// {"done":true}. A returned theme's refs are validated against the pool,
+// persisted as a skeleton, and its expand dispatched concurrently; the claimed
+// items are removed from the pool so the next round narrows.
+//
+// It returns the persisted themes (in discovery order), the leftover (unclaimed)
+// pool keys, and stoppedClean=true only when the loop ended via done or an empty
+// pool — so the caller may mark leftover read. fatal is non-nil ONLY when a
+// round errored before any theme was found, so the caller can fail the session.
+// All dispatched expands are awaited before peel returns (deferred wg.Wait).
+func (p *Pipeline) peel(ctx context.Context, sessionID int64, g gatherResult) (themes []db.CatchupTheme, leftover []refKey, stoppedClean bool, fatal error) {
+	prefs := p.catchupPrefs()
+	targets := p.targetsLine()
+
+	claimed := make(map[refKey]bool)
+
+	workers := p.cfg.AI.Workers
+	if workers <= 0 {
+		workers = config.DefaultAIWorkers
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
+	orderIdx := 0
+	for round := 0; round < maxPeelRounds; round++ {
+		sections := unclaimedSections(g.sections, claimed)
+		if sectionsEmpty(sections) {
+			stoppedClean = true
+			break
+		}
+
+		user := buildPeelUserMessage(sections, targets)
+		if prefs != "" {
+			user = prefs + "\n" + user
+		}
+		raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.peel"), p.withLanguage(peelSystemPrompt), user, "")
+		if err != nil {
+			p.logf("catchup: peel round %d AI error: %v", round, err)
+			if len(themes) == 0 {
+				fatal = fmt.Errorf("catchup peel: %w", err)
+			}
+			return themes, unclaimedKeys(g, claimed), false, fatal
+		}
+		parsed, err := parsePeel(raw)
+		if err != nil {
+			p.logf("catchup: peel round %d parse error: %v", round, err)
+			if len(themes) == 0 {
+				fatal = err
+			}
+			return themes, unclaimedKeys(g, claimed), false, fatal
+		}
+		if parsed.Done || parsed.Theme == nil {
+			stoppedClean = true
+			break
+		}
+
+		refs := p.validatePeelRefs(parsed.Theme.Refs, g, claimed)
+		if len(refs) == 0 {
+			// No valid new refs: the loop would not make progress. Treat the
+			// remaining pool as noise and stop cleanly.
+			p.logf("catchup: peel round %d produced no valid new refs; stopping", round)
+			stoppedClean = true
+			break
+		}
+
 		refsJSON, err := json.Marshal(refs)
 		if err != nil {
-			return nil, fmt.Errorf("encoding theme refs: %w", err)
+			return themes, unclaimedKeys(g, claimed), false, fmt.Errorf("encoding theme refs: %w", err)
 		}
-		priority := normalizePriority(ot.Priority, "medium")
 		t := db.CatchupTheme{
 			SessionID: sessionID,
-			OrderIdx:  i,
-			Title:     ot.Title,
-			Priority:  priority,
+			OrderIdx:  orderIdx,
+			Title:     parsed.Theme.Title,
+			Priority:  normalizePriority(parsed.Theme.Priority, "medium"),
 			RefsJSON:  string(refsJSON),
 			GenState:  "skeleton",
 		}
 		id, err := p.db.InsertCatchupTheme(t)
 		if err != nil {
-			return nil, err
+			return themes, unclaimedKeys(g, claimed), false, fmt.Errorf("inserting peel theme: %w", err)
 		}
 		t.ID = id
 		themes = append(themes, t)
+		orderIdx++
+		for _, r := range refs {
+			claimed[refKey{area: r.Area, id: r.ID}] = true
+		}
+
+		// Dispatch expand concurrently so the narrative is written while the next
+		// peel round runs. Per-theme failure is isolated by expandOne
+		// (gen_state='failed'); it never aborts the run (CATCHUP-03).
+		wg.Add(1)
+		go func(theme db.CatchupTheme) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			_ = p.expandOne(ctx, theme, "", prefs)
+		}(t)
 	}
-	return themes, nil
+
+	return themes, unclaimedKeys(g, claimed), stoppedClean, nil
 }
 
-// validateRefs drops refs whose (area,id) is not in the gathered snapshot and
-// fills a fallback label from the source item when the model omitted one.
-func (p *Pipeline) validateRefs(refs []db.CatchupRef, g gatherResult) []db.CatchupRef {
+// validatePeelRefs keeps only refs that are in the gathered snapshot and not yet
+// claimed by an earlier round, filling a fallback label when the model omits one.
+func (p *Pipeline) validatePeelRefs(refs []db.CatchupRef, g gatherResult, claimed map[refKey]bool) []db.CatchupRef {
 	out := make([]db.CatchupRef, 0, len(refs))
 	for _, r := range refs {
-		item, ok := g.byRef[refKey{area: r.Area, id: r.ID}]
+		k := refKey{area: r.Area, id: r.ID}
+		item, ok := g.byRef[k]
 		if !ok {
-			p.logf("catchup: dropping outline ref to unknown item %s#%d", r.Area, r.ID)
+			p.logf("catchup: dropping peel ref to unknown item %s#%d", r.Area, r.ID)
+			continue
+		}
+		if claimed[k] {
+			p.logf("catchup: dropping peel ref to already-claimed item %s#%d", r.Area, r.ID)
 			continue
 		}
 		if r.Label == "" {
@@ -200,35 +282,41 @@ func (p *Pipeline) validateRefs(refs []db.CatchupRef, g gatherResult) []db.Catch
 	return out
 }
 
-// expand writes each theme's narrative with a bounded-concurrency fan-out: one
-// AI call per theme, at most cfg.AI.Workers in flight. Each theme is persisted
-// independently (the UI streams them in via observation). A per-theme error
-// marks that row gen_state='failed' and is logged; it never aborts the run.
-func (p *Pipeline) expand(ctx context.Context, themes []db.CatchupTheme) {
-	workers := p.cfg.AI.Workers
-	if workers <= 0 {
-		workers = config.DefaultAIWorkers
+// unclaimedSections rebuilds per-area sections from the gathered snapshot minus
+// the claimed items, preserving the original area and item order.
+func unclaimedSections(src []gatheredSection, claimed map[refKey]bool) []gatheredSection {
+	out := make([]gatheredSection, 0, len(src))
+	for _, s := range src {
+		var items []db.UnreadItem
+		for _, it := range s.items {
+			if !claimed[refKey{area: s.area, id: it.ID}] {
+				items = append(items, it)
+			}
+		}
+		out = append(out, gatheredSection{area: s.area, items: items, total: len(items)})
 	}
+	return out
+}
 
-	// Load the learned preferences once for the whole fan-out rather than per
-	// theme — they are identical across themes in a run.
-	prefs := p.catchupPrefs()
-
-	sem := make(chan struct{}, workers)
-	var wg sync.WaitGroup
-	for _, t := range themes {
-		wg.Add(1)
-		go func(theme db.CatchupTheme) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			// Per-theme failure is already logged + marked gen_state='failed' by
-			// expandOne; the batch never aborts on it. The CLI/UI surface the
-			// failed count by reading gen_state, so the error is not lost.
-			_ = p.expandOne(ctx, theme, "", prefs)
-		}(t)
+// sectionsEmpty reports whether every section's item list is empty.
+func sectionsEmpty(sections []gatheredSection) bool {
+	for _, s := range sections {
+		if len(s.items) > 0 {
+			return false
+		}
 	}
-	wg.Wait()
+	return true
+}
+
+// unclaimedKeys returns every gathered (area,id) not yet claimed by a theme.
+func unclaimedKeys(g gatherResult, claimed map[refKey]bool) []refKey {
+	out := make([]refKey, 0)
+	for k := range g.byRef {
+		if !claimed[k] {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // expandOne runs the single-theme expand AI call and persists the result. On any
@@ -244,7 +332,7 @@ func (p *Pipeline) expandOne(ctx context.Context, theme db.CatchupTheme, comment
 	if prefs != "" {
 		user = prefs + "\n" + user
 	}
-	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.expand"), expandSystemPrompt, user, "")
+	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.expand"), p.withLanguage(expandSystemPrompt), user, "")
 	if err != nil {
 		p.failTheme(theme, "expand AI call", err)
 		return fmt.Errorf("catchup expand theme %d: %w", theme.ID, err)
@@ -355,22 +443,8 @@ func (p *Pipeline) Acknowledge(themeID int64) error {
 	}
 
 	for _, r := range refs {
-		var markErr error
-		switch r.Area {
-		case "digests":
-			markErr = p.db.MarkDigestRead(r.ID)
-		case "tracks":
-			markErr = p.db.MarkTrackRead(r.ID)
-		case "inbox":
-			markErr = p.db.MarkInboxRead(r.ID)
-		case "briefings":
-			markErr = p.db.MarkBriefingRead(r.ID)
-		default:
-			p.logf("catchup: theme %d ack skipping unknown area %q", themeID, r.Area)
-			continue
-		}
-		if markErr != nil {
-			p.logf("catchup: theme %d ack mark-read %s#%d: %v", themeID, r.Area, r.ID, markErr)
+		if err := p.markAreaRead(r.Area, r.ID); err != nil {
+			p.logf("catchup: theme %d ack mark-read %s#%d: %v", themeID, r.Area, r.ID, err)
 		}
 	}
 
@@ -385,6 +459,35 @@ func (p *Pipeline) Acknowledge(themeID int64) error {
 		}
 	}
 	return nil
+}
+
+// markAreaRead marks a single source item read in its own surface. Digests
+// cascade their decisions read (CATCHUP-01). Shared by Acknowledge and the peel
+// leftover-noise sweep. Returns an error for an unknown area.
+func (p *Pipeline) markAreaRead(area string, id int) error {
+	switch area {
+	case "digests":
+		return p.db.MarkDigestRead(id)
+	case "tracks":
+		return p.db.MarkTrackRead(id)
+	case "inbox":
+		return p.db.MarkInboxRead(id)
+	case "briefings":
+		return p.db.MarkBriefingRead(id)
+	default:
+		return fmt.Errorf("unknown area %q", area)
+	}
+}
+
+// markLeftoverRead marks the pool items the model judged noise (loop ended via
+// done/empty pool) read, so catch-up actually clears the backlog. Best-effort: a
+// per-item error is logged and skipped.
+func (p *Pipeline) markLeftoverRead(leftover []refKey) {
+	for _, k := range leftover {
+		if err := p.markAreaRead(k.area, k.id); err != nil {
+			p.logf("catchup: leftover mark-read %s#%d: %v", k.area, k.id, err)
+		}
+	}
 }
 
 // targetsLine renders a read-only summary of active targets. Best-effort: any

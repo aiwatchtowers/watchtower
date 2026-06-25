@@ -1,8 +1,8 @@
 // Package catchup builds an on-demand, persisted review session over the
-// currently-unread items across digests, tracks, inbox, and briefings. A cheap
-// outline pass clusters them into thematic skeletons; a per-theme expand pass
-// fills in the narrative. Themes/sessions persist in SQLite and stream to the
-// SwiftUI app via GRDB observation.
+// currently-unread items across digests, tracks, inbox, and briefings. A
+// sequential peel pass extracts one thematic skeleton per round until only noise
+// remains; a per-theme expand pass fills in the narrative. Themes/sessions
+// persist in SQLite and stream to the SwiftUI app via GRDB observation.
 package catchup
 
 import (
@@ -13,17 +13,19 @@ import (
 	"watchtower/internal/db"
 )
 
-// outlineResult is the shape the outline AI call returns: a clustered set of
-// theme skeletons referencing only the ids that were supplied as input.
-type outlineResult struct {
-	Themes []outlineTheme `json:"themes"`
-}
-
-// outlineTheme is one skeleton theme from the outline pass.
-type outlineTheme struct {
+// peelTheme is the single skeleton theme the peel pass extracts in one round,
+// referencing only the ids that were supplied as input.
+type peelTheme struct {
 	Title    string          `json:"title"`
 	Priority string          `json:"priority"`
 	Refs     []db.CatchupRef `json:"refs"`
+}
+
+// peelResult is one peel round's output: either the next theme, or done=true
+// when only noise/trivia remains in the pool.
+type peelResult struct {
+	Theme *peelTheme `json:"theme"`
+	Done  bool       `json:"done"`
 }
 
 // expandResult is the shape the per-theme expand AI call returns: the rich
@@ -71,12 +73,12 @@ func parseExpand(raw string) (expandResult, error) {
 	return out, nil
 }
 
-// parseOutline extracts the {themes:[...]} object, tolerating markdown fences.
-func parseOutline(raw string) (outlineResult, error) {
-	var out outlineResult
+// parsePeel extracts one peel-round object, tolerating markdown fences.
+func parsePeel(raw string) (peelResult, error) {
+	var out peelResult
 	s := trimToJSONObject(raw)
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
-		return outlineResult{}, fmt.Errorf("parsing catchup outline output: %w", err)
+		return peelResult{}, fmt.Errorf("parsing catchup peel output: %w", err)
 	}
 	return out, nil
 }

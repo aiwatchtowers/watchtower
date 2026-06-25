@@ -7,27 +7,30 @@ import (
 	"watchtower/internal/db"
 )
 
-// outlineSystemPrompt drives the cheap clustering pass that produces theme
-// skeletons (no narrative yet — that is the per-theme expand pass).
-const outlineSystemPrompt = `You are a chief-of-staff catching the operator up on everything they missed while away.
+// peelSystemPrompt drives one round of the sequential peel pass: from the
+// remaining unread pool, extract the single most important coherent theme, or
+// signal done when only noise is left. The narrative is written later (expand).
+const peelSystemPrompt = `You are a chief-of-staff catching the operator up on everything they missed while away.
 
-You receive the operator's currently-unread items grouped by source (digests, tracks, inbox, briefings). Each item has a stable numeric id within its area.
+You receive the operator's CURRENTLY-REMAINING unread items grouped by source (digests, tracks, inbox, briefings). Each item has a stable numeric id within its area. Items you already grouped in earlier rounds are gone from this list.
 
-Your job: cluster related items into a small set of NON-OVERLAPPING THEMES that span sources. One real-world topic that shows up in a digest AND a track AND an inbox mention is ONE theme, not three. Merge aggressively; prefer 3-8 strong themes over a long shallow list. Every theme must reference at least one provided item; do not leave items unclustered if they belong somewhere.
+Your job: identify the SINGLE most important coherent theme still in the pool — one real-world topic that may span multiple sources — and return ONLY that theme. Pull in every remaining item that genuinely belongs to it (across sources); leave everything else for later rounds. Do not force unrelated items together.
 
-Rank themes by importance (most important first).
+If what remains is only noise, chatter, or trivia not worth its own catch-up theme, return {"done": true} instead of a theme.
 
-For each theme produce ONLY a skeleton (the narrative is written later):
+When you return a theme, produce ONLY a skeleton (the narrative is written later):
 - title: short, concrete (e.g. "Payments migration blocked on infra review").
 - priority: "high" | "medium" | "low".
-- refs: the source items that belong to the theme, each as {area, id, label}. Use ONLY ids that appear in the input. Never invent ids. label is a short human-readable name for the item.
+- refs: the remaining source items that belong to this theme, each as {area, id, label}. Use ONLY ids that appear in the input above. Never invent ids. label is a short human-readable name for the item.
 
-Respond with ONLY a JSON object, no markdown fences:
-{"themes": [{"title": "...", "priority": "high", "refs": [{"area": "tracks", "id": 1, "label": "..."}]}]}`
+Respond with ONLY a JSON object, no markdown fences. Either:
+{"theme": {"title": "...", "priority": "high", "refs": [{"area": "tracks", "id": 1, "label": "..."}]}}
+or:
+{"done": true}`
 
-// buildOutlineUserMessage renders the gathered unread items (and optional
-// targets context) into the outline user message.
-func buildOutlineUserMessage(sections []gatheredSection, targetsLine string) string {
+// buildPeelUserMessage renders the remaining unread pool (and optional targets
+// context) into one peel round's user message.
+func buildPeelUserMessage(sections []gatheredSection, targetsLine string) string {
 	var b strings.Builder
 	if targetsLine != "" {
 		b.WriteString("TARGETS CONTEXT (read-only): ")
@@ -38,7 +41,7 @@ func buildOutlineUserMessage(sections []gatheredSection, targetsLine string) str
 		if len(s.items) == 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "=== %s (showing %d of %d) ===\n", strings.ToUpper(s.area), len(s.items), s.total)
+		fmt.Fprintf(&b, "=== %s (%d remaining) ===\n", strings.ToUpper(s.area), len(s.items))
 		for _, it := range s.items {
 			fmt.Fprintf(&b, "[id=%d] %s — %s\n", it.ID, it.Title, oneLine(it.Snippet))
 		}

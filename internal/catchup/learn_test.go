@@ -40,7 +40,7 @@ func TestCatchup30_CommentFeedbackDerivesPipelineRule(t *testing.T) {
 	_, themeID := seedReadyTheme(t, d)
 
 	gen := &mockGenerator{fn: func(system, _ string) string {
-		if system == learnSystemPrompt {
+		if strings.HasPrefix(system, learnSystemPrompt) {
 			return `{"rules":[{"pipeline":"digest","rule_type":"source_mute","scope_key":"digest:channel:Crandom","weight":-1.0,"reason":"channel is noise"}],"regenerate":false}`
 		}
 		t.Fatalf("unexpected AI call with system prompt: %q", system)
@@ -138,10 +138,10 @@ func TestCatchup32_PresentationCorrectionTriggersRegen(t *testing.T) {
 	_, themeID := seedReadyTheme(t, d)
 
 	gen := &mockGenerator{fn: func(system, user string) string {
-		if system == learnSystemPrompt {
+		if strings.HasPrefix(system, learnSystemPrompt) {
 			return `{"rules":[],"regenerate":true}`
 		}
-		if system == expandSystemPrompt {
+		if strings.HasPrefix(system, expandSystemPrompt) {
 			if !strings.Contains(user, "OPERATOR CORRECTION") {
 				t.Fatalf("regen expand call missing operator correction: %q", user)
 			}

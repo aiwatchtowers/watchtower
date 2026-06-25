@@ -57,7 +57,7 @@ func (p *Pipeline) SubmitThemeFeedback(ctx context.Context, themeID int64, ratin
 	}
 
 	user := buildLearnUserMessage(*theme, lrefs, rating, comment)
-	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.learn"), learnSystemPrompt, user, "")
+	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.learn"), p.withLanguage(learnSystemPrompt), user, "")
 	if err != nil {
 		return fmt.Errorf("catchup learn: %w", err)
 	}
