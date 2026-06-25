@@ -36,15 +36,14 @@ func (p *Pipeline) withLanguage(base string) string {
 	return base + "\n\n" + prompts.Directive(p.cfg.Digest.Language)
 }
 
-// gatheredSection is the unread set for one area, with its uncapped total.
+// gatheredSection is the (capped) unread set for one area.
 type gatheredSection struct {
 	area  string
 	items []db.UnreadItem
-	total int
 }
 
-// gatherResult is the full unread snapshot driving an outline pass. byRef indexes
-// every gathered item by (area, id) so outline refs can be validated and labeled.
+// gatherResult is the full unread snapshot driving the peel pass. byRef indexes
+// every gathered item by (area, id) so peel refs can be validated and labeled.
 type gatherResult struct {
 	sections   []gatheredSection
 	byRef      map[refKey]db.UnreadItem
@@ -130,10 +129,10 @@ func (p *Pipeline) gather() (gatherResult, error) {
 	}
 
 	sections := []gatheredSection{
-		{area: "digests", items: dItems, total: dTotal},
-		{area: "tracks", items: tItems, total: tTotal},
-		{area: "inbox", items: iItems, total: iTotal},
-		{area: "briefings", items: bItems, total: bTotal},
+		{area: "digests", items: dItems},
+		{area: "tracks", items: tItems},
+		{area: "inbox", items: iItems},
+		{area: "briefings", items: bItems},
 	}
 
 	byRef := make(map[refKey]db.UnreadItem)
@@ -207,17 +206,28 @@ func (p *Pipeline) peel(ctx context.Context, sessionID int64, g gatherResult) (t
 			}
 			return themes, unclaimedKeys(g, claimed), false, fatal
 		}
-		if parsed.Done || parsed.Theme == nil {
+		if parsed.Done {
+			// Affirmative "only noise left" — the one signal that authorises
+			// clearing the leftover pool as read.
 			stoppedClean = true
+			break
+		}
+		if parsed.Theme == nil {
+			// Valid JSON but neither a theme nor done — a degenerate model
+			// response (e.g. `{}`, the legacy `{"themes":[...]}` shape), NOT an
+			// operator-judged "all noise" signal. Stop, keep themes so far, and
+			// leave the leftover UNREAD (like an error exit). Conflating this with
+			// done would silently mark the whole unread backlog read.
+			p.logf("catchup: peel round %d returned neither a theme nor done; stopping without clearing leftover", round)
 			break
 		}
 
 		refs := p.validatePeelRefs(parsed.Theme.Refs, g, claimed)
 		if len(refs) == 0 {
-			// No valid new refs: the loop would not make progress. Treat the
-			// remaining pool as noise and stop cleanly.
-			p.logf("catchup: peel round %d produced no valid new refs; stopping", round)
-			stoppedClean = true
+			// The model produced a theme but none of its refs validated (unknown
+			// or already-claimed ids) — a misfire, not "the rest is noise". Stop
+			// without clearing the leftover so it stays unread (like an error exit).
+			p.logf("catchup: peel round %d returned a theme with no valid refs; stopping without clearing leftover", round)
 			break
 		}
 
@@ -293,7 +303,7 @@ func unclaimedSections(src []gatheredSection, claimed map[refKey]bool) []gathere
 				items = append(items, it)
 			}
 		}
-		out = append(out, gatheredSection{area: s.area, items: items, total: len(items)})
+		out = append(out, gatheredSection{area: s.area, items: items})
 	}
 	return out
 }
@@ -412,7 +422,7 @@ func (p *Pipeline) RegenTheme(ctx context.Context, themeID int64, comment string
 const maxCatchupPrefs = 20
 
 // catchupPrefs loads the catchup-pipeline learned rules (derived from the
-// operator's review feedback) and formats them for the outline/expand prompts so
+// operator's review feedback) and formats them for the peel/expand prompts so
 // the model honors accumulated preferences. Best-effort: any error yields an
 // empty block so a rules-load failure never blocks a run.
 func (p *Pipeline) catchupPrefs() string {
@@ -483,6 +493,9 @@ func (p *Pipeline) markAreaRead(area string, id int) error {
 // done/empty pool) read, so catch-up actually clears the backlog. Best-effort: a
 // per-item error is logged and skipped.
 func (p *Pipeline) markLeftoverRead(leftover []refKey) {
+	if len(leftover) > 0 {
+		p.logf("catchup: marking %d leftover items read (model-judged noise)", len(leftover))
+	}
 	for _, k := range leftover {
 		if err := p.markAreaRead(k.area, k.id); err != nil {
 			p.logf("catchup: leftover mark-read %s#%d: %v", k.area, k.id, err)

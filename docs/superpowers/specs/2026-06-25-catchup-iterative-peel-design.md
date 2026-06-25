@@ -133,7 +133,10 @@ New / changed (Go, `internal/catchup/pipeline_test.go` unless noted):
 
 - Desktop UI (`CatchUpView`/`CatchUpReviewPane`) — already streams themes via
   observation; no change needed. (The earlier toolbar/header fix is separate.)
-- The feedback/learn interpreter (`learn.go`) — unchanged.
+- The feedback/learn interpreter (`learn.go`) — logic unchanged. (Note: a
+  one-line fix routing `learnSystemPrompt` through `withLanguage` rode along in
+  the peel commit so every catch-up AI call carries the language directive per
+  CATCHUP-02; it is unrelated to the peel loop itself.)
 - Batched peel, conversational/multi-turn peel — explicitly declined.
 
 ## Cost note

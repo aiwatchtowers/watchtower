@@ -173,7 +173,7 @@ func decodeRefs(raw string) ([]db.CatchupRef, error) {
 	return parseRefs(raw)
 }
 
-func TestCatchup12_OutlineInjectsLearnedPreferences(t *testing.T) {
+func TestCatchup12_PeelInjectsLearnedPreferences(t *testing.T) {
 	d := db.OpenTestDB(t)
 	seedUnreadDigest(t, d)
 	// A catchup-pipeline rule derived from prior feedback must reach the prompt,
@@ -699,6 +699,63 @@ func TestCatchup29_MidLoopPeelErrorKeepsEarlierThemes(t *testing.T) {
 	}
 	if total == 0 {
 		t.Fatal("leftover should remain unread on error exit")
+	}
+}
+
+// TestCatchup34_DegenerateRoundDoesNotClearUnthemedPool — a peel round that
+// returns valid-but-degenerate JSON (a parseable object that is neither a theme
+// nor done, e.g. `{}`) must NOT be treated as a clean "all noise" signal: with
+// zero themes produced, the whole gathered pool must stay unread. Guards the
+// data-loss path where a degenerate light-model response silently marked the
+// operator's entire backlog read.
+func TestCatchup34_DegenerateRoundDoesNotClearUnthemedPool(t *testing.T) {
+	d := db.OpenTestDB(t)
+	seedUnreadDigest(t, d) // id=1
+	seedUnreadDigest(t, d) // id=2
+	// Round 0 returns a parseable object with neither theme nor done.
+	gen := &mockGenerator{fn: peelScript(expandOK, `{}`)}
+
+	if _, err := New(d, newCfg(), gen, testLogger()).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, total, err := d.GetUnreadDigests(40, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("degenerate round produced zero themes; pool must stay unread, got unread=%d want 2", total)
+	}
+}
+
+// TestCatchup35_AllInvalidRefsDoesNotClearPool — a theme whose refs are all
+// unknown ids (model misfire) yields len(refs)==0; that must stop WITHOUT
+// clearing the leftover, not silently mark the whole pool read.
+func TestCatchup35_AllInvalidRefsDoesNotClearPool(t *testing.T) {
+	d := db.OpenTestDB(t)
+	seedUnreadDigest(t, d) // id=1
+	seedUnreadDigest(t, d) // id=2
+	// Round 0 returns a theme referencing a nonexistent id only.
+	gen := &mockGenerator{fn: peelScript(expandOK,
+		`{"theme":{"title":"Bogus","priority":"high","refs":[{"area":"digests","id":999}]}}`,
+	)}
+
+	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	themes, err := d.ListCatchupThemes(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(themes) != 0 {
+		t.Fatalf("a theme with no valid refs must not be persisted; got %d themes", len(themes))
+	}
+	_, total, err := d.GetUnreadDigests(40, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("all-invalid-refs misfire must not clear the pool; got unread=%d want 2", total)
 	}
 }
 
