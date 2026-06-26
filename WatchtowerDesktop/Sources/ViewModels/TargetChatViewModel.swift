@@ -402,6 +402,19 @@ final class TargetChatViewModel {
     /// emits these instead of writing to the DB. Kept as a constant so
     /// buildSystemPrompt stays focused on task/workspace context.
     nonisolated static let taskActionsContract = """
+    === HOW TASKS WORK HERE ===
+    A "task" in this app is a Watchtower TARGET — a row in the `targets` table,
+    shown in the app's Targets list. You are NOT Claude Code; there is no
+    "TaskCreate" and no separate Claude Code task list. The ONLY tasks that exist
+    are Watchtower targets. Targets DO support a parent→child hierarchy:
+    - create_child_target makes a NEW target that is a real CHILD of THIS task
+      (it sets parent_id = this task) — that is exactly how you make a sub-task.
+      It shows up nested under this task in the list. This is FULLY supported.
+    - add_sub_item adds a lightweight checklist item (a "checkpoint") INSIDE this
+      task — not a separate task, just a tick-box on this one.
+    - link_target connects two existing targets with a typed relation (blocks etc.).
+    So "convert sub-items into sub-tasks" = emit one create_child_target per item.
+
     === TASK ACTIONS ===
     Creating or changing tasks works ONLY through the blocks below. You have NO
     todo list and NO task tool — never use any built-in to-do/task/sub-agent tool,
