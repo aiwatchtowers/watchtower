@@ -31,6 +31,7 @@ struct TargetDetailView: View {
     @State private var suggestedLinks: SuggestedLinksResult?
     @State private var isSuggestingLinks = false
     @State private var suggestLinksError: String?
+    @State private var chatVM: TargetChatViewModel?
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable {
@@ -42,6 +43,7 @@ struct TargetDetailView: View {
         case details = "Details"
         case links = "Links"
         case activity = "Activity"
+        case assistant = "Assistant"
     }
 
     /// Identifies a sub-item the user is currently promoting via `PromoteSubItemSheet`.
@@ -94,6 +96,19 @@ struct TargetDetailView: View {
                         linksTab
                     case .activity:
                         activityTab
+                    case .assistant:
+                        if let chatVM {
+                            TargetChatSection(chatVM: chatVM)
+                                .frame(minHeight: 320)
+                        } else {
+                            Color.clear.onAppear {
+                                if let dbManager = appState.databaseManager {
+                                    chatVM = TargetChatViewModel(
+                                        target: target, viewModel: viewModel, dbManager: dbManager
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 .padding()
