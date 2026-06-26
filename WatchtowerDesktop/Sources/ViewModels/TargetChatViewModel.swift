@@ -233,7 +233,7 @@ final class TargetChatViewModel {
         }
 
         // Parse watchtower-action blocks out of the final text.
-        let parsed = TaskActionParser.parse(fullText)
+        let parsed = TargetActionParser.parse(fullText)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
         let displayText = parsed.text.isEmpty && !parsed.actions.isEmpty
@@ -291,7 +291,7 @@ final class TargetChatViewModel {
               actionCards[idx].state == .pending else { return }
         reloadTarget()
         do {
-            let summary = try TaskActionExecutor.apply(card.action, target: target, viewModel: viewModel)
+            let summary = try TargetActionExecutor.apply(card.action, target: target, viewModel: viewModel)
             actionCards[idx].state = .applied(summary)
             reloadTarget()
             sendFollowUp("Action applied: \(summary). Continue with the task.")
@@ -318,7 +318,10 @@ final class TargetChatViewModel {
     }
 
     private func finishStream() {
-        if let idx = messages.indices.last {
+        // Clear every streaming flag, not just the last message: appending
+        // system messages (e.g. invalid-action warnings) after the assistant
+        // placeholder would otherwise leave the placeholder stuck "streaming".
+        for idx in messages.indices where messages[idx].isStreaming {
             messages[idx].isStreaming = false
         }
         isStreaming = false

@@ -3,7 +3,7 @@ import GRDB
 @testable import WatchtowerDesktop
 
 @MainActor
-final class TaskActionExecutorTests: XCTestCase {
+final class TargetActionExecutorTests: XCTestCase {
     private func makeTarget(_ manager: DatabaseManager) throws -> Target {
         let id = try manager.dbPool.write { db in
             try TargetQueries.create(db, text: "parent", periodStart: "2026-06-01", periodEnd: "2026-06-30")
@@ -18,7 +18,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let vm = TargetsViewModel(dbManager: manager)
 
         let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
-        _ = try TaskActionExecutor.apply(action, target: target, viewModel: vm)
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
 
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "done")
@@ -31,7 +31,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let vm = TargetsViewModel(dbManager: manager)
 
         let action = ProposedAction(type: .updateProgress, reason: "half", progress: 50)
-        _ = try TaskActionExecutor.apply(action, target: target, viewModel: vm)
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
 
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.progress, 0.5, accuracy: 0.0001)
@@ -44,7 +44,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let vm = TargetsViewModel(dbManager: manager)
 
         let action = ProposedAction(type: .updateNotes, reason: "log", note: "spoke to Bob")
-        _ = try TaskActionExecutor.apply(action, target: target, viewModel: vm)
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
 
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertTrue(after.decodedNotes.contains { $0.text == "spoke to Bob" })
@@ -57,7 +57,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let vm = TargetsViewModel(dbManager: manager)
 
         let action = ProposedAction(type: .addSubItem, reason: "step", text: "draft reply")
-        _ = try TaskActionExecutor.apply(action, target: target, viewModel: vm)
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
 
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertTrue(after.decodedSubItems.contains { $0.text == "draft reply" })
@@ -71,7 +71,7 @@ final class TaskActionExecutorTests: XCTestCase {
 
         let action = ProposedAction(type: .createChildTarget, reason: "spin off",
                                     text: "Ping Bob", intent: "unblock", priority: "high")
-        let summary = try TaskActionExecutor.apply(action, target: target, viewModel: vm)
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
 
         let children = try manager.dbPool.read { db in
             try Target.fetchAll(db, sql: "SELECT * FROM targets WHERE parent_id = ?", arguments: [target.id])
@@ -89,7 +89,7 @@ final class TaskActionExecutorTests: XCTestCase {
 
         // update_status without a status must throw, not silently no-op.
         let action = ProposedAction(type: .updateStatus, reason: "x", status: nil)
-        XCTAssertThrowsError(try TaskActionExecutor.apply(action, target: target, viewModel: vm))
+        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm))
 
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "todo") // unchanged

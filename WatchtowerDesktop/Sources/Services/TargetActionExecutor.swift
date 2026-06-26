@@ -1,6 +1,6 @@
 import Foundation
 
-enum TaskActionError: LocalizedError {
+enum TargetActionError: LocalizedError {
     case writeFailed(String)
 
     var errorDescription: String? {
@@ -20,45 +20,45 @@ enum TaskActionError: LocalizedError {
 /// (the established house idiom for the list UI), so we detect failure by
 /// snapshotting `errorMessage` around the call rather than changing those
 /// signatures and rippling into every existing caller.
-enum TaskActionExecutor {
+enum TargetActionExecutor {
     @MainActor
     static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) throws -> String {
         let priorError = viewModel.errorMessage
         func checkWrite() throws {
             if let err = viewModel.errorMessage, err != priorError {
-                throw TaskActionError.writeFailed(err)
+                throw TargetActionError.writeFailed(err)
             }
         }
 
         switch action.type {
         case .updateStatus:
-            guard let status = action.status else { throw TaskActionError.writeFailed("missing status") }
+            guard let status = action.status else { throw TargetActionError.writeFailed("missing status") }
             viewModel.updateStatus(target, to: status)
             try checkWrite()
             return "set status to \(status)"
         case .updateNotes:
-            guard let note = action.note else { throw TaskActionError.writeFailed("missing note") }
+            guard let note = action.note else { throw TargetActionError.writeFailed("missing note") }
             viewModel.addNote(target, text: note)
             try checkWrite()
             return "added a note"
         case .updateProgress:
-            guard let pct = action.progress else { throw TaskActionError.writeFailed("missing progress") }
+            guard let pct = action.progress else { throw TargetActionError.writeFailed("missing progress") }
             viewModel.updateProgress(target, to: Double(pct) / 100.0)
             try checkWrite()
             return "set progress to \(pct)%"
         case .addSubItem:
-            guard let text = action.text else { throw TaskActionError.writeFailed("missing text") }
+            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             viewModel.addSubItem(target, text: text)
             try checkWrite()
             return "added sub-item \"\(text)\""
         case .createChildTarget:
-            guard let text = action.text else { throw TaskActionError.writeFailed("missing text") }
+            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             guard viewModel.createChild(
                 target, text: text,
                 intent: action.intent ?? "",
                 priority: action.priority ?? "medium"
             ) != nil else {
-                throw TaskActionError.writeFailed(viewModel.errorMessage ?? "could not create child target")
+                throw TargetActionError.writeFailed(viewModel.errorMessage ?? "could not create child target")
             }
             return "created child target \"\(text)\""
         }

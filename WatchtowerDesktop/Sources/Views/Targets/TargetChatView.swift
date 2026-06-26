@@ -37,6 +37,7 @@ struct TargetChatSection: View {
                         ForEach(chatVM.actionCards.filter { $0.messageID == msg.id }) { card in
                             TargetActionCardView(
                                 card: card,
+                                isStreaming: chatVM.isStreaming,
                                 onApprove: { chatVM.approve(card) },
                                 onReject: { chatVM.reject(card) }
                             )
@@ -130,6 +131,9 @@ struct TargetChatSection: View {
 
 struct TargetActionCardView: View {
     let card: TargetActionCard
+    /// Disable Approve/Reject while a turn is streaming: a decision taken mid-stream
+    /// would apply the write but its follow-up is dropped (sendFollowUp guards on isStreaming).
+    let isStreaming: Bool
     let onApprove: () -> Void
     let onReject: () -> Void
 
@@ -149,6 +153,7 @@ struct TargetActionCardView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
+                .disabled(isStreaming)
             case .applied(let summary):
                 Label(summary, systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)

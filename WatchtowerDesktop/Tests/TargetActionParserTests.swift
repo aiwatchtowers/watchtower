@@ -1,9 +1,9 @@
 import XCTest
 @testable import WatchtowerDesktop
 
-final class TaskActionParserTests: XCTestCase {
+final class TargetActionParserTests: XCTestCase {
     func testNoBlockReturnsTextUnchanged() {
-        let r = TaskActionParser.parse("Just a plain answer.")
+        let r = TargetActionParser.parse("Just a plain answer.")
         XCTAssertEqual(r.text, "Just a plain answer.")
         XCTAssertTrue(r.actions.isEmpty)
         XCTAssertTrue(r.errors.isEmpty)
@@ -17,7 +17,7 @@ final class TaskActionParserTests: XCTestCase {
         ```
         Done.
         """
-        let r = TaskActionParser.parse(raw)
+        let r = TargetActionParser.parse(raw)
         XCTAssertEqual(r.actions.count, 1)
         XCTAssertEqual(r.actions.first?.type, .updateStatus)
         XCTAssertFalse(r.text.contains("watchtower-action"))
@@ -35,7 +35,7 @@ final class TaskActionParserTests: XCTestCase {
         {"type":"update_progress","progress":50,"reason":"r2"}
         ```
         """
-        let r = TaskActionParser.parse(raw)
+        let r = TargetActionParser.parse(raw)
         XCTAssertEqual(r.actions.count, 2)
         XCTAssertTrue(r.errors.isEmpty)
     }
@@ -46,7 +46,7 @@ final class TaskActionParserTests: XCTestCase {
         {"type":"update_status", oops}
         ```
         """
-        let r = TaskActionParser.parse(raw)
+        let r = TargetActionParser.parse(raw)
         XCTAssertTrue(r.actions.isEmpty)
         XCTAssertEqual(r.errors.count, 1)
     }
@@ -57,7 +57,7 @@ final class TaskActionParserTests: XCTestCase {
         {"type":"update_progress","progress":999,"reason":"x"}
         ```
         """
-        let r = TaskActionParser.parse(raw)
+        let r = TargetActionParser.parse(raw)
         XCTAssertTrue(r.actions.isEmpty)
         XCTAssertEqual(r.errors.count, 1)
     }

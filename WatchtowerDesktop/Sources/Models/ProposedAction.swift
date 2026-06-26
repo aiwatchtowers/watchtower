@@ -1,6 +1,6 @@
 import Foundation
 
-enum TaskActionKind: String, Codable {
+enum TargetActionKind: String, Codable {
     case updateStatus = "update_status"
     case updateNotes = "update_notes"
     case updateProgress = "update_progress"
@@ -17,7 +17,7 @@ enum ProposedActionError: Error, Equatable {
 /// the desktop app applies it only after the user approves.
 struct ProposedAction: Codable, Identifiable, Equatable {
     let id = UUID()
-    let type: TaskActionKind
+    let type: TargetActionKind
     let reason: String
     var status: String?
     var note: String?
@@ -52,15 +52,11 @@ struct ProposedAction: Codable, Identifiable, Equatable {
             guard let progress, (0...100).contains(progress) else {
                 throw ProposedActionError.invalid("progress must be 0...100")
             }
-        case .addSubItem:
+        case .addSubItem, .createChildTarget:
             guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw ProposedActionError.invalid("text is required")
             }
-        case .createChildTarget:
-            guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ProposedActionError.invalid("text is required")
-            }
-            if let priority, !Self.allowedPriorities.contains(priority) {
+            if type == .createChildTarget, let priority, !Self.allowedPriorities.contains(priority) {
                 throw ProposedActionError.invalid("priority must be one of \(Self.allowedPriorities.sorted())")
             }
         }

@@ -3,7 +3,7 @@ import Foundation
 /// Extracts ```watchtower-action``` fenced JSON blocks from AI output.
 /// The AI emits one ProposedAction JSON object per block; everything else
 /// is the human-visible answer. Blocks are removed from the visible text.
-enum TaskActionParser {
+enum TargetActionParser {
     private static let pattern = "```watchtower-action\\s*\\n(.*?)\\n?```"
 
     static func parse(_ raw: String) -> (text: String, actions: [ProposedAction], errors: [String]) {
