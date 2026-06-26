@@ -141,8 +141,9 @@ struct TargetsListView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        todaySection(vm.todayTargets, vm: vm)
-                        allSection(vm.allTargets, vm: vm)
+                        let combined = vm.todayTargets + vm.allTargets
+                        todaySection(vm.todayTargets, allTargets: combined, vm: vm)
+                        allSection(vm.allTargets, allTargets: combined, vm: vm)
                     }
                 }
             }
@@ -232,20 +233,22 @@ struct TargetsListView: View {
     }
 
     @ViewBuilder
-    private func todaySection(_ targets: [Target], vm: TargetsViewModel) -> some View {
-        if !targets.isEmpty {
-            sectionHeader("Today", count: targets.count)
-            ForEach(Self.hierarchical(targets)) { entry in
+    private func todaySection(_ targets: [Target], allTargets: [Target], vm: TargetsViewModel) -> some View {
+        let entries = Self.rootEntries(targets, in: allTargets)
+        if !entries.isEmpty {
+            sectionHeader("Today", count: entries.filter { $0.depth == 0 }.count)
+            ForEach(entries) { entry in
                 targetRow(entry.target, vm: vm, depth: entry.depth)
             }
         }
     }
 
     @ViewBuilder
-    private func allSection(_ targets: [Target], vm: TargetsViewModel) -> some View {
-        if !targets.isEmpty {
-            sectionHeader("All Targets", count: targets.count)
-            ForEach(Self.hierarchical(targets)) { entry in
+    private func allSection(_ targets: [Target], allTargets: [Target], vm: TargetsViewModel) -> some View {
+        let entries = Self.rootEntries(targets, in: allTargets)
+        if !entries.isEmpty {
+            sectionHeader("All Targets", count: entries.filter { $0.depth == 0 }.count)
+            ForEach(entries) { entry in
                 targetRow(entry.target, vm: vm, depth: entry.depth)
             }
         }
@@ -258,19 +261,22 @@ struct TargetsListView: View {
         var id: Int { target.id }
     }
 
-    /// Order `targets` so children (by `parent_id`) immediately follow their parent
-    /// with increasing depth. Parents not present in this set are treated as roots,
-    /// so children whose parent lives in another section still appear (at depth 0).
-    private static func hierarchical(_ targets: [Target]) -> [HierEntry] {
-        let presentIDs = Set(targets.map { $0.id })
+    /// Build the rows for a section: every root in `sectionTargets` (a target whose
+    /// parent is not present anywhere in the list) followed by its full subtree.
+    /// Children are pulled from the whole `allTargets` set — so a parent in "Today"
+    /// nests its children even when they live in "All Targets" — and a child is never
+    /// rendered as its own root, so it appears exactly once, under its parent.
+    private static func rootEntries(_ sectionTargets: [Target], in allTargets: [Target]) -> [HierEntry] {
+        let presentIDs = Set(allTargets.map { $0.id })
         var childrenByParent: [Int: [Target]] = [:]
-        var roots: [Target] = []
-        for target in targets {
+        for target in allTargets {
             if let parentID = target.parentId, presentIDs.contains(parentID) {
                 childrenByParent[parentID, default: []].append(target)
-            } else {
-                roots.append(target)
             }
+        }
+        func isRoot(_ target: Target) -> Bool {
+            guard let parentID = target.parentId else { return true }
+            return !presentIDs.contains(parentID)
         }
         var ordered: [HierEntry] = []
         func visit(_ target: Target, _ depth: Int) {
@@ -279,7 +285,9 @@ struct TargetsListView: View {
                 visit(child, depth + 1)
             }
         }
-        for root in roots { visit(root, 0) }
+        for target in sectionTargets where isRoot(target) {
+            visit(target, 0)
+        }
         return ordered
     }
 
