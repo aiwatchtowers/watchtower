@@ -13,20 +13,24 @@ struct TargetsListView: View {
             if let vm = viewModel {
                 listPanel(vm)
 
+                Divider()
+
                 if let id = selectedItemID, let item = vm.itemByID(id) {
-                    Divider()
                     TargetDetailView(target: item, viewModel: vm) {
                         selectedItemID = nil
                     }
                     .id(id)
-                    .frame(minWidth: 560, maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    emptyDetailPlaceholder
                 }
             } else {
                 ProgressView("Loading...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .animation(.easeInOut(duration: 0.25), value: selectedItemID)
         .onAppear {
             initViewModel()
@@ -214,6 +218,18 @@ struct TargetsListView: View {
     }
 
     // MARK: - Sections
+
+    private var emptyDetailPlaceholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "scope")
+                .font(.system(size: 30))
+                .foregroundStyle(.tertiary)
+            Text("Select a target to see details")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
     @ViewBuilder
     private func todaySection(_ targets: [Target], vm: TargetsViewModel) -> some View {
