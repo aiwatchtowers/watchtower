@@ -13,6 +13,15 @@ struct TargetChatSection: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
                 Spacer()
+                Picker("Model", selection: $chatVM.selectedModel) {
+                    ForEach(ChatModel.models(for: chatVM.provider)) { model in
+                        Text(model.displayName).tag(model)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .disabled(chatVM.isStreaming)
                 if chatVM.isStreaming {
                     Button("Stop") { chatVM.cancelStream() }
                         .buttonStyle(.borderless)

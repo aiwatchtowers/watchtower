@@ -27,6 +27,12 @@ final class TargetChatViewModel {
     var isStreaming = false
     var inputText = ""
     var errorMessage: String?
+    var selectedModel: ChatModel
+
+    /// Configured AI provider — scopes the model picker so we never hand a
+    /// codex model to a claude session (the model is the only real lever; the
+    /// provider itself is config-driven in WatchtowerAIService).
+    let provider: AIProvider
 
     private var conversationID: Int64?
     private var sessionID: String?
@@ -41,12 +47,17 @@ final class TargetChatViewModel {
         target: Target,
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
-        aiService: (any AIServiceProtocol)? = nil
+        aiService: (any AIServiceProtocol)? = nil,
+        provider: AIProvider? = nil
     ) {
         self.target = target
         self.viewModel = viewModel
         self.dbManager = dbManager
         self.aiService = aiService ?? WatchtowerAIService()
+        let resolvedProvider = provider
+            ?? (ConfigService().aiProvider == "codex" ? .codex : .claude)
+        self.provider = resolvedProvider
+        self.selectedModel = ChatModel.defaultModel(for: resolvedProvider)
 
         loadOrCreateConversation()
         startMessageObservation()
@@ -195,7 +206,8 @@ final class TargetChatViewModel {
                 prompt: text,
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
-                dbPath: dbPath
+                dbPath: dbPath,
+                model: selectedModel.rawValue
             )
             var sawTurnComplete = false
             for try await event in stream {

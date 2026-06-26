@@ -25,6 +25,23 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(prompt.contains("create_child_target"))
     }
 
+    func testDefaultModelMatchesProvider() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let claude = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                         aiService: MockClaudeService(), provider: .claude)
+        XCTAssertEqual(claude.provider, .claude)
+        XCTAssertEqual(claude.selectedModel, ChatModel.defaultModel(for: .claude))
+        XCTAssertTrue(ChatModel.models(for: .claude).contains(claude.selectedModel))
+
+        let codex = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                        aiService: MockClaudeService(), provider: .codex)
+        XCTAssertEqual(codex.selectedModel, ChatModel.defaultModel(for: .codex))
+    }
+
     func testApproveAppliesActionAndAppendsFollowUp() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
