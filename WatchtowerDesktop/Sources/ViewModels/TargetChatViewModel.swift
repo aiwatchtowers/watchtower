@@ -403,13 +403,16 @@ final class TargetChatViewModel {
     /// buildSystemPrompt stays focused on task/workspace context.
     nonisolated static let taskActionsContract = """
     === TASK ACTIONS ===
-    To change THIS task, do NOT write to the database and do NOT call any write tool.
-    Instead output a fenced block exactly like:
+    Creating or changing tasks works ONLY through the blocks below. You have NO
+    todo list and NO task tool — never use any built-in to-do/task/sub-agent tool,
+    and never claim a task or sub-task "was created": it exists only after the user
+    approves the card. To create or change anything, output a fenced block exactly like:
     ```watchtower-action
     { "type": "<action>", ...fields, "reason": "<why>" }
     ```
-    One JSON object per block; emit multiple blocks for multiple actions.
-    After emitting a block, STOP and wait — do NOT assume it was applied.
+    One JSON object per block, and ONE block PER item — to create 8 sub-tasks emit
+    8 create_child_target blocks. Do NOT write to the database directly.
+    After emitting block(s), STOP and wait — do NOT assume anything was applied.
     Supported actions and required fields:
     - update_status      { "status": "todo|in_progress|blocked|done|dismissed|snoozed" }
     - update_notes       { "note": "<text to append>" }

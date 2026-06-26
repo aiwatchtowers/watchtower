@@ -44,8 +44,28 @@ func TestBuildArgs(t *testing.T) {
 	assert.Contains(t, args, "--allowedTools")
 	assert.Contains(t, args, "mcp__sqlite__*,Bash(sqlite3*)")
 	assert.Contains(t, args, "--disallowedTools")
-	assert.Contains(t, args, "Edit,Write,NotebookEdit")
+	assert.Contains(t, args, "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead")
+	// TCC isolation: every spawn must skip user-level ~/.claude/settings.json
+	// via --setting-sources project,local. Dropping this re-opens the P0 where
+	// plugin/hook auto-discovery probes ~/Desktop and triggers a Watchtower.app
+	// TCC prompt. Assert the flag AND its value adjacency so a refactor can't
+	// silently drop or split the pair.
+	assertFlagValue(t, args, "--setting-sources", "project,local")
 	assert.NotContains(t, args, "--resume")
+}
+
+// assertFlagValue verifies flag is present in args and immediately followed by value.
+func assertFlagValue(t *testing.T, args []string, flag, value string) {
+	t.Helper()
+	for i, a := range args {
+		if a == flag {
+			if assert.Less(t, i+1, len(args), "%s has no value", flag) {
+				assert.Equal(t, value, args[i+1], "%s value", flag)
+			}
+			return
+		}
+	}
+	t.Errorf("flag %s not found in args %v", flag, args)
 }
 
 func TestBuildArgs_WithDBPath(t *testing.T) {

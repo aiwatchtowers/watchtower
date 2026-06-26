@@ -101,7 +101,16 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		"--output-format", outputFormat,
 		"--model", c.model,
 		"--allowedTools", "mcp__sqlite__*,Bash(sqlite3*)",
-		"--disallowedTools", "Edit,Write,NotebookEdit",
+		// Block file-editing plus Claude Code's native task tooling (TodoWrite/Task):
+		// the assistants here read the DB and answer, and the task-chat agent must
+		// create/change targets ONLY via watchtower-action approval cards — not via
+		// the CLI's ephemeral todo list, which would silently bypass the DB.
+		"--disallowedTools", "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead",
+		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
+		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
+		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
+		// Keychain-backed OAuth still works because we don't override CLAUDE_CONFIG_DIR.
+		"--setting-sources", "project,local",
 	}
 	// Claude CLI requires --verbose for stream-json output format.
 	if outputFormat == "stream-json" {
@@ -163,7 +172,6 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		cmd.Dir = os.TempDir()
 		cmd.Env = append(os.Environ(),
 			"PATH="+claude.RichPATH(),
-			"CLAUDE_CONFIG_DIR="+claude.IsolatedConfigDir(),
 		)
 
 		stdout, err := cmd.StdoutPipe()
@@ -244,7 +252,6 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	cmd.Dir = os.TempDir()
 	cmd.Env = append(os.Environ(),
 		"PATH="+claude.RichPATH(),
-		"CLAUDE_CONFIG_DIR="+claude.IsolatedConfigDir(),
 	)
 
 	var stderrBuf strings.Builder
