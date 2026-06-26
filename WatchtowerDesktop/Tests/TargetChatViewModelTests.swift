@@ -1,0 +1,64 @@
+import XCTest
+import GRDB
+@testable import WatchtowerDesktop
+
+@MainActor
+final class TargetChatViewModelTests: XCTestCase {
+    private func makeTarget(_ manager: DatabaseManager, intent: String) throws -> Target {
+        let id = try manager.dbPool.write { db in
+            try TargetQueries.create(db, text: "ship feature", intent: intent,
+                                     periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        return try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }!
+    }
+
+    func testSystemPromptIncludesIntentAndContract() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try manager.dbPool.write { db in try TestDatabase.insertWorkspace(db) }
+        let target = try makeTarget(manager, intent: "get sign-off from design")
+
+        let prompt = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool)
+        XCTAssertTrue(prompt.contains("get sign-off from design"))
+        XCTAssertTrue(prompt.contains("=== TASK ACTIONS ==="))
+        XCTAssertTrue(prompt.contains("watchtower-action"))
+        XCTAssertTrue(prompt.contains("create_child_target"))
+    }
+
+    func testApproveAppliesActionAndAppendsFollowUp() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: MockClaudeService())
+
+        let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        let after = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }!
+        XCTAssertEqual(after.status, "done")
+        // card transitions to applied
+        XCTAssertEqual(chat.actionCards.first?.state, .applied("set status to done"))
+    }
+
+    func testRejectMarksCardRejected() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: MockClaudeService())
+
+        let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.reject(card)
+
+        XCTAssertEqual(chat.actionCards.first?.state, .rejected)
+        let after = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }!
+        XCTAssertEqual(after.status, "todo") // unchanged
+    }
+}
