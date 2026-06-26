@@ -375,6 +375,28 @@ final class TargetChatViewModel {
         }
     }
 
+    /// The action contract injected into the system prompt. Lists the five
+    /// supported watchtower-action types and their required fields; the AI
+    /// emits these instead of writing to the DB. Kept as a constant so
+    /// buildSystemPrompt stays focused on task/workspace context.
+    nonisolated static let taskActionsContract = """
+    === TASK ACTIONS ===
+    To change THIS task, do NOT write to the database and do NOT call any write tool.
+    Instead output a fenced block exactly like:
+    ```watchtower-action
+    { "type": "<action>", ...fields, "reason": "<why>" }
+    ```
+    One JSON object per block; emit multiple blocks for multiple actions.
+    After emitting a block, STOP and wait — do NOT assume it was applied.
+    Supported actions and required fields:
+    - update_status      { "status": "todo|in_progress|blocked|done|dismissed|snoozed" }
+    - update_notes       { "note": "<text to append>" }
+    - update_progress    { "progress": <0-100 integer> }
+    - add_sub_item       { "text": "<sub-item text>" }
+    - create_child_target{ "text": "<title>", "intent": "<goal>", "priority": "high|medium|low" }
+    Every block must also include "reason".
+    """
+
     nonisolated static func buildSystemPrompt(
         target: Target, dbPool: DatabasePool
     ) -> String {
@@ -408,21 +430,7 @@ final class TargetChatViewModel {
         Created: \(target.createdAt)
         Updated: \(target.updatedAt)
 
-        === TASK ACTIONS ===
-        To change THIS task, do NOT write to the database and do NOT call any write tool.
-        Instead output a fenced block exactly like:
-        ```watchtower-action
-        { "type": "<action>", ...fields, "reason": "<why>" }
-        ```
-        One JSON object per block; emit multiple blocks for multiple actions.
-        After emitting a block, STOP and wait — do NOT assume it was applied.
-        Supported actions and required fields:
-        - update_status      { "status": "todo|in_progress|blocked|done|dismissed|snoozed" }
-        - update_notes       { "note": "<text to append>" }
-        - update_progress    { "progress": <0-100 integer> }
-        - add_sub_item       { "text": "<sub-item text>" }
-        - create_child_target{ "text": "<title>", "intent": "<goal>", "priority": "high|medium|low" }
-        Every block must also include "reason".
+        \(Self.taskActionsContract)
 
         === CAPABILITIES ===
         You can query the database to find related messages, threads, and people involved.

@@ -9,7 +9,7 @@ final class TargetChatViewModelTests: XCTestCase {
             try TargetQueries.create(db, text: "ship feature", intent: intent,
                                      periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
-        return try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }!
+        return try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
     }
 
     func testSystemPromptIncludesIntentAndContract() throws {
@@ -38,7 +38,7 @@ final class TargetChatViewModelTests: XCTestCase {
         chat.actionCards = [card]
         chat.approve(card)
 
-        let after = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }!
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "done")
         // card transitions to applied
         XCTAssertEqual(chat.actionCards.first?.state, .applied("set status to done"))
@@ -58,7 +58,7 @@ final class TargetChatViewModelTests: XCTestCase {
         chat.reject(card)
 
         XCTAssertEqual(chat.actionCards.first?.state, .rejected)
-        let after = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }!
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "todo") // unchanged
     }
 }

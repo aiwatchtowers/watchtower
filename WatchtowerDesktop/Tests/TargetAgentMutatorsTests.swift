@@ -37,13 +37,12 @@ final class TargetAgentMutatorsTests: XCTestCase {
         let parentID = try manager.dbPool.write { db in
             try TargetQueries.create(db, text: "parent", periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
-        let parent = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: parentID) }!
+        let parent = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: parentID) })
         let vm = TargetsViewModel(dbManager: manager)
 
-        let childID = vm.createChild(parent, text: "child", intent: "do x", priority: "high")
-        XCTAssertNotNil(childID)
+        let childID = try XCTUnwrap(vm.createChild(parent, text: "child", intent: "do x", priority: "high"))
 
-        let child = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: childID!) }!
+        let child = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: childID) })
         XCTAssertEqual(child.parentId, parentID)
         XCTAssertEqual(child.periodStart, "2026-06-01")
         XCTAssertEqual(child.periodEnd, "2026-06-30")

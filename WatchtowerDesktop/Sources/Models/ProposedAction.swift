@@ -31,7 +31,7 @@ struct ProposedAction: Codable, Identifiable, Equatable {
     }
 
     static let allowedStatuses: Set<String> = [
-        "todo", "in_progress", "blocked", "done", "dismissed", "snoozed",
+        "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
     ]
     static let allowedPriorities: Set<String> = ["high", "medium", "low"]
 

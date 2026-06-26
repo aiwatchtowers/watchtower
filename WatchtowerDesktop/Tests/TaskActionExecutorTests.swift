@@ -8,7 +8,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let id = try manager.dbPool.write { db in
             try TargetQueries.create(db, text: "parent", periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
-        return try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }!
+        return try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
     }
 
     func testApplyUpdateStatus() throws {
@@ -20,7 +20,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
         _ = TaskActionExecutor.apply(action, target: target, viewModel: vm)
 
-        let after = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }!
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "done")
     }
 
@@ -33,7 +33,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let action = ProposedAction(type: .updateProgress, reason: "half", progress: 50)
         _ = TaskActionExecutor.apply(action, target: target, viewModel: vm)
 
-        let after = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }!
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.progress, 0.5, accuracy: 0.0001)
     }
 
@@ -46,7 +46,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let action = ProposedAction(type: .updateNotes, reason: "log", note: "spoke to Bob")
         _ = TaskActionExecutor.apply(action, target: target, viewModel: vm)
 
-        let after = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }!
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertTrue(after.decodedNotes.contains { $0.text == "spoke to Bob" })
     }
 
@@ -59,7 +59,7 @@ final class TaskActionExecutorTests: XCTestCase {
         let action = ProposedAction(type: .addSubItem, reason: "step", text: "draft reply")
         _ = TaskActionExecutor.apply(action, target: target, viewModel: vm)
 
-        let after = try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }!
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertTrue(after.decodedSubItems.contains { $0.text == "draft reply" })
     }
 
