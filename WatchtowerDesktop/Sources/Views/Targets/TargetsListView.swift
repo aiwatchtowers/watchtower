@@ -19,7 +19,7 @@ struct TargetsListView: View {
                         selectedItemID = nil
                     }
                     .id(id)
-                    .frame(minWidth: 400, idealWidth: 500)
+                    .frame(minWidth: 560, maxWidth: .infinity)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             } else {
@@ -143,7 +143,7 @@ struct TargetsListView: View {
                 }
             }
         }
-        .frame(minWidth: 300, idealWidth: 350)
+        .frame(minWidth: 280, idealWidth: 320, maxWidth: 360)
     }
 
     // MARK: - Toolbar
