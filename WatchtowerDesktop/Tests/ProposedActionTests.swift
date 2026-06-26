@@ -22,6 +22,24 @@ final class ProposedActionTests: XCTestCase {
         XCTAssertEqual(a.priority, "high")
     }
 
+    func testDecodesLinkTarget() throws {
+        let a = try decode(#"{"type":"link_target","target_id":42,"relation":"blocks","reason":"x"}"#)
+        XCTAssertEqual(a.type, .linkTarget)
+        XCTAssertEqual(a.targetId, 42)
+        XCTAssertEqual(a.relation, "blocks")
+        XCTAssertNoThrow(try a.validate())
+    }
+
+    func testValidateRejectsBadRelation() throws {
+        let a = try decode(#"{"type":"link_target","target_id":42,"relation":"frobnicate","reason":"x"}"#)
+        XCTAssertThrowsError(try a.validate())
+    }
+
+    func testValidateRejectsMissingTargetId() throws {
+        let a = try decode(#"{"type":"link_target","relation":"blocks","reason":"x"}"#)
+        XCTAssertThrowsError(try a.validate())
+    }
+
     func testUnknownTypeFailsDecoding() {
         XCTAssertThrowsError(try decode(#"{"type":"delete_everything","reason":"x"}"#))
     }

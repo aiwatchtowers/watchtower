@@ -401,7 +401,10 @@ final class TargetChatViewModel {
     - update_progress    { "progress": <0-100 integer> }
     - add_sub_item       { "text": "<sub-item text>" }
     - create_child_target{ "text": "<title>", "intent": "<goal>", "priority": "high|medium|low" }
+    - link_target        { "target_id": <id of an EXISTING target>, "relation": "contributes_to|blocks|related|duplicates" }
     Every block must also include "reason".
+    For link_target, first look up the other target's id by querying the `targets`
+    table (e.g. SELECT id, text FROM targets WHERE ...); never guess an id.
     """
 
     /// The `=== CURRENT TASK ===` context block for the system prompt, with

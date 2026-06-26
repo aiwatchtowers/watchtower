@@ -81,6 +81,40 @@ final class TargetActionExecutorTests: XCTestCase {
         XCTAssertFalse(summary.isEmpty)
     }
 
+    func testApplyLinkTarget() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let otherID = try manager.dbPool.write { db in
+            try TargetQueries.create(db, text: "other", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .linkTarget, reason: "blocks it",
+                                    targetId: otherID, relation: "blocks")
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let links = try manager.dbPool.read { db in
+            try TargetLink.fetchAll(
+                db, sql: "SELECT * FROM target_links WHERE source_target_id = ?", arguments: [target.id]
+            )
+        }
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.targetTargetId, otherID)
+        XCTAssertEqual(links.first?.relation, "blocks")
+    }
+
+    func testApplyLinkTargetRejectsSelfLink() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .linkTarget, reason: "x",
+                                    targetId: target.id, relation: "blocks")
+        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm))
+    }
+
     func testApplyThrowsOnMissingRequiredField() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

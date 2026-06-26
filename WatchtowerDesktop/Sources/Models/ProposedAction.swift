@@ -6,6 +6,7 @@ enum TargetActionKind: String, Codable {
     case updateProgress = "update_progress"
     case addSubItem = "add_sub_item"
     case createChildTarget = "create_child_target"
+    case linkTarget = "link_target"
 }
 
 enum ProposedActionError: Error, Equatable {
@@ -25,15 +26,22 @@ struct ProposedAction: Codable, Identifiable, Equatable {
     var text: String?
     var intent: String?
     var priority: String?
+    var targetId: Int?
+    var relation: String?
 
     enum CodingKeys: String, CodingKey {
         case type, reason, status, note, progress, text, intent, priority
+        case targetId = "target_id"
+        case relation
     }
 
     static let allowedStatuses: Set<String> = [
         "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
     ]
     static let allowedPriorities: Set<String> = ["high", "medium", "low"]
+    static let allowedRelations: Set<String> = [
+        "contributes_to", "blocks", "related", "duplicates"
+    ]
 
     func validate() throws {
         if reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -59,6 +67,13 @@ struct ProposedAction: Codable, Identifiable, Equatable {
             if type == .createChildTarget, let priority, !Self.allowedPriorities.contains(priority) {
                 throw ProposedActionError.invalid("priority must be one of \(Self.allowedPriorities.sorted())")
             }
+        case .linkTarget:
+            guard let targetId, targetId > 0 else {
+                throw ProposedActionError.invalid("target_id is required")
+            }
+            guard let relation, Self.allowedRelations.contains(relation) else {
+                throw ProposedActionError.invalid("relation must be one of \(Self.allowedRelations.sorted())")
+            }
         }
     }
 
@@ -74,6 +89,8 @@ struct ProposedAction: Codable, Identifiable, Equatable {
             return "Add sub-item: \(text ?? "")\n\(reason)"
         case .createChildTarget:
             return "Create child target: \(text ?? "")\n\(reason)"
+        case .linkTarget:
+            return "Link → target #\(targetId ?? 0) as \"\(relation ?? "?")\"\n\(reason)"
         }
     }
 }

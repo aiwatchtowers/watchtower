@@ -61,6 +61,13 @@ enum TargetActionExecutor {
                 throw TargetActionError.writeFailed(viewModel.errorMessage ?? "could not create child target")
             }
             return "created child target \"\(text)\""
+        case .linkTarget:
+            guard let targetID = action.targetId else { throw TargetActionError.writeFailed("missing target_id") }
+            guard targetID != target.id else { throw TargetActionError.writeFailed("cannot link a task to itself") }
+            guard let relation = action.relation else { throw TargetActionError.writeFailed("missing relation") }
+            viewModel.createLink(from: target.id, to: targetID, relation: relation)
+            try checkWrite()
+            return "linked to target #\(targetID) (\(relation))"
         }
     }
 }

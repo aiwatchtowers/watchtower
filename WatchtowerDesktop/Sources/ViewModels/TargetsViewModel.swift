@@ -360,6 +360,19 @@ final class TargetsViewModel {
         }
     }
 
+    /// Create a typed link (contributes_to/blocks/related/duplicates) from one
+    /// existing target to another. Used by the task AI agent.
+    func createLink(from sourceID: Int, to targetID: Int, relation: String) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TargetQueries.createLink(db, sourceID: sourceID, targetID: targetID, relation: relation)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to link target: \(error.localizedDescription)"
+        }
+    }
+
     func deleteTarget(_ target: Target) {
         do {
             try dbManager.dbPool.write { db in

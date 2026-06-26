@@ -235,6 +235,7 @@ struct TargetActionCardView: View {
         case .updateProgress: "chart.bar.fill"
         case .addSubItem: "checklist"
         case .createChildTarget: "plus.square.on.square"
+        case .linkTarget: "link"
         }
     }
 }

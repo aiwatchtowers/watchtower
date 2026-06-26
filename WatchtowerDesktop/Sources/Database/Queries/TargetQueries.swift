@@ -280,6 +280,26 @@ enum TargetQueries {
 
     // MARK: - Links
 
+    /// Create a typed link between two existing targets. INSERT OR IGNORE respects
+    /// the UNIQUE(source, target, external_ref, relation) constraint, so re-proposing
+    /// an existing link is a no-op rather than an error.
+    static func createLink(
+        _ db: Database,
+        sourceID: Int,
+        targetID: Int,
+        relation: String,
+        createdBy: String = "user"
+    ) throws {
+        try db.execute(
+            sql: """
+                INSERT OR IGNORE INTO target_links
+                  (source_target_id, target_target_id, external_ref, relation, created_by)
+                VALUES (?, ?, '', ?, ?)
+                """,
+            arguments: [sourceID, targetID, relation, createdBy]
+        )
+    }
+
     static func fetchLinks(
         _ db: Database,
         targetID: Int,
