@@ -219,8 +219,8 @@ struct TargetsListView: View {
     private func todaySection(_ targets: [Target], vm: TargetsViewModel) -> some View {
         if !targets.isEmpty {
             sectionHeader("Today", count: targets.count)
-            ForEach(targets) { target in
-                targetRow(target, vm: vm, depth: 0)
+            ForEach(Self.hierarchical(targets)) { entry in
+                targetRow(entry.target, vm: vm, depth: entry.depth)
             }
         }
     }
@@ -229,10 +229,42 @@ struct TargetsListView: View {
     private func allSection(_ targets: [Target], vm: TargetsViewModel) -> some View {
         if !targets.isEmpty {
             sectionHeader("All Targets", count: targets.count)
-            ForEach(targets) { target in
-                targetRow(target, vm: vm, depth: 0)
+            ForEach(Self.hierarchical(targets)) { entry in
+                targetRow(entry.target, vm: vm, depth: entry.depth)
             }
         }
+    }
+
+    /// A target plus its nesting depth, for rendering parent→child hierarchy.
+    private struct HierEntry: Identifiable {
+        let target: Target
+        let depth: Int
+        var id: Int { target.id }
+    }
+
+    /// Order `targets` so children (by `parent_id`) immediately follow their parent
+    /// with increasing depth. Parents not present in this set are treated as roots,
+    /// so children whose parent lives in another section still appear (at depth 0).
+    private static func hierarchical(_ targets: [Target]) -> [HierEntry] {
+        let presentIDs = Set(targets.map { $0.id })
+        var childrenByParent: [Int: [Target]] = [:]
+        var roots: [Target] = []
+        for target in targets {
+            if let parentID = target.parentId, presentIDs.contains(parentID) {
+                childrenByParent[parentID, default: []].append(target)
+            } else {
+                roots.append(target)
+            }
+        }
+        var ordered: [HierEntry] = []
+        func visit(_ target: Target, _ depth: Int) {
+            ordered.append(HierEntry(target: target, depth: depth))
+            for child in childrenByParent[target.id] ?? [] {
+                visit(child, depth + 1)
+            }
+        }
+        for root in roots { visit(root, 0) }
+        return ordered
     }
 
     private func sectionHeader(_ title: String, count: Int) -> some View {
@@ -262,6 +294,9 @@ struct TargetsListView: View {
             HStack(spacing: 8) {
                 if indent > 0 {
                     Spacer().frame(width: indent)
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
 
                 Button {

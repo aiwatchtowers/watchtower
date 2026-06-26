@@ -26,6 +26,8 @@ struct TargetDetailView: View {
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
     @State private var links: [TargetLink] = []
+    @State private var parentTarget: Target?
+    @State private var childTargets: [Target] = []
     @State private var showSuggestLinksSheet = false
     @State private var showDeleteConfirm = false
     @State private var suggestedLinks: SuggestedLinksResult?
@@ -120,11 +122,13 @@ struct TargetDetailView: View {
             syncState()
             loadJiraIssue()
             loadLinks()
+            loadHierarchy()
         }
         .onChange(of: target.id) {
             syncState()
             loadJiraIssue()
             loadLinks()
+            loadHierarchy()
         }
         .onChange(of: focusedField) { oldValue, _ in
             switch oldValue {
@@ -209,6 +213,7 @@ struct TargetDetailView: View {
             statusSection
             dueDateSection
             detailsSection
+            hierarchySection
             subItemsSection
             notesSection
             jiraIssueSection
@@ -398,6 +403,85 @@ struct TargetDetailView: View {
                     .foregroundStyle(.secondary)
                     .onSubmit { commitBallOn() }
             }
+        }
+    }
+
+    // MARK: - Hierarchy (parent / sub-targets)
+
+    @ViewBuilder
+    private var hierarchySection: some View {
+        if parentTarget != nil || !childTargets.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Dependencies")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                if let parent = parentTarget {
+                    Text("Parent")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    hierarchyRow(parent, icon: "arrow.up.left")
+                }
+
+                if !childTargets.isEmpty {
+                    Text("Sub-targets (\(childTargets.count))")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    ForEach(childTargets) { child in
+                        hierarchyRow(child, icon: "arrow.turn.down.right")
+                    }
+                }
+            }
+        }
+    }
+
+    private func hierarchyRow(_ item: Target, icon: String) -> some View {
+        Button {
+            appState.pendingTargetID = item.id
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Circle()
+                    .fill(item.isActive ? Color.accentColor : Color.secondary)
+                    .frame(width: 6, height: 6)
+                Text(item.text)
+                    .font(.callout)
+                    .lineLimit(1)
+                Spacer()
+                Text(item.status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func loadHierarchy() {
+        guard let dbManager = appState.databaseManager else {
+            parentTarget = nil
+            childTargets = []
+            return
+        }
+        do {
+            try dbManager.dbPool.read { db in
+                parentTarget = try target.parentId.flatMap { try TargetQueries.fetchByID(db, id: $0) }
+                childTargets = try TargetQueries.fetchAll(
+                    db, filter: TargetFilter(includeDone: true, parentID: target.id)
+                )
+            }
+        } catch {
+            parentTarget = nil
+            childTargets = []
         }
     }
 
