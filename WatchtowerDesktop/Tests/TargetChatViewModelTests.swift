@@ -42,6 +42,36 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertEqual(after.status, "done")
         // card transitions to applied
         XCTAssertEqual(chat.actionCards.first?.state, .applied("set status to done"))
+        // a follow-up turn is fed back into the conversation so the AI continues
+        XCTAssertTrue(chat.messages.contains {
+            $0.role == .system && $0.text.contains("Action applied")
+        })
+    }
+
+    func testApproveWithFailedWriteMarksCardFailed() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: MockClaudeService())
+
+        // An action missing its required field cannot be applied — the card must
+        // surface .failed and the follow-up must NOT claim success.
+        let action = ProposedAction(type: .updateStatus, reason: "x", status: nil)
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        if case .failed = chat.actionCards.first?.state {} else {
+            XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
+        }
+        XCTAssertTrue(chat.messages.contains {
+            $0.role == .system && $0.text.contains("Action FAILED")
+        })
+        XCTAssertFalse(chat.messages.contains {
+            $0.role == .system && $0.text.contains("Action applied")
+        })
     }
 
     func testRejectMarksCardRejected() throws {
@@ -58,6 +88,9 @@ final class TargetChatViewModelTests: XCTestCase {
         chat.reject(card)
 
         XCTAssertEqual(chat.actionCards.first?.state, .rejected)
+        XCTAssertTrue(chat.messages.contains {
+            $0.role == .system && $0.text.contains("rejected")
+        })
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "todo") // unchanged
     }

@@ -1,36 +1,65 @@
 import Foundation
 
+enum TaskActionError: LocalizedError {
+    case writeFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .writeFailed(let message): return message
+        }
+    }
+}
+
 /// Applies an approved ProposedAction to a target via TargetsViewModel.
 /// The AI proposes; this executor (driven by an explicit user Approve) is the
 /// only thing that mutates the DB. Returns a short summary for the follow-up
-/// message sent back into the conversation.
+/// message sent back into the conversation, or throws if the write failed so
+/// the caller can surface a failed card instead of reporting a false success.
+///
+/// The shared TargetsViewModel mutators swallow DB errors into `errorMessage`
+/// (the established house idiom for the list UI), so we detect failure by
+/// snapshotting `errorMessage` around the call rather than changing those
+/// signatures and rippling into every existing caller.
 enum TaskActionExecutor {
     @MainActor
-    static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) -> String {
+    static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) throws -> String {
+        let priorError = viewModel.errorMessage
+        func checkWrite() throws {
+            if let err = viewModel.errorMessage, err != priorError {
+                throw TaskActionError.writeFailed(err)
+            }
+        }
+
         switch action.type {
         case .updateStatus:
-            let status = action.status ?? "todo"
+            guard let status = action.status else { throw TaskActionError.writeFailed("missing status") }
             viewModel.updateStatus(target, to: status)
+            try checkWrite()
             return "set status to \(status)"
         case .updateNotes:
-            let note = action.note ?? ""
+            guard let note = action.note else { throw TaskActionError.writeFailed("missing note") }
             viewModel.addNote(target, text: note)
+            try checkWrite()
             return "added a note"
         case .updateProgress:
-            let pct = action.progress ?? 0
+            guard let pct = action.progress else { throw TaskActionError.writeFailed("missing progress") }
             viewModel.updateProgress(target, to: Double(pct) / 100.0)
+            try checkWrite()
             return "set progress to \(pct)%"
         case .addSubItem:
-            let text = action.text ?? ""
+            guard let text = action.text else { throw TaskActionError.writeFailed("missing text") }
             viewModel.addSubItem(target, text: text)
+            try checkWrite()
             return "added sub-item \"\(text)\""
         case .createChildTarget:
-            let text = action.text ?? ""
-            viewModel.createChild(
+            guard let text = action.text else { throw TaskActionError.writeFailed("missing text") }
+            guard viewModel.createChild(
                 target, text: text,
                 intent: action.intent ?? "",
                 priority: action.priority ?? "medium"
-            )
+            ) != nil else {
+                throw TaskActionError.writeFailed(viewModel.errorMessage ?? "could not create child target")
+            }
             return "created child target \"\(text)\""
         }
     }

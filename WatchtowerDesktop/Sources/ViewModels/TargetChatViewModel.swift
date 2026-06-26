@@ -100,7 +100,9 @@ final class TargetChatViewModel {
                         self.messages = records.map { $0.toChatMessage() }
                     }
                 }
-            } catch {}
+            } catch {
+                print("TargetChat: message observation stopped: \(error)")
+            }
         }
     }
 
@@ -130,28 +132,7 @@ final class TargetChatViewModel {
             timestamp: Date(),
             isStreaming: true
         ))
-        isStreaming = true
-
-        let currentSessionID = sessionID
-        let dbPath = dbManager.dbPool.path
-        let dbPool = dbManager.dbPool
-        let capturedTarget = target
-        let capturedAIService = aiService
-        let capturedConvID = conversationID
-        let capturedDBManager = dbManager
-
-        streamTask = Task { [weak self] in
-            await self?.executeStream(
-                text: text,
-                currentSessionID: currentSessionID,
-                target: capturedTarget,
-                dbPool: dbPool,
-                dbPath: dbPath,
-                aiService: capturedAIService,
-                dbManager: capturedDBManager,
-                conversationID: capturedConvID
-            )
-        }
+        startStream(prompt: text)
     }
 
     private func sendFollowUp(_ text: String) {
@@ -161,8 +142,14 @@ final class TargetChatViewModel {
         messages.append(ChatMessage(
             id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
         ))
-        isStreaming = true
+        startStream(prompt: text)
+    }
 
+    /// Spawn the streaming turn. Shared by `send()` and `sendFollowUp(_:)` —
+    /// the caller is responsible for appending the user/system message and the
+    /// empty assistant placeholder before calling this.
+    private func startStream(prompt: String) {
+        isStreaming = true
         let currentSessionID = sessionID
         let dbPath = dbManager.dbPool.path
         let dbPool = dbManager.dbPool
@@ -173,9 +160,14 @@ final class TargetChatViewModel {
 
         streamTask = Task { [weak self] in
             await self?.executeStream(
-                text: text, currentSessionID: currentSessionID, target: capturedTarget,
-                dbPool: dbPool, dbPath: dbPath, aiService: capturedAIService,
-                dbManager: capturedDBManager, conversationID: capturedConvID
+                text: prompt,
+                currentSessionID: currentSessionID,
+                target: capturedTarget,
+                dbPool: dbPool,
+                dbPath: dbPath,
+                aiService: capturedAIService,
+                dbManager: capturedDBManager,
+                conversationID: capturedConvID
             )
         }
     }
@@ -197,14 +189,13 @@ final class TargetChatViewModel {
             : nil
 
         var fullText = ""
-        var newSessionID: String?
+        var streamFailed = false
         do {
             let stream = aiService.stream(
                 prompt: text,
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
-                dbPath: dbPath,
-                extraAllowedTools: ["Bash(watchtower*)"]
+                dbPath: dbPath
             )
             var sawTurnComplete = false
             for try await event in stream {
@@ -222,22 +213,33 @@ final class TargetChatViewModel {
                     sawTurnComplete = true
                     updateLastMessage(fullText)
                 case .sessionID(let sid):
-                    newSessionID = sid
                     handleSessionID(sid)
                 case .done:
                     break
                 }
             }
         } catch {
+            streamFailed = true
             if !Task.isCancelled {
                 errorMessage = error.localizedDescription
             }
         }
 
+        // On a failed/cancelled stream, do NOT parse actions out of partial,
+        // possibly-truncated output — that could surface a half-formed proposal.
+        if streamFailed {
+            finishStream()
+            return
+        }
+
         // Parse watchtower-action blocks out of the final text.
         let parsed = TaskActionParser.parse(fullText)
-        let visibleText = parsed.text
-        updateLastMessage(visibleText)
+        // When the AI emits only an action block, visible prose is empty; show a
+        // placeholder so the turn isn't blank and gets persisted into the transcript.
+        let displayText = parsed.text.isEmpty && !parsed.actions.isEmpty
+            ? "(proposed \(parsed.actions.count) action(s))"
+            : parsed.text
+        updateLastMessage(displayText)
 
         let assistantMessageID = messages.indices.last.map { messages[$0].id } ?? UUID()
         for action in parsed.actions {
@@ -249,16 +251,8 @@ final class TargetChatViewModel {
             appendSystemMessage("⚠️ Invalid action proposal: \(err)")
         }
 
-        if !visibleText.isEmpty, let convID = conversationID {
-            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: visibleText)
-        }
-
-        if let sid = newSessionID, let convID = conversationID {
-            Self.persistSession(
-                dbManager: dbManager,
-                conversationID: convID,
-                sessionID: sid
-            )
+        if !displayText.isEmpty, let convID = conversationID {
+            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: displayText)
         }
 
         finishStream()
@@ -274,16 +268,6 @@ final class TargetChatViewModel {
                 db, conversationID: conversationID, role: "assistant", text: text
             )
             try ChatConversationQueries.touch(db, id: conversationID)
-        }
-    }
-
-    nonisolated private static func persistSession(
-        dbManager: DatabaseManager, conversationID: Int64, sessionID: String
-    ) {
-        _ = try? dbManager.dbPool.write { db in
-            try ChatConversationQueries.updateSessionID(
-                db, id: conversationID, sessionID: sessionID
-            )
         }
     }
 
@@ -306,10 +290,16 @@ final class TargetChatViewModel {
         guard let idx = actionCards.firstIndex(where: { $0.id == card.id }),
               actionCards[idx].state == .pending else { return }
         reloadTarget()
-        let summary = TaskActionExecutor.apply(card.action, target: target, viewModel: viewModel)
-        actionCards[idx].state = .applied(summary)
-        reloadTarget()
-        sendFollowUp("Action applied: \(summary). Continue with the task.")
+        do {
+            let summary = try TaskActionExecutor.apply(card.action, target: target, viewModel: viewModel)
+            actionCards[idx].state = .applied(summary)
+            reloadTarget()
+            sendFollowUp("Action applied: \(summary). Continue with the task.")
+        } catch {
+            actionCards[idx].state = .failed(error.localizedDescription)
+            sendFollowUp("Action FAILED: \(error.localizedDescription). " +
+                         "Do NOT assume it was applied; suggest how to proceed.")
+        }
     }
 
     func reject(_ card: TargetActionCard) {
@@ -364,7 +354,9 @@ final class TargetChatViewModel {
             }) {
                 target = updated
             }
-        } catch {}
+        } catch {
+            print("TargetChat: reloadTarget failed: \(error)")
+        }
     }
 
     private func persistSessionID(conversationID: Int64, sessionID: String) {
@@ -397,6 +389,34 @@ final class TargetChatViewModel {
     Every block must also include "reason".
     """
 
+    /// The `=== CURRENT TASK ===` context block for the system prompt, with
+    /// notes and sub-items rendered as plain text (not raw JSON).
+    nonisolated private static func taskContextBlock(_ target: Target) -> String {
+        let notesList = target.decodedNotes.map { "- \($0.text)" }.joined(separator: "\n")
+        let notesText = notesList.isEmpty ? "(none)" : notesList
+        let subItemsList = target.decodedSubItems
+            .map { "- [\($0.done ? "x" : " ")] \($0.text)" }
+            .joined(separator: "\n")
+        let subItemsText = subItemsList.isEmpty ? "(none)" : subItemsList
+        return """
+        === CURRENT TASK ===
+        ID: \(target.id)
+        Text: \(target.text)
+        Intent: \(target.intent)
+        Status: \(target.status)
+        Priority: \(target.priority)
+        Ownership: \(target.ownership)
+        Blocking: \(target.blocking)
+        Progress: \(Int((target.progress * 100).rounded()))%
+        Notes:
+        \(notesText)
+        Sub-items:
+        \(subItemsText)
+        Created: \(target.createdAt)
+        Updated: \(target.updatedAt)
+        """
+    }
+
     nonisolated static func buildSystemPrompt(
         target: Target, dbPool: DatabasePool
     ) -> String {
@@ -416,19 +436,7 @@ final class TargetChatViewModel {
         You are Watchtower, an AI assistant helping the user make progress on a specific \
         task (target) tracked in their workspace.
 
-        === CURRENT TASK ===
-        ID: \(target.id)
-        Text: \(target.text)
-        Intent: \(target.intent)
-        Status: \(target.status)
-        Priority: \(target.priority)
-        Ownership: \(target.ownership)
-        Blocking: \(target.blocking)
-        Progress: \(Int((target.progress * 100).rounded()))%
-        Notes: \(target.notes)
-        Sub-items: \(target.subItems)
-        Created: \(target.createdAt)
-        Updated: \(target.updatedAt)
+        \(Self.taskContextBlock(target))
 
         \(Self.taskActionsContract)
 
