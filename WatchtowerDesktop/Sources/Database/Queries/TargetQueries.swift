@@ -234,6 +234,17 @@ enum TargetQueries {
         )
     }
 
+    static func updateProgress(_ db: Database, id: Int, progress: Double) throws {
+        let clamped = min(max(progress, 0.0), 1.0)
+        try db.execute(
+            sql: """
+                UPDATE targets SET progress = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [clamped, id]
+        )
+    }
+
     static func updateSubItems(_ db: Database, id: Int, subItems: [TargetSubItem]) throws {
         let data = try JSONEncoder().encode(subItems)
         let json = String(data: data, encoding: .utf8) ?? "[]"

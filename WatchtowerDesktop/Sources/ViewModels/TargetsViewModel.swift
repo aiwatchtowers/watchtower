@@ -322,6 +322,44 @@ final class TargetsViewModel {
         }
     }
 
+    func updateProgress(_ target: Target, to progress: Double) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TargetQueries.updateProgress(db, id: target.id, progress: progress)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update progress: \(error.localizedDescription)"
+        }
+    }
+
+    /// Create a child target under `parent`, inheriting its planning period and
+    /// level. Used by the task AI agent. Returns the new id, or nil on failure.
+    @discardableResult
+    func createChild(_ parent: Target, text: String, intent: String, priority: String) -> Int? {
+        do {
+            let newID = try dbManager.dbPool.write { db in
+                try TargetQueries.create(
+                    db,
+                    text: text,
+                    intent: intent,
+                    level: parent.level,
+                    periodStart: parent.periodStart,
+                    periodEnd: parent.periodEnd,
+                    parentId: parent.id,
+                    priority: priority,
+                    sourceType: "chat",
+                    sourceID: "target:\(parent.id)"
+                )
+            }
+            load()
+            return newID
+        } catch {
+            errorMessage = "Failed to create child target: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     func deleteTarget(_ target: Target) {
         do {
             try dbManager.dbPool.write { db in
