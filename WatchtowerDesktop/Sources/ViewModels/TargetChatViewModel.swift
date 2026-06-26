@@ -298,12 +298,16 @@ final class TargetChatViewModel {
         }
     }
 
-    func approve(_ card: TargetActionCard) {
+    /// Approve a proposed action. `kind` lets the user override what gets created
+    /// for the interchangeable add_sub_item / create_child_target proposals
+    /// (checkpoint vs sub-task); nil keeps the AI's proposed kind.
+    func approve(_ card: TargetActionCard, as kind: TargetActionKind? = nil) {
         guard let idx = actionCards.firstIndex(where: { $0.id == card.id }),
               actionCards[idx].state == .pending else { return }
+        let action = Self.resolved(card.action, overrideKind: kind)
         reloadTarget()
         do {
-            let summary = try TargetActionExecutor.apply(card.action, target: target, viewModel: viewModel)
+            let summary = try TargetActionExecutor.apply(action, target: target, viewModel: viewModel)
             actionCards[idx].state = .applied(summary)
             reloadTarget()
             sendFollowUp("Action applied: \(summary). Continue with the task.")
@@ -320,6 +324,17 @@ final class TargetChatViewModel {
         actionCards[idx].state = .rejected
         sendFollowUp("User rejected the action (reason given: \(card.action.reason)). " +
                      "Suggest an alternative or ask what to do.")
+    }
+
+    /// Return `action` with its `type` swapped to `kind` (keeping text/intent/etc.).
+    /// Used to let the user pick checkpoint vs sub-task at approve time.
+    private static func resolved(_ action: ProposedAction, overrideKind kind: TargetActionKind?) -> ProposedAction {
+        guard let kind, kind != action.type else { return action }
+        return ProposedAction(
+            type: kind, reason: action.reason, status: action.status, note: action.note,
+            progress: action.progress, text: action.text, intent: action.intent,
+            priority: action.priority, targetId: action.targetId, relation: action.relation
+        )
     }
 
     private func handleSessionID(_ sid: String) {

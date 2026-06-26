@@ -76,7 +76,7 @@ struct TargetChatSection: View {
                             TargetActionCardView(
                                 card: card,
                                 isStreaming: chatVM.isStreaming,
-                                onApprove: { chatVM.approve(card) },
+                                onApprove: { kind in chatVM.approve(card, as: kind) },
                                 onReject: { chatVM.reject(card) }
                             )
                         }
@@ -176,8 +176,31 @@ struct TargetActionCardView: View {
     /// Disable Approve/Reject while a turn is streaming: a decision taken mid-stream
     /// would apply the write but its follow-up is dropped (sendFollowUp guards on isStreaming).
     let isStreaming: Bool
-    let onApprove: () -> Void
+    /// `kind` is the user's chosen create-kind for checkpoint/sub-task proposals (nil otherwise).
+    let onApprove: (TargetActionKind?) -> Void
     let onReject: () -> Void
+
+    /// For add_sub_item / create_child_target the user picks what to actually create.
+    @State private var createKind: TargetActionKind
+
+    init(
+        card: TargetActionCard,
+        isStreaming: Bool,
+        onApprove: @escaping (TargetActionKind?) -> Void,
+        onReject: @escaping () -> Void
+    ) {
+        self.card = card
+        self.isStreaming = isStreaming
+        self.onApprove = onApprove
+        self.onReject = onReject
+        _createKind = State(initialValue: card.action.type)
+    }
+
+    /// add_sub_item and create_child_target are interchangeable — both just need
+    /// `text`, so the user can pick either at approve time.
+    private var isCreatable: Bool {
+        card.action.type == .addSubItem || card.action.type == .createChildTarget
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -195,8 +218,19 @@ struct TargetActionCardView: View {
 
             switch card.state {
             case .pending:
+                if isCreatable {
+                    Picker("Create as", selection: $createKind) {
+                        Text("Checkpoint").tag(TargetActionKind.addSubItem)
+                        Text("Sub-task").tag(TargetActionKind.createChildTarget)
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
+                    .disabled(isStreaming)
+                }
                 HStack(spacing: 8) {
-                    Button(action: onApprove) {
+                    Button { onApprove(isCreatable ? createKind : nil) } label: {
                         Label("Approve", systemImage: "checkmark")
                     }
                     .buttonStyle(.borderedProminent)

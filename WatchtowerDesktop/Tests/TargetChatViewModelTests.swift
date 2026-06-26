@@ -65,6 +65,30 @@ final class TargetChatViewModelTests: XCTestCase {
         })
     }
 
+    func testApproveOverridesCreateKind() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: MockClaudeService())
+
+        // AI proposed a checkpoint (sub-item); user overrides to a full sub-task.
+        let action = ProposedAction(type: .addSubItem, reason: "spin off", text: "Ping Bob")
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card, as: .createChildTarget)
+
+        let children = try manager.dbPool.read { db in
+            try Target.fetchAll(db, sql: "SELECT * FROM targets WHERE parent_id = ?", arguments: [target.id])
+        }
+        XCTAssertEqual(children.count, 1)
+        XCTAssertEqual(children.first?.text, "Ping Bob")
+        // and it did NOT become a sub-item
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertFalse(after.decodedSubItems.contains { $0.text == "Ping Bob" })
+    }
+
     func testApproveWithFailedWriteMarksCardFailed() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

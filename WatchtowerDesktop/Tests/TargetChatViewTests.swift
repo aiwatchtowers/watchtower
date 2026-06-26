@@ -11,6 +11,6 @@ final class TargetChatViewTests: XCTestCase {
         XCTAssertTrue(card.action.cardDescription.contains("done"))
         XCTAssertTrue(card.action.cardDescription.contains("all merged"))
         // View constructs without crashing.
-        _ = TargetActionCardView(card: card, isStreaming: false, onApprove: {}, onReject: {})
+        _ = TargetActionCardView(card: card, isStreaming: false, onApprove: { _ in }, onReject: {})
     }
 }
