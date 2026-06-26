@@ -15,6 +15,21 @@ final class TargetAgentMutatorsTests: XCTestCase {
         XCTAssertEqual(target?.progress ?? 0, 0.42, accuracy: 0.0001)
     }
 
+    func testUpdateProgressClampsOutOfRange() throws {
+        let queue = try TestDatabase.create()
+        let id = try queue.write { db in
+            try TargetQueries.create(db, text: "t", periodStart: "2026-06-26", periodEnd: "2026-06-26")
+        }
+        // Above 1.0 clamps to 1.0, below 0.0 clamps to 0.0.
+        try queue.write { db in try TargetQueries.updateProgress(db, id: id, progress: 1.5) }
+        let high = try queue.read { db in try TargetQueries.fetchByID(db, id: id) }
+        XCTAssertEqual(high?.progress ?? -1, 1.0, accuracy: 0.0001)
+
+        try queue.write { db in try TargetQueries.updateProgress(db, id: id, progress: -0.3) }
+        let low = try queue.read { db in try TargetQueries.fetchByID(db, id: id) }
+        XCTAssertEqual(low?.progress ?? -1, 0.0, accuracy: 0.0001)
+    }
+
     @MainActor
     func testCreateChildInheritsPeriodAndParent() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
