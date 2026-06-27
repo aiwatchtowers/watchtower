@@ -69,10 +69,11 @@ func buildObserverPrompt(o db.Observer, target *db.Target, act db.ObserverActivi
 
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(r[:n]) + "…"
 }
 
 // parseObserverOutput extracts the events array from a raw AI response,

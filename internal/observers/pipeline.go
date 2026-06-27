@@ -94,7 +94,8 @@ func (p *Pipeline) RunForTarget(ctx context.Context, targetID int) ([]db.Observe
 // seedDefaultObservers creates a default observer for every active target that
 // has none. This is the single Go chokepoint for the "auto-default" UX.
 func (p *Pipeline) seedDefaultObservers() error {
-	targets, err := p.db.GetTargets(db.TargetFilter{Limit: 500})
+	// No limit: every active target must get its default observer.
+	targets, err := p.db.GetTargets(db.TargetFilter{})
 	if err != nil {
 		return err
 	}
@@ -163,6 +164,7 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer) ([]db.ObserverEven
 	}
 
 	var created []db.ObserverEvent
+	insertFailed := false
 	for _, ev := range parsed {
 		if strings.TrimSpace(ev.Summary) == "" {
 			continue
@@ -184,12 +186,18 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer) ([]db.ObserverEven
 		id, err := p.db.InsertObserverEvent(rec)
 		if err != nil {
 			p.logger.Printf("observers: insert event for observer %d: %v", o.ID, err)
+			insertFailed = true
 			continue
 		}
 		rec.ID = id
 		created = append(created, rec)
 	}
 
+	if insertFailed {
+		// Leave the watermark un-advanced so the next run re-queries this window
+		// rather than silently dropping events that failed to persist.
+		return created, fmt.Errorf("one or more observer events failed to insert for observer %d", o.ID)
+	}
 	if err := p.db.SetObserverLastRun(o.ID, now); err != nil {
 		return created, err
 	}
