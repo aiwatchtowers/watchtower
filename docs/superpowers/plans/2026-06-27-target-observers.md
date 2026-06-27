@@ -358,11 +358,11 @@ import (
 )
 
 // CreateObserver inserts a new observer and returns its id.
-func (d *DB) CreateObserver(o Observer) (int, error) {
+func (db *DB) CreateObserver(o Observer) (int, error) {
 	if o.EntityType == "" {
 		o.EntityType = "target"
 	}
-	res, err := d.conn.Exec(`
+	res, err := db.Exec(`
 		INSERT INTO observers (entity_type, entity_id, name, instruction, enabled)
 		VALUES (?, ?, ?, ?, ?)`,
 		o.EntityType, o.EntityID, o.Name, o.Instruction, boolToInt(o.Enabled))
@@ -387,8 +387,8 @@ func scanObserver(s interface{ Scan(...any) error }) (*Observer, error) {
 const observerCols = `id, entity_type, entity_id, name, instruction, enabled, last_run_at, created_at, updated_at`
 
 // GetObserverByID loads one observer.
-func (d *DB) GetObserverByID(id int) (*Observer, error) {
-	row := d.conn.QueryRow(`SELECT `+observerCols+` FROM observers WHERE id = ?`, id)
+func (db *DB) GetObserverByID(id int) (*Observer, error) {
+	row := db.QueryRow(`SELECT `+observerCols+` FROM observers WHERE id = ?`, id)
 	o, err := scanObserver(row)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("observer %d not found", id)
@@ -397,8 +397,8 @@ func (d *DB) GetObserverByID(id int) (*Observer, error) {
 }
 
 // GetObserversForEntity returns all observers attached to an entity, newest first.
-func (d *DB) GetObserversForEntity(entityType string, entityID int) ([]Observer, error) {
-	rows, err := d.conn.Query(`SELECT `+observerCols+`
+func (db *DB) GetObserversForEntity(entityType string, entityID int) ([]Observer, error) {
+	rows, err := db.Query(`SELECT `+observerCols+`
 		FROM observers WHERE entity_type = ? AND entity_id = ? ORDER BY created_at`,
 		entityType, entityID)
 	if err != nil {
@@ -409,8 +409,8 @@ func (d *DB) GetObserversForEntity(entityType string, entityID int) ([]Observer,
 }
 
 // GetEnabledObservers returns every enabled observer across all entities.
-func (d *DB) GetEnabledObservers() ([]Observer, error) {
-	rows, err := d.conn.Query(`SELECT ` + observerCols + ` FROM observers WHERE enabled = 1 ORDER BY id`)
+func (db *DB) GetEnabledObservers() ([]Observer, error) {
+	rows, err := db.Query(`SELECT ` + observerCols + ` FROM observers WHERE enabled = 1 ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -431,16 +431,16 @@ func collectObservers(rows *sql.Rows) ([]Observer, error) {
 }
 
 // UpdateObserver edits the name and instruction and bumps updated_at.
-func (d *DB) UpdateObserver(id int, name, instruction string) error {
-	_, err := d.conn.Exec(`UPDATE observers
+func (db *DB) UpdateObserver(id int, name, instruction string) error {
+	_, err := db.Exec(`UPDATE observers
 		SET name = ?, instruction = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ?`, name, instruction, id)
 	return err
 }
 
 // SetObserverEnabled toggles the enabled flag.
-func (d *DB) SetObserverEnabled(id int, enabled bool) error {
-	_, err := d.conn.Exec(`UPDATE observers
+func (db *DB) SetObserverEnabled(id int, enabled bool) error {
+	_, err := db.Exec(`UPDATE observers
 		SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ?`, boolToInt(enabled), id)
 	return err
@@ -448,27 +448,27 @@ func (d *DB) SetObserverEnabled(id int, enabled bool) error {
 
 // SetObserverLastRun advances the per-observer watermark. It intentionally does
 // not touch updated_at (a run is not a user edit).
-func (d *DB) SetObserverLastRun(id int, at string) error {
-	_, err := d.conn.Exec(`UPDATE observers SET last_run_at = ? WHERE id = ?`, at, id)
+func (db *DB) SetObserverLastRun(id int, at string) error {
+	_, err := db.Exec(`UPDATE observers SET last_run_at = ? WHERE id = ?`, at, id)
 	return err
 }
 
 // DeleteObserver removes an observer; its events cascade-delete.
-func (d *DB) DeleteObserver(id int) error {
-	_, err := d.conn.Exec(`DELETE FROM observers WHERE id = ?`, id)
+func (db *DB) DeleteObserver(id int) error {
+	_, err := db.Exec(`DELETE FROM observers WHERE id = ?`, id)
 	return err
 }
 
 // CountObserversForEntity counts observers attached to an entity.
-func (d *DB) CountObserversForEntity(entityType string, entityID int) (int, error) {
+func (db *DB) CountObserversForEntity(entityType string, entityID int) (int, error) {
 	var n int
-	err := d.conn.QueryRow(`SELECT COUNT(*) FROM observers WHERE entity_type = ? AND entity_id = ?`,
+	err := db.QueryRow(`SELECT COUNT(*) FROM observers WHERE entity_type = ? AND entity_id = ?`,
 		entityType, entityID).Scan(&n)
 	return n, err
 }
 
 // InsertObserverEvent appends one event to the timeline.
-func (d *DB) InsertObserverEvent(e ObserverEvent) (int, error) {
+func (db *DB) InsertObserverEvent(e ObserverEvent) (int, error) {
 	if e.EntityType == "" {
 		e.EntityType = "target"
 	}
@@ -478,7 +478,7 @@ func (d *DB) InsertObserverEvent(e ObserverEvent) (int, error) {
 	if e.ActionStatus == "" {
 		e.ActionStatus = "none"
 	}
-	res, err := d.conn.Exec(`
+	res, err := db.Exec(`
 		INSERT INTO observer_events
 			(observer_id, entity_type, entity_id, summary, detail, source_type, source_id,
 			 source_refs, decision, proposed_action, action_status)
@@ -497,11 +497,11 @@ const observerEventCols = `id, observer_id, entity_type, entity_id, summary, det
 	COALESCE(read_at, ''), created_at`
 
 // GetObserverEventsForEntity returns the timeline for an entity, newest first.
-func (d *DB) GetObserverEventsForEntity(entityType string, entityID, limit int) ([]ObserverEvent, error) {
+func (db *DB) GetObserverEventsForEntity(entityType string, entityID, limit int) ([]ObserverEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := d.conn.Query(`SELECT `+observerEventCols+`
+	rows, err := db.Query(`SELECT `+observerEventCols+`
 		FROM observer_events WHERE entity_type = ? AND entity_id = ?
 		ORDER BY created_at DESC, id DESC LIMIT ?`, entityType, entityID, limit)
 	if err != nil {
@@ -522,14 +522,14 @@ func (d *DB) GetObserverEventsForEntity(entityType string, entityID, limit int) 
 }
 
 // MarkObserverEventRead sets read_at.
-func (d *DB) MarkObserverEventRead(id int, at string) error {
-	_, err := d.conn.Exec(`UPDATE observer_events SET read_at = ? WHERE id = ?`, at, id)
+func (db *DB) MarkObserverEventRead(id int, at string) error {
+	_, err := db.Exec(`UPDATE observer_events SET read_at = ? WHERE id = ?`, at, id)
 	return err
 }
 
 // SetObserverEventActionStatus updates the proposed-action lifecycle.
-func (d *DB) SetObserverEventActionStatus(id int, status string) error {
-	_, err := d.conn.Exec(`UPDATE observer_events SET action_status = ? WHERE id = ?`, status, id)
+func (db *DB) SetObserverEventActionStatus(id int, status string) error {
+	_, err := db.Exec(`UPDATE observer_events SET action_status = ? WHERE id = ?`, status, id)
 	return err
 }
 
@@ -572,13 +572,13 @@ type ObserverActivity struct {
 // `since` ISO8601 watermark, capped at `limit` rows per source. These three
 // already-summarized sources together cover Slack (digests), action items
 // (tracks), and Jira/Calendar/decision signals (inbox items).
-func (d *DB) GetObserverActivity(since string, limit int) (ObserverActivity, error) {
+func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, error) {
 	if limit <= 0 {
 		limit = 40
 	}
 	var act ObserverActivity
 
-	dr, err := d.conn.Query(`SELECT id, channel_id, summary, decisions, created_at
+	dr, err := db.Query(`SELECT id, channel_id, summary, decisions, created_at
 		FROM digests WHERE type = 'channel' AND created_at > ?
 		ORDER BY created_at DESC LIMIT ?`, since, limit)
 	if err != nil {
@@ -594,7 +594,7 @@ func (d *DB) GetObserverActivity(since string, limit int) (ObserverActivity, err
 	}
 	dr.Close()
 
-	tr, err := d.conn.Query(`SELECT id, text, context, updated_at
+	tr, err := db.Query(`SELECT id, text, context, updated_at
 		FROM tracks WHERE dismissed_at = '' AND updated_at > ?
 		ORDER BY updated_at DESC LIMIT ?`, since, limit)
 	if err != nil {
@@ -610,7 +610,7 @@ func (d *DB) GetObserverActivity(since string, limit int) (ObserverActivity, err
 	}
 	tr.Close()
 
-	ir, err := d.conn.Query(`SELECT id, trigger_type, snippet, permalink, created_at
+	ir, err := db.Query(`SELECT id, trigger_type, snippet, permalink, created_at
 		FROM inbox_items WHERE created_at > ?
 		ORDER BY created_at DESC LIMIT ?`, since, limit)
 	if err != nil {
@@ -630,7 +630,7 @@ func (d *DB) GetObserverActivity(since string, limit int) (ObserverActivity, err
 }
 ```
 
-> NOTE: this file uses `d.conn` and `boolToInt`. Confirm the field/helper names by grepping an existing file: `grep -n "d.conn\|func boolToInt\|d\.db\b" internal/db/targets.go`. If the connection field is named differently (e.g. `d.db`) or `boolToInt` does not exist, adjust: replace `d.conn` with the actual field and inline `enabled` as `0`/`1` via a local `func b2i(b bool) int { if b { return 1 }; return 0 }` in this file.
+> NOTE: `*DB` embeds `*sql.DB` (verified), so `db.Exec` / `db.Query` / `db.QueryRow` are the embedded methods called directly on the receiver. `boolToInt(bool) int` already exists in `internal/db/dayplans.go` (same package) — reuse it, do not redefine.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -773,7 +773,7 @@ func newTarget(t *testing.T, d *db.DB, text string) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return id
+	return int(id) // CreateTarget returns int64
 }
 
 func TestRunSeedsDefaultObserverAndPersistsEvents(t *testing.T) {
@@ -1016,6 +1016,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 // DefaultObserverName / DefaultObserverInstruction seed the auto-created observer
@@ -1199,13 +1200,14 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer) ([]db.ObserverEven
 	return created, nil
 }
 
-// systemPrompt loads the registered observer.run template, falling back to the
-// built-in default if the DB has no row.
+// systemPrompt loads the registered observer.run template from the DB, falling
+// back to the built-in default if the DB has no row. db.GetPrompt returns
+// (*db.Prompt, error) and (nil, nil) when the id is not seeded.
 func (p *Pipeline) systemPrompt() string {
-	if tpl, err := p.db.GetPrompt(promptsObserverRun); err == nil && tpl != "" {
-		return tpl
+	if row, err := p.db.GetPrompt(prompts.ObserverRun); err == nil && row != nil && row.Template != "" {
+		return row.Template
 	}
-	return promptsObserverRunDefault
+	return prompts.DefaultFor(prompts.ObserverRun)
 }
 
 func isActiveStatus(s string) bool {
@@ -1218,16 +1220,7 @@ func isActiveStatus(s string) bool {
 }
 ```
 
-> The pipeline references the prompt by id/default. To avoid an import cycle risk and keep this self-contained, add these two unexported bindings at the top of `pipeline.go` (below the imports), wiring to the prompts package:
->
-> ```go
-> // bound to the prompts package; kept as vars so tests don't need a seeded DB.
-> var (
-> 	promptsObserverRun        = prompts.ObserverRun
-> 	promptsObserverRunDefault = prompts.DefaultFor(prompts.ObserverRun)
-> )
-> ```
-> and add `"watchtower/internal/prompts"` to the imports. Confirm `db.GetPrompt(id string) (string, error)` exists: `grep -n "func (d \*DB) GetPrompt" internal/db/`. If its signature differs (e.g. returns `*Prompt`), adapt `systemPrompt()` to read the `.Template` field and treat not-found as fallback.
+> `systemPrompt()` imports `"watchtower/internal/prompts"` and uses `prompts.ObserverRun` (id const from Task 3) + `prompts.DefaultFor(...)` (the built-in template). `db.GetPrompt` returns `(*db.Prompt, error)` with `(nil, nil)` when not seeded — verified. There is no import cycle: `internal/prompts` does not import `internal/observers`.
 
 - [ ] **Step 5: Run to verify pass**
 
