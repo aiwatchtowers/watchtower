@@ -109,6 +109,7 @@ func TestAllTablesExist(t *testing.T) {
 		"digests", "decision_reads", "user_analyses", "period_summaries",
 		"custom_emojis", "tracks", "decision_importance_corrections",
 		"feedback", "prompts", "prompt_history", "user_profile",
+		"observers", "observer_events",
 	}
 
 	for _, table := range expectedTables {
