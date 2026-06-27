@@ -110,6 +110,54 @@ func rawJSONOrEmpty(m json.RawMessage) string {
 	return t
 }
 
+// ComposeResult is the AI-drafted observer name + watch instruction.
+type ComposeResult struct {
+	Name        string `json:"name"`
+	Instruction string `json:"instruction"`
+}
+
+// buildComposePrompt renders the target context + the operator's free-text
+// request into the user message for the observer.compose prompt.
+func buildComposePrompt(target *db.Target, input string) string {
+	var b strings.Builder
+	b.WriteString("TARGET:\n")
+	fmt.Fprintf(&b, "- text: %s\n", target.Text)
+	if target.Intent != "" {
+		fmt.Fprintf(&b, "- why: %s\n", target.Intent)
+	}
+	b.WriteString("\nUSER REQUEST (what to watch for):\n")
+	b.WriteString(strings.TrimSpace(input) + "\n")
+	return b.String()
+}
+
+// parseComposeOutput extracts the {name, instruction} object from a raw AI
+// response, tolerating markdown fences and surrounding prose. A blank name
+// defaults to "Observer"; a blank instruction is an error.
+func parseComposeOutput(raw string) (ComposeResult, error) {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	start := strings.Index(s, "{")
+	end := strings.LastIndex(s, "}")
+	if start < 0 || end < start {
+		return ComposeResult{}, fmt.Errorf("no JSON object found")
+	}
+	var r ComposeResult
+	if err := json.Unmarshal([]byte(s[start:end+1]), &r); err != nil {
+		return ComposeResult{}, err
+	}
+	r.Name = strings.TrimSpace(r.Name)
+	r.Instruction = strings.TrimSpace(r.Instruction)
+	if r.Instruction == "" {
+		return ComposeResult{}, fmt.Errorf("compose returned empty instruction")
+	}
+	if r.Name == "" {
+		r.Name = "Observer"
+	}
+	return r, nil
+}
+
 // encodeRefs marshals source refs to a JSON array string, never "".
 func encodeRefs(refs []string) string {
 	if len(refs) == 0 {

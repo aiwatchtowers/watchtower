@@ -164,3 +164,29 @@ func (p *Pipeline) systemPrompt() string {
 	}
 	return prompts.DefaultFor(prompts.ObserverRun)
 }
+
+// Compose drafts an observer name + watch instruction for a target from the
+// operator's free-text request. It does not persist anything — the caller
+// decides whether to create the observer.
+func (p *Pipeline) Compose(ctx context.Context, targetID int, input string) (ComposeResult, error) {
+	target, err := p.db.GetTargetByID(targetID)
+	if err != nil {
+		return ComposeResult{}, fmt.Errorf("loading target %d: %w", targetID, err)
+	}
+	user := buildComposePrompt(target, input)
+	ctx2 := digest.WithSource(ctx, "observer.compose")
+	raw, _, _, err := p.gen.Generate(ctx2, p.composeSystemPrompt(), user, "")
+	if err != nil {
+		return ComposeResult{}, fmt.Errorf("observer compose AI call: %w", err)
+	}
+	return parseComposeOutput(raw)
+}
+
+// composeSystemPrompt loads the registered observer.compose template from the
+// DB, falling back to the built-in default.
+func (p *Pipeline) composeSystemPrompt() string {
+	if row, err := p.db.GetPrompt(prompts.ObserverCompose); err == nil && row != nil && row.Template != "" {
+		return row.Template
+	}
+	return prompts.DefaultFor(prompts.ObserverCompose)
+}

@@ -163,3 +163,54 @@ func TestRunForTargetNoObserversReturnsEmpty(t *testing.T) {
 		t.Fatalf("RunForTarget must not auto-create observers, got %d", cnt)
 	}
 }
+
+func TestComposeParsesNameAndInstruction(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Ship billing migration")
+
+	gen := &mockGen{resp: "```json\n{\"name\":\"Billing refund\",\"instruction\":\"Watch only the HashBank refund decision and its owner.\"}\n```"}
+	p := New(d, gen, log.Default())
+
+	res, err := p.Compose(context.Background(), tid, "the refund commission thing with HashBank")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Name != "Billing refund" {
+		t.Fatalf("name = %q", res.Name)
+	}
+	if res.Instruction == "" {
+		t.Fatalf("instruction empty")
+	}
+	if gen.calls != 1 {
+		t.Fatalf("expected 1 AI call, got %d", gen.calls)
+	}
+}
+
+func TestComposeEmptyInstructionErrors(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Ship billing migration")
+	gen := &mockGen{resp: `{"name":"X","instruction":""}`}
+	p := New(d, gen, log.Default())
+
+	if _, err := p.Compose(context.Background(), tid, "watch stuff"); err == nil {
+		t.Fatalf("expected error for empty instruction")
+	}
+}
+
+func TestComposeDefaultsBlankName(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Ship billing migration")
+	gen := &mockGen{resp: `{"name":"","instruction":"Watch the refund decision."}`}
+	p := New(d, gen, log.Default())
+
+	res, err := p.Compose(context.Background(), tid, "watch stuff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Name != "Observer" {
+		t.Fatalf("blank name should default to Observer, got %q", res.Name)
+	}
+}
