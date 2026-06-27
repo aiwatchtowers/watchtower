@@ -1,5 +1,3 @@
-import Foundation
-
 /// Collapsible, named groups of sidebar destinations. Source of truth for the
 /// order and membership of grouped items. Root items (always visible) and tool
 /// items live on `SidebarDestination` instead.
@@ -11,7 +9,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     /// Render order of the sections.
-    static var ordered: [SidebarSection] { [.today, .delivery, .analytics] }
+    static let ordered: [SidebarSection] = [.today, .delivery, .analytics]
 
     var title: String {
         switch self {

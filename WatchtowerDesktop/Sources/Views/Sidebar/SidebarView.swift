@@ -143,23 +143,25 @@ struct SidebarView: View {
         } else {
             let count = self.count(for: item)
             if count > 0 {
-                Text("\(count)")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(
-                        item == .tracks ? .orange
-                            : item == .inbox && inboxHighPriorityCount > 0 ? .red
-                            : item == .inbox ? .blue
-                            : item == .targets && overdueTaskCount > 0 ? .red
-                            : item == .targets ? .blue
-                            : .red,
-                        in: Capsule()
-                    )
+                capsuleBadge(count, color: item == .tracks ? .orange
+                    : item == .inbox && inboxHighPriorityCount > 0 ? .red
+                    : item == .inbox ? .blue
+                    : item == .targets && overdueTaskCount > 0 ? .red
+                    : item == .targets ? .blue
+                    : .red)
             }
         }
+    }
+
+    @ViewBuilder
+    private func capsuleBadge(_ count: Int, color: Color) -> some View {
+        Text("\(count)")
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color, in: Capsule())
     }
 
     /// The numeric badge value for a single destination (0 = no badge).
@@ -182,18 +184,13 @@ struct SidebarView: View {
         section.items.reduce(0) { $0 + count(for: $1) }
     }
 
-    /// Color of the collapsed-header badge: the loudest child wins.
-    /// red (any item already red) > orange (tracks) > blue (targets/inbox) > red default.
+    /// Color of the collapsed-header badge: red if any child is a red source (inbox-high/digests/briefings/statistics/catch-up), otherwise blue.
     private func sectionBadgeColor(_ section: SidebarSection) -> Color {
-        // Tracks is the only orange source; inbox-high and overdue-targets are red;
-        // inbox-normal and active-targets are blue. Mirror badgeCount(for:)'s coloring.
         if section.items.contains(.inbox), inboxHighPriorityCount > 0 { return .red }
-        if section.items.contains(.targets), overdueTaskCount > 0 { return .red }
         if section.items.contains(.digests), unreadDigestCount > 0 { return .red }
         if section.items.contains(.briefings), unreadBriefingCount > 0 { return .red }
         if section.items.contains(.statistics), recommendationCount > 0 { return .red }
         if section.items.contains(.catchUp), catchUpTotalCount > 0 { return .red }
-        if section.items.contains(.tracks), updatedTrackCount > 0 { return .orange }
         return .blue
     }
 
@@ -219,19 +216,12 @@ struct SidebarView: View {
                 Spacer()
                 let badge = sectionBadgeCount(section)
                 if !isExpanded.wrappedValue, badge > 0 {
-                    Text("\(badge)")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(sectionBadgeColor(section), in: Capsule())
+                    capsuleBadge(badge, color: sectionBadgeColor(section))
                 }
             }
             .padding(.horizontal, 8)
             .contentShape(Rectangle())
         }
-        .disclosureGroupStyle(.automatic)
     }
 
 }
