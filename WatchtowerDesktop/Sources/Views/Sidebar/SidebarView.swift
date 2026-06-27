@@ -5,6 +5,23 @@ struct SidebarView: View {
     @Binding var selection: SidebarDestination
     @Environment(AppState.self) private var appState
 
+    /// Per-section collapsed flag. Held in @State so toggling re-renders the view;
+    /// seeded from UserDefaults (persisted across launches) on first appearance.
+    @State private var collapsedSections: [String: Bool] = SidebarView.loadCollapsedSections()
+
+    private static func storageKey(_ section: SidebarSection) -> String {
+        "sidebar.section.\(section.id).collapsed"
+    }
+
+    private static func loadCollapsedSections() -> [String: Bool] {
+        var result: [String: Bool] = [:]
+        for section in SidebarSection.ordered {
+            result[section.id] = UserDefaults.standard.object(forKey: storageKey(section)) as? Bool
+                ?? section.collapsedByDefault
+        }
+        return result
+    }
+
     private var counts: SidebarCountsViewModel? { appState.sidebarCountsViewModel }
     private var updatedTrackCount: Int { counts?.updatedTrackCount ?? 0 }
     private var unreadDigestCount: Int { counts?.unreadDigestCount ?? 0 }
@@ -194,46 +211,51 @@ struct SidebarView: View {
         return .blue
     }
 
+    private func isCollapsed(_ section: SidebarSection) -> Bool {
+        collapsedSections[section.id] ?? section.collapsedByDefault
+    }
+
+    private func toggleSection(_ section: SidebarSection) {
+        let newValue = !isCollapsed(section)
+        collapsedSections[section.id] = newValue
+        UserDefaults.standard.set(newValue, forKey: Self.storageKey(section))
+    }
+
     @ViewBuilder
     private func sectionView(_ section: SidebarSection) -> some View {
-        // Persist expansion per section; default seeded from collapsedByDefault.
-        let storageKey = "sidebar.section.\(section.id).collapsed"
-        let collapsedBinding = AppStorageBool(key: storageKey, defaultValue: section.collapsedByDefault)
-        let isExpanded = Binding(
-            get: { !collapsedBinding.value },
-            set: { collapsedBinding.value = !$0 }
-        )
-
-        DisclosureGroup(isExpanded: isExpanded) {
-            ForEach(section.items) { item in
-                sidebarButton(item)
+        let collapsed = isCollapsed(section)
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    toggleSection(section)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 12)
+                    Text(section.title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    let badge = sectionBadgeCount(section)
+                    if collapsed, badge > 0 {
+                        capsuleBadge(badge, color: sectionBadgeColor(section))
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
             }
-        } label: {
-            HStack(spacing: 4) {
-                Text(section.title)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                let badge = sectionBadgeCount(section)
-                if !isExpanded.wrappedValue, badge > 0 {
-                    capsuleBadge(badge, color: sectionBadgeColor(section))
+            .buttonStyle(.plain)
+
+            if !collapsed {
+                ForEach(section.items) { item in
+                    sidebarButton(item)
                 }
             }
-            .padding(.horizontal, 8)
-            .contentShape(Rectangle())
         }
     }
 
-}
-
-/// Lightweight UserDefaults-backed bool for dynamic, per-section storage keys.
-/// (`@AppStorage` requires a compile-time key, which section iteration can't provide.)
-private struct AppStorageBool {
-    let key: String
-    let defaultValue: Bool
-
-    var value: Bool {
-        get { UserDefaults.standard.object(forKey: key) as? Bool ?? defaultValue }
-        nonmutating set { UserDefaults.standard.set(newValue, forKey: key) }
-    }
 }
