@@ -36,6 +36,7 @@ struct ObserverTimelineView: View {
             }
         }
         .onAppear { viewModel.start() }
+        .onDisappear { viewModel.stop() }
         .sheet(isPresented: $showingManage) {
             ObserverManagementSheet(viewModel: viewModel)
         }

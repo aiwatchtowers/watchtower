@@ -147,6 +147,7 @@ struct TargetDetailView: View {
             loadLinks()
             loadHierarchy()
             syncNextStep()
+            observerVM?.stop()
             observerVM = nil
             if let runner = ProcessCLIRunner.makeDefault(),
                let dbManager = appState.databaseManager {
@@ -244,6 +245,7 @@ struct TargetDetailView: View {
             nextStepCard
             if let observerVM {
                 ObserverTimelineView(viewModel: observerVM)
+                    .id(target.id)
             }
             metadataGrid
             checklistSection

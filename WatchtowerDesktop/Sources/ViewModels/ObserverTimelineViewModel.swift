@@ -81,9 +81,20 @@ final class ObserverTimelineViewModel {
     }
 
     func dismissAction(for event: ObserverEvent) {
-        try? dbPool.write { db in
-            try ObserverQueries.setActionStatus(db, id: event.id, status: "dismissed")
+        do {
+            try dbPool.write { db in
+                try ObserverQueries.setActionStatus(db, id: event.id, status: "dismissed")
+            }
+        } catch {
+            errorMessage = error.localizedDescription
         }
+    }
+
+    /// Cancels the GRDB observation. Call from the view's onDisappear / before
+    /// replacing the VM, since a @MainActor deinit cannot touch the task.
+    func stop() {
+        observationTask?.cancel()
+        observationTask = nil
     }
 
     // Observer management
