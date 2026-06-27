@@ -71,16 +71,13 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Main navigation items (shown above the separator).
-    static var mainItems: [Self] {
-        [
-            .chat, .catchUp, .briefings, .dayPlan, .inbox, .calendar, .targets, .tracks,
-            .digests, .people, .workload, .blockers, .projectMap, .releases, .statistics, .search
-        ]
+    /// Always-visible items rendered above the collapsible sections.
+    static var rootItems: [Self] {
+        [.chat, .targets, .tracks]
     }
 
-    /// Tool items (shown below the separator).
+    /// Tool items (shown below the separator). Search lives here too.
     static var toolItems: [Self] {
-        [.boards, .usage, .training]
+        [.search, .boards, .usage, .training]
     }
 }
