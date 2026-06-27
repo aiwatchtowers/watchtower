@@ -44,7 +44,7 @@ func (db *DB) GetObserverByID(id int) (*Observer, error) {
 	return o, err
 }
 
-// GetObserversForEntity returns all observers attached to an entity, newest first.
+// GetObserversForEntity returns all observers attached to an entity, oldest first.
 func (db *DB) GetObserversForEntity(entityType string, entityID int) ([]Observer, error) {
 	rows, err := db.Query(`SELECT `+observerCols+`
 		FROM observers WHERE entity_type = ? AND entity_id = ? ORDER BY created_at`,
@@ -241,6 +241,9 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 		act.Digests = append(act.Digests, a)
 	}
 	dr.Close()
+	if err := dr.Err(); err != nil {
+		return act, err
+	}
 
 	tr, err := db.Query(`SELECT id, text, context, updated_at
 		FROM tracks WHERE dismissed_at = '' AND updated_at > ?
@@ -257,6 +260,9 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 		act.Tracks = append(act.Tracks, a)
 	}
 	tr.Close()
+	if err := tr.Err(); err != nil {
+		return act, err
+	}
 
 	ir, err := db.Query(`SELECT id, trigger_type, snippet, permalink, created_at
 		FROM inbox_items WHERE created_at > ?
@@ -273,6 +279,9 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 		act.Inbox = append(act.Inbox, a)
 	}
 	ir.Close()
+	if err := ir.Err(); err != nil {
+		return act, err
+	}
 
 	return act, nil
 }
