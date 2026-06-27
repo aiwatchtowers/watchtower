@@ -73,11 +73,12 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Always-visible items rendered above the collapsible sections.
     static var rootItems: [Self] {
-        [.chat, .targets, .tracks]
+        [.targets, .tracks]
     }
 
-    /// Tool items (shown below the separator). Search lives here too.
+    /// Tool items (shown below the separator). Search and AI Chat live here too;
+    /// AI Chat sits last so it anchors the very bottom of the sidebar.
     static var toolItems: [Self] {
-        [.search, .boards, .usage, .training]
+        [.search, .boards, .usage, .training, .chat]
     }
 }

@@ -27,7 +27,11 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testRootItems() {
-        XCTAssertEqual(SidebarDestination.rootItems, [.chat, .targets, .tracks])
+        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks])
+    }
+
+    func testChatIsLastToolItem() {
+        XCTAssertEqual(SidebarDestination.toolItems.last, .chat)
     }
 
     func testCollapsedByDefault() {
