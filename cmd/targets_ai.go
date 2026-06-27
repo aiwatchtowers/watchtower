@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/observers"
 	"watchtower/internal/prompts"
 	"watchtower/internal/targets"
 
@@ -659,4 +660,96 @@ func runTargetsPromoteSubItem(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Promoted sub-item #%d of target #%d to new child target #%d\n",
 		idx, parentID, childID)
 	return nil
+}
+
+func runTargetsObserve(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid target id %q: %w", args[0], err)
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	applyProviderOverride(cfg)
+	gen := cliGenerator(cfg)
+	pipe := observers.New(database, gen, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	events, err := pipe.RunForTarget(ctx, id)
+	if err != nil {
+		return fmt.Errorf("observe failed: %w", err)
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(events)
+}
+
+// runTargetsNextStep (re)generates the AI "next step" suggestion. With --all it
+// refreshes every active target whose suggestion is missing or stale and prints
+// the count; with an <id> it regenerates that one target and prints the
+// suggestion as JSON for the Desktop app to render.
+func runTargetsNextStep(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	if !targetsFlagNextStepAll && len(args) != 1 {
+		return fmt.Errorf("provide a target <id> or --all")
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	applyProviderOverride(cfg)
+	gen := cliGenerator(cfg)
+	pipe := targets.New(database, &cfg.Targets, gen, nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	if targetsFlagNextStepAll {
+		n, err := pipe.GenerateAllNextSteps(ctx)
+		if err != nil {
+			return fmt.Errorf("next-step generation failed: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Generated next step for %d target(s)\n", n)
+		return nil
+	}
+
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid target id %q: %w", args[0], err)
+	}
+
+	ns, err := pipe.GenerateNextStep(ctx, id)
+	if err != nil {
+		return fmt.Errorf("next-step generation failed: %w", err)
+	}
+
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(ns)
 }

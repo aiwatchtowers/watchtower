@@ -17,21 +17,22 @@ import (
 )
 
 var (
-	targetsFlagStatus     string
-	targetsFlagPriority   string
-	targetsFlagOwnership  string
-	targetsFlagAll        bool
-	targetsFlagJSON       bool
-	targetsFlagText       string
-	targetsFlagIntent     string
-	targetsFlagDue        string
-	targetsFlagSourceType string
-	targetsFlagSourceID   string
-	targetsFlagTags       string
-	targetsFlagBallOn     string
-	targetsFlagBlocking   string
-	targetsFlagSource     string
-	targetsFlagLevel      string
+	targetsFlagStatus      string
+	targetsFlagPriority    string
+	targetsFlagOwnership   string
+	targetsFlagAll         bool
+	targetsFlagNextStepAll bool
+	targetsFlagJSON        bool
+	targetsFlagText        string
+	targetsFlagIntent      string
+	targetsFlagDue         string
+	targetsFlagSourceType  string
+	targetsFlagSourceID    string
+	targetsFlagTags        string
+	targetsFlagBallOn      string
+	targetsFlagBlocking    string
+	targetsFlagSource      string
+	targetsFlagLevel       string
 	// targetsFlagPeriod removed — period filtering returns in V2 (DB filter not yet wired)
 	targetsFlagPeriodStart string
 	targetsFlagPeriodEnd   string
@@ -160,6 +161,16 @@ var targetsGenerateCmd = &cobra.Command{
 	RunE:  runTargetsGenerate,
 }
 
+var targetsNextStepCmd = &cobra.Command{
+	Use:   "next-step [id]",
+	Short: "Generate the AI next-step suggestion for a target (or --all)",
+	Long: "Computes the single most important next action for a target and stores it. " +
+		"With an <id>, regenerates that target and prints the suggestion as JSON. " +
+		"With --all, refreshes every active target whose suggestion is missing or stale.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: runTargetsNextStep,
+}
+
 var targetsNoteCmd = &cobra.Command{
 	Use:   "note",
 	Short: "Manage target notes",
@@ -185,6 +196,13 @@ var targetsAIUpdateCmd = &cobra.Command{
 	Long:  "Reads current target state, sends it with your instruction to AI, and outputs the updated target as JSON to stdout. The caller is responsible for applying the changes.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTargetsAIUpdate,
+}
+
+var targetsObserveCmd = &cobra.Command{
+	Use:   "observe <id>",
+	Short: "Force-run observers for one target and print new events as JSON",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTargetsObserve,
 }
 
 var targetsPromoteSubItemCmd = &cobra.Command{
@@ -216,11 +234,16 @@ func init() {
 		targetsSnoozeCmd,
 		targetsUpdateCmd,
 		targetsGenerateCmd,
+		targetsNextStepCmd,
+		targetsObserveCmd,
 		targetsNoteCmd,
 		targetsAIUpdateCmd,
 		targetsPromoteSubItemCmd,
 	)
 	targetsNoteCmd.AddCommand(targetsNoteAddCmd, targetsNoteListCmd)
+
+	// next-step flags
+	targetsNextStepCmd.Flags().BoolVar(&targetsFlagNextStepAll, "all", false, "refresh every active target with a missing or stale next step")
 
 	// targets (list) flags
 	targetsCmd.Flags().StringVar(&targetsFlagStatus, "status", "", "filter by status (todo, in_progress, blocked, done, dismissed, snoozed)")

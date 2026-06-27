@@ -22,7 +22,9 @@ import (
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
 
+	"watchtower/internal/observers"
 	"watchtower/internal/sync"
+	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
 )
 
@@ -54,6 +56,8 @@ type Daemon struct {
 	peoplePipe      *guide.Pipeline
 	briefingPipe    *briefing.Pipeline
 	inboxPipe       *inbox.Pipeline
+	nextStepPipe    *targets.Pipeline
+	observerPipe    *observers.Pipeline
 	calendarSyncer  *calendar.Syncer
 	jiraSyncer      *jira.Syncer
 	dayPlanPipeline DayPlanRunner
@@ -100,6 +104,18 @@ func (d *Daemon) SetBriefingPipeline(p *briefing.Pipeline) {
 // SetInboxPipeline sets the inbox detection pipeline.
 func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
 	d.inboxPipe = p
+}
+
+// SetNextStepPipeline sets the targets pipeline used to refresh AI next-step
+// suggestions for active targets each cycle.
+func (d *Daemon) SetNextStepPipeline(p *targets.Pipeline) {
+	d.nextStepPipe = p
+}
+
+// SetObserverPipeline sets the observers pipeline that produces target activity
+// timelines from recent cross-source events.
+func (d *Daemon) SetObserverPipeline(p *observers.Pipeline) {
+	d.observerPipe = p
 }
 
 // SetCalendarSyncer sets the calendar syncer for post-sync calendar fetch.
@@ -226,6 +242,8 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.autoMarkRead()
 
 	d.phaseInbox(ctx)
+	d.phaseNextStep(ctx)
+	d.phaseObservers(ctx)
 	d.phaseBriefing(ctx)
 
 	now := time.Now()
@@ -490,6 +508,42 @@ func (d *Daemon) phaseInbox(ctx context.Context) {
 			items: created + resolved, inTok: inTok, outTok: outTok,
 			cost: cost, totalAPI: totalAPI, err: err,
 		}
+	})
+}
+
+// phaseNextStep refreshes AI next-step suggestions for active targets whose
+// suggestion is missing or stale (regenerated after a user edit). Runs after
+// inbox so any targets just surfaced/created are included.
+func (d *Daemon) phaseNextStep(ctx context.Context) {
+	if d.nextStepPipe == nil {
+		return
+	}
+	d.trackedPipelineRun("next_step", func() pipelineRunStats {
+		n, err := d.nextStepPipe.GenerateAllNextSteps(ctx)
+		if err != nil {
+			d.logger.Printf("next-step error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("next-step: refreshed %d target(s)", n)
+		}
+		return pipelineRunStats{items: n, err: err}
+	})
+}
+
+// phaseObservers runs enabled observers over recent activity, producing timeline
+// events on watched targets. Runs after next-step so freshly surfaced targets and
+// their lazy default observers are included.
+func (d *Daemon) phaseObservers(ctx context.Context) {
+	if d.observerPipe == nil {
+		return
+	}
+	d.trackedPipelineRun("observers", func() pipelineRunStats {
+		n, err := d.observerPipe.Run(ctx)
+		if err != nil {
+			d.logger.Printf("observers error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("observers: created %d event(s)", n)
+		}
+		return pipelineRunStats{items: n, err: err}
 	})
 }
 
