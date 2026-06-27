@@ -13,9 +13,9 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .today: "TODAY"
-        case .delivery: "DELIVERY"
-        case .analytics: "ANALYTICS"
+        case .today: "FOCUS"
+        case .delivery: "EXECUTION"
+        case .analytics: "INSIGHTS"
         }
     }
 
