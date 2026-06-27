@@ -27,11 +27,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Whether the section starts collapsed on first launch.
-    var collapsedByDefault: Bool {
-        switch self {
-        case .today: false
-        case .delivery, .analytics: true
-        }
-    }
+    /// Whether the section starts collapsed on first launch. All sections start
+    /// collapsed — the sidebar opens compact and the user expands what they need.
+    var collapsedByDefault: Bool { true }
 }

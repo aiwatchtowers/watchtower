@@ -35,8 +35,8 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testCollapsedByDefault() {
-        XCTAssertFalse(SidebarSection.today.collapsedByDefault)
-        XCTAssertTrue(SidebarSection.delivery.collapsedByDefault)
-        XCTAssertTrue(SidebarSection.analytics.collapsedByDefault)
+        for section in SidebarSection.ordered {
+            XCTAssertTrue(section.collapsedByDefault, "\(section) should start collapsed")
+        }
     }
 }
