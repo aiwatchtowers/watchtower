@@ -39,6 +39,12 @@ func TestRunSeedsDefaultObserverAndPersistsEvents(t *testing.T) {
 	defer d.Close()
 	tid := newTarget(t, d, "Ship the billing migration")
 
+	// Seed one channel digest so the observer has activity to analyze.
+	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary)
+		VALUES ('C1', 0, 0, 'channel', 'Billing plan B agreed in #eng')`); err != nil {
+		t.Fatal(err)
+	}
+
 	gen := &mockGen{resp: `{"events":[
 		{"summary":"Billing decision finalized in #eng","source_type":"digest","source_id":"5",
 		 "source_refs":["https://x"],"decision":{"text":"go with plan B","by":"@ann","importance":"high"},
@@ -106,6 +112,10 @@ func TestRunForTargetReturnsNewEvents(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 	tid := newTarget(t, d, "Force target")
+	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary)
+		VALUES ('C1', 0, 0, 'channel', 'manual run activity')`); err != nil {
+		t.Fatal(err)
+	}
 	gen := &mockGen{resp: `{"events":[{"summary":"manual run event","source_type":"track"}]}`}
 	p := New(d, gen, log.Default())
 
@@ -115,5 +125,35 @@ func TestRunForTargetReturnsNewEvents(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Summary != "manual run event" {
 		t.Fatalf("unexpected: %+v", events)
+	}
+}
+
+func TestRunActivityPresentButNoEventsAdvancesWatermark(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Has activity, no relevant events")
+	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary)
+		VALUES ('C1', 0, 0, 'channel', 'unrelated chatter')`); err != nil {
+		t.Fatal(err)
+	}
+	gen := &mockGen{resp: `{"events":[]}`}
+	p := New(d, gen, log.Default())
+
+	n, err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("must not error: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 events, got %d", n)
+	}
+	if gen.calls != 1 {
+		t.Fatalf("AI should be called once when activity is present, got %d calls", gen.calls)
+	}
+	obs, _ := d.GetObserversForEntity("target", tid)
+	if len(obs) != 1 || obs[0].LastRunAt == "" {
+		t.Fatalf("watermark must advance: %+v", obs)
+	}
+	if events, _ := d.GetObserverEventsForEntity("target", tid, 50); len(events) != 0 {
+		t.Fatalf("no events should be inserted, got %d", len(events))
 	}
 }

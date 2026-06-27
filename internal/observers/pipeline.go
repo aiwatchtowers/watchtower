@@ -146,6 +146,11 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer) ([]db.ObserverEven
 
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 
+	// No new activity since the watermark: advance it and exit without an AI call.
+	if len(act.Digests) == 0 && len(act.Tracks) == 0 && len(act.Inbox) == 0 {
+		return nil, p.db.SetObserverLastRun(o.ID, now)
+	}
+
 	user := buildObserverPrompt(o, target, act)
 	ctx2 := digest.WithSource(ctx, "observer.run")
 	raw, _, _, err := p.gen.Generate(ctx2, p.systemPrompt(), user, "")
