@@ -21,6 +21,7 @@ var (
 	observerFlagInstruction string
 	observerFlagDisable     bool
 	observerFlagEnable      bool
+	observerFlagInput       string
 )
 
 var observersCmd = &cobra.Command{
@@ -67,6 +68,12 @@ var observersRunCmd = &cobra.Command{
 	RunE:  runObserversRun,
 }
 
+var observersComposeCmd = &cobra.Command{
+	Use:   "compose",
+	Short: "Draft an observer name + watch instruction from a free-text request (AI)",
+	RunE:  runObserversCompose,
+}
+
 func init() {
 	observersListCmd.Flags().StringVar(&observerFlagEntity, "entity", "", "filter by entity, e.g. target:42")
 	observersCreateCmd.Flags().StringVar(&observerFlagEntity, "entity", "", "entity to attach to, e.g. target:42")
@@ -77,8 +84,11 @@ func init() {
 	observersEditCmd.Flags().BoolVar(&observerFlagEnable, "enable", false, "enable the observer")
 	observersEditCmd.Flags().BoolVar(&observerFlagDisable, "disable", false, "disable the observer")
 
+	observersComposeCmd.Flags().StringVar(&observerFlagEntity, "entity", "", "entity to attach to, e.g. target:42")
+	observersComposeCmd.Flags().StringVar(&observerFlagInput, "input", "", "free-text description of what to watch")
+
 	observersCmd.AddCommand(observersListCmd, observersShowCmd, observersCreateCmd,
-		observersEditCmd, observersDeleteCmd, observersRunCmd)
+		observersEditCmd, observersDeleteCmd, observersRunCmd, observersComposeCmd)
 	rootCmd.AddCommand(observersCmd)
 }
 
@@ -271,4 +281,31 @@ func runObserversRun(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "created %d event(s)\n", n)
 	return nil
+}
+
+func runObserversCompose(cmd *cobra.Command, args []string) error {
+	database, cfg, err := openObserverDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	_, id, err := parseEntity(observerFlagEntity)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(observerFlagInput) == "" {
+		return fmt.Errorf("--input is required")
+	}
+	applyProviderOverride(cfg)
+	gen := cliGenerator(cfg)
+	pipe := observers.New(database, gen, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	res, err := pipe.Compose(ctx, id, observerFlagInput)
+	if err != nil {
+		return fmt.Errorf("compose failed: %w", err)
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(res)
 }
