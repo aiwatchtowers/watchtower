@@ -13,9 +13,9 @@ This is strictly **read-only**. No write/mutation tools exist in v1.
 ## Architecture
 
 - **`internal/mcp/`** — new Go package: server construction + tool registration + per-domain tool handlers. Handlers are thin: typed args → existing `internal/db` / `internal/jira` read function → structured JSON result.
-- **`cmd/mcp.go`** — thin cobra subcommand `watchtower mcp`. Resolves the DB path via the same `internal/config` resolution used by every other command, opens SQLite **read-only**, builds the MCP server, serves over **stdio**.
+- **`cmd/mcp.go`** — thin cobra subcommand `watchtower mcp`. Resolves config via the same `config.Load(flagConfig)` + `cfg.DBPath()` path used by every other command, opens the DB via the existing `db.Open` (which applies idempotent pending migrations, exactly like every other command), builds the MCP server, serves over **stdio**.
 - **SDK:** official `github.com/modelcontextprotocol/go-sdk` (pinned `v1.6.1`). It owns the JSON-RPC protocol, tool schemas, and (un)marshaling. No new runtime — everything ships in the existing single Go binary.
-- **Read-only enforcement is belt-and-suspenders:** (1) the DB is opened in SQLite read-only mode, and (2) only read tools are ever registered. No code path can write.
+- **Read-only is enforced at the tool surface:** only read tools are ever registered — no write/mutation tool exists anywhere in `internal/mcp`. (We reuse `db.Open` rather than a separate read-only connection because all the curated read methods hang off `*db.DB`; the read-only guarantee is the tool set, not the connection mode.)
 
 ### Data flow
 
