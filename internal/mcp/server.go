@@ -31,6 +31,7 @@ func NewServer(database *db.DB) *Server {
 	}, nil)
 
 	registerTargets(s, database)
+	registerDigests(s, database)
 
 	return &Server{s: s}
 }
