@@ -30,6 +30,7 @@ var Defaults = map[string]string{
 	TargetsExtract:       defaultTargetsExtract,
 	TargetsLink:          defaultTargetsLink,
 	ObserverRun:          defaultObserverRun,
+	ObserverCompose:      defaultObserverCompose,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -58,6 +59,7 @@ var AllIDs = []string{
 	TargetsExtract,
 	TargetsLink,
 	ObserverRun,
+	ObserverCompose,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -88,6 +90,7 @@ var DefaultVersions = map[string]int{
 	TargetsExtract:     1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:        1, // v1: single-target link proposal against active snapshot
 	ObserverRun:        1, // v1: cross-source event timeline for an observed entity
+	ObserverCompose:    1, // v1: draft observer name+instruction from a free-text request
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -120,6 +123,7 @@ var Descriptions = map[string]string{
 	TargetsExtract:       "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
 	TargetsLink:          "Target linking — single-target parent and secondary link proposal against active snapshot",
 	ObserverRun:          "Observer run — produce timeline events for an observed entity from recent cross-source activity",
+	ObserverCompose:      "Observer compose — draft a scoped observer name + watch instruction from a free-text user request",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1196,3 +1200,12 @@ Rules:
   Propose an action only when the activity clearly justifies it. Most events have none.
 - Do not invent activity. Every event must trace to an item in RECENT ACTIVITY.
 - Keep "summary"/"detail" in the operator's language (match the target text's language).`
+
+const defaultObserverCompose = `You design a WATCH INSTRUCTION for an "observer" attached to a single goal or task (a "target") the operator owns. An observer scans recent cross-source activity (Slack digests, action-item tracks, inbox/Jira/calendar items) and surfaces ONLY updates relevant to its instruction.
+
+You are given the TARGET and the operator's free-text USER REQUEST describing what they want watched. Produce:
+- "name": a short label (at most 4 words) for what this observer watches.
+- "instruction": a precise watch instruction scoped TIGHTLY to this target. Name the concrete topics, people, decisions, or blockers to watch for, and explicitly exclude unrelated chatter. Another AI reads this instruction as its relevance filter, so be specific and unambiguous. Write it in the operator's language.
+
+Return ONLY a JSON object (no markdown fences, no prose) with exactly this shape:
+{"name": "...", "instruction": "..."}`

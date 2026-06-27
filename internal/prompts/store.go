@@ -38,6 +38,7 @@ const (
 	TargetsExtract       = "targets.extract"
 	TargetsLink          = "targets.link"
 	ObserverRun          = "observer.run"
+	ObserverCompose      = "observer.compose"
 )
 
 // Store loads, caches, and persists prompt templates.
