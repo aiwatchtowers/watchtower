@@ -2007,48 +2007,64 @@ struct TargetObserveService {
 
 Create `WatchtowerDesktop/Sources/ViewModels/ObserverTimelineViewModel.swift`:
 
+VERIFIED repo facts this code matches (do NOT re-derive):
+- App-wide DB type is `DatabasePool`, reached via `DatabaseManager.dbPool`. ViewModels take a `DatabaseManager` (see `TargetChatViewModel(target:viewModel:dbManager:)`) and use `dbManager.dbPool.read/write { db in ... }`.
+- The observation pattern used by `TargetsViewModel` is an async stream: `for try await v in observation.values(in: dbPool) { ... }` inside a `Task`, NOT `.start(in:)`.
+- `TargetActionExecutor.apply` is **static and synchronous**: `static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) throws -> String`. So the VM holds the `Target` and the `TargetsViewModel` and calls it directly — there is no executor instance.
+- `ObserverQueries` methods take a GRDB `Database` and work with a `DatabasePool` unchanged.
+
 ```swift
 import Foundation
 import GRDB
 
 /// Drives the observer timeline + management UI on a target's detail view.
-/// Observes `observer_events` and `observers` for the target and applies a
-/// confirmed proposed action through the shared `TargetActionExecutor`.
+/// Observes `observers` + `observer_events` for the target and applies a
+/// confirmed proposed action through the shared (static) `TargetActionExecutor`,
+/// reusing the same Target + TargetsViewModel the chat path uses.
 @MainActor
 @Observable
 final class ObserverTimelineViewModel {
-    let targetID: Int
-    private let dbQueue: DatabaseQueue
+    let target: Target
+    private let dbPool: DatabasePool
+    private let targetsViewModel: TargetsViewModel
     private let observeService: TargetObserveService
-    private let executor: TargetActionExecutor
 
     var observers: [Observer] = []
     var events: [ObserverEvent] = []
     var isRefreshing = false
     var errorMessage: String?
 
-    private var cancellable: AnyDatabaseCancellable?
+    private var observationTask: Task<Void, Never>?
 
-    init(targetID: Int, dbQueue: DatabaseQueue,
-         observeService: TargetObserveService, executor: TargetActionExecutor) {
-        self.targetID = targetID
-        self.dbQueue = dbQueue
+    init(target: Target, dbManager: DatabaseManager,
+         targetsViewModel: TargetsViewModel, observeService: TargetObserveService) {
+        self.target = target
+        self.dbPool = dbManager.dbPool
+        self.targetsViewModel = targetsViewModel
         self.observeService = observeService
-        self.executor = executor
     }
 
+    deinit { observationTask?.cancel() }
+
     func start() {
-        let id = targetID
-        let observation = ValueObservation.tracking { db -> ([Observer], [ObserverEvent]) in
-            let obs = try ObserverQueries.fetchForEntity(db, entityId: id)
-            let evs = try ObserverQueries.fetchEvents(db, entityId: id)
-            return (obs, evs)
-        }
-        cancellable = observation.start(in: dbQueue, scheduling: .async(onQueue: .main)) { [weak self] error in
-            self?.errorMessage = error.localizedDescription
-        } onChange: { [weak self] result in
-            self?.observers = result.0
-            self?.events = result.1
+        let id = target.id
+        let dbPool = self.dbPool
+        observationTask?.cancel()
+        observationTask = Task { [weak self] in
+            let observation = ValueObservation.tracking { db -> ([Observer], [ObserverEvent]) in
+                let obs = try ObserverQueries.fetchForEntity(db, entityId: id)
+                let evs = try ObserverQueries.fetchEvents(db, entityId: id)
+                return (obs, evs)
+            }
+            do {
+                for try await result in observation.values(in: dbPool) {
+                    guard let self else { return }
+                    self.observers = result.0
+                    self.events = result.1
+                }
+            } catch {
+                self?.errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -2056,8 +2072,8 @@ final class ObserverTimelineViewModel {
         isRefreshing = true
         defer { isRefreshing = false }
         do {
-            _ = try await observeService.run(targetID: targetID)
-            // The daemon/CLI wrote rows; ValueObservation will push them.
+            _ = try await observeService.run(targetID: target.id)
+            // The CLI wrote rows; the ValueObservation stream pushes them.
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -2065,16 +2081,16 @@ final class ObserverTimelineViewModel {
 
     func markRead(_ event: ObserverEvent) {
         guard event.isUnread else { return }
-        try? dbQueue.write { db in try ObserverQueries.markRead(db, id: event.id) }
+        try? dbPool.write { db in try ObserverQueries.markRead(db, id: event.id) }
     }
 
-    /// Applies a confirmed proposed action via the shared executor, then records
-    /// the event's action_status so the button does not re-fire.
-    func applyAction(for event: ObserverEvent) async {
+    /// Applies a confirmed proposed action via the shared static executor, then
+    /// records the event's action_status so the button does not re-fire.
+    func applyAction(for event: ObserverEvent) {
         guard let action = event.decodedAction else { return }
         do {
-            try await executor.apply(action, toTargetID: targetID)
-            try dbQueue.write { db in
+            _ = try TargetActionExecutor.apply(action, target: target, viewModel: targetsViewModel)
+            try dbPool.write { db in
                 try ObserverQueries.setActionStatus(db, id: event.id, status: "applied")
             }
         } catch {
@@ -2083,33 +2099,33 @@ final class ObserverTimelineViewModel {
     }
 
     func dismissAction(for event: ObserverEvent) {
-        try? dbQueue.write { db in
+        try? dbPool.write { db in
             try ObserverQueries.setActionStatus(db, id: event.id, status: "dismissed")
         }
     }
 
     // Observer management
     func createObserver(name: String, instruction: String) {
-        try? dbQueue.write { db in
-            _ = try ObserverQueries.create(db, entityId: targetID, name: name, instruction: instruction)
+        try? dbPool.write { db in
+            _ = try ObserverQueries.create(db, entityId: target.id, name: name, instruction: instruction)
         }
     }
 
     func updateObserver(_ o: Observer, name: String, instruction: String) {
-        try? dbQueue.write { db in try ObserverQueries.update(db, id: o.id, name: name, instruction: instruction) }
+        try? dbPool.write { db in try ObserverQueries.update(db, id: o.id, name: name, instruction: instruction) }
     }
 
     func toggleObserver(_ o: Observer) {
-        try? dbQueue.write { db in try ObserverQueries.setEnabled(db, id: o.id, enabled: !o.enabled) }
+        try? dbPool.write { db in try ObserverQueries.setEnabled(db, id: o.id, enabled: !o.enabled) }
     }
 
     func deleteObserver(_ o: Observer) {
-        try? dbQueue.write { db in try ObserverQueries.delete(db, id: o.id) }
+        try? dbPool.write { db in try ObserverQueries.delete(db, id: o.id) }
     }
 }
 ```
 
-> Confirm the exact executor API: `grep -n "func apply\|struct TargetActionExecutor\|class TargetActionExecutor" WatchtowerDesktop/Sources/Services/TargetActionExecutor.swift`. The plan assumes `func apply(_ action: ProposedAction, toTargetID: Int) async throws`. If the real signature differs (e.g. takes a `Target` or returns a value), adjust `applyAction` to match — do not change the executor.
+> `applyAction` is now synchronous (the executor is sync); the timeline view calls it as `viewModel.applyAction(for: event)` WITHOUT `Task {}`/`await`. Adjust the "Apply" button in Step 3 accordingly (it currently wraps the call in `Task { await ... }`).
 
 - [ ] **Step 3: Write the timeline view**
 
@@ -2195,7 +2211,7 @@ private struct ObserverEventRow: View {
                 HStack(spacing: 8) {
                     Text(action.reason).font(.caption).foregroundColor(.secondary).lineLimit(2)
                     Spacer()
-                    Button("Apply") { Task { await viewModel.applyAction(for: event) } }
+                    Button("Apply") { viewModel.applyAction(for: event) }
                         .controlSize(.small)
                     Button("Dismiss") { viewModel.dismissAction(for: event) }
                         .controlSize(.small).buttonStyle(.borderless)
@@ -2310,24 +2326,39 @@ private struct ObserverEditRow: View {
 
 - [ ] **Step 5: Mount in TargetDetailView**
 
-In `WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift`, locate where the next-step card / sections render (search for `TargetNextStep` or the main detail `VStack`). Add the timeline below the existing sections:
+`TargetDetailView` already has `let target: Target`, `let viewModel: TargetsViewModel`, and a `dbManager` in scope (it builds `TargetChatViewModel(target: target, viewModel: viewModel, dbManager: dbManager)` and calls `dbManager.dbPool.read { ... }`). Build the timeline VM **lazily and once**, mirroring how `chatVM` is held — do NOT construct a fresh VM inside `body` (that would re-subscribe the observation every render).
+
+Add a state holder near the other `@State` vars:
 
 ```swift
-            ObserverTimelineView(
-                viewModel: ObserverTimelineViewModel(
-                    targetID: target.id,
-                    dbQueue: AppDatabase.shared.dbQueue,
-                    observeService: TargetObserveService(runner: CLIRunner()),
-                    executor: TargetActionExecutor(/* same deps used by TargetChat */)
-                )
-            )
+    @State private var observerVM: ObserverTimelineViewModel?
 ```
 
-> Resolve the three concrete dependencies against how the existing detail view builds them:
-> - DB pool: find the shared accessor (`grep -rn "DatabaseQueue\|dbQueue\|AppDatabase" WatchtowerDesktop/Sources/Database | head`).
-> - `CLIRunner`: how `TargetNextStepService` is constructed in this view (`grep -n "TargetNextStepService(" WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift`).
-> - `TargetActionExecutor`: how `TargetChatViewModel`/`TargetChatView` builds it (`grep -rn "TargetActionExecutor(" WatchtowerDesktop/Sources`).
-> Use the exact same construction those call sites use. If the detail view already holds an environment object or injected services, thread those instead of constructing new ones.
+Render the section where the next-step card / detail sections are (search for the next-step card or `TargetNextStepCard`/`nextStep` usage), inside the main detail `VStack`:
+
+```swift
+            if let observerVM {
+                ObserverTimelineView(viewModel: observerVM)
+            }
+```
+
+And build it once in an `.onAppear` on that container (or reuse the existing `.onAppear`/`.task` the view already has), using the runner pattern the file already uses (`ProcessCLIRunner.makeDefault()`):
+
+```swift
+            .onAppear {
+                if observerVM == nil, let runner = ProcessCLIRunner.makeDefault() {
+                    observerVM = ObserverTimelineViewModel(
+                        target: target,
+                        dbManager: dbManager,
+                        targetsViewModel: viewModel,
+                        observeService: TargetObserveService(runner: runner)
+                    )
+                    observerVM?.start()
+                }
+            }
+```
+
+Use the SAME `dbManager` symbol the surrounding code already uses (e.g. the one passed to `TargetChatViewModel`). Do not introduce a new DB accessor. If the view has multiple `.onAppear`s, fold this into the one that already builds `chatVM`.
 
 - [ ] **Step 6: Build and test Desktop**
 
