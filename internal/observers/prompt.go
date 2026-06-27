@@ -33,7 +33,7 @@ func buildObserverPrompt(o db.Observer, target *db.Target, act db.ObserverActivi
 	b.WriteString("WATCH INSTRUCTION:\n")
 	instr := strings.TrimSpace(o.Instruction)
 	if instr == "" {
-		instr = DefaultObserverInstruction
+		instr = "Track updates relevant to this target."
 	}
 	b.WriteString(instr + "\n\n")
 

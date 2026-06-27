@@ -34,12 +34,45 @@ func newTarget(t *testing.T, d *db.DB, text string) int {
 	return int(id) // CreateTarget returns int64
 }
 
-func TestRunSeedsDefaultObserverAndPersistsEvents(t *testing.T) {
+func newObserver(t *testing.T, d *db.DB, targetID int) {
+	t.Helper()
+	if _, err := d.CreateObserver(db.Observer{
+		EntityType: "target", EntityID: targetID,
+		Name: "Billing watcher", Instruction: "Watch billing migration progress.", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunNoObserversCreatesNothing(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 	tid := newTarget(t, d, "Ship the billing migration")
 
-	// Seed one channel digest so the observer has activity to analyze.
+	gen := &mockGen{resp: `{"events":[]}`}
+	p := New(d, gen, log.Default())
+
+	n, err := p.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 events with no observers, got %d", n)
+	}
+	if gen.calls != 0 {
+		t.Fatalf("AI must not be called when no observers exist, got %d calls", gen.calls)
+	}
+	if cnt, _ := d.CountObserversForEntity("target", tid); cnt != 0 {
+		t.Fatalf("Run must not auto-create observers, got %d", cnt)
+	}
+}
+
+func TestRunPersistsEventsForExistingObserver(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Ship the billing migration")
+	newObserver(t, d, tid)
+
 	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary)
 		VALUES ('C1', 0, 0, 'channel', 'Billing plan B agreed in #eng')`); err != nil {
 		t.Fatal(err)
@@ -58,13 +91,6 @@ func TestRunSeedsDefaultObserverAndPersistsEvents(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 event, got %d", n)
 	}
-
-	// lazy default observer created exactly once
-	cnt, _ := d.CountObserversForEntity("target", tid)
-	if cnt != 1 {
-		t.Fatalf("expected 1 default observer, got %d", cnt)
-	}
-
 	events, _ := d.GetObserverEventsForEntity("target", tid, 50)
 	if len(events) != 1 || events[0].ActionStatus != "pending" {
 		t.Fatalf("event not persisted with pending action: %+v", events)
@@ -72,22 +98,13 @@ func TestRunSeedsDefaultObserverAndPersistsEvents(t *testing.T) {
 	if events[0].Decision == "" || events[0].ProposedAction == "" {
 		t.Fatalf("decision/proposed_action lost: %+v", events[0])
 	}
-
-	// second run does NOT create a second default observer
-	gen.resp = `{"events":[]}`
-	if _, err := p.Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	cnt, _ = d.CountObserversForEntity("target", tid)
-	if cnt != 1 {
-		t.Fatalf("default observer duplicated on second run: %d", cnt)
-	}
 }
 
 func TestRunDegenerateNoEventsAdvancesWatermarkCleanly(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 	tid := newTarget(t, d, "Quiet target")
+	newObserver(t, d, tid)
 	gen := &mockGen{resp: `{"events":[]}`}
 	p := New(d, gen, log.Default())
 
@@ -102,8 +119,7 @@ func TestRunDegenerateNoEventsAdvancesWatermarkCleanly(t *testing.T) {
 	if len(obs) != 1 || obs[0].LastRunAt == "" {
 		t.Fatalf("watermark must advance even with no events: %+v", obs)
 	}
-	events, _ := d.GetObserverEventsForEntity("target", tid, 50)
-	if len(events) != 0 {
+	if events, _ := d.GetObserverEventsForEntity("target", tid, 50); len(events) != 0 {
 		t.Fatalf("no events should be inserted, got %d", len(events))
 	}
 }
@@ -112,6 +128,7 @@ func TestRunForTargetReturnsNewEvents(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 	tid := newTarget(t, d, "Force target")
+	newObserver(t, d, tid)
 	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary)
 		VALUES ('C1', 0, 0, 'channel', 'manual run activity')`); err != nil {
 		t.Fatal(err)
@@ -128,32 +145,21 @@ func TestRunForTargetReturnsNewEvents(t *testing.T) {
 	}
 }
 
-func TestRunActivityPresentButNoEventsAdvancesWatermark(t *testing.T) {
+func TestRunForTargetNoObserversReturnsEmpty(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
-	tid := newTarget(t, d, "Has activity, no relevant events")
-	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary)
-		VALUES ('C1', 0, 0, 'channel', 'unrelated chatter')`); err != nil {
-		t.Fatal(err)
-	}
+	tid := newTarget(t, d, "No observers here")
 	gen := &mockGen{resp: `{"events":[]}`}
 	p := New(d, gen, log.Default())
 
-	n, err := p.Run(context.Background())
+	events, err := p.RunForTarget(context.Background(), tid)
 	if err != nil {
-		t.Fatalf("must not error: %v", err)
+		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 events, got %d", n)
+	if len(events) != 0 {
+		t.Fatalf("expected no events, got %+v", events)
 	}
-	if gen.calls != 1 {
-		t.Fatalf("AI should be called once when activity is present, got %d calls", gen.calls)
-	}
-	obs, _ := d.GetObserversForEntity("target", tid)
-	if len(obs) != 1 || obs[0].LastRunAt == "" {
-		t.Fatalf("watermark must advance: %+v", obs)
-	}
-	if events, _ := d.GetObserverEventsForEntity("target", tid, 50); len(events) != 0 {
-		t.Fatalf("no events should be inserted, got %d", len(events))
+	if cnt, _ := d.CountObserversForEntity("target", tid); cnt != 0 {
+		t.Fatalf("RunForTarget must not auto-create observers, got %d", cnt)
 	}
 }

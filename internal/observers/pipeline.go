@@ -15,13 +15,6 @@ import (
 	"watchtower/internal/prompts"
 )
 
-// DefaultObserverName / DefaultObserverInstruction seed the auto-created observer
-// every active target gets so events appear out of the box.
-const (
-	DefaultObserverName        = "Activity watcher"
-	DefaultObserverInstruction = "Track anything across all sources that affects the progress, status, blockers, or decisions of this goal. Surface relevant updates and flag when the status or next step should change."
-)
-
 // defaultLookback bounds the first run of a never-run observer.
 const defaultLookback = 7 * 24 * time.Hour
 
@@ -40,13 +33,9 @@ func New(database *db.DB, gen digest.Generator, logger *log.Logger) *Pipeline {
 	return &Pipeline{db: database, gen: gen, logger: logger}
 }
 
-// Run lazy-seeds default observers for active targets, then runs every enabled
-// observer over activity since its watermark. Returns the number of events
-// created. Per-observer failures are logged and skipped.
+// Run runs every enabled observer over activity since its watermark. Returns
+// the number of events created. Per-observer failures are logged and skipped.
 func (p *Pipeline) Run(ctx context.Context) (int, error) {
-	if err := p.seedDefaultObservers(); err != nil {
-		p.logger.Printf("observers: seeding defaults: %v", err)
-	}
 	enabled, err := p.db.GetEnabledObservers()
 	if err != nil {
 		return 0, err
@@ -66,12 +55,9 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-// RunForTarget force-runs all enabled observers attached to one target,
-// seeding a default first if it has none, and returns the new events.
+// RunForTarget force-runs all enabled observers attached to one target and
+// returns the new events.
 func (p *Pipeline) RunForTarget(ctx context.Context, targetID int) ([]db.ObserverEvent, error) {
-	if err := p.ensureDefaultForTarget(targetID); err != nil {
-		return nil, err
-	}
 	obs, err := p.db.GetObserversForEntity("target", targetID)
 	if err != nil {
 		return nil, err
@@ -89,41 +75,6 @@ func (p *Pipeline) RunForTarget(ctx context.Context, targetID int) ([]db.Observe
 		out = append(out, events...)
 	}
 	return out, nil
-}
-
-// seedDefaultObservers creates a default observer for every active target that
-// has none. This is the single Go chokepoint for the "auto-default" UX.
-func (p *Pipeline) seedDefaultObservers() error {
-	// No limit: every active target must get its default observer.
-	targets, err := p.db.GetTargets(db.TargetFilter{})
-	if err != nil {
-		return err
-	}
-	for i := range targets {
-		t := targets[i]
-		if !isActiveStatus(t.Status) {
-			continue
-		}
-		if err := p.ensureDefaultForTarget(t.ID); err != nil {
-			p.logger.Printf("observers: default for target %d: %v", t.ID, err)
-		}
-	}
-	return nil
-}
-
-func (p *Pipeline) ensureDefaultForTarget(targetID int) error {
-	cnt, err := p.db.CountObserversForEntity("target", targetID)
-	if err != nil {
-		return err
-	}
-	if cnt > 0 {
-		return nil
-	}
-	_, err = p.db.CreateObserver(db.Observer{
-		EntityType: "target", EntityID: targetID,
-		Name: DefaultObserverName, Instruction: DefaultObserverInstruction, Enabled: true,
-	})
-	return err
 }
 
 // runOne runs a single observer and persists its events, advancing the watermark.
@@ -212,13 +163,4 @@ func (p *Pipeline) systemPrompt() string {
 		return row.Template
 	}
 	return prompts.DefaultFor(prompts.ObserverRun)
-}
-
-func isActiveStatus(s string) bool {
-	switch s {
-	case "todo", "in_progress", "blocked":
-		return true
-	default:
-		return false
-	}
 }

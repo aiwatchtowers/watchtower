@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -182,11 +183,11 @@ func runObserversCreate(cmd *cobra.Command, args []string) error {
 	}
 	name := observerFlagName
 	if name == "" {
-		name = observers.DefaultObserverName
+		name = "Observer"
 	}
-	instr := observerFlagInstruction
+	instr := strings.TrimSpace(observerFlagInstruction)
 	if instr == "" {
-		instr = observers.DefaultObserverInstruction
+		return fmt.Errorf("--instruction is required")
 	}
 	newID, err := database.CreateObserver(db.Observer{
 		EntityType: typ, EntityID: id, Name: name, Instruction: instr, Enabled: true,
