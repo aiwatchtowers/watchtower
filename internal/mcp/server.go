@@ -33,6 +33,7 @@ func NewServer(database *db.DB) *Server {
 	registerTargets(s, database)
 	registerDigests(s, database)
 	registerPeople(s, database)
+	registerJira(s, database)
 
 	return &Server{s: s}
 }

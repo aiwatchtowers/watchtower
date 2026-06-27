@@ -1073,3 +1073,31 @@ func TestClearJiraData_IncludesReleases(t *testing.T) {
 	releases, _ := db.GetJiraReleases("P")
 	assert.Empty(t, releases)
 }
+
+func TestGetJiraIssues(t *testing.T) {
+	db := openTestDB(t)
+
+	mustUpsert := func(key, project, status string) {
+		require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+			Key: key, ID: key, ProjectKey: project, Summary: "s",
+			Status: status, StatusCategory: "In Progress",
+			CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z",
+			SyncedAt: "2026-06-02T00:00:00Z",
+		}), "upsert %s", key)
+	}
+	mustUpsert("ABC-1", "ABC", "To Do")
+	mustUpsert("ABC-2", "ABC", "Done")
+	mustUpsert("XYZ-1", "XYZ", "To Do")
+
+	all, err := db.GetJiraIssues(JiraIssueFilter{})
+	require.NoError(t, err, "GetJiraIssues all")
+	assert.Len(t, all, 3)
+
+	byProject, err := db.GetJiraIssues(JiraIssueFilter{ProjectKey: "ABC"})
+	require.NoError(t, err, "GetJiraIssues project")
+	assert.Len(t, byProject, 2)
+
+	byStatus, err := db.GetJiraIssues(JiraIssueFilter{Status: "To Do"})
+	require.NoError(t, err, "GetJiraIssues status")
+	assert.Len(t, byStatus, 2)
+}
