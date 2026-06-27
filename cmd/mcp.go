@@ -1,0 +1,50 @@
+package cmd
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	internalmcp "watchtower/internal/mcp"
+)
+
+var mcpCmd = &cobra.Command{
+	Use:   "mcp",
+	Short: "Run a read-only MCP server exposing Watchtower data over stdio",
+	Long: `Run a Model Context Protocol (MCP) server over stdio.
+
+The server exposes Watchtower's product data (targets, briefings, digests,
+people, tracks, calendar, Jira) as read-only tools so any MCP client
+(Claude Code, Cursor, Codex, ...) can use it for work context.
+
+Add it to Claude Code with:
+  claude mcp add watchtower -- watchtower mcp`,
+	RunE: runMCP,
+}
+
+func init() {
+	rootCmd.AddCommand(mcpCmd)
+}
+
+func runMCP(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	return internalmcp.NewServer(database).ServeStdio(cmd.Context())
+}
