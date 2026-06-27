@@ -37,6 +37,7 @@ const (
 	DayPlanGenerate      = "day_plan.generate"
 	TargetsExtract       = "targets.extract"
 	TargetsLink          = "targets.link"
+	ObserverRun          = "observer.run"
 )
 
 // Store loads, caches, and persists prompt templates.

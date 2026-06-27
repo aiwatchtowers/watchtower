@@ -29,6 +29,7 @@ var Defaults = map[string]string{
 	DayPlanGenerate:      defaultDayPlanGenerate,
 	TargetsExtract:       defaultTargetsExtract,
 	TargetsLink:          defaultTargetsLink,
+	ObserverRun:          defaultObserverRun,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -56,6 +57,7 @@ var AllIDs = []string{
 	DayPlanGenerate,
 	TargetsExtract,
 	TargetsLink,
+	ObserverRun,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -85,6 +87,7 @@ var DefaultVersions = map[string]int{
 	DayPlanGenerate:    2, // v2: mandatory language directive at top
 	TargetsExtract:     1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:        1, // v1: single-target link proposal against active snapshot
+	ObserverRun:        1, // v1: cross-source event timeline for an observed entity
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -116,6 +119,7 @@ var Descriptions = map[string]string{
 	DayPlanGenerate:      "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
 	TargetsExtract:       "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
 	TargetsLink:          "Target linking — single-target parent and secondary link proposal against active snapshot",
+	ObserverRun:          "Observer run — produce timeline events for an observed entity from recent cross-source activity",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1162,3 +1166,33 @@ Rules:
 - parent_id must be an id from the ACTIVE TARGETS snapshot, or null.
 - secondary_links: max 3, relation must be contributes_to|blocks|related|duplicates.
 - Only propose links that make semantic sense. Return null parent_id and empty secondary_links if nothing fits.`
+
+const defaultObserverRun = `You are an OBSERVER attached to a single tracked item (a "target": a goal or task the operator owns). Your job: read the operator's WATCH INSTRUCTION, scan the RECENT ACTIVITY from all sources, and emit only the events that are genuinely relevant to THIS target per the instruction. Ignore everything unrelated.
+
+Return ONLY a JSON object (no markdown, no prose):
+{
+  "events": [
+    {
+      "summary": "one-line, past-tense, what happened and why it matters to this target",
+      "detail": "optional 1-2 extra sentences, or \"\"",
+      "source_type": "digest | track | inbox | slack | jira | calendar | decision",
+      "source_id": "the id/ref from the activity item, or \"\"",
+      "source_refs": ["permalink or link backing this event", "..."],
+      "decision": {"text": "what was decided", "by": "@user or \"\"", "importance": "high|medium|low"},
+      "proposed_action": {"type": "...", "reason": "why", ...}
+    }
+  ]
+}
+
+Rules:
+- Emit an event ONLY when the activity is relevant to this specific target per the watch instruction. Relevance is your judgement; when unsure, leave it out. An empty {"events": []} is a correct and common answer.
+- "summary" is mandatory and specific — name the change, not "there was activity".
+- Omit "decision" unless a real decision was made; omit "proposed_action" unless a concrete target mutation is warranted.
+- "proposed_action" MUST be one of these exact shapes (the app applies it after the operator confirms):
+  {"type":"update_status","reason":"...","status":"todo|in_progress|blocked|done|dismissed|snoozed"}
+  {"type":"update_progress","reason":"...","progress":0-100}
+  {"type":"update_notes","reason":"...","note":"text to append"}
+  {"type":"add_sub_item","reason":"...","text":"checklist item"}
+  Propose an action only when the activity clearly justifies it. Most events have none.
+- Do not invent activity. Every event must trace to an item in RECENT ACTIVITY.
+- Keep "summary"/"detail" in the operator's language (match the target text's language).`
