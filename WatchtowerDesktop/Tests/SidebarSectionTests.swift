@@ -34,6 +34,18 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertEqual(SidebarDestination.toolItems.last, .chat)
     }
 
+    func testPartitionSplitsHiddenPreservingOrder() {
+        let (visible, hidden) = SidebarSection.delivery.partition(hidden: [SidebarDestination.releases.id])
+        XCTAssertEqual(visible, [.projectMap, .blockers, .workload])
+        XCTAssertEqual(hidden, [.releases])
+    }
+
+    func testPartitionEmptyHiddenKeepsAllVisible() {
+        let (visible, hidden) = SidebarSection.today.partition(hidden: [])
+        XCTAssertEqual(visible, SidebarSection.today.items)
+        XCTAssertTrue(hidden.isEmpty)
+    }
+
     func testCollapsedByDefault() {
         for section in SidebarSection.ordered {
             XCTAssertTrue(section.collapsedByDefault, "\(section) should start collapsed")

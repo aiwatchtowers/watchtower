@@ -30,4 +30,15 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     /// Whether the section starts collapsed on first launch. All sections start
     /// collapsed — the sidebar opens compact and the user expands what they need.
     var collapsedByDefault: Bool { true }
+
+    /// Splits this section's items into the currently visible ones and the ones
+    /// the user has hidden (matched by destination id), preserving declared order.
+    func partition(hidden: Set<String>) -> (visible: [SidebarDestination], hidden: [SidebarDestination]) {
+        var visible: [SidebarDestination] = []
+        var hiddenItems: [SidebarDestination] = []
+        for item in items {
+            if hidden.contains(item.id) { hiddenItems.append(item) } else { visible.append(item) }
+        }
+        return (visible, hiddenItems)
+    }
 }
