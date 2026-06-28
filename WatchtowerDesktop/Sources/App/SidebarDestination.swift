@@ -79,9 +79,14 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         [.targets, .tracks]
     }
 
-    /// Tool items (shown below the separator). Search and AI Chat live here too;
-    /// AI Chat sits last so it anchors the very bottom of the sidebar.
+    /// Always-visible items rendered below the collapsible sections, as the last
+    /// entries of the main menu (above the TOOLS separator). AI Chat anchors here.
+    static var mainTrailingItems: [Self] {
+        [.chat]
+    }
+
+    /// Tool items (shown below the separator). Search lives here too.
     static var toolItems: [Self] {
-        [.search, .boards, .usage, .training, .mcpServer, .chat]
+        [.search, .boards, .usage, .training, .mcpServer]
     }
 }

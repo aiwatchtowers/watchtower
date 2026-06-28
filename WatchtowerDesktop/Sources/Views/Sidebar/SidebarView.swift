@@ -58,6 +58,10 @@ struct SidebarView: View {
                 sectionView(section)
             }
 
+            ForEach(SidebarDestination.mainTrailingItems) { item in
+                sidebarButton(item)
+            }
+
             Spacer()
 
             // Background tasks progress

@@ -12,6 +12,7 @@ final class SidebarSectionTests: XCTestCase {
         for section in SidebarSection.ordered {
             seen.append(contentsOf: section.items)
         }
+        seen.append(contentsOf: SidebarDestination.mainTrailingItems)
         seen.append(contentsOf: SidebarDestination.toolItems)
 
         // No duplicates.
@@ -30,8 +31,9 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks])
     }
 
-    func testChatIsLastToolItem() {
-        XCTAssertEqual(SidebarDestination.toolItems.last, .chat)
+    func testChatIsTrailingMainItemNotTool() {
+        XCTAssertEqual(SidebarDestination.mainTrailingItems, [.chat])
+        XCTAssertFalse(SidebarDestination.toolItems.contains(.chat))
     }
 
     func testPartitionSplitsHiddenPreservingOrder() {
