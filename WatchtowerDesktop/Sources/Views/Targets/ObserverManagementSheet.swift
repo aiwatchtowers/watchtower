@@ -65,7 +65,10 @@ struct ObserverManagementSheet: View {
             HStack {
                 Spacer()
                 Button("Add observer") {
-                    viewModel.createObserver(name: draftName, instruction: draftInstruction)
+                    let name = draftName.trimmingCharacters(in: .whitespaces).isEmpty
+                        ? "Observer"
+                        : draftName
+                    viewModel.createObserver(name: name, instruction: draftInstruction)
                     resetDraft()
                 }
                 .disabled(draftInstruction.trimmingCharacters(in: .whitespaces).isEmpty)
