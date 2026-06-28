@@ -5,8 +5,11 @@ struct ObserverManagementSheet: View {
     @State var viewModel: ObserverTimelineViewModel
     @Environment(\.dismiss) private var dismiss
 
-    @State private var newName = ""
-    @State private var newInstruction = ""
+    @State private var request = ""
+    @State private var draftName = ""
+    @State private var draftInstruction = ""
+    @State private var hasDraft = false
+    @State private var isGenerating = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -21,17 +24,30 @@ struct ObserverManagementSheet: View {
 
             Divider()
             Text("Add observer").font(.headline)
-            TextField("Name", text: $newName)
-            TextField("What should it watch for?", text: $newInstruction, axis: .vertical)
+            Text("Describe what to watch for — AI turns it into a focused instruction and names it.")
+                .font(.caption).foregroundColor(.secondary)
+            TextField("e.g. the HashBank refund decision and who owns it", text: $request, axis: .vertical)
                 .lineLimit(2...4)
+                .disabled(isGenerating)
             HStack {
-                Spacer()
-                Button("Add") {
-                    let name = newName.isEmpty ? "Observer" : newName
-                    viewModel.createObserver(name: name, instruction: newInstruction)
-                    newName = ""; newInstruction = ""
+                if let err = viewModel.errorMessage {
+                    Text(err).font(.caption).foregroundColor(.red).lineLimit(2)
                 }
-                .disabled(newInstruction.trimmingCharacters(in: .whitespaces).isEmpty)
+                Spacer()
+                Button {
+                    Task { await generate() }
+                } label: {
+                    if isGenerating {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Generating…") }
+                    } else {
+                        Label("Generate with AI", systemImage: "sparkles")
+                    }
+                }
+                .disabled(isGenerating || request.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            if hasDraft {
+                draftPreview
             }
 
             Divider()
@@ -39,6 +55,42 @@ struct ObserverManagementSheet: View {
         }
         .padding()
         .frame(width: 460)
+    }
+
+    private var draftPreview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Review").font(.subheadline).foregroundColor(.secondary)
+            TextField("Name", text: $draftName)
+            TextField("Instruction", text: $draftInstruction, axis: .vertical).lineLimit(2...5)
+            HStack {
+                Spacer()
+                Button("Add observer") {
+                    viewModel.createObserver(name: draftName, instruction: draftInstruction)
+                    resetDraft()
+                }
+                .disabled(draftInstruction.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func generate() async {
+        isGenerating = true
+        viewModel.errorMessage = nil
+        defer { isGenerating = false }
+        if let draft = await viewModel.compose(input: request) {
+            draftName = draft.name
+            draftInstruction = draft.instruction
+            hasDraft = true
+        }
+    }
+
+    private func resetDraft() {
+        request = ""
+        draftName = ""
+        draftInstruction = ""
+        hasDraft = false
     }
 }
 

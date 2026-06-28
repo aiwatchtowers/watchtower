@@ -97,6 +97,21 @@ final class ObserverTimelineViewModel {
         observationTask = nil
     }
 
+    /// Drafts a scoped observer (name + instruction) from a free-text request
+    /// via the CLI. Returns nil and sets `errorMessage` on failure.
+    func compose(input: String) async -> ObserverDraft? {
+        guard let runner = ProcessCLIRunner.makeDefault() else {
+            errorMessage = "watchtower CLI not found in PATH"
+            return nil
+        }
+        do {
+            return try await ObserverComposeService(runner: runner).compose(targetID: target.id, input: input)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     // Observer management
     func createObserver(name: String, instruction: String) {
         try? dbPool.write { db in
