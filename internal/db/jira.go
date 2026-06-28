@@ -791,7 +791,6 @@ type JiraIssueFilter struct {
 	ProjectKey        string
 	Status            string
 	AssigneeAccountID string
-	SprintID          *int
 	Limit             int
 }
 
@@ -811,10 +810,6 @@ func (db *DB) GetJiraIssues(f JiraIssueFilter) ([]JiraIssue, error) {
 	if f.AssigneeAccountID != "" {
 		query += ` AND assignee_account_id = ?`
 		args = append(args, f.AssigneeAccountID)
-	}
-	if f.SprintID != nil {
-		query += ` AND sprint_id = ?`
-		args = append(args, *f.SprintID)
 	}
 	query += ` ORDER BY updated_at DESC`
 	if f.Limit > 0 {

@@ -97,3 +97,66 @@ func TestAllToolsAreReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestNoToolMutatesDatabase is the behavioural read-only guard: invoking every
+// tool must leave all tables byte-for-byte unchanged (row counts). It catches a
+// future handler that mutates despite a read-y name — which the lexical
+// TestAllToolsAreReadOnly cannot.
+func TestNoToolMutatesDatabase(t *testing.T) {
+	database := seedDB(t)
+	if _, err := database.CreateTarget(db.Target{
+		Text: "guard", Intent: "x", Level: "week", Status: "todo",
+		Priority: "high", Ownership: "mine", SourceType: "manual",
+	}); err != nil {
+		t.Fatalf("seeding target: %v", err)
+	}
+	if _, err := database.UpsertDigest(db.Digest{ChannelID: "C1", Type: "daily", Summary: "s", PeriodFrom: 1, PeriodTo: 2}); err != nil {
+		t.Fatalf("seeding digest: %v", err)
+	}
+	if _, err := database.UpsertTrack(db.Track{Text: "guard track", Ownership: "mine", Priority: "low"}); err != nil {
+		t.Fatalf("seeding track: %v", err)
+	}
+	if err := database.UpsertJiraIssue(db.JiraIssue{
+		Key: "ABC-1", ID: "ABC-1", ProjectKey: "ABC", Summary: "s", Status: "To Do", StatusCategory: "To Do",
+		CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z", SyncedAt: "2026-06-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("seeding jira issue: %v", err)
+	}
+
+	tables := []string{"targets", "digests", "tracks", "jira_issues", "calendar_events", "people_cards", "briefings", "workspace"}
+	counts := func() map[string]int {
+		m := map[string]int{}
+		for _, tbl := range tables {
+			var n int
+			if err := database.QueryRow("SELECT count(*) FROM " + tbl).Scan(&n); err != nil {
+				t.Fatalf("counting %s: %v", tbl, err)
+			}
+			m[tbl] = n
+		}
+		return m
+	}
+
+	before := counts()
+	cs := newTestSession(t, database)
+	ctx := context.Background()
+	calls := []mcpsdk.CallToolParams{
+		{Name: "list_targets"}, {Name: "get_target", Arguments: map[string]any{"id": 1}},
+		{Name: "get_today_briefing"}, {Name: "list_digests"}, {Name: "get_digest", Arguments: map[string]any{"id": 1}},
+		{Name: "list_people"}, {Name: "get_person", Arguments: map[string]any{"user_id": "U1"}},
+		{Name: "list_tracks"}, {Name: "get_track", Arguments: map[string]any{"id": 1}},
+		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
+		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
+	}
+	for _, c := range calls {
+		if _, err := cs.CallTool(ctx, &c); err != nil {
+			t.Fatalf("call %s: %v", c.Name, err)
+		}
+	}
+	after := counts()
+
+	for _, tbl := range tables {
+		if before[tbl] != after[tbl] {
+			t.Errorf("table %s row count changed %d -> %d after read tools ran", tbl, before[tbl], after[tbl])
+		}
+	}
+}

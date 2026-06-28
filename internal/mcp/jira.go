@@ -12,7 +12,7 @@ type listJiraIssuesArgs struct {
 	Project  string `json:"project,omitempty" jsonschema:"Jira project key, e.g. ABC"`
 	Status   string `json:"status,omitempty" jsonschema:"exact status name, e.g. 'In Progress'"`
 	Assignee string `json:"assignee,omitempty" jsonschema:"assignee Jira account id"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"max results, 0 = no limit"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50)"`
 }
 
 type getJiraIssueArgs struct {
@@ -24,15 +24,11 @@ func registerJira(s *mcpsdk.Server, database *db.DB) {
 		Name:        "list_jira_issues",
 		Description: "List synced Jira issues, optionally filtered by project, status, or assignee account id.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args listJiraIssuesArgs) (*mcpsdk.CallToolResult, any, error) {
-		limit := args.Limit
-		if limit == 0 {
-			limit = 50
-		}
 		issues, err := database.GetJiraIssues(db.JiraIssueFilter{
 			ProjectKey:        args.Project,
 			Status:            args.Status,
 			AssigneeAccountID: args.Assignee,
-			Limit:             limit,
+			Limit:             listLimit(args.Limit),
 		})
 		if err != nil {
 			return errResult("listing jira issues: " + err.Error()), nil, nil
@@ -48,7 +44,10 @@ func registerJira(s *mcpsdk.Server, database *db.DB) {
 		if err != nil {
 			return errResult("getting jira issue: " + err.Error()), nil, nil
 		}
-		if issue == nil {
+		// GetJiraIssueByKey does not filter soft-deleted rows (unlike
+		// GetJiraIssues); treat a tombstoned issue as not-found so the read
+		// model stays consistent across the two tools.
+		if issue == nil || issue.IsDeleted {
 			return errResult("no jira issue with key " + args.Key), nil, nil
 		}
 		return jsonResult(issue)

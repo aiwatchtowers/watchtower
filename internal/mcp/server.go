@@ -16,6 +16,18 @@ import (
 // version is reported to MCP clients in the server handshake.
 const version = "0.1.0"
 
+// defaultListLimit caps list_ tools that the caller left unbounded, so a single
+// tool call cannot dump an entire table into an LLM context window.
+const defaultListLimit = 50
+
+// listLimit applies defaultListLimit when the caller passed 0 (unbounded).
+func listLimit(n int) int {
+	if n <= 0 {
+		return defaultListLimit
+	}
+	return n
+}
+
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.
 type Server struct {
 	s *mcpsdk.Server

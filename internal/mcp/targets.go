@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -13,7 +15,7 @@ type listTargetsArgs struct {
 	Priority  string `json:"priority,omitempty" jsonschema:"filter by priority: high|medium|low"`
 	Level     string `json:"level,omitempty" jsonschema:"filter by level: quarter|month|week|day|custom"`
 	Ownership string `json:"ownership,omitempty" jsonschema:"filter by ownership: mine|delegated|watching"`
-	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = no limit"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50)"`
 }
 
 type getTargetArgs struct {
@@ -30,7 +32,10 @@ func registerTargets(s *mcpsdk.Server, database *db.DB) {
 			Priority:  args.Priority,
 			Level:     args.Level,
 			Ownership: args.Ownership,
-			Limit:     args.Limit,
+			Limit:     listLimit(args.Limit),
+			// GetTargets excludes done/dismissed unless IncludeDone is set; without
+			// this, filtering by status=done/dismissed would always return [].
+			IncludeDone: args.Status == "done" || args.Status == "dismissed",
 		})
 		if err != nil {
 			return errResult("listing targets: " + err.Error()), nil, nil
@@ -44,10 +49,10 @@ func registerTargets(s *mcpsdk.Server, database *db.DB) {
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getTargetArgs) (*mcpsdk.CallToolResult, any, error) {
 		target, err := database.GetTargetByID(args.ID)
 		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errResult("no target with id " + itoa(args.ID)), nil, nil
+			}
 			return errResult("getting target: " + err.Error()), nil, nil
-		}
-		if target == nil {
-			return errResult("no target with id " + itoa(args.ID)), nil, nil
 		}
 		return jsonResult(target)
 	})

@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,7 +18,7 @@ type getPersonArgs struct {
 type listTracksArgs struct {
 	Priority  string `json:"priority,omitempty" jsonschema:"filter by priority: high|medium|low"`
 	Ownership string `json:"ownership,omitempty" jsonschema:"filter by ownership: mine|delegated|watching"`
-	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = no limit"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50)"`
 }
 
 type getTrackArgs struct {
@@ -32,7 +34,7 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 		Name:        "list_people",
 		Description: "List people cards (per-person communication and collaboration profiles).",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, _ struct{}) (*mcpsdk.CallToolResult, any, error) {
-		cards, err := database.GetPeopleCards(db.PeopleCardFilter{})
+		cards, err := database.GetPeopleCards(db.PeopleCardFilter{Limit: defaultListLimit})
 		if err != nil {
 			return errResult("listing people: " + err.Error()), nil, nil
 		}
@@ -60,7 +62,7 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 		tracks, err := database.GetTracks(db.TrackFilter{
 			Priority:  args.Priority,
 			Ownership: args.Ownership,
-			Limit:     args.Limit,
+			Limit:     listLimit(args.Limit),
 		})
 		if err != nil {
 			return errResult("listing tracks: " + err.Error()), nil, nil
@@ -74,10 +76,10 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getTrackArgs) (*mcpsdk.CallToolResult, any, error) {
 		track, err := database.GetTrackByID(args.ID)
 		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errResult("no track with id " + itoa(args.ID)), nil, nil
+			}
 			return errResult("getting track: " + err.Error()), nil, nil
-		}
-		if track == nil {
-			return errResult("no track with id " + itoa(args.ID)), nil, nil
 		}
 		return jsonResult(track)
 	})
@@ -94,6 +96,7 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 		events, err := database.GetCalendarEvents(db.CalendarEventFilter{
 			FromTime: now.Format(time.RFC3339),
 			ToTime:   now.Add(time.Duration(hours) * time.Hour).Format(time.RFC3339),
+			Limit:    defaultListLimit,
 		})
 		if err != nil {
 			return errResult("listing events: " + err.Error()), nil, nil
