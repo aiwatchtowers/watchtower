@@ -786,6 +786,56 @@ func (db *DB) GetJiraIssuesByKeys(keys []string) ([]JiraIssue, error) {
 	return issues, rows.Err()
 }
 
+// JiraIssueFilter narrows GetJiraIssues. Empty/zero fields are not applied.
+type JiraIssueFilter struct {
+	ProjectKey        string
+	Status            string
+	AssigneeAccountID string
+	SprintID          *int
+	Limit             int
+}
+
+// GetJiraIssues returns non-deleted Jira issues matching the filter, most
+// recently updated first.
+func (db *DB) GetJiraIssues(f JiraIssueFilter) ([]JiraIssue, error) {
+	query := `SELECT ` + jiraIssueColumns + ` FROM jira_issues WHERE is_deleted = 0`
+	var args []any
+	if f.ProjectKey != "" {
+		query += ` AND project_key = ?`
+		args = append(args, f.ProjectKey)
+	}
+	if f.Status != "" {
+		query += ` AND status = ?`
+		args = append(args, f.Status)
+	}
+	if f.AssigneeAccountID != "" {
+		query += ` AND assignee_account_id = ?`
+		args = append(args, f.AssigneeAccountID)
+	}
+	if f.SprintID != nil {
+		query += ` AND sprint_id = ?`
+		args = append(args, *f.SprintID)
+	}
+	query += ` ORDER BY updated_at DESC`
+	if f.Limit > 0 {
+		query += fmt.Sprintf(` LIMIT %d`, f.Limit)
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying jira issues: %w", err)
+	}
+	defer rows.Close()
+	var issues []JiraIssue
+	for rows.Next() {
+		issue, err := scanJiraIssue(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning jira issue: %w", err)
+		}
+		issues = append(issues, issue)
+	}
+	return issues, rows.Err()
+}
+
 // GetJiraActiveSprintStats returns aggregated stats for the active sprint of a board.
 // Returns nil if no active sprint exists.
 func (db *DB) GetJiraActiveSprintStats(boardID int) (*SprintStats, error) {

@@ -20,6 +20,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case boards
     case usage
     case training
+    case mcpServer
 
     var id: String { rawValue }
 
@@ -44,6 +45,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .boards: "Boards"
         case .usage: "Usage"
         case .training: "Training"
+        case .mcpServer: "MCP Server"
         }
     }
 
@@ -68,6 +70,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .boards: "rectangle.on.rectangle.angled"
         case .usage: "chart.bar"
         case .training: "brain.head.profile"
+        case .mcpServer: "terminal"
         }
     }
 
@@ -79,6 +82,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     /// Tool items (shown below the separator). Search and AI Chat live here too;
     /// AI Chat sits last so it anchors the very bottom of the sidebar.
     static var toolItems: [Self] {
-        [.search, .boards, .usage, .training, .chat]
+        [.search, .boards, .usage, .training, .mcpServer, .chat]
     }
 }

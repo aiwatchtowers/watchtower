@@ -31,6 +31,7 @@ Watchtower is a native macOS app that turns your Slack workspace into an actiona
 - **Full-text Search** — FTS5 search across all synced messages
 - **Self-improving AI** — feedback loop with prompt tuning based on your ratings
 - **Native Notifications** — alerts for new briefings, tracks, and digests
+- **MCP server:** `watchtower mcp` exposes your data to any MCP client (read-only). See [docs/mcp-server.md](docs/mcp-server.md).
 
 ## Install
 

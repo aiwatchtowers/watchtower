@@ -204,6 +204,8 @@ struct MainNavigationView: View {
             UsageView()
         case .training:
             TrainingView()
+        case .mcpServer:
+            MCPServerView()
         }
     }
 }
