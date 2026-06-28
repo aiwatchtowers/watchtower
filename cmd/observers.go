@@ -114,13 +114,16 @@ func parseEntity(s string) (string, int, error) {
 	if s == "" {
 		return "", 0, fmt.Errorf("--entity is required, e.g. target:42")
 	}
-	var typ string
-	var id int
-	if _, err := fmt.Sscanf(s, "%[^:]:%d", &typ, &id); err != nil {
-		return "", 0, fmt.Errorf("invalid --entity %q (want target:<id>): %w", s, err)
+	typ, idStr, ok := strings.Cut(s, ":")
+	if !ok {
+		return "", 0, fmt.Errorf("invalid --entity %q (want target:<id>)", s)
 	}
 	if typ != "target" {
 		return "", 0, fmt.Errorf("only entity type 'target' is supported")
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid --entity %q (want target:<id>): %w", s, err)
 	}
 	return typ, id, nil
 }
