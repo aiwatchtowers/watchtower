@@ -76,3 +76,34 @@ func TestGetTargetNotFound(t *testing.T) {
 		t.Fatalf("expected IsError for unknown id")
 	}
 }
+
+func TestGetTarget(t *testing.T) {
+	database := seedDB(t)
+	id, err := database.CreateTarget(db.Target{
+		Text:       "Ship MCP server",
+		Intent:     "x",
+		Level:      "week",
+		Status:     "todo",
+		Priority:   "high",
+		Ownership:  "mine",
+		SourceType: "manual",
+	})
+	if err != nil {
+		t.Fatalf("seeding target: %v", err)
+	}
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "get_target",
+		Arguments: map[string]any{"id": int(id)},
+	})
+	if err != nil {
+		t.Fatalf("call get_target: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", textContent(t, res))
+	}
+	if got := textContent(t, res); !strings.Contains(got, "Ship MCP server") {
+		t.Fatalf("expected seeded target in output, got: %s", got)
+	}
+}

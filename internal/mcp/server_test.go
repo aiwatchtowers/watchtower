@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -51,4 +52,48 @@ func textContent(t *testing.T, res *mcpsdk.CallToolResult) string {
 		t.Fatalf("first content is not text: %T", res.Content[0])
 	}
 	return tc.Text
+}
+
+func TestToolsList(t *testing.T) {
+	cs := newTestSession(t, seedDB(t))
+
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	got := map[string]bool{}
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
+	}
+	want := []string{
+		"list_targets", "get_target",
+		"get_today_briefing", "list_digests", "get_digest",
+		"list_people", "get_person", "list_tracks", "get_track", "list_upcoming_events",
+		"list_jira_issues", "get_jira_issue",
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("missing tool %q", name)
+		}
+	}
+	if len(res.Tools) != len(want) {
+		t.Errorf("expected exactly %d tools, got %d", len(want), len(res.Tools))
+	}
+}
+
+func TestAllToolsAreReadOnly(t *testing.T) {
+	// Guard the read-only invariant: every exposed tool name must be a known
+	// read verb. A new write tool would have to be added here deliberately —
+	// which is the point: it forces a conscious change to this guard.
+	cs := newTestSession(t, seedDB(t))
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if !strings.HasPrefix(tool.Name, "list_") &&
+			!strings.HasPrefix(tool.Name, "get_") {
+			t.Errorf("tool %q is not a read-only verb (list_/get_)", tool.Name)
+		}
+	}
 }
