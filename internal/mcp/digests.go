@@ -53,7 +53,7 @@ func registerDigests(s *mcpsdk.Server, database *db.DB) {
 		if err != nil {
 			return errResult("listing digests: " + err.Error()), nil, nil
 		}
-		return jsonResult(digests)
+		return jsonListResult(digests)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

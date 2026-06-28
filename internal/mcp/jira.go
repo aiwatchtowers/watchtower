@@ -37,7 +37,7 @@ func registerJira(s *mcpsdk.Server, database *db.DB) {
 		if err != nil {
 			return errResult("listing jira issues: " + err.Error()), nil, nil
 		}
-		return jsonResult(issues)
+		return jsonListResult(issues)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

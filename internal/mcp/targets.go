@@ -35,7 +35,7 @@ func registerTargets(s *mcpsdk.Server, database *db.DB) {
 		if err != nil {
 			return errResult("listing targets: " + err.Error()), nil, nil
 		}
-		return jsonResult(targets)
+		return jsonListResult(targets)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

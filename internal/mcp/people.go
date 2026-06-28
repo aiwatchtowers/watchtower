@@ -36,7 +36,7 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 		if err != nil {
 			return errResult("listing people: " + err.Error()), nil, nil
 		}
-		return jsonResult(cards)
+		return jsonListResult(cards)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -55,7 +55,7 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "list_tracks",
-		Description: "List work tracks (active by default), optionally filtered by priority or ownership.",
+		Description: "List work/narrative tracks (active by default), optionally filtered by priority or ownership.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args listTracksArgs) (*mcpsdk.CallToolResult, any, error) {
 		tracks, err := database.GetTracks(db.TrackFilter{
 			Priority:  args.Priority,
@@ -65,7 +65,7 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 		if err != nil {
 			return errResult("listing tracks: " + err.Error()), nil, nil
 		}
-		return jsonResult(tracks)
+		return jsonListResult(tracks)
 	})
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
@@ -98,6 +98,6 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 		if err != nil {
 			return errResult("listing events: " + err.Error()), nil, nil
 		}
-		return jsonResult(events)
+		return jsonListResult(events)
 	})
 }

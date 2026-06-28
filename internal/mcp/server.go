@@ -55,6 +55,15 @@ func jsonResult(v any) (*mcpsdk.CallToolResult, any, error) {
 	}, nil, nil
 }
 
+// jsonListResult marshals a list, rendering a nil/empty slice as [] (not null)
+// so list_ tools always return a JSON array.
+func jsonListResult[T any](items []T) (*mcpsdk.CallToolResult, any, error) {
+	if items == nil {
+		items = []T{}
+	}
+	return jsonResult(items)
+}
+
 // errResult builds a tool-level error result with a human-readable message.
 func errResult(msg string) *mcpsdk.CallToolResult {
 	return &mcpsdk.CallToolResult{
