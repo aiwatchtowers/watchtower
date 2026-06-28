@@ -26,8 +26,21 @@ struct ObserverTimelineView: View {
             }
 
             if viewModel.events.isEmpty {
-                Text("No activity yet. Observers will surface relevant updates as they happen.")
-                    .font(.caption).foregroundColor(.secondary)
+                if viewModel.observers.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("No observers yet — add one to watch this goal.")
+                            .font(.caption).foregroundColor(.secondary)
+                        Button {
+                            showingManage = true
+                        } label: {
+                            Label("Add observer", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                } else {
+                    Text("No activity yet. Observers will surface relevant updates as they happen.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
             } else {
                 ForEach(viewModel.events) { event in
                     ObserverEventRow(event: event, viewModel: viewModel)

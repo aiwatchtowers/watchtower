@@ -30,6 +30,7 @@ struct TargetDetailView: View {
     @State private var links: [TargetLink] = []
     @State private var parentTarget: Target?
     @State private var childTargets: [Target] = []
+    @State private var showAddSubTarget = false
     @State private var showSuggestLinksSheet = false
     @State private var showDeleteConfirm = false
     @State private var suggestedLinks: SuggestedLinksResult?
@@ -170,6 +171,18 @@ struct TargetDetailView: View {
             case .none: break
             }
         }
+        .sheet(isPresented: $showAddSubTarget) {
+            CreateTargetSheet(
+                prefill: TargetPrefill(
+                    text: "",
+                    intent: "",
+                    sourceType: "manual",
+                    sourceID: "",
+                    parentID: target.id
+                ),
+                onCreated: { _ in loadHierarchy() }
+            )
+        }
         .sheet(isPresented: $showSuggestLinksSheet) {
             if let suggestedLinks {
                 SuggestLinksSheet(
@@ -243,10 +256,6 @@ struct TargetDetailView: View {
             heroSection
             statusBadgesRow
             nextStepCard
-            if let observerVM {
-                ObserverTimelineView(viewModel: observerVM)
-                    .id(target.id)
-            }
             metadataGrid
             checklistSection
             intentSection
@@ -254,6 +263,7 @@ struct TargetDetailView: View {
             notesSection
             jiraIssueSection
             assistantInlineInput
+            aboutSection
             footerActions
         }
     }
@@ -903,22 +913,34 @@ struct TargetDetailView: View {
 
     // MARK: - Hierarchy (sub-targets)
 
-    @ViewBuilder
     private var hierarchySection: some View {
-        if !childTargets.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
                 Text("Dependencies")
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
-
-                if !childTargets.isEmpty {
-                    Text("Sub-targets (\(childTargets.count))")
+                Spacer()
+                Button {
+                    showAddSubTarget = true
+                } label: {
+                    Label("Add sub-target", systemImage: "plus")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    ForEach(childTargets) { child in
-                        hierarchyRow(child, icon: "arrow.turn.down.right")
-                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
+
+            if childTargets.isEmpty {
+                Text("No sub-targets yet")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text("Sub-targets (\(childTargets.count))")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                ForEach(childTargets) { child in
+                    hierarchyRow(child, icon: "arrow.turn.down.right")
                 }
             }
         }
@@ -1024,6 +1046,46 @@ struct TargetDetailView: View {
                     }
             }
         }
+    }
+
+    // MARK: - About (metadata moved off the old Activity tab)
+
+    @ViewBuilder
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("About").font(.headline)
+            if !target.sourceType.isEmpty && target.sourceType != "manual" {
+                aboutRow("Source", "\(target.sourceType.capitalized) \(target.sourceID)")
+            }
+            aboutRow("Created", relativeOrDate(target.createdDate))
+            aboutRow("Updated", relativeOrDate(target.updatedDate))
+            let tags = target.decodedTags
+            if !tags.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(tags, id: \.self) { tag in
+                        Text(tag)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(.blue.opacity(0.1), in: Capsule())
+                    }
+                }
+            }
+        }
+    }
+
+    private func aboutRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 64, alignment: .leading)
+            Text(value).font(.callout)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func relativeOrDate(_ date: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f.localizedString(for: date, relativeTo: Date())
     }
 
     // MARK: - Snooze Popover
@@ -1148,70 +1210,17 @@ struct TargetDetailView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - Activity Tab
+    // MARK: - Activity Tab (observer timeline)
 
+    @ViewBuilder
     private var activityTab: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Progress")
-                    .font(.headline)
-                ProgressView(value: target.progress)
-                    .tint(.green)
-                Text("\(Int(target.progress * 100))% complete")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if !target.sourceType.isEmpty && target.sourceType != "manual" {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Source")
-                        .font(.headline)
-                    Text("\(target.sourceType.capitalized) \(target.sourceID)")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Created")
-                    .font(.headline)
-                Text(target.createdDate, style: .date)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Updated")
-                    .font(.headline)
-                Text(target.updatedDate, style: .relative)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            let tags = target.decodedTags
-            if !tags.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Tags")
-                        .font(.headline)
-                    FlowLayout(spacing: 6) {
-                        ForEach(tags, id: \.self) { tag in
-                            Text(tag)
-                                .font(.caption)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(.blue.opacity(0.1), in: Capsule())
-                        }
-                    }
-                }
-            }
-
-            if let dbManager = appState.databaseManager {
-                FeedbackButtons(
-                    entityType: "target",
-                    entityID: String(target.id),
-                    dbManager: dbManager
-                )
-            }
+        if let observerVM {
+            ObserverTimelineView(viewModel: observerVM)
+                .id(target.id)
+        } else {
+            Text("Loading…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 
