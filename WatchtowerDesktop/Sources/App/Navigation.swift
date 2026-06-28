@@ -19,6 +19,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case boards
     case usage
     case training
+    case mcpServer
 
     var id: String { rawValue }
 
@@ -42,6 +43,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .boards: "Boards"
         case .usage: "Usage"
         case .training: "Training"
+        case .mcpServer: "MCP Server"
         }
     }
 
@@ -65,6 +67,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .boards: "rectangle.on.rectangle.angled"
         case .usage: "chart.bar"
         case .training: "brain.head.profile"
+        case .mcpServer: "terminal"
         }
     }
 
@@ -75,7 +78,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Tool items (shown below the separator).
     static var toolItems: [Self] {
-        [.boards, .usage, .training]
+        [.boards, .usage, .training, .mcpServer]
     }
 }
 
@@ -275,6 +278,8 @@ struct MainNavigationView: View {
             UsageView()
         case .training:
             TrainingView()
+        case .mcpServer:
+            MCPServerView()
         }
     }
 }
