@@ -7,8 +7,15 @@ import Foundation
 struct TargetObserveService {
     let runner: CLIRunnerProtocol
 
-    func run(targetID: Int) async throws -> [ObserverEvent] {
-        let data = try await runner.run(args: ["targets", "observe", "\(targetID)"])
+    /// Force-runs the target's observers. When `since` is non-nil, scans history
+    /// from that ISO8601 instant (the "Scan history" action) instead of the
+    /// observer watermark.
+    func run(targetID: Int, since: String? = nil) async throws -> [ObserverEvent] {
+        var args = ["targets", "observe", "\(targetID)"]
+        if let since, !since.isEmpty {
+            args.append(contentsOf: ["--since", since])
+        }
+        let data = try await runner.run(args: args)
         if data.isEmpty { return [] }
         return (try? JSONDecoder().decode([ObserverEvent].self, from: data)) ?? []
     }

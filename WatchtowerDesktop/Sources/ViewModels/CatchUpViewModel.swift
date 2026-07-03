@@ -227,6 +227,24 @@ final class CatchUpViewModel {
         }
     }
 
+    // MARK: - Inline source detail
+
+    // Read-only fetches backing the review pane's expandable source rows. They
+    // read the VM's own live `dbPool` (the same handle the theme stream uses), so
+    // a digest/track referenced by a theme always resolves — no separate
+    // DatabaseManager or observed list to be out of sync with.
+
+    /// Fetch a referenced digest by id for inline expansion. nil if the row is
+    /// gone (e.g. pruned after the theme snapshot).
+    func digest(byID id: Int) -> Digest? {
+        try? dbPool.read { try DigestQueries.fetchByID($0, id: id) }
+    }
+
+    /// Fetch a referenced track by id for inline expansion. nil if the row is gone.
+    func track(byID id: Int) -> Track? {
+        try? dbPool.read { try TrackQueries.fetchByID($0, id: id) }
+    }
+
     // MARK: - Selection
 
     /// Advances selection to the next pending theme after the given one (by

@@ -11,11 +11,19 @@ struct TargetsListView: View {
     var body: some View {
         HStack(spacing: 0) {
             if let vm = viewModel {
+                // Read the observed arrays at the top of `body` so SwiftUI registers
+                // the dependency for the whole view — not just inside `listPanel`'s
+                // helpers. This guarantees both the list and the detail pane below
+                // re-render when an in-pane edit (e.g. changing a target's level)
+                // calls `load()`, instead of waiting for an unrelated refresh.
+                let loaded = vm.todayTargets + vm.allTargets
+
                 listPanel(vm)
 
                 Divider()
 
-                if let id = selectedItemID, let item = vm.itemByID(id) {
+                if let id = selectedItemID,
+                   let item = loaded.first(where: { $0.id == id }) ?? vm.itemByID(id) {
                     TargetDetailView(target: item, viewModel: vm) {
                         selectedItemID = nil
                     }

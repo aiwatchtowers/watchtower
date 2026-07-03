@@ -16,6 +16,9 @@ final class ObserverTimelineViewModel {
     var observers: [Observer] = []
     var events: [ObserverEvent] = []
     var isRefreshing = false
+    /// Non-nil while a history backfill runs — drives the visible "Scanning…"
+    /// banner so the long (multi-minute) operation is unmistakably in progress.
+    var scanStatus: String?
     var errorMessage: String?
 
     private var observationTask: Task<Void, Never>?
@@ -59,6 +62,41 @@ final class ObserverTimelineViewModel {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Backfills the timeline by scanning history from `since` (nil = all history)
+    /// up to now, deduping against existing events. `label` describes the range
+    /// for the in-progress banner. The scan runs several AI calls and can take a
+    /// few minutes, so `scanStatus` stays set for the whole duration.
+    func scanHistory(since: Date?, label: String) async {
+        isRefreshing = true
+        scanStatus = "Scanning \(label)… this can take a few minutes"
+        errorMessage = nil
+        defer { isRefreshing = false; scanStatus = nil }
+        let iso = Self.isoFormatter.string(from: since ?? Date(timeIntervalSince1970: 0))
+        do {
+            _ = try await observeService.run(targetID: target.id, since: iso)
+        } catch {
+            errorMessage = "History scan failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// UTC ISO8601 without fractional seconds, matching the Go watermark format.
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
+    /// Resolves an external "open the source" link for an event: an explicit
+    /// source_ref if present, else a resolved permalink for the underlying entity
+    /// (e.g. the Slack link of an inbox-sourced event). Returns nil when none.
+    func sourceLink(for event: ObserverEvent) -> String? {
+        if let first = event.decodedRefs.first, !first.isEmpty { return first }
+        return (try? dbPool.read { db in
+            try ObserverQueries.sourcePermalink(db, sourceType: event.sourceType, sourceId: event.sourceId)
+        }) ?? nil
     }
 
     func markRead(_ event: ObserverEvent) {

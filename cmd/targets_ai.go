@@ -686,9 +686,16 @@ func runTargetsObserve(cmd *cobra.Command, args []string) error {
 	applyProviderOverride(cfg)
 	gen := cliGenerator(cfg)
 	pipe := observers.New(database, gen, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	// A history backfill fans out into several cheap shortlist calls plus one
+	// extract; each CLI subprocess is slow, so allow generous headroom.
+	ctx, cancel := context.WithTimeout(context.Background(), 420*time.Second)
 	defer cancel()
-	events, err := pipe.RunForTarget(ctx, id)
+	var events []db.ObserverEvent
+	if targetsFlagObserveSince != "" {
+		events, err = pipe.RunForTargetSince(ctx, id, targetsFlagObserveSince)
+	} else {
+		events, err = pipe.RunForTarget(ctx, id)
+	}
 	if err != nil {
 		return fmt.Errorf("observe failed: %w", err)
 	}

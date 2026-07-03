@@ -34,10 +34,11 @@ var (
 	targetsFlagSource      string
 	targetsFlagLevel       string
 	// targetsFlagPeriod removed — period filtering returns in V2 (DB filter not yet wired)
-	targetsFlagPeriodStart string
-	targetsFlagPeriodEnd   string
-	targetsFlagParent      int
-	targetsFlagInstruction string
+	targetsFlagPeriodStart  string
+	targetsFlagPeriodEnd    string
+	targetsFlagParent       int
+	targetsFlagInstruction  string
+	targetsFlagObserveSince string
 
 	// link subcommand flags
 	targetsFlagLinkParent   int
@@ -244,6 +245,9 @@ func init() {
 
 	// next-step flags
 	targetsNextStepCmd.Flags().BoolVar(&targetsFlagNextStepAll, "all", false, "refresh every active target with a missing or stale next step")
+
+	// observe flags
+	targetsObserveCmd.Flags().StringVar(&targetsFlagObserveSince, "since", "", "scan history from this ISO8601 instant (e.g. 1970-01-01T00:00:00Z for all history) instead of the observer watermark")
 
 	// targets (list) flags
 	targetsCmd.Flags().StringVar(&targetsFlagStatus, "status", "", "filter by status (todo, in_progress, blocked, done, dismissed, snoozed)")

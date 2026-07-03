@@ -67,6 +67,60 @@ func buildObserverPrompt(o db.Observer, target *db.Target, act db.ObserverActivi
 	return b.String()
 }
 
+// titleRef is one shortlisted activity item carried from stage 1 to stage 2.
+type titleRef struct {
+	Kind string `json:"kind"`
+	ID   int    `json:"id"`
+}
+
+type shortlistOutput struct {
+	Refs []titleRef `json:"refs"`
+}
+
+// buildShortlistPrompt renders the watch instruction, target, selection cap, and
+// a numbered list of activity TITLES for the cheap stage-1 relevance filter.
+func buildShortlistPrompt(o db.Observer, target *db.Target, titles []db.ActivityTitle, limit int) string {
+	var b strings.Builder
+	b.WriteString("WATCH INSTRUCTION:\n")
+	instr := strings.TrimSpace(o.Instruction)
+	if instr == "" {
+		instr = "Track updates relevant to this target."
+	}
+	b.WriteString(instr + "\n\n")
+
+	b.WriteString("TARGET:\n")
+	fmt.Fprintf(&b, "- text: %s\n", target.Text)
+	if target.Intent != "" {
+		fmt.Fprintf(&b, "- why: %s\n", target.Intent)
+	}
+	fmt.Fprintf(&b, "\nSelect at most %d items.\n\n", limit)
+
+	b.WriteString("ACTIVITY TITLES:\n")
+	for _, t := range titles {
+		fmt.Fprintf(&b, "- [%s id=%d] %s\n", t.Kind, t.ID, truncate(t.Title, 160))
+	}
+	return b.String()
+}
+
+// parseShortlistOutput extracts the {refs:[{kind,id}]} array from a raw AI
+// response, tolerating markdown fences and surrounding prose.
+func parseShortlistOutput(raw string) ([]titleRef, error) {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	start := strings.Index(s, "{")
+	end := strings.LastIndex(s, "}")
+	if start < 0 || end < start {
+		return nil, fmt.Errorf("no JSON object found")
+	}
+	var out shortlistOutput
+	if err := json.Unmarshal([]byte(s[start:end+1]), &out); err != nil {
+		return nil, err
+	}
+	return out.Refs, nil
+}
+
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	r := []rune(s)

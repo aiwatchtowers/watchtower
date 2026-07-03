@@ -3,22 +3,29 @@ package observers
 import (
 	"context"
 	"log"
+	"strings"
 	"testing"
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
 
-// mockGen returns a canned AI response and records the prompt it saw.
+// mockGen returns a canned AI response and records the prompt it saw. For the
+// two-stage backfill it returns shortlistResp to the stage-1 (title) prompt and
+// resp to the stage-2 (extract) prompt, distinguished by their headers.
 type mockGen struct {
-	resp     string
-	lastUser string
-	calls    int
+	resp          string
+	shortlistResp string
+	lastUser      string
+	calls         int
 }
 
 func (m *mockGen) Generate(ctx context.Context, sys, user, sess string) (string, *digest.Usage, string, error) {
 	m.calls++
 	m.lastUser = user
+	if m.shortlistResp != "" && strings.Contains(user, "ACTIVITY TITLES:") {
+		return m.shortlistResp, &digest.Usage{}, "", nil
+	}
 	return m.resp, &digest.Usage{}, "", nil
 }
 
@@ -161,6 +168,110 @@ func TestRunForTargetNoObserversReturnsEmpty(t *testing.T) {
 	}
 	if cnt, _ := d.CountObserversForEntity("target", tid); cnt != 0 {
 		t.Fatalf("RunForTarget must not auto-create observers, got %d", cnt)
+	}
+}
+
+func TestRunForTargetSinceScansDeepHistory(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Deep history target")
+	newObserver(t, d, tid)
+	// A digest older than the default 7-day lookback: a normal run misses it.
+	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary, created_at)
+		VALUES ('C1', 0, 0, 'channel', 'old billing decision', '2020-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	gen := &mockGen{
+		resp:          `{"events":[{"summary":"old billing event","source_type":"digest"}]}`,
+		shortlistResp: `{"refs":[{"kind":"digest","id":1}]}`,
+	}
+	p := New(d, gen, log.Default())
+
+	// Normal forward run sees nothing (the activity predates the 7-day window).
+	if n, err := p.Run(context.Background()); err != nil || n != 0 {
+		t.Fatalf("forward run should find nothing, got n=%d err=%v", n, err)
+	}
+
+	// Backfill from the epoch picks up the old activity.
+	events, err := p.RunForTargetSince(context.Background(), tid, "1970-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Summary != "old billing event" {
+		t.Fatalf("backfill should surface the old event, got %+v", events)
+	}
+}
+
+func TestRunForTargetSinceDedupsRepeatedSummaries(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Dedup target")
+	newObserver(t, d, tid)
+	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary, created_at)
+		VALUES ('C1', 0, 0, 'channel', 'recurring decision', '2020-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	gen := &mockGen{
+		resp:          `{"events":[{"summary":"same event","source_type":"digest"}]}`,
+		shortlistResp: `{"refs":[{"kind":"digest","id":1}]}`,
+	}
+	p := New(d, gen, log.Default())
+
+	first, err := p.RunForTargetSince(context.Background(), tid, "1970-01-01T00:00:00Z")
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first backfill should create 1 event, got %d err=%v", len(first), err)
+	}
+	// Re-running the same window yields the same summary, which must be deduped.
+	second, err := p.RunForTargetSince(context.Background(), tid, "1970-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("repeated summary must be deduped, got %+v", second)
+	}
+	if all, _ := d.GetObserverEventsForEntity("target", tid, 50); len(all) != 1 {
+		t.Fatalf("timeline should hold exactly 1 event after dedup, got %d", len(all))
+	}
+}
+
+func TestRunForTargetSinceEmptyShortlistSkipsExtract(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Filter target")
+	newObserver(t, d, tid)
+	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary, created_at)
+		VALUES ('C1', 0, 0, 'channel', 'unrelated chatter', '2020-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	gen := &mockGen{
+		resp:          `{"events":[{"summary":"should never be extracted"}]}`,
+		shortlistResp: `{"refs":[]}`,
+	}
+	p := New(d, gen, log.Default())
+
+	events, err := p.RunForTargetSince(context.Background(), tid, "1970-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("empty shortlist must produce no events, got %+v", events)
+	}
+	// Only the cheap stage-1 call should have run; the expensive extract is skipped.
+	if gen.calls != 1 {
+		t.Fatalf("extract must be skipped when nothing is shortlisted; want 1 AI call, got %d", gen.calls)
+	}
+}
+
+func TestRunForTargetSinceEmptyErrors(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Target")
+	newObserver(t, d, tid)
+	gen := &mockGen{resp: `{"events":[]}`}
+	p := New(d, gen, log.Default())
+
+	if _, err := p.RunForTargetSince(context.Background(), tid, ""); err == nil {
+		t.Fatalf("empty since must error")
 	}
 }
 

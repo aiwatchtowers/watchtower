@@ -9,20 +9,10 @@ import SwiftUI
 // auto-advances to the next pending theme.
 struct CatchUpView: View {
     @Bindable var vm: CatchUpViewModel
+    @Environment(AppState.self) private var appState
 
     var body: some View {
         content
-            .navigationTitle("Catch Up")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        vm.startSession()
-                    } label: {
-                        Label("Start review", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(vm.isLoading)
-                }
-            }
             .onAppear { vm.startObserving() }
     }
 
@@ -66,10 +56,19 @@ struct CatchUpView: View {
     @ViewBuilder
     private var progressHeader: some View {
         if let session = vm.session {
-            VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
                 Text("\(session.reviewedCount) of \(session.totalThemes) reviewed")
                     .font(.caption)
                     .fontWeight(.medium)
+                Spacer(minLength: 0)
+                Button {
+                    vm.startSession()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Start review")
+                .disabled(vm.isLoading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
@@ -82,7 +81,7 @@ struct CatchUpView: View {
     @ViewBuilder
     private var reviewPane: some View {
         if let theme = vm.selected {
-            CatchUpReviewPane(theme: theme, vm: vm)
+            CatchUpReviewPane(theme: theme, vm: vm, onOpenSource: openSource)
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "checkmark.circle")
@@ -95,6 +94,23 @@ struct CatchUpView: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    // MARK: - Source navigation
+    //
+    // Digests and tracks expand inline under their source row inside the review
+    // pane (handled by CatchUpReviewPane). Only briefings and inbox — which have
+    // no inline renderer — route here to switch the sidebar destination. Ref areas
+    // are persisted plural by the Go pipeline.
+    private func openSource(_ ref: CatchUpRef) {
+        switch ref.area {
+        case "briefings":
+            appState.navigateToBriefing(ref.id)
+        case "inbox":
+            appState.selectedDestination = .inbox
+        default:
+            break
         }
     }
 

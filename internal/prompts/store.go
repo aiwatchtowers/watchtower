@@ -39,6 +39,7 @@ const (
 	TargetsLink          = "targets.link"
 	ObserverRun          = "observer.run"
 	ObserverCompose      = "observer.compose"
+	ObserverShortlist    = "observer.shortlist"
 )
 
 // Store loads, caches, and persists prompt templates.

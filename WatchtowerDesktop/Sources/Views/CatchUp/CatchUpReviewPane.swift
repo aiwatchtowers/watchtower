@@ -10,9 +10,16 @@ import SwiftUI
 struct CatchUpReviewPane: View {
     let theme: CatchUpTheme
     let vm: CatchUpViewModel
-    @Environment(AppState.self) private var appState
+    /// Invoked when the operator taps a source row. The parent decides whether to
+    /// open it inline (a sheet over Catch-Up, for digests/tracks) or to switch the
+    /// sidebar destination (briefings/inbox) — keeping the area→behaviour mapping
+    /// in one place.
+    var onOpenSource: (CatchUpRef) -> Void
 
     @State private var comment: String = ""
+    /// Source rows (digests/tracks) the operator has expanded inline, keyed by
+    /// `CatchUpRef.compositeID`. Reset per theme via the `.id(theme.id)` below.
+    @State private var expandedSources: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -148,37 +155,104 @@ struct CatchUpReviewPane: View {
                     .font(.headline)
 
                 ForEach(refs, id: \.compositeID) { ref in
-                    Button {
-                        navigate(to: ref)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: sourceSymbol(ref.area))
-                                .font(.caption)
-                                .foregroundStyle(sourceColor(ref.area))
-                                .frame(width: 18)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(ref.label.isEmpty ? "\(areaLabel(ref.area)) #\(ref.id)" : ref.label)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(2)
-                                Text(areaLabel(ref.area))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(sourceColor(ref.area).opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
+                    sourceRow(ref)
                 }
+            }
+        }
+    }
+
+    /// A tappable source row plus, for digests/tracks, its inline detail expanded
+    /// underneath. Briefings/inbox have no inline renderer, so their row navigates
+    /// away via `onOpenSource`.
+    @ViewBuilder
+    private func sourceRow(_ ref: CatchUpRef) -> some View {
+        let expandable = isExpandable(ref.area)
+        let expanded = expandedSources.contains(ref.compositeID)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                tapSource(ref)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: sourceSymbol(ref.area))
+                        .font(.caption)
+                        .foregroundStyle(sourceColor(ref.area))
+                        .frame(width: 18)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(ref.label.isEmpty ? "\(areaLabel(ref.area)) #\(ref.id)" : ref.label)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                        Text(areaLabel(ref.area))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    // Chevron points down/up for the inline-expandable areas, right
+                    // for the navigate-away ones.
+                    Image(systemName: expandable ? (expanded ? "chevron.up" : "chevron.down") : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(sourceColor(ref.area).opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+
+            if expandable && expanded {
+                sourceExpansion(for: ref)
+                    .padding(.top, 6)
+                    .padding(.horizontal, 4)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sourceExpansion(for ref: CatchUpRef) -> some View {
+        switch ref.area {
+        case "digests":
+            if let digest = vm.digest(byID: ref.id) {
+                DigestInlineDetail(digest: digest)
+            } else {
+                sourceMissingNotice
+            }
+        case "tracks":
+            if let track = vm.track(byID: ref.id) {
+                TrackInlineDetail(track: track)
+            } else {
+                sourceMissingNotice
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private var sourceMissingNotice: some View {
+        Text("This source is no longer available.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+    }
+
+    private func isExpandable(_ area: String) -> Bool {
+        area == "digests" || area == "tracks"
+    }
+
+    private func tapSource(_ ref: CatchUpRef) {
+        guard isExpandable(ref.area) else {
+            onOpenSource(ref)
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if expandedSources.contains(ref.compositeID) {
+                expandedSources.remove(ref.compositeID)
+            } else {
+                expandedSources.insert(ref.compositeID)
             }
         }
     }
@@ -229,9 +303,9 @@ struct CatchUpReviewPane: View {
                 }
 
                 Menu {
-                    Button("1 hour")        { snooze(hours: 1) }
+                    Button("1 hour") { snooze(hours: 1) }
                     Button("Till tomorrow") { snooze(days: 1) }
-                    Button("Next week")     { snooze(days: 7) }
+                    Button("Next week") { snooze(days: 7) }
                 } label: {
                     Label("Snooze", systemImage: "moon.zzz")
                 }
@@ -264,26 +338,11 @@ struct CatchUpReviewPane: View {
         Task { await vm.snooze(theme, until: until) }
     }
 
-    // MARK: - Source navigation
+    // MARK: - Source area presentation
 
     // Ref areas are persisted plural by the Go pipeline (digests/tracks/inbox/
-    // briefings); these switches must match that contract or source rows fall to
-    // the default branch (broken navigation + generic label/icon).
-    private func navigate(to ref: CatchUpRef) {
-        switch ref.area {
-        case "digests":
-            appState.navigateToDigest(ref.id)
-        case "tracks":
-            appState.navigateToTrack(ref.id)
-        case "briefings":
-            appState.navigateToBriefing(ref.id)
-        case "inbox":
-            appState.selectedDestination = .inbox
-        default:
-            break
-        }
-    }
-
+    // briefings). The parent's `onOpenSource` handler routes on these; the
+    // label/icon helpers below switch on the same set and must stay in sync.
     private func areaLabel(_ area: String) -> String {
         switch area {
         case "digests": return "Digest"

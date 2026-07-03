@@ -143,25 +143,6 @@ func loginShellWhich(name string) string {
 	return ""
 }
 
-// IsolatedConfigDir returns a stable, mostly-empty directory to point Claude
-// Code at via CLAUDE_CONFIG_DIR. This prevents claude from loading the user's
-// real ~/.claude/settings.json — including any enabled plugins, hooks, or
-// CLAUDE.md auto-discovery scanners — that would otherwise probe protected
-// directories (~/Desktop, ~/Documents) on startup and trigger TCC prompts
-// attributed to the parent app (Watchtower.app).
-//
-// Keychain-backed OAuth still works (Claude Code reads it via OS, not via
-// CLAUDE_CONFIG_DIR), so auth is unaffected.
-func IsolatedConfigDir() string {
-	base, err := os.UserCacheDir()
-	if err != nil || base == "" {
-		base = os.TempDir()
-	}
-	dir := filepath.Join(base, "watchtower", "claude-isolated-config")
-	_ = os.MkdirAll(dir, 0o700)
-	return dir
-}
-
 // loginShellPATH gets the full PATH from a login interactive shell.
 func loginShellPATH() string {
 	sh := loginShell()

@@ -3,6 +3,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // CreateObserver inserts a new observer and returns its id.
@@ -169,6 +171,30 @@ func (db *DB) GetObserverEventsForEntity(entityType string, entityID, limit int)
 	return out, rows.Err()
 }
 
+// GetObserverEventSummaries returns the most recent event summaries for one
+// observer, newest first. Used to dedup a history backfill against events the
+// observer already produced for an overlapping window.
+func (db *DB) GetObserverEventSummaries(observerID, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := db.Query(`SELECT summary FROM observer_events
+		WHERE observer_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, observerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // MarkObserverEventRead sets read_at.
 func (db *DB) MarkObserverEventRead(id int, at string) error {
 	_, err := db.Exec(`UPDATE observer_events SET read_at = ? WHERE id = ?`, at, id)
@@ -284,4 +310,148 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 	}
 
 	return act, nil
+}
+
+// ActivityTitle is a one-line headline for a single activity item, used by the
+// cheap stage-1 "shortlist" pass of a history backfill. Kind is digest|track|inbox.
+type ActivityTitle struct {
+	Kind      string
+	ID        int
+	Title     string
+	CreatedAt string
+}
+
+// GetObserverActivityTitles returns headline-only activity in the window after
+// `since`, newest first, capped at `limit` items total. Titles are tiny, so a
+// backfill can shortlist far more of the window than it could feed in full.
+func (db *DB) GetObserverActivityTitles(since string, limit int) ([]ActivityTitle, error) {
+	if limit <= 0 {
+		limit = 2000
+	}
+	var titles []ActivityTitle
+
+	scan := func(q, kind string) error {
+		rows, err := db.Query(q, since, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			t := ActivityTitle{Kind: kind}
+			if err := rows.Scan(&t.ID, &t.Title, &t.CreatedAt); err != nil {
+				return err
+			}
+			titles = append(titles, t)
+		}
+		return rows.Err()
+	}
+
+	if err := scan(`SELECT id, summary, created_at FROM digests
+		WHERE type = 'channel' AND created_at > ?
+		ORDER BY created_at DESC LIMIT ?`, "digest"); err != nil {
+		return nil, err
+	}
+	if err := scan(`SELECT id, text, updated_at FROM tracks
+		WHERE dismissed_at = '' AND updated_at > ?
+		ORDER BY updated_at DESC LIMIT ?`, "track"); err != nil {
+		return nil, err
+	}
+	if err := scan(`SELECT id, snippet, created_at FROM inbox_items
+		WHERE created_at > ?
+		ORDER BY created_at DESC LIMIT ?`, "inbox"); err != nil {
+		return nil, err
+	}
+
+	// Merge the three per-source streams newest-first and cap to the overall limit.
+	sort.Slice(titles, func(i, j int) bool { return titles[i].CreatedAt > titles[j].CreatedAt })
+	if len(titles) > limit {
+		titles = titles[:limit]
+	}
+	return titles, nil
+}
+
+// GetObserverActivityByIDs loads full activity content for the given per-source
+// ids (the stage-1 shortlist), for the stage-2 extract pass. Empty id slices are
+// skipped. Order within each source is newest first.
+func (db *DB) GetObserverActivityByIDs(digestIDs, trackIDs, inboxIDs []int) (ObserverActivity, error) {
+	var act ObserverActivity
+
+	if len(digestIDs) > 0 {
+		rows, err := db.Query(`SELECT id, channel_id, summary, decisions, created_at
+			FROM digests WHERE id IN (`+placeholders(len(digestIDs))+`)
+			ORDER BY created_at DESC`, intArgs(digestIDs)...)
+		if err != nil {
+			return act, err
+		}
+		for rows.Next() {
+			var a ActivityDigest
+			if err := rows.Scan(&a.ID, &a.ChannelID, &a.Summary, &a.Decisions, &a.CreatedAt); err != nil {
+				rows.Close()
+				return act, err
+			}
+			act.Digests = append(act.Digests, a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return act, err
+		}
+	}
+
+	if len(trackIDs) > 0 {
+		rows, err := db.Query(`SELECT id, text, context, updated_at
+			FROM tracks WHERE id IN (`+placeholders(len(trackIDs))+`)
+			ORDER BY updated_at DESC`, intArgs(trackIDs)...)
+		if err != nil {
+			return act, err
+		}
+		for rows.Next() {
+			var a ActivityTrack
+			if err := rows.Scan(&a.ID, &a.Text, &a.Context, &a.UpdatedAt); err != nil {
+				rows.Close()
+				return act, err
+			}
+			act.Tracks = append(act.Tracks, a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return act, err
+		}
+	}
+
+	if len(inboxIDs) > 0 {
+		rows, err := db.Query(`SELECT id, trigger_type, snippet, permalink, created_at
+			FROM inbox_items WHERE id IN (`+placeholders(len(inboxIDs))+`)
+			ORDER BY created_at DESC`, intArgs(inboxIDs)...)
+		if err != nil {
+			return act, err
+		}
+		for rows.Next() {
+			var a ActivityInbox
+			if err := rows.Scan(&a.ID, &a.TriggerType, &a.Snippet, &a.Permalink, &a.CreatedAt); err != nil {
+				rows.Close()
+				return act, err
+			}
+			act.Inbox = append(act.Inbox, a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return act, err
+		}
+	}
+
+	return act, nil
+}
+
+// placeholders returns "?,?,…" with n entries for an IN clause.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// intArgs converts an int slice to []any for parameterized queries.
+func intArgs(ids []int) []any {
+	args := make([]any, len(ids))
+	for i, v := range ids {
+		args[i] = v
+	}
+	return args
 }

@@ -35,6 +35,50 @@ struct ProposedAction: Codable, Identifiable, Equatable {
         case relation
     }
 
+    init(
+        type: TargetActionKind, reason: String, status: String? = nil, note: String? = nil,
+        progress: Int? = nil, text: String? = nil, intent: String? = nil, priority: String? = nil,
+        targetId: Int? = nil, relation: String? = nil
+    ) {
+        self.type = type
+        self.reason = reason
+        self.status = status
+        self.note = note
+        self.progress = progress
+        self.text = text
+        self.intent = intent
+        self.priority = priority
+        self.targetId = targetId
+        self.relation = relation
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decode(TargetActionKind.self, forKey: .type)
+        reason = (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? ""
+        status = try? c.decodeIfPresent(String.self, forKey: .status)
+        note = try? c.decodeIfPresent(String.self, forKey: .note)
+        text = try? c.decodeIfPresent(String.self, forKey: .text)
+        intent = try? c.decodeIfPresent(String.self, forKey: .intent)
+        priority = try? c.decodeIfPresent(String.self, forKey: .priority)
+        relation = try? c.decodeIfPresent(String.self, forKey: .relation)
+        // LLMs frequently emit numeric fields as quoted strings — accept both.
+        progress = Self.lenientInt(c, .progress)
+        targetId = Self.lenientInt(c, .targetId)
+    }
+
+    /// Decodes an optional Int that the model may have emitted as a JSON number
+    /// or as a quoted string ("50"). Returns nil when absent or unparseable.
+    private static func lenientInt(
+        _ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys
+    ) -> Int? {
+        if let i = try? c.decodeIfPresent(Int.self, forKey: key) { return i }
+        if let s = try? c.decodeIfPresent(String.self, forKey: key) {
+            return Int(s.trimmingCharacters(in: .whitespaces))
+        }
+        return nil
+    }
+
     static let allowedStatuses: Set<String> = [
         "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
     ]

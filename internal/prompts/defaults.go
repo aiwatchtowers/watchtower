@@ -31,6 +31,7 @@ var Defaults = map[string]string{
 	TargetsLink:          defaultTargetsLink,
 	ObserverRun:          defaultObserverRun,
 	ObserverCompose:      defaultObserverCompose,
+	ObserverShortlist:    defaultObserverShortlist,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -60,6 +61,7 @@ var AllIDs = []string{
 	TargetsLink,
 	ObserverRun,
 	ObserverCompose,
+	ObserverShortlist,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -91,6 +93,7 @@ var DefaultVersions = map[string]int{
 	TargetsLink:        1, // v1: single-target link proposal against active snapshot
 	ObserverRun:        1, // v1: cross-source event timeline for an observed entity
 	ObserverCompose:    1, // v1: draft observer name+instruction from a free-text request
+	ObserverShortlist:  1, // v1: cheap title-only relevance filter for history backfill
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -124,6 +127,7 @@ var Descriptions = map[string]string{
 	TargetsLink:          "Target linking — single-target parent and secondary link proposal against active snapshot",
 	ObserverRun:          "Observer run — produce timeline events for an observed entity from recent cross-source activity",
 	ObserverCompose:      "Observer compose — draft a scoped observer name + watch instruction from a free-text user request",
+	ObserverShortlist:    "Observer shortlist — cheap title-only relevance filter that picks candidate activity for a history backfill before the full extract",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1209,3 +1213,13 @@ You are given the TARGET and the operator's free-text USER REQUEST describing wh
 
 Return ONLY a JSON object (no markdown fences, no prose) with exactly this shape:
 {"name": "...", "instruction": "..."}`
+
+const defaultObserverShortlist = `You are the RELEVANCE FILTER (stage 1 of 2) for an OBSERVER attached to a single tracked item (a "target": a goal or task the operator owns). You are shown the WATCH INSTRUCTION, the TARGET, and a numbered list of activity TITLES (one short headline per item, across Slack digests, action-item tracks, and inbox items). A second AI will read the FULL content of whatever you select, so your only job here is to cast a sensible net: pick every item whose title could plausibly relate to this target per the instruction.
+
+Return ONLY a JSON object (no markdown, no prose):
+{"refs": [{"kind": "digest|track|inbox", "id": 123}, ...]}
+
+Rules:
+- Judge from the title alone. When a title is ambiguous but could relate, INCLUDE it — stage 2 will discard false positives. Only drop titles that are clearly unrelated.
+- Use the exact kind and id printed in brackets for each item. Do not invent ids.
+- Respect the selection cap stated in the request; if more look relevant, keep the strongest. An empty {"refs": []} is valid when nothing fits.`

@@ -53,3 +53,6 @@ dist/
 docs/strategy/*
 # Claude Code client-side MCP auth cache (created in cwd, not project data)
 mcp-needs-auth-cache.json
+
+# Stray Claude Code session data (transcripts/memory) accidentally created in-repo
+projects/-Users-user-PhpstormProjects-watchtower/

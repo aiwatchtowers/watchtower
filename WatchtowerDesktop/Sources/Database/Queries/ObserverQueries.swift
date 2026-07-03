@@ -65,4 +65,15 @@ enum ObserverQueries {
         try db.execute(sql: "UPDATE observer_events SET action_status = ? WHERE id = ?",
                        arguments: [status, id])
     }
+
+    /// Best-effort external link to an event's underlying source. Inbox-sourced
+    /// events resolve to their Slack permalink; other source types have no single
+    /// external URL (the event's own `source_refs` cover those when present).
+    static func sourcePermalink(_ db: Database, sourceType: String, sourceId: String) throws -> String? {
+        guard sourceType == "inbox", let id = Int(sourceId) else { return nil }
+        let link = try String.fetchOne(db,
+            sql: "SELECT permalink FROM inbox_items WHERE id = ?", arguments: [id])
+        guard let link, !link.isEmpty else { return nil }
+        return link
+    }
 }

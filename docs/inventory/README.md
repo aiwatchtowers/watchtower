@@ -10,6 +10,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 |---|---|---|
 | Inbox Pulse | [inbox-pulse.md](inbox-pulse.md) | `internal/inbox/`, `WatchtowerDesktop/Sources/Views/Inbox/`, `WatchtowerDesktop/Sources/ViewModels/Inbox*.swift` |
 | Tracks | [tracks.md](tracks.md) | `internal/tracks/`, `internal/db/tracks.go`, `WatchtowerDesktop/Sources/Views/Tracks/`, `WatchtowerDesktop/Sources/ViewModels/TracksViewModel.swift` |
+| Catch-up | [catchup.md](catchup.md) | `internal/catchup/`, `internal/db/catchup_store.go`, `internal/db/digests.go` (`MarkDigestRead` decision cascade), `WatchtowerDesktop/Sources/{Views,ViewModels}/CatchUp*`, `WatchtowerDesktop/Sources/Database/Queries/CatchUpQueries.swift` |
 
 (Other modules will be added as their inventories are written.)
 

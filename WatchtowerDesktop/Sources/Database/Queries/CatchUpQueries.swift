@@ -78,6 +78,11 @@ enum CatchUpQueries {
             switch ref.area {
             case "digests":
                 try DigestQueries.markDigestRead(db, id: ref.id)
+                // A read digest implies its decisions are read; without this the
+                // Decisions feed (counted via decision_reads) strands decisions
+                // already seen via catch-up. Mirrors the other markDigestRead
+                // call sites and the Go MarkDigestRead cascade.
+                try DigestQueries.markAllDecisionsRead(db, digestID: ref.id)
             case "tracks":
                 try TrackQueries.markRead(db, id: ref.id)
             case "inbox":

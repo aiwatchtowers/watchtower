@@ -32,6 +32,10 @@ struct CreateTargetSheet: View {
     @State private var sourceType: String = "manual"
     @State private var sourceID: String = ""
     @State private var secondaryLinks: [TargetPrefillLink] = []
+    /// Optional parent target (`targets.parent_id`). nil = top-level target.
+    @State private var parentID: Int? = nil
+    /// Active targets offered in the parent picker. Loaded once on appear.
+    @State private var candidateParents: [Target] = []
 
     private let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
@@ -56,6 +60,7 @@ struct CreateTargetSheet: View {
                 sourceType = p.sourceType
                 sourceID = p.sourceID
                 secondaryLinks = p.secondaryLinks
+                parentID = p.parentID
             }
             if !intent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 showMoreOptions = true
@@ -63,6 +68,10 @@ struct CreateTargetSheet: View {
             if !subItems.isEmpty {
                 showChecklist = true
             }
+            loadCandidateParents()
+            // A preselected parent (sub-target creation) snaps the planning
+            // window to the parent's, matching `createChild` semantics.
+            if let pid = parentID { inheritFromParent(pid) }
         }
         .sheet(isPresented: $showExtractSheet) {
             if let result = extractedResult {
@@ -98,6 +107,7 @@ struct CreateTargetSheet: View {
                 textFieldWithAI
                 extractButton
                 levelPriorityRow
+                parentPickerRow
                 customPeriodRow
                 checklistSection
                 moreOptionsSection
@@ -185,6 +195,74 @@ struct CreateTargetSheet: View {
             }
             .font(.callout)
         }
+    }
+
+    private var parentPickerRow: some View {
+        HStack(spacing: 8) {
+            Text("Parent")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Menu {
+                Button("None (top-level)") { selectParent(nil) }
+                if !candidateParents.isEmpty {
+                    Divider()
+                    ForEach(candidateParents) { candidate in
+                        Button(candidate.text) { selectParent(candidate.id) }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(parentDisplayName)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Spacer()
+        }
+    }
+
+    private var parentDisplayName: String {
+        guard let parentID,
+              let parent = candidateParents.first(where: { $0.id == parentID })
+        else { return "None" }
+        return parent.text
+    }
+
+    /// Selects a parent and, when one is chosen, inherits its planning window.
+    private func selectParent(_ id: Int?) {
+        parentID = id
+        if let id { inheritFromParent(id) }
+    }
+
+    /// Snaps `level`/period to the parent's so a sub-target lands inside the
+    /// parent's planning window. The user can still override afterward.
+    private func inheritFromParent(_ id: Int) {
+        guard let parent = candidateParents.first(where: { $0.id == id }) else { return }
+        level = parent.level
+        if let start = dateFormatter.date(from: parent.periodStart) {
+            periodStart = start
+        }
+        if let end = dateFormatter.date(from: parent.periodEnd) {
+            periodEnd = end
+        }
+    }
+
+    private func loadCandidateParents() {
+        guard let db = appState.databaseManager else { return }
+        var loaded = (try? db.dbPool.read { dbConn in
+            try TargetQueries.fetchAll(dbConn, filter: TargetFilter())
+        }) ?? []
+        // Ensure a preselected parent is offered even if it's done/dismissed
+        // (active-only filter would otherwise drop it and blank the label).
+        if let pid = parentID, !loaded.contains(where: { $0.id == pid }),
+           let parent = try? db.dbPool.read({ try TargetQueries.fetchByID($0, id: pid) }) {
+            loaded.insert(parent, at: 0)
+        }
+        candidateParents = loaded
     }
 
     @ViewBuilder
@@ -393,6 +471,7 @@ struct CreateTargetSheet: View {
         let sourceTypeCopy = sourceType
         let sourceIDCopy = sourceID
         let secondaryLinksCopy = secondaryLinks
+        let parentIDCopy = parentID
 
         // 1. Insert the parent target.
         let newID: Int
@@ -405,6 +484,7 @@ struct CreateTargetSheet: View {
                     level: levelCopy,
                     periodStart: start,
                     periodEnd: end,
+                    parentId: parentIDCopy,
                     priority: priorityCopy,
                     subItems: subItemsJSON,
                     sourceType: sourceTypeCopy,

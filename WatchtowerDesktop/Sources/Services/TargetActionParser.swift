@@ -26,6 +26,8 @@ enum TargetActionParser {
                 actions.append(action)
             } catch let ProposedActionError.invalid(msg) {
                 errors.append(msg)
+            } catch let decodingError as DecodingError {
+                errors.append(describe(decodingError))
             } catch {
                 errors.append("malformed action JSON")
             }
@@ -36,5 +38,27 @@ enum TargetActionParser {
         )
         let text = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
         return (text, actions, errors)
+    }
+
+    /// Turns an opaque `DecodingError` into a human-readable reason that names
+    /// the offending field, so a malformed proposal is actionable instead of a
+    /// generic "malformed action JSON".
+    private static func describe(_ error: DecodingError) -> String {
+        switch error {
+        case let .dataCorrupted(ctx):
+            if let field = ctx.codingPath.last?.stringValue {
+                // Includes the unknown-enum case, e.g. an unsupported "type".
+                return "invalid value for \"\(field)\": \(ctx.debugDescription)"
+            }
+            return "invalid JSON: \(ctx.debugDescription)"
+        case let .keyNotFound(key, _):
+            return "missing field \"\(key.stringValue)\""
+        case let .typeMismatch(_, ctx):
+            return "wrong type for \"\(ctx.codingPath.last?.stringValue ?? "a field")\""
+        case let .valueNotFound(_, ctx):
+            return "missing value for \"\(ctx.codingPath.last?.stringValue ?? "a field")\""
+        @unknown default:
+            return "malformed action JSON"
+        }
     }
 }

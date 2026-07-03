@@ -9,7 +9,7 @@ const (
 // Lightweight classification/rollup tasks use Haiku; quality-critical analysis uses Sonnet.
 func ModelForSource(source string) string {
 	switch source {
-	case SourceLight, "inbox.prioritize", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "observer.compose":
+	case SourceLight, "inbox.prioritize", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "observer.compose", "observer.shortlist":
 		return ModelHaiku
 	default:
 		return ModelSonnet

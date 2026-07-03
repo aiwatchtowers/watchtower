@@ -311,6 +311,27 @@ final class TargetsViewModel {
         }
     }
 
+    func updateLevel(_ target: Target, to level: String) {
+        // Expand the period to the new level's natural window, anchored on the
+        // target's existing period_start so its "when" is preserved (nil for
+        // custom/unknown levels → period left untouched).
+        let window = Target.periodWindow(for: level, anchoredOn: target.periodStart)
+        do {
+            try dbManager.dbPool.write { db in
+                try TargetQueries.updateLevel(
+                    db,
+                    id: target.id,
+                    level: level,
+                    periodStart: window?.start,
+                    periodEnd: window?.end
+                )
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update level: \(error.localizedDescription)"
+        }
+    }
+
     func updateStatus(_ target: Target, to status: String) {
         do {
             try dbManager.dbPool.write { db in

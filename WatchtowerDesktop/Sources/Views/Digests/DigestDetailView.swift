@@ -20,6 +20,10 @@ struct DigestDetailView: View {
     @State private var withoutJiraEnabled = false
     @State private var epicProgressVM: EpicProgressViewModel?
     @State private var channelsExpanded = false
+    // Deep link to the first Slack message inside this digest's time window, so
+    // opening Slack lands on the digested messages instead of the channel's
+    // latest. nil for cross-channel digests or when no message is in range.
+    @State private var firstMessageURL: URL?
 
     var body: some View {
         ScrollView {
@@ -87,6 +91,24 @@ struct DigestDetailView: View {
                     try DigestQueries.fetchTopics(db, digestID: digest.id)
                 }) ?? []
 
+                // Anchor the channel deep link to the first message in the
+                // digest window so Slack opens on the digested messages.
+                if !digest.channelID.isEmpty {
+                    let firstTS: String? = try? dbManager.dbPool.read { db in
+                        try MessageQueries.fetchByTimeRange(
+                            db,
+                            channelID: digest.channelID,
+                            from: digest.periodFrom,
+                            to: digest.periodTo
+                        ).first?.ts
+                    }
+                    if let ts = firstTS, !ts.isEmpty {
+                        firstMessageURL = viewModel.slackMessageURL(
+                            channelID: digest.channelID, messageTS: ts
+                        )
+                    }
+                }
+
                 // Load epic progress for weekly digests
                 if jiraConnected && digest.type == "weekly" {
                     let vm = EpicProgressViewModel(dbManager: dbManager)
@@ -130,7 +152,7 @@ struct DigestDetailView: View {
                 .background(typeColor.opacity(0.12), in: Capsule())
 
             if let name = channelName {
-                if let url = viewModel.slackChannelURL(channelID: digest.channelID) {
+                if let url = firstMessageURL ?? viewModel.slackChannelURL(channelID: digest.channelID) {
                     Link(destination: url) {
                         Text("#\(name)")
                             .font(.title3)
@@ -171,9 +193,18 @@ struct DigestDetailView: View {
             .foregroundStyle(.secondary)
 
             if digest.messageCount > 0 {
-                Label("\(digest.messageCount) messages", systemImage: "message")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let url = firstMessageURL {
+                    Link(destination: url) {
+                        Label("\(digest.messageCount) messages", systemImage: "message")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Open these messages in Slack")
+                } else {
+                    Label("\(digest.messageCount) messages", systemImage: "message")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer()

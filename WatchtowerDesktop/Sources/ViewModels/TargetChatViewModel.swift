@@ -199,11 +199,21 @@ final class TargetChatViewModel {
             ? Self.buildSystemPrompt(target: target, dbPool: dbPool)
             : nil
 
+        // On the first turn the target context is in the system prompt. On a
+        // resumed turn the CLI uses --resume and drops the system prompt entirely
+        // — and if that session has expired (e.g. after an app restart) the model
+        // would have NO context at all. So carry the live target context with the
+        // message on every resumed turn: the assistant never loses track of which
+        // target it is working on, and it sees the target's current state.
+        let effectivePrompt = currentSessionID == nil
+            ? text
+            : "\(Self.taskContextBlock(target))\n\n\(text)"
+
         var fullText = ""
         var streamFailed = false
         do {
             let stream = aiService.stream(
-                prompt: text,
+                prompt: effectivePrompt,
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
                 dbPath: dbPath,
@@ -436,6 +446,14 @@ final class TargetChatViewModel {
     Every block must also include "reason".
     For link_target, first look up the other target's id by querying the `targets`
     table (e.g. SELECT id, text FROM targets WHERE ...); never guess an id.
+
+    JSON RULES (strict — a malformed block is dropped, not applied):
+    - Emit ONE valid JSON object per block. Inside string values, escape every
+      double quote as \\" and every backslash as \\\\.
+    - Keep each string value on a single line — never put a raw line break inside
+      a string (use \\n if you truly need one).
+    - No trailing commas, no comments, no markdown inside the block.
+    - Numbers (progress, target_id) are JSON numbers, not quoted strings.
     """
 
     /// The `=== CURRENT TASK ===` context block for the system prompt, with

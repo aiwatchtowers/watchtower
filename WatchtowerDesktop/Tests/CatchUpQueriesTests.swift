@@ -115,6 +115,7 @@ final class CatchUpQueriesTests: XCTestCase {
     // MARK: - Acknowledge cascade
 
     func testAcknowledgeCascadesMarkReadAndFlipsReviewState() throws {
+        // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
         let dbQueue = try TestDatabase.create()
         let ctx = try dbQueue.write { db -> (sid: Int64, themeID: Int64) in
             try TestDatabase.insertWorkspace(db)
@@ -167,7 +168,43 @@ final class CatchUpQueriesTests: XCTestCase {
         }
     }
 
+    func testAcknowledgeMarksDigestDecisionsRead() throws {
+        // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+        let dbQueue = try TestDatabase.create()
+        let ctx = try dbQueue.write { db -> (sid: Int64, themeID: Int64) in
+            try TestDatabase.insertWorkspace(db)
+            try TestDatabase.insertChannel(db)
+            // Digest id 1 carries two decisions.
+            try TestDatabase.insertDigest(
+                db, decisions: #"[{"text":"a"},{"text":"b"}]"#
+            )
+            let sid = try insertSession(db, totalThemes: 1, reviewedCount: 0)
+            let themeID = try insertTheme(
+                db, sessionID: sid,
+                refs: #"[{"area":"digests","id":1,"label":"D"}]"#
+            )
+            return (sid, themeID)
+        }
+
+        let theme = try dbQueue.read { db in
+            try CatchUpQueries.fetchThemes(db, sessionID: Int(ctx.sid)).first { $0.id == Int(ctx.themeID) }
+        }
+        try dbQueue.write { db in
+            try CatchUpQueries.acknowledge(db, theme: try XCTUnwrap(theme))
+        }
+
+        try dbQueue.read { db in
+            // Both decisions of the referenced digest are marked read, so they
+            // leave the Decisions feed's unread count.
+            let read = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM decision_reads WHERE digest_id = 1"
+            )
+            XCTAssertEqual(read, 2)
+        }
+    }
+
     func testAcknowledgeReviewedCountIsIdempotent() throws {
+        // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
         let dbQueue = try TestDatabase.create()
         let ctx = try dbQueue.write { db -> (sid: Int64, themeID: Int64) in
             let sid = try insertSession(db, totalThemes: 1, reviewedCount: 0)

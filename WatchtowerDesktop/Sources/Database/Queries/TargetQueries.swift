@@ -234,6 +234,45 @@ enum TargetQueries {
         )
     }
 
+    /// Updates a target's horizon level. Switching to any standard level
+    /// (quarter/month/week/day) clears `custom_label`, which is only meaningful
+    /// for the "custom" level. When `periodStart`/`periodEnd` are supplied (the
+    /// natural window for the new level, see `Target.periodWindow`), the period is
+    /// updated too so it reflects the new granularity; pass nil to leave it as-is.
+    static func updateLevel(
+        _ db: Database,
+        id: Int,
+        level: String,
+        periodStart: String? = nil,
+        periodEnd: String? = nil
+    ) throws {
+        if let periodStart, let periodEnd {
+            try db.execute(
+                sql: """
+                    UPDATE targets
+                    SET level = ?,
+                        custom_label = CASE WHEN ? THEN '' ELSE custom_label END,
+                        period_start = ?,
+                        period_end = ?,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    WHERE id = ?
+                    """,
+                arguments: [level, level != "custom", periodStart, periodEnd, id]
+            )
+        } else {
+            try db.execute(
+                sql: """
+                    UPDATE targets
+                    SET level = ?,
+                        custom_label = CASE WHEN ? THEN '' ELSE custom_label END,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    WHERE id = ?
+                    """,
+                arguments: [level, level != "custom", id]
+            )
+        }
+    }
+
     static func updateProgress(_ db: Database, id: Int, progress: Double) throws {
         let clamped = min(max(progress, 0.0), 1.0)
         try db.execute(
