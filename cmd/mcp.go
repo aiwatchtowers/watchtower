@@ -46,5 +46,11 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
+	// The MCP surface is read-only; enforce it at the connection level so even
+	// a buggy handler cannot write. Must run after Open (migrations need writes).
+	if err := database.SetReadOnly(); err != nil {
+		return fmt.Errorf("enforcing read-only: %w", err)
+	}
+
 	return internalmcp.NewServer(database).ServeStdio(cmd.Context())
 }

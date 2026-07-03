@@ -77,6 +77,16 @@ func (db *DB) migrate() error {
 	return goose.Up(db.DB, "migrations")
 }
 
+// SetReadOnly flips the connection to SQLite query_only mode: any subsequent
+// write (INSERT/UPDATE/DELETE/DDL) fails while reads keep working. Used by
+// read-only consumers (the MCP server) after Open has run migrations.
+func (db *DB) SetReadOnly() error {
+	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
+		return fmt.Errorf("setting query_only: %w", err)
+	}
+	return nil
+}
+
 // hasColumn checks whether a table has a specific column via PRAGMA table_info.
 // table must be a valid identifier (alphanumeric + underscore only).
 func hasColumn(querier interface {

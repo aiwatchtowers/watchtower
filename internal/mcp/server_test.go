@@ -24,8 +24,14 @@ func seedDB(t *testing.T) *db.DB {
 }
 
 // newTestSession wires an in-memory MCP client to a server over our database.
+// Mirrors production wiring (cmd/mcp.go): the connection is flipped to
+// query_only before serving, so every tool test runs under the same
+// connection-level read-only enforcement as the real server.
 func newTestSession(t *testing.T, database *db.DB) *mcpsdk.ClientSession {
 	t.Helper()
+	if err := database.SetReadOnly(); err != nil {
+		t.Fatalf("setting read-only: %v", err)
+	}
 	ctx := context.Background()
 	srv := NewServer(database)
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "v0"}, nil)
@@ -98,10 +104,11 @@ func TestAllToolsAreReadOnly(t *testing.T) {
 	}
 }
 
-// TestNoToolMutatesDatabase is the behavioural read-only guard: invoking every
-// tool must leave all tables byte-for-byte unchanged (row counts). It catches a
-// future handler that mutates despite a read-y name — which the lexical
-// TestAllToolsAreReadOnly cannot.
+// TestNoToolMutatesDatabase is the behavioural read-only guard. Two layers:
+// the session runs over a query_only connection (any write inside a handler
+// errors at the SQLite level), and row counts are compared before/after as a
+// belt-and-braces check. Note the count check alone would not catch an UPDATE;
+// the query_only pragma is the real guarantee.
 func TestNoToolMutatesDatabase(t *testing.T) {
 	database := seedDB(t)
 	if _, err := database.CreateTarget(db.Target{
@@ -138,11 +145,15 @@ func TestNoToolMutatesDatabase(t *testing.T) {
 
 	before := counts()
 	cs := newTestSession(t, database)
+	// The session connection must reject direct writes — proves query_only is on.
+	if _, err := database.Exec(`INSERT INTO users (id, name, is_stub) VALUES ('WGUARD', 'w', 1)`); err == nil {
+		t.Fatalf("expected direct write to fail on the read-only MCP connection")
+	}
 	ctx := context.Background()
 	calls := []mcpsdk.CallToolParams{
 		{Name: "list_targets"}, {Name: "get_target", Arguments: map[string]any{"id": 1}},
 		{Name: "get_today_briefing"}, {Name: "list_digests"}, {Name: "get_digest", Arguments: map[string]any{"id": 1}},
-		{Name: "list_people"}, {Name: "get_person", Arguments: map[string]any{"user_id": "U1"}},
+		{Name: "list_people"}, {Name: "get_person", Arguments: map[string]any{"query": "U1"}},
 		{Name: "list_tracks"}, {Name: "get_track", Arguments: map[string]any{"id": 1}},
 		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
 		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
@@ -157,6 +168,24 @@ func TestNoToolMutatesDatabase(t *testing.T) {
 	for _, tbl := range tables {
 		if before[tbl] != after[tbl] {
 			t.Errorf("table %s row count changed %d -> %d after read tools ran", tbl, before[tbl], after[tbl])
+		}
+	}
+}
+
+// TestListLimitClamp: 0/negative falls back to the default, oversized requests
+// are capped so one tool call cannot dump an entire table into an LLM context.
+func TestListLimitClamp(t *testing.T) {
+	cases := []struct{ in, want int }{
+		{0, defaultListLimit},
+		{-5, defaultListLimit},
+		{10, 10},
+		{maxListLimit, maxListLimit},
+		{maxListLimit + 1, maxListLimit},
+		{100000, maxListLimit},
+	}
+	for _, c := range cases {
+		if got := listLimit(c.in); got != c.want {
+			t.Errorf("listLimit(%d) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }

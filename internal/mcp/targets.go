@@ -15,7 +15,7 @@ type listTargetsArgs struct {
 	Priority  string `json:"priority,omitempty" jsonschema:"filter by priority: high|medium|low"`
 	Level     string `json:"level,omitempty" jsonschema:"filter by level: quarter|month|week|day|custom"`
 	Ownership string `json:"ownership,omitempty" jsonschema:"filter by ownership: mine|delegated|watching"`
-	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50)"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 }
 
 type getTargetArgs struct {
@@ -27,6 +27,14 @@ func registerTargets(s *mcpsdk.Server, database *db.DB) {
 		Name:        "list_targets",
 		Description: "List the user's personal action items (targets), optionally filtered by status, priority, level, or ownership.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args listTargetsArgs) (*mcpsdk.CallToolResult, any, error) {
+		if msg := firstError(
+			validateEnum("status", args.Status, "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"),
+			validateEnum("priority", args.Priority, "high", "medium", "low"),
+			validateEnum("level", args.Level, "quarter", "month", "week", "day", "custom"),
+			validateEnum("ownership", args.Ownership, "mine", "delegated", "watching"),
+		); msg != "" {
+			return errResult(msg), nil, nil
+		}
 		targets, err := database.GetTargets(db.TargetFilter{
 			Status:    args.Status,
 			Priority:  args.Priority,

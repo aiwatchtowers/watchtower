@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -12,7 +13,16 @@ import (
 type listDigestsArgs struct {
 	Type    string `json:"type,omitempty" jsonschema:"digest type: channel|daily|weekly"`
 	Channel string `json:"channel,omitempty" jsonschema:"channel id to filter by"`
-	Limit   int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50)"`
+	Since   string `json:"since,omitempty" jsonschema:"only digests whose period starts on/after this date (YYYY-MM-DD or RFC3339)"`
+	Limit   int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
+}
+
+// parseSince accepts a date (YYYY-MM-DD, local midnight) or an RFC3339 timestamp.
+func parseSince(s string) (time.Time, error) {
+	if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, s)
 }
 
 type getDigestArgs struct {
@@ -42,9 +52,21 @@ func registerDigests(s *mcpsdk.Server, database *db.DB) {
 		Name:        "list_digests",
 		Description: "List channel/daily/weekly digests (AI summaries of Slack activity), most recent first.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args listDigestsArgs) (*mcpsdk.CallToolResult, any, error) {
+		if msg := validateEnum("type", args.Type, "channel", "daily", "weekly"); msg != "" {
+			return errResult(msg), nil, nil
+		}
+		var fromUnix float64
+		if args.Since != "" {
+			ts, err := parseSince(args.Since)
+			if err != nil {
+				return errResult(fmt.Sprintf("invalid since %q: use YYYY-MM-DD or RFC3339", args.Since)), nil, nil
+			}
+			fromUnix = float64(ts.Unix())
+		}
 		digests, err := database.GetDigests(db.DigestFilter{
 			Type:      args.Type,
 			ChannelID: args.Channel,
+			FromUnix:  fromUnix,
 			Limit:     listLimit(args.Limit),
 		})
 		if err != nil {

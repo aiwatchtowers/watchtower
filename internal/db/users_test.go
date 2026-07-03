@@ -149,3 +149,30 @@ func TestGetUsersCombinedFilter(t *testing.T) {
 	assert.Len(t, users, 1)
 	assert.Equal(t, "alice", users[0].Name)
 }
+
+func TestSearchUsersByName(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertUser(User{ID: "U001", Name: "alice", DisplayName: "Alice Smith", RealName: "Alice J. Smith"}))
+	require.NoError(t, db.UpsertUser(User{ID: "U002", Name: "bob", DisplayName: "Bob Jones", RealName: "Robert Jones"}))
+	require.NoError(t, db.UpsertUser(User{ID: "U003", Name: "alicebot", DisplayName: "Alice Bot", IsBot: true}))
+	require.NoError(t, db.UpsertUser(User{ID: "U004", Name: "alice.gone", IsDeleted: true}))
+
+	// Case-insensitive match on username/display/real name; bots and deleted excluded.
+	users, err := db.SearchUsersByName("ALICE", 10)
+	require.NoError(t, err)
+	require.Len(t, users, 1)
+	assert.Equal(t, "U001", users[0].ID)
+
+	// Match against real_name only.
+	users, err = db.SearchUsersByName("robert", 10)
+	require.NoError(t, err)
+	require.Len(t, users, 1)
+	assert.Equal(t, "U002", users[0].ID)
+
+	users, err = db.SearchUsersByName("nobody", 10)
+	require.NoError(t, err)
+	assert.Empty(t, users)
+}

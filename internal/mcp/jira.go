@@ -12,7 +12,7 @@ type listJiraIssuesArgs struct {
 	Project  string `json:"project,omitempty" jsonschema:"Jira project key, e.g. ABC"`
 	Status   string `json:"status,omitempty" jsonschema:"exact status name, e.g. 'In Progress'"`
 	Assignee string `json:"assignee,omitempty" jsonschema:"assignee Jira account id"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50)"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 }
 
 type getJiraIssueArgs struct {

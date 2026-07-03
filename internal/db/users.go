@@ -72,6 +72,24 @@ func (db *DB) GetUserByName(name string) (*User, error) {
 	return scanUser(row)
 }
 
+// SearchUsersByName returns non-bot, non-deleted users whose username, display
+// name, or real name contains the query (case-insensitive).
+func (db *DB) SearchUsersByName(query string, limit int) ([]User, error) {
+	pattern := "%" + query + "%"
+	rows, err := db.Query(`
+		SELECT id, name, display_name, real_name, email, is_bot, is_deleted, is_stub, profile_json, updated_at
+		FROM users
+		WHERE is_bot = 0 AND is_deleted = 0
+		  AND (name LIKE ? OR display_name LIKE ? OR real_name LIKE ?)
+		ORDER BY name LIMIT ?`, pattern, pattern, pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("searching users: %w", err)
+	}
+	defer rows.Close()
+
+	return scanUsers(rows)
+}
+
 // GetUserByID returns a user by their Slack ID.
 func (db *DB) GetUserByID(id string) (*User, error) {
 	row := db.QueryRow(`

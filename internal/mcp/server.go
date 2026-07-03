@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -16,16 +18,43 @@ import (
 // version is reported to MCP clients in the server handshake.
 const version = "0.1.0"
 
-// defaultListLimit caps list_ tools that the caller left unbounded, so a single
-// tool call cannot dump an entire table into an LLM context window.
-const defaultListLimit = 50
+// defaultListLimit applies to list_ tools when the caller left limit unset;
+// maxListLimit caps explicit requests, so a single tool call can never dump an
+// entire table into an LLM context window.
+const (
+	defaultListLimit = 50
+	maxListLimit     = 200
+)
 
-// listLimit applies defaultListLimit when the caller passed 0 (unbounded).
+// listLimit applies defaultListLimit when the caller passed 0 (unbounded) and
+// clamps oversized requests to maxListLimit.
 func listLimit(n int) int {
-	if n <= 0 {
+	switch {
+	case n <= 0:
 		return defaultListLimit
+	case n > maxListLimit:
+		return maxListLimit
 	}
 	return n
+}
+
+// validateEnum returns an error message when value is not one of allowed.
+// An empty value means "no filter" and is always valid.
+func validateEnum(field, value string, allowed ...string) string {
+	if value == "" || slices.Contains(allowed, value) {
+		return ""
+	}
+	return fmt.Sprintf("invalid %s %q: must be one of %s", field, value, strings.Join(allowed, "|"))
+}
+
+// firstError returns the first non-empty message, or "".
+func firstError(msgs ...string) string {
+	for _, m := range msgs {
+		if m != "" {
+			return m
+		}
+	}
+	return ""
 }
 
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.

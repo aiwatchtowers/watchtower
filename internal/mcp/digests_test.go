@@ -165,3 +165,80 @@ func TestGetTodayBriefingEmpty(t *testing.T) {
 		t.Fatalf("missing briefing should not be an error: %s", textContent(t, res))
 	}
 }
+
+func TestListDigestsInvalidType(t *testing.T) {
+	database := seedDB(t)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "list_digests",
+		Arguments: map[string]any{"type": "monthly"},
+	})
+	if err != nil {
+		t.Fatalf("call list_digests: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected validation error for type=monthly, got: %s", textContent(t, res))
+	}
+	if msg := textContent(t, res); !strings.Contains(msg, "monthly") || !strings.Contains(msg, "channel|daily|weekly") {
+		t.Fatalf("error should name the bad value and allowed set, got: %s", msg)
+	}
+}
+
+// TestListDigestsSince: only digests whose period starts on/after the given
+// date are returned; older ones are excluded.
+func TestListDigestsSince(t *testing.T) {
+	database := seedDB(t)
+	oldStart := time.Date(2026, 1, 10, 9, 0, 0, 0, time.Local)
+	newStart := time.Date(2026, 6, 15, 9, 0, 0, 0, time.Local)
+	if _, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "daily", Summary: "january digest",
+		PeriodFrom: float64(oldStart.Unix()), PeriodTo: float64(oldStart.Add(time.Hour).Unix()),
+	}); err != nil {
+		t.Fatalf("seeding old digest: %v", err)
+	}
+	if _, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "daily", Summary: "june digest",
+		PeriodFrom: float64(newStart.Unix()), PeriodTo: float64(newStart.Add(time.Hour).Unix()),
+	}); err != nil {
+		t.Fatalf("seeding new digest: %v", err)
+	}
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "list_digests",
+		Arguments: map[string]any{"since": "2026-06-01"},
+	})
+	if err != nil {
+		t.Fatalf("call list_digests: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	got := textContent(t, res)
+	if !strings.Contains(got, "june digest") {
+		t.Fatalf("expected the june digest, got: %s", got)
+	}
+	if strings.Contains(got, "january digest") {
+		t.Fatalf("since=2026-06-01 must exclude the january digest, got: %s", got)
+	}
+}
+
+func TestListDigestsInvalidSince(t *testing.T) {
+	database := seedDB(t)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "list_digests",
+		Arguments: map[string]any{"since": "yesterday"},
+	})
+	if err != nil {
+		t.Fatalf("call list_digests: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected validation error for since=yesterday, got: %s", textContent(t, res))
+	}
+	if msg := textContent(t, res); !strings.Contains(msg, "yesterday") {
+		t.Fatalf("error should name the bad value, got: %s", msg)
+	}
+}

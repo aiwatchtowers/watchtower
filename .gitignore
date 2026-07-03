@@ -51,3 +51,5 @@ dist/
 # App bundles (redundant safety)
 *.app/
 docs/strategy/*
+# Claude Code client-side MCP auth cache (created in cwd, not project data)
+mcp-needs-auth-cache.json

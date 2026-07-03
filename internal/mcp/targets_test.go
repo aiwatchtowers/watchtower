@@ -73,8 +73,6 @@ func TestListTargetsByDoneStatus(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seeding done target: %v", err)
 	}
-	cs := newTestSession(t, database)
-
 	for _, status := range []string{"done", "dismissed"} {
 		if _, err := database.CreateTarget(db.Target{
 			Text:       "dismissed-" + status,
@@ -88,6 +86,7 @@ func TestListTargetsByDoneStatus(t *testing.T) {
 			t.Fatalf("seeding dismissed target: %v", err)
 		}
 	}
+	cs := newTestSession(t, database)
 
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name:      "list_targets",
@@ -178,5 +177,37 @@ func TestGetTarget(t *testing.T) {
 	}
 	if got := textContent(t, res); !strings.Contains(got, "Ship MCP server") {
 		t.Fatalf("expected seeded target in output, got: %s", got)
+	}
+}
+
+// TestListTargetsInvalidEnumValues: a bogus filter value must produce a clear
+// validation error listing the allowed values — not silently return [] (which
+// an LLM client would read as "no targets").
+func TestListTargetsInvalidEnumValues(t *testing.T) {
+	database := seedDB(t)
+	cs := newTestSession(t, database)
+
+	cases := []struct{ field, value, wantAllowed string }{
+		{"status", "in-progress", "todo|in_progress|blocked|done|dismissed|snoozed"},
+		{"priority", "urgent", "high|medium|low"},
+		{"level", "year", "quarter|month|week|day|custom"},
+		{"ownership", "theirs", "mine|delegated|watching"},
+	}
+	for _, c := range cases {
+		res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+			Name:      "list_targets",
+			Arguments: map[string]any{c.field: c.value},
+		})
+		if err != nil {
+			t.Fatalf("call list_targets (%s=%s): %v", c.field, c.value, err)
+		}
+		if !res.IsError {
+			t.Errorf("%s=%q: expected validation error, got: %s", c.field, c.value, textContent(t, res))
+			continue
+		}
+		msg := textContent(t, res)
+		if !strings.Contains(msg, c.value) || !strings.Contains(msg, c.wantAllowed) {
+			t.Errorf("%s=%q: error should name the bad value and allowed set, got: %s", c.field, c.value, msg)
+		}
 	}
 }

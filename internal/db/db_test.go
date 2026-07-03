@@ -497,3 +497,15 @@ func tableExists(t *testing.T, database *DB, table string) bool {
 
 // TestMigration_v67_Backfill verifies the migration backfill logic by directly
 // creating a pre-v67 inbox_items table (without item_class) and running the v67 migration SQL.
+
+func TestSetReadOnlyBlocksWrites(t *testing.T) {
+	database := openTestDB(t)
+
+	require.NoError(t, database.SetReadOnly())
+
+	_, err := database.Exec(`INSERT INTO users (id, name, is_stub) VALUES ('U1', 'alice', 1)`)
+	require.Error(t, err, "INSERT must fail on a query_only connection")
+
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT count(*) FROM users`).Scan(&n), "reads must keep working")
+}
