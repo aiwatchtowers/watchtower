@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watchtower — Privacy Policy</title>
+<style>
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         max-width: 720px; margin: 3rem auto; padding: 0 1.2rem; color: #1a1a1a; }
+  h1 { font-size: 1.9rem; }
+  h2 { margin-top: 2rem; }
+  a { color: #2563eb; }
+  .muted { color: #666; }
+  ul { padding-left: 1.2rem; }
+  code { background: #f3f4f6; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+</style>
+</head>
+<body>
+  <h1>Privacy Policy for Watchtower</h1>
+  <p class="muted"><strong>Last updated:</strong> 2026-06-26</p>
+
+  <p>Watchtower ("the App") is a personal productivity tool that runs locally on
+  the user's own computer. It synchronizes a user's workplace communications
+  (Slack, Jira) and Google Calendar into a local database and uses AI to produce
+  digests, briefings, and meeting preparation. This policy explains what data the
+  App accesses, how it is used, and the choices available to the user.</p>
+
+  <h2>Who operates the App</h2>
+  <p>Watchtower is operated by the individual developer who builds and distributes
+  it (the "Operator"). The App is not a hosted service: it runs entirely on the
+  end user's own machine. There is no Watchtower server that receives or stores
+  user data.</p>
+  <p>Contact: <a href="mailto:tv88dn@gmail.com">tv88dn@gmail.com</a></p>
+
+  <h2>What Google user data the App accesses</h2>
+  <p>When a user connects Google Calendar, the App requests these scopes:</p>
+  <ul>
+    <li><code>https://www.googleapis.com/auth/calendar.events.readonly</code> —
+    <strong>read-only</strong> access to calendar events (titles, times,
+    descriptions, attendees, locations).</li>
+    <li><code>https://www.googleapis.com/auth/calendar.calendarlist.readonly</code> —
+    <strong>read-only</strong> access to the list of the user's calendars (names,
+    colors, primary flag).</li>
+  </ul>
+  <p>The App requests <strong>no write, delete, or sharing</strong> permissions on
+  Google data.</p>
+
+  <h2>How the data is used</h2>
+  <ul>
+    <li><strong>Local storage.</strong> Calendar data is stored in a SQLite
+    database file on the user's own machine (under the user's local
+    application-data directory). It is not uploaded to any Operator-controlled
+    server.</li>
+    <li><strong>AI analysis.</strong> To generate meeting preparation, daily
+    briefings, and prioritized inbox items, relevant calendar content (event
+    titles, descriptions, attendees, times) may be sent to the AI provider that
+    the user has configured — either Anthropic (Claude) or OpenAI (Codex) —
+    through that provider's official command-line client running on the user's
+    machine. This happens only to produce the user-requested output. Use of those
+    providers is governed by their own privacy policies.</li>
+    <li><strong>No advertising, no sale.</strong> Google user data is never sold,
+    rented, or used for advertising, profiling unrelated to the user's own
+    productivity, or any purpose other than the features described above.</li>
+    <li><strong>No transfer to third parties</strong> other than the
+    user-configured AI provider described above, and only as needed to operate the
+    user-requested features.</li>
+  </ul>
+  <p>Watchtower's use and transfer of information received from Google APIs adheres
+  to the
+  <a href="https://developers.google.com/terms/api-services-user-data-policy">Google
+  API Services User Data Policy</a>, including the Limited Use requirements.</p>
+
+  <h2>Data retention and deletion</h2>
+  <ul>
+    <li>Data lives in a local database the user controls. The user can delete it
+    at any time by removing the application-data directory or the token file.</li>
+    <li>The user can revoke the App's access at any time at
+    <a href="https://myaccount.google.com/connections">Google Account → Security →
+    Third-party access</a>, or by deleting the local <code>google_token.json</code>
+    file. Revoking access stops all further calendar synchronization.</li>
+  </ul>
+
+  <h2>Security</h2>
+  <p>OAuth tokens are stored with restrictive file permissions (owner read/write
+  only) in the user's local application-data directory. Because the App runs
+  locally, the security of the data also depends on the security of the user's own
+  device.</p>
+
+  <h2>Children</h2>
+  <p>The App is a workplace productivity tool and is not directed to children under
+  13.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>This policy may be updated. Material changes will be reflected by the "Last
+  updated" date above.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy:
+  <a href="mailto:tv88dn@gmail.com">tv88dn@gmail.com</a></p>
+</body>
+</html>
