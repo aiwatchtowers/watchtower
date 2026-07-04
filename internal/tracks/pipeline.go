@@ -709,6 +709,18 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			continue
 		}
 
+		// Custom tracks take priority: fold matching auto content into them
+		// without overwriting their user-authored narrative/instruction.
+		if custID := p.matchCustomTrack(userID, fp, item.Text, item.Context); custID > 0 {
+			if err := p.db.FoldSourceRefsIntoTrack(custID, sourceRefs, channelIDsJSON, itemDigestIDs); err != nil {
+				p.logger.Printf("tracks: warning: fold into custom track #%d failed: %v", custID, err)
+			} else {
+				p.logger.Printf("tracks: folded auto content into custom track #%d: %.80s", custID, item.Text)
+				stored++
+			}
+			continue
+		}
+
 		// Dedup: fingerprint match against existing tracks.
 		if len(fp) > 0 {
 			if matches, err := p.db.FindTracksByFingerprint(userID, fp); err == nil && len(matches) > 0 {
@@ -1530,6 +1542,46 @@ func jaccardSimilarity(a, b map[string]struct{}) float64 {
 		return 0
 	}
 	return float64(intersection) / float64(union)
+}
+
+// customSimilarityThreshold is intentionally below textSimilarityThreshold so
+// custom tracks (which the operator explicitly created) claim borderline
+// matches before the auto splitter can spawn a near-duplicate.
+const customSimilarityThreshold = 0.22
+
+// matchCustomTrack returns the id of a custom track this item should fold into,
+// or 0. Fingerprint match wins; else best Jaccard over custom tracks >= 0.22.
+func (p *Pipeline) matchCustomTrack(userID string, fp []string, text, context string) int {
+	if len(fp) > 0 {
+		if matches, err := p.db.FindTracksByFingerprint(userID, fp); err == nil {
+			for _, m := range matches {
+				if m.Origin == "custom" {
+					return m.ID
+				}
+			}
+		}
+	}
+	p.cacheMu.RLock()
+	all := p.allActiveTracksRef
+	p.cacheMu.RUnlock()
+	newTokens := tokenizeText(text, context)
+	if len(newTokens) == 0 {
+		return 0
+	}
+	bestID, bestScore := 0, 0.0
+	for _, t := range all {
+		if t.Origin != "custom" || t.AssigneeUserID != userID {
+			continue
+		}
+		score := jaccardSimilarity(newTokens, tokenizeText(t.Text, t.Context))
+		if score > bestScore {
+			bestScore, bestID = score, t.ID
+		}
+	}
+	if bestScore >= customSimilarityThreshold {
+		return bestID
+	}
+	return 0
 }
 
 // findSimilarTrack finds the most similar existing active track by text content.

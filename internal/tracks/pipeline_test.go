@@ -2,6 +2,7 @@ package tracks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -1119,4 +1120,53 @@ func TestTracksLearnedPrefsHelper(t *testing.T) {
 	prefs := pipe.learnedPrefs()
 	assert.Contains(t, prefs, "LEARNED PREFERENCES")
 	assert.Contains(t, prefs, "tracks:channel:Ctest")
+}
+
+func TestAutoExtractionFoldsIntoCustomTrack(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
+
+	// Seed a custom track whose text/context match the auto item below.
+	custID, err := database.CreateCustomTrack(db.Track{
+		AssigneeUserID: "U1", Text: "Watch the HashBank refund decision",
+		Context: "refund ownership", Instruction: "watch refund", Fingerprint: `["hashbank"]`,
+	})
+	require.NoError(t, err)
+
+	pipe := New(database, testConfig(), &mockGenerator{}, log.Default())
+
+	// Pre-load cache (normally done in RunForWindow); includes the custom track.
+	allActive, _ := database.GetAllActiveTracks()
+	pipe.allActiveTracksRef = allActive
+
+	stored := pipe.storeTrackItems([]aiItem{{
+		Text: "Decide HashBank refund owner", Context: "who owns the hashbank refund",
+		Priority: "high", Ownership: "mine",
+		SourceRefs: json.RawMessage(`[{"ts":"1","author":"a","text":"x"}]`),
+	}}, "U1", "C1", "general", nil, 1, 0, 0)
+
+	// The auto item folded into the custom track → no new auto track created.
+	assert.Equal(t, 1, stored)
+
+	autos, _ := database.GetTracks(db.TrackFilter{})
+	customCount, autoCount := 0, 0
+	for _, tr := range autos {
+		if tr.Origin == "custom" {
+			customCount++
+		} else {
+			autoCount++
+		}
+	}
+	if autoCount != 0 || customCount != 1 {
+		t.Fatalf("expected fold into the 1 custom track, got auto=%d custom=%d", autoCount, customCount)
+	}
+
+	// Narrative preserved.
+	got, _ := database.GetTrackByID(int(custID))
+	if got.Text != "Watch the HashBank refund decision" {
+		t.Fatalf("custom narrative overwritten: %q", got.Text)
+	}
+	assert.True(t, got.HasUpdates, "fold should flag has_updates")
 }
