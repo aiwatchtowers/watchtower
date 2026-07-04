@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/briefing"
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
+	"watchtower/internal/customtracks"
 	"watchtower/internal/daemon"
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
@@ -27,7 +28,6 @@ import (
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
-	"watchtower/internal/observers"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -287,7 +287,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 				d.SetInboxPipeline(inbox.New(database, cfg, gen, logger))
 			}
 			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
-			d.SetObserverPipeline(observers.New(database, gen, cfg.Digest.Language, logger))
+			customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
+			d.SetCustomTracksPipeline(customTracksPipe)
 			if cfg.DayPlan.Enabled {
 				dayPlanPipe := dayplan.New(database, cfg, gen, logger)
 				dayPlanPipe.SetPromptStore(prompts.New(database, nil))

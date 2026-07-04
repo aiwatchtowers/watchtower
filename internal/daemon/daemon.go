@@ -22,7 +22,7 @@ import (
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
 
-	"watchtower/internal/observers"
+	"watchtower/internal/customtracks"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -45,26 +45,26 @@ var minPollInterval = 1 * time.Second
 
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
-	orchestrator    *sync.Orchestrator
-	config          *config.Config
-	logger          *log.Logger
-	wakeCh          <-chan struct{}
-	pidPath         string
-	db              *db.DB
-	digestPipe      *digest.Pipeline
-	tracksPipe      *tracks.Pipeline
-	peoplePipe      *guide.Pipeline
-	briefingPipe    *briefing.Pipeline
-	inboxPipe       *inbox.Pipeline
-	nextStepPipe    *targets.Pipeline
-	observerPipe    *observers.Pipeline
-	calendarSyncer  *calendar.Syncer
-	jiraSyncer      *jira.Syncer
-	dayPlanPipeline DayPlanRunner
-	lastJira        time.Time
-	lastPeople      time.Time // when people cards last ran (once per day)
-	lastBriefing    time.Time // when briefing last ran (once per day)
-	lastDayPlanDate string    // YYYY-MM-DD of last generation, for dedup
+	orchestrator     *sync.Orchestrator
+	config           *config.Config
+	logger           *log.Logger
+	wakeCh           <-chan struct{}
+	pidPath          string
+	db               *db.DB
+	digestPipe       *digest.Pipeline
+	tracksPipe       *tracks.Pipeline
+	peoplePipe       *guide.Pipeline
+	briefingPipe     *briefing.Pipeline
+	inboxPipe        *inbox.Pipeline
+	nextStepPipe     *targets.Pipeline
+	customTracksPipe *customtracks.Pipeline
+	calendarSyncer   *calendar.Syncer
+	jiraSyncer       *jira.Syncer
+	dayPlanPipeline  DayPlanRunner
+	lastJira         time.Time
+	lastPeople       time.Time // when people cards last ran (once per day)
+	lastBriefing     time.Time // when briefing last ran (once per day)
+	lastDayPlanDate  string    // YYYY-MM-DD of last generation, for dedup
 }
 
 // New creates a Daemon that runs incremental syncs via the given orchestrator.
@@ -112,10 +112,12 @@ func (d *Daemon) SetNextStepPipeline(p *targets.Pipeline) {
 	d.nextStepPipe = p
 }
 
-// SetObserverPipeline sets the observers pipeline that produces target activity
-// timelines from recent cross-source events.
-func (d *Daemon) SetObserverPipeline(p *observers.Pipeline) {
-	d.observerPipe = p
+// SetCustomTracksPipeline sets the pipeline that scans user-authored custom
+// tracks over recent cross-source activity, producing their event timelines.
+// It runs BEFORE auto-track extraction so custom narratives/fingerprints are
+// current when the auto splitter dedups against them.
+func (d *Daemon) SetCustomTracksPipeline(p *customtracks.Pipeline) {
+	d.customTracksPipe = p
 }
 
 // SetCalendarSyncer sets the calendar syncer for post-sync calendar fetch.
@@ -221,6 +223,8 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
 
+	d.phaseCustomTrackScan(ctx) // before auto extraction so folds land
+
 	// Phases 2-4 run in parallel where possible:
 	//   Group A: Tracks → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
@@ -243,7 +247,6 @@ func (d *Daemon) runSync(ctx context.Context) {
 
 	d.phaseInbox(ctx)
 	d.phaseNextStep(ctx)
-	d.phaseObservers(ctx)
 	d.phaseBriefing(ctx)
 
 	now := time.Now()
@@ -529,20 +532,18 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 	})
 }
 
-// phaseObservers runs enabled observers over recent activity, producing timeline
-// events on watched targets. Runs after next-step so activity on freshly
-// surfaced targets is included. Observers are user-created only (the lazy
-// default observers were removed by migration 00006).
-func (d *Daemon) phaseObservers(ctx context.Context) {
-	if d.observerPipe == nil {
+// phaseCustomTrackScan runs enabled custom tracks over recent activity,
+// appending timeline events. Runs before auto-track extraction so folds land.
+func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
+	if d.customTracksPipe == nil {
 		return
 	}
-	d.trackedPipelineRun("observers", func() pipelineRunStats {
-		n, err := d.observerPipe.Run(ctx)
+	d.trackedPipelineRun("custom_tracks", func() pipelineRunStats {
+		n, err := d.customTracksPipe.Run(ctx)
 		if err != nil {
-			d.logger.Printf("observers error: %v", err)
+			d.logger.Printf("custom tracks error: %v", err)
 		} else if n > 0 {
-			d.logger.Printf("observers: created %d event(s)", n)
+			d.logger.Printf("custom tracks: created %d event(s)", n)
 		}
 		return pipelineRunStats{items: n, err: err}
 	})
