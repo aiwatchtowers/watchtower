@@ -67,6 +67,15 @@ final class CustomTrackTimelineViewModel {
     }
 
     func refreshNow() async {
+        // A watch with no events yet needs a history BACKFILL (the two-stage
+        // shortlist→extract over the whole window since it was created), not a
+        // forward scan that only reads ~40 items past the watermark and barely
+        // moves it. Once the timeline has events, incremental forward scans
+        // keep it current cheaply.
+        if events.isEmpty {
+            await scanHistory(since: track.createdDate, label: "since the track was created")
+            return
+        }
         isRefreshing = true
         errorMessage = nil
         lastScanNote = nil
