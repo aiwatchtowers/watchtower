@@ -41,7 +41,6 @@ struct TargetDetailView: View {
     @State private var isGeneratingNextStep = false
     @State private var nextStepError: String?
     @State private var assistantInput: String = ""
-    @State private var watchText = ""
     @State private var showWatchSheet = false
     @State private var watchesVM: TargetWatchesViewModel?
     @FocusState private var focusedField: Field?
