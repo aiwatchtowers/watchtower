@@ -197,6 +197,11 @@ type Track struct {
 	PromptVersion    int
 	CreatedAt        string
 	UpdatedAt        string
+	Origin           string // "auto" (default) or "custom"
+	Instruction      string // custom tracks: watch instruction
+	Enabled          bool   // custom tracks: scan on/off
+	LastRunAt        string // custom tracks: scan watermark, "" = never
+	LinkedTargetID   int    // custom tracks: linked target id, 0 = none
 }
 
 // Digest represents an AI-generated summary of channel activity.
