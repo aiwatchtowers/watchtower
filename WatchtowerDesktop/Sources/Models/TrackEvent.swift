@@ -1,14 +1,12 @@
 import Foundation
 import GRDB
 
-/// One item on a target's observer-produced activity timeline. Mirrors the Go
-/// `observer_events` table. `proposedAction` decodes into the existing
-/// `ProposedAction` so the chat executor can apply it.
-struct ObserverEvent: Codable, FetchableRecord, Identifiable, Equatable {
+/// One item on a custom track's scan-produced activity timeline. Mirrors the Go
+/// `track_events` table. `proposedAction` decodes into the existing
+/// `ProposedAction` so the chat executor can apply it to a linked target.
+struct TrackEvent: Codable, FetchableRecord, Identifiable, Equatable {
     var id: Int
-    var observerId: Int
-    var entityType: String
-    var entityId: Int
+    var trackId: Int
     var summary: String
     var detail: String
     var sourceType: String
@@ -22,9 +20,7 @@ struct ObserverEvent: Codable, FetchableRecord, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id
-        case observerId = "observer_id"
-        case entityType = "entity_type"
-        case entityId = "entity_id"
+        case trackId = "track_id"
         case summary, detail
         case sourceType = "source_type"
         case sourceId = "source_id"
