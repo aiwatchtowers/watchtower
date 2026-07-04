@@ -20,6 +20,7 @@ struct TrackDetailView: View {
     @State private var collecting = true
     @State private var isEditingInstruction = false
     @State private var draftInstruction = ""
+    @State private var showDeleteConfirm = false
 
     var body: some View {
         VSplitView {
@@ -172,6 +173,16 @@ struct TrackDetailView: View {
             try TrackQueries.setEnabled(database, id: track.id, enabled: on)
         }
         collecting = on
+    }
+
+    /// Permanently deletes a custom track (and its events) and closes the pane;
+    /// the list's tracks-count observation drops it automatically.
+    private func deleteTrack() {
+        guard let db = appState.databaseManager else { return }
+        onClose?()
+        try? db.dbPool.write { database in
+            try TrackQueries.delete(database, id: track.id)
+        }
     }
 
     /// Builds and starts the custom-track timeline VM. When the track is linked
@@ -654,7 +665,27 @@ struct TrackDetailView: View {
                 }
             }
 
-            if track.isDismissed {
+            if track.isCustom {
+                // A watch is user-created and one-off — offer a real delete
+                // (cascades its events) rather than the soft dismiss used for
+                // auto-extracted tracks.
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .confirmationDialog(
+                    "Delete this watch?",
+                    isPresented: $showDeleteConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete", role: .destructive) { deleteTrack() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The watch and its collected activity are removed. This can't be undone.")
+                }
+            } else if track.isDismissed {
                 Button {
                     viewModel.restoreTrack(track)
                 } label: {

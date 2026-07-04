@@ -211,6 +211,12 @@ enum TrackQueries {
         try String.fetchOne(db, sql: "SELECT last_run_at FROM tracks WHERE id = ?", arguments: [id]) ?? ""
     }
 
+    /// Permanently deletes a track and cascades its track_events (FK ON DELETE
+    /// CASCADE). Used for user-created custom tracks; auto tracks use dismiss.
+    static func delete(_ db: Database, id: Int) throws {
+        try db.execute(sql: "DELETE FROM tracks WHERE id = ?", arguments: [id])
+    }
+
     // MARK: - Workspace helper
 
     static func fetchCurrentUserID(_ db: Database) throws -> String? {
