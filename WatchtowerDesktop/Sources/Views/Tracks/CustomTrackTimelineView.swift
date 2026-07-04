@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// The observer-produced activity timeline shown on a target's detail page.
-struct ObserverTimelineView: View {
-    @State var viewModel: ObserverTimelineViewModel
-    @State private var showingManage = false
+/// The scan-produced activity timeline shown on a CUSTOM track's detail page.
+/// Ported from the removed `ObserverTimelineView`. A custom track carries a
+/// single watch instruction (not N observers), so the observer-chip UI is gone;
+/// the refresh + history-scan controls remain. A confirmable proposed action is
+/// only actionable when the track is linked to a target (`canApplyActions`).
+struct CustomTrackTimelineView: View {
+    let viewModel: CustomTrackTimelineViewModel
     @State private var showingCustom = false
     @State private var customSince = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
 
@@ -34,8 +37,8 @@ struct ObserverTimelineView: View {
                     Button("Last 7 days") { scanHistory(days: 7) }
                     Button("Last 30 days") { scanHistory(days: 30) }
                     Button("Last 90 days") { scanHistory(days: 90) }
-                    Button("Since target start") {
-                        Task { await viewModel.scanHistory(since: viewModel.target.createdDate, label: "since target start") }
+                    Button("Since track created") {
+                        Task { await viewModel.scanHistory(since: viewModel.track.createdDate, label: "since track created") }
                     }
                     Button("All history") {
                         Task { await viewModel.scanHistory(since: nil, label: "all history") }
@@ -50,11 +53,7 @@ struct ObserverTimelineView: View {
                 .disabled(viewModel.isRefreshing)
                 .help("Scan history and fill the timeline")
                 .popover(isPresented: $showingCustom, arrowEdge: .bottom) { customScanPopover }
-                Button { showingManage = true } label: { Image(systemName: "slider.horizontal.3") }
-                    .buttonStyle(.borderless)
             }
-
-            observerChips
 
             if let status = viewModel.scanStatus {
                 HStack(spacing: 8) {
@@ -77,24 +76,14 @@ struct ObserverTimelineView: View {
             }
 
             if viewModel.events.isEmpty {
-                if viewModel.observers.isEmpty {
-                    Text("No observers yet — tap + to watch this goal.")
-                        .font(.caption).foregroundColor(.secondary)
-                } else {
-                    Text("No activity yet. Observers will surface relevant updates as they happen.")
-                        .font(.caption).foregroundColor(.secondary)
-                }
+                Text("No activity yet. This track surfaces relevant updates as they happen — or scan history to backfill.")
+                    .font(.caption).foregroundColor(.secondary)
             } else {
                 ForEach(viewModel.events) { event in
-                    ObserverEventRow(event: event, viewModel: viewModel)
+                    TrackEventRow(event: event, viewModel: viewModel)
                         .onAppear { viewModel.markRead(event) }
                 }
             }
-        }
-        .onAppear { viewModel.start() }
-        .onDisappear { viewModel.stop() }
-        .sheet(isPresented: $showingManage) {
-            ObserverManagementSheet(viewModel: viewModel)
         }
     }
 
@@ -128,46 +117,11 @@ struct ObserverTimelineView: View {
         .padding()
         .frame(width: 320)
     }
-
-    /// Always-visible row of observer chips (name + enabled dot) plus an add
-    /// affordance, so the user can see and reach their observers without opening
-    /// the management sheet. Tapping a chip or "+" opens that sheet.
-    private var observerChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(viewModel.observers) { observer in
-                    Button { showingManage = true } label: {
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(observer.enabled ? Color.green : Color.secondary)
-                                .frame(width: 6, height: 6)
-                            Text(observer.name).font(.caption).lineLimit(1)
-                        }
-                        .observerChipBackground()
-                    }
-                    .buttonStyle(.plain)
-                }
-                Button { showingManage = true } label: {
-                    Image(systemName: "plus").font(.caption)
-                        .observerChipBackground()
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
 }
 
-private extension View {
-    func observerChipBackground() -> some View {
-        padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.secondary.opacity(0.12), in: Capsule())
-    }
-}
-
-private struct ObserverEventRow: View {
-    let event: ObserverEvent
-    let viewModel: ObserverTimelineViewModel
+private struct TrackEventRow: View {
+    let event: TrackEvent
+    let viewModel: CustomTrackTimelineViewModel
     @State private var expanded = false
     @State private var sourceURL: String?
 
@@ -206,8 +160,11 @@ private struct ObserverEventRow: View {
                 HStack(spacing: 8) {
                     Text(action.reason).font(.caption).foregroundColor(.secondary).lineLimit(2)
                     Spacer()
-                    Button("Apply") { viewModel.applyAction(for: event) }
-                        .controlSize(.small)
+                    // Only a track linked to a target can apply a proposed action.
+                    if viewModel.canApplyActions {
+                        Button("Apply") { viewModel.applyAction(for: event) }
+                            .controlSize(.small)
+                    }
                     Button("Dismiss") { viewModel.dismissAction(for: event) }
                         .controlSize(.small).buttonStyle(.borderless)
                 }

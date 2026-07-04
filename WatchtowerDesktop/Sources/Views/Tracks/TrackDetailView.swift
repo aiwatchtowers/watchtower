@@ -14,6 +14,7 @@ struct TrackDetailView: View {
     @State private var jiraIssues: [JiraIssue] = []
     @State private var trackStates: [TrackState] = []
     @State private var expandedTrackStateIDs: Set<Int> = []
+    @State private var timelineVM: CustomTrackTimelineViewModel?
 
     var body: some View {
         VSplitView {
@@ -23,6 +24,7 @@ struct TrackDetailView: View {
                     textSection
                     requesterSection
                     contextSection
+                    customActivitySection
                     blockingSection
                     subItemsSection
                     decisionSection
@@ -56,13 +58,72 @@ struct TrackDetailView: View {
                 loadLinkedTargets(db: db)
                 loadJiraIssues(db: db)
                 loadTrackStates(db: db)
+                startTimelineIfCustom(db: db)
             }
+        }
+        .onChange(of: track.id) {
+            timelineVM?.stop()
+            timelineVM = nil
+            if let db = appState.databaseManager {
+                startTimelineIfCustom(db: db)
+            }
+        }
+        .onDisappear {
+            timelineVM?.stop()
+            timelineVM = nil
         }
         .onChange(of: showCreateTarget) { _, isShowing in
             if !isShowing, let db = appState.databaseManager {
                 loadLinkedTargets(db: db)
             }
         }
+    }
+
+    // MARK: - Custom-track Activity
+
+    /// Timeline of scan-produced events for a custom track. Standalone tracks
+    /// (no linked target) still see the timeline; only the per-event "Apply"
+    /// affordance is gated on the track being linked (see the VM's
+    /// `canApplyActions`).
+    @ViewBuilder
+    private var customActivitySection: some View {
+        if track.isCustom {
+            VStack(alignment: .leading, spacing: 12) {
+                if !track.instruction.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Watch instruction")
+                            .font(.headline)
+                        Text(track.instruction)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                if let vm = timelineVM {
+                    CustomTrackTimelineView(viewModel: vm)
+                }
+            }
+        }
+    }
+
+    /// Builds and starts the custom-track timeline VM. When the track is linked
+    /// to a target, a TargetsViewModel is supplied so a confirmed proposed
+    /// action can mutate that target; standalone tracks pass nil.
+    private func startTimelineIfCustom(db: DatabaseManager) {
+        guard track.isCustom, timelineVM == nil,
+              let runner = ProcessCLIRunner.makeDefault() else { return }
+        let targetsVM: TargetsViewModel? = track.linkedTargetID != nil
+            ? TargetsViewModel(dbManager: db)
+            : nil
+        let vm = CustomTrackTimelineViewModel(
+            track: track,
+            dbManager: db,
+            scanService: TrackScanService(runner: runner),
+            targetsViewModel: targetsVM
+        )
+        vm.start()
+        timelineVM = vm
     }
 
     // MARK: - Header

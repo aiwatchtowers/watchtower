@@ -167,7 +167,7 @@ struct TracksListView: View {
             if vm.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.updatedTracks.isEmpty && vm.allTracks.isEmpty {
+            } else if vm.updatedTracks.isEmpty && vm.allTracks.isEmpty && vm.customTracks.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "binoculars")
                         .font(.system(size: 48))
@@ -184,6 +184,14 @@ struct TracksListView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 1) {
+                        // Pinned Custom section — user-authored tracks first.
+                        if !vm.customTracks.isEmpty {
+                            sectionHeader("Custom", count: vm.customTracks.count, color: .accentColor)
+                            ForEach(vm.customTracks) { track in
+                                trackRow(track, vm: vm, isUpdate: false)
+                            }
+                        }
+
                         // Updates section
                         if !vm.updatedTracks.isEmpty {
                             sectionHeader("Updates", count: vm.updatedTracks.count, color: .orange)
