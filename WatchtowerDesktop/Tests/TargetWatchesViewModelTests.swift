@@ -57,4 +57,45 @@ final class TargetWatchesViewModelTests: XCTestCase {
         }
         XCTAssertEqual(events.map(\.summary), ["a2", "a1"], "only t1's watch events, newest-first")
     }
+
+    func testApplyActionMutatesTargetAndMarksApplied() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try manager.dbPool.write { db in try db.execute(sql: Self.trackEventsSQL) }
+
+        let targetID = try manager.dbPool.write { db -> Int in
+            try TargetQueries.create(db, text: "ship it", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let (watchID, eventID) = try manager.dbPool.write { db -> (Int, Int) in
+            let w = try makeWatch(db, targetID: targetID, text: "watch ship")
+            try db.execute(sql: """
+                INSERT INTO track_events (track_id, summary, proposed_action, action_status)
+                VALUES (?, 'done', ?, 'pending')
+                """, arguments: [w, #"{"type":"update_status","reason":"shipped","status":"done"}"#])
+            return (w, Int(db.lastInsertedRowID))
+        }
+        _ = watchID
+
+        let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) })
+        let vm = TargetWatchesViewModel(
+            target: target,
+            dbManager: manager,
+            scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
+            targetsViewModel: TargetsViewModel(dbManager: manager),
+            scanCenter: TrackScanCenter()
+        )
+        let event = try XCTUnwrap(manager.dbPool.read { db in
+            try TrackEvent.fetchOne(db, sql: "SELECT * FROM track_events WHERE id = ?", arguments: [eventID])
+        })
+        vm.applyAction(for: event)
+
+        let status = try manager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [targetID])
+        }
+        XCTAssertEqual(status, "done")
+        let evStatus = try manager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT action_status FROM track_events WHERE id = ?", arguments: [eventID])
+        }
+        XCTAssertEqual(evStatus, "applied")
+    }
 }

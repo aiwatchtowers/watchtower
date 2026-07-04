@@ -80,4 +80,79 @@ final class TargetWatchesViewModel {
         }
         originTrack = try? dbPool.read { db in try TrackQueries.fetchByID(db, id: tid) }
     }
+
+    // MARK: - Scanning
+
+    func isScanning(_ trackID: Int) -> Bool { scanCenter.isRunning(trackID) }
+
+    /// Scans one watch over the given range (nil since = all history), tracked
+    /// in the shared center so the indicator survives navigation.
+    func scanWatch(_ watch: Track, since: Date?, label: String) async {
+        scanCenter.begin(watch.id)
+        var note: String?
+        defer { scanCenter.finish(watch.id, note: note) }
+        do {
+            let iso = since.map { Self.isoFormatter.string(from: $0) }
+            let created = try await scanService.run(trackID: watch.id, since: iso)
+            note = created.isEmpty
+                ? "\(watch.text): no new activity (\(label))."
+                : "\(watch.text): \(created.count) new update(s)."
+        } catch {
+            note = "\(watch.text): scan failed — \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Scans every enabled watch of the target (concurrently is unnecessary —
+    /// each is a slow subprocess; run them in sequence to keep it simple).
+    func scanAll() async {
+        for w in watches where w.enabled {
+            await scanWatch(w, since: nil, label: "all history")
+        }
+    }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
+    // MARK: - Feed actions
+
+    /// Every feed event originates from a watch linked to this target, so a
+    /// confirmed proposed action always has a target to mutate.
+    var canApplyActions: Bool { true }
+
+    func applyAction(for event: TrackEvent) {
+        guard let action = event.decodedAction else { return }
+        do {
+            guard let fresh = try dbPool.read({ db in try TargetQueries.fetchByID(db, id: target.id) }) else {
+                errorMessage = "This target no longer exists — it may have been deleted."
+                return
+            }
+            _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
+            try dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func dismissAction(for event: TrackEvent) {
+        do { try dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") } }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    func markRead(_ event: TrackEvent) {
+        guard event.isUnread else { return }
+        try? dbPool.write { db in try TrackEventQueries.markRead(db, id: event.id) }
+    }
+
+    // MARK: - Watch management
+
+    func setCollecting(_ watch: Track, _ on: Bool) {
+        try? dbPool.write { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
+    }
+
+    func deleteWatch(_ watch: Track) {
+        try? dbPool.write { db in try TrackQueries.delete(db, id: watch.id) }
+    }
 }
