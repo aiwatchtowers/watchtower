@@ -32,6 +32,9 @@ var Defaults = map[string]string{
 	ObserverRun:          defaultObserverRun,
 	ObserverCompose:      defaultObserverCompose,
 	ObserverShortlist:    defaultObserverShortlist,
+	TrackCompose:         defaultTrackCompose,
+	TrackRun:             defaultTrackRun,
+	TrackShortlist:       defaultTrackShortlist,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -62,6 +65,9 @@ var AllIDs = []string{
 	ObserverRun,
 	ObserverCompose,
 	ObserverShortlist,
+	TrackCompose,
+	TrackRun,
+	TrackShortlist,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -94,6 +100,9 @@ var DefaultVersions = map[string]int{
 	ObserverRun:        1, // v1: cross-source event timeline for an observed entity
 	ObserverCompose:    1, // v1: draft observer name+instruction from a free-text request
 	ObserverShortlist:  1, // v1: cheap title-only relevance filter for history backfill
+	TrackCompose:       1, // v1: draft custom-track title+instruction from a free-text request
+	TrackRun:           1, // v1: custom-track timeline events from recent cross-source activity
+	TrackShortlist:     1, // v1: cheap title-only relevance filter for custom-track backfill
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -128,6 +137,9 @@ var Descriptions = map[string]string{
 	ObserverRun:          "Observer run — produce timeline events for an observed entity from recent cross-source activity",
 	ObserverCompose:      "Observer compose — draft a scoped observer name + watch instruction from a free-text user request",
 	ObserverShortlist:    "Observer shortlist — cheap title-only relevance filter that picks candidate activity for a history backfill before the full extract",
+	TrackRun:             "Custom track run — timeline events from recent cross-source activity",
+	TrackCompose:         "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
+	TrackShortlist:       "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1223,3 +1235,51 @@ Rules:
 - Judge from the title alone. When a title is ambiguous but could relate, INCLUDE it — stage 2 will discard false positives. Only drop titles that are clearly unrelated.
 - Use the exact kind and id printed in brackets for each item. Do not invent ids.
 - Respect the selection cap stated in the request; if more look relevant, keep the strongest. An empty {"refs": []} is valid when nothing fits.`
+
+const defaultTrackRun = `You are a CUSTOM TRACK watcher. Your job: read the track's WATCH INSTRUCTION, scan the RECENT ACTIVITY from all sources, and emit only the events genuinely relevant to THIS track per the instruction. Ignore everything unrelated.
+
+Return ONLY a JSON object (no markdown, no prose):
+{
+  "events": [
+    {
+      "summary": "one-line, past-tense, what happened and why it matters to this track",
+      "detail": "optional 1-2 extra sentences, or \"\"",
+      "source_type": "digest | track | inbox | slack | jira | calendar | decision",
+      "source_id": "the id/ref from the activity item, or \"\"",
+      "source_refs": ["permalink or link backing this event", "..."],
+      "decision": {"text": "what was decided", "by": "@user or \"\"", "importance": "high|medium|low"},
+      "proposed_action": {"type": "...", "reason": "why", ...}
+    }
+  ]
+}
+
+Rules:
+- Emit an event ONLY when the activity is relevant to this specific track per the watch instruction. When unsure, leave it out. An empty {"events": []} is a correct and common answer.
+- "summary" is mandatory and specific — name the change, not "there was activity".
+- Omit "decision" unless a real decision was made.
+- Include "proposed_action" ONLY when this track is linked to a goal/task the operator owns AND the activity clearly justifies a mutation to it. Standalone tracks (no linked target) MUST omit "proposed_action". When present it MUST be one of:
+  {"type":"update_status","reason":"...","status":"todo|in_progress|blocked|done|dismissed|snoozed"}
+  {"type":"update_progress","reason":"...","progress":0-100}
+  {"type":"update_notes","reason":"...","note":"text to append"}
+  {"type":"add_sub_item","reason":"...","text":"checklist item"}
+- Do not invent activity. Every event must trace to an item in RECENT ACTIVITY.
+- Keep "summary"/"detail" in the operator's language.`
+
+const defaultTrackCompose = `You design a WATCH INSTRUCTION for a CUSTOM TRACK the operator wants to follow. A custom track scans recent cross-source activity (Slack digests, action-item tracks, inbox/Jira/calendar items) and surfaces ONLY updates relevant to its instruction.
+
+You are given the operator's free-text USER REQUEST describing what they want watched (and, when present, a linked TARGET for context). Produce:
+- "title": a short label (at most 6 words) naming what this track follows.
+- "instruction": a precise watch instruction. Name the concrete topics, people, decisions, or blockers to watch for, and explicitly exclude unrelated chatter. Another AI reads this as its relevance filter, so be specific and unambiguous. Write it in the operator's language.
+
+Return ONLY a JSON object (no markdown fences, no prose) with exactly this shape:
+{"title": "...", "instruction": "..."}`
+
+const defaultTrackShortlist = `You are the RELEVANCE FILTER (stage 1 of 2) for a CUSTOM TRACK. You are shown the WATCH INSTRUCTION and a numbered list of activity TITLES (one short headline per item, across Slack digests, action-item tracks, and inbox items). A second AI will read the FULL content of whatever you select, so your only job is to cast a sensible net: pick every item whose title could plausibly relate to this track per the instruction.
+
+Return ONLY a JSON object (no markdown, no prose):
+{"refs": [{"kind": "digest|track|inbox", "id": 123}, ...]}
+
+Rules:
+- Judge from the title alone. When ambiguous but possibly related, INCLUDE it — stage 2 discards false positives. Only drop titles clearly unrelated.
+- Use the exact kind and id printed in brackets. Do not invent ids.
+- Respect the selection cap stated in the request. An empty {"refs": []} is valid when nothing fits.`

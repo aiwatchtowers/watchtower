@@ -40,6 +40,9 @@ const (
 	ObserverRun          = "observer.run"
 	ObserverCompose      = "observer.compose"
 	ObserverShortlist    = "observer.shortlist"
+	TrackCompose         = "track.compose"
+	TrackRun             = "track.run"
+	TrackShortlist       = "track.shortlist"
 )
 
 // Store loads, caches, and persists prompt templates.
