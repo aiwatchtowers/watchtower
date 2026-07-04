@@ -175,6 +175,21 @@ enum TrackQueries {
         )
     }
 
+    // MARK: - Custom tracks
+
+    static func fetchCustomTracks(_ db: Database) throws -> [Track] {
+        try Track.fetchAll(db, sql: """
+            SELECT * FROM tracks WHERE origin = 'custom' AND dismissed_at = ''
+            ORDER BY updated_at DESC
+            """)
+    }
+
+    static func setEnabled(_ db: Database, id: Int, enabled: Bool) throws {
+        try db.execute(sql: """
+            UPDATE tracks SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?
+            """, arguments: [enabled, id])
+    }
+
     // MARK: - Workspace helper
 
     static func fetchCurrentUserID(_ db: Database) throws -> String? {
