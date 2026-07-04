@@ -4,6 +4,7 @@ struct TracksListView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: TracksViewModel?
     @State private var selectedItemID: Int?
+    @State private var showCreateSheet = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -23,6 +24,11 @@ struct TracksListView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: selectedItemID)
+        .sheet(isPresented: $showCreateSheet) {
+            // Standalone custom track (no linked target). The tracks-table
+            // ValueObservation refreshes the Custom section on insert.
+            CustomTrackManagementSheet()
+        }
         .onAppear {
             if viewModel == nil, let db = appState.databaseManager {
                 let vm = TracksViewModel(dbManager: db)
@@ -74,6 +80,15 @@ struct TracksListView: View {
                             .padding(.vertical, 1)
                             .background(.orange, in: Capsule())
                     }
+
+                    Button {
+                        showCreateSheet = true
+                    } label: {
+                        Image(systemName: "plus.circle")
+                            .font(.body)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Create a custom track to watch")
 
                     Spacer()
 
