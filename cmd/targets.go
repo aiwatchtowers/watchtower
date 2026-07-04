@@ -34,10 +34,10 @@ var (
 	targetsFlagSource      string
 	targetsFlagLevel       string
 	// targetsFlagPeriod removed — period filtering returns in V2 (DB filter not yet wired)
-	targetsFlagPeriodStart  string
-	targetsFlagPeriodEnd    string
-	targetsFlagParent       int
-	targetsFlagInstruction  string
+	targetsFlagPeriodStart string
+	targetsFlagPeriodEnd   string
+	targetsFlagParent      int
+	targetsFlagInstruction string
 
 	// link subcommand flags
 	targetsFlagLinkParent   int
