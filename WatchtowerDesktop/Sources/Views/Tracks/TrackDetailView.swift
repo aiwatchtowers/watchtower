@@ -562,15 +562,29 @@ struct TrackDetailView: View {
                     .foregroundStyle(.red)
             }
 
-            Button {
-                openCreateTarget()
-            } label: {
-                Label("Create Target", systemImage: "scope")
-            }
-            .buttonStyle(.bordered)
-            .disabled(isBuildingPrefill)
-            .sheet(isPresented: $showCreateTarget) {
-                CreateTargetSheet(prefill: targetPrefill)
+            // A custom track is a watch, not extracted work — "Create Target"
+            // makes no sense for it. When it's linked to a target, offer a jump
+            // to that target instead; standalone custom tracks show neither.
+            if track.isCustom {
+                if let linkedID = track.linkedTargetID {
+                    Button {
+                        appState.navigateToTarget(linkedID)
+                    } label: {
+                        Label("Go to Target", systemImage: "scope")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else {
+                Button {
+                    openCreateTarget()
+                } label: {
+                    Label("Create Target", systemImage: "scope")
+                }
+                .buttonStyle(.bordered)
+                .disabled(isBuildingPrefill)
+                .sheet(isPresented: $showCreateTarget) {
+                    CreateTargetSheet(prefill: targetPrefill)
+                }
             }
 
             if track.isDismissed {

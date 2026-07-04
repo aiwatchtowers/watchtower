@@ -25,6 +25,9 @@ final class CustomTrackTimelineViewModel {
     /// banner so the long (multi-minute) operation is unmistakably in progress.
     var scanStatus: String?
     var errorMessage: String?
+    /// Transient result note shown after a scan finishes, so an empty result
+    /// reads as "ran, found nothing" rather than "nothing happened".
+    var lastScanNote: String?
 
     /// True when a confirmed proposed action can be applied: the track must be
     /// linked to a target AND a TargetsViewModel must be available to mutate it.
@@ -65,10 +68,16 @@ final class CustomTrackTimelineViewModel {
 
     func refreshNow() async {
         isRefreshing = true
+        errorMessage = nil
+        lastScanNote = nil
         defer { isRefreshing = false }
         do {
-            _ = try await scanService.run(trackID: track.id)
-            // The CLI wrote rows; the ValueObservation stream pushes them.
+            // The CLI wrote any new rows; the ValueObservation stream pushes
+            // them. The returned slice is exactly what was created this run.
+            let created = try await scanService.run(trackID: track.id)
+            lastScanNote = created.isEmpty
+                ? "Scan complete — no new activity since the last check. Use “Scan history” to backfill older activity."
+                : "Found \(created.count) new update\(created.count == 1 ? "" : "s")."
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -82,10 +91,14 @@ final class CustomTrackTimelineViewModel {
         isRefreshing = true
         scanStatus = "Scanning \(label)… this can take a few minutes"
         errorMessage = nil
+        lastScanNote = nil
         defer { isRefreshing = false; scanStatus = nil }
         let iso = Self.isoFormatter.string(from: since ?? Date(timeIntervalSince1970: 0))
         do {
-            _ = try await scanService.run(trackID: track.id, since: iso)
+            let created = try await scanService.run(trackID: track.id, since: iso)
+            lastScanNote = created.isEmpty
+                ? "History scan complete — no matching activity found for \(label)."
+                : "History scan found \(created.count) update\(created.count == 1 ? "" : "s")."
         } catch {
             errorMessage = "History scan failed: \(error.localizedDescription)"
         }

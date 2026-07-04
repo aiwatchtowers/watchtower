@@ -184,6 +184,15 @@ enum TrackQueries {
             """)
     }
 
+    /// Custom tracks (watches) linked to a given target, newest first.
+    static func fetchByLinkedTarget(_ db: Database, targetID: Int) throws -> [Track] {
+        try Track.fetchAll(db, sql: """
+            SELECT * FROM tracks
+            WHERE origin = 'custom' AND linked_target_id = ? AND dismissed_at = ''
+            ORDER BY updated_at DESC
+            """, arguments: [targetID])
+    }
+
     static func setEnabled(_ db: Database, id: Int, enabled: Bool) throws {
         try db.execute(sql: """
             UPDATE tracks SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?

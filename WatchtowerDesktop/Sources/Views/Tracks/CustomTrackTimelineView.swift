@@ -73,6 +73,16 @@ struct CustomTrackTimelineView: View {
                 }
                 .padding(8)
                 .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+            } else if let note = viewModel.lastScanNote {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle").foregroundColor(.secondary)
+                    Text(note).font(.caption).foregroundColor(.secondary).lineLimit(3)
+                    Spacer()
+                    Button { viewModel.lastScanNote = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.borderless)
+                }
+                .padding(8)
+                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
             }
 
             if viewModel.events.isEmpty {
