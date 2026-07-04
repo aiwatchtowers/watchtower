@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/customtracks"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
 	"watchtower/internal/tracks"
@@ -71,6 +73,53 @@ var tracksGenerateCmd = &cobra.Command{
 	RunE:  runTracksGenerate,
 }
 
+var (
+	tracksCreateFlagText   string
+	tracksCreateFlagTarget int
+	tracksScanFlagSince    string
+)
+
+var tracksCreateCmd = &cobra.Command{
+	Use:   "create",
+	Short: "Create a custom track from a description (AI drafts the watch instruction)",
+	RunE:  runTracksCreate,
+}
+
+var tracksWatchCmd = &cobra.Command{
+	Use:   "watch <target-id>",
+	Short: "Create a custom track linked to a target",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTracksWatch,
+}
+
+var tracksScanCmd = &cobra.Command{
+	Use:   "scan [<id>]",
+	Short: "Run the custom-track scan (all enabled, or one id)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runTracksScan,
+}
+
+var tracksEventsCmd = &cobra.Command{
+	Use:   "events <id>",
+	Short: "Show a custom track's event timeline",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTracksEvents,
+}
+
+var tracksEnableCmd = &cobra.Command{
+	Use:   "enable <id>",
+	Short: "Enable scanning for a custom track",
+	Args:  cobra.ExactArgs(1),
+	RunE:  func(c *cobra.Command, a []string) error { return setTrackEnabled(c, a, true) },
+}
+
+var tracksDisableCmd = &cobra.Command{
+	Use:   "disable <id>",
+	Short: "Disable scanning for a custom track",
+	Args:  cobra.ExactArgs(1),
+	RunE:  func(c *cobra.Command, a []string) error { return setTrackEnabled(c, a, false) },
+}
+
 func init() {
 	rootCmd.AddCommand(tracksCmd)
 	tracksCmd.AddCommand(tracksShowCmd)
@@ -78,6 +127,11 @@ func init() {
 	tracksCmd.AddCommand(tracksDismissCmd)
 	tracksCmd.AddCommand(tracksRestoreCmd)
 	tracksCmd.AddCommand(tracksGenerateCmd)
+	tracksCmd.AddCommand(tracksCreateCmd, tracksWatchCmd, tracksScanCmd,
+		tracksEventsCmd, tracksEnableCmd, tracksDisableCmd)
+	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagText, "text", "", "description of what to watch")
+	tracksCreateCmd.Flags().IntVar(&tracksCreateFlagTarget, "target", 0, "optional linked target id")
+	tracksScanCmd.Flags().StringVar(&tracksScanFlagSince, "since", "", "scan history from this ISO8601 instant")
 	tracksCmd.Flags().StringVar(&tracksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	tracksCmd.Flags().StringVar(&tracksFlagOwnership, "ownership", "", "filter by ownership (mine, delegated, watching)")
 	tracksCmd.Flags().StringVar(&tracksFlagChannel, "channel", "", "filter by channel name")
@@ -667,16 +721,139 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func openTracksDB() (*db.DB, error) {
+func openTracksDBWithConfig() (*db.DB, *config.Config, error) {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
+		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	if err := cfg.ValidateWorkspace(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+		return nil, nil, fmt.Errorf("invalid config: %w", err)
 	}
-	return db.Open(cfg.DBPath())
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, err
+	}
+	return database, cfg, nil
+}
+
+func openTracksDB() (*db.DB, error) {
+	database, _, err := openTracksDBWithConfig()
+	return database, err
+}
+
+func runTracksCreate(cmd *cobra.Command, _ []string) error {
+	if strings.TrimSpace(tracksCreateFlagText) == "" {
+		return fmt.Errorf("--text is required")
+	}
+	database, cfg, err := openTracksDBWithConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	applyProviderOverride(cfg)
+	pipe := customtracks.New(database, cliGenerator(cfg), cfg.Digest.Language, nil)
+	ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
+	defer cancel()
+	res, err := pipe.Compose(ctx, tracksCreateFlagTarget, tracksCreateFlagText)
+	if err != nil {
+		return fmt.Errorf("compose failed: %w", err)
+	}
+	uid, _ := database.GetCurrentUserID()
+	id, err := database.CreateCustomTrack(db.Track{
+		AssigneeUserID: uid, Text: res.Title, Context: tracksCreateFlagText,
+		Instruction: res.Instruction, LinkedTargetID: tracksCreateFlagTarget,
+	})
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]any{"id": id, "title": res.Title, "instruction": res.Instruction})
+}
+
+func runTracksWatch(cmd *cobra.Command, args []string) error {
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid target id %q: %w", args[0], err)
+	}
+	tracksCreateFlagTarget = id
+	return runTracksCreate(cmd, nil)
+}
+
+func runTracksScan(cmd *cobra.Command, args []string) error {
+	database, cfg, err := openTracksDBWithConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	applyProviderOverride(cfg)
+	pipe := customtracks.New(database, cliGenerator(cfg), cfg.Digest.Language, nil)
+	ctx, cancel := context.WithTimeout(cmd.Context(), 420*time.Second)
+	defer cancel()
+	if len(args) == 1 {
+		id, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid track id: %w", err)
+		}
+		var events []db.TrackEvent
+		if tracksScanFlagSince != "" {
+			events, err = pipe.RunForTrackSince(ctx, id, tracksScanFlagSince)
+		} else {
+			events, err = pipe.RunForTrack(ctx, id)
+		}
+		if err != nil {
+			return fmt.Errorf("scan failed: %w", err)
+		}
+		if events == nil {
+			events = []db.TrackEvent{}
+		}
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(events)
+	}
+	n, err := pipe.Run(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "scanned enabled custom tracks: %d new event(s)\n", n)
+	return nil
+}
+
+func runTracksEvents(cmd *cobra.Command, args []string) error {
+	database, err := openTracksDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid track id: %w", err)
+	}
+	events, err := database.GetTrackEvents(id, 100)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(events)
+}
+
+func setTrackEnabled(cmd *cobra.Command, args []string, enabled bool) error {
+	database, err := openTracksDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid track id: %w", err)
+	}
+	if err := database.SetTrackEnabled(id, enabled); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "track #%d enabled=%v\n", id, enabled)
+	return nil
 }
