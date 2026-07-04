@@ -199,6 +199,18 @@ enum TrackQueries {
             """, arguments: [enabled, id])
     }
 
+    /// Edits a custom track's watch instruction in place.
+    static func updateInstruction(_ db: Database, id: Int, instruction: String) throws {
+        try db.execute(sql: """
+            UPDATE tracks SET instruction = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+            WHERE id = ? AND origin = 'custom'
+            """, arguments: [instruction, id])
+    }
+
+    static func fetchLastRunAt(_ db: Database, id: Int) throws -> String {
+        try String.fetchOne(db, sql: "SELECT last_run_at FROM tracks WHERE id = ?", arguments: [id]) ?? ""
+    }
+
     // MARK: - Workspace helper
 
     static func fetchCurrentUserID(_ db: Database) throws -> String? {

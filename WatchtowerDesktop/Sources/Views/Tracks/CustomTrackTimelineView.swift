@@ -7,7 +7,7 @@ import SwiftUI
 /// only actionable when the track is linked to a target (`canApplyActions`).
 struct CustomTrackTimelineView: View {
     let viewModel: CustomTrackTimelineViewModel
-    @State private var showingCustom = false
+    @State private var showScanPopover = false
     @State private var customSince = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
 
     var body: some View {
@@ -24,35 +24,20 @@ struct CustomTrackTimelineView: View {
                         .clipShape(Capsule())
                 }
                 Spacer()
-                Button { Task { await viewModel.refreshNow() } } label: {
-                    if viewModel.isRefreshing {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
+                Text(viewModel.lastScannedText)
+                    .font(.caption2).foregroundStyle(.secondary)
+                if viewModel.isRefreshing {
+                    ProgressView().controlSize(.small)
                 }
-                .buttonStyle(.borderless)
-                .disabled(viewModel.isRefreshing)
-                Menu {
-                    Button("Last 7 days") { scanHistory(days: 7) }
-                    Button("Last 30 days") { scanHistory(days: 30) }
-                    Button("Last 90 days") { scanHistory(days: 90) }
-                    Button("Since track created") {
-                        Task { await viewModel.scanHistory(since: viewModel.track.createdDate, label: "since track created") }
-                    }
-                    Button("All history") {
-                        Task { await viewModel.scanHistory(since: nil, label: "all history") }
-                    }
-                    Divider()
-                    Button("Custom…") { showingCustom = true }
+                Button {
+                    showScanPopover = true
                 } label: {
-                    Image(systemName: "clock.arrow.circlepath")
+                    Label("Scan", systemImage: "arrow.clockwise")
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .controlSize(.small)
                 .disabled(viewModel.isRefreshing)
-                .help("Scan history and fill the timeline")
-                .popover(isPresented: $showingCustom, arrowEdge: .bottom) { customScanPopover }
+                .help("Scan a chosen range and fill the timeline")
+                .popover(isPresented: $showScanPopover, arrowEdge: .bottom) { scanRangePopover }
             }
 
             if let status = viewModel.scanStatus {
@@ -104,28 +89,55 @@ struct CustomTrackTimelineView: View {
         Task { await viewModel.scanHistory(since: since, label: "last \(days) days") }
     }
 
-    /// Date picker for a custom "scan from" instant. Restricted to the past —
-    /// there is no activity to scan in the future.
-    private var customScanPopover: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Scan history from").font(.headline)
-            DatePicker("", selection: $customSince, in: ...Date(),
-                       displayedComponents: [.date])
-                .datePickerStyle(.graphical)
-                .labelsHidden()
-            HStack {
-                Spacer()
-                Button("Cancel") { showingCustom = false }
-                Button("Scan") {
-                    showingCustom = false
-                    let label = "from " + customSince.formatted(date: .abbreviated, time: .omitted)
-                    Task { await viewModel.scanHistory(since: customSince, label: label) }
-                }
-                .keyboardShortcut(.defaultAction)
+    /// A tappable range option that dismisses the popover and kicks off the scan.
+    private func rangeRow(_ title: String, systemImage: String, _ run: @escaping () -> Void) -> some View {
+        Button {
+            showScanPopover = false
+            run()
+        } label: {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The "choose a period" popover. Every option builds on what's already
+    /// collected — it reads only what's newer than the range start and dedups
+    /// against existing events, so nothing is duplicated.
+    private var scanRangePopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Scan range").font(.headline)
+            Text("Reads what's new for the chosen range and dedups against what the track already collected.")
+                .font(.caption).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            rangeRow("Since last check", systemImage: "arrow.clockwise") {
+                Task { await viewModel.scanSinceLast() }
             }
+            rangeRow("Last 7 days", systemImage: "calendar") { scanHistory(days: 7) }
+            rangeRow("Last 30 days", systemImage: "calendar") { scanHistory(days: 30) }
+            rangeRow("Last 90 days", systemImage: "calendar") { scanHistory(days: 90) }
+            rangeRow("Since track created", systemImage: "flag") {
+                Task { await viewModel.scanHistory(since: viewModel.track.createdDate, label: "since the track was created") }
+            }
+            rangeRow("All history", systemImage: "infinity") {
+                Task { await viewModel.scanHistory(since: nil, label: "all history") }
+            }
+
+            Divider()
+            Text("From a specific date").font(.caption).foregroundColor(.secondary)
+            DatePicker("", selection: $customSince, in: ...Date(), displayedComponents: [.date])
+                .datePickerStyle(.compact).labelsHidden()
+            Button("Scan from date") {
+                showScanPopover = false
+                let label = "from " + customSince.formatted(date: .abbreviated, time: .omitted)
+                Task { await viewModel.scanHistory(since: customSince, label: label) }
+            }
+            .keyboardShortcut(.defaultAction)
         }
         .padding()
-        .frame(width: 320)
+        .frame(width: 300)
     }
 }
 

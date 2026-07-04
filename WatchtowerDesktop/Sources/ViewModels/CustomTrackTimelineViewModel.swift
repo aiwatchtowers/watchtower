@@ -20,6 +20,9 @@ final class CustomTrackTimelineViewModel {
     private let scanService: TrackScanService
 
     var events: [TrackEvent] = []
+    /// Watermark of the last scan (ISO8601, "" = never), kept fresh across scans
+    /// so the "Last scanned" line reflects what the track has already collected.
+    var lastRunAt: String
     var isRefreshing = false
     /// Non-nil while a history backfill runs — drives the visible "Scanning…"
     /// banner so the long (multi-minute) operation is unmistakably in progress.
@@ -45,6 +48,15 @@ final class CustomTrackTimelineViewModel {
         self.dbPool = dbManager.dbPool
         self.scanService = scanService
         self.targetsViewModel = targetsViewModel
+        self.lastRunAt = track.lastRunAt
+    }
+
+    /// Re-reads the persisted watermark after a scan so "Last scanned" updates
+    /// without waiting for the detail view to be reopened with a fresh snapshot.
+    private func refreshLastRunAt() {
+        if let ts = try? dbPool.read({ db in try TrackQueries.fetchLastRunAt(db, id: track.id) }) {
+            lastRunAt = ts
+        }
     }
 
     func start() {
@@ -66,16 +78,10 @@ final class CustomTrackTimelineViewModel {
         }
     }
 
-    func refreshNow() async {
-        // A watch with no events yet needs a history BACKFILL (the two-stage
-        // shortlist→extract over the whole window since it was created), not a
-        // forward scan that only reads ~40 items past the watermark and barely
-        // moves it. Once the timeline has events, incremental forward scans
-        // keep it current cheaply.
-        if events.isEmpty {
-            await scanHistory(since: track.createdDate, label: "since the track was created")
-            return
-        }
+    /// Incremental scan: reads activity strictly after the watermark and dedups,
+    /// so it builds on what the track already collected. Cheap; the right choice
+    /// for "keep me current". For an initial fill use `scanHistory`.
+    func scanSinceLast() async {
         isRefreshing = true
         errorMessage = nil
         lastScanNote = nil
@@ -84,8 +90,9 @@ final class CustomTrackTimelineViewModel {
             // The CLI wrote any new rows; the ValueObservation stream pushes
             // them. The returned slice is exactly what was created this run.
             let created = try await scanService.run(trackID: track.id)
+            refreshLastRunAt()
             lastScanNote = created.isEmpty
-                ? "Scan complete — no new activity since the last check. Use “Scan history” to backfill older activity."
+                ? "Scan complete — no new activity since the last check. Pick a wider range to backfill older activity."
                 : "Found \(created.count) new update\(created.count == 1 ? "" : "s")."
         } catch {
             errorMessage = error.localizedDescription
@@ -105,12 +112,24 @@ final class CustomTrackTimelineViewModel {
         let iso = Self.isoFormatter.string(from: since ?? Date(timeIntervalSince1970: 0))
         do {
             let created = try await scanService.run(trackID: track.id, since: iso)
+            refreshLastRunAt()
             lastScanNote = created.isEmpty
                 ? "History scan complete — no matching activity found for \(label)."
                 : "History scan found \(created.count) update\(created.count == 1 ? "" : "s")."
         } catch {
             errorMessage = "History scan failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Human "Last scanned" line for the header: relative age of the watermark.
+    var lastScannedText: String {
+        guard !lastRunAt.isEmpty else { return "Not scanned yet" }
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime]
+        guard let date = parser.date(from: lastRunAt) else { return "Last scanned: \(lastRunAt)" }
+        let rel = RelativeDateTimeFormatter()
+        rel.unitsStyle = .abbreviated
+        return "Last scanned \(rel.localizedString(for: date, relativeTo: Date()))"
     }
 
     /// UTC ISO8601 without fractional seconds, matching the Go watermark format.

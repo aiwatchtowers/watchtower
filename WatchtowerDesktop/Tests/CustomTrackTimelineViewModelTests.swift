@@ -150,14 +150,14 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
         XCTAssertEqual(status, "pending", "standalone tracks must not apply/consume the action")
     }
 
-    /// refreshNow force-runs the scan via the CLI; a runner failure must surface
+    /// scanSinceLast force-runs the scan via the CLI; a runner failure must surface
     /// through errorMessage (not be swallowed as "no new events").
     func testRefreshNowSurfacesScanFailure() async throws {
         struct Boom: Error {}
         let (_, path, _, timeline) = try makeHarness(scanRunner: FakeCLIRunner(error: Boom()))
         defer { TestDatabase.cleanup(path: path) }
 
-        await timeline.refreshNow()
+        await timeline.scanSinceLast()
         XCTAssertNotNil(timeline.errorMessage)
         XCTAssertFalse(timeline.isRefreshing)
     }
@@ -168,7 +168,7 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
         let (_, path, _, timeline) = try makeHarness()
         defer { TestDatabase.cleanup(path: path) }
 
-        await timeline.refreshNow()
+        await timeline.scanSinceLast()
         XCTAssertNil(timeline.errorMessage)
         XCTAssertFalse(timeline.isRefreshing)
     }

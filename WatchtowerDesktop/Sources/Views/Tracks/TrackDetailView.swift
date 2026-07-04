@@ -15,6 +15,11 @@ struct TrackDetailView: View {
     @State private var trackStates: [TrackState] = []
     @State private var expandedTrackStateIDs: Set<Int> = []
     @State private var timelineVM: CustomTrackTimelineViewModel?
+    // Custom-track manage state (local so edits reflect before a snapshot reload).
+    @State private var displayedInstruction = ""
+    @State private var collecting = true
+    @State private var isEditingInstruction = false
+    @State private var draftInstruction = ""
 
     var body: some View {
         VSplitView {
@@ -59,11 +64,16 @@ struct TrackDetailView: View {
                 loadJiraIssues(db: db)
                 loadTrackStates(db: db)
                 startTimelineIfCustom(db: db)
+                displayedInstruction = track.instruction
+                collecting = track.enabled
             }
         }
         .onChange(of: track.id) {
             timelineVM?.stop()
             timelineVM = nil
+            isEditingInstruction = false
+            displayedInstruction = track.instruction
+            collecting = track.enabled
             if let db = appState.databaseManager {
                 startTimelineIfCustom(db: db)
             }
@@ -89,22 +99,79 @@ struct TrackDetailView: View {
     private var customActivitySection: some View {
         if track.isCustom {
             VStack(alignment: .leading, spacing: 12) {
-                if !track.instruction.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Watch instruction")
-                            .font(.headline)
-                        Text(track.instruction)
+                // Manage row: collecting toggle + edit affordance.
+                HStack {
+                    Toggle(isOn: Binding(
+                        get: { collecting },
+                        set: { setCollecting($0) }
+                    )) {
+                        Text(collecting ? "Collecting" : "Paused")
+                            .font(.subheadline)
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help(collecting
+                          ? "The daemon scans this watch each cycle. Turn off to pause."
+                          : "Paused — the daemon skips this watch until re-enabled.")
+                    Spacer()
+                    if !isEditingInstruction {
+                        Button {
+                            draftInstruction = displayedInstruction
+                            isEditingInstruction = true
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Watch instruction").font(.headline)
+                    if isEditingInstruction {
+                        TextField("What to watch for…", text: $draftInstruction, axis: .vertical)
+                            .lineLimit(3...10)
+                            .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Spacer()
+                            Button("Cancel") { isEditingInstruction = false }
+                            Button("Save") { saveInstruction() }
+                                .keyboardShortcut(.defaultAction)
+                                .disabled(draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    } else if !displayedInstruction.isEmpty {
+                        Text(displayedInstruction)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+
                 if let vm = timelineVM {
                     CustomTrackTimelineView(viewModel: vm)
                 }
             }
         }
+    }
+
+    /// Persists an edited watch instruction and reflects it immediately.
+    private func saveInstruction() {
+        let text = draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let db = appState.databaseManager else { return }
+        try? db.dbPool.write { database in
+            try TrackQueries.updateInstruction(database, id: track.id, instruction: text)
+        }
+        displayedInstruction = text
+        isEditingInstruction = false
+    }
+
+    /// Toggles whether the daemon collects for this watch.
+    private func setCollecting(_ on: Bool) {
+        guard let db = appState.databaseManager else { return }
+        try? db.dbPool.write { database in
+            try TrackQueries.setEnabled(database, id: track.id, enabled: on)
+        }
+        collecting = on
     }
 
     /// Builds and starts the custom-track timeline VM. When the track is linked
