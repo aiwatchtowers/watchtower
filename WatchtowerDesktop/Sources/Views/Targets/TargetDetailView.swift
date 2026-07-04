@@ -37,11 +37,12 @@ struct TargetDetailView: View {
     @State private var isSuggestingLinks = false
     @State private var suggestLinksError: String?
     @State private var chatVM: TargetChatViewModel?
-    @State private var observerVM: ObserverTimelineViewModel?
     @State private var nextStep: TargetNextStep?
     @State private var isGeneratingNextStep = false
     @State private var nextStepError: String?
     @State private var assistantInput: String = ""
+    @State private var watchText = ""
+    @State private var showWatchSheet = false
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable {
@@ -51,7 +52,6 @@ struct TargetDetailView: View {
     enum Tab: String, CaseIterable {
         case details = "Details"
         case links = "Links"
-        case activity = "Activity"
         case assistant = "Assistant"
     }
 
@@ -73,6 +73,14 @@ struct TargetDetailView: View {
                     tabButton(tab)
                 }
                 Spacer()
+                Button {
+                    showWatchSheet = true
+                } label: {
+                    Label("Watch", systemImage: "binoculars")
+                }
+                .buttonStyle(.borderless)
+                .fixedSize()
+                .padding(.trailing, 8)
                 Menu {
                     Button("Delete…", role: .destructive) {
                         showDeleteConfirm = true
@@ -103,8 +111,6 @@ struct TargetDetailView: View {
                         detailsTab
                     case .links:
                         linksTab
-                    case .activity:
-                        activityTab
                     case .assistant:
                         if let chatVM {
                             TargetChatSection(chatVM: chatVM)
@@ -131,16 +137,6 @@ struct TargetDetailView: View {
             loadLinks()
             loadHierarchy()
             syncNextStep()
-            if observerVM == nil, let runner = ProcessCLIRunner.makeDefault(),
-               let dbManager = appState.databaseManager {
-                observerVM = ObserverTimelineViewModel(
-                    target: target,
-                    dbManager: dbManager,
-                    targetsViewModel: viewModel,
-                    observeService: TargetObserveService(runner: runner)
-                )
-                observerVM?.start()
-            }
         }
         .onChange(of: target.id) {
             syncState()
@@ -148,18 +144,6 @@ struct TargetDetailView: View {
             loadLinks()
             loadHierarchy()
             syncNextStep()
-            observerVM?.stop()
-            observerVM = nil
-            if let runner = ProcessCLIRunner.makeDefault(),
-               let dbManager = appState.databaseManager {
-                observerVM = ObserverTimelineViewModel(
-                    target: target,
-                    dbManager: dbManager,
-                    targetsViewModel: viewModel,
-                    observeService: TargetObserveService(runner: runner)
-                )
-                observerVM?.start()
-            }
         }
         .onChange(of: target.nextStep) {
             // Pick up suggestions written by the daemon's next-step phase.
@@ -189,6 +173,11 @@ struct TargetDetailView: View {
                     suggestions: suggestedLinks
                 )
             }
+        }
+        .sheet(isPresented: $showWatchSheet) {
+            // Minimal compose sheet: text field → creates a custom track linked
+            // to this target (the sheet's create passes `--target`).
+            CustomTrackManagementSheet(linkedTargetID: target.id)
         }
         .sheet(item: $promotingSubItem) { ctx in
             let prefill = TargetPrefillBuilder.fromSubItem(
@@ -1207,20 +1196,6 @@ struct TargetDetailView: View {
             }
         }
         .padding(.vertical, 4)
-    }
-
-    // MARK: - Activity Tab (observer timeline)
-
-    @ViewBuilder
-    private var activityTab: some View {
-        if let observerVM {
-            ObserverTimelineView(viewModel: observerVM)
-                .id(target.id)
-        } else {
-            Text("Loading…")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
     }
 
     // MARK: - Jira Issue
