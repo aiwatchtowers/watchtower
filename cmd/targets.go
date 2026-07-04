@@ -38,7 +38,6 @@ var (
 	targetsFlagPeriodEnd    string
 	targetsFlagParent       int
 	targetsFlagInstruction  string
-	targetsFlagObserveSince string
 
 	// link subcommand flags
 	targetsFlagLinkParent   int
@@ -199,13 +198,6 @@ var targetsAIUpdateCmd = &cobra.Command{
 	RunE:  runTargetsAIUpdate,
 }
 
-var targetsObserveCmd = &cobra.Command{
-	Use:   "observe <id>",
-	Short: "Force-run observers for one target and print new events as JSON",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTargetsObserve,
-}
-
 var targetsPromoteSubItemCmd = &cobra.Command{
 	Use:   "promote-subitem <target-id> <sub-item-index>",
 	Short: "Convert a sub-item into a standalone child target",
@@ -236,7 +228,6 @@ func init() {
 		targetsUpdateCmd,
 		targetsGenerateCmd,
 		targetsNextStepCmd,
-		targetsObserveCmd,
 		targetsNoteCmd,
 		targetsAIUpdateCmd,
 		targetsPromoteSubItemCmd,
@@ -245,9 +236,6 @@ func init() {
 
 	// next-step flags
 	targetsNextStepCmd.Flags().BoolVar(&targetsFlagNextStepAll, "all", false, "refresh every active target with a missing or stale next step")
-
-	// observe flags
-	targetsObserveCmd.Flags().StringVar(&targetsFlagObserveSince, "since", "", "scan history from this ISO8601 instant (e.g. 1970-01-01T00:00:00Z for all history) instead of the observer watermark")
 
 	// targets (list) flags
 	targetsCmd.Flags().StringVar(&targetsFlagStatus, "status", "", "filter by status (todo, in_progress, blocked, done, dismissed, snoozed)")

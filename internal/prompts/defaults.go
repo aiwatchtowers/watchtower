@@ -29,9 +29,6 @@ var Defaults = map[string]string{
 	DayPlanGenerate:      defaultDayPlanGenerate,
 	TargetsExtract:       defaultTargetsExtract,
 	TargetsLink:          defaultTargetsLink,
-	ObserverRun:          defaultObserverRun,
-	ObserverCompose:      defaultObserverCompose,
-	ObserverShortlist:    defaultObserverShortlist,
 	TrackCompose:         defaultTrackCompose,
 	TrackRun:             defaultTrackRun,
 	TrackShortlist:       defaultTrackShortlist,
@@ -62,9 +59,6 @@ var AllIDs = []string{
 	DayPlanGenerate,
 	TargetsExtract,
 	TargetsLink,
-	ObserverRun,
-	ObserverCompose,
-	ObserverShortlist,
 	TrackCompose,
 	TrackRun,
 	TrackShortlist,
@@ -97,9 +91,6 @@ var DefaultVersions = map[string]int{
 	DayPlanGenerate:    2, // v2: mandatory language directive at top
 	TargetsExtract:     1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:        1, // v1: single-target link proposal against active snapshot
-	ObserverRun:        1, // v1: cross-source event timeline for an observed entity
-	ObserverCompose:    1, // v1: draft observer name+instruction from a free-text request
-	ObserverShortlist:  1, // v1: cheap title-only relevance filter for history backfill
 	TrackCompose:       1, // v1: draft custom-track title+instruction from a free-text request
 	TrackRun:           1, // v1: custom-track timeline events from recent cross-source activity
 	TrackShortlist:     1, // v1: cheap title-only relevance filter for custom-track backfill
@@ -134,9 +125,6 @@ var Descriptions = map[string]string{
 	DayPlanGenerate:      "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
 	TargetsExtract:       "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
 	TargetsLink:          "Target linking — single-target parent and secondary link proposal against active snapshot",
-	ObserverRun:          "Observer run — produce timeline events for an observed entity from recent cross-source activity",
-	ObserverCompose:      "Observer compose — draft a scoped observer name + watch instruction from a free-text user request",
-	ObserverShortlist:    "Observer shortlist — cheap title-only relevance filter that picks candidate activity for a history backfill before the full extract",
 	TrackRun:             "Custom track run — timeline events from recent cross-source activity",
 	TrackCompose:         "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
 	TrackShortlist:       "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
@@ -1186,55 +1174,6 @@ Rules:
 - parent_id must be an id from the ACTIVE TARGETS snapshot, or null.
 - secondary_links: max 3, relation must be contributes_to|blocks|related|duplicates.
 - Only propose links that make semantic sense. Return null parent_id and empty secondary_links if nothing fits.`
-
-const defaultObserverRun = `You are an OBSERVER attached to a single tracked item (a "target": a goal or task the operator owns). Your job: read the operator's WATCH INSTRUCTION, scan the RECENT ACTIVITY from all sources, and emit only the events that are genuinely relevant to THIS target per the instruction. Ignore everything unrelated.
-
-Return ONLY a JSON object (no markdown, no prose):
-{
-  "events": [
-    {
-      "summary": "one-line, past-tense, what happened and why it matters to this target",
-      "detail": "optional 1-2 extra sentences, or \"\"",
-      "source_type": "digest | track | inbox | slack | jira | calendar | decision",
-      "source_id": "the id/ref from the activity item, or \"\"",
-      "source_refs": ["permalink or link backing this event", "..."],
-      "decision": {"text": "what was decided", "by": "@user or \"\"", "importance": "high|medium|low"},
-      "proposed_action": {"type": "...", "reason": "why", ...}
-    }
-  ]
-}
-
-Rules:
-- Emit an event ONLY when the activity is relevant to this specific target per the watch instruction. Relevance is your judgement; when unsure, leave it out. An empty {"events": []} is a correct and common answer.
-- "summary" is mandatory and specific — name the change, not "there was activity".
-- Omit "decision" unless a real decision was made; omit "proposed_action" unless a concrete target mutation is warranted.
-- "proposed_action" MUST be one of these exact shapes (the app applies it after the operator confirms):
-  {"type":"update_status","reason":"...","status":"todo|in_progress|blocked|done|dismissed|snoozed"}
-  {"type":"update_progress","reason":"...","progress":0-100}
-  {"type":"update_notes","reason":"...","note":"text to append"}
-  {"type":"add_sub_item","reason":"...","text":"checklist item"}
-  Propose an action only when the activity clearly justifies it. Most events have none.
-- Do not invent activity. Every event must trace to an item in RECENT ACTIVITY.
-- Keep "summary"/"detail" in the operator's language (match the target text's language).`
-
-const defaultObserverCompose = `You design a WATCH INSTRUCTION for an "observer" attached to a single goal or task (a "target") the operator owns. An observer scans recent cross-source activity (Slack digests, action-item tracks, inbox/Jira/calendar items) and surfaces ONLY updates relevant to its instruction.
-
-You are given the TARGET and the operator's free-text USER REQUEST describing what they want watched. Produce:
-- "name": a short label (at most 4 words) for what this observer watches.
-- "instruction": a precise watch instruction scoped TIGHTLY to this target. Name the concrete topics, people, decisions, or blockers to watch for, and explicitly exclude unrelated chatter. Another AI reads this instruction as its relevance filter, so be specific and unambiguous. Write it in the operator's language.
-
-Return ONLY a JSON object (no markdown fences, no prose) with exactly this shape:
-{"name": "...", "instruction": "..."}`
-
-const defaultObserverShortlist = `You are the RELEVANCE FILTER (stage 1 of 2) for an OBSERVER attached to a single tracked item (a "target": a goal or task the operator owns). You are shown the WATCH INSTRUCTION, the TARGET, and a numbered list of activity TITLES (one short headline per item, across Slack digests, action-item tracks, and inbox items). A second AI will read the FULL content of whatever you select, so your only job here is to cast a sensible net: pick every item whose title could plausibly relate to this target per the instruction.
-
-Return ONLY a JSON object (no markdown, no prose):
-{"refs": [{"kind": "digest|track|inbox", "id": 123}, ...]}
-
-Rules:
-- Judge from the title alone. When a title is ambiguous but could relate, INCLUDE it — stage 2 will discard false positives. Only drop titles that are clearly unrelated.
-- Use the exact kind and id printed in brackets for each item. Do not invent ids.
-- Respect the selection cap stated in the request; if more look relevant, keep the strongest. An empty {"refs": []} is valid when nothing fits.`
 
 const defaultTrackRun = `You are a CUSTOM TRACK watcher. Your job: read the track's WATCH INSTRUCTION, scan the RECENT ACTIVITY from all sources, and emit only the events genuinely relevant to THIS track per the instruction. Ignore everything unrelated.
 

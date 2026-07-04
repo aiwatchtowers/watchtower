@@ -13,7 +13,6 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/observers"
 	"watchtower/internal/prompts"
 	"watchtower/internal/targets"
 
@@ -660,50 +659,6 @@ func runTargetsPromoteSubItem(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Promoted sub-item #%d of target #%d to new child target #%d\n",
 		idx, parentID, childID)
 	return nil
-}
-
-func runTargetsObserve(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load(flagConfig)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
-		return err
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil {
-		return fmt.Errorf("invalid target id %q: %w", args[0], err)
-	}
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer database.Close()
-
-	applyProviderOverride(cfg)
-	gen := cliGenerator(cfg)
-	pipe := observers.New(database, gen, cfg.Digest.Language, nil)
-	// A history backfill fans out into several cheap shortlist calls plus one
-	// extract; each CLI subprocess is slow, so allow generous headroom.
-	ctx, cancel := context.WithTimeout(context.Background(), 420*time.Second)
-	defer cancel()
-	var events []db.ObserverEvent
-	if targetsFlagObserveSince != "" {
-		events, err = pipe.RunForTargetSince(ctx, id, targetsFlagObserveSince)
-	} else {
-		events, err = pipe.RunForTarget(ctx, id)
-	}
-	if err != nil {
-		return fmt.Errorf("observe failed: %w", err)
-	}
-	// runForTarget guarantees a non-nil slice on success, so an empty result
-	// encodes as [] not null (Swift decodes an array).
-	enc := json.NewEncoder(cmd.OutOrStdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(events)
 }
 
 // runTargetsNextStep (re)generates the AI "next step" suggestion. With --all it

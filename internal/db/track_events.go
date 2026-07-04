@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // TrackEvent is one entry in a custom track's timeline (ported from the
@@ -114,9 +115,60 @@ func (db *DB) SetTrackEventActionStatus(id int, status string) error {
 
 // ---- Scan-activity gather (cross-source feed for the custom-track scan) ----
 
+// ActivityDigest is a compact recent channel digest for the scan prompt.
+type ActivityDigest struct {
+	ID        int
+	ChannelID string
+	Summary   string
+	Decisions string // JSON array
+	CreatedAt string
+}
+
+// ActivityTrack is a compact recent track.
+type ActivityTrack struct {
+	ID        int
+	Text      string
+	Context   string
+	UpdatedAt string
+}
+
+// ActivityInbox is a compact recent inbox item (covers Jira/Calendar/decision triggers).
+type ActivityInbox struct {
+	ID          int
+	TriggerType string
+	Snippet     string
+	Permalink   string
+	CreatedAt   string
+}
+
+// ActivityTitle is a one-line headline for a single activity item, used by the
+// cheap stage-1 "shortlist" pass of a history backfill. Kind is digest|track|inbox.
+type ActivityTitle struct {
+	Kind      string
+	ID        int
+	Title     string
+	CreatedAt string
+}
+
+// forEachRow runs query and invokes scan per row, closing rows before
+// returning — with the single pooled connection the rows must be closed
+// before the caller can issue its next query.
+func (db *DB) forEachRow(scan func(*sql.Rows) error, query string, args ...any) error {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := scan(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // ScanActivity is the bundle of recent cross-source activity fed to a custom
-// track's scan (ported from ObserverActivity; reuses the shared Activity*
-// row structs declared alongside the observer engine).
+// track's scan (ported from ObserverActivity).
 type ScanActivity struct {
 	Digests []ActivityDigest
 	Tracks  []ActivityTrack
@@ -332,4 +384,18 @@ func (db *DB) GetScanActivityByIDs(digestIDs, trackIDs, inboxIDs []int) (ScanAct
 	}
 
 	return act, nil
+}
+
+// placeholders returns "?,?,…" with n entries for an IN clause.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// intArgs converts an int slice to []any for parameterized queries.
+func intArgs(ids []int) []any {
+	args := make([]any, len(ids))
+	for i, v := range ids {
+		args[i] = v
+	}
+	return args
 }
