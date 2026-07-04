@@ -40,4 +40,16 @@ enum TrackEventQueries {
         guard let link, !link.isEmpty else { return nil }
         return link
     }
+
+    /// Merged timeline across all of a target's watches (custom tracks linked to
+    /// it), newest-first. Reactive to inserts and to watch deletion (FK cascade).
+    static func fetchForTarget(_ db: Database, targetID: Int, limit: Int = 200) throws -> [TrackEvent] {
+        try TrackEvent.fetchAll(db, sql: """
+            SELECT e.* FROM track_events e
+            JOIN tracks t ON t.id = e.track_id
+            WHERE t.linked_target_id = ?
+            ORDER BY e.created_at DESC, e.id DESC
+            LIMIT ?
+            """, arguments: [targetID, limit])
+    }
 }
