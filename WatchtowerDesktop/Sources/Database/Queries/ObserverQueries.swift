@@ -12,8 +12,11 @@ enum ObserverQueries {
     }
 
     @discardableResult
-    static func create(_ db: Database, entityType: String = "target", entityId: Int,
-                       name: String, instruction: String) throws -> Int64 {
+    static func create(_ db: Database,
+                       entityType: String = "target",
+                       entityId: Int,
+                       name: String,
+                       instruction: String) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO observers (entity_type, entity_id, name, instruction, enabled)
             VALUES (?, ?, ?, ?, 1)
@@ -71,8 +74,7 @@ enum ObserverQueries {
     /// external URL (the event's own `source_refs` cover those when present).
     static func sourcePermalink(_ db: Database, sourceType: String, sourceId: String) throws -> String? {
         guard sourceType == "inbox", let id = Int(sourceId) else { return nil }
-        let link = try String.fetchOne(db,
-            sql: "SELECT permalink FROM inbox_items WHERE id = ?", arguments: [id])
+        let link = try String.fetchOne(db, sql: "SELECT permalink FROM inbox_items WHERE id = ?", arguments: [id])
         guard let link, !link.isEmpty else { return nil }
         return link
     }

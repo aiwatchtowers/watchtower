@@ -33,7 +33,7 @@ struct CreateTargetSheet: View {
     @State private var sourceID: String = ""
     @State private var secondaryLinks: [TargetPrefillLink] = []
     /// Optional parent target (`targets.parent_id`). nil = top-level target.
-    @State private var parentID: Int? = nil
+    @State private var parentID: Int?
     /// Active targets offered in the parent picker. Loaded once on appear.
     @State private var candidateParents: [Target] = []
 

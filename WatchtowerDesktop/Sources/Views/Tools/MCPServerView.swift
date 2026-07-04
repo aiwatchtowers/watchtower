@@ -21,8 +21,11 @@ struct MCPServerView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("MCP Server")
                     .font(.largeTitle).bold()
-                Text("Expose your Watchtower data (read-only) to any MCP client — Claude Code, Cursor, Codex — so it can use your targets, briefings, digests, people, tracks, calendar, and Jira as work context.")
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Expose your Watchtower data (read-only) to any MCP client — Claude Code, Cursor, Codex — " +
+                    "so it can use your targets, briefings, digests, people, tracks, calendar, and Jira as work context."
+                )
+                .foregroundStyle(.secondary)
 
                 snippetBlock(title: "Add to Claude Code", text: claudeSnippet)
                 snippetBlock(title: "Add to .mcp.json", text: jsonSnippet)

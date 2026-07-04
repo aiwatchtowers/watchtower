@@ -179,9 +179,8 @@ struct TargetDetailView: View {
                     sourceType: "manual",
                     sourceID: "",
                     parentID: target.id
-                ),
-                onCreated: { _ in loadHierarchy() }
-            )
+                )
+            ) { _ in loadHierarchy() }
         }
         .sheet(isPresented: $showSuggestLinksSheet) {
             if let suggestedLinks {
@@ -816,7 +815,7 @@ struct TargetDetailView: View {
         let fresh = try? dbManager.dbPool.read { db in
             try TargetQueries.fetchByID(db, id: target.id)
         }
-        return (fresh ?? nil)?.decodedNextStep ?? target.decodedNextStep
+        return fresh?.decodedNextStep ?? target.decodedNextStep
     }
 
     private func generateNextStep() async {

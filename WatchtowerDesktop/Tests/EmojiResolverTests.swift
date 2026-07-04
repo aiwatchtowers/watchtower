@@ -48,7 +48,7 @@ struct EmojiResolverTests {
         let segs = resolver.parse("ship it :acme: now")
         var sawCustom = false
         for s in segs {
-            if case .customEmoji(let name, let url) = s {
+            if case let .customEmoji(name, url) = s {
                 sawCustom = true
                 #expect(name == "acme")
                 #expect(url == "https://example.com/acme.png")

@@ -242,6 +242,23 @@ type ObserverActivity struct {
 	Inbox   []ActivityInbox
 }
 
+// forEachRow runs query and invokes scan per row, closing rows before
+// returning — with the single pooled connection the rows must be closed
+// before the caller can issue its next query.
+func (db *DB) forEachRow(scan func(*sql.Rows) error, query string, args ...any) error {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := scan(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // GetObserverActivity returns recent activity created/updated strictly after the
 // `since` ISO8601 watermark, capped at `limit` rows per source. These three
 // already-summarized sources together cover Slack (digests), action items
@@ -252,60 +269,42 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 	}
 	var act ObserverActivity
 
-	dr, err := db.Query(`SELECT id, channel_id, summary, decisions, created_at
-		FROM digests WHERE type = 'channel' AND created_at > ?
-		ORDER BY created_at DESC LIMIT ?`, since, limit)
-	if err != nil {
-		return act, err
-	}
-	for dr.Next() {
+	if err := db.forEachRow(func(r *sql.Rows) error {
 		var a ActivityDigest
-		if err := dr.Scan(&a.ID, &a.ChannelID, &a.Summary, &a.Decisions, &a.CreatedAt); err != nil {
-			dr.Close()
-			return act, err
+		if err := r.Scan(&a.ID, &a.ChannelID, &a.Summary, &a.Decisions, &a.CreatedAt); err != nil {
+			return err
 		}
 		act.Digests = append(act.Digests, a)
-	}
-	dr.Close()
-	if err := dr.Err(); err != nil {
+		return nil
+	}, `SELECT id, channel_id, summary, decisions, created_at
+		FROM digests WHERE type = 'channel' AND created_at > ?
+		ORDER BY created_at DESC LIMIT ?`, since, limit); err != nil {
 		return act, err
 	}
 
-	tr, err := db.Query(`SELECT id, text, context, updated_at
-		FROM tracks WHERE dismissed_at = '' AND updated_at > ?
-		ORDER BY updated_at DESC LIMIT ?`, since, limit)
-	if err != nil {
-		return act, err
-	}
-	for tr.Next() {
+	if err := db.forEachRow(func(r *sql.Rows) error {
 		var a ActivityTrack
-		if err := tr.Scan(&a.ID, &a.Text, &a.Context, &a.UpdatedAt); err != nil {
-			tr.Close()
-			return act, err
+		if err := r.Scan(&a.ID, &a.Text, &a.Context, &a.UpdatedAt); err != nil {
+			return err
 		}
 		act.Tracks = append(act.Tracks, a)
-	}
-	tr.Close()
-	if err := tr.Err(); err != nil {
+		return nil
+	}, `SELECT id, text, context, updated_at
+		FROM tracks WHERE dismissed_at = '' AND updated_at > ?
+		ORDER BY updated_at DESC LIMIT ?`, since, limit); err != nil {
 		return act, err
 	}
 
-	ir, err := db.Query(`SELECT id, trigger_type, snippet, permalink, created_at
-		FROM inbox_items WHERE created_at > ?
-		ORDER BY created_at DESC LIMIT ?`, since, limit)
-	if err != nil {
-		return act, err
-	}
-	for ir.Next() {
+	if err := db.forEachRow(func(r *sql.Rows) error {
 		var a ActivityInbox
-		if err := ir.Scan(&a.ID, &a.TriggerType, &a.Snippet, &a.Permalink, &a.CreatedAt); err != nil {
-			ir.Close()
-			return act, err
+		if err := r.Scan(&a.ID, &a.TriggerType, &a.Snippet, &a.Permalink, &a.CreatedAt); err != nil {
+			return err
 		}
 		act.Inbox = append(act.Inbox, a)
-	}
-	ir.Close()
-	if err := ir.Err(); err != nil {
+		return nil
+	}, `SELECT id, trigger_type, snippet, permalink, created_at
+		FROM inbox_items WHERE created_at > ?
+		ORDER BY created_at DESC LIMIT ?`, since, limit); err != nil {
 		return act, err
 	}
 
@@ -377,64 +376,46 @@ func (db *DB) GetObserverActivityByIDs(digestIDs, trackIDs, inboxIDs []int) (Obs
 	var act ObserverActivity
 
 	if len(digestIDs) > 0 {
-		rows, err := db.Query(`SELECT id, channel_id, summary, decisions, created_at
-			FROM digests WHERE id IN (`+placeholders(len(digestIDs))+`)
-			ORDER BY created_at DESC`, intArgs(digestIDs)...)
-		if err != nil {
-			return act, err
-		}
-		for rows.Next() {
+		if err := db.forEachRow(func(r *sql.Rows) error {
 			var a ActivityDigest
-			if err := rows.Scan(&a.ID, &a.ChannelID, &a.Summary, &a.Decisions, &a.CreatedAt); err != nil {
-				rows.Close()
-				return act, err
+			if err := r.Scan(&a.ID, &a.ChannelID, &a.Summary, &a.Decisions, &a.CreatedAt); err != nil {
+				return err
 			}
 			act.Digests = append(act.Digests, a)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+			return nil
+		}, `SELECT id, channel_id, summary, decisions, created_at
+			FROM digests WHERE id IN (`+placeholders(len(digestIDs))+`)
+			ORDER BY created_at DESC`, intArgs(digestIDs)...); err != nil {
 			return act, err
 		}
 	}
 
 	if len(trackIDs) > 0 {
-		rows, err := db.Query(`SELECT id, text, context, updated_at
-			FROM tracks WHERE id IN (`+placeholders(len(trackIDs))+`)
-			ORDER BY updated_at DESC`, intArgs(trackIDs)...)
-		if err != nil {
-			return act, err
-		}
-		for rows.Next() {
+		if err := db.forEachRow(func(r *sql.Rows) error {
 			var a ActivityTrack
-			if err := rows.Scan(&a.ID, &a.Text, &a.Context, &a.UpdatedAt); err != nil {
-				rows.Close()
-				return act, err
+			if err := r.Scan(&a.ID, &a.Text, &a.Context, &a.UpdatedAt); err != nil {
+				return err
 			}
 			act.Tracks = append(act.Tracks, a)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+			return nil
+		}, `SELECT id, text, context, updated_at
+			FROM tracks WHERE id IN (`+placeholders(len(trackIDs))+`)
+			ORDER BY updated_at DESC`, intArgs(trackIDs)...); err != nil {
 			return act, err
 		}
 	}
 
 	if len(inboxIDs) > 0 {
-		rows, err := db.Query(`SELECT id, trigger_type, snippet, permalink, created_at
-			FROM inbox_items WHERE id IN (`+placeholders(len(inboxIDs))+`)
-			ORDER BY created_at DESC`, intArgs(inboxIDs)...)
-		if err != nil {
-			return act, err
-		}
-		for rows.Next() {
+		if err := db.forEachRow(func(r *sql.Rows) error {
 			var a ActivityInbox
-			if err := rows.Scan(&a.ID, &a.TriggerType, &a.Snippet, &a.Permalink, &a.CreatedAt); err != nil {
-				rows.Close()
-				return act, err
+			if err := r.Scan(&a.ID, &a.TriggerType, &a.Snippet, &a.Permalink, &a.CreatedAt); err != nil {
+				return err
 			}
 			act.Inbox = append(act.Inbox, a)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+			return nil
+		}, `SELECT id, trigger_type, snippet, permalink, created_at
+			FROM inbox_items WHERE id IN (`+placeholders(len(inboxIDs))+`)
+			ORDER BY created_at DESC`, intArgs(inboxIDs)...); err != nil {
 			return act, err
 		}
 	}

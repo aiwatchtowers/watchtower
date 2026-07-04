@@ -13,13 +13,20 @@ struct ObserverTimelineView: View {
                 Text("Activity").font(.headline)
                 if unreadCount > 0 {
                     Text("\(unreadCount)")
-                        .font(.caption2).padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.accentColor).foregroundColor(.white).clipShape(Capsule())
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor)
+                        .foregroundColor(.white)
+                        .clipShape(Capsule())
                 }
                 Spacer()
                 Button { Task { await viewModel.refreshNow() } } label: {
-                    if viewModel.isRefreshing { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "arrow.clockwise") }
+                    if viewModel.isRefreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
                 }
                 .buttonStyle(.borderless)
                 .disabled(viewModel.isRefreshing)
@@ -238,7 +245,8 @@ private struct ObserverEventRow: View {
             }
             if let decision = event.decodedDecisionText {
                 Label(decision, systemImage: "checkmark.seal")
-                    .font(.caption).foregroundColor(.orange)
+                    .font(.caption)
+                    .foregroundColor(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !refs.isEmpty {

@@ -7,11 +7,11 @@ struct SidebarView: View {
 
     /// Per-section collapsed flag. Held in @State so toggling re-renders the view;
     /// seeded from UserDefaults (persisted across launches) on first appearance.
-    @State private var collapsedSections: [String: Bool] = SidebarView.loadCollapsedSections()
+    @State private var collapsedSections: [String: Bool] = Self.loadCollapsedSections()
 
     /// Destination ids the user has hidden into their section's "Hidden" sub-list.
     /// Held in @State so hide/show re-renders; persisted to UserDefaults.
-    @State private var hiddenItems: Set<String> = SidebarView.loadHiddenItems()
+    @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
 
     private static func storageKey(_ section: SidebarSection) -> String {
         "sidebar.section.\(section.id).collapsed"

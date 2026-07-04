@@ -36,9 +36,16 @@ struct ProposedAction: Codable, Identifiable, Equatable {
     }
 
     init(
-        type: TargetActionKind, reason: String, status: String? = nil, note: String? = nil,
-        progress: Int? = nil, text: String? = nil, intent: String? = nil, priority: String? = nil,
-        targetId: Int? = nil, relation: String? = nil
+        type: TargetActionKind,
+        reason: String,
+        status: String? = nil,
+        note: String? = nil,
+        progress: Int? = nil,
+        text: String? = nil,
+        intent: String? = nil,
+        priority: String? = nil,
+        targetId: Int? = nil,
+        relation: String? = nil
     ) {
         self.type = type
         self.reason = reason

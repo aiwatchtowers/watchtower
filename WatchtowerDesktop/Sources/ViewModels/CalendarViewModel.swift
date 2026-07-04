@@ -63,7 +63,7 @@ final class CalendarViewModel {
                 }
             }
             let next = try CalendarQueries.fetchNextEvent(db)
-            let auth = (try? CalendarQueries.fetchAuthState(db)) ?? nil
+            let auth = try? CalendarQueries.fetchAuthState(db)
             return (days, next, auth)
         }
 

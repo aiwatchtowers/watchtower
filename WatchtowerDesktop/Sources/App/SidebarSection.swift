@@ -9,7 +9,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     /// Render order of the sections.
-    static let ordered: [SidebarSection] = [.today, .delivery, .analytics]
+    static let ordered: [Self] = [.today, .delivery, .analytics]
 
     var title: String {
         switch self {

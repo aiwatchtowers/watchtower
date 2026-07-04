@@ -23,8 +23,10 @@ final class ObserverTimelineViewModel {
 
     private var observationTask: Task<Void, Never>?
 
-    init(target: Target, dbManager: DatabaseManager,
-         targetsViewModel: TargetsViewModel, observeService: TargetObserveService) {
+    init(target: Target,
+         dbManager: DatabaseManager,
+         targetsViewModel: TargetsViewModel,
+         observeService: TargetObserveService) {
         self.target = target
         self.dbPool = dbManager.dbPool
         self.targetsViewModel = targetsViewModel
@@ -94,9 +96,9 @@ final class ObserverTimelineViewModel {
     /// (e.g. the Slack link of an inbox-sourced event). Returns nil when none.
     func sourceLink(for event: ObserverEvent) -> String? {
         if let first = event.decodedRefs.first, !first.isEmpty { return first }
-        return (try? dbPool.read { db in
+        return try? dbPool.read { db in
             try ObserverQueries.sourcePermalink(db, sourceType: event.sourceType, sourceId: event.sourceId)
-        }) ?? nil
+        }
     }
 
     func markRead(_ event: ObserverEvent) {
@@ -157,15 +159,15 @@ final class ObserverTimelineViewModel {
         }
     }
 
-    func updateObserver(_ o: Observer, name: String, instruction: String) {
-        try? dbPool.write { db in try ObserverQueries.update(db, id: o.id, name: name, instruction: instruction) }
+    func updateObserver(_ observer: Observer, name: String, instruction: String) {
+        try? dbPool.write { db in try ObserverQueries.update(db, id: observer.id, name: name, instruction: instruction) }
     }
 
-    func toggleObserver(_ o: Observer) {
-        try? dbPool.write { db in try ObserverQueries.setEnabled(db, id: o.id, enabled: !o.enabled) }
+    func toggleObserver(_ observer: Observer) {
+        try? dbPool.write { db in try ObserverQueries.setEnabled(db, id: observer.id, enabled: !observer.enabled) }
     }
 
-    func deleteObserver(_ o: Observer) {
-        try? dbPool.write { db in try ObserverQueries.delete(db, id: o.id) }
+    func deleteObserver(_ observer: Observer) {
+        try? dbPool.write { db in try ObserverQueries.delete(db, id: observer.id) }
     }
 }
