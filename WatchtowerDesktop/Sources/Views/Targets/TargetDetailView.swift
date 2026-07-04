@@ -43,7 +43,7 @@ struct TargetDetailView: View {
     @State private var assistantInput: String = ""
     @State private var watchText = ""
     @State private var showWatchSheet = false
-    @State private var linkedWatches: [Track] = []
+    @State private var watchesVM: TargetWatchesViewModel?
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable {
@@ -52,6 +52,7 @@ struct TargetDetailView: View {
 
     enum Tab: String, CaseIterable {
         case details = "Details"
+        case watch = "Watch"
         case links = "Links"
         case assistant = "Assistant"
     }
@@ -110,6 +111,13 @@ struct TargetDetailView: View {
                     switch selectedTab {
                     case .details:
                         detailsTab
+                    case .watch:
+                        if let vm = watchesVM {
+                            TargetWatchTabView(viewModel: vm) { seed in
+                                selectedTab = .assistant
+                                chatVM?.inputText = seed
+                            }
+                        }
                     case .links:
                         linksTab
                     case .assistant:
@@ -137,21 +145,20 @@ struct TargetDetailView: View {
             loadJiraIssue()
             loadLinks()
             loadHierarchy()
-            loadLinkedWatches()
             syncNextStep()
+            if let db = appState.databaseManager { startWatchesVM(db: db) }
         }
         .onChange(of: target.id) {
             syncState()
             loadJiraIssue()
             loadLinks()
             loadHierarchy()
-            loadLinkedWatches()
             syncNextStep()
+            watchesVM?.stop(); watchesVM = nil
+            if let db = appState.databaseManager { startWatchesVM(db: db) }
         }
-        .onChange(of: showWatchSheet) { _, isShowing in
-            // Reload the watches list when the compose sheet closes so a
-            // just-created watch appears without leaving the target.
-            if !isShowing { loadLinkedWatches() }
+        .onDisappear {
+            watchesVM?.stop()
         }
         .onChange(of: target.nextStep) {
             // Pick up suggestions written by the daemon's next-step phase.
@@ -256,69 +263,12 @@ struct TargetDetailView: View {
             checklistSection
             intentSection
             hierarchySection
-            watchesSection
             notesSection
             jiraIssueSection
             assistantInlineInput
             aboutSection
             footerActions
         }
-    }
-
-    // MARK: - Watches (linked custom tracks)
-
-    @ViewBuilder
-    private var watchesSection: some View {
-        if !linkedWatches.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Label("Watches", systemImage: "binoculars")
-                        .font(.headline)
-                    Spacer()
-                    Button {
-                        showWatchSheet = true
-                    } label: {
-                        Image(systemName: "plus.circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Add another watch")
-                }
-                ForEach(linkedWatches) { watch in
-                    Button {
-                        appState.navigateToTrack(watch.id)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: watch.enabled ? "dot.radiowaves.left.and.right" : "pause.circle")
-                                .foregroundStyle(watch.enabled ? Color.accentColor : .secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(watch.text).font(.subheadline).lineLimit(1)
-                                if !watch.instruction.isEmpty {
-                                    Text(watch.instruction).font(.caption)
-                                        .foregroundStyle(.secondary).lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        }
-    }
-
-    private func loadLinkedWatches() {
-        guard let dbManager = appState.databaseManager else {
-            linkedWatches = []
-            return
-        }
-        linkedWatches = (try? dbManager.dbPool.read { db in
-            try TrackQueries.fetchByLinkedTarget(db, targetID: target.id)
-        }) ?? []
     }
 
     // MARK: - Breadcrumb
@@ -838,6 +788,21 @@ struct TargetDetailView: View {
                 )
             }
         }
+    }
+
+    // MARK: - Watches VM
+
+    private func startWatchesVM(db: DatabaseManager) {
+        guard let runner = ProcessCLIRunner.makeDefault() else { return }
+        let vm = TargetWatchesViewModel(
+            target: target,
+            dbManager: db,
+            scanService: TrackScanService(runner: runner),
+            targetsViewModel: viewModel,
+            scanCenter: appState.trackScanCenter
+        )
+        vm.start()
+        watchesVM = vm
     }
 
     // MARK: - Next-step logic
