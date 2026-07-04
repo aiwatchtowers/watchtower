@@ -699,9 +699,8 @@ func runTargetsObserve(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("observe failed: %w", err)
 	}
-	if events == nil {
-		events = []db.ObserverEvent{} // JSON: [] not null (Swift decodes an array)
-	}
+	// runForTarget guarantees a non-nil slice on success, so an empty result
+	// encodes as [] not null (Swift decodes an array).
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
 	return enc.Encode(events)
@@ -738,11 +737,14 @@ func runTargetsNextStep(cmd *cobra.Command, args []string) error {
 	pipe := targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, nil)
 
 	// --all refreshes up to ~100 targets through per-target CLI subprocess
-	// calls; each one is slow, so allow generous headroom (same budget as the
-	// observe command's backfill path).
+	// calls on 4 workers (~25 waves), so it needs far more headroom than a
+	// single target. Even 900s may not cover a full cold batch — that is fine:
+	// each suggestion persists as it lands and the selection query only picks
+	// missing/stale targets, so the batch converges incrementally across runs
+	// and a deadline mid-batch loses nothing.
 	timeout := 120 * time.Second
 	if targetsFlagNextStepAll {
-		timeout = 420 * time.Second
+		timeout = 900 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

@@ -281,9 +281,14 @@ func (db *DB) forEachRow(scan func(*sql.Rows) error, query string, args ...any) 
 // already-summarized sources together cover Slack (digests), action items
 // (tracks), and Jira/Calendar/decision signals (inbox items).
 //
-// Rows come oldest-first so a capped window is consumed incrementally: when a
-// source hits the cap, CappedAt records how far the window was actually read
-// and the caller advances its watermark to that point, not to now.
+// Rows come oldest-first ((timestamp, id) order) so a capped window is consumed
+// incrementally: when a source hits the cap, CappedAt records how far the
+// window was actually read and the caller advances its watermark to that point,
+// not to now. Timestamps are second-resolution, so a capped fetch additionally
+// drains every remaining row tied at the boundary second — the caller reopens
+// the next window with a strict `>`, and any tie left behind would be skipped
+// forever (realistic: inbox_items batch-inserted 100-in-one-second on a cold
+// start).
 func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, error) {
 	if limit <= 0 {
 		limit = 40
@@ -297,52 +302,73 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 		}
 	}
 
-	if err := db.forEachRow(func(r *sql.Rows) error {
+	scanDigest := func(r *sql.Rows) error {
 		var a ActivityDigest
 		if err := r.Scan(&a.ID, &a.ChannelID, &a.Summary, &a.Decisions, &a.CreatedAt); err != nil {
 			return err
 		}
 		act.Digests = append(act.Digests, a)
 		return nil
-	}, `SELECT id, channel_id, summary, decisions, created_at
+	}
+	if err := db.forEachRow(scanDigest, `SELECT id, channel_id, summary, decisions, created_at
 		FROM digests WHERE type = 'channel' AND created_at > ?
-		ORDER BY created_at ASC LIMIT ?`, since, limit); err != nil {
+		ORDER BY created_at ASC, id ASC LIMIT ?`, since, limit); err != nil {
 		return act, err
 	}
 	if len(act.Digests) == limit {
-		cappedAt(act.Digests[limit-1].CreatedAt)
+		last := act.Digests[limit-1]
+		if err := db.forEachRow(scanDigest, `SELECT id, channel_id, summary, decisions, created_at
+			FROM digests WHERE type = 'channel' AND created_at = ? AND id > ?
+			ORDER BY id ASC`, last.CreatedAt, last.ID); err != nil {
+			return act, err
+		}
+		cappedAt(last.CreatedAt)
 	}
 
-	if err := db.forEachRow(func(r *sql.Rows) error {
+	scanTrack := func(r *sql.Rows) error {
 		var a ActivityTrack
 		if err := r.Scan(&a.ID, &a.Text, &a.Context, &a.UpdatedAt); err != nil {
 			return err
 		}
 		act.Tracks = append(act.Tracks, a)
 		return nil
-	}, `SELECT id, text, context, updated_at
+	}
+	if err := db.forEachRow(scanTrack, `SELECT id, text, context, updated_at
 		FROM tracks WHERE dismissed_at = '' AND updated_at > ?
-		ORDER BY updated_at ASC LIMIT ?`, since, limit); err != nil {
+		ORDER BY updated_at ASC, id ASC LIMIT ?`, since, limit); err != nil {
 		return act, err
 	}
 	if len(act.Tracks) == limit {
-		cappedAt(act.Tracks[limit-1].UpdatedAt)
+		last := act.Tracks[limit-1]
+		if err := db.forEachRow(scanTrack, `SELECT id, text, context, updated_at
+			FROM tracks WHERE dismissed_at = '' AND updated_at = ? AND id > ?
+			ORDER BY id ASC`, last.UpdatedAt, last.ID); err != nil {
+			return act, err
+		}
+		cappedAt(last.UpdatedAt)
 	}
 
-	if err := db.forEachRow(func(r *sql.Rows) error {
+	scanInbox := func(r *sql.Rows) error {
 		var a ActivityInbox
 		if err := r.Scan(&a.ID, &a.TriggerType, &a.Snippet, &a.Permalink, &a.CreatedAt); err != nil {
 			return err
 		}
 		act.Inbox = append(act.Inbox, a)
 		return nil
-	}, `SELECT id, trigger_type, snippet, permalink, created_at
+	}
+	if err := db.forEachRow(scanInbox, `SELECT id, trigger_type, snippet, permalink, created_at
 		FROM inbox_items WHERE created_at > ?
-		ORDER BY created_at ASC LIMIT ?`, since, limit); err != nil {
+		ORDER BY created_at ASC, id ASC LIMIT ?`, since, limit); err != nil {
 		return act, err
 	}
 	if len(act.Inbox) == limit {
-		cappedAt(act.Inbox[limit-1].CreatedAt)
+		last := act.Inbox[limit-1]
+		if err := db.forEachRow(scanInbox, `SELECT id, trigger_type, snippet, permalink, created_at
+			FROM inbox_items WHERE created_at = ? AND id > ?
+			ORDER BY id ASC`, last.CreatedAt, last.ID); err != nil {
+			return act, err
+		}
+		cappedAt(last.CreatedAt)
 	}
 
 	return act, nil

@@ -496,7 +496,13 @@ enum TestDatabase {
         message_ts      TEXT NOT NULL,
         thread_ts       TEXT NOT NULL DEFAULT '',
         sender_user_id  TEXT NOT NULL,
-        trigger_type    TEXT NOT NULL CHECK(trigger_type IN ('mention','dm')),
+        trigger_type    TEXT NOT NULL CHECK(trigger_type IN (
+            'mention','dm','thread_reply','reaction',
+            'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
+            'calendar_invite','calendar_time_change','calendar_cancelled',
+            'decision_made','briefing_ready',
+            'target_due'
+        )),
         snippet         TEXT NOT NULL DEFAULT '',
         context         TEXT NOT NULL DEFAULT '',
         raw_text        TEXT NOT NULL DEFAULT '',

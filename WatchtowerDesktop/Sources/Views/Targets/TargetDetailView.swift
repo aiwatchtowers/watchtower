@@ -1356,6 +1356,13 @@ struct TargetDetailView: View {
         }
         if ref.hasPrefix("slack:") {
             let parts = ref.dropFirst(6).split(separator: ":")
+            if parts.count == 1 {
+                // Channel-only fallback ref (`slack:<channelID>`, see
+                // TargetPrefillBuilder) — no message ts for an archives link,
+                // so use Slack's generic channel redirect (the workspace
+                // domain/team ID is not available in this view).
+                return URL(string: "https://slack.com/app_redirect?channel=\(parts[0])")
+            }
             guard parts.count >= 2 else { return nil }
             return URL(string: "https://slack.com/archives/\(parts[0])/p\(parts[1].replacingOccurrences(of: ".", with: ""))")
         }

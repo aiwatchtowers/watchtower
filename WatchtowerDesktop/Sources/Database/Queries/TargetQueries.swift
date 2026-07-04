@@ -222,6 +222,25 @@ enum TargetQueries {
                 """,
             arguments: [status, id]
         )
+
+        // BEHAVIOR INBOX-02 — closing a target resolves its pending `target_due`
+        // inbox items so the user never has to close the same thing twice.
+        // Mirrors the Go-side cascade in `UpdateTargetStatus`
+        // (internal/db/targets.go); Desktop "Done" bypasses Go, so the two
+        // paths must stay in sync (same dual-path convention as
+        // `CatchUpQueries.acknowledge`).
+        if status == "done" || status == "dismissed" {
+            try db.execute(
+                sql: """
+                    UPDATE inbox_items
+                    SET status = 'resolved',
+                        resolved_reason = 'target_closed',
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    WHERE target_id = ? AND trigger_type = 'target_due' AND status = 'pending'
+                    """,
+                arguments: [id]
+            )
+        }
     }
 
     static func updatePriority(_ db: Database, id: Int, priority: String) throws {

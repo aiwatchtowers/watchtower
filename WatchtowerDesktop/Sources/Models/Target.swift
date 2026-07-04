@@ -24,7 +24,11 @@ struct TargetSubItem: Codable, Identifiable, Equatable {
     }
 
     var isOverdue: Bool {
-        guard !done, let date = dueDateParsed else { return false }
+        guard !done, let date = dueDateParsed, let dueDate else { return false }
+        if Target.isDateOnly(dueDate) {
+            // Same "due ON the day" semantics as Target.isOverdue.
+            return dueDate < Target.todayUTCDayString()
+        }
         return date < Date()
     }
 }
@@ -201,13 +205,35 @@ struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equatable, H
     var isOverdue: Bool {
         guard isActive, !dueDate.isEmpty else { return false }
         guard let due = Self.parseDueDate(dueDate) else { return false }
+        if Self.isDateOnly(dueDate) {
+            // Date-only means "due ON that day": overdue only once the stored
+            // UTC day has fully passed, never mid-day just because the value
+            // parses as UTC midnight (which lies behind `Date()` for most of
+            // the day west of UTC).
+            return dueDate < Self.todayUTCDayString()
+        }
         return due < Date()
     }
 
     var isDueToday: Bool {
         guard !dueDate.isEmpty else { return false }
         guard let due = Self.parseDueDate(dueDate) else { return false }
+        if Self.isDateOnly(dueDate) {
+            // Compare UTC calendar days — the stored day IS the due day.
+            return dueDate == Self.todayUTCDayString()
+        }
         return Calendar.current.isDateInToday(due)
+    }
+
+    /// True for date-only stored values ("YYYY-MM-DD", no time component).
+    static func isDateOnly(_ stored: String) -> Bool {
+        !stored.contains("T")
+    }
+
+    /// Today's UTC calendar day as "yyyy-MM-dd" — lexicographically comparable
+    /// with stored date-only due dates.
+    static func todayUTCDayString(now: Date = Date()) -> String {
+        periodFormatter.string(from: now)
     }
 
     // MARK: - Level

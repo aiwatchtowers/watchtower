@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -292,8 +293,15 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 		}
 	}
 
+	// Like the inbox cascade above, a recompute failure is surfaced to the
+	// caller (joined with any cascade error) — the status change persisted,
+	// so the error only signals that the parent's progress is now stale.
 	if parentID.Valid {
-		_ = db.RecomputeParentProgress(parentID.Int64)
+		if rerr := db.RecomputeParentProgress(parentID.Int64); rerr != nil {
+			cascadeErr = errors.Join(cascadeErr, fmt.Errorf(
+				"recomputing parent %d progress for target %d (status change persisted): %w",
+				parentID.Int64, id, rerr))
+		}
 	}
 	return cascadeErr
 }

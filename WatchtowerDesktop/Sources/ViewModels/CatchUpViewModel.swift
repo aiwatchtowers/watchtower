@@ -119,6 +119,7 @@ final class CatchUpViewModel {
         } catch {
             // Keep the previous session on a transient read failure — nulling a
             // live session here would blank the review UI mid-pass.
+            print("CatchUp: fetchActiveSession failed (keeping previous session): \(error)")
         }
 
         // Re-point the selection at the freshest copy of the selected row, then

@@ -89,6 +89,35 @@ final class ObserverTimelineViewModelTests: XCTestCase {
         XCTAssertEqual(statuses, ["applied", "applied"])
     }
 
+    /// Applying an action after the target row was deleted must surface an
+    /// error and leave the event pending — silently applying against the stale
+    /// init-time snapshot would mark the event applied with no effect.
+    func testApplyActionAgainstDeletedTarget_SetsErrorAndLeavesEventPending() throws {
+        let (manager, path, target, timeline) = try makeHarness()
+        defer { TestDatabase.cleanup(path: path) }
+
+        try manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO observer_events (observer_id, entity_id, summary, proposed_action, action_status)
+                VALUES (1, ?, 'stale', '{"type":"add_sub_item","reason":"r","text":"x"}', 'pending')
+                """, arguments: [target.id])
+        }
+        let events = try manager.dbPool.read { db in
+            try ObserverQueries.fetchEvents(db, entityId: target.id)
+        }
+        try manager.dbPool.write { db in
+            try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target.id])
+        }
+
+        timeline.applyAction(for: events[0])
+
+        XCTAssertNotNil(timeline.errorMessage)
+        let status = try manager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT action_status FROM observer_events")
+        }
+        XCTAssertEqual(status, "pending", "the event must stay pending when the target is gone")
+    }
+
     // MARK: - CRUD error surfacing (no observers table → write must fail loudly)
 
     func testCreateObserverFailureSetsErrorMessage() throws {

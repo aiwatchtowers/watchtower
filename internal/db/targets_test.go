@@ -174,6 +174,37 @@ func TestUpdateTargetStatus(t *testing.T) {
 	assert.Equal(t, "done", tgt.Status)
 }
 
+// TestUpdateTargetStatus_ParentRecomputeFailureSurfaces guards F9: a failed
+// RecomputeParentProgress after a status change must be reported to the
+// caller, not swallowed — the status change itself has already persisted, so
+// the error is the only signal that the parent's progress is now stale.
+func TestUpdateTargetStatus_ParentRecomputeFailureSurfaces(t *testing.T) {
+	db := openTestDB(t)
+
+	parentID, err := db.CreateTarget(makeTarget("Parent", "todo", "medium"))
+	require.NoError(t, err)
+	child := makeTarget("Child", "todo", "medium")
+	child.ParentID = sql.NullInt64{Int64: parentID, Valid: true}
+	childID, err := db.CreateTarget(child)
+	require.NoError(t, err)
+
+	// Simulate a recompute failure: abort any progress update on the parent.
+	_, err = db.Exec(fmt.Sprintf(`CREATE TRIGGER fail_parent_progress
+		BEFORE UPDATE OF progress ON targets WHEN NEW.id = %d
+		BEGIN SELECT RAISE(ABORT, 'simulated recompute failure'); END`, parentID))
+	require.NoError(t, err)
+
+	err = db.UpdateTargetStatus(int(childID), "done")
+	require.Error(t, err, "recompute failure must surface")
+	assert.Contains(t, err.Error(), "simulated recompute failure")
+	assert.Contains(t, err.Error(), "status change persisted")
+
+	// The status change itself persisted.
+	tgt, gerr := db.GetTargetByID(int(childID))
+	require.NoError(t, gerr)
+	assert.Equal(t, "done", tgt.Status)
+}
+
 // ── DeleteTarget / ON DELETE SET NULL on parent_id ───────────────────────────
 
 func TestDeleteTarget_Basic(t *testing.T) {

@@ -114,10 +114,15 @@ final class ObserverTimelineViewModel {
             // Apply against a FRESH copy of the target, not the init-time
             // snapshot: the executor's sub-item/note paths are whole-JSON
             // read-modify-writes, so a stale snapshot would clobber anything
-            // applied since this VM was created (lost update).
-            let fresh = try dbPool.read { db in
+            // applied since this VM was created (lost update). A missing row
+            // means the target was deleted — surface that instead of silently
+            // applying against the stale snapshot and marking the event applied.
+            guard let fresh = try dbPool.read({ db in
                 try TargetQueries.fetchByID(db, id: target.id)
-            } ?? target
+            }) else {
+                errorMessage = "This task no longer exists — it may have been deleted."
+                return
+            }
             _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
             try dbPool.write { db in
                 try ObserverQueries.setActionStatus(db, id: event.id, status: "applied")

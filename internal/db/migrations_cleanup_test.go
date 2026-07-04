@@ -111,11 +111,13 @@ func TestMigration00007CleansMalformedExternalRefs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	seed(nil, "slack:https://x.slack.com/archives/C1/p1", "related") // no target → delete
-	seed(2, "slack:https://x.slack.com/archives/C1/p2", "blocks")    // has target → blank
-	seed(2, "", "related")                                           // clean duplicate…
-	seed(2, "slack:https://x.slack.com/archives/C1/p3", "related")   // …malformed twin → delete
-	seed(nil, "jira:ABC-1", "related")                               // healthy ref → untouched
+	seed(nil, "slack:https://x.slack.com/archives/C1/p1", "related")  // no target → delete
+	seed(2, "slack:https://x.slack.com/archives/C1/p2", "blocks")     // has target → blank
+	seed(2, "", "related")                                            // clean duplicate…
+	seed(2, "slack:https://x.slack.com/archives/C1/p3", "related")    // …malformed twin → delete
+	seed(nil, "jira:ABC-1", "related")                                // healthy ref → untouched
+	seed(2, "slack:https://x.slack.com/archives/C1/p4", "duplicates") // colliding malformed twins with…
+	seed(2, "slack:https://x.slack.com/archives/C1/p5", "duplicates") // …no clean dup → keep exactly one, blanked
 
 	if err := goose.Up(raw, "migrations"); err != nil {
 		t.Fatalf("apply 00007: %v", err)
@@ -133,8 +135,8 @@ func TestMigration00007CleansMalformedExternalRefs(t *testing.T) {
 	if err := raw.QueryRow(`SELECT COUNT(*) FROM target_links`).Scan(&total); err != nil {
 		t.Fatal(err)
 	}
-	if total != 3 {
-		t.Fatalf("expected 3 surviving links (blanked + clean dup + jira), got %d", total)
+	if total != 4 {
+		t.Fatalf("expected 4 surviving links (blanked + clean dup + jira + one blanked collision twin), got %d", total)
 	}
 	var blanked int
 	if err := raw.QueryRow(`SELECT COUNT(*) FROM target_links
@@ -151,5 +153,17 @@ func TestMigration00007CleansMalformedExternalRefs(t *testing.T) {
 	}
 	if jira != 1 {
 		t.Fatalf("healthy external ref must be untouched, got %d", jira)
+	}
+	// The colliding malformed twins (same source/target/relation, different
+	// URLs, no clean '' twin) must not both survive the DELETE: blanking both
+	// would violate UNIQUE(source_target_id, target_target_id, external_ref,
+	// relation) and abort the whole migration.
+	var collided int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM target_links
+		WHERE target_target_id = 2 AND relation = 'duplicates' AND external_ref = ''`).Scan(&collided); err != nil {
+		t.Fatal(err)
+	}
+	if collided != 1 {
+		t.Fatalf("exactly one blanked collision twin must survive, got %d", collided)
 	}
 }

@@ -75,7 +75,8 @@ func (p *Pipeline) GenerateNextStep(ctx context.Context, targetID int) (*NextSte
 
 	prompt := p.buildNextStepPrompt(target)
 	ctx2 := digest.WithSource(ctx, "targets.next_step")
-	raw, _, _, err := p.gen.Generate(ctx2, p.withNextStepLanguage(nextStepSystemPrompt),
+	sys := nextStepSystemPrompt + "\n\n" + prompts.Directive(p.lang)
+	raw, _, _, err := p.gen.Generate(ctx2, sys,
 		"Decide the single next action for this target.\n\n"+prompt, "")
 	if err != nil {
 		return nil, fmt.Errorf("next-step AI call for target %d: %w", targetID, err)
@@ -142,13 +143,6 @@ func (p *Pipeline) GenerateAllNextSteps(ctx context.Context) (int, error) {
 	}
 	wg.Wait()
 	return done, ctx.Err()
-}
-
-// withNextStepLanguage appends the workspace response-language directive so the
-// suggestion comes back in the operator's configured language (digest.language,
-// threaded into the Pipeline by its constructor).
-func (p *Pipeline) withNextStepLanguage(base string) string {
-	return base + "\n\n" + prompts.Directive(p.lang)
 }
 
 // buildNextStepPrompt renders the target and its surrounding context into the

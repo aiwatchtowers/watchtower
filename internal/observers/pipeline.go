@@ -207,12 +207,14 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer, opts runOpts) ([]d
 
 	var created []db.ObserverEvent
 	insertFailed := false
+	deduped := 0
 	for _, ev := range parsed {
 		summary := strings.TrimSpace(ev.Summary)
 		if summary == "" {
 			continue
 		}
 		if seen[summary] {
+			deduped++
 			continue
 		}
 		seen[summary] = true
@@ -238,6 +240,9 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer, opts runOpts) ([]d
 		}
 		rec.ID = id
 		created = append(created, rec)
+	}
+	if deduped > 0 {
+		p.logger.Printf("observers: observer %d: %d event(s) deduped against existing summaries", o.ID, deduped)
 	}
 
 	if insertFailed {

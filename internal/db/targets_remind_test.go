@@ -75,6 +75,40 @@ func TestNotifyDueTargets_FutureDueIgnored(t *testing.T) {
 	assert.Equal(t, 0, count)
 }
 
+// TestNotifyDueTargets_DateOnlyDueSemantics pins the R2-F4 judge ruling for
+// date-only due dates ("2026-07-05", no time component): they compare as UTC
+// day strings, so the reminder fires from UTC midnight at the START of the due
+// day ("it's due today"), while a due date of tomorrow stays silent.
+func TestNotifyDueTargets_DateOnlyDueSemantics(t *testing.T) {
+	db := openTestDB(t)
+
+	dueToday := makeTarget("Due today", "todo", "high")
+	dueToday.DueDate = "2026-05-01"
+	todayID, err := db.CreateTarget(dueToday)
+	require.NoError(t, err)
+
+	dueTomorrow := makeTarget("Due tomorrow", "todo", "high")
+	dueTomorrow.DueDate = "2026-05-02"
+	tomorrowID, err := db.CreateTarget(dueTomorrow)
+	require.NoError(t, err)
+
+	// Exactly UTC midnight at the start of the due day: today notifies…
+	now := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	n, err := db.NotifyDueTargets(now)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	var count int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM inbox_items WHERE target_id = ?`, todayID).Scan(&count))
+	assert.Equal(t, 1, count, "date-only due equal to today's UTC date must notify")
+
+	// …tomorrow does not.
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM inbox_items WHERE target_id = ?`, tomorrowID).Scan(&count))
+	assert.Equal(t, 0, count, "date-only due of tomorrow must not notify")
+}
+
 // TestNotifyDueTargets_ClosedStatusesSkipped verifies done/dismissed targets
 // are not surfaced even if overdue — closing the target ends the reminder.
 func TestNotifyDueTargets_ClosedStatusesSkipped(t *testing.T) {

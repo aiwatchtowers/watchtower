@@ -1,6 +1,7 @@
 package observers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -607,5 +608,126 @@ func TestObserverShortlistPromptOmitsDirective(t *testing.T) {
 	}
 	if prompts.HasDirective(gen.lastSys) {
 		t.Fatalf("shortlist prompt must not carry the language directive (ids-only output):\n%s", gen.lastSys)
+	}
+}
+
+// TestRunCappedSameSecondBatchNotLost guards the same-second tie hole: when
+// MORE than the per-source cap of rows share one created_at second (realistic:
+// inbox_items batch-inserted 100-in-one-second on a cold start), the whole tie
+// group must be fed to the prompt in one batch — the watermark advances to the
+// boundary second and the next window opens with a strict `>`, so anything
+// left behind would be skipped forever.
+func TestRunCappedSameSecondBatchNotLost(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Cold-start target")
+	newObserver(t, d, tid)
+
+	total := defaultActivityLimit + 10
+	for i := 0; i < total; i++ {
+		seedDigestAt(t, d, i, "2026-07-01T00:00:00Z")
+	}
+
+	gen := &mockGen{resp: `{"events":[]}`}
+	p := New(d, gen, "", log.Default())
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(gen.lastUser, "[digest id="); got != total {
+		t.Fatalf("prompt carried %d of %d same-second rows (boundary ties lost)", got, total)
+	}
+
+	// The whole tie group was consumed, so the second run finds nothing new:
+	// no AI call, no events.
+	gen.calls = 0
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gen.calls != 0 {
+		t.Fatalf("second run must make no AI call (window fully consumed), got %d", gen.calls)
+	}
+	if events, _ := d.GetObserverEventsForEntity("target", tid, 100); len(events) != 0 {
+		t.Fatalf("no events expected, got %d", len(events))
+	}
+}
+
+// TestRunCappedBoundaryTiesNotLost guards the mixed shape: increasing
+// timestamps up to the cap plus a few rows tied at the boundary second. The
+// tied rows must be fed with the first batch, not dropped when the watermark
+// advances to the boundary.
+func TestRunCappedBoundaryTiesNotLost(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Tied-boundary target")
+	newObserver(t, d, tid)
+
+	// 39 rows with increasing seconds, then 5 tied at the boundary second.
+	for i := 0; i < defaultActivityLimit-1; i++ {
+		seedDigestAt(t, d, i, fmt.Sprintf("2026-07-01T00:00:%02dZ", i))
+	}
+	boundary := fmt.Sprintf("2026-07-01T00:00:%02dZ", defaultActivityLimit-1)
+	total := defaultActivityLimit + 4
+	for i := defaultActivityLimit - 1; i < total; i++ {
+		seedDigestAt(t, d, i, boundary)
+	}
+
+	gen := &mockGen{resp: `{"events":[]}`}
+	p := New(d, gen, "", log.Default())
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(gen.lastUser, "[digest id="); got != total {
+		t.Fatalf("prompt carried %d of %d rows (tied boundary rows lost)", got, total)
+	}
+	if got := lastRunAt(t, d, tid); got != boundary {
+		t.Fatalf("watermark = %q, want boundary %q", got, boundary)
+	}
+
+	gen.calls = 0
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gen.calls != 0 {
+		t.Fatalf("second run must make no AI call (window fully consumed), got %d", gen.calls)
+	}
+}
+
+// TestRunForwardDedupSkipsAndLogs covers the forward-run dedup path (F2): a
+// capped first run persists event "X"; the second run re-emits "X" alongside a
+// new "Y". Only "Y" may be created, and the skip must be observable in the log.
+func TestRunForwardDedupSkipsAndLogs(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Forward dedup target")
+	newObserver(t, d, tid)
+
+	// Cap the first run so the second run still has overflow rows to process.
+	total := defaultActivityLimit + 5
+	for i := 0; i < total; i++ {
+		seedDigestAt(t, d, i, fmt.Sprintf("2026-07-01T00:00:%02dZ", i))
+	}
+
+	var buf bytes.Buffer
+	gen := &mockGen{resp: `{"events":[{"summary":"X","source_type":"digest"}]}`}
+	p := New(d, gen, "", log.New(&buf, "", 0))
+
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	gen.resp = `{"events":[
+		{"summary":"X","source_type":"digest"},
+		{"summary":"Y","source_type":"digest"}]}`
+	buf.Reset()
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	events, _ := d.GetObserverEventsForEntity("target", tid, 50)
+	if len(events) != 2 {
+		t.Fatalf("expected X + Y only (X deduped on the second run), got %d: %+v", len(events), events)
+	}
+	if !strings.Contains(buf.String(), "1 event(s) deduped") {
+		t.Fatalf("dedup must be logged, log was:\n%s", buf.String())
 	}
 }

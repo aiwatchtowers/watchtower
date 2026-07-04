@@ -14,6 +14,13 @@ import (
 // "Active" means status ∈ {todo, in_progress, blocked} — closing the target
 // (done/dismissed/snoozed) suppresses the reminder. Snoozed targets are
 // re-surfaced once UnsnoozeExpiredTargets flips them back to todo.
+//
+// Due-date comparison is a UTC string compare against the minute-resolution
+// cutoff. For date-only due dates ("2026-07-05", no time component) the value
+// is a strict prefix of any same-day cutoff, so it compares <= from UTC
+// midnight at the START of the due day — deliberately: a reminder means "it's
+// due today", while overdue-style checks treat date-only dues as overdue only
+// after the day ends (R2-F4 judge ruling).
 func (db *DB) NotifyDueTargets(now time.Time) (int, error) {
 	cutoff := now.UTC().Format("2006-01-02T15:04")
 
