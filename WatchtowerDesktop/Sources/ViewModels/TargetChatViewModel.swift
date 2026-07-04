@@ -497,6 +497,27 @@ final class TargetChatViewModel {
         """
     }
 
+    /// The `=== WATCH ACTIVITY ===` context block: recent events surfaced by the
+    /// target's watches, so the assistant can act on them. Empty string when the
+    /// target has no watch activity (the block is then omitted from the prompt).
+    nonisolated static func watchActivityBlock(target: Target, dbPool: DatabasePool) -> String {
+        let events = (try? dbPool.read { db in
+            try TrackEventQueries.fetchForTarget(db, targetID: target.id, limit: 20)
+        }) ?? []
+        guard !events.isEmpty else { return "" }
+        let lines = events.map { e -> String in
+            let action = e.decodedAction.map { " [proposed: \($0.type.rawValue)]" } ?? ""
+            return "- \(e.summary)\(action)"
+        }.joined(separator: "\n")
+        return """
+
+        === WATCH ACTIVITY ===
+        Recent updates surfaced by this target's watches (newest first). You may
+        propose target mutations based on these via the task actions above.
+        \(lines)
+        """
+    }
+
     nonisolated static func buildSystemPrompt(
         target: Target, dbPool: DatabasePool
     ) -> String {
@@ -517,6 +538,7 @@ final class TargetChatViewModel {
         task (target) tracked in their workspace.
 
         \(Self.taskContextBlock(target))
+        \(Self.watchActivityBlock(target: target, dbPool: dbPool))
 
         \(Self.taskActionsContract)
 
