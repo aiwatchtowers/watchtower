@@ -86,7 +86,7 @@ enum TargetPrefillBuilder {
 
     // MARK: - fromDigest
 
-    static func fromDigest(_ digest: Digest, topic: DigestTopic?, db: DatabaseManager) async throws -> TargetPrefill {
+    static func fromDigest(_ digest: Digest, db: DatabaseManager) async throws -> TargetPrefill {
         let channelName = try await db.dbPool.read { dbConn -> String in
             if let ch = try ChannelQueries.fetchByID(dbConn, id: digest.channelID) {
                 return ch.name
@@ -94,28 +94,13 @@ enum TargetPrefillBuilder {
             return digest.channelID
         }
 
-        let title: String
-        if let t = topic {
-            title = t.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? Self.firstLine(digest.summary)
-                : t.title
-        } else {
-            title = Self.firstLine(digest.summary)
-        }
+        let title = Self.firstLine(digest.summary)
 
         var lines: [String] = []
         lines.append("From digest in #\(channelName):")
 
-        let body = (topic?.summary).flatMap { s -> String? in
-            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        } ?? digest.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = digest.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         if !body.isEmpty { lines.append(body) }
-
-        if let topic, !topic.parsedKeyMessages.isEmpty {
-            let bulleted = topic.parsedKeyMessages.prefix(5).map { "  • \($0)" }.joined(separator: "\n")
-            lines.append("Key messages:\n\(bulleted)")
-        }
 
         let links: [TargetPrefillLink] = digest.channelID.isEmpty
             ? []
@@ -151,9 +136,17 @@ enum TargetPrefillBuilder {
             lines.append("Why it matters: \(aiReason)")
         }
 
-        let links: [TargetPrefillLink] = item.permalink.isEmpty
-            ? []
-            : [TargetPrefillLink(externalRef: "slack:\(item.permalink)", relation: "related")]
+        // external_ref follows the documented `slack:<channelID>:<messageTs>`
+        // format (see TargetLink.swift) — never a permalink URL. Fall back to
+        // channel-only when the item has no message timestamp.
+        let links: [TargetPrefillLink] = item.channelID.isEmpty ? [] : [
+            TargetPrefillLink(
+                externalRef: item.messageTS.isEmpty
+                    ? "slack:\(item.channelID)"
+                    : "slack:\(item.channelID):\(item.messageTS)",
+                relation: "related"
+            )
+        ]
 
         return TargetPrefill(
             text: item.snippet,
@@ -189,7 +182,7 @@ enum TargetPrefillBuilder {
                 if let digest = try await dbMgr.dbPool.read({ db in
                     try Digest.fetchOne(db, sql: "SELECT * FROM digests WHERE id = ?", arguments: [id])
                 }) {
-                    var pf = try await fromDigest(digest, topic: nil, db: dbMgr)
+                    var pf = try await fromDigest(digest, db: dbMgr)
                     pf.text = item.text
                     pf.intent = prefix + "\n\n" + pf.intent
                     return pf

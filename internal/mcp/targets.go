@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -58,7 +59,7 @@ func registerTargets(s *mcpsdk.Server, database *db.DB) {
 		target, err := database.GetTargetByID(args.ID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return errResult("no target with id " + itoa(args.ID)), nil, nil
+				return errResult("no target with id " + strconv.Itoa(args.ID)), nil, nil
 			}
 			return errResult("getting target: " + err.Error()), nil, nil
 		}

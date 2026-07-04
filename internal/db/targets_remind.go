@@ -82,11 +82,14 @@ func (db *DB) NotifyDueTargets(now time.Time) (int, error) {
 	return surfaced, nil
 }
 
+// truncate caps s at n runes. Cutting on runes, not bytes, keeps multi-byte
+// text (e.g. Cyrillic target titles) valid UTF-8.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n]
+	return string(r[:n])
 }
 
 func normalizePriority(p string) string {

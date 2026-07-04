@@ -594,3 +594,40 @@ func TestGetTargetsForBriefing(t *testing.T) {
 }
 
 // ── Migration v67: v65→v67 on a fixture DB ───────────────────────────────────
+
+// TestUpdateTargetStatus_CascadeFailureSurfaces guards the H1 fix: the
+// INBOX-02 cascade (closing a target resolves its pending target_due inbox
+// item) must not be fire-and-forget. When the cascade UPDATE fails, the
+// caller gets an error carrying the target id — while the status change
+// itself, which persisted before the cascade ran, stays in place.
+func TestUpdateTargetStatus_CascadeFailureSurfaces(t *testing.T) {
+	db := openTestDB(t)
+
+	id, err := db.CreateTarget(makeTarget("Cascade me", "todo", "high"))
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO inbox_items
+		(channel_id, message_ts, sender_user_id, trigger_type, snippet, target_id, item_class)
+		VALUES (?, '1', '', 'target_due', 'Cascade me', ?, 'actionable')`,
+		fmt.Sprintf("target:%d", id), id)
+	require.NoError(t, err)
+
+	// Simulate a cascade failure via a trigger on the resolve UPDATE.
+	_, err = db.Exec(`CREATE TRIGGER fail_resolve BEFORE UPDATE ON inbox_items
+		WHEN NEW.resolved_reason = 'target_closed'
+		BEGIN SELECT RAISE(ABORT, 'simulated cascade failure'); END`)
+	require.NoError(t, err)
+
+	err = db.UpdateTargetStatus(int(id), "done")
+	require.Error(t, err, "cascade failure must surface, not be swallowed")
+	assert.Contains(t, err.Error(), "resolving target_due inbox items")
+	assert.Contains(t, err.Error(), fmt.Sprintf("target %d", id))
+
+	// The status update itself persisted before the cascade ran.
+	got, gErr := db.GetTargetByID(int(id))
+	require.NoError(t, gErr)
+	assert.Equal(t, "done", got.Status)
+	// The inbox item is untouched (the failed UPDATE rolled back).
+	var status string
+	require.NoError(t, db.QueryRow(`SELECT status FROM inbox_items WHERE target_id = ?`, id).Scan(&status))
+	assert.Equal(t, "pending", status)
+}

@@ -275,7 +275,7 @@ func runObserversRun(cmd *cobra.Command, args []string) error {
 	defer database.Close()
 	applyProviderOverride(cfg)
 	gen := cliGenerator(cfg)
-	pipe := observers.New(database, gen, nil)
+	pipe := observers.New(database, gen, cfg.Digest.Language, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 	n, err := pipe.Run(ctx)
@@ -301,7 +301,7 @@ func runObserversCompose(cmd *cobra.Command, args []string) error {
 	}
 	applyProviderOverride(cfg)
 	gen := cliGenerator(cfg)
-	pipe := observers.New(database, gen, nil)
+	pipe := observers.New(database, gen, cfg.Digest.Language, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	res, err := pipe.Compose(ctx, id, observerFlagInput)

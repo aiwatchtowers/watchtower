@@ -48,15 +48,18 @@ func (o runOpts) isBackfill() bool { return o.sinceOverride != "" }
 type Pipeline struct {
 	db     *db.DB
 	gen    digest.Generator
+	lang   string // workspace response language (digest.language); "" falls back to the prompts default
 	logger *log.Logger
 }
 
-// New constructs a Pipeline.
-func New(database *db.DB, gen digest.Generator, logger *log.Logger) *Pipeline {
+// New constructs a Pipeline. lang is the workspace response language
+// (cfg.Digest.Language) injected into operator-facing prompts via
+// prompts.Directive; an empty value falls back to prompts.DefaultLanguage.
+func New(database *db.DB, gen digest.Generator, lang string, logger *log.Logger) *Pipeline {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Pipeline{db: database, gen: gen, logger: logger}
+	return &Pipeline{db: database, gen: gen, lang: lang, logger: logger}
 }
 
 // Run runs every enabled observer over activity since its watermark. Returns
@@ -98,22 +101,34 @@ func (p *Pipeline) RunForTargetSince(ctx context.Context, targetID int, since st
 	return p.runForTarget(ctx, targetID, runOpts{sinceOverride: since})
 }
 
+// runForTarget backs the user-initiated Refresh/Scan actions, so unlike the
+// daemon's Run it must fail visibly: a partial failure keeps skip-and-log
+// semantics, but when every enabled observer fails the whole call errors.
+// The returned slice is non-nil on success so callers JSON-encode it as [].
 func (p *Pipeline) runForTarget(ctx context.Context, targetID int, opts runOpts) ([]db.ObserverEvent, error) {
 	obs, err := p.db.GetObserversForEntity("target", targetID)
 	if err != nil {
 		return nil, err
 	}
-	var out []db.ObserverEvent
+	out := []db.ObserverEvent{}
+	ran, failed := 0, 0
+	var lastErr error
 	for i := range obs {
 		if !obs[i].Enabled {
 			continue
 		}
+		ran++
 		events, err := p.runOne(ctx, obs[i], opts)
 		if err != nil {
 			p.logger.Printf("observers: observer %d: %v", obs[i].ID, err)
+			failed++
+			lastErr = err
 			continue
 		}
 		out = append(out, events...)
+	}
+	if ran > 0 && failed == ran {
+		return nil, fmt.Errorf("all %d observer(s) failed, last: %w", ran, lastErr)
 	}
 	return out, nil
 }
@@ -155,9 +170,20 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer, opts runOpts) ([]d
 		return nil, p.db.SetObserverLastRun(o.ID, now)
 	}
 
+	// When a source hit the per-source cap the window was only partially read:
+	// advance the watermark to the last row actually loaded, not to now, so the
+	// overflow is picked up by the next run instead of being skipped forever.
+	next := now
+	if !opts.isBackfill() && act.CappedAt != "" {
+		next = act.CappedAt
+		p.logger.Printf("observers: observer %d: activity cap (%d/source) hit; watermark advances to %s, overflow resumes next run",
+			o.ID, defaultActivityLimit, next)
+	}
+
 	user := buildObserverPrompt(o, target, act)
 	ctx2 := digest.WithSource(ctx, "observer.run")
-	raw, _, _, err := p.gen.Generate(ctx2, p.systemPrompt(), user, "")
+	sys := p.promptFor(prompts.ObserverRun) + "\n\n" + prompts.Directive(p.lang)
+	raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
 	if err != nil {
 		return nil, fmt.Errorf("observer AI call: %w", err)
 	}
@@ -166,18 +192,17 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer, opts runOpts) ([]d
 		return nil, fmt.Errorf("parsing observer output: %w", err)
 	}
 
-	// On a history backfill the scanned window overlaps activity the observer
-	// already covered on earlier runs, so dedup against existing summaries.
-	var seen map[string]bool
-	if opts.isBackfill() {
-		existing, err := p.db.GetObserverEventSummaries(o.ID, dedupSummaryLimit)
-		if err != nil {
-			return nil, fmt.Errorf("loading existing summaries: %w", err)
-		}
-		seen = make(map[string]bool, len(existing))
-		for _, s := range existing {
-			seen[strings.TrimSpace(s)] = true
-		}
+	// Dedup against existing summaries: a backfill re-scans windows the observer
+	// already covered, and after a cap-hit forward run the next window partially
+	// overlaps sources that were already consumed to now — both would otherwise
+	// re-create the same events.
+	existing, err := p.db.GetObserverEventSummaries(o.ID, dedupSummaryLimit)
+	if err != nil {
+		return nil, fmt.Errorf("loading existing summaries: %w", err)
+	}
+	seen := make(map[string]bool, len(existing))
+	for _, s := range existing {
+		seen[strings.TrimSpace(s)] = true
 	}
 
 	var created []db.ObserverEvent
@@ -187,12 +212,10 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer, opts runOpts) ([]d
 		if summary == "" {
 			continue
 		}
-		if seen != nil {
-			if seen[summary] {
-				continue
-			}
-			seen[summary] = true
+		if seen[summary] {
+			continue
 		}
+		seen[summary] = true
 		action := rawJSONOrEmpty(ev.ProposedAction)
 		status := "none"
 		if action != "" {
@@ -222,7 +245,7 @@ func (p *Pipeline) runOne(ctx context.Context, o db.Observer, opts runOpts) ([]d
 		// rather than silently dropping events that failed to persist.
 		return created, fmt.Errorf("one or more observer events failed to insert for observer %d", o.ID)
 	}
-	if err := p.db.SetObserverLastRun(o.ID, now); err != nil {
+	if err := p.db.SetObserverLastRun(o.ID, next); err != nil {
 		return created, err
 	}
 	return created, nil
@@ -244,7 +267,9 @@ func (p *Pipeline) gatherBackfillActivity(ctx context.Context, o db.Observer, ta
 		p.logger.Printf("observers: observer %d: backfill considered %d titles (cap); older items skipped", o.ID, maxBackfillTitles)
 	}
 
-	sys := p.shortlistSystemPrompt()
+	// The shortlist prompt returns an ids-only JSON object, so it carries no
+	// language directive — there is no operator-facing text to localise.
+	sys := p.promptFor(prompts.ObserverShortlist)
 	selected := map[titleRef]bool{}
 	for start := 0; start < len(titles) && len(selected) < maxCandidates; start += shortlistChunk {
 		if ctx.Err() != nil {
@@ -289,23 +314,18 @@ func (p *Pipeline) gatherBackfillActivity(ctx context.Context, o db.Observer, ta
 	return p.db.GetObserverActivityByIDs(digestIDs, trackIDs, inboxIDs)
 }
 
-// systemPrompt loads the registered observer.run template from the DB, falling
-// back to the built-in default if the DB has no row. db.GetPrompt returns
-// (*db.Prompt, error) and (nil, nil) when the id is not seeded.
-func (p *Pipeline) systemPrompt() string {
-	if row, err := p.db.GetPrompt(prompts.ObserverRun); err == nil && row != nil && row.Template != "" {
+// promptFor loads the registered template for id from the DB, falling back to
+// the built-in default when the id is not seeded (db.GetPrompt returns
+// (nil, nil)) or is blank. A real DB error is logged before falling back so a
+// broken prompts table does not silently bypass user customization.
+func (p *Pipeline) promptFor(id string) string {
+	row, err := p.db.GetPrompt(id)
+	if err != nil {
+		p.logger.Printf("observers: loading prompt %s: %v (falling back to built-in default)", id, err)
+	} else if row != nil && row.Template != "" {
 		return row.Template
 	}
-	return prompts.DefaultFor(prompts.ObserverRun)
-}
-
-// shortlistSystemPrompt loads the registered observer.shortlist template, falling
-// back to the built-in default.
-func (p *Pipeline) shortlistSystemPrompt() string {
-	if row, err := p.db.GetPrompt(prompts.ObserverShortlist); err == nil && row != nil && row.Template != "" {
-		return row.Template
-	}
-	return prompts.DefaultFor(prompts.ObserverShortlist)
+	return prompts.DefaultFor(id)
 }
 
 // Compose drafts an observer name + watch instruction for a target from the
@@ -318,18 +338,10 @@ func (p *Pipeline) Compose(ctx context.Context, targetID int, input string) (Com
 	}
 	user := buildComposePrompt(target, input)
 	ctx2 := digest.WithSource(ctx, "observer.compose")
-	raw, _, _, err := p.gen.Generate(ctx2, p.composeSystemPrompt(), user, "")
+	sys := p.promptFor(prompts.ObserverCompose) + "\n\n" + prompts.Directive(p.lang)
+	raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
 	if err != nil {
 		return ComposeResult{}, fmt.Errorf("observer compose AI call: %w", err)
 	}
 	return parseComposeOutput(raw)
-}
-
-// composeSystemPrompt loads the registered observer.compose template from the
-// DB, falling back to the built-in default.
-func (p *Pipeline) composeSystemPrompt() string {
-	if row, err := p.db.GetPrompt(prompts.ObserverCompose); err == nil && row != nil && row.Template != "" {
-		return row.Template
-	}
-	return prompts.DefaultFor(prompts.ObserverCompose)
 }

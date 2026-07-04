@@ -286,8 +286,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 			if cfg.Inbox.Enabled {
 				d.SetInboxPipeline(inbox.New(database, cfg, gen, logger))
 			}
-			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, logger))
-			d.SetObserverPipeline(observers.New(database, gen, logger))
+			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
+			d.SetObserverPipeline(observers.New(database, gen, cfg.Digest.Language, logger))
 			if cfg.DayPlan.Enabled {
 				dayPlanPipe := dayplan.New(database, cfg, gen, logger)
 				dayPlanPipe.SetPromptStore(prompts.New(database, nil))

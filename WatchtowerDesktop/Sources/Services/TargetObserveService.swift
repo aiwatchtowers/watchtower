@@ -17,6 +17,9 @@ struct TargetObserveService {
         }
         let data = try await runner.run(args: args)
         if data.isEmpty { return [] }
-        return (try? JSONDecoder().decode([ObserverEvent].self, from: data)) ?? []
+        // Malformed output must throw (callers surface it via errorMessage);
+        // swallowing it would render a scan failure as "no new events".
+        // Empty results are printed as [] by the CLI, so they decode fine.
+        return try JSONDecoder().decode([ObserverEvent].self, from: data)
     }
 }

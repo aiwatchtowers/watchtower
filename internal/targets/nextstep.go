@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 // NextStep is the AI-suggested single most important next action for a target.
@@ -144,11 +145,10 @@ func (p *Pipeline) GenerateAllNextSteps(ctx context.Context) (int, error) {
 }
 
 // withNextStepLanguage appends the workspace response-language directive so the
-// suggestion comes back in the operator's configured language. The targets
-// config carries no language field, so this is a no-op passthrough today and a
-// hook for when one is added.
+// suggestion comes back in the operator's configured language (digest.language,
+// threaded into the Pipeline by its constructor).
 func (p *Pipeline) withNextStepLanguage(base string) string {
-	return base
+	return base + "\n\n" + prompts.Directive(p.lang)
 }
 
 // buildNextStepPrompt renders the target and its surrounding context into the
@@ -206,25 +206,18 @@ func (p *Pipeline) buildNextStepPrompt(t *db.Target) string {
 	return b.String()
 }
 
-// subItemForPrompt is a minimal view of a target sub-item for prompt building.
-type subItemForPrompt struct {
-	Text    string `json:"text"`
-	Done    bool   `json:"done"`
-	DueDate string `json:"due_date"`
-}
-
-func parseSubItems(raw string) []subItemForPrompt {
+func parseSubItems(raw string) []storedSubItem {
 	if raw == "" || raw == "[]" {
 		return nil
 	}
-	var items []subItemForPrompt
+	var items []storedSubItem
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return nil
 	}
 	return items
 }
 
-func subItemOverdue(it subItemForPrompt, now time.Time) bool {
+func subItemOverdue(it storedSubItem, now time.Time) bool {
 	if it.DueDate == "" {
 		return false
 	}
@@ -239,17 +232,12 @@ func subItemOverdue(it subItemForPrompt, now time.Time) bool {
 // parseNextStep extracts and validates a NextStep from a raw AI response,
 // tolerating markdown fences and surrounding prose.
 func parseNextStep(raw string) (*NextStep, error) {
-	s := strings.TrimSpace(raw)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start < 0 || end < start {
-		return nil, fmt.Errorf("no JSON object found")
+	obj, err := prompts.ExtractJSONObject(raw)
+	if err != nil {
+		return nil, err
 	}
 	var ns NextStep
-	if err := json.Unmarshal([]byte(s[start:end+1]), &ns); err != nil {
+	if err := json.Unmarshal([]byte(obj), &ns); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(ns.Title) == "" {

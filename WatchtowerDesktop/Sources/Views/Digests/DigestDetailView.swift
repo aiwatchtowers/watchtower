@@ -594,7 +594,7 @@ struct DigestDetailView: View {
             isBuildingPrefill = true
             defer { isBuildingPrefill = false }
             do {
-                let pf = try await TargetPrefillBuilder.fromDigest(digest, topic: nil, db: db)
+                let pf = try await TargetPrefillBuilder.fromDigest(digest, db: db)
                 targetPrefill = pf
                 targetPrefillError = nil
                 showCreateTask = true

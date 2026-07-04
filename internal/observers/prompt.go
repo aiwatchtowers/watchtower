@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 )
 
 // aiEvent mirrors one event in the observer AI output.
@@ -105,17 +106,12 @@ func buildShortlistPrompt(o db.Observer, target *db.Target, titles []db.Activity
 // parseShortlistOutput extracts the {refs:[{kind,id}]} array from a raw AI
 // response, tolerating markdown fences and surrounding prose.
 func parseShortlistOutput(raw string) ([]titleRef, error) {
-	s := strings.TrimSpace(raw)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start < 0 || end < start {
-		return nil, fmt.Errorf("no JSON object found")
+	obj, err := prompts.ExtractJSONObject(raw)
+	if err != nil {
+		return nil, err
 	}
 	var out shortlistOutput
-	if err := json.Unmarshal([]byte(s[start:end+1]), &out); err != nil {
+	if err := json.Unmarshal([]byte(obj), &out); err != nil {
 		return nil, err
 	}
 	return out.Refs, nil
@@ -134,17 +130,12 @@ func truncate(s string, n int) string {
 // tolerating markdown fences and surrounding prose. A missing/empty array is
 // not an error.
 func parseObserverOutput(raw string) ([]aiEvent, error) {
-	s := strings.TrimSpace(raw)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start < 0 || end < start {
-		return nil, fmt.Errorf("no JSON object found")
+	obj, err := prompts.ExtractJSONObject(raw)
+	if err != nil {
+		return nil, err
 	}
 	var out aiOutput
-	if err := json.Unmarshal([]byte(s[start:end+1]), &out); err != nil {
+	if err := json.Unmarshal([]byte(obj), &out); err != nil {
 		return nil, err
 	}
 	return out.Events, nil
@@ -188,17 +179,12 @@ func buildComposePrompt(target *db.Target, input string) string {
 // response, tolerating markdown fences and surrounding prose. A blank name
 // defaults to "Observer"; a blank instruction is an error.
 func parseComposeOutput(raw string) (ComposeResult, error) {
-	s := strings.TrimSpace(raw)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start < 0 || end < start {
-		return ComposeResult{}, fmt.Errorf("no JSON object found")
+	obj, err := prompts.ExtractJSONObject(raw)
+	if err != nil {
+		return ComposeResult{}, err
 	}
 	var r ComposeResult
-	if err := json.Unmarshal([]byte(s[start:end+1]), &r); err != nil {
+	if err := json.Unmarshal([]byte(obj), &r); err != nil {
 		return ComposeResult{}, err
 	}
 	r.Name = strings.TrimSpace(r.Name)

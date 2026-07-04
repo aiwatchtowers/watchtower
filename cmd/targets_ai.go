@@ -73,7 +73,7 @@ func runTargetsExtract(cmd *cobra.Command, _ []string) error {
 	// Timeout governed by config targets.extract.timeout_seconds (no outer wrap needed).
 	resolver := targets.NewResolver(database, nil,
 		time.Duration(cfg.Targets.Resolver.MCPTimeoutSeconds)*time.Second)
-	pipe := targets.New(database, &cfg.Targets, gen, resolver, nil)
+	pipe := targets.New(database, &cfg.Targets, gen, resolver, cfg.Digest.Language, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -256,7 +256,7 @@ func runTargetsSuggestLinks(cmd *cobra.Command, args []string) error {
 
 	applyProviderOverride(cfg)
 	gen := cliGenerator(cfg)
-	pipe := targets.New(database, &cfg.Targets, gen, nil, nil)
+	pipe := targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -685,7 +685,7 @@ func runTargetsObserve(cmd *cobra.Command, args []string) error {
 
 	applyProviderOverride(cfg)
 	gen := cliGenerator(cfg)
-	pipe := observers.New(database, gen, nil)
+	pipe := observers.New(database, gen, cfg.Digest.Language, nil)
 	// A history backfill fans out into several cheap shortlist calls plus one
 	// extract; each CLI subprocess is slow, so allow generous headroom.
 	ctx, cancel := context.WithTimeout(context.Background(), 420*time.Second)
@@ -698,6 +698,9 @@ func runTargetsObserve(cmd *cobra.Command, args []string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("observe failed: %w", err)
+	}
+	if events == nil {
+		events = []db.ObserverEvent{} // JSON: [] not null (Swift decodes an array)
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
@@ -732,15 +735,22 @@ func runTargetsNextStep(cmd *cobra.Command, args []string) error {
 
 	applyProviderOverride(cfg)
 	gen := cliGenerator(cfg)
-	pipe := targets.New(database, &cfg.Targets, gen, nil, nil)
+	pipe := targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// --all refreshes up to ~100 targets through per-target CLI subprocess
+	// calls; each one is slow, so allow generous headroom (same budget as the
+	// observe command's backfill path).
+	timeout := 120 * time.Second
+	if targetsFlagNextStepAll {
+		timeout = 420 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	if targetsFlagNextStepAll {
 		n, err := pipe.GenerateAllNextSteps(ctx)
 		if err != nil {
-			return fmt.Errorf("next-step generation failed: %w", err)
+			return fmt.Errorf("next-step generation failed (generated %d before failure): %w", n, err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Generated next step for %d target(s)\n", n)
 		return nil

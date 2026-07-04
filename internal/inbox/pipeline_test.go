@@ -592,3 +592,48 @@ func TestPipeline_RunFastDetection(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, wmAfterFull, wmBefore, "full Run must advance the watermark")
 }
+
+// TestPipeline_RunFastDetection_DisabledConfigNoOp: with inbox.enabled=false
+// the fast pass is a clean no-op — no detection, no writes.
+func TestPipeline_RunFastDetection_DisabledConfigNoOp(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "alice")
+
+	// A DM that WOULD be detected if the pipeline were enabled.
+	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-bob', 'dm', 'U_BOB')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_BOB', 'ping')`, recentTS(10))
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	cfg.Inbox.Enabled = false
+	p := New(d, cfg, nil, log.Default())
+	p.SetCurrentUser("alice", "alice@x.com")
+
+	require.NoError(t, p.RunFastDetection(context.Background()))
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&n))
+	assert.Equal(t, 0, n, "disabled pipeline must write nothing")
+}
+
+// TestPipeline_RunFastDetection_NoCurrentUserCleanExit: a workspace with no
+// current user (valid but degenerate — e.g. before the first auth.test) exits
+// cleanly with zero writes instead of erroring or mis-detecting.
+func TestPipeline_RunFastDetection_NoCurrentUserCleanExit(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "") // workspace row exists, current_user_id empty
+
+	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-bob', 'dm', 'U_BOB')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_BOB', 'ping')`, recentTS(10))
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+
+	require.NoError(t, p.RunFastDetection(context.Background()))
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&n))
+	assert.Equal(t, 0, n, "no-current-user fast pass must write nothing")
+}

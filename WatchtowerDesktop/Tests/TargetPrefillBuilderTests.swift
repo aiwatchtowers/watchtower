@@ -99,43 +99,7 @@ final class TargetPrefillBuilderTests: XCTestCase {
 
     // MARK: - fromDigest
 
-    func testFromDigest_WithTopic() async throws {
-        let mgr = try Self.makeManagerSeededWith { db in
-            try TestDatabase.insertChannel(db, id: "C100", name: "deals")
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C100",
-                summary: "Channel-level summary"
-            )
-            try TestDatabase.insertDigestTopic(
-                db,
-                digestID: 1,
-                idx: 0,
-                title: "Q2 pipeline review",
-                summary: "Three deals at risk; Acme is committed.",
-                keyMessages: #"["Acme signed the NDA","Beta wants a 10% discount"]"#
-            )
-        }
-        let digest = try await mgr.dbPool.read { db in
-            try XCTUnwrap(try Digest.fetchOne(db, sql: "SELECT * FROM digests WHERE id = 1"))
-        }
-        let topic = try await mgr.dbPool.read { db in
-            try XCTUnwrap(try DigestTopic.fetchOne(db, sql: "SELECT * FROM digest_topics WHERE id = 1"))
-        }
-
-        let prefill = try await TargetPrefillBuilder.fromDigest(digest, topic: topic, db: mgr)
-        XCTAssertEqual(prefill.text, "Q2 pipeline review")
-        XCTAssertEqual(prefill.sourceType, "digest")
-        XCTAssertEqual(prefill.sourceID, "1")
-        XCTAssertTrue(prefill.intent.contains("From digest in #deals"))
-        XCTAssertTrue(prefill.intent.contains("Three deals at risk"))
-        XCTAssertTrue(prefill.intent.contains("Acme signed the NDA"))
-        XCTAssertEqual(prefill.secondaryLinks, [
-            TargetPrefillLink(externalRef: "slack:C100", relation: "related")
-        ])
-    }
-
-    func testFromDigest_NoTopic_FallsBackToSummary() async throws {
+    func testFromDigest_UsesSummary() async throws {
         let mgr = try Self.makeManagerSeededWith { db in
             try TestDatabase.insertChannel(db, id: "C200", name: "ops")
             try TestDatabase.insertDigest(db, channelID: "C200", summary: "Plain summary")
@@ -143,11 +107,15 @@ final class TargetPrefillBuilderTests: XCTestCase {
         let digest = try await mgr.dbPool.read { db in
             try XCTUnwrap(try Digest.fetchOne(db, sql: "SELECT * FROM digests WHERE id = 1"))
         }
-        let prefill = try await TargetPrefillBuilder.fromDigest(digest, topic: nil, db: mgr)
+        let prefill = try await TargetPrefillBuilder.fromDigest(digest, db: mgr)
         XCTAssertTrue(prefill.text.contains("Plain summary"))
+        XCTAssertEqual(prefill.sourceType, "digest")
+        XCTAssertEqual(prefill.sourceID, "1")
         XCTAssertTrue(prefill.intent.contains("From digest in #ops"))
         XCTAssertTrue(prefill.intent.contains("Plain summary"))
-        XCTAssertFalse(prefill.intent.contains("Key messages:"))
+        XCTAssertEqual(prefill.secondaryLinks, [
+            TargetPrefillLink(externalRef: "slack:C200", relation: "related")
+        ])
     }
 
     func testFromDigest_UnknownChannelFallsBackToID() async throws {
@@ -157,7 +125,7 @@ final class TargetPrefillBuilderTests: XCTestCase {
         let digest = try await mgr.dbPool.read { db in
             try XCTUnwrap(try Digest.fetchOne(db, sql: "SELECT * FROM digests WHERE id = 1"))
         }
-        let prefill = try await TargetPrefillBuilder.fromDigest(digest, topic: nil, db: mgr)
+        let prefill = try await TargetPrefillBuilder.fromDigest(digest, db: mgr)
         XCTAssertTrue(prefill.intent.contains("From digest in #C404"))
     }
 
@@ -170,6 +138,7 @@ final class TargetPrefillBuilderTests: XCTestCase {
             try TestDatabase.insertInboxItem(
                 db,
                 channelID: "C300",
+                messageTS: "1714567890.123456",
                 senderUserID: "U010",
                 triggerType: "mention",
                 snippet: "Need your call on the API contract",
@@ -188,18 +157,21 @@ final class TargetPrefillBuilderTests: XCTestCase {
         XCTAssertTrue(prefill.intent.contains("From @Vlad in #team (mention):"))
         XCTAssertTrue(prefill.intent.contains("\"Need your call on the API contract\""))
         XCTAssertTrue(prefill.intent.contains("Why it matters: Direct ask, blocking external commitment"))
+        // external_ref must follow the documented `slack:<channelID>:<messageTs>`
+        // format (TargetLink.swift), never a permalink URL.
         XCTAssertEqual(prefill.secondaryLinks, [
-            TargetPrefillLink(externalRef: "slack:https://slack.com/archives/C300/p123", relation: "related")
+            TargetPrefillLink(externalRef: "slack:C300:1714567890.123456", relation: "related")
         ])
     }
 
-    func testFromInbox_NoPermalink_NoAIReason() async throws {
+    func testFromInbox_NoMessageTS_FallsBackToChannelOnlyRef() async throws {
         let mgr = try Self.makeManagerSeededWith { db in
             try TestDatabase.insertUser(db, id: "U011", name: "jane", displayName: "")
             try TestDatabase.insertChannel(db, id: "C301", name: "design")
             try TestDatabase.insertInboxItem(
                 db,
                 channelID: "C301",
+                messageTS: "",
                 senderUserID: "U011",
                 triggerType: "dm",
                 snippet: "ping",
@@ -210,8 +182,29 @@ final class TargetPrefillBuilderTests: XCTestCase {
             try XCTUnwrap(try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1"))
         }
         let prefill = try await TargetPrefillBuilder.fromInbox(item, db: mgr)
-        XCTAssertTrue(prefill.secondaryLinks.isEmpty)
+        XCTAssertEqual(prefill.secondaryLinks, [
+            TargetPrefillLink(externalRef: "slack:C301", relation: "related")
+        ])
         XCTAssertFalse(prefill.intent.contains("Why it matters:"))
+    }
+
+    func testFromInbox_NoChannel_NoLinks() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertUser(db, id: "U012", name: "sam", displayName: "")
+            try TestDatabase.insertInboxItem(
+                db,
+                channelID: "",
+                messageTS: "",
+                senderUserID: "U012",
+                triggerType: "dm",
+                snippet: "hi"
+            )
+        }
+        let item = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1"))
+        }
+        let prefill = try await TargetPrefillBuilder.fromInbox(item, db: mgr)
+        XCTAssertTrue(prefill.secondaryLinks.isEmpty)
     }
 
     // MARK: - fromBriefingItem

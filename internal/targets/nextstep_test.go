@@ -3,9 +3,12 @@ package targets
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 )
 
 func TestGenerateNextStep_PersistsAndParses(t *testing.T) {
@@ -122,5 +125,125 @@ func TestGetTargetsNeedingNextStep_FiltersDoneAndFresh(t *testing.T) {
 	}
 	if ids[int(freshID)] {
 		t.Error("fresh target with current next_step should be excluded")
+	}
+}
+
+// TestGenerateNextStep_SystemPromptCarriesLanguageDirective enforces the
+// prompts.Directive contract (F7): the next-step system prompt must carry the
+// configured response language instead of silently defaulting to English.
+func TestGenerateNextStep_SystemPromptCarriesLanguageDirective(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"title":"Do X","actions":[]}`}}
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+	p := New(d, nil, gen, nil, "Ukrainian", nil)
+
+	id, err := d.CreateTarget(db.Target{Text: "x", Status: "todo", Ownership: "mine", Priority: "medium", SourceType: "manual", PeriodStart: "2026-07-01"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if _, err := p.GenerateNextStep(context.Background(), int(id)); err != nil {
+		t.Fatalf("GenerateNextStep: %v", err)
+	}
+	if !prompts.HasDirective(gen.lastSystem) || !strings.Contains(gen.lastSystem, "Ukrainian") {
+		t.Fatalf("next-step system prompt missing language directive:\n%s", gen.lastSystem)
+	}
+}
+
+// seedActiveTarget creates one active target with the given text.
+func seedActiveTarget(t *testing.T, d *db.DB, text string) int64 {
+	t.Helper()
+	id, err := d.CreateTarget(db.Target{Text: text, Status: "todo", Ownership: "mine", Priority: "medium", SourceType: "manual", PeriodStart: "2026-07-01"})
+	if err != nil {
+		t.Fatalf("create target %q: %v", text, err)
+	}
+	return id
+}
+
+// TestGenerateAllNextSteps_PerTargetFailureIsolation: one bad target must not
+// abort the batch — the other targets still get their next_step persisted and
+// are counted.
+func TestGenerateAllNextSteps_PerTargetFailureIsolation(t *testing.T) {
+	gen := &mockGenerator{
+		responses:           []string{`{"title":"Do X","actions":[]}`},
+		failOnUserSubstring: "FAILME",
+	}
+	p, d := makeTestPipeline(t, gen)
+
+	goodA := seedActiveTarget(t, d, "alpha")
+	bad := seedActiveTarget(t, d, "FAILME beta")
+	goodB := seedActiveTarget(t, d, "gamma")
+
+	n, err := p.GenerateAllNextSteps(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateAllNextSteps: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 successful generations, got %d", n)
+	}
+	for _, id := range []int64{goodA, goodB} {
+		tgt, err := d.GetTargetByID(int(id))
+		if err != nil {
+			t.Fatalf("reload target %d: %v", id, err)
+		}
+		if tgt.NextStep == "" {
+			t.Fatalf("target %d should have next_step persisted", id)
+		}
+	}
+	tgt, err := d.GetTargetByID(int(bad))
+	if err != nil {
+		t.Fatalf("reload bad target: %v", err)
+	}
+	if tgt.NextStep != "" {
+		t.Fatalf("failed target must not get a next_step, got %q", tgt.NextStep)
+	}
+}
+
+// TestGenerateAllNextSteps_ZeroTargetsCleanExit: an empty DB is a valid,
+// degenerate input — (0, nil) and no AI calls.
+func TestGenerateAllNextSteps_ZeroTargetsCleanExit(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"title":"never","actions":[]}`}}
+	p, _ := makeTestPipeline(t, gen)
+
+	n, err := p.GenerateAllNextSteps(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateAllNextSteps on empty DB: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 generations, got %d", n)
+	}
+	if gen.calls() != 0 {
+		t.Fatalf("AI must not be called with zero targets, got %d calls", gen.calls())
+	}
+}
+
+// TestGenerateAllNextSteps_RespectsActiveSnapshotLimit: the configured
+// resolver.active_snapshot_limit caps how many stale targets one batch
+// refreshes.
+func TestGenerateAllNextSteps_RespectsActiveSnapshotLimit(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"title":"Do X","actions":[]}`}}
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+	cfg := &config.TargetsConfig{Resolver: config.TargetsResolverConfig{ActiveSnapshotLimit: 1}}
+	p := New(d, cfg, gen, nil, "", nil)
+
+	for _, text := range []string{"a", "b", "c"} {
+		seedActiveTarget(t, d, text)
+	}
+
+	n, err := p.GenerateAllNextSteps(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateAllNextSteps: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected the limit to cap the batch at 1, got %d", n)
+	}
+	if gen.calls() != 1 {
+		t.Fatalf("expected exactly 1 AI call, got %d", gen.calls())
 	}
 }

@@ -7,6 +7,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// legacySchemaTip is the last PRAGMA user_version written by the legacy
+// migration engine. The goose baseline (00001_init.sql) squashes the legacy
+// schema at exactly this version, so only a DB at the tip may be baselined
+// as goose v1; anything else must first be migrated by the previous release.
+const legacySchemaTip = 73
+
 // RunSchemaUpgrade is the one-shot transition from the legacy migration
 // engine (PRAGMA user_version + manual switch in migrate()) to goose.
 //
@@ -15,6 +21,8 @@ import (
 //   - returns nil immediately if the DB has already been transitioned
 //     (goose_db_version table exists) — fully idempotent
 //   - returns nil if PRAGMA user_version == 0 (fresh DB, goose handles it)
+//   - errors if PRAGMA user_version != legacySchemaTip — a DB stranded on an
+//     older legacy version must be migrated by the previous release first
 //   - otherwise creates goose_db_version and marks the baseline as applied
 //
 // PRAGMA user_version is preserved on the legacy value: the Swift Desktop
@@ -47,6 +55,11 @@ func RunSchemaUpgrade(dbPath string) error {
 	}
 	if userVersion == 0 {
 		return nil
+	}
+	if userVersion != legacySchemaTip {
+		return fmt.Errorf(
+			"database is at legacy schema version %d, but this release can only take over from version %d: run the previous release binary once to bring the database up to version %d, then retry",
+			userVersion, legacySchemaTip, legacySchemaTip)
 	}
 
 	tx, err := raw.Begin()

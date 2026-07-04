@@ -314,17 +314,14 @@ struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equatable, H
 
     // MARK: - Date Helpers
 
-    private static let dateFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        return fmt
-    }()
-
+    /// UTC storage formatter for due dates: the Go side writes `t.UTC()` and
+    /// compares against `now.UTC()` (cmd/remind.go, NotifyDueTargets), so the
+    /// stored wall time is UTC — never parse/format it in the local zone.
     private static let datetimeFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd'T'HH:mm"
         fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
         return fmt
     }()
 
@@ -388,14 +385,15 @@ struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equatable, H
         return (periodFormatter.string(from: start), periodFormatter.string(from: end))
     }
 
-    /// Parses due date string supporting both "YYYY-MM-DDTHH:MM" and "YYYY-MM-DD" formats.
+    /// Parses a stored due date ("YYYY-MM-DDTHH:MM" or "YYYY-MM-DD", both UTC)
+    /// into the instant it denotes; date-only values parse as UTC midnight.
     static func parseDueDate(_ str: String) -> Date? {
         if let d = datetimeFormatter.date(from: str) { return d }
-        if let d = dateFormatter.date(from: str) { return d }
+        if let d = periodFormatter.date(from: str) { return d }
         return nil
     }
 
-    /// Formats due date for storage: "yyyy-MM-dd'T'HH:mm".
+    /// Formats due date for storage: "yyyy-MM-dd'T'HH:mm" in UTC.
     static func formatDueDate(_ date: Date) -> String {
         datetimeFormatter.string(from: date)
     }
@@ -427,11 +425,14 @@ struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equatable, H
               let date = Self.parseDueDate(dueDate) else { return nil }
         let display = DateFormatter()
         display.dateStyle = .medium
-        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
-        if comps.hour == 0 && comps.minute == 0 {
-            display.timeStyle = .none
-        } else {
+        if dueDate.contains("T") {
+            // Stored-UTC instant, shown converted to the local zone.
             display.timeStyle = .short
+        } else {
+            // Date-only due dates carry no meaningful time: show the stored
+            // calendar day as-is (UTC) instead of shifting it into local.
+            display.timeStyle = .none
+            display.timeZone = TimeZone(identifier: "UTC")
         }
         return display.string(from: date)
     }

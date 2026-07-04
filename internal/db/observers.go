@@ -82,31 +82,39 @@ func collectObservers(rows *sql.Rows) ([]Observer, error) {
 
 // UpdateObserver edits the name and instruction and bumps updated_at.
 func (db *DB) UpdateObserver(id int, name, instruction string) error {
-	_, err := db.Exec(`UPDATE observers
+	if _, err := db.Exec(`UPDATE observers
 		SET name = ?, instruction = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ?`, name, instruction, id)
-	return err
+		WHERE id = ?`, name, instruction, id); err != nil {
+		return fmt.Errorf("update observer %d: %w", id, err)
+	}
+	return nil
 }
 
 // SetObserverEnabled toggles the enabled flag.
 func (db *DB) SetObserverEnabled(id int, enabled bool) error {
-	_, err := db.Exec(`UPDATE observers
+	if _, err := db.Exec(`UPDATE observers
 		SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ?`, boolToInt(enabled), id)
-	return err
+		WHERE id = ?`, boolToInt(enabled), id); err != nil {
+		return fmt.Errorf("set observer %d enabled: %w", id, err)
+	}
+	return nil
 }
 
 // SetObserverLastRun advances the per-observer watermark. It intentionally does
 // not touch updated_at (a run is not a user edit).
 func (db *DB) SetObserverLastRun(id int, at string) error {
-	_, err := db.Exec(`UPDATE observers SET last_run_at = ? WHERE id = ?`, at, id)
-	return err
+	if _, err := db.Exec(`UPDATE observers SET last_run_at = ? WHERE id = ?`, at, id); err != nil {
+		return fmt.Errorf("set observer %d last run: %w", id, err)
+	}
+	return nil
 }
 
 // DeleteObserver removes an observer; its events cascade-delete.
 func (db *DB) DeleteObserver(id int) error {
-	_, err := db.Exec(`DELETE FROM observers WHERE id = ?`, id)
-	return err
+	if _, err := db.Exec(`DELETE FROM observers WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete observer %d: %w", id, err)
+	}
+	return nil
 }
 
 // CountObserversForEntity counts observers attached to an entity.
@@ -197,14 +205,18 @@ func (db *DB) GetObserverEventSummaries(observerID, limit int) ([]string, error)
 
 // MarkObserverEventRead sets read_at.
 func (db *DB) MarkObserverEventRead(id int, at string) error {
-	_, err := db.Exec(`UPDATE observer_events SET read_at = ? WHERE id = ?`, at, id)
-	return err
+	if _, err := db.Exec(`UPDATE observer_events SET read_at = ? WHERE id = ?`, at, id); err != nil {
+		return fmt.Errorf("mark observer event %d read: %w", id, err)
+	}
+	return nil
 }
 
 // SetObserverEventActionStatus updates the proposed-action lifecycle.
 func (db *DB) SetObserverEventActionStatus(id int, status string) error {
-	_, err := db.Exec(`UPDATE observer_events SET action_status = ? WHERE id = ?`, status, id)
-	return err
+	if _, err := db.Exec(`UPDATE observer_events SET action_status = ? WHERE id = ?`, status, id); err != nil {
+		return fmt.Errorf("set observer event %d action status: %w", id, err)
+	}
+	return nil
 }
 
 // ---- Activity gather (cross-source feed for the observer prompt) ----
@@ -240,6 +252,11 @@ type ObserverActivity struct {
 	Digests []ActivityDigest
 	Tracks  []ActivityTrack
 	Inbox   []ActivityInbox
+	// CappedAt is the safe watermark when any source hit the per-source row cap:
+	// the smallest max-timestamp among capped sources. Rows newer than it were
+	// NOT loaded, so the caller must not advance its watermark past this point.
+	// Empty when no source was capped (the whole window was consumed).
+	CappedAt string
 }
 
 // forEachRow runs query and invokes scan per row, closing rows before
@@ -263,11 +280,22 @@ func (db *DB) forEachRow(scan func(*sql.Rows) error, query string, args ...any) 
 // `since` ISO8601 watermark, capped at `limit` rows per source. These three
 // already-summarized sources together cover Slack (digests), action items
 // (tracks), and Jira/Calendar/decision signals (inbox items).
+//
+// Rows come oldest-first so a capped window is consumed incrementally: when a
+// source hits the cap, CappedAt records how far the window was actually read
+// and the caller advances its watermark to that point, not to now.
 func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, error) {
 	if limit <= 0 {
 		limit = 40
 	}
 	var act ObserverActivity
+
+	// cappedAt folds one source's coverage into act.CappedAt (min across sources).
+	cappedAt := func(maxTS string) {
+		if act.CappedAt == "" || maxTS < act.CappedAt {
+			act.CappedAt = maxTS
+		}
+	}
 
 	if err := db.forEachRow(func(r *sql.Rows) error {
 		var a ActivityDigest
@@ -278,8 +306,11 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 		return nil
 	}, `SELECT id, channel_id, summary, decisions, created_at
 		FROM digests WHERE type = 'channel' AND created_at > ?
-		ORDER BY created_at DESC LIMIT ?`, since, limit); err != nil {
+		ORDER BY created_at ASC LIMIT ?`, since, limit); err != nil {
 		return act, err
+	}
+	if len(act.Digests) == limit {
+		cappedAt(act.Digests[limit-1].CreatedAt)
 	}
 
 	if err := db.forEachRow(func(r *sql.Rows) error {
@@ -291,8 +322,11 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 		return nil
 	}, `SELECT id, text, context, updated_at
 		FROM tracks WHERE dismissed_at = '' AND updated_at > ?
-		ORDER BY updated_at DESC LIMIT ?`, since, limit); err != nil {
+		ORDER BY updated_at ASC LIMIT ?`, since, limit); err != nil {
 		return act, err
+	}
+	if len(act.Tracks) == limit {
+		cappedAt(act.Tracks[limit-1].UpdatedAt)
 	}
 
 	if err := db.forEachRow(func(r *sql.Rows) error {
@@ -304,8 +338,11 @@ func (db *DB) GetObserverActivity(since string, limit int) (ObserverActivity, er
 		return nil
 	}, `SELECT id, trigger_type, snippet, permalink, created_at
 		FROM inbox_items WHERE created_at > ?
-		ORDER BY created_at DESC LIMIT ?`, since, limit); err != nil {
+		ORDER BY created_at ASC LIMIT ?`, since, limit); err != nil {
 		return act, err
+	}
+	if len(act.Inbox) == limit {
+		cappedAt(act.Inbox[limit-1].CreatedAt)
 	}
 
 	return act, nil

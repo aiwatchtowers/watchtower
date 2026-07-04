@@ -115,6 +115,50 @@ final class TargetChatViewModelTests: XCTestCase {
         })
     }
 
+    /// A resumed turn drops the system prompt (the CLI uses --resume), so the
+    /// per-turn prompt must carry BOTH the live task context and the action
+    /// grammar — otherwise a post-restart expired session can no longer emit
+    /// valid watchtower-action blocks.
+    func testResumedTurnCarriesTaskContextAndActionContract() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(eventSequence: [
+            [.sessionID("s1"), .text("first reply"), .done],
+            [.text("second reply"), .done]
+        ])
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: mock, provider: .claude)
+
+        chat.inputText = "hello"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        chat.inputText = "again"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        XCTAssertEqual(mock.prompts.count, 2)
+        // First turn: context + contract live in the system prompt, not the message.
+        XCTAssertEqual(mock.prompts[0], "hello")
+        // Resumed turn: the message itself must carry context AND the contract.
+        XCTAssertTrue(mock.prompts[1].contains("=== CURRENT TASK ==="))
+        XCTAssertTrue(mock.prompts[1].contains("=== TASK ACTIONS ==="))
+        XCTAssertTrue(mock.prompts[1].hasSuffix("again"))
+    }
+
+    private func waitForStreamEnd(_ chat: TargetChatViewModel, timeout: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while chat.isStreaming {
+            if Date() > deadline {
+                XCTFail("stream did not finish within \(timeout)s")
+                return
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
     func testRejectMarksCardRejected() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

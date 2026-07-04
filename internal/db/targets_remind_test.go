@@ -2,8 +2,10 @@ package db
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -138,4 +140,39 @@ func TestNotifyDueTargets_NoDueDate(t *testing.T) {
 	n, err := db.NotifyDueTargets(now)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
+}
+
+// TestTruncate_RuneSafe guards H-fix F14: truncate must cut on runes, not
+// bytes. Cyrillic characters are 2 bytes each, so a byte-slice cut at an odd
+// offset would split a rune and emit invalid UTF-8 into inbox snippets.
+func TestTruncate_RuneSafe(t *testing.T) {
+	// 5 Cyrillic runes = 10 bytes; the old byte-based s[:3] would split "и".
+	s := "живой"
+	got := truncate(s, 3)
+	assert.Equal(t, "жив", got)
+	assert.True(t, utf8.ValidString(got), "truncate emitted invalid UTF-8: %q", got)
+
+	// A string within the cap is returned unchanged.
+	assert.Equal(t, s, truncate(s, 5))
+}
+
+// TestNotifyDueTargets_CyrillicSnippetStaysValidUTF8 exercises the truncate
+// path end-to-end: a long Cyrillic target text must surface as a valid UTF-8
+// snippet.
+func TestNotifyDueTargets_CyrillicSnippetStaysValidUTF8(t *testing.T) {
+	db := openTestDB(t)
+
+	long := strings.Repeat("ы", 250) // 250 runes, 500 bytes — beyond the 200 cap
+	overdue := makeTarget(long, "todo", "high")
+	overdue.DueDate = "2020-01-01T12:00"
+	id, err := db.CreateTarget(overdue)
+	require.NoError(t, err)
+
+	_, err = db.NotifyDueTargets(time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+
+	var snippet string
+	require.NoError(t, db.QueryRow(`SELECT snippet FROM inbox_items WHERE target_id = ?`, id).Scan(&snippet))
+	assert.True(t, utf8.ValidString(snippet), "snippet is invalid UTF-8")
+	assert.Equal(t, 200, utf8.RuneCountInString(snippet))
 }

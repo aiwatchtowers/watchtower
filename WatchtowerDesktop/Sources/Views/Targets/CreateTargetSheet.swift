@@ -253,9 +253,15 @@ struct CreateTargetSheet: View {
 
     private func loadCandidateParents() {
         guard let db = appState.databaseManager else { return }
-        var loaded = (try? db.dbPool.read { dbConn in
-            try TargetQueries.fetchAll(dbConn, filter: TargetFilter())
-        }) ?? []
+        var loaded: [Target]
+        do {
+            loaded = try db.dbPool.read { dbConn in
+                try TargetQueries.fetchAll(dbConn, filter: TargetFilter())
+            }
+        } catch {
+            print("CreateTargetSheet: failed to load candidate parents: \(error)")
+            loaded = []
+        }
         // Ensure a preselected parent is offered even if it's done/dismissed
         // (active-only filter would otherwise drop it and blank the label).
         if let pid = parentID, !loaded.contains(where: { $0.id == pid }),

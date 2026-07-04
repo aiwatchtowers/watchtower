@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -84,7 +85,7 @@ func registerDigests(s *mcpsdk.Server, database *db.DB) {
 			return errResult("getting digest: " + err.Error()), nil, nil
 		}
 		if digest == nil {
-			return errResult("no digest with id " + itoa(args.ID)), nil, nil
+			return errResult("no digest with id " + strconv.Itoa(args.ID)), nil, nil
 		}
 		return jsonResult(digest)
 	})

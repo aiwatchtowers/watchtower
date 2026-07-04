@@ -10,10 +10,12 @@ import (
 )
 
 // storedSubItem mirrors the JSON shape persisted in targets.sub_items.
-// The schema also allows a due_date string; the extractor does not set it.
+// DueDate is optional; the extractor never sets it (omitempty keeps freshly
+// stored rows byte-identical to the pre-DueDate format).
 type storedSubItem struct {
-	Text string `json:"text"`
-	Done bool   `json:"done"`
+	Text    string `json:"text"`
+	Done    bool   `json:"done"`
+	DueDate string `json:"due_date,omitempty"`
 }
 
 // Store wraps db.DB for transactional batch operations on targets.

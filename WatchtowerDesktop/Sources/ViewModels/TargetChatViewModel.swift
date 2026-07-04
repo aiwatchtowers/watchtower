@@ -202,12 +202,13 @@ final class TargetChatViewModel {
         // On the first turn the target context is in the system prompt. On a
         // resumed turn the CLI uses --resume and drops the system prompt entirely
         // — and if that session has expired (e.g. after an app restart) the model
-        // would have NO context at all. So carry the live target context with the
-        // message on every resumed turn: the assistant never loses track of which
-        // target it is working on, and it sees the target's current state.
+        // would have NO context at all. So carry the live target context AND the
+        // action contract with the message on every resumed turn: the assistant
+        // never loses track of which target it is working on, sees the target's
+        // current state, and can still emit valid watchtower-action blocks.
         let effectivePrompt = currentSessionID == nil
             ? text
-            : "\(Self.taskContextBlock(target))\n\n\(text)"
+            : "\(Self.taskContextBlock(target))\n\n\(Self.taskActionsContract)\n\n\(text)"
 
         var fullText = ""
         var streamFailed = false
@@ -285,11 +286,15 @@ final class TargetChatViewModel {
     nonisolated private static func persistResponse(
         dbManager: DatabaseManager, conversationID: Int64, text: String
     ) {
-        _ = try? dbManager.dbPool.write { db in
-            try ChatMessageQueries.insert(
-                db, conversationID: conversationID, role: "assistant", text: text
-            )
-            try ChatConversationQueries.touch(db, id: conversationID)
+        do {
+            try dbManager.dbPool.write { db in
+                try ChatMessageQueries.insert(
+                    db, conversationID: conversationID, role: "assistant", text: text
+                )
+                try ChatConversationQueries.touch(db, id: conversationID)
+            }
+        } catch {
+            print("TargetChat: failed to persist assistant response for conversation \(conversationID): \(error)")
         }
     }
 
@@ -380,10 +385,14 @@ final class TargetChatViewModel {
     }
 
     private func persistMessage(conversationID: Int64, role: String, text: String) {
-        _ = try? dbManager.dbPool.write { db in
-            try ChatMessageQueries.insert(
-                db, conversationID: conversationID, role: role, text: text
-            )
+        do {
+            try dbManager.dbPool.write { db in
+                try ChatMessageQueries.insert(
+                    db, conversationID: conversationID, role: role, text: text
+                )
+            }
+        } catch {
+            print("TargetChat: failed to persist \(role) message for conversation \(conversationID): \(error)")
         }
     }
 
@@ -400,14 +409,18 @@ final class TargetChatViewModel {
     }
 
     private func persistSessionID(conversationID: Int64, sessionID: String) {
-        _ = try? dbManager.dbPool.write { db in
-            try ChatConversationQueries.updateSessionID(
-                db, id: conversationID, sessionID: sessionID
-            )
+        do {
+            try dbManager.dbPool.write { db in
+                try ChatConversationQueries.updateSessionID(
+                    db, id: conversationID, sessionID: sessionID
+                )
+            }
+        } catch {
+            print("TargetChat: failed to persist session id for conversation \(conversationID): \(error)")
         }
     }
 
-    /// The action contract injected into the system prompt. Lists the five
+    /// The action contract injected into the system prompt. Lists the
     /// supported watchtower-action types and their required fields; the AI
     /// emits these instead of writing to the DB. Kept as a constant so
     /// buildSystemPrompt stays focused on task/workspace context.

@@ -279,18 +279,23 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 	// so the user never has to close the same thing twice (mirrors how
 	// auto-resolve works for slack/jira/calendar). See
 	// docs/inventory/inbox-pulse.md.
+	// The status update above already persisted, so a cascade failure is
+	// reported to the caller rather than rolling anything back.
+	var cascadeErr error
 	if newStatus == "done" || newStatus == "dismissed" {
-		_, _ = db.Exec(`UPDATE inbox_items
+		if _, err := db.Exec(`UPDATE inbox_items
 			SET status = 'resolved',
 			    resolved_reason = 'target_closed',
 			    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-			WHERE target_id = ? AND trigger_type = 'target_due' AND status = 'pending'`, id)
+			WHERE target_id = ? AND trigger_type = 'target_due' AND status = 'pending'`, id); err != nil {
+			cascadeErr = fmt.Errorf("resolving target_due inbox items for target %d (status change persisted): %w", id, err)
+		}
 	}
 
 	if parentID.Valid {
 		_ = db.RecomputeParentProgress(parentID.Int64)
 	}
-	return nil
+	return cascadeErr
 }
 
 // DeleteTarget removes a target by ID.

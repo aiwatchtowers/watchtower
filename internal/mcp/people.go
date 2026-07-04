@@ -121,7 +121,7 @@ func registerPeople(s *mcpsdk.Server, database *db.DB) {
 		track, err := database.GetTrackByID(args.ID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return errResult("no track with id " + itoa(args.ID)), nil, nil
+				return errResult("no track with id " + strconv.Itoa(args.ID)), nil, nil
 			}
 			return errResult("getting track: " + err.Error()), nil, nil
 		}

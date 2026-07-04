@@ -530,8 +530,9 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 }
 
 // phaseObservers runs enabled observers over recent activity, producing timeline
-// events on watched targets. Runs after next-step so freshly surfaced targets and
-// their lazy default observers are included.
+// events on watched targets. Runs after next-step so activity on freshly
+// surfaced targets is included. Observers are user-created only (the lazy
+// default observers were removed by migration 00006).
 func (d *Daemon) phaseObservers(ctx context.Context) {
 	if d.observerPipe == nil {
 		return

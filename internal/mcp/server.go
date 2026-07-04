@@ -112,6 +112,3 @@ func errResult(msg string) *mcpsdk.CallToolResult {
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: msg}},
 	}
 }
-
-// itoa avoids importing strconv in every tool file.
-func itoa(n int) string { return fmt.Sprintf("%d", n) }

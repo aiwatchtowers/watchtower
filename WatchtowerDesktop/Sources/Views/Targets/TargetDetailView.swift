@@ -1268,6 +1268,9 @@ struct TargetDetailView: View {
         guard let date = Target.parseDueDate(target.periodStart) else { return "" }
         let fmt = DateFormatter()
         fmt.dateFormat = "LLLL"
+        // period_start parses as UTC midnight; format in UTC so the month
+        // never shifts to the previous one in zones west of UTC.
+        fmt.timeZone = TimeZone(identifier: "UTC")
         return fmt.string(from: date)
     }
 

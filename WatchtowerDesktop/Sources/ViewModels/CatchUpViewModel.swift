@@ -114,7 +114,12 @@ final class CatchUpViewModel {
 
     private func apply(themes: [CatchUpTheme]) async {
         self.themes = themes
-        self.session = try? await dbPool.read { db in try CatchUpQueries.fetchActiveSession(db) }
+        do {
+            self.session = try await dbPool.read { db in try CatchUpQueries.fetchActiveSession(db) }
+        } catch {
+            // Keep the previous session on a transient read failure — nulling a
+            // live session here would blank the review UI mid-pass.
+        }
 
         // Re-point the selection at the freshest copy of the selected row, then
         // auto-advance to the first pending theme when there is no live selection.

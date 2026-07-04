@@ -2,27 +2,45 @@ package observers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
-// mockGen returns a canned AI response and records the prompt it saw. For the
+// mockGen returns a canned AI response and records the prompts it saw. For the
 // two-stage backfill it returns shortlistResp to the stage-1 (title) prompt and
 // resp to the stage-2 (extract) prompt, distinguished by their headers.
+// genErr fails every call; failOnUserSubstring fails only calls whose user
+// prompt contains the substring (to fail one observer out of several).
 type mockGen struct {
-	resp          string
-	shortlistResp string
-	lastUser      string
-	calls         int
+	resp                string
+	shortlistResp       string
+	genErr              error
+	failOnUserSubstring string
+	lastUser            string
+	lastSys             string
+	sysSeen             []string
+	calls               int
 }
 
 func (m *mockGen) Generate(ctx context.Context, sys, user, sess string) (string, *digest.Usage, string, error) {
 	m.calls++
 	m.lastUser = user
+	m.lastSys = sys
+	m.sysSeen = append(m.sysSeen, sys)
+	if m.genErr != nil {
+		return "", nil, "", m.genErr
+	}
+	if m.failOnUserSubstring != "" && strings.Contains(user, m.failOnUserSubstring) {
+		return "", nil, "", fmt.Errorf("simulated AI failure")
+	}
 	if m.shortlistResp != "" && strings.Contains(user, "ACTIVITY TITLES:") {
 		return m.shortlistResp, &digest.Usage{}, "", nil
 	}
@@ -57,7 +75,7 @@ func TestRunNoObserversCreatesNothing(t *testing.T) {
 	tid := newTarget(t, d, "Ship the billing migration")
 
 	gen := &mockGen{resp: `{"events":[]}`}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	n, err := p.Run(context.Background())
 	if err != nil {
@@ -89,7 +107,7 @@ func TestRunPersistsEventsForExistingObserver(t *testing.T) {
 		{"summary":"Billing decision finalized in #eng","source_type":"digest","source_id":"5",
 		 "source_refs":["https://x"],"decision":{"text":"go with plan B","by":"@ann","importance":"high"},
 		 "proposed_action":{"type":"update_status","reason":"decided","status":"in_progress"}}]}`}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	n, err := p.Run(context.Background())
 	if err != nil {
@@ -113,7 +131,7 @@ func TestRunDegenerateNoEventsAdvancesWatermarkCleanly(t *testing.T) {
 	tid := newTarget(t, d, "Quiet target")
 	newObserver(t, d, tid)
 	gen := &mockGen{resp: `{"events":[]}`}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	n, err := p.Run(context.Background())
 	if err != nil {
@@ -141,7 +159,7 @@ func TestRunForTargetReturnsNewEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	gen := &mockGen{resp: `{"events":[{"summary":"manual run event","source_type":"track"}]}`}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	events, err := p.RunForTarget(context.Background(), tid)
 	if err != nil {
@@ -157,7 +175,7 @@ func TestRunForTargetNoObserversReturnsEmpty(t *testing.T) {
 	defer d.Close()
 	tid := newTarget(t, d, "No observers here")
 	gen := &mockGen{resp: `{"events":[]}`}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	events, err := p.RunForTarget(context.Background(), tid)
 	if err != nil {
@@ -185,7 +203,7 @@ func TestRunForTargetSinceScansDeepHistory(t *testing.T) {
 		resp:          `{"events":[{"summary":"old billing event","source_type":"digest"}]}`,
 		shortlistResp: `{"refs":[{"kind":"digest","id":1}]}`,
 	}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	// Normal forward run sees nothing (the activity predates the 7-day window).
 	if n, err := p.Run(context.Background()); err != nil || n != 0 {
@@ -215,7 +233,7 @@ func TestRunForTargetSinceDedupsRepeatedSummaries(t *testing.T) {
 		resp:          `{"events":[{"summary":"same event","source_type":"digest"}]}`,
 		shortlistResp: `{"refs":[{"kind":"digest","id":1}]}`,
 	}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	first, err := p.RunForTargetSince(context.Background(), tid, "1970-01-01T00:00:00Z")
 	if err != nil || len(first) != 1 {
@@ -247,7 +265,7 @@ func TestRunForTargetSinceEmptyShortlistSkipsExtract(t *testing.T) {
 		resp:          `{"events":[{"summary":"should never be extracted"}]}`,
 		shortlistResp: `{"refs":[]}`,
 	}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	events, err := p.RunForTargetSince(context.Background(), tid, "1970-01-01T00:00:00Z")
 	if err != nil {
@@ -268,7 +286,7 @@ func TestRunForTargetSinceEmptyErrors(t *testing.T) {
 	tid := newTarget(t, d, "Target")
 	newObserver(t, d, tid)
 	gen := &mockGen{resp: `{"events":[]}`}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	if _, err := p.RunForTargetSince(context.Background(), tid, ""); err == nil {
 		t.Fatalf("empty since must error")
@@ -281,7 +299,7 @@ func TestComposeParsesNameAndInstruction(t *testing.T) {
 	tid := newTarget(t, d, "Ship billing migration")
 
 	gen := &mockGen{resp: "```json\n{\"name\":\"Billing refund\",\"instruction\":\"Watch only the HashBank refund decision and its owner.\"}\n```"}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	res, err := p.Compose(context.Background(), tid, "the refund commission thing with HashBank")
 	if err != nil {
@@ -303,7 +321,7 @@ func TestComposeEmptyInstructionErrors(t *testing.T) {
 	defer d.Close()
 	tid := newTarget(t, d, "Ship billing migration")
 	gen := &mockGen{resp: `{"name":"X","instruction":""}`}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	if _, err := p.Compose(context.Background(), tid, "watch stuff"); err == nil {
 		t.Fatalf("expected error for empty instruction")
@@ -315,7 +333,7 @@ func TestComposeDefaultsBlankName(t *testing.T) {
 	defer d.Close()
 	tid := newTarget(t, d, "Ship billing migration")
 	gen := &mockGen{resp: `{"name":"","instruction":"Watch the refund decision."}`}
-	p := New(d, gen, log.Default())
+	p := New(d, gen, "", log.Default())
 
 	res, err := p.Compose(context.Background(), tid, "watch stuff")
 	if err != nil {
@@ -323,5 +341,271 @@ func TestComposeDefaultsBlankName(t *testing.T) {
 	}
 	if res.Name != "Observer" {
 		t.Fatalf("blank name should default to Observer, got %q", res.Name)
+	}
+}
+
+// seedDigestAt inserts one channel digest with an explicit created_at.
+func seedDigestAt(t *testing.T, d *db.DB, i int, createdAt string) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary, created_at)
+		VALUES ('C1', ?, ?, 'channel', ?, ?)`, i, i, fmt.Sprintf("digest %d", i), createdAt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// lastRunAt reads the watermark of the single observer on a target.
+func lastRunAt(t *testing.T, d *db.DB, targetID int) string {
+	t.Helper()
+	obs, err := d.GetObserversForEntity("target", targetID)
+	if err != nil || len(obs) != 1 {
+		t.Fatalf("expected 1 observer, got %d (err %v)", len(obs), err)
+	}
+	return obs[0].LastRunAt
+}
+
+// TestRunCappedActivityAdvancesWatermarkToProcessed guards the F2 contract:
+// when a forward run hits the per-source activity cap, the watermark advances
+// only to the newest row actually processed — never to now — so overflow is
+// picked up by the next cycle instead of being skipped forever.
+func TestRunCappedActivityAdvancesWatermarkToProcessed(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Busy target")
+	newObserver(t, d, tid)
+
+	// 5 rows beyond the cap, oldest first: seconds 00..44 on a fixed minute.
+	total := defaultActivityLimit + 5
+	for i := 0; i < total; i++ {
+		seedDigestAt(t, d, i, fmt.Sprintf("2026-07-01T00:00:%02dZ", i))
+	}
+
+	gen := &mockGen{resp: `{"events":[]}`}
+	p := New(d, gen, "", log.Default())
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Oldest-first processing consumed rows 0..39; watermark = created_at of row 39.
+	want := fmt.Sprintf("2026-07-01T00:00:%02dZ", defaultActivityLimit-1)
+	if got := lastRunAt(t, d, tid); got != want {
+		t.Fatalf("capped run watermark = %q, want %q (cap overflow would be skipped forever)", got, want)
+	}
+
+	// Second run picks up the remaining 5 rows and, uncapped, advances past them.
+	gen.calls = 0
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gen.calls != 1 {
+		t.Fatalf("second run must process the overflow (1 AI call), got %d", gen.calls)
+	}
+	if got := lastRunAt(t, d, tid); got <= fmt.Sprintf("2026-07-01T00:00:%02dZ", total-1) {
+		t.Fatalf("uncapped second run should advance watermark past the seeded rows, got %q", got)
+	}
+}
+
+// TestRunInsertFailureHoldsWatermark pins the documented contract at
+// pipeline.go: a failed event insert must leave the watermark un-advanced so
+// the next run re-queries the window instead of silently dropping the event.
+func TestRunInsertFailureHoldsWatermark(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Fragile target")
+	newObserver(t, d, tid)
+	seedDigestAt(t, d, 1, "2026-07-01T00:00:01Z")
+
+	// Simulate a persist failure for one specific event via a trigger.
+	if _, err := d.Exec(`CREATE TRIGGER fail_insert BEFORE INSERT ON observer_events
+		WHEN NEW.summary = 'BOOM' BEGIN SELECT RAISE(ABORT, 'simulated insert failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	gen := &mockGen{resp: `{"events":[
+		{"summary":"BOOM","source_type":"digest","source_id":"1"},
+		{"summary":"Survivor event","source_type":"digest","source_id":"1"}]}`}
+	p := New(d, gen, "", log.Default())
+
+	before := lastRunAt(t, d, tid)
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run logs per-observer failures and must not error: %v", err)
+	}
+
+	if got := lastRunAt(t, d, tid); got != before {
+		t.Fatalf("watermark advanced %q -> %q despite insert failure (window silently dropped)", before, got)
+	}
+	events, _ := d.GetObserverEventsForEntity("target", tid, 50)
+	if len(events) != 1 || !strings.Contains(events[0].Summary, "Survivor") {
+		t.Fatalf("the non-failing event should still persist, got: %+v", events)
+	}
+}
+
+// newObserverWithInstruction creates an enabled observer with a custom
+// instruction (so per-observer AI failures can be targeted by prompt content).
+func newObserverWithInstruction(t *testing.T, d *db.DB, targetID int, instr string) {
+	t.Helper()
+	if _, err := d.CreateObserver(db.Observer{
+		EntityType: "target", EntityID: targetID,
+		Name: "Watcher", Instruction: instr, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRunForTargetAllObserversFailedErrors guards the F5/F11 fix: RunForTarget
+// backs the user-initiated Refresh action, so when EVERY enabled observer
+// fails the call must fail visibly instead of returning (nil, nil).
+func TestRunForTargetAllObserversFailedErrors(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Doomed target")
+	newObserverWithInstruction(t, d, tid, "Watch A.")
+	newObserverWithInstruction(t, d, tid, "Watch B.")
+	seedDigestAt(t, d, 1, time.Now().UTC().Format("2006-01-02T15:04:05Z")) // fresh activity so runOne reaches the AI call
+
+	gen := &mockGen{genErr: fmt.Errorf("provider exploded")}
+	p := New(d, gen, "", log.Default())
+
+	_, err := p.RunForTarget(context.Background(), tid)
+	if err == nil {
+		t.Fatal("expected error when all observers fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "all 2 observer(s) failed") {
+		t.Fatalf("error should say all observers failed, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "provider exploded") {
+		t.Fatalf("error should wrap the last observer failure, got: %v", err)
+	}
+}
+
+// TestRunForTargetPartialFailureKeepsSkipAndLog: when only some observers
+// fail, RunForTarget keeps the original skip-and-log semantics and returns
+// the surviving events without an error.
+func TestRunForTargetPartialFailureKeepsSkipAndLog(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Mixed target")
+	newObserverWithInstruction(t, d, tid, "Watch billing FAILME.")
+	newObserverWithInstruction(t, d, tid, "Watch shipping.")
+	seedDigestAt(t, d, 1, time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+
+	gen := &mockGen{
+		resp:                `{"events":[{"summary":"shipping moved","source_type":"digest"}]}`,
+		failOnUserSubstring: "FAILME",
+	}
+	p := New(d, gen, "", log.Default())
+
+	events, err := p.RunForTarget(context.Background(), tid)
+	if err != nil {
+		t.Fatalf("partial failure must not error: %v", err)
+	}
+	if len(events) != 1 || events[0].Summary != "shipping moved" {
+		t.Fatalf("surviving observer's events lost: %+v", events)
+	}
+}
+
+// TestRunForTargetNoEventsReturnsNonNilEmptySlice pins the JSON contract for
+// the CLI: `targets observe` encodes the result directly, and Swift expects
+// [] — a nil slice would encode as null.
+func TestRunForTargetNoEventsReturnsNonNilEmptySlice(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Quiet target")
+	newObserver(t, d, tid)
+
+	gen := &mockGen{resp: `{"events":[]}`}
+	p := New(d, gen, "", log.Default())
+
+	events, err := p.RunForTarget(context.Background(), tid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events == nil {
+		t.Fatal("RunForTarget must return a non-nil slice on success")
+	}
+	buf, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "[]" {
+		t.Fatalf("empty result must encode as [], got %s", buf)
+	}
+}
+
+// TestRunAllObserversFailedStillNoError pins that the daemon path is
+// unchanged by the F5 fix: Run keeps skip-and-log semantics even when every
+// observer fails (the daemon logs and moves to the next phase).
+func TestRunAllObserversFailedStillNoError(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Daemon target")
+	newObserver(t, d, tid)
+	seedDigestAt(t, d, 1, time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+
+	gen := &mockGen{genErr: fmt.Errorf("provider exploded")}
+	p := New(d, gen, "", log.Default())
+
+	n, err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run must keep skip-and-log semantics: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 events, got %d", n)
+	}
+}
+
+// TestObserverPromptsCarryLanguageDirective enforces the prompts.Directive
+// contract (F7) for the observer pipeline: the run and compose system prompts
+// must carry the configured response language; the shortlist prompt returns
+// an ids-only JSON object and is explicitly exempt.
+func TestObserverPromptsCarryLanguageDirective(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Localized target")
+	newObserver(t, d, tid)
+	seedDigestAt(t, d, 1, time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+
+	gen := &mockGen{resp: `{"events":[]}`}
+	p := New(d, gen, "Ukrainian", log.Default())
+
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !prompts.HasDirective(gen.lastSys) || !strings.Contains(gen.lastSys, "Ukrainian") {
+		t.Fatalf("observer.run system prompt missing language directive:\n%s", gen.lastSys)
+	}
+
+	gen.resp = `{"name":"W","instruction":"Watch the refund decision."}`
+	if _, err := p.Compose(context.Background(), tid, "watch refunds"); err != nil {
+		t.Fatal(err)
+	}
+	if !prompts.HasDirective(gen.lastSys) || !strings.Contains(gen.lastSys, "Ukrainian") {
+		t.Fatalf("observer.compose system prompt missing language directive:\n%s", gen.lastSys)
+	}
+}
+
+// TestObserverShortlistPromptOmitsDirective pins the documented exception:
+// the stage-1 shortlist call outputs ids-only JSON, so it carries no
+// language directive.
+func TestObserverShortlistPromptOmitsDirective(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid := newTarget(t, d, "Backfill target")
+	newObserver(t, d, tid)
+	seedDigestAt(t, d, 1, "2020-01-01T00:00:00Z")
+
+	gen := &mockGen{
+		resp:          `{"events":[]}`,
+		shortlistResp: `{"refs":[]}`,
+	}
+	p := New(d, gen, "Ukrainian", log.Default())
+
+	if _, err := p.RunForTargetSince(context.Background(), tid, "1970-01-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if gen.calls != 1 {
+		t.Fatalf("expected only the shortlist call, got %d", gen.calls)
+	}
+	if prompts.HasDirective(gen.lastSys) {
+		t.Fatalf("shortlist prompt must not carry the language directive (ids-only output):\n%s", gen.lastSys)
 	}
 }

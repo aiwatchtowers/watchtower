@@ -111,7 +111,14 @@ final class ObserverTimelineViewModel {
     func applyAction(for event: ObserverEvent) {
         guard let action = event.decodedAction else { return }
         do {
-            _ = try TargetActionExecutor.apply(action, target: target, viewModel: targetsViewModel)
+            // Apply against a FRESH copy of the target, not the init-time
+            // snapshot: the executor's sub-item/note paths are whole-JSON
+            // read-modify-writes, so a stale snapshot would clobber anything
+            // applied since this VM was created (lost update).
+            let fresh = try dbPool.read { db in
+                try TargetQueries.fetchByID(db, id: target.id)
+            } ?? target
+            _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
             try dbPool.write { db in
                 try ObserverQueries.setActionStatus(db, id: event.id, status: "applied")
             }
@@ -154,20 +161,40 @@ final class ObserverTimelineViewModel {
 
     // Observer management
     func createObserver(name: String, instruction: String) {
-        try? dbPool.write { db in
-            _ = try ObserverQueries.create(db, entityId: target.id, name: name, instruction: instruction)
+        do {
+            try dbPool.write { db in
+                _ = try ObserverQueries.create(db, entityId: target.id, name: name, instruction: instruction)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
     func updateObserver(_ observer: Observer, name: String, instruction: String) {
-        try? dbPool.write { db in try ObserverQueries.update(db, id: observer.id, name: name, instruction: instruction) }
+        do {
+            try dbPool.write { db in
+                try ObserverQueries.update(db, id: observer.id, name: name, instruction: instruction)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func toggleObserver(_ observer: Observer) {
-        try? dbPool.write { db in try ObserverQueries.setEnabled(db, id: observer.id, enabled: !observer.enabled) }
+        do {
+            try dbPool.write { db in
+                try ObserverQueries.setEnabled(db, id: observer.id, enabled: !observer.enabled)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func deleteObserver(_ observer: Observer) {
-        try? dbPool.write { db in try ObserverQueries.delete(db, id: observer.id) }
+        do {
+            try dbPool.write { db in try ObserverQueries.delete(db, id: observer.id) }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
