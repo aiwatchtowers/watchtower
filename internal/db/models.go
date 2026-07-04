@@ -853,41 +853,6 @@ type DayPlanItem struct {
 	UpdatedAt   time.Time
 }
 
-// Observer is a user-editable watcher attached to an entity (polymorphic via
-// EntityType/EntityID; v1 only 'target'). The daemon runs each enabled observer
-// over recent activity since LastRunAt and writes ObserverEvents.
-type Observer struct {
-	ID          int    `json:"id"`
-	EntityType  string `json:"entity_type"`
-	EntityID    int    `json:"entity_id"`
-	Name        string `json:"name"`
-	Instruction string `json:"instruction"`
-	Enabled     bool   `json:"enabled"`
-	LastRunAt   string `json:"last_run_at"` // "" = never run
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
-}
-
-// ObserverEvent is one item on an entity's observer-produced activity timeline.
-// Decision and ProposedAction are optional raw JSON ("" = absent). ProposedAction
-// matches the Desktop chat ProposedAction shape so the existing executor applies it.
-type ObserverEvent struct {
-	ID             int    `json:"id"`
-	ObserverID     int    `json:"observer_id"`
-	EntityType     string `json:"entity_type"`
-	EntityID       int    `json:"entity_id"`
-	Summary        string `json:"summary"`
-	Detail         string `json:"detail"`
-	SourceType     string `json:"source_type"`
-	SourceID       string `json:"source_id"`
-	SourceRefs     string `json:"source_refs"`     // JSON array
-	Decision       string `json:"decision"`        // JSON object or ""
-	ProposedAction string `json:"proposed_action"` // JSON object or ""
-	ActionStatus   string `json:"action_status"`
-	ReadAt         string `json:"read_at"` // "" = unread
-	CreatedAt      string `json:"created_at"`
-}
-
 // Day plan status constants.
 const (
 	DayPlanStatusActive   = "active"
