@@ -204,6 +204,14 @@ struct TracksListView: View {
                             sectionHeader("Custom", count: vm.customTracks.count, color: .accentColor)
                             ForEach(vm.customTracks) { track in
                                 trackRow(track, vm: vm, isUpdate: false)
+                                    .overlay(alignment: .trailing) {
+                                        if appState.trackScanCenter.isRunning(track.id) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                                .padding(.trailing, 12)
+                                                .help("Scanning…")
+                                        }
+                                    }
                             }
                         }
 

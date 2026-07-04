@@ -61,7 +61,8 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
             track: track,
             dbManager: manager,
             scanService: TrackScanService(runner: scanRunner),
-            targetsViewModel: TargetsViewModel(dbManager: manager)
+            targetsViewModel: TargetsViewModel(dbManager: manager),
+            scanCenter: TrackScanCenter()
         )
         return (manager, path, track, timeline)
     }

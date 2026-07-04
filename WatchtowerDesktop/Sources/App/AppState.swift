@@ -23,6 +23,10 @@ final class AppState {
     /// Map of custom emoji name → image URL, loaded from DB.
     var customEmojiMap: [String: String] = [:]
 
+    /// App-wide registry of in-flight custom-track scans, so the "scanning"
+    /// indicator survives navigating away from a track's detail.
+    let trackScanCenter = TrackScanCenter()
+
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?

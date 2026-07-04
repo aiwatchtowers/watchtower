@@ -18,6 +18,9 @@ final class CustomTrackTimelineViewModel {
     /// target, so a confirmed proposed action has something to mutate.
     private let targetsViewModel: TargetsViewModel?
     private let scanService: TrackScanService
+    /// Shared registry so the "scanning" indicator survives navigation away
+    /// from this detail (the list/sidebar read it too).
+    private let scanCenter: TrackScanCenter
 
     var events: [TrackEvent] = []
     /// Watermark of the last scan (ISO8601, "" = never), kept fresh across scans
@@ -43,13 +46,20 @@ final class CustomTrackTimelineViewModel {
     init(track: Track,
          dbManager: DatabaseManager,
          scanService: TrackScanService,
-         targetsViewModel: TargetsViewModel? = nil) {
+         targetsViewModel: TargetsViewModel? = nil,
+         scanCenter: TrackScanCenter) {
         self.track = track
         self.dbPool = dbManager.dbPool
         self.scanService = scanService
         self.targetsViewModel = targetsViewModel
+        self.scanCenter = scanCenter
         self.lastRunAt = track.lastRunAt
     }
+
+    /// True while a scan for THIS track is running — whether kicked off here or
+    /// still in flight from a previous visit (read from the shared center), so
+    /// returning to the detail mid-scan still shows progress.
+    var isScanRunning: Bool { isRefreshing || scanCenter.isRunning(track.id) }
 
     /// Re-reads the persisted watermark after a scan so "Last scanned" updates
     /// without waiting for the detail view to be reopened with a fresh snapshot.
@@ -82,10 +92,11 @@ final class CustomTrackTimelineViewModel {
     /// so it builds on what the track already collected. Cheap; the right choice
     /// for "keep me current". For an initial fill use `scanHistory`.
     func scanSinceLast() async {
+        scanCenter.begin(track.id)
         isRefreshing = true
         errorMessage = nil
         lastScanNote = nil
-        defer { isRefreshing = false }
+        defer { isRefreshing = false; scanCenter.finish(track.id, note: lastScanNote ?? errorMessage) }
         do {
             // The CLI wrote any new rows; the ValueObservation stream pushes
             // them. The returned slice is exactly what was created this run.
@@ -104,11 +115,12 @@ final class CustomTrackTimelineViewModel {
     /// for the in-progress banner. The scan runs several AI calls and can take a
     /// few minutes, so `scanStatus` stays set for the whole duration.
     func scanHistory(since: Date?, label: String) async {
+        scanCenter.begin(track.id)
         isRefreshing = true
         scanStatus = "Scanning \(label)… this can take a few minutes"
         errorMessage = nil
         lastScanNote = nil
-        defer { isRefreshing = false; scanStatus = nil }
+        defer { isRefreshing = false; scanStatus = nil; scanCenter.finish(track.id, note: lastScanNote ?? errorMessage) }
         let iso = Self.isoFormatter.string(from: since ?? Date(timeIntervalSince1970: 0))
         do {
             let created = try await scanService.run(trackID: track.id, since: iso)

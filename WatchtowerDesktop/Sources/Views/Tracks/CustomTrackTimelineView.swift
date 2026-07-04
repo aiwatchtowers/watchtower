@@ -26,7 +26,7 @@ struct CustomTrackTimelineView: View {
                 Spacer()
                 Text(viewModel.lastScannedText)
                     .font(.caption2).foregroundStyle(.secondary)
-                if viewModel.isRefreshing {
+                if viewModel.isScanRunning {
                     ProgressView().controlSize(.small)
                 }
                 Button {
@@ -35,15 +35,16 @@ struct CustomTrackTimelineView: View {
                     Label("Scan", systemImage: "arrow.clockwise")
                 }
                 .controlSize(.small)
-                .disabled(viewModel.isRefreshing)
+                .disabled(viewModel.isScanRunning)
                 .help("Scan a chosen range and fill the timeline")
                 .popover(isPresented: $showScanPopover, arrowEdge: .bottom) { scanRangePopover }
             }
 
-            if let status = viewModel.scanStatus {
+            if viewModel.isScanRunning {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text(status).font(.caption).foregroundColor(.secondary)
+                    Text(viewModel.scanStatus ?? "Scanning… you can leave this view; it keeps running.")
+                        .font(.caption).foregroundColor(.secondary)
                     Spacer()
                 }
                 .padding(8)

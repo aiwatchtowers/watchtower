@@ -198,7 +198,8 @@ struct TrackDetailView: View {
             track: track,
             dbManager: db,
             scanService: TrackScanService(runner: runner),
-            targetsViewModel: targetsVM
+            targetsViewModel: targetsVM,
+            scanCenter: appState.trackScanCenter
         )
         vm.start()
         timelineVM = vm
