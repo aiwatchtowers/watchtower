@@ -310,13 +310,20 @@ CREATE TABLE IF NOT EXISTS tracks (
     cost_usd            REAL NOT NULL DEFAULT 0,
     prompt_version      INTEGER NOT NULL DEFAULT 0,
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    origin              TEXT NOT NULL DEFAULT 'auto' CHECK(origin IN ('auto','custom')),
+    instruction         TEXT NOT NULL DEFAULT '',       -- custom tracks: watch instruction
+    enabled             INTEGER NOT NULL DEFAULT 1,      -- custom tracks: scan on/off
+    last_run_at         TEXT NOT NULL DEFAULT '',        -- custom tracks: scan watermark, ''=never
+    linked_target_id    INTEGER REFERENCES targets(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_priority ON tracks(priority);
 CREATE INDEX IF NOT EXISTS idx_tracks_has_updates ON tracks(has_updates);
 CREATE INDEX IF NOT EXISTS idx_tracks_updated ON tracks(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tracks_ownership ON tracks(ownership);
 CREATE INDEX IF NOT EXISTS idx_tracks_assignee ON tracks(assignee_user_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_origin ON tracks(origin);
+CREATE INDEX IF NOT EXISTS idx_tracks_custom_enabled ON tracks(origin, enabled) WHERE origin = 'custom';
 
 -- TRACKS-06: per-track narrative-state history
 CREATE TABLE IF NOT EXISTS track_states (
@@ -410,33 +417,14 @@ CREATE INDEX IF NOT EXISTS idx_target_links_source   ON target_links(source_targ
 CREATE INDEX IF NOT EXISTS idx_target_links_target   ON target_links(target_target_id);
 CREATE INDEX IF NOT EXISTS idx_target_links_external ON target_links(external_ref);
 
--- Observers: user-editable watchers attached to an entity (polymorphic via
--- entity_type/entity_id; v1 only uses entity_type='target'). Each enabled
--- observer is run by the daemon over recent cross-source activity since its
--- last_run_at watermark, producing rows in observer_events.
-CREATE TABLE IF NOT EXISTS observers (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type  TEXT NOT NULL DEFAULT 'target' CHECK(entity_type IN ('target')),
-    entity_id    INTEGER NOT NULL,
-    name         TEXT NOT NULL DEFAULT '',
-    instruction  TEXT NOT NULL DEFAULT '',
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    last_run_at  TEXT NOT NULL DEFAULT '',   -- '' = never run; else ISO8601 watermark
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
-CREATE INDEX IF NOT EXISTS idx_observers_entity  ON observers(entity_type, entity_id);
-CREATE INDEX IF NOT EXISTS idx_observers_enabled ON observers(enabled);
-
--- observer_events: the per-entity activity timeline produced by observers.
--- decision / proposed_action are optional JSON blobs ('' = absent). proposed_action
--- uses the same shape as the Desktop chat ProposedAction so the existing executor
--- applies it. action_status tracks the lifecycle of a proposed_action.
-CREATE TABLE IF NOT EXISTS observer_events (
+-- track_events: the per-track activity timeline produced by the custom-track
+-- scan engine. decision / proposed_action are optional JSON blobs ('' = absent).
+-- proposed_action uses the same shape as the Desktop chat ProposedAction so the
+-- existing executor applies it. action_status tracks the lifecycle of a
+-- proposed_action.
+CREATE TABLE IF NOT EXISTS track_events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    observer_id     INTEGER NOT NULL REFERENCES observers(id) ON DELETE CASCADE,
-    entity_type     TEXT NOT NULL DEFAULT 'target',
-    entity_id       INTEGER NOT NULL,
+    track_id        INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     summary         TEXT NOT NULL DEFAULT '',
     detail          TEXT NOT NULL DEFAULT '',
     source_type     TEXT NOT NULL DEFAULT '',
@@ -449,8 +437,7 @@ CREATE TABLE IF NOT EXISTS observer_events (
     read_at         TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
-CREATE INDEX IF NOT EXISTS idx_observer_events_entity   ON observer_events(entity_type, entity_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_observer_events_observer ON observer_events(observer_id);
+CREATE INDEX IF NOT EXISTS idx_track_events_track ON track_events(track_id, created_at DESC);
 
 -- Inbox items — messages awaiting user response (@mentions, DMs, Jira, Calendar, etc.)
 CREATE TABLE IF NOT EXISTS inbox_items (

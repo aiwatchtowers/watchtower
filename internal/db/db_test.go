@@ -109,7 +109,7 @@ func TestAllTablesExist(t *testing.T) {
 		"digests", "decision_reads", "user_analyses", "period_summaries",
 		"custom_emojis", "tracks", "decision_importance_corrections",
 		"feedback", "prompts", "prompt_history", "user_profile",
-		"observers", "observer_events",
+		"track_events",
 	}
 
 	for _, table := range expectedTables {
@@ -119,6 +119,45 @@ func TestAllTablesExist(t *testing.T) {
 		).Scan(&name)
 		require.NoError(t, err, "table %q should exist", table)
 		assert.Equal(t, table, name)
+	}
+}
+
+func TestMigration00008CustomTracks(t *testing.T) {
+	database := openTestDB(t) // existing helper that runs migrations on a fresh DB
+	defer database.Close()
+
+	// New columns exist on tracks.
+	for _, col := range []string{"origin", "instruction", "enabled", "last_run_at", "linked_target_id"} {
+		var count int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = ?`, col).Scan(&count)
+		if err != nil || count != 1 {
+			t.Fatalf("tracks.%s missing (count=%d err=%v)", col, count, err)
+		}
+	}
+	// origin defaults to 'auto' and rejects bad values.
+	if _, err := database.Exec(`INSERT INTO tracks (text, origin) VALUES ('x', 'bogus')`); err == nil {
+		t.Fatal("expected CHECK violation for origin='bogus'")
+	}
+	// track_events exists; observers/observer_events are gone.
+	assertTableExists(t, database, "track_events")
+	assertTableGone(t, database, "observers")
+	assertTableGone(t, database, "observer_events")
+}
+
+func assertTableExists(t *testing.T, d *DB, name string) {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("table %s expected to exist (n=%d err=%v)", name, n, err)
+	}
+}
+
+func assertTableGone(t *testing.T, d *DB, name string) {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("table %s expected to be dropped (n=%d err=%v)", name, n, err)
 	}
 }
 

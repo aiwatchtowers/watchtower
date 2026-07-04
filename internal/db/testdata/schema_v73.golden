@@ -164,18 +164,6 @@ CREATE INDEX idx_messages_ts_unix ON messages(ts_unix)
 index	idx_messages_user_id
 CREATE INDEX idx_messages_user_id ON messages(user_id)
 
-index	idx_observer_events_entity
-CREATE INDEX idx_observer_events_entity ON observer_events(entity_type, entity_id, created_at DESC)
-
-index	idx_observer_events_observer
-CREATE INDEX idx_observer_events_observer ON observer_events(observer_id)
-
-index	idx_observers_enabled
-CREATE INDEX idx_observers_enabled ON observers(enabled)
-
-index	idx_observers_entity
-CREATE INDEX idx_observers_entity ON observers(entity_type, entity_id)
-
 index	idx_people_cards_period
 CREATE INDEX idx_people_cards_period ON people_cards(period_from, period_to)
 
@@ -240,14 +228,24 @@ CREATE INDEX idx_targets_status ON targets(status)
 index	idx_targets_updated
 CREATE INDEX idx_targets_updated ON targets(updated_at DESC)
 
+index	idx_track_events_track
+CREATE INDEX idx_track_events_track ON track_events(track_id, created_at DESC)
+
 index	idx_track_states_track
 CREATE INDEX idx_track_states_track ON track_states(track_id, created_at DESC)
 
 index	idx_tracks_assignee
 CREATE INDEX idx_tracks_assignee ON tracks(assignee_user_id)
 
+index	idx_tracks_custom_enabled
+CREATE INDEX idx_tracks_custom_enabled ON tracks(origin, enabled)
+WHERE origin = 'custom'
+
 index	idx_tracks_has_updates
 CREATE INDEX idx_tracks_has_updates ON tracks(has_updates)
+
+index	idx_tracks_origin
+CREATE INDEX idx_tracks_origin ON tracks(origin)
 
 index	idx_tracks_ownership
 CREATE INDEX idx_tracks_ownership ON tracks(ownership)
@@ -825,38 +823,6 @@ CREATE TABLE 'messages_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
 table	messages_fts_idx
 CREATE TABLE 'messages_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
 
-table	observer_events
-CREATE TABLE observer_events (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-observer_id INTEGER NOT NULL REFERENCES observers(id) ON DELETE CASCADE,
-entity_type TEXT NOT NULL DEFAULT 'target',
-entity_id INTEGER NOT NULL,
-summary TEXT NOT NULL DEFAULT '',
-detail TEXT NOT NULL DEFAULT '',
-source_type TEXT NOT NULL DEFAULT '',
-source_id TEXT NOT NULL DEFAULT '',
-source_refs TEXT NOT NULL DEFAULT '[]',
-decision TEXT NOT NULL DEFAULT '',
-proposed_action TEXT NOT NULL DEFAULT '',
-action_status TEXT NOT NULL DEFAULT 'none'
-CHECK(action_status IN ('none','pending','applied','dismissed')),
-read_at TEXT,
-created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-)
-
-table	observers
-CREATE TABLE observers (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-entity_type TEXT NOT NULL DEFAULT 'target' CHECK(entity_type IN ('target')),
-entity_id INTEGER NOT NULL,
-name TEXT NOT NULL DEFAULT '',
-instruction TEXT NOT NULL DEFAULT '',
-enabled INTEGER NOT NULL DEFAULT 1,
-last_run_at TEXT NOT NULL DEFAULT '', -- '' = never run; else ISO8601 watermark
-created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-)
-
 table	people_card_summaries
 CREATE TABLE people_card_summaries (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1057,6 +1023,23 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , notified_at TEXT NOT NULL DEFAULT '', next_step TEXT NOT NULL DEFAULT '', next_step_at TEXT NOT NULL DEFAULT '')
 
+table	track_events
+CREATE TABLE track_events (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+summary TEXT NOT NULL DEFAULT '',
+detail TEXT NOT NULL DEFAULT '',
+source_type TEXT NOT NULL DEFAULT '',
+source_id TEXT NOT NULL DEFAULT '',
+source_refs TEXT NOT NULL DEFAULT '[]',
+decision TEXT NOT NULL DEFAULT '',
+proposed_action TEXT NOT NULL DEFAULT '',
+action_status TEXT NOT NULL DEFAULT 'none'
+CHECK(action_status IN ('none','pending','applied','dismissed')),
+read_at TEXT,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
 table	track_states
 CREATE TABLE track_states (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1117,7 +1100,9 @@ cost_usd REAL NOT NULL DEFAULT 0,
 prompt_version INTEGER NOT NULL DEFAULT 0,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-)
+, origin TEXT NOT NULL DEFAULT 'auto'
+CHECK(origin IN ('auto','custom')), instruction TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, last_run_at TEXT NOT NULL DEFAULT '', linked_target_id INTEGER
+REFERENCES targets(id) ON DELETE SET NULL)
 
 table	user_analyses
 CREATE TABLE user_analyses (
@@ -1752,33 +1737,6 @@ END
 1	term		notnull=1	dflt=NULL	pk=2
 2	pgno		notnull=0	dflt=NULL	pk=0
 
-## observer_events
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	observer_id	INTEGER	notnull=1	dflt=NULL	pk=0
-2	entity_type	TEXT	notnull=1	dflt='target'	pk=0
-3	entity_id	INTEGER	notnull=1	dflt=NULL	pk=0
-4	summary	TEXT	notnull=1	dflt=''	pk=0
-5	detail	TEXT	notnull=1	dflt=''	pk=0
-6	source_type	TEXT	notnull=1	dflt=''	pk=0
-7	source_id	TEXT	notnull=1	dflt=''	pk=0
-8	source_refs	TEXT	notnull=1	dflt='[]'	pk=0
-9	decision	TEXT	notnull=1	dflt=''	pk=0
-10	proposed_action	TEXT	notnull=1	dflt=''	pk=0
-11	action_status	TEXT	notnull=1	dflt='none'	pk=0
-12	read_at	TEXT	notnull=0	dflt=NULL	pk=0
-13	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
-
-## observers
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	entity_type	TEXT	notnull=1	dflt='target'	pk=0
-2	entity_id	INTEGER	notnull=1	dflt=NULL	pk=0
-3	name	TEXT	notnull=1	dflt=''	pk=0
-4	instruction	TEXT	notnull=1	dflt=''	pk=0
-5	enabled	INTEGER	notnull=1	dflt=1	pk=0
-6	last_run_at	TEXT	notnull=1	dflt=''	pk=0
-7	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
-8	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
-
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	period_from	REAL	notnull=1	dflt=NULL	pk=0
@@ -1941,6 +1899,20 @@ END
 25	next_step	TEXT	notnull=1	dflt=''	pk=0
 26	next_step_at	TEXT	notnull=1	dflt=''	pk=0
 
+## track_events
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	track_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	summary	TEXT	notnull=1	dflt=''	pk=0
+3	detail	TEXT	notnull=1	dflt=''	pk=0
+4	source_type	TEXT	notnull=1	dflt=''	pk=0
+5	source_id	TEXT	notnull=1	dflt=''	pk=0
+6	source_refs	TEXT	notnull=1	dflt='[]'	pk=0
+7	decision	TEXT	notnull=1	dflt=''	pk=0
+8	proposed_action	TEXT	notnull=1	dflt=''	pk=0
+9	action_status	TEXT	notnull=1	dflt='none'	pk=0
+10	read_at	TEXT	notnull=0	dflt=NULL	pk=0
+11	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
 ## track_states
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	track_id	INTEGER	notnull=1	dflt=NULL	pk=0
@@ -1998,6 +1970,11 @@ END
 29	prompt_version	INTEGER	notnull=1	dflt=0	pk=0
 30	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 31	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+32	origin	TEXT	notnull=1	dflt='auto'	pk=0
+33	instruction	TEXT	notnull=1	dflt=''	pk=0
+34	enabled	INTEGER	notnull=1	dflt=1	pk=0
+35	last_run_at	TEXT	notnull=1	dflt=''	pk=0
+36	linked_target_id	INTEGER	notnull=0	dflt=NULL	pk=0
 
 ## user_analyses
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
