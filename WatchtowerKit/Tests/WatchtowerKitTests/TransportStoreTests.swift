@@ -63,8 +63,33 @@ final class TransportStoreTests: XCTestCase {
     func testClearPendingRemovesOnlyNamed() throws {
         let store = try TransportStore.inMemory()
         try store.enqueueSave([record("target-1"), record("target-2")])
-        try store.clearPending(saveNames: ["target-1"], deleteNames: [])
+        try store.clearPending(saves: [(name: "target-1", zone: .data)], deletes: [])
         XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["target-2"])
+    }
+
+    func testClearPendingIsZoneScoped() throws {
+        let store = try TransportStore.inMemory()
+        try store.enqueueSave([record("shared-name", zone: .data)])
+        try store.enqueueSave([record("shared-name", zone: .relay)])
+        try store.clearPending(saves: [(name: "shared-name", zone: .data)], deletes: [])
+        let batch = try store.pendingBatch(limit: 10)
+        XCTAssertEqual(batch.saves.map(\.recordName), ["shared-name"])
+        XCTAssertEqual(batch.saves[0].zone, .relay)
+    }
+
+    func testInterleavedZoneWritesDoNotSkipOrDuplicate() throws {
+        let store = try TransportStore.inMemory()
+        try store.bufferChanged([record("target-1", zone: .data)])      // seq 1
+        let dataToken = try store.changes(in: .data, since: nil).newToken
+        try store.bufferChanged([record("action-1", zone: .relay)])     // seq 2
+        try store.bufferChanged([record("target-2", zone: .data)])      // seq 3
+
+        let batch = try store.changes(in: .data, since: dataToken)
+        XCTAssertEqual(batch.changed.map(\.recordName), ["target-2"])
+
+        let after = try store.changes(in: .data, since: batch.newToken)
+        XCTAssertTrue(after.changed.isEmpty)
+        XCTAssertTrue(after.deletedRecordNames.isEmpty)
     }
 
     func testEngineStateRoundTrip() throws {

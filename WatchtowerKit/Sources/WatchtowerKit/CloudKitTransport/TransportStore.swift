@@ -24,6 +24,10 @@ public final class TransportStore: Sendable {
 
     private func createSchema() throws {
         try queue.write { db in
+            // events is append-only in Plan 2: compaction (dropping events older
+            // than every consumer's floor token) is deliberately deferred — a
+            // single-consumer desktop hub grows this slowly. Owner: Plan 3 revisits
+            // when the mobile replica becomes a second consumer.
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,6 +97,9 @@ public final class TransportStore: Sendable {
 
     public func pendingBatch(limit: Int) throws -> (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)]) {
         try queue.read { db in
+            // rowid survives ON CONFLICT DO UPDATE, so batches are ordered by
+            // FIRST enqueue — a hot record cannot starve older pending sends.
+            // Do not "fix" to latest-write ordering.
             let rows = try Row.fetchAll(
                 db,
                 sql: "SELECT * FROM pending ORDER BY rowid LIMIT ?",
@@ -118,13 +125,22 @@ public final class TransportStore: Sendable {
         }
     }
 
-    public func clearPending(saveNames: [String], deleteNames: [String]) throws {
+    public func clearPending(
+        saves: [(name: String, zone: CloudZoneID)],
+        deletes: [(name: String, zone: CloudZoneID)]
+    ) throws {
         try queue.write { db in
-            for name in saveNames {
-                try db.execute(sql: "DELETE FROM pending WHERE record_name = ? AND deleted = 0", arguments: [name])
+            for entry in saves {
+                try db.execute(
+                    sql: "DELETE FROM pending WHERE record_name = ? AND zone = ? AND deleted = 0",
+                    arguments: [entry.name, entry.zone.rawValue]
+                )
             }
-            for name in deleteNames {
-                try db.execute(sql: "DELETE FROM pending WHERE record_name = ? AND deleted = 1", arguments: [name])
+            for entry in deletes {
+                try db.execute(
+                    sql: "DELETE FROM pending WHERE record_name = ? AND zone = ? AND deleted = 1",
+                    arguments: [entry.name, entry.zone.rawValue]
+                )
             }
         }
     }
