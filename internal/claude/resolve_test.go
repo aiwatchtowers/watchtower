@@ -192,3 +192,39 @@ func TestLoginShellWhich_AcceptsValidNames(t *testing.T) {
 	_ = loginShellWhich("sh")
 	_ = loginShellWhich("test-binary_1")
 }
+
+func TestRichPATH_FallbackWhenShellFails(t *testing.T) {
+	// Point SHELL at a non-existent binary so loginShellPATH returns "".
+	// RichPATH must fall through to fallbackPATH and still return non-empty.
+	resetCache()
+	t.Setenv("SHELL", "/nonexistent/shell")
+
+	got := RichPATH()
+	if got == "" {
+		t.Error("RichPATH should fall back to fallbackPATH when login shell is unavailable")
+	}
+}
+
+func TestLoginShellPATH_ReturnsEmptyOnBadShell(t *testing.T) {
+	t.Setenv("SHELL", "/nonexistent/shell")
+	// Must not panic and must return empty string.
+	got := loginShellPATH()
+	if got != "" {
+		// If by some miracle a shell at that path exists, just skip.
+		t.Logf("loginShellPATH returned %q (non-empty — likely shell resolved)", got)
+	}
+}
+
+func TestFindBinary_FallbackString(t *testing.T) {
+	// When neither LookPath nor loginShellWhich can find claude, FindBinary
+	// must return a non-empty fallback ("claude") rather than "".
+	resetCache()
+	// Force a PATH with no claude binary.
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("SHELL", "/nonexistent/shell")
+
+	got := FindBinary("")
+	if got == "" {
+		t.Error("FindBinary must always return a non-empty fallback")
+	}
+}

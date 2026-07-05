@@ -41,6 +41,10 @@ func TestDaemon_Setters_AssignDeps(t *testing.T) {
 	jiraSyncer := &jira.Syncer{}
 	d.SetJiraSyncer(jiraSyncer)
 	assert.Same(t, jiraSyncer, d.jiraSyncer)
+
+	// nil-assign is a valid no-op — verify setters don't panic.
+	d.SetNextStepPipeline(nil)
+	d.SetCustomTracksPipeline(nil)
 }
 
 func TestSameCalendarDay(t *testing.T) {
