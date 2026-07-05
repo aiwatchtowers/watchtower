@@ -13,6 +13,8 @@ public enum RowPayloadCoder {
         return try JSONEncoder().encode(dict)
     }
 
+    /// Column order is not preserved and duplicate column names collapse
+    /// (last write wins) — models decode by column name, so neither matters.
     public static func row(from payload: Data) throws -> Row {
         let dict = try JSONDecoder().decode([String: JSONValue].self, from: payload)
         var rowDict: [String: DatabaseValueConvertible?] = [:]
