@@ -122,9 +122,6 @@ func cleanSnippet(text string) string {
 // DefaultLookbackDays is the default lookback for first-time inbox detection.
 const DefaultLookbackDays = 7
 
-// MaxItemsPerAIBatch is the max number of items sent to AI in one call.
-const MaxItemsPerAIBatch = 50
-
 // ProgressFunc is called during pipeline execution to report progress.
 type ProgressFunc func(done, total int, status string)
 
@@ -141,9 +138,6 @@ type Pipeline struct {
 	currentUserID    string
 	currentUserEmail string
 
-	// pinnedSelector runs an AI call to select the top-pinned items.
-	pinnedSelector *PinnedSelector
-
 	// Step metrics (set before each OnProgress call).
 	LastStepDurationSeconds float64
 	LastStepInputTokens     int
@@ -157,11 +151,10 @@ type Pipeline struct {
 // New creates a new inbox pipeline.
 func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.Logger) *Pipeline {
 	return &Pipeline{
-		db:             database,
-		cfg:            cfg,
-		generator:      gen,
-		logger:         logger,
-		pinnedSelector: NewPinnedSelector(database, gen, cfg.Digest.Language),
+		db:        database,
+		cfg:       cfg,
+		generator: gen,
+		logger:    logger,
 	}
 }
 
@@ -195,9 +188,9 @@ func (p *Pipeline) accumulateUsage(usage *digest.Usage) {
 	p.LastStepOutputTokens = usage.OutputTokens
 }
 
-// Run executes the inbox pipeline: detect new items, classify, learn, AI prioritize,
-// select pinned, auto-resolve, auto-archive, then unsnooze.
-// Returns (created count, resolved count, error).
+// Run executes the inbox pipeline: dedup, detect new items, triage (trigger
+// items plus a stream scan), learn, auto-resolve, prepare secretary cards,
+// auto-archive, then unsnooze. Returns (created count, resolved count, error).
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
 	p.totalInputTokens = 0
@@ -237,6 +230,8 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	}
 	sinceTime := time.Unix(int64(lastTS), 0)
 
+	const totalSteps = 7
+
 	// Phase 0: Deduplicate existing thread inbox items (cleanup from before thread-grouping).
 	if deduped, err := p.db.DeduplicateThreadInboxItems(); err != nil {
 		p.logger.Printf("inbox: dedup error: %v", err)
@@ -244,23 +239,41 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 		p.logger.Printf("inbox: merged %d duplicate thread items", deduped)
 	}
 
-	p.progress(0, 6, "Detecting messages...")
-
 	// Phase 1: Detection — Slack + external sources (individually non-fatal, but a
-	// failure freezes the watermark below so no window is skipped).
+	// failure freezes/partially advances the watermark below so no window is skipped).
+	p.progress(1, totalSteps, "detecting")
 	stepStart := time.Now()
 	createdSlack, createdJira, createdCalendar, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
 	created := createdSlack + createdJira + createdCalendar + createdWatchtower
-
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
-	p.progress(1, 6, fmt.Sprintf("Detected %d new items", created))
 
-	// Phase 2: Classify new items — assign item_class based on trigger_type for any unclassified items.
-	if err := p.classifyNewItems(ctx); err != nil {
-		p.logger.Printf("inbox: classify error: %v", err)
+	// Phase 2: Triage — the secretary reviews every new trigger item plus a
+	// full scan of ordinary channel traffic (INBOX-01/INBOX-03).
+	p.progress(2, totalSteps, "triaging")
+	pendingItems, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
+	if err != nil {
+		return created, 0, fmt.Errorf("loading pending items for triage: %w", err)
 	}
+	var newItems []db.InboxItem
+	for _, item := range pendingItems {
+		if item.AIReason == "" {
+			newItems = append(newItems, item)
+		}
+	}
+	var outcome triageOutcome
+	var triageErr error
+	if p.generator != nil {
+		stepStart = time.Now()
+		outcome, triageErr = p.runTriage(ctx, currentUserID, newItems)
+		p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
+		if triageErr != nil {
+			p.logger.Printf("inbox: triage error: %v", triageErr)
+		}
+	}
+	created += outcome.Created
 
 	// Phase 3: Implicit learning — update mute rules from dismiss patterns.
+	p.progress(3, totalSteps, "learning")
 	var learnedRuleUpdates int
 	if n, err := RunImplicitLearner(ctx, p.db, 30*24*time.Hour); err != nil {
 		p.logger.Printf("inbox: learner error: %v", err)
@@ -269,53 +282,22 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	}
 
 	// Phase 4: Auto-resolve — rule-based resolution for all source types.
+	p.progress(4, totalSteps, "auto-resolving")
 	stepStart = time.Now()
 	resolved := p.autoResolveByRules(ctx, currentUserID)
-
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
-	// Reload pending items after rule-based resolution for AI prioritization.
-	pendingItems, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
-	if err != nil {
-		return created, resolved, fmt.Errorf("loading pending items for AI: %w", err)
+	// Phase 5: Cards — secretary write-ups (why-it-matters / thread digest /
+	// draft reply) for items that need one. Per-item failures are recorded via
+	// MarkInboxCardFailed and retried next cycle; they never fail Run (INBOX-07).
+	p.progress(5, totalSteps, "preparing cards")
+	cardsGenerated, cardErr := p.runCards(ctx, currentUserID)
+	if cardErr != nil {
+		p.logger.Printf("inbox: cards error: %v", cardErr)
 	}
 
-	p.progress(2, 6, fmt.Sprintf("Checked pending, %d resolved", resolved))
-
-	// Phase 4a: AI prioritize — only new unprioritized items.
-	var newItems []db.InboxItem
-	for _, item := range pendingItems {
-		if item.AIReason == "" {
-			newItems = append(newItems, item)
-		}
-	}
-
-	if len(newItems) > 0 && p.generator != nil {
-		numBatches := (len(newItems) + MaxItemsPerAIBatch - 1) / MaxItemsPerAIBatch
-		if numBatches < 1 {
-			numBatches = 1
-		}
-		total := 3 + numBatches + 1
-		aiResolved, err := p.aiPrioritizeNewItems(ctx, currentUserID, newItems, 3, total)
-		if err != nil {
-			p.logger.Printf("inbox: AI prioritize error: %v", err)
-		}
-		resolved += aiResolved
-	}
-
-	p.progress(4, 6, "Selecting pinned items...")
-
-	// Phase 4b: AI select pinned (separate AI call, non-fatal; skipped when no generator).
-	var pinned int
-	if p.pinnedSelector != nil && p.generator != nil {
-		if n, err := p.pinnedSelector.Run(ctx); err != nil {
-			p.logger.Printf("inbox: pinned selector error: %v", err)
-		} else {
-			pinned = n
-		}
-	}
-
-	// Phase 5: Auto-archive expired/stale items (non-fatal).
+	// Phase 6: Auto-archive expired/stale items, then unsnooze expired snoozes.
+	p.progress(6, totalSteps, "archiving")
 	var archived int
 	if n, err := p.db.ArchiveExpiredAmbient(7 * 24 * time.Hour); err != nil {
 		p.logger.Printf("inbox: archive ambient error: %v", err)
@@ -327,45 +309,68 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	} else {
 		archived += n
 	}
-
-	// Phase 6: Unsnooze expired snoozed items.
 	if _, err := p.db.UnsnoozeExpiredInboxItems(); err != nil {
 		p.logger.Printf("inbox: unsnooze error: %v", err)
 	}
 
-	// Advance watermark — but only if detection succeeded. If any detector
-	// failed, its window was not fully scanned; advancing the watermark past it
-	// would silently drop the mentions/DMs it never saw, so leave the watermark
-	// where it was and let the next cycle re-cover the window.
-	if detectErr != nil {
-		p.logger.Printf("inbox: detector error, leaving watermark unchanged to avoid losing the skipped window: %v", detectErr)
-	} else {
+	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09. A
+	// detector or triage failure means part of the window was never scanned;
+	// advancing the watermark past it would silently drop what was missed.
+	// Exceptions: triage may have made real progress before failing, or hit
+	// its per-cycle cap while otherwise succeeding — advance only over what
+	// was actually processed, and never below lastTS.
+	switch {
+	case detectErr != nil || triageErr != nil:
+		switch {
+		case triageErr == nil && outcome.Capped:
+			p.advanceWatermark(outcome.MaxProcessedTS, lastTS)
+		case triageErr != nil && outcome.MaxProcessedTS > lastTS:
+			p.advanceWatermark(outcome.MaxProcessedTS, lastTS)
+		default:
+			p.logger.Printf("inbox: detector/triage error, leaving watermark unchanged to avoid losing the skipped window (detectErr=%v triageErr=%v)", detectErr, triageErr)
+		}
+	case outcome.Capped:
+		p.advanceWatermark(outcome.MaxProcessedTS, lastTS)
+	default:
 		// Use a 30-minute buffer instead of wall-clock time to account for
 		// Slack search API indexing delays — messages may arrive in the DB
 		// with ts_unix values behind wall-clock time.
-		bufferTS := float64(time.Now().Add(-30 * time.Minute).Unix())
-		if bufferTS < lastTS {
-			bufferTS = lastTS // never go backwards
-		}
-		if err := p.db.SetInboxLastProcessedTS(bufferTS); err != nil {
-			p.logger.Printf("inbox: error updating last processed ts: %v", err)
-		}
+		p.advanceWatermark(float64(time.Now().Add(-30*time.Minute).Unix()), lastTS)
 	}
 
-	p.progress(6, 6, fmt.Sprintf("Done — %d created, %d resolved", created, resolved))
+	p.progress(totalSteps, totalSteps, "done")
 
-	p.logger.Printf("inbox: +%d new (S%d J%d C%d I%d), %d pinned, %d auto-resolved, %d auto-archived, %d learned-rule-updates",
-		created, createdSlack, createdJira, createdCalendar, createdWatchtower,
-		pinned, resolved, archived, learnedRuleUpdates)
+	p.logger.Printf("inbox: +%d new (S%d J%d C%d I%d T%d), %d auto-resolved, %d cards, %d auto-archived, %d learned-rule-updates",
+		created, createdSlack, createdJira, createdCalendar, createdWatchtower, outcome.Created,
+		resolved, cardsGenerated, archived, learnedRuleUpdates)
 
-	return created, resolved, nil
+	// detectErr is logged but non-fatal (existing behavior, guarded by
+	// TestInbox09_WatermarkFrozenOnDetectorError); triageErr is surfaced to
+	// the caller, joined with detectErr when both occurred.
+	var runErr error
+	if triageErr != nil {
+		runErr = errors.Join(detectErr, triageErr)
+	}
+	return created, resolved, runErr
+}
+
+// advanceWatermark sets the inbox watermark to ts, clamped so it never moves
+// backwards past lastTS.
+func (p *Pipeline) advanceWatermark(ts, lastTS float64) {
+	if ts < lastTS {
+		ts = lastTS
+	}
+	if err := p.db.SetInboxLastProcessedTS(ts); err != nil {
+		p.logger.Printf("inbox: error updating last processed ts: %v", err)
+	}
 }
 
 // RunFastDetection runs a lightweight subset of the pipeline: dedup, Slack/Jira/
-// Calendar detection, classification and rule-based auto-resolve. It skips the
-// digest-dependent decision_made/briefing_ready detector, the implicit learner,
-// AI prioritization, the pinned selector, archival, and the watermark advance —
-// all of which the full Run still performs afterwards.
+// Calendar detection and rule-based auto-resolve. It skips the digest-dependent
+// decision_made/briefing_ready detector, the implicit learner, triage, cards,
+// archival, and the watermark advance — all of which the full Run still
+// performs afterwards. Fast-detected items surface as actionable/medium (the
+// CreateInboxItem default) until the next full Run triages them.
 //
 // This lets the daemon surface DMs/mentions in the UI immediately after a Slack
 // sync, instead of waiting for the LLM-heavy digest+tracks phases to finish.
@@ -411,10 +416,6 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 	// detectAll; no watermark gating is needed here.
 	createdSlack, createdJira, createdCalendar, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
 	created := createdSlack + createdJira + createdCalendar
-
-	if err := p.classifyNewItems(ctx); err != nil {
-		p.logger.Printf("inbox fast: classify error: %v", err)
-	}
 
 	resolved := p.autoResolveByRules(ctx, currentUserID)
 
@@ -575,41 +576,6 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, currentUserID string
 	return created, nil
 }
 
-// classifyNewItems assigns item_class to inbox items that have an empty class,
-// using DefaultItemClass based on trigger_type. Items set by detectors already
-// have a class; this function acts as a backfill for any that don't.
-func (p *Pipeline) classifyNewItems(_ context.Context) error {
-	rows, err := p.db.Query(`SELECT id, trigger_type FROM inbox_items WHERE item_class='' OR item_class IS NULL`)
-	if err != nil {
-		return err
-	}
-	// Drain cursor before issuing updates (avoids SQLite single-connection deadlock).
-	type update struct {
-		id    int64
-		class string
-	}
-	var updates []update
-	for rows.Next() {
-		var id int64
-		var trig string
-		if err := rows.Scan(&id, &trig); err != nil {
-			rows.Close()
-			return err
-		}
-		updates = append(updates, update{id: id, class: DefaultItemClass(trig)})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, u := range updates {
-		if err := p.db.SetInboxItemClass(u.id, u.class); err != nil {
-			p.logger.Printf("inbox: classify item %d: %v", u.id, err)
-		}
-	}
-	return nil
-}
-
 // loadContext loads thread or channel context for an inbox item.
 func (p *Pipeline) loadContext(channelID, messageTS, threadTS string) string {
 	var msgs []struct {
@@ -654,178 +620,6 @@ func (p *Pipeline) progress(done, total int, status string) {
 	if p.OnProgress != nil {
 		p.OnProgress(done, total, status)
 	}
-}
-
-// formatAge computes a human-readable age from an ISO8601 CreatedAt string.
-func formatAge(createdAt string) string {
-	t, err := time.Parse("2006-01-02T15:04:05Z", createdAt)
-	if err != nil {
-		return ""
-	}
-	d := time.Since(t)
-	switch {
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
-}
-
-// aiPrioritizeItem is the per-item result from AI.
-type aiPrioritizeItem struct {
-	ID       int    `json:"id"`
-	Priority string `json:"priority"`
-	Reason   string `json:"reason"`
-	Resolved bool   `json:"resolved"`
-}
-
-// aiPrioritizeResult is the structured AI response.
-type aiPrioritizeResult struct {
-	Items []aiPrioritizeItem `json:"items"`
-}
-
-// aiPrioritizeNewItems runs AI prioritization only on new unprioritized items.
-// baseStep is the last completed step; total is the overall step count.
-func (p *Pipeline) aiPrioritizeNewItems(ctx context.Context, currentUserID string, newItems []db.InboxItem, baseStep, total int) (int, error) {
-	if len(newItems) == 0 {
-		return 0, nil
-	}
-
-	profile, _ := p.db.GetUserProfile(currentUserID)
-	role := ""
-	if profile != nil {
-		role = profile.Role
-	}
-
-	promptTmpl, _ := p.getPrompt(prompts.InboxPrioritize)
-
-	// Split into batches.
-	var batches [][]db.InboxItem
-	for i := 0; i < len(newItems); i += MaxItemsPerAIBatch {
-		end := i + MaxItemsPerAIBatch
-		if end > len(newItems) {
-			end = len(newItems)
-		}
-		batches = append(batches, newItems[i:end])
-	}
-
-	allUpdates := make(map[int]struct {
-		Priority string
-		AIReason string
-	})
-	allResolved := make(map[int]string)
-
-	for i, batch := range batches {
-		step := baseStep + 1 + i
-		stepStart := time.Now()
-
-		p.progress(step, total, fmt.Sprintf("AI batch %d/%d (%d items)...", i+1, len(batches), len(batch)))
-
-		var sb strings.Builder
-		sb.WriteString("=== NEW ITEMS TO PRIORITIZE ===\n")
-		for _, item := range batch {
-			sb.WriteString(p.formatItemLine(item))
-		}
-
-		// Prepend user preferences (learned mute/boost rules) to the items block.
-		userPrefs, _ := buildUserPreferencesBlock(p.db, batch)
-		itemsBlock := sb.String()
-		if userPrefs != "" {
-			itemsBlock = userPrefs + "\n" + itemsBlock
-		}
-		systemPrompt := fmt.Sprintf(promptTmpl, prompts.Directive(p.cfg.Digest.Language), role, itemsBlock)
-		response, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "inbox.prioritize"), systemPrompt, "Prioritize these items.", "")
-		if err != nil {
-			p.logger.Printf("inbox: AI batch %d error: %v", i+1, err)
-			continue
-		}
-		p.accumulateUsage(usage)
-
-		p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
-		p.progress(step, total, fmt.Sprintf("AI batch %d/%d done", i+1, len(batches)))
-
-		result, err := parseAIResult(response)
-		if err != nil {
-			p.logger.Printf("inbox: AI batch %d parse error: %v", i+1, err)
-			continue
-		}
-
-		for _, item := range result.Items {
-			if item.Resolved {
-				allResolved[item.ID] = item.Reason
-			} else if item.Priority != "" {
-				allUpdates[item.ID] = struct {
-					Priority string
-					AIReason string
-				}{Priority: item.Priority, AIReason: item.Reason}
-			}
-		}
-	}
-
-	resolved := 0
-	for id, reason := range allResolved {
-		if err := p.db.ResolveInboxItem(id, "AI: "+reason); err != nil {
-			p.logger.Printf("inbox: error AI-resolving item %d: %v", id, err)
-			continue
-		}
-		resolved++
-	}
-
-	if len(allUpdates) > 0 {
-		if err := p.db.BulkUpdateInboxPriorities(allUpdates); err != nil {
-			p.logger.Printf("inbox: error bulk updating priorities: %v", err)
-		}
-	}
-
-	return resolved, nil
-}
-
-// formatItemLine builds a rich context line for a single inbox item.
-func (p *Pipeline) formatItemLine(item db.InboxItem) string {
-	senderName, _ := p.db.UserNameByID(item.SenderUserID)
-	channelName, _ := p.db.ChannelNameByID(item.ChannelID)
-	age := formatAge(item.CreatedAt)
-
-	// Sender role from user profile.
-	senderRole := ""
-	if profile, _ := p.db.GetUserProfile(item.SenderUserID); profile != nil && profile.Role != "" {
-		senderRole = profile.Role
-	}
-
-	// Reply count from message.
-	var replyCount int
-	_ = p.db.QueryRow(`SELECT reply_count FROM messages WHERE channel_id = ? AND ts = ?`,
-		item.ChannelID, item.MessageTS).Scan(&replyCount)
-
-	senderStr := senderName
-	if senderRole != "" {
-		senderStr = fmt.Sprintf("%s(%s)", senderName, senderRole)
-	}
-
-	// Use raw_text if available, otherwise snippet.
-	text := item.Snippet
-	if item.RawText != "" {
-		text = enrichSnippet(item.RawText, p.db)
-		if len(text) > 500 {
-			text = text[:500] + "..."
-		}
-	}
-
-	line := fmt.Sprintf("- [id=%d type=%s sender=%s channel=#%s age=%s replies=%d] %s\n",
-		item.ID, item.TriggerType, senderStr, channelName, age, replyCount, text)
-
-	// Append thread context (truncated to avoid prompt bloat).
-	if item.Context != "" {
-		ctx := item.Context
-		if len(ctx) > 500 {
-			ctx = ctx[:500] + "..."
-		}
-		line += fmt.Sprintf("  Thread context:\n  %s\n", strings.ReplaceAll(ctx, "\n", "\n  "))
-	}
-
-	return line
 }
 
 func (p *Pipeline) getPrompt(id string) (string, int) {
@@ -982,23 +776,4 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context) int {
 		}
 	}
 	return resolved
-}
-
-// parseAIResult parses the JSON response from the AI.
-func parseAIResult(response string) (*aiPrioritizeResult, error) {
-	response = strings.TrimSpace(response)
-	// Strip markdown fences if present.
-	if strings.HasPrefix(response, "```") {
-		lines := strings.Split(response, "\n")
-		if len(lines) > 2 {
-			lines = lines[1 : len(lines)-1]
-			response = strings.Join(lines, "\n")
-		}
-	}
-
-	var result aiPrioritizeResult
-	if err := json.Unmarshal([]byte(response), &result); err != nil {
-		return nil, fmt.Errorf("unmarshaling AI response: %w", err)
-	}
-	return &result, nil
 }

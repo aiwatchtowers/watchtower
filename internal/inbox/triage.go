@@ -142,6 +142,21 @@ func foldMutedTS(out *triageOutcome, mutedTS []float64, failedFloor float64) {
 	}
 }
 
+// loadMuteScopes returns the set of "sender:<id>" / "channel:<id>" scope keys
+// that are hard-muted (weight <= -0.8), used to drop candidates before they
+// ever reach the AI. Moved here from the deleted pinned_selector.go, which
+// also relied on it for filtering AI-suggested pinned items.
+func loadMuteScopes(database *db.DB) map[string]bool {
+	rules, _ := database.ListAllLearnedRules()
+	m := map[string]bool{}
+	for _, r := range rules {
+		if r.RuleType == "source_mute" && r.Weight <= -0.8 {
+			m[r.ScopeKey] = true
+		}
+	}
+	return m
+}
+
 // triageChunk sends one chunk of candidates to the AI and applies the
 // verdicts. On any error (AI call, parse), it returns before mutating
 // anything so the caller's outcome reflects only fully-triaged chunks (INBOX-07).
