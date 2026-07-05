@@ -110,4 +110,54 @@ struct UpdateServicePureTests {
         #expect(err.errorDescription?.contains("503") == true)
         #expect(err.errorDescription?.contains("GitHub API") == true)
     }
+
+    @Test("designatedRequirement embeds the Team ID")
+    func designatedRequirementFormat() {
+        let req = UpdateService.designatedRequirement(forTeamID: "ABCDE12345")
+        #expect(req == "anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"")
+    }
+
+    @Test("parseTeamIdentifier extracts a valid Team ID from codesign -dv output")
+    func parseTeamIdentifierValid() {
+        let output = """
+        Executable=/Applications/Watchtower.app/Contents/MacOS/Watchtower
+        Identifier=com.watchtower.desktop
+        Format=app bundle with Mach-O universal (x86_64 arm64)
+        CodeDirectory v=20500 size=1234 flags=0x10000(runtime) hashes=1+7 location=embedded
+        Signature size=4681
+        Authority=Apple Development: Someone (ABCDE12345)
+        Authority=Apple Worldwide Developer Relations Certification Authority
+        Authority=Apple Root CA
+        TeamIdentifier=ABCDE12345
+        Sealed Resources version=2 rules=13 files=42
+        Internal requirements count=1 size=180
+        """
+        #expect(UpdateService.parseTeamIdentifier(from: output) == "ABCDE12345")
+    }
+
+    @Test("parseTeamIdentifier returns nil when Team ID is not set (ad-hoc signature)")
+    func parseTeamIdentifierNotSet() {
+        let output = """
+        Executable=/Applications/Watchtower.app/Contents/MacOS/Watchtower
+        Identifier=com.watchtower.desktop
+        Format=app bundle with Mach-O universal (x86_64 arm64)
+        Signature=adhoc
+        TeamIdentifier=not set
+        """
+        #expect(UpdateService.parseTeamIdentifier(from: output) == nil)
+    }
+
+    @Test("parseTeamIdentifier returns nil when there is no TeamIdentifier line at all")
+    func parseTeamIdentifierMissing() {
+        let output = "Executable=/tmp/x\nIdentifier=com.example\n"
+        #expect(UpdateService.parseTeamIdentifier(from: output) == nil)
+    }
+
+    @Test("parseTeamIdentifier rejects malformed values instead of passing them through")
+    func parseTeamIdentifierMalformed() {
+        // Guards against embedding unexpected characters into a shell command.
+        #expect(UpdateService.parseTeamIdentifier(from: "TeamIdentifier=abc\n") == nil)
+        #expect(UpdateService.parseTeamIdentifier(from: "TeamIdentifier=ABCDE123456\n") == nil)
+        #expect(UpdateService.parseTeamIdentifier(from: "TeamIdentifier=ABCDE\"1234\n") == nil)
+    }
 }

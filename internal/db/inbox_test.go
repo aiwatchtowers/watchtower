@@ -606,3 +606,52 @@ func TestCreateInboxItem_UniqueConstraint(t *testing.T) {
 	_, err = db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U1", TriggerType: "mention"})
 	assert.Error(t, err)
 }
+
+// Regression: dedup must not collapse unrelated items that happen to share a
+// channel_id + thread_ts but represent different trigger types (e.g. an
+// @mention and a DM both landing in the same thread). Each trigger type is a
+// distinct signal to the user and must not silently disappear as a "dupe" of
+// the other.
+func TestDeduplicateThreadInboxItems_PreservesDifferentTriggerTypes(t *testing.T) {
+	db := openTestDB(t)
+
+	mentionID, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", ThreadTS: "1.0", SenderUserID: "U1", TriggerType: "mention"})
+	require.NoError(t, err)
+	dmID, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.2", ThreadTS: "1.0", SenderUserID: "U1", TriggerType: "dm"})
+	require.NoError(t, err)
+
+	deduped, err := db.DeduplicateThreadInboxItems()
+	require.NoError(t, err)
+	assert.Equal(t, 0, deduped, "different trigger types in the same thread must not be merged")
+
+	mentionItem, err := db.GetInboxItemByID(int(mentionID))
+	require.NoError(t, err)
+	assert.Equal(t, "pending", mentionItem.Status)
+
+	dmItem, err := db.GetInboxItemByID(int(dmID))
+	require.NoError(t, err)
+	assert.Equal(t, "pending", dmItem.Status)
+}
+
+// Same trigger type in the same thread is still a genuine duplicate and must
+// keep collapsing to the most recent item.
+func TestDeduplicateThreadInboxItems_MergesSameTriggerType(t *testing.T) {
+	db := openTestDB(t)
+
+	firstID, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", ThreadTS: "1.0", SenderUserID: "U1", TriggerType: "mention"})
+	require.NoError(t, err)
+	secondID, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.2", ThreadTS: "1.0", SenderUserID: "U2", TriggerType: "mention"})
+	require.NoError(t, err)
+
+	deduped, err := db.DeduplicateThreadInboxItems()
+	require.NoError(t, err)
+	assert.Equal(t, 1, deduped)
+
+	kept, err := db.GetInboxItemByID(int(secondID))
+	require.NoError(t, err)
+	assert.Equal(t, "pending", kept.Status)
+
+	merged, err := db.GetInboxItemByID(int(firstID))
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", merged.Status)
+}

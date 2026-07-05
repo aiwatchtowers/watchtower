@@ -637,3 +637,30 @@ func TestPipeline_RunFastDetection_NoCurrentUserCleanExit(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&n))
 	assert.Equal(t, 0, n, "no-current-user fast pass must write nothing")
 }
+
+// TestInbox09_WatermarkFrozenOnDetectorError guards INBOX-09: when a detector
+// pass fails, the inbox watermark must NOT advance. Advancing it on failure
+// permanently skips the window of mentions/DMs the failed pass never scanned.
+// A broken detector is simulated by removing the table DetectJira reads.
+func TestInbox09_WatermarkFrozenOnDetectorError(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U_ME")
+
+	// Freeze the watermark at a known, non-zero value.
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+
+	// Break one detector: DetectJira queries jira_issues, so dropping it makes
+	// the detector pass return an error.
+	_, err := d.Exec(`DROP TABLE jira_issues`)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err, "a detector failure must not fail the whole run")
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts,
+		"detector failure must leave the inbox watermark untouched to avoid losing the skipped window")
+}

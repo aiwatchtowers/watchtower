@@ -189,7 +189,11 @@ func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 	var conditions []string
 	var args []any
 
-	if !f.IncludeDone {
+	// The default "exclude done/dismissed" clause only applies when the
+	// caller didn't ask for a specific status — ANDing it with an explicit
+	// Status="done"/"dismissed" filter would be mutually exclusive and
+	// always return zero rows.
+	if !f.IncludeDone && f.Status == "" {
 		conditions = append(conditions, "status NOT IN ('done','dismissed')")
 	}
 	if f.Status != "" {

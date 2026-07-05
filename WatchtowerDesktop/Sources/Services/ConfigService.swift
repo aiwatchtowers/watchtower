@@ -120,7 +120,14 @@ final class ConfigService {
     }
 
     func save() throws {
-        var yaml = rawYAML
+        // Re-read the config file right before writing instead of using the
+        // in-memory `rawYAML` snapshot captured at the last reload(). Between
+        // load and save, an external process (e.g. `watchtower jira login`,
+        // `watchtower calendar login`) may have written sections we don't
+        // own (jira, google token, etc). Merging onto a stale snapshot would
+        // silently discard those. Fall back to `rawYAML` only if the file is
+        // gone or unreadable.
+        var yaml = currentYAMLOnDisk() ?? rawYAML
 
         yaml["active_workspace"] = activeWorkspace
 
@@ -184,6 +191,18 @@ final class ConfigService {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
 
         rawYAML = yaml
+    }
+
+    /// Load the current on-disk config as a raw YAML dictionary, without
+    /// touching any of the published `@Observable` properties. Used by
+    /// `save()` to merge onto the freshest state rather than a stale snapshot.
+    private func currentYAMLOnDisk() -> [String: Any]? {
+        guard let data = FileManager.default.contents(atPath: configPath),
+              let str = String(data: data, encoding: .utf8),
+              let yaml = try? Yams.load(yaml: str) as? [String: Any] else {
+            return nil
+        }
+        return yaml
     }
 
     func openInEditor() {
