@@ -182,6 +182,19 @@ func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
 	return p.totalInputTokens, p.totalOutputTokens, 0, p.totalAPITokens
 }
 
+// accumulateUsage folds one Generate call's token usage into the pipeline's
+// running totals and last-step metrics. usage may be nil (no-op).
+func (p *Pipeline) accumulateUsage(usage *digest.Usage) {
+	if usage == nil {
+		return
+	}
+	p.totalInputTokens += usage.InputTokens
+	p.totalOutputTokens += usage.OutputTokens
+	p.totalAPITokens += usage.TotalAPITokens
+	p.LastStepInputTokens = usage.InputTokens
+	p.LastStepOutputTokens = usage.OutputTokens
+}
+
 // Run executes the inbox pipeline: detect new items, classify, learn, AI prioritize,
 // select pinned, auto-resolve, auto-archive, then unsnooze.
 // Returns (created count, resolved count, error).
@@ -728,13 +741,7 @@ func (p *Pipeline) aiPrioritizeNewItems(ctx context.Context, currentUserID strin
 			p.logger.Printf("inbox: AI batch %d error: %v", i+1, err)
 			continue
 		}
-		if usage != nil {
-			p.totalInputTokens += usage.InputTokens
-			p.totalOutputTokens += usage.OutputTokens
-			p.totalAPITokens += usage.TotalAPITokens
-			p.LastStepInputTokens = usage.InputTokens
-			p.LastStepOutputTokens = usage.OutputTokens
-		}
+		p.accumulateUsage(usage)
 
 		p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 		p.progress(step, total, fmt.Sprintf("AI batch %d/%d done", i+1, len(batches)))

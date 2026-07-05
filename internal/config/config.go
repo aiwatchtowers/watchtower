@@ -54,6 +54,8 @@ type InboxConfig struct {
 	Enabled             bool `mapstructure:"enabled"`               // enable inbox detection (default: true)
 	MaxItemsPerRun      int  `mapstructure:"max_items_per_run"`     // max candidates per run (default: 100)
 	InitialLookbackDays int  `mapstructure:"initial_lookback_days"` // days to look back on first run (default: 7)
+	MaxTriageMessages   int  `mapstructure:"max_triage_messages"`   // max stream messages scanned per triage cycle (default: 600)
+	MaxAwarenessCards   int  `mapstructure:"max_awareness_cards"`   // max ambient items given a secretary card per cycle (default: 3)
 }
 
 // CatchupConfig controls the on-demand unread summarizer.
@@ -203,6 +205,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.enabled", DefaultInboxEnabled)
 	v.SetDefault("inbox.max_items_per_run", DefaultInboxMaxItems)
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
+	v.SetDefault("inbox.max_triage_messages", DefaultInboxMaxTriageMessages)
+	v.SetDefault("inbox.max_awareness_cards", DefaultInboxMaxAwarenessCards)
 	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
 	v.SetDefault("catchup.max_age_days", 30)
 	v.SetDefault("catchup.caps.digests", 150)
