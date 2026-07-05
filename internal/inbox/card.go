@@ -27,7 +27,7 @@ func (p *Pipeline) runCards(ctx context.Context, currentUserID string) (int, err
 	if err != nil {
 		return 0, fmt.Errorf("listing items needing cards: %w", err)
 	}
-	if len(items) == 0 {
+	if len(items) == 0 || p.generator == nil {
 		return 0, nil
 	}
 

@@ -3,6 +3,7 @@ package inbox
 import (
 	"context"
 	"fmt"
+	"log"
 	"testing"
 
 	"watchtower/internal/db"
@@ -71,6 +72,23 @@ func TestRunCards_InvalidJSONMarksFailed(t *testing.T) {
 	assert.Equal(t, "failed", it.CardStatus)
 	assert.Equal(t, "pending", it.Status)
 	assert.Equal(t, "original snippet", it.Snippet)
+}
+
+func TestRunCards_NilGeneratorSkips(t *testing.T) {
+	// A workspace with no AI provider: runCards must be a no-op, not a panic.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+	p := New(d, testConfig(), nil, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+	id := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "mention", Snippet: "needs a card"})
+
+	n, err := p.runCards(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	it, err := d.GetInboxItem(id)
+	require.NoError(t, err)
+	assert.Equal(t, "none", it.CardStatus, "nil generator must leave items untouched for a later cycle")
 }
 
 func TestRunCards_AwarenessCapRespected(t *testing.T) {
