@@ -187,7 +187,7 @@ enum ChannelStatsQueries {
             ),
             task_via_digest AS (
                 SELECT d.channel_id, COUNT(*) AS cnt
-                FROM tasks t
+                FROM targets t
                 JOIN digests d ON t.source_type = 'digest' AND t.source_id = CAST(d.id AS TEXT)
                 WHERE t.status IN ('todo','in_progress','blocked')
                   AND d.channel_id != ''
@@ -195,7 +195,7 @@ enum ChannelStatsQueries {
             ),
             task_via_inbox AS (
                 SELECT i.channel_id, COUNT(*) AS cnt
-                FROM tasks t
+                FROM targets t
                 JOIN inbox_items i ON t.source_type = 'inbox' AND t.source_id = CAST(i.id AS TEXT)
                 WHERE t.status IN ('todo','in_progress','blocked')
                 GROUP BY i.channel_id
@@ -234,7 +234,7 @@ enum ChannelStatsQueries {
                 ),
                 task_via_digest AS (
                     SELECT d.channel_id, COUNT(*) AS cnt
-                    FROM tasks t
+                    FROM targets t
                     JOIN digests d ON t.source_type = 'digest' AND t.source_id = CAST(d.id AS TEXT)
                     WHERE t.status IN ('todo','in_progress','blocked')
                       AND d.channel_id != ''
@@ -242,7 +242,7 @@ enum ChannelStatsQueries {
                 ),
                 task_via_inbox AS (
                     SELECT i.channel_id, COUNT(*) AS cnt
-                    FROM tasks t
+                    FROM targets t
                     JOIN inbox_items i ON t.source_type = 'inbox' AND t.source_id = CAST(i.id AS TEXT)
                     WHERE t.status IN ('todo','in_progress','blocked')
                     GROUP BY i.channel_id

@@ -130,6 +130,18 @@ final class UpdateService {
     func install(daemonManager: DaemonManager) async {
         guard case .readyToInstall(let newAppPath) = state else { return }
 
+        // Pin the replacement build's signature check to the Team ID of the
+        // app that's currently running. Without this, the helper script's
+        // `codesign --verify` only checks that *some* signature is valid —
+        // an ad-hoc or third-party signed .app (e.g. a compromised download)
+        // would pass just as well. Fail closed: if we can't determine our
+        // own Team ID (ad-hoc/dev build), refuse to install rather than
+        // falling back to a signature check with no identity pinning.
+        guard let teamID = Self.currentTeamIdentifier() else {
+            state = .error("Update aborted: could not determine the running app's Team ID (ad-hoc/dev build). Refusing to install an update that can't be verified against a known signer.")
+            return
+        }
+
         state = .installing
 
         // 1. Stop daemon
@@ -145,7 +157,8 @@ final class UpdateService {
         let script = Self.generateHelperScript(
             currentAppPath: currentAppPath,
             newAppPath: newAppPath.path,
-            pid: ProcessInfo.processInfo.processIdentifier
+            pid: ProcessInfo.processInfo.processIdentifier,
+            teamID: teamID
         )
 
         let scriptPath = Self.cacheDir.appendingPathComponent("update.sh")
@@ -199,11 +212,14 @@ final class UpdateService {
         return result
     }
 
-    private static func generateHelperScript(currentAppPath: String, newAppPath: String, pid: pid_t) -> String {
+    private static func generateHelperScript(currentAppPath: String, newAppPath: String, pid: pid_t, teamID: String) -> String {
         // C1 fix: escape paths for safe shell interpolation
         let escapedCurrent = shellEscape(currentAppPath)
         let escapedNew = shellEscape(newAppPath)
         let escapedCache = shellEscape(Self.cacheDir.path)
+        // Team ID is validated by parseTeamIdentifier (10 alphanumeric chars),
+        // so it's safe to embed directly without shellEscape.
+        let requirement = designatedRequirement(forTeamID: teamID)
         return """
         #!/bin/sh
         # Watchtower auto-update helper script
@@ -215,9 +231,11 @@ final class UpdateService {
         # Small extra delay to ensure file handles are released
         sleep 1
 
-        # Verify codesign on the new app before replacing
-        if ! /usr/bin/codesign --verify --deep --strict "\(escapedNew)" 2>/dev/null; then
-            echo "ERROR: Code signature verification failed. Aborting update." >&2
+        # Verify codesign on the new app before replacing: signature must be
+        # valid AND signed by the same Team ID as the currently running app.
+        # A valid-but-unrelated (e.g. ad-hoc) signature is rejected.
+        if ! /usr/bin/codesign --verify --deep --strict -R='\(requirement)' "\(escapedNew)" 2>/dev/null; then
+            echo "ERROR: Code signature verification failed (invalid signature or Team ID mismatch). Aborting update." >&2
             exit 1
         fi
 
@@ -245,6 +263,54 @@ final class UpdateService {
         let bundleURL = Bundle.main.bundleURL
         guard bundleURL.pathExtension == "app" else { return nil }
         return bundleURL.path
+    }
+
+    /// Extract the Team Identifier from `codesign -dv --verbose=4` output
+    /// (that command writes its report to stderr). Returns nil if there is
+    /// no team identifier — ad-hoc signed or unsigned builds report
+    /// `TeamIdentifier=not set`, and we treat that the same as absent.
+    nonisolated static func parseTeamIdentifier(from codesignOutput: String) -> String? {
+        for line in codesignOutput.split(whereSeparator: \.isNewline) {
+            guard line.hasPrefix("TeamIdentifier=") else { continue }
+            let value = line.dropFirst("TeamIdentifier=".count).trimmingCharacters(in: .whitespaces)
+            // Apple Team IDs are exactly 10 alphanumeric characters. Reject
+            // anything else (including "not set") so we never embed
+            // unexpected characters into a shell command downstream.
+            guard value.range(of: "^[A-Za-z0-9]{10}$", options: .regularExpression) != nil else { return nil }
+            return value
+        }
+        return nil
+    }
+
+    /// Build a codesign designated-requirement string pinning verification
+    /// to a specific Team ID.
+    nonisolated static func designatedRequirement(forTeamID teamID: String) -> String {
+        "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
+    }
+
+    /// Team ID of the currently running app bundle, read from its own code
+    /// signature. Nil for ad-hoc/dev builds with no Team ID.
+    private static func currentTeamIdentifier() -> String? {
+        guard let bundlePath = currentAppBundlePath() else { return nil }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.arguments = ["-dv", "--verbose=4", bundlePath]
+        let stderrPipe = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, let output = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return parseTeamIdentifier(from: output)
     }
 
     private func fetchLatestRelease() async throws -> GitHubRelease {

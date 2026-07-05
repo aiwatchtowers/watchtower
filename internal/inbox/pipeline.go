@@ -4,6 +4,7 @@ package inbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -232,9 +233,10 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	p.progress(0, 6, "Detecting messages...")
 
-	// Phase 1: Detection — Slack + external sources (all non-fatal).
+	// Phase 1: Detection — Slack + external sources (individually non-fatal, but a
+	// failure freezes the watermark below so no window is skipped).
 	stepStart := time.Now()
-	createdSlack, createdJira, createdCalendar, createdWatchtower := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
+	createdSlack, createdJira, createdCalendar, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
 	created := createdSlack + createdJira + createdCalendar + createdWatchtower
 
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
@@ -318,16 +320,23 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 		p.logger.Printf("inbox: unsnooze error: %v", err)
 	}
 
-	// Advance watermark.
-	// Use a 30-minute buffer instead of wall-clock time to account for
-	// Slack search API indexing delays — messages may arrive in the DB
-	// with ts_unix values behind wall-clock time.
-	bufferTS := float64(time.Now().Add(-30 * time.Minute).Unix())
-	if bufferTS < lastTS {
-		bufferTS = lastTS // never go backwards
-	}
-	if err := p.db.SetInboxLastProcessedTS(bufferTS); err != nil {
-		p.logger.Printf("inbox: error updating last processed ts: %v", err)
+	// Advance watermark — but only if detection succeeded. If any detector
+	// failed, its window was not fully scanned; advancing the watermark past it
+	// would silently drop the mentions/DMs it never saw, so leave the watermark
+	// where it was and let the next cycle re-cover the window.
+	if detectErr != nil {
+		p.logger.Printf("inbox: detector error, leaving watermark unchanged to avoid losing the skipped window: %v", detectErr)
+	} else {
+		// Use a 30-minute buffer instead of wall-clock time to account for
+		// Slack search API indexing delays — messages may arrive in the DB
+		// with ts_unix values behind wall-clock time.
+		bufferTS := float64(time.Now().Add(-30 * time.Minute).Unix())
+		if bufferTS < lastTS {
+			bufferTS = lastTS // never go backwards
+		}
+		if err := p.db.SetInboxLastProcessedTS(bufferTS); err != nil {
+			p.logger.Printf("inbox: error updating last processed ts: %v", err)
+		}
 	}
 
 	p.progress(6, 6, fmt.Sprintf("Done — %d created, %d resolved", created, resolved))
@@ -384,7 +393,10 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 		p.logger.Printf("inbox fast: merged %d duplicate thread items", deduped)
 	}
 
-	createdSlack, createdJira, createdCalendar, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
+	// RunFastDetection never advances the watermark (the full Run owns that), so
+	// a detector error is already surfaced via the per-detector logs inside
+	// detectAll; no watermark gating is needed here.
+	createdSlack, createdJira, createdCalendar, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
 	created := createdSlack + createdJira + createdCalendar
 
 	if err := p.classifyNewItems(ctx); err != nil {
@@ -403,30 +415,37 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 // includeWatchtower is false, the watchtower-internal detector
 // (decision_made / briefing_ready, depends on digests + briefings) is skipped —
 // used by RunFastDetection so it can run before the digest pipeline.
-func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time, includeWatchtower bool) (slack, jira, cal, wt int) {
-	if n, err := p.detectSlackTriggers(ctx, currentUserID, lastTS); err != nil {
-		p.logger.Printf("inbox: slack detect error: %v", err)
+// The returned error is non-nil if any detector failed; callers use it to gate
+// the watermark advance so a failed pass does not skip its message window.
+func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time, includeWatchtower bool) (slack, jira, cal, wt int, err error) {
+	var errs []error
+	if n, e := p.detectSlackTriggers(ctx, currentUserID, lastTS); e != nil {
+		p.logger.Printf("inbox: slack detect error: %v", e)
+		errs = append(errs, fmt.Errorf("slack: %w", e))
 	} else {
 		slack = n
 	}
-	if n, err := DetectJira(ctx, p.db, currentUserID, sinceTime); err != nil {
-		p.logger.Printf("inbox: jira detect error: %v", err)
+	if n, e := DetectJira(ctx, p.db, currentUserID, sinceTime); e != nil {
+		p.logger.Printf("inbox: jira detect error: %v", e)
+		errs = append(errs, fmt.Errorf("jira: %w", e))
 	} else {
 		jira = n
 	}
-	if n, err := DetectCalendar(ctx, p.db, p.currentUserEmail, sinceTime); err != nil {
-		p.logger.Printf("inbox: calendar detect error: %v", err)
+	if n, e := DetectCalendar(ctx, p.db, p.currentUserEmail, sinceTime); e != nil {
+		p.logger.Printf("inbox: calendar detect error: %v", e)
+		errs = append(errs, fmt.Errorf("calendar: %w", e))
 	} else {
 		cal = n
 	}
 	if includeWatchtower {
-		if n, err := DetectWatchtowerInternal(ctx, p.db, sinceTime); err != nil {
-			p.logger.Printf("inbox: watchtower detect error: %v", err)
+		if n, e := DetectWatchtowerInternal(ctx, p.db, sinceTime); e != nil {
+			p.logger.Printf("inbox: watchtower detect error: %v", e)
+			errs = append(errs, fmt.Errorf("watchtower: %w", e))
 		} else {
 			wt = n
 		}
 	}
-	return
+	return slack, jira, cal, wt, errors.Join(errs...)
 }
 
 // detectSlackTriggers detects @mentions, DMs, thread replies and reactions from Slack messages.

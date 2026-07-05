@@ -69,6 +69,17 @@ final class CustomTrackTimelineViewModel {
         }
     }
 
+    /// One-shot refetch of the timeline, used after a CLI scan subprocess
+    /// completes (see `scanSinceLast`/`scanHistory`). The scan writes on a
+    /// separate SQLite connection from another process, so the ValueObservation
+    /// below — which only reacts to same-process writes — never sees those rows;
+    /// this refetch is what makes them show up.
+    private func refreshEvents() {
+        if let rows = try? dbPool.read({ db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }) {
+            events = rows
+        }
+    }
+
     func start() {
         let id = track.id
         let dbPool = self.dbPool
@@ -98,10 +109,12 @@ final class CustomTrackTimelineViewModel {
         lastScanNote = nil
         defer { isRefreshing = false; scanCenter.finish(track.id, note: lastScanNote ?? errorMessage) }
         do {
-            // The CLI wrote any new rows; the ValueObservation stream pushes
-            // them. The returned slice is exactly what was created this run.
+            // The CLI subprocess writes any new rows on its own connection, so
+            // the ValueObservation above (same-process only) will not see them —
+            // refreshEvents() below does the explicit refetch.
             let created = try await scanService.run(trackID: track.id)
             refreshLastRunAt()
+            refreshEvents()
             lastScanNote = created.isEmpty
                 ? "Scan complete — no new activity since the last check. Pick a wider range to backfill older activity."
                 : "Found \(created.count) new update\(created.count == 1 ? "" : "s")."
@@ -125,6 +138,7 @@ final class CustomTrackTimelineViewModel {
         do {
             let created = try await scanService.run(trackID: track.id, since: iso)
             refreshLastRunAt()
+            refreshEvents()
             lastScanNote = created.isEmpty
                 ? "History scan complete — no matching activity found for \(label)."
                 : "History scan found \(created.count) update\(created.count == 1 ? "" : "s")."

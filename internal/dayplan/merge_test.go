@@ -67,6 +67,39 @@ func TestBuildItems_DropsTimeblockOverlappingCalendar(t *testing.T) {
 	assert.Contains(t, dropped[0], "overlaps calendar")
 }
 
+// TestBuildItems_KeepsTimeblocksOverlappingAllDayEvent guards against a
+// single all-day event (e.g. a holiday or OOO, stored as 00:00–24:00) being
+// treated as an ordinary busy slot: since it spans the whole day, every
+// AI-generated timeblock would otherwise "overlap" it and get dropped. Uses
+// a non-UTC time.Local (like the checklist's repro) to also confirm the
+// all-day exclusion holds regardless of the reader's zone.
+func TestBuildItems_KeepsTimeblocksOverlappingAllDayEvent(t *testing.T) {
+	orig := time.Local
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	time.Local = loc
+	defer func() { time.Local = orig }()
+
+	events := []db.CalendarEvent{
+		{
+			ID:        "holiday1",
+			Title:     "Company Holiday",
+			StartTime: "2026-04-23T00:00:00Z",
+			EndTime:   "2026-04-24T00:00:00Z",
+			IsAllDay:  true,
+		},
+	}
+
+	r := &GenerateResult{
+		Timeblocks: []AIItem{
+			{SourceType: "focus", Title: "Deep work", StartTimeLocal: "10:00", EndTimeLocal: "11:00", Priority: "high"},
+		},
+	}
+	items, dropped := buildItems(r, "2026-04-23", events, nil, nil)
+	require.Len(t, items, 1, "all-day event must not block AI timeblocks")
+	assert.Empty(t, dropped)
+}
+
 func TestBuildItems_DropsTimeblockMissingTime(t *testing.T) {
 	r := &GenerateResult{
 		Timeblocks: []AIItem{

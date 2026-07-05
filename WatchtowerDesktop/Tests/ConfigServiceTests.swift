@@ -173,4 +173,37 @@ struct ConfigServiceTests {
         #expect(svc.briefingHour == 8) // default
         #expect(svc.dayPlanEnabled == true) // default
     }
+
+    @Test("Save merges onto sections written concurrently by a CLI login, not the stale in-memory snapshot")
+    func saveDoesNotClobberConcurrentCLIWrites() throws {
+        let path = makeTempConfig("""
+        jira:
+          project_key: X
+        ai:
+          provider: claude
+        """)
+        let svc = ConfigService(configPath: path)
+
+        // Simulate a CLI flow (e.g. `watchtower jira login`) writing new
+        // fields to disk *after* ConfigService loaded its in-memory snapshot.
+        try """
+        jira:
+          project_key: X
+          api_token: secret-from-cli-login
+        ai:
+          provider: claude
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        svc.aiProvider = "codex"
+        try svc.save()
+
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let yaml = try Yams.load(yaml: raw) as? [String: Any]
+        let jira = yaml?["jira"] as? [String: Any]
+        #expect(jira?["project_key"] as? String == "X", "section Desktop doesn't own must survive; got: \(raw)")
+        #expect(jira?["api_token"] as? String == "secret-from-cli-login", "concurrent CLI write must survive; got: \(raw)")
+
+        let ai = yaml?["ai"] as? [String: Any]
+        #expect(ai?["provider"] as? String == "codex", "Desktop-owned field must still be updated; got: \(raw)")
+    }
 }

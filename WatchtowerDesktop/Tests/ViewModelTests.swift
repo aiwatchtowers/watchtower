@@ -513,6 +513,63 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(vm.messages.last).isStreaming)
     }
 
+    /// A mock whose stream stalls partway through, giving the test a window to
+    /// call `cancelStream()` while the stream Task is still in flight — this is
+    /// what reproduces the real race: cancellation is cooperative, so the
+    /// stream Task's own completion tail keeps running (and used to persist the
+    /// reply again) even after `cancelStream()` already saved the partial text.
+    private final class StallingMockService: AIServiceProtocol, @unchecked Sendable {
+        func stream(
+            prompt: String,
+            systemPrompt: String?,
+            sessionID: String?,
+            dbPath: String?,
+            model: String?,
+            provider: String?,
+            extraAllowedTools: [String]
+        ) -> AsyncThrowingStream<StreamEvent, Error> {
+            AsyncThrowingStream { continuation in
+                Task {
+                    continuation.yield(.text("Partial answer"))
+                    try? await Task.sleep(for: .milliseconds(200))
+                    // Mirrors WatchtowerAIService.run(): it still emits a final
+                    // turnComplete + done even after the Task was cancelled.
+                    continuation.yield(.turnComplete("Partial answer"))
+                    continuation.yield(.done)
+                    continuation.finish()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testCancelStreamDuringActiveStreamPersistsReplyOnlyOnce() async throws {
+        try await dbManager.dbPool.write { db in
+            try ChatConversationQueries.ensureTable(db)
+            try ChatMessageQueries.ensureTable(db)
+        }
+        let conv = try await dbManager.dbPool.write { db in try ChatConversationQueries.create(db, title: "t") }
+
+        let vm = ChatViewModel(aiService: StallingMockService(), dbManager: dbManager)
+        vm.bind(to: conv)
+        vm.inputText = "Hi"
+        vm.send()
+
+        // Let the mock emit its first chunk, then hit Stop while the stream
+        // Task is still stalled (not yet at its completion tail).
+        try await Task.sleep(for: .milliseconds(50))
+        vm.cancelStream()
+
+        // Give the stream Task's tail time to run to completion too.
+        try await Task.sleep(for: .milliseconds(300))
+
+        let stored = try await dbManager.dbPool.read { db in
+            try ChatMessageQueries.fetchByConversation(db, conversationID: conv.id)
+        }
+        let assistantRows = stored.filter { $0.role == "assistant" }
+        XCTAssertEqual(assistantRows.count, 1, "the partial reply must be persisted exactly once, not once per completion path")
+    }
+
     @MainActor
     func testSendCreatesMessages() async throws {
         let mock = MockClaudeService(events: [.text("Hello "), .text("world"), .done])
@@ -570,6 +627,33 @@ final class ChatViewModelTests: XCTestCase {
 
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertFalse(vm.isStreaming)
+    }
+
+    /// Locks in the provider-picker fix: the CLI provider flag must reflect
+    /// whichever `AIProvider` is active on the view model, not whatever
+    /// `ai.provider` happens to be set to in config.yaml.
+    @MainActor
+    func testSendPassesSelectedProviderToService() async throws {
+        let mock = MockClaudeService()
+        let vm = ChatViewModel(aiService: mock, dbManager: dbManager, provider: .codex)
+
+        vm.inputText = "Hi"
+        vm.send()
+        try await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertEqual(mock.providers, ["codex"])
+    }
+
+    @MainActor
+    func testSendPassesClaudeProviderToService() async throws {
+        let mock = MockClaudeService()
+        let vm = ChatViewModel(aiService: mock, dbManager: dbManager, provider: .claude)
+
+        vm.inputText = "Hi"
+        vm.send()
+        try await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertEqual(mock.providers, ["claude"])
     }
 
     func testBuildSystemPrompt() throws {
@@ -718,6 +802,21 @@ final class ChatViewModelProviderTests: XCTestCase {
         vm.switchProvider(.claude)
         XCTAssertEqual(vm.selectedProvider, .claude)
         XCTAssertEqual(vm.selectedModel.provider, .claude)
+    }
+
+    /// Locks in the invariant `switchProvider` must maintain: whatever provider
+    /// is active, `selectedModel` always belongs to it — a stale model from the
+    /// previous provider (e.g. a Claude model string sent while Codex is
+    /// selected) would produce an incompatible model/provider pair downstream.
+    @MainActor
+    func testSwitchProviderAlwaysKeepsModelConsistentWithActiveProvider() {
+        let vm = ChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        for provider in AIProvider.allCases {
+            vm.switchProvider(provider)
+            XCTAssertEqual(vm.selectedProvider, provider)
+            XCTAssertEqual(vm.selectedModel.provider, provider,
+                           "selectedModel must belong to the just-activated provider")
+        }
     }
 
     @MainActor
@@ -1707,5 +1806,36 @@ final class BackgroundTaskManagerTests: XCTestCase {
 
         manager.tasks[.people] = .init(status: .pending)
         XCTAssertTrue(manager.hasVisibleTasks)
+    }
+
+    // Regression test for a bug where a failed digests phase left tracks/people
+    // stuck in `.pending` ("Waiting..." forever in the sidebar) because the
+    // pipeline chain returned early instead of isolating the failure. The fix
+    // always runs `resolvePendingAsSkipped()` when the chain exits; this test
+    // exercises that cleanup directly.
+    @MainActor
+    func testResolvePendingAsSkippedClearsStuckTasks() {
+        let manager = BackgroundTaskManager()
+        manager.tasks[.digests] = .init(status: .error("boom"))
+        manager.tasks[.tracks] = .init(status: .pending)
+        manager.tasks[.people] = .init(status: .pending)
+
+        manager.resolvePendingAsSkipped()
+
+        XCTAssertEqual(manager.tasks[.digests]?.status, .error("boom"))
+        XCTAssertEqual(manager.tasks[.tracks]?.status, .error("Skipped"))
+        XCTAssertEqual(manager.tasks[.people]?.status, .error("Skipped"))
+    }
+
+    @MainActor
+    func testResolvePendingAsSkippedLeavesRunningAndDoneUntouched() {
+        let manager = BackgroundTaskManager()
+        manager.tasks[.digests] = .init(status: .done)
+        manager.tasks[.tracks] = .init(status: .running)
+
+        manager.resolvePendingAsSkipped()
+
+        XCTAssertEqual(manager.tasks[.digests]?.status, .done)
+        XCTAssertEqual(manager.tasks[.tracks]?.status, .running)
     }
 }
