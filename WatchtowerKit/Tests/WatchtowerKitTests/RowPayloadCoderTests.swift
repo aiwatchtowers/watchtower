@@ -8,8 +8,8 @@ final class RowPayloadCoderTests: XCTestCase {
             "id": 42,
             "score": 0.5,
             "title": "hello",
-            "raw": "bytes".data(using: .utf8)!,
-            "missing": nil,
+            "raw": Data("bytes".utf8),
+            "missing": nil
         ])
 
         let payload = try RowPayloadCoder.payload(from: original)
@@ -18,7 +18,7 @@ final class RowPayloadCoderTests: XCTestCase {
         XCTAssertEqual(decoded["id"] as Int64?, 42)
         XCTAssertEqual(decoded["score"] as Double?, 0.5)
         XCTAssertEqual(decoded["title"] as String?, "hello")
-        XCTAssertEqual(decoded["raw"] as Data?, "bytes".data(using: .utf8)!)
+        XCTAssertEqual(decoded["raw"] as Data?, Data("bytes".utf8))
         XCTAssertTrue((decoded["missing"] as DatabaseValue?)?.isNull ?? false)
         XCTAssertEqual(decoded.count, original.count)
     }
@@ -26,7 +26,7 @@ final class RowPayloadCoderTests: XCTestCase {
     func testRowFromRealDatabaseQueryRoundTrips() throws {
         let queue = try DatabaseQueue()
         let payload: Data = try queue.read { db in
-            let row = try Row.fetchOne(db, sql: "SELECT 7 AS n, 'x' AS s, NULL AS z, 1.5 AS f")!
+            let row = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT 7 AS n, 'x' AS s, NULL AS z, 1.5 AS f"))
             return try RowPayloadCoder.payload(from: row)
         }
         let decoded = try RowPayloadCoder.row(from: payload)

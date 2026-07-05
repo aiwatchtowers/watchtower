@@ -10,7 +10,8 @@ final class RelayPayloadTests: XCTestCase {
             params: ["snooze_until": .string("2026-07-06T09:00:00Z")],
             createdAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
-        let json = String(data: try RelayCoder.makeEncoder().encode(action), encoding: .utf8)!
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(action), encoding: .utf8))
+        // swiftlint:disable:next line_length
         XCTAssertEqual(json, #"{"created_at":1700000000,"entity_id":"42","id":"A1","kind":"inbox_snooze","params":{"snooze_until":"2026-07-06T09:00:00Z"},"status":"pending"}"#)
     }
 
@@ -60,6 +61,7 @@ final class RelayPayloadTests: XCTestCase {
     func testFrozenFixtureDecodesWithParamsKeysVerbatim() throws {
         // Decode-direction pin: convertFromSnakeCase must not rewrite params
         // dictionary keys (snooze_until must NOT become snoozeUntil).
+        // swiftlint:disable:next line_length
         let json = #"{"created_at":1700000000,"entity_id":"42","id":"A1","kind":"inbox_snooze","params":{"snooze_until":"2026-07-06T09:00:00Z"},"status":"pending"}"#
         let decoded = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8))
         XCTAssertEqual(decoded.params["snooze_until"], .string("2026-07-06T09:00:00Z"))
@@ -77,7 +79,7 @@ final class RelayPayloadTests: XCTestCase {
             createdAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
         let data = try RelayCoder.makeEncoder().encode(action)
-        let json = String(data: data, encoding: .utf8)!
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
         XCTAssertTrue(json.contains(#""dueDate""#), "params key was rewritten on encode: \(json)")
         XCTAssertFalse(json.contains(#""due_date""#))
 
@@ -87,21 +89,21 @@ final class RelayPayloadTests: XCTestCase {
 
     func testChatMessageWireFormatIsFrozen() throws {
         let message = ChatMessagePayload(id: "M1", sessionID: "S1", text: "hi", createdAt: Date(timeIntervalSince1970: 1_700_000_000))
-        let json = String(data: try RelayCoder.makeEncoder().encode(message), encoding: .utf8)!
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(message), encoding: .utf8))
         XCTAssertEqual(json, #"{"created_at":1700000000,"id":"M1","session_id":"S1","text":"hi"}"#)
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(ChatMessagePayload.self, from: Data(json.utf8)), message)
     }
 
     func testChatChunkWireFormatIsFrozen() throws {
         let chunk = ChatChunkPayload(sessionID: "S1", messageID: "M1", seq: 3, text: "partial", done: true)
-        let json = String(data: try RelayCoder.makeEncoder().encode(chunk), encoding: .utf8)!
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(chunk), encoding: .utf8))
         XCTAssertEqual(json, #"{"done":true,"message_id":"M1","seq":3,"session_id":"S1","text":"partial"}"#)
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(ChatChunkPayload.self, from: Data(json.utf8)), chunk)
     }
 
     func testHeartbeatWireFormatIsFrozen() throws {
         let beat = HeartbeatPayload(updatedAt: Date(timeIntervalSince1970: 1_700_000_002), appVersion: "1.0")
-        let json = String(data: try RelayCoder.makeEncoder().encode(beat), encoding: .utf8)!
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(beat), encoding: .utf8))
         XCTAssertEqual(json, #"{"app_version":"1.0","updated_at":1700000002}"#)
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: Data(json.utf8)), beat)
     }
@@ -116,7 +118,8 @@ final class RelayPayloadTests: XCTestCase {
         )
         action.status = .failed
         action.errorMessage = "row not found"
-        let json = String(data: try RelayCoder.makeEncoder().encode(action), encoding: .utf8)!
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(action), encoding: .utf8))
+        // swiftlint:disable:next line_length
         XCTAssertEqual(json, #"{"created_at":1700000000,"entity_id":"7","error_message":"row not found","id":"A1","kind":"target_done","params":{},"status":"failed"}"#)
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8)), action)
     }

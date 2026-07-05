@@ -144,7 +144,7 @@ public struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
             "&gt;": ">",
             "&quot;": "\"",
             "&#39;": "'",
-            "&apos;": "'",
+            "&apos;": "'"
         ]
         for (k, v) in entities {
             s = s.replacingOccurrences(of: k, with: v)

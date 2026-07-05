@@ -158,7 +158,7 @@ public struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equat
         case snoozeUntil      = "snooze_until"
         case blocking
         case tags
-        case subItems         = "sub_items"
+        case subItems = "sub_items"
         case notes
         case progress
         case sourceType       = "source_type"
