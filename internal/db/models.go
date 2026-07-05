@@ -527,30 +527,35 @@ type TargetLink struct {
 
 // InboxItem represents a Slack message awaiting user response.
 type InboxItem struct {
-	ID             int
-	ChannelID      string
-	MessageTS      string
-	ThreadTS       string
-	SenderUserID   string
-	TriggerType    string // "mention", "dm"
-	Snippet        string
-	Context        string
-	RawText        string
-	Permalink      string
-	Status         string // "pending", "resolved", "dismissed", "snoozed"
-	Priority       string // "high", "medium", "low"
-	AIReason       string
-	ResolvedReason string
-	SnoozeUntil    string
-	WaitingUserIDs string // JSON array of user IDs waiting for response, e.g. ["U123","U456"]
-	TargetID       *int
-	ReadAt         string
-	CreatedAt      string
-	UpdatedAt      string
-	ItemClass      string // "actionable" or "ambient"
-	Pinned         bool
-	ArchivedAt     string // empty if not archived
-	ArchiveReason  string
+	ID              int
+	ChannelID       string
+	MessageTS       string
+	ThreadTS        string
+	SenderUserID    string
+	TriggerType     string // "mention", "dm"
+	Snippet         string
+	Context         string
+	RawText         string
+	Permalink       string
+	Status          string // "pending", "resolved", "dismissed", "snoozed"
+	Priority        string // "high", "medium", "low"
+	AIReason        string
+	ResolvedReason  string
+	SnoozeUntil     string
+	WaitingUserIDs  string // JSON array of user IDs waiting for response, e.g. ["U123","U456"]
+	TargetID        *int
+	ReadAt          string
+	CreatedAt       string
+	UpdatedAt       string
+	ItemClass       string // "actionable" or "ambient"
+	Pinned          bool
+	ArchivedAt      string // empty if not archived
+	ArchiveReason   string
+	WhyMatters      string
+	ThreadDigest    string
+	DraftReply      string
+	CardStatus      string // none|ready|failed
+	CardGeneratedAt string
 }
 
 // InboxCandidate is a potential inbox item found by detection queries.

@@ -605,7 +605,8 @@ trigger_type TEXT NOT NULL CHECK(trigger_type IN (
 'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
 'calendar_invite','calendar_time_change','calendar_cancelled',
 'decision_made','briefing_ready',
-'target_due'
+'target_due',
+'stream'
 )),
 snippet TEXT NOT NULL DEFAULT '',
 context TEXT NOT NULL DEFAULT '',
@@ -625,6 +626,11 @@ item_class TEXT NOT NULL DEFAULT 'actionable' CHECK(item_class IN ('actionable',
 pinned INTEGER NOT NULL DEFAULT 0,
 archived_at TEXT,
 archive_reason TEXT DEFAULT '' CHECK(archive_reason IN ('','resolved','seen_expired','stale','dismissed')),
+why_matters TEXT NOT NULL DEFAULT '',
+thread_digest TEXT NOT NULL DEFAULT '',
+draft_reply TEXT NOT NULL DEFAULT '',
+card_status TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
+card_generated_at TEXT,
 UNIQUE(channel_id, message_ts)
 )
 
@@ -1222,7 +1228,7 @@ synced_at TEXT, -- ISO8601 timestamp of last sync
 search_last_date TEXT NOT NULL DEFAULT '', -- YYYY-MM-DD of last search sync
 current_user_id TEXT NOT NULL DEFAULT '', -- Slack user_id of the token owner (from auth.test)
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-)
+, secretary_profile TEXT NOT NULL DEFAULT '')
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
@@ -1537,6 +1543,11 @@ END
 21	pinned	INTEGER	notnull=1	dflt=0	pk=0
 22	archived_at	TEXT	notnull=0	dflt=NULL	pk=0
 23	archive_reason	TEXT	notnull=0	dflt=''	pk=0
+24	why_matters	TEXT	notnull=1	dflt=''	pk=0
+25	thread_digest	TEXT	notnull=1	dflt=''	pk=0
+26	draft_reply	TEXT	notnull=1	dflt=''	pk=0
+27	card_status	TEXT	notnull=1	dflt='none'	pk=0
+28	card_generated_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## inbox_learned_rules
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -2075,4 +2086,5 @@ END
 4	search_last_date	TEXT	notnull=1	dflt=''	pk=0
 5	current_user_id	TEXT	notnull=1	dflt=''	pk=0
 6	inbox_last_processed_ts	REAL	notnull=1	dflt=0	pk=0
+7	secretary_profile	TEXT	notnull=1	dflt=''	pk=0
 

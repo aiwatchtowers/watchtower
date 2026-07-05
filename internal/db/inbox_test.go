@@ -606,3 +606,24 @@ func TestCreateInboxItem_UniqueConstraint(t *testing.T) {
 	_, err = db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U1", TriggerType: "mention"})
 	assert.Error(t, err)
 }
+
+func TestInboxItemCardFieldsRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	id, err := db.CreateInboxItem(InboxItem{
+		ChannelID: "C1", MessageTS: "100.1", SenderUserID: "U2",
+		TriggerType: "stream", Snippet: "release blocked",
+	})
+	if err != nil {
+		t.Fatalf("create with trigger_type=stream: %v", err)
+	}
+	it, err := db.GetInboxItem(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.CardStatus != "none" {
+		t.Fatalf("card_status default = %q, want none", it.CardStatus)
+	}
+	if it.WhyMatters != "" || it.ThreadDigest != "" || it.DraftReply != "" {
+		t.Fatalf("card text fields should default empty")
+	}
+}

@@ -12,7 +12,8 @@ const inboxSelectCols = `id, channel_id, message_ts, thread_ts, sender_user_id,
 	trigger_type, snippet, context, raw_text, permalink, status, priority,
 	ai_reason, resolved_reason, snooze_until, COALESCE(waiting_user_ids,''), target_id,
 	COALESCE(read_at,''), created_at, updated_at,
-	COALESCE(item_class,'actionable'), COALESCE(pinned,0), COALESCE(archived_at,''), COALESCE(archive_reason,'')`
+	COALESCE(item_class,'actionable'), COALESCE(pinned,0), COALESCE(archived_at,''), COALESCE(archive_reason,''),
+	COALESCE(why_matters,''), COALESCE(thread_digest,''), COALESCE(draft_reply,''), COALESCE(card_status,'none'), COALESCE(card_generated_at,'')`
 
 // inboxItemColumns is an alias for inboxSelectCols used by feed/pinned queries.
 const inboxItemColumns = inboxSelectCols
@@ -21,16 +22,19 @@ const inboxItemColumns = inboxSelectCols
 func scanInboxItem(row interface{ Scan(...any) error }) (*InboxItem, error) {
 	var it InboxItem
 	var pinned int
+	var cardGeneratedAt string
 	if err := row.Scan(
 		&it.ID, &it.ChannelID, &it.MessageTS, &it.ThreadTS, &it.SenderUserID,
 		&it.TriggerType, &it.Snippet, &it.Context, &it.RawText, &it.Permalink, &it.Status, &it.Priority,
 		&it.AIReason, &it.ResolvedReason, &it.SnoozeUntil, &it.WaitingUserIDs, &it.TargetID,
 		&it.ReadAt, &it.CreatedAt, &it.UpdatedAt,
 		&it.ItemClass, &pinned, &it.ArchivedAt, &it.ArchiveReason,
+		&it.WhyMatters, &it.ThreadDigest, &it.DraftReply, &it.CardStatus, &cardGeneratedAt,
 	); err != nil {
 		return nil, err
 	}
 	it.Pinned = pinned != 0
+	it.CardGeneratedAt = cardGeneratedAt
 	return &it, nil
 }
 
