@@ -114,4 +114,50 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(delta.changed.map(\.recordName), ["target-\(updatedID)"])
         XCTAssertTrue(delta.deletedRecordNames.isEmpty)
     }
+
+    // Exercises the two calendar_events-specific paths in publishOnce:
+    //   1. rowID(.string) — calendar_events.id is TEXT PRIMARY KEY
+    //   2. datetime(start_time) window — only events within −1d..+14d from now
+    func testCalendarEventTextIdAndDatetimeWindow() async throws {
+        let inWindowID  = "cal_future_001"
+        let outWindowID = "cal_past_030"
+
+        // "a few hours in the future" — inside the −1d..+14d window
+        let inWindowStart  = "2026-07-06T14:00:00Z"
+        let inWindowEnd    = "2026-07-06T15:00:00Z"
+        // 30 days in the past — outside the window
+        let outWindowStart = "2026-06-06T14:00:00Z"
+        let outWindowEnd   = "2026-06-06T15:00:00Z"
+
+        try await dbPool.write { db in
+            try TestDatabase.insertCalendarEvent(
+                db,
+                id: inWindowID,
+                startTime: inWindowStart,
+                endTime: inWindowEnd
+            )
+            try TestDatabase.insertCalendarEvent(
+                db,
+                id: outWindowID,
+                startTime: outWindowStart,
+                endTime: outWindowEnd
+            )
+        }
+
+        let result = try await publisher.publishOnce()
+        XCTAssertEqual(result.pushed, 1, "only the in-window event should be pushed")
+        XCTAssertEqual(result.deleted, 0)
+        XCTAssertTrue(result.skipped.isEmpty)
+
+        let batch = try await transport.changes(in: .data, since: nil)
+        let names = Set(batch.changed.map(\.recordName))
+        XCTAssertTrue(
+            names.contains("calendar_event-\(inWindowID)"),
+            "in-window event must appear as calendar_event-\(inWindowID) (TEXT id branch)"
+        )
+        XCTAssertFalse(
+            names.contains("calendar_event-\(outWindowID)"),
+            "out-of-window event must be excluded by the datetime() filter"
+        )
+    }
 }
