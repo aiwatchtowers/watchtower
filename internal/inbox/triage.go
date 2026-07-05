@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -72,12 +73,17 @@ func (p *Pipeline) runTriage(ctx context.Context, currentUserID string, newItems
 			item: it,
 		})
 	}
+	// Muted candidates are dropped before the AI sees them, but their ts may
+	// only advance the watermark once every unmuted stream candidate BELOW it
+	// has been successfully triaged (INBOX-09: the watermark advances only
+	// over what was actually processed). Collect them (input is ts ASC, so
+	// the slice stays sorted) and fold them in on return, bounded by the
+	// first failure point.
+	var mutedTS []float64
 	for i := range streamCands {
 		c := &streamCands[i]
 		if mutes["sender:"+c.SenderUserID] || mutes["channel:"+c.ChannelID] {
-			if c.TSUnix > out.MaxProcessedTS {
-				out.MaxProcessedTS = c.TSUnix // muted = processed, never sent to the AI
-			}
+			mutedTS = append(mutedTS, c.TSUnix)
 			continue
 		}
 		cands = append(cands, triageCandidate{
@@ -87,6 +93,7 @@ func (p *Pipeline) runTriage(ctx context.Context, currentUserID string, newItems
 		})
 	}
 	if len(cands) == 0 {
+		foldMutedTS(&out, mutedTS, math.MaxFloat64)
 		return out, nil
 	}
 
@@ -97,10 +104,42 @@ func (p *Pipeline) runTriage(ctx context.Context, currentUserID string, newItems
 		end := min(start+maxTriagePerCall, len(cands))
 		chunk := cands[start:end]
 		if err := p.triageChunk(ctx, brief, tmpl, chunk, &out); err != nil {
+			// The failing chunk and everything after it were NOT triaged:
+			// muted ts values at or beyond the first untriaged stream
+			// candidate must not advance the watermark.
+			foldMutedTS(&out, mutedTS, untriagedStreamFloor(cands[start:]))
 			return out, err // caller freezes/partially advances the watermark at out.MaxProcessedTS
 		}
 	}
+	foldMutedTS(&out, mutedTS, math.MaxFloat64)
 	return out, nil
+}
+
+// untriagedStreamFloor returns the smallest ts_unix among the stream
+// candidates in remaining (the failed chunk plus every chunk after it), or
+// math.MaxFloat64 if none. Candidates are ordered trigger-items-first then
+// stream ts ASC, so the first stream entry is the floor.
+func untriagedStreamFloor(remaining []triageCandidate) float64 {
+	for _, c := range remaining {
+		if c.stream != nil {
+			return c.stream.TSUnix
+		}
+	}
+	return math.MaxFloat64
+}
+
+// foldMutedTS raises out.MaxProcessedTS over muted candidate timestamps, but
+// only those strictly below failedFloor (the first untriaged stream ts).
+// mutedTS is sorted ascending; the fold only ever raises, never lowers.
+func foldMutedTS(out *triageOutcome, mutedTS []float64, failedFloor float64) {
+	for _, ts := range mutedTS {
+		if ts >= failedFloor {
+			break
+		}
+		if ts > out.MaxProcessedTS {
+			out.MaxProcessedTS = ts
+		}
+	}
 }
 
 // triageChunk sends one chunk of candidates to the AI and applies the

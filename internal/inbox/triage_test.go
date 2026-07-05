@@ -153,7 +153,28 @@ func TestTriage_HardMutedStreamCandidateSkipped(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, gen.calls, "muted candidate must never reach the generator")
 	assert.Equal(t, 0, out.Created)
-	assert.Greater(t, out.MaxProcessedTS, float64(0), "muted candidate still counts as processed")
+	// ts "100.1" → ts_unix 100 (generated column truncates at the dot).
+	assert.Equal(t, float64(100), out.MaxProcessedTS,
+		"a muted-only cycle must still advance the watermark over the muted candidate")
+}
+
+func TestTriage_MutedBeyondFailedChunkDoesNotAdvanceWatermark(t *testing.T) {
+	// INBOX-09: a muted candidate's ts may advance MaxProcessedTS only if
+	// every unmuted stream candidate with a smaller ts was successfully
+	// triaged. Here the unmuted ts=10 chunk fails, so the muted ts=20 must
+	// not push the watermark past the lost message.
+	d, p, gen := newTriagePipeline(t)
+	insertChannel(t, d, "C1", "public")
+	insertChannel(t, d, "C9", "public")
+	insertMessage(t, d, "C1", "10.0", "U2", "important unmuted message")
+	insertMessage(t, d, "C9", "20.0", "U2", "noise in muted channel")
+	require.NoError(t, d.UpsertLearnedRule(db.InboxLearnedRule{RuleType: "source_mute", ScopeKey: "channel:C9", Weight: -1.0, Source: "user_rule"}))
+	gen.responses = []string{""} // the single chunk (containing ts=10) errors
+
+	out, err := p.runTriage(context.Background(), "U1", nil)
+	require.Error(t, err)
+	assert.Equal(t, float64(0), out.MaxProcessedTS,
+		"muted ts=20 must not advance the watermark past the untriaged ts=10 message")
 }
 
 func TestTriage_ChunkingAndPartialFailure(t *testing.T) {
