@@ -63,7 +63,7 @@ final class TransportStoreTests: XCTestCase {
     func testClearPendingRemovesOnlyNamed() throws {
         let store = try TransportStore.inMemory()
         try store.enqueueSave([record("target-1"), record("target-2")])
-        try store.clearPending(saves: [(name: "target-1", zone: .data)], deletes: [])
+        try store.clearPending(saves: [(name: "target-1", zone: .data, sentModifiedAt: .distantFuture)], deletes: [])
         XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["target-2"])
     }
 
@@ -71,10 +71,26 @@ final class TransportStoreTests: XCTestCase {
         let store = try TransportStore.inMemory()
         try store.enqueueSave([record("shared-name", zone: .data)])
         try store.enqueueSave([record("shared-name", zone: .relay)])
-        try store.clearPending(saves: [(name: "shared-name", zone: .data)], deletes: [])
+        try store.clearPending(saves: [(name: "shared-name", zone: .data, sentModifiedAt: .distantFuture)], deletes: [])
         let batch = try store.pendingBatch(limit: 10)
         XCTAssertEqual(batch.saves.map(\.recordName), ["shared-name"])
         XCTAssertEqual(batch.saves[0].zone, .relay)
+    }
+
+    func testClearPendingKeepsNewerReEnqueuedSave() throws {
+        let store = try TransportStore.inMemory()
+        let v1Stamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let v2Stamp = Date(timeIntervalSince1970: 1_700_000_100)
+        let v1 = CloudRecord(recordName: "target-1", zone: .data, kind: "target", modifiedAt: v1Stamp, payload: Data("{\"v\":1}".utf8))
+        try store.enqueueSave([v1])
+        // v2 lands while v1 is in flight
+        let v2 = CloudRecord(recordName: "target-1", zone: .data, kind: "target", modifiedAt: v2Stamp, payload: Data("{\"v\":2}".utf8))
+        try store.enqueueSave([v2])
+        // v1's send completes
+        try store.clearPending(saves: [(name: "target-1", zone: .data, sentModifiedAt: v1Stamp)], deletes: [])
+        let batch = try store.pendingBatch(limit: 10)
+        XCTAssertEqual(batch.saves.map(\.recordName), ["target-1"], "newer pending save must survive the clear")
+        XCTAssertEqual(batch.saves[0].payload, Data("{\"v\":2}".utf8))
     }
 
     func testInterleavedZoneWritesDoNotSkipOrDuplicate() throws {

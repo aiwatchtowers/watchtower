@@ -126,14 +126,22 @@ public final class TransportStore: Sendable {
     }
 
     public func clearPending(
-        saves: [(name: String, zone: CloudZoneID)],
+        saves: [(name: String, zone: CloudZoneID, sentModifiedAt: Date)],
         deletes: [(name: String, zone: CloudZoneID)]
     ) throws {
         try queue.write { db in
             for entry in saves {
+                // Only clear if the pending row hasn't been superseded by a
+                // newer local edit (modified_at > sentModifiedAt means a re-enqueue
+                // already landed while this batch was in flight).
                 try db.execute(
-                    sql: "DELETE FROM pending WHERE record_name = ? AND zone = ? AND deleted = 0",
-                    arguments: [entry.name, entry.zone.rawValue]
+                    sql: """
+                        DELETE FROM pending
+                        WHERE record_name = ? AND zone = ? AND deleted = 0
+                          AND modified_at <= ?
+                        """,
+                    arguments: [entry.name, entry.zone.rawValue,
+                                entry.sentModifiedAt.timeIntervalSince1970]
                 )
             }
             for entry in deletes {

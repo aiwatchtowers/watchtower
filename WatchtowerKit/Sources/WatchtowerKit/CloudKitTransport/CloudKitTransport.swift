@@ -59,7 +59,7 @@ public actor CloudKitTransport: CloudSyncTransport {
     /// degrade to store-only operation (records wait in the pending queue).
     public func start() async {
         guard engine == nil else { return }
-        guard Self.hasCloudKitEntitlement() else {
+        guard Self.hasCloudKitEntitlement(containerID: containerID) else {
             lastError = "missing iCloud entitlement (unsigned dev build?)"
             return
         }
@@ -104,7 +104,7 @@ public actor CloudKitTransport: CloudSyncTransport {
 
     public func availability() async -> CloudAvailability {
         if let lastError { return .unavailable(lastError) }
-        guard Self.hasCloudKitEntitlement() else {
+        guard Self.hasCloudKitEntitlement(containerID: containerID) else {
             return .unavailable("missing iCloud entitlement (unsigned dev build?)")
         }
         let container = self.container ?? CKContainer(identifier: containerID)
@@ -180,6 +180,7 @@ public actor CloudKitTransport: CloudSyncTransport {
         do {
             let data = try JSONEncoder().encode(serialization)
             try store.saveEngineState(data)
+            lastError = nil
         } catch {
             recordError(error)
         }
@@ -197,16 +198,21 @@ public actor CloudKitTransport: CloudSyncTransport {
             for (zone, names) in deletedByZone {
                 try store.bufferDeleted(recordNames: names, zone: zone)
             }
+            lastError = nil
         } catch {
             recordError(error)
         }
     }
 
     private func clearSentChanges(_ event: CKSyncEngine.Event.SentRecordZoneChanges) {
-        var saves: [(name: String, zone: CloudZoneID)] = []
+        var saves: [(name: String, zone: CloudZoneID, sentModifiedAt: Date)] = []
         for record in event.savedRecords {
             guard let zone = CloudZoneID(rawValue: record.recordID.zoneID.zoneName) else { continue }
-            saves.append((name: record.recordID.recordName, zone: zone))
+            // Use the record's own modifiedAt as the stamp so that a newer
+            // local re-enqueue (modified_at > stamp) is not silently lost.
+            // Missing field → .distantFuture → clears unconditionally (old behaviour).
+            let stamp = (record["modifiedAt"] as? Date) ?? .distantFuture
+            saves.append((name: record.recordID.recordName, zone: zone, sentModifiedAt: stamp))
         }
         var deletes: [(name: String, zone: CloudZoneID)] = []
         for recordID in event.deletedRecordIDs {
@@ -222,6 +228,9 @@ public actor CloudKitTransport: CloudSyncTransport {
         }
         do {
             try store.clearPending(saves: saves, deletes: deletes)
+            lastError = nil
+            // re-nudge: pendingBatch is capped at 200; without this a large offline backlog stalls
+            nudgeEngine()
         } catch {
             recordError(error)
         }
@@ -237,12 +246,21 @@ public actor CloudKitTransport: CloudSyncTransport {
 
     /// On macOS an unsigned dev build has no iCloud entitlement, and CloudKit
     /// raises an uncatchable ObjC exception when touched without one — so we
-    /// probe the entitlement first and degrade instead. iOS builds always
-    /// carry entitlements from the provisioning profile.
-    private static func hasCloudKitEntitlement() -> Bool {
+    /// probe the entitlement first and degrade instead. The uncatchable
+    /// exception fires specifically when the container ID is absent from
+    /// `com.apple.developer.icloud-container-identifiers`, so we check that
+    /// list rather than the presence of `icloud-services`.
+    /// iOS builds always carry entitlements from the provisioning profile.
+    private static func hasCloudKitEntitlement(containerID: String) -> Bool {
         #if os(macOS)
         guard let task = SecTaskCreateFromSelf(nil) else { return false }
-        return SecTaskCopyValueForEntitlement(task, "com.apple.developer.icloud-services" as CFString, nil) != nil
+        guard let value = SecTaskCopyValueForEntitlement(
+            task,
+            "com.apple.developer.icloud-container-identifiers" as CFString,
+            nil
+        ) else { return false }
+        guard let list = value as? [String] else { return false }
+        return list.contains(containerID)
         #else
         return true
         #endif
