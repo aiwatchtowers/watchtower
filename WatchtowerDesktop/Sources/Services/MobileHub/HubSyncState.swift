@@ -1,0 +1,77 @@
+import Foundation
+import GRDB
+
+/// Persists per-record payload hashes so the hub can diff local DB rows
+/// against what was last pushed to CloudKit without re-reading the full payload.
+/// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
+final class HubSyncState: Sendable {
+    private let queue: DatabaseQueue
+
+    init(path: String) throws {
+        queue = try DatabaseQueue(path: path)
+        try createSchema()
+    }
+
+    private init(queue: DatabaseQueue) throws {
+        self.queue = queue
+        try createSchema()
+    }
+
+    static func inMemory() throws -> HubSyncState {
+        try HubSyncState(queue: DatabaseQueue())
+    }
+
+    private func createSchema() throws {
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS slice_state (
+                    record_name TEXT PRIMARY KEY,
+                    payload_hash TEXT NOT NULL,
+                    pushed_at REAL NOT NULL DEFAULT 0
+                );
+                """)
+        }
+    }
+
+    // MARK: - Hash queries
+
+    /// Returns a recordName → payloadHash map for all records of the given kind.
+    /// Filtered by `record_name LIKE '<kind.rawValue>-%'`.
+    func hashes(forKind kind: SliceKind) throws -> [String: String] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT record_name, payload_hash FROM slice_state WHERE record_name LIKE ?",
+                arguments: ["\(kind.rawValue)-%"]
+            )
+            return Dictionary(uniqueKeysWithValues: rows.map { ($0["record_name"] as String, $0["payload_hash"] as String) })
+        }
+    }
+
+    func setHash(_ hash: String, for recordName: String) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO slice_state (record_name, payload_hash, pushed_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(record_name) DO UPDATE SET
+                        payload_hash = excluded.payload_hash,
+                        pushed_at = excluded.pushed_at
+                    """,
+                arguments: [recordName, hash, Date().timeIntervalSince1970]
+            )
+        }
+    }
+
+    func removeHashes(_ recordNames: [String]) throws {
+        guard !recordNames.isEmpty else { return }
+        try queue.write { db in
+            for name in recordNames {
+                try db.execute(
+                    sql: "DELETE FROM slice_state WHERE record_name = ?",
+                    arguments: [name]
+                )
+            }
+        }
+    }
+}
