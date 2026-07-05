@@ -10,29 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// openTestDB opens an isolated in-memory database for a test.
-//
-// Fast path (when TestMain has pre-built the schema template): clones the
-// migrated schema from the shared named in-memory template in ~milliseconds,
-// bypassing the full goose.Up() run. Fallback (when called from a package
-// that does not have TestMain): falls back to Open(":memory:") as before.
-func openTestDB(t *testing.T) *DB {
-	t.Helper()
-	if templateReady.Load() == 1 {
-		sqlDB, err := cloneTemplateDB()
-		require.NoError(t, err, "cloneTemplateDB")
-		// Skip WAL/busy_timeout pragmas for in-memory test DBs; only
-		// foreign_keys matters for correctness (set inside cloneTemplateDB).
-		db := &DB{DB: sqlDB}
-		t.Cleanup(func() { _ = db.Close() })
-		return db
-	}
-	// Fallback for packages without TestMain (e.g. cross-package test helpers).
-	db, err := Open(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
 
 func TestOpenMemory(t *testing.T) {
 	db, err := Open(":memory:")

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,10 @@ import (
 func TestMain(m *testing.M) {
 	// Allow sub-second poll intervals in tests for fast execution.
 	minPollInterval = 1 * time.Millisecond
+	if err := db.InitTestTemplate(); err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
+		os.Exit(1)
+	}
 	os.Exit(m.Run())
 }
 

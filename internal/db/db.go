@@ -16,6 +16,11 @@ type DB struct {
 	*sql.DB
 }
 
+// openMemoryHook, when non-nil, is called instead of the normal migration path
+// whenever Open(":memory:") is invoked. Tests set this in TestMain to return a
+// pre-migrated clone and avoid running goose on every test call.
+var openMemoryHook func() (*DB, error)
+
 // Open creates directories if needed, opens the SQLite database, sets pragmas,
 // and runs migrations. Pass ":memory:" for an in-memory database.
 //
@@ -24,6 +29,9 @@ type DB struct {
 // callers must invoke RunSchemaUpgrade(dbPath) once before Open() — see
 // cmd/root.go for the centralized pre-flight.
 func Open(dbPath string) (*DB, error) {
+	if dbPath == ":memory:" && openMemoryHook != nil {
+		return openMemoryHook()
+	}
 	if dbPath != ":memory:" {
 		dir := filepath.Dir(dbPath)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
