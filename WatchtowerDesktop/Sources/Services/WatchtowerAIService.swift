@@ -119,6 +119,7 @@ final class WatchtowerAIService: AIServiceProtocol, Sendable {
         return args
     }
 
+    // swiftlint:disable:next function_parameter_count
     private func run(
         prompt: String,
         systemPrompt: String?,

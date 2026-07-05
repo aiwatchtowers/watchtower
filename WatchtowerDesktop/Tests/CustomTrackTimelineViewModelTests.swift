@@ -213,7 +213,11 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
 
         await timeline.scanHistory(since: nil, label: "all history")
 
-        XCTAssertEqual(timeline.events.map(\.summary), ["backfilled update"], "the timeline must reflect the CLI's write without an active observation")
+        XCTAssertEqual(
+            timeline.events.map(\.summary),
+            ["backfilled update"],
+            "the timeline must reflect the CLI's write without an active observation"
+        )
     }
 
     /// dismissAction records the event's action_status without touching any

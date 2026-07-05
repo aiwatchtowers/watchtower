@@ -138,7 +138,8 @@ final class UpdateService {
         // own Team ID (ad-hoc/dev build), refuse to install rather than
         // falling back to a signature check with no identity pinning.
         guard let teamID = Self.currentTeamIdentifier() else {
-            state = .error("Update aborted: could not determine the running app's Team ID (ad-hoc/dev build). Refusing to install an update that can't be verified against a known signer.")
+            state = .error("Update aborted: could not determine the running app's Team ID (ad-hoc/dev build). "
+                + "Refusing to install an update that can't be verified against a known signer.")
             return
         }
 
