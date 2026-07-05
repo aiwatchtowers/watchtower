@@ -49,6 +49,9 @@ public struct CloudChangeBatch: Equatable {
 /// against InMemoryCloudTransport; only Plan 2's CKSyncEngine adapter touches CloudKit.
 public protocol CloudSyncTransport {
     func save(_ records: [CloudRecord]) async throws
+    /// Deleting is idempotent: deleting a recordName that was never saved
+    /// (or is already deleted) succeeds silently. CloudKit adapters must
+    /// swallow the server's unknown-item error to honor this.
     func delete(recordNames: [String], in zone: CloudZoneID) async throws
     /// `changed` and `deletedRecordNames` are in first-seen event order.
     /// Consumers should not rely on stricter ordering — the real CloudKit
