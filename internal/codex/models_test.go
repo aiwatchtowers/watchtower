@@ -12,7 +12,6 @@ func TestModelForSource(t *testing.T) {
 		want   string
 	}{
 		{digest.SourceLight, ModelLightweight},
-		{"inbox.prioritize", ModelLightweight},
 		{"inbox.triage", ModelLightweight},
 		{"digest.period", ModelLightweight},
 		{"digest.channel_batch", ModelLightweight},

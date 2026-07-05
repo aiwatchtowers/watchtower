@@ -25,7 +25,6 @@ const (
 	PeopleReduce         = "people.reduce"
 	PeopleTeam           = "people.team"
 	BriefingDaily        = "briefing.daily"
-	InboxPrioritize      = "inbox.prioritize"
 	InboxTriage          = "inbox.triage"
 	InboxCard            = "inbox.card"
 	DigestChannelBatch   = "digest.channel_batch"

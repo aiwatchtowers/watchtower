@@ -548,7 +548,6 @@ type InboxItem struct {
 	CreatedAt       string
 	UpdatedAt       string
 	ItemClass       string // "actionable" or "ambient"
-	Pinned          bool
 	ArchivedAt      string // empty if not archived
 	ArchiveReason   string
 	WhyMatters      string

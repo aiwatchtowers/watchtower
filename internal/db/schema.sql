@@ -470,7 +470,6 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     item_class      TEXT NOT NULL DEFAULT 'actionable' CHECK(item_class IN ('actionable','ambient')),
-    pinned          INTEGER NOT NULL DEFAULT 0,
     archived_at     TEXT,
     archive_reason  TEXT DEFAULT '' CHECK(archive_reason IN ('','resolved','seen_expired','stale','dismissed')),
     why_matters     TEXT NOT NULL DEFAULT '',
@@ -486,7 +485,6 @@ CREATE INDEX IF NOT EXISTS idx_inbox_items_updated ON inbox_items(updated_at DES
 CREATE INDEX IF NOT EXISTS idx_inbox_items_sender ON inbox_items(sender_user_id);
 CREATE INDEX IF NOT EXISTS idx_inbox_items_snooze ON inbox_items(snooze_until);
 CREATE INDEX IF NOT EXISTS idx_inbox_items_class_status ON inbox_items(item_class, status);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_pinned ON inbox_items(pinned) WHERE pinned = 1;
 CREATE INDEX IF NOT EXISTS idx_inbox_items_archived ON inbox_items(archived_at);
 
 -- Inbox learned rules — adaptive signal weights from implicit/explicit feedback

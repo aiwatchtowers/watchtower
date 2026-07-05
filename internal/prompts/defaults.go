@@ -17,7 +17,6 @@ var Defaults = map[string]string{
 	PeopleReduce:         defaultPeopleReduce,
 	PeopleTeam:           defaultPeopleTeam,
 	BriefingDaily:        defaultBriefingDaily,
-	InboxPrioritize:      defaultInboxPrioritize,
 	InboxTriage:          defaultInboxTriage,
 	InboxCard:            defaultInboxCard,
 	DigestChannelBatch:   defaultDigestChannelBatch,
@@ -52,7 +51,6 @@ var AllIDs = []string{
 	PeopleTeam,
 	PeopleBatch,
 	BriefingDaily,
-	InboxPrioritize,
 	InboxTriage,
 	InboxCard,
 	TasksGenerate,
@@ -85,7 +83,6 @@ var DefaultVersions = map[string]int{
 	PeopleReduce:       1,
 	PeopleTeam:         1,
 	BriefingDaily:      5, // v5: jira integration
-	InboxPrioritize:    4, // v4: mandatory language directive
 	InboxTriage:        1, // v1: initial triage template
 	InboxCard:          1, // v1: initial card template
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
@@ -120,7 +117,6 @@ var Descriptions = map[string]string{
 	PeopleReduce:         "People card — unified profile from signals",
 	PeopleTeam:           "Team summary — cross-user attention & tips",
 	BriefingDaily:        "Daily briefing — personalized morning summary",
-	InboxPrioritize:      "Inbox prioritization — AI priority + auto-resolve for inbox items",
 	InboxTriage:          "Inbox: triage scan of new activity",
 	InboxCard:            "Inbox: secretary card for a surfaced item",
 	DigestChannelBatch:   "Channel batch digest — multi-channel analysis for low-activity channels",
@@ -688,45 +684,6 @@ Rules:
 %s
 
 === JIRA CONTEXT ===
-%s`
-
-const defaultInboxPrioritize = `You are prioritizing Slack messages that may need the user's response.
-
-%s
-
-User role: %s
-
-You will receive two lists:
-1. NEW PENDING ITEMS — messages that @mention the user or are DMs from others. Assign a priority and reason.
-2. REPLIED ITEMS — messages where the user has already posted a reply. Determine if the matter is resolved.
-
-Return ONLY a JSON object (no markdown fences, no explanation):
-
-{
-  "items": [
-    {"id": 123, "priority": "high|medium|low", "reason": "Why this priority", "resolved": false},
-    {"id": 456, "priority": "", "reason": "User responded and issue is addressed", "resolved": true}
-  ]
-}
-
-Rules:
-- For NEW PENDING: assign priority based on urgency, sender role, and context.
-  - high: direct request for action, blocker, manager asking, production issue
-  - medium: question, review request, normal work discussion
-  - low: FYI, informational, bot notification, no action needed
-- Consider message age: older unresolved items may need higher priority.
-- Consider sender role: manager/lead requests are typically higher priority than peer FYIs.
-- "thread_reply" items are replies to the user's own messages — prioritize if they ask questions or need decisions.
-- "reaction" items mean someone flagged the user's message with an attention emoji — usually needs a look.
-- Closing signals ("thanks", "thank you", "got it", "ok", "спасибо", "понял", etc.) where the user
-  already replied and the conversation appears concluded: set resolved=true, priority="",
-  reason="Closing signal — no reply needed".
-- Short acknowledgment messages at the end of a resolved conversation should be resolved=true.
-- For REPLIED items: set resolved=true if the user's reply addressed the question/request. Set resolved=false if the conversation is still ongoing.
-- Include the original item ID in each result.
-- Be concise in reasons (1 sentence max).
-- Return valid JSON only.
-
 %s`
 
 const defaultDigestChannelBatch = `You are analyzing Slack messages from multiple channels for the period %s to %s.
