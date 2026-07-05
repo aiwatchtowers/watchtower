@@ -118,16 +118,23 @@ final class SlicePublisherTests: XCTestCase {
     // Exercises the two calendar_events-specific paths in publishOnce:
     //   1. rowID(.string) — calendar_events.id is TEXT PRIMARY KEY
     //   2. datetime(start_time) window — only events within −1d..+14d from now
+    // Note: insertCalendarEvent's DEFAULT startTime is in 2023 — outside the
+    // publish window — so events inserted with defaults never sync (pushed == 0);
+    // always pass explicit run-time-relative timestamps here.
     func testCalendarEventTextIdAndDatetimeWindow() async throws {
         let inWindowID  = "cal_future_001"
         let outWindowID = "cal_past_030"
 
-        // "a few hours in the future" — inside the −1d..+14d window
-        let inWindowStart  = "2026-07-06T14:00:00Z"
-        let inWindowEnd    = "2026-07-06T15:00:00Z"
-        // 30 days in the past — outside the window
-        let outWindowStart = "2026-06-06T14:00:00Z"
-        let outWindowEnd   = "2026-06-06T15:00:00Z"
+        // Computed from Date() so the test never rots against the SQL's live
+        // datetime('now'). ISO8601DateFormatter emits the schema's required
+        // 'T'-separated format with a 'Z' suffix.
+        let iso = ISO8601DateFormatter()
+        // +8h — inside the −1d..+14d window
+        let inWindowStart = iso.string(from: Date().addingTimeInterval(8 * 3600))
+        let inWindowEnd   = iso.string(from: Date().addingTimeInterval(9 * 3600))
+        // −30d — outside the window
+        let outWindowStart = iso.string(from: Date().addingTimeInterval(-30 * 24 * 3600))
+        let outWindowEnd   = iso.string(from: Date().addingTimeInterval(-30 * 24 * 3600 + 3600))
 
         try await dbPool.write { db in
             try TestDatabase.insertCalendarEvent(
