@@ -112,7 +112,7 @@ public struct TargetNextStepAction: Codable, Equatable, Identifiable {
 // MARK: - Target
 
 public struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equatable, Hashable {
-    public static var databaseTableName = "targets"
+    public static let databaseTableName = "targets"
 
     public let id: Int
     public let text: String

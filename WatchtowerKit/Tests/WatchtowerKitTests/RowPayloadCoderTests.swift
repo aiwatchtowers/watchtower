@@ -78,4 +78,15 @@ final class RowPayloadCoderTests: XCTestCase {
         XCTAssertThrowsError(try RowPayloadCoder.row(from: Data("not json".utf8)))
         XCTAssertThrowsError(try RowPayloadCoder.row(from: Data("[1,2,3]".utf8)))
     }
+
+    func testPayloadOutputIsDeterministic() throws {
+        // .sortedKeys makes the payload byte-stable across processes —
+        // Plan 2 hashes payloads for change detection.
+        let row = Row(["zebra": 1, "alpha": "x", "mid": 2.5])
+        let payload = try RowPayloadCoder.payload(from: row)
+        XCTAssertEqual(
+            String(data: payload, encoding: .utf8),
+            #"{"alpha":"x","mid":2.5,"zebra":1}"#
+        )
+    }
 }

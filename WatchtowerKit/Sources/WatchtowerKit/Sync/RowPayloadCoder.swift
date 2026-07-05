@@ -10,7 +10,9 @@ public enum RowPayloadCoder {
         for (column, dbValue) in row {
             dict[column] = JSONValue(dbValue)
         }
-        return try JSONEncoder().encode(dict)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(dict)
     }
 
     /// Column order is not preserved and duplicate column names collapse
