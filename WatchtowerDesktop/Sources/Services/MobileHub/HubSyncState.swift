@@ -41,8 +41,8 @@ final class HubSyncState: Sendable {
         try queue.read { db in
             let rows = try Row.fetchAll(
                 db,
-                sql: "SELECT record_name, payload_hash FROM slice_state WHERE record_name LIKE ?",
-                arguments: ["\(kind.rawValue)-%"]
+                sql: "SELECT record_name, payload_hash FROM slice_state WHERE record_name LIKE ? ESCAPE '\\'",
+                arguments: [kind.rawValue.replacingOccurrences(of: "_", with: "\\_") + "-%"]
             )
             return Dictionary(uniqueKeysWithValues: rows.map { ($0["record_name"] as String, $0["payload_hash"] as String) })
         }

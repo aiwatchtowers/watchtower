@@ -77,4 +77,26 @@ final class SliceDiffTests: XCTestCase {
         XCTAssertEqual(try state.hashes(forKind: .target), [:])
         XCTAssertEqual(try state.hashes(forKind: .inboxItem), ["inbox_item-5": "h2"])
     }
+
+    func testHashesForKindDoesNotTreatUnderscoreAsWildcard() throws {
+        let state = try HubSyncState.inMemory()
+        try state.setHash("h-topic", for: "digest_topic-1")
+        // digest-kind record whose id happens to start with "topic-":
+        try state.setHash("h-digest", for: "digest-topic-1")
+        XCTAssertEqual(try state.hashes(forKind: .digestTopic), ["digest_topic-1": "h-topic"])
+        XCTAssertEqual(try state.hashes(forKind: .digest), ["digest-topic-1": "h-digest"])
+    }
+
+    func testSkippedRowWithKnownHashIsNotDeleted() throws {
+        let bad = Row(["id": 1, "score": Double.infinity])
+        let result = SliceDiff.compute(
+            kind: .target,
+            rows: [(id: "1", row: bad)],
+            knownHashes: ["target-1": "existing-hash"],
+            now: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        XCTAssertEqual(result.skipped, ["target-1"])
+        XCTAssertTrue(result.deletions.isEmpty, "a temporarily unencodable row must not delete the synced record")
+        XCTAssertTrue(result.upserts.isEmpty)
+    }
 }
