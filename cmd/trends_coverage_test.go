@@ -20,7 +20,7 @@ func TestRunTrends_WeeklyWithActionsAndDecisions(t *testing.T) {
 
 	now := float64(time.Now().Unix())
 	_, err = database.UpsertDigest(db.Digest{
-		PeriodFrom:   now - 7*86400,
+		PeriodFrom:   now - 6*86400, // 6 days ago — safely within the 7-day window queried by trendsCmd
 		PeriodTo:     now,
 		Type:         "weekly",
 		Summary:      "Productive week with multiple decisions",
