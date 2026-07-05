@@ -29,6 +29,14 @@ final class HubSyncState: Sendable {
                     payload_hash TEXT NOT NULL,
                     pushed_at REAL NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS hub_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS relay_processed (
+                    record_name TEXT PRIMARY KEY,
+                    processed_at REAL NOT NULL DEFAULT 0
+                );
                 """)
         }
     }
@@ -72,6 +80,47 @@ final class HubSyncState: Sendable {
                     arguments: [name]
                 )
             }
+        }
+    }
+
+    // MARK: - Hub meta (relay change token, …)
+
+    func metaValue(forKey key: String) throws -> String? {
+        try queue.read { db in
+            try String.fetchOne(db, sql: "SELECT value FROM hub_meta WHERE key = ?", arguments: [key])
+        }
+    }
+
+    func setMetaValue(_ value: String, forKey key: String) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO hub_meta (key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                arguments: [key, value]
+            )
+        }
+    }
+
+    // MARK: - Relay processed set (duplicate-delivery idempotency)
+
+    func isRelayProcessed(_ recordName: String) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM relay_processed WHERE record_name = ?)",
+                arguments: [recordName]
+            ) ?? false
+        }
+    }
+
+    func markRelayProcessed(_ recordName: String, at date: Date) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO relay_processed (record_name, processed_at) VALUES (?, ?)",
+                arguments: [recordName, date.timeIntervalSince1970]
+            )
         }
     }
 }
