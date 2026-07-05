@@ -666,6 +666,45 @@ func TestInbox09_WatermarkFrozenOnTriageError(t *testing.T) {
 		"triage failure with no progress must leave the inbox watermark untouched")
 }
 
+// TestInbox09_DetectorErrorFreezesEvenWhenTriageCapped guards INBOX-09: a
+// detector error must ALWAYS freeze the watermark, even when the capped
+// stream triage succeeds. Detectors and triage scan the same ts window, so
+// advancing over triage's progress would still permanently skip the
+// mentions/DMs the failed detector never saw.
+func TestInbox09_DetectorErrorFreezesEvenWhenTriageCapped(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	const frozen = 50.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+
+	// Stream candidates above the watermark, more than the triage cap.
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "101.0", "U2", "first")
+	insertMessage(t, d, "C1", "102.0", "U2", "second")
+	insertMessage(t, d, "C1", "103.0", "U2", "third — beyond the cap")
+
+	// Break one detector: DetectJira queries jira_issues, so dropping it makes
+	// the detector pass return an error while triage still runs and caps.
+	_, err := d.Exec(`DROP TABLE jira_issues`)
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	cfg.Inbox.MaxTriageMessages = 2 // triage caps at ts=102 and succeeds
+	gen := &seqGenerator{responses: []string{`{"verdicts":[]}`}}
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err, "a detector failure alone must not fail the whole run")
+	require.Equal(t, 1, gen.calls, "triage must still have run (and capped) despite the detector error")
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts,
+		"a detector error must freeze the watermark even when the capped triage succeeded")
+}
+
 // TestInbox09_CappedTriageAdvancesWatermarkPartially guards INBOX-09: when
 // the stream scan hits its per-cycle cap (MaxTriageMessages) but triage
 // otherwise succeeds, the watermark advances only over what was actually

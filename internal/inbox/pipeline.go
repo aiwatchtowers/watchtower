@@ -316,17 +316,21 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09. A
 	// detector or triage failure means part of the window was never scanned;
 	// advancing the watermark past it would silently drop what was missed.
-	// Exceptions: triage may have made real progress before failing, or hit
-	// its per-cycle cap while otherwise succeeding — advance only over what
-	// was actually processed, and never below lastTS.
+	//
+	// A detector error ALWAYS freezes the watermark, even when triage capped
+	// or made partial progress: detectors and triage scan the same ts window,
+	// so advancing over triage's progress would still skip the mentions/DMs
+	// the failed detector never saw. Only when detection is clean may triage
+	// outcomes move the watermark — over exactly what was processed (capped
+	// scan, or the chunks completed before a triage failure), never below
+	// lastTS.
 	switch {
-	case detectErr != nil || triageErr != nil:
-		switch {
-		case triageErr == nil && outcome.Capped:
+	case detectErr != nil:
+		p.logger.Printf("inbox: detector/triage error, leaving watermark unchanged to avoid losing the skipped window (detectErr=%v triageErr=%v)", detectErr, triageErr)
+	case triageErr != nil:
+		if outcome.MaxProcessedTS > lastTS {
 			p.advanceWatermark(outcome.MaxProcessedTS, lastTS)
-		case triageErr != nil && outcome.MaxProcessedTS > lastTS:
-			p.advanceWatermark(outcome.MaxProcessedTS, lastTS)
-		default:
+		} else {
 			p.logger.Printf("inbox: detector/triage error, leaving watermark unchanged to avoid losing the skipped window (detectErr=%v triageErr=%v)", detectErr, triageErr)
 		}
 	case outcome.Capped:
