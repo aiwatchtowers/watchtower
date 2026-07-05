@@ -3,11 +3,11 @@ import GRDB
 
 // MARK: - Track v2 Supporting Types
 
-struct TrackParticipant: Codable, Identifiable, Equatable {
-    let id = UUID()
-    let name: String
-    let userID: String?
-    let stance: String?
+public struct TrackParticipant: Codable, Identifiable, Equatable {
+    public let id = UUID()
+    public let name: String
+    public let userID: String?
+    public let stance: String?
 
     enum CodingKeys: String, CodingKey {
         case name
@@ -15,19 +15,19 @@ struct TrackParticipant: Codable, Identifiable, Equatable {
         case stance
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.name == rhs.name && lhs.userID == rhs.userID && lhs.stance == rhs.stance
     }
 }
 
-struct TrackSourceRef: Codable, Identifiable, Equatable {
-    let ts: String
-    let channelID: String?
-    let threadTS: String?
-    let author: String
-    let text: String
+public struct TrackSourceRef: Codable, Identifiable, Equatable {
+    public let ts: String
+    public let channelID: String?
+    public let threadTS: String?
+    public let author: String
+    public let text: String
 
-    var id: String { "\(ts)-\(author)" }
+    public var id: String { "\(ts)-\(author)" }
 
     enum CodingKeys: String, CodingKey {
         case ts
@@ -38,19 +38,19 @@ struct TrackSourceRef: Codable, Identifiable, Equatable {
     }
 }
 
-struct TrackDecisionOption: Codable, Identifiable, Equatable {
-    let option: String
-    let supporters: [String]
-    let pros: String
-    let cons: String
+public struct TrackDecisionOption: Codable, Identifiable, Equatable {
+    public let option: String
+    public let supporters: [String]
+    public let pros: String
+    public let cons: String
 
-    var id: String { option }
+    public var id: String { option }
 
     enum CodingKeys: String, CodingKey {
         case option, supporters, pros, cons
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         option = try container.decodeIfPresent(String.self, forKey: .option) ?? ""
         supporters = try container.decodeIfPresent([String].self, forKey: .supporters) ?? []
@@ -59,56 +59,56 @@ struct TrackDecisionOption: Codable, Identifiable, Equatable {
     }
 }
 
-struct TrackSubItem: Codable, Identifiable, Equatable {
-    let text: String
-    var status: String // "open" or "done"
+public struct TrackSubItem: Codable, Identifiable, Equatable {
+    public let text: String
+    public var status: String // "open" or "done"
 
-    var id: String { text }
-    var isDone: Bool { status == "done" }
+    public var id: String { text }
+    public var isDone: Bool { status == "done" }
 }
 
 // MARK: - Track
 
-struct Track: FetchableRecord, Identifiable, Equatable {
-    let id: Int
-    let assigneeUserID: String
-    let text: String
-    let context: String
-    let category: String
-    let ownership: String
-    let ballOn: String
-    let ownerUserID: String
-    let requesterName: String
-    let requesterUserID: String
-    let blocking: String
-    let decisionSummary: String
-    let decisionOptions: String
-    let subItems: String
-    let participants: String
-    let sourceRefs: String
-    let tags: String
-    let channelIDs: String
-    let relatedDigestIDs: String
-    let priority: String
-    let dueDate: Double?
-    let fingerprint: String
-    let readAt: String?
-    let hasUpdates: Bool
-    let dismissedAt: String
-    let model: String
-    let inputTokens: Int
-    let outputTokens: Int
-    let costUSD: Double
-    let promptVersion: Int
-    let createdAt: String
-    let updatedAt: String
-    let origin: String
-    let instruction: String
-    let enabled: Bool
-    let lastRunAt: String
-    let linkedTargetID: Int?
+public struct Track: FetchableRecord, Identifiable, Equatable {
+    public let id: Int
+    public let assigneeUserID: String
+    public let text: String
+    public let context: String
+    public let category: String
+    public let ownership: String
+    public let ballOn: String
+    public let ownerUserID: String
+    public let requesterName: String
+    public let requesterUserID: String
+    public let blocking: String
+    public let decisionSummary: String
+    public let decisionOptions: String
+    public let subItems: String
+    public let participants: String
+    public let sourceRefs: String
+    public let tags: String
+    public let channelIDs: String
+    public let relatedDigestIDs: String
+    public let priority: String
+    public let dueDate: Double?
+    public let fingerprint: String
+    public let readAt: String?
+    public let hasUpdates: Bool
+    public let dismissedAt: String
+    public let model: String
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let costUSD: Double
+    public let promptVersion: Int
+    public let createdAt: String
+    public let updatedAt: String
+    public let origin: String
+    public let instruction: String
+    public let enabled: Bool
+    public let lastRunAt: String
+    public let linkedTargetID: Int?
 
-    init(row: Row) {
+    public init(row: Row) {
         id = row["id"]
         assigneeUserID = row["assignee_user_id"] ?? ""
         text = row["text"] ?? ""
@@ -150,23 +150,23 @@ struct Track: FetchableRecord, Identifiable, Equatable {
 
     // MARK: - Ownership predicates
 
-    var isMine: Bool { ownership == "mine" }
-    var isDelegated: Bool { ownership == "delegated" }
-    var isWatching: Bool { ownership == "watching" }
+    public var isMine: Bool { ownership == "mine" }
+    public var isDelegated: Bool { ownership == "delegated" }
+    public var isWatching: Bool { ownership == "watching" }
 
     // MARK: - Origin
 
-    var isCustom: Bool { origin == "custom" }
+    public var isCustom: Bool { origin == "custom" }
 
     // MARK: - Read predicates
 
-    var isRead: Bool { readAt != nil && !hasUpdates }
-    var isUnread: Bool { !isRead }
-    var isDismissed: Bool { !dismissedAt.isEmpty }
+    public var isRead: Bool { readAt != nil && !hasUpdates }
+    public var isUnread: Bool { !isRead }
+    public var isDismissed: Bool { !dismissedAt.isEmpty }
 
     // MARK: - Labels
 
-    var categoryLabel: String {
+    public var categoryLabel: String {
         switch category {
         case "task": return "Task"
         case "decision": return "Decision"
@@ -179,7 +179,7 @@ struct Track: FetchableRecord, Identifiable, Equatable {
         }
     }
 
-    var ownershipLabel: String {
+    public var ownershipLabel: String {
         switch ownership {
         case "mine": return "Mine"
         case "delegated": return "Delegated"
@@ -202,17 +202,17 @@ struct Track: FetchableRecord, Identifiable, Equatable {
         return fmt
     }()
 
-    var createdDate: Date {
+    public var createdDate: Date {
         if let date = Self.iso8601WithFractional.date(from: createdAt) { return date }
         return Self.iso8601Standard.date(from: createdAt) ?? Date()
     }
 
-    var updatedDate: Date {
+    public var updatedDate: Date {
         if let date = Self.iso8601WithFractional.date(from: updatedAt) { return date }
         return Self.iso8601Standard.date(from: updatedAt) ?? Date()
     }
 
-    var updatedAgo: String {
+    public var updatedAgo: String {
         let interval = Date().timeIntervalSince(updatedDate)
         if interval < 60 { return "just now" }
         if interval < 3600 { return "\(Int(interval / 60))m ago" }
@@ -221,7 +221,7 @@ struct Track: FetchableRecord, Identifiable, Equatable {
         return days == 1 ? "1d ago" : "\(days)d ago"
     }
 
-    var dueDateFormatted: String? {
+    public var dueDateFormatted: String? {
         guard let dueDate else { return nil }
         let date = Date(timeIntervalSince1970: dueDate)
         let formatter = DateFormatter()
@@ -230,57 +230,57 @@ struct Track: FetchableRecord, Identifiable, Equatable {
         return formatter.string(from: date)
     }
 
-    var isOverdue: Bool {
+    public var isOverdue: Bool {
         guard let dueDate else { return false }
         return Date(timeIntervalSince1970: dueDate) < Date()
     }
 
     // MARK: - JSON decoders
 
-    var decodedParticipants: [TrackParticipant] {
+    public var decodedParticipants: [TrackParticipant] {
         guard !participants.isEmpty, participants != "[]",
               let data = participants.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([TrackParticipant].self, from: data)) ?? []
     }
 
-    var decodedSourceRefs: [TrackSourceRef] {
+    public var decodedSourceRefs: [TrackSourceRef] {
         guard !sourceRefs.isEmpty, sourceRefs != "[]",
               let data = sourceRefs.data(using: .utf8) else { return [] }
         let refs = (try? JSONDecoder().decode([TrackSourceRef].self, from: data)) ?? []
         return refs.filter { !$0.ts.isEmpty }
     }
 
-    var decodedTags: [String] {
+    public var decodedTags: [String] {
         guard !tags.isEmpty, tags != "[]",
               let data = tags.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([String].self, from: data)) ?? []
     }
 
-    var decodedChannelIDs: [String] {
+    public var decodedChannelIDs: [String] {
         guard !channelIDs.isEmpty, channelIDs != "[]",
               let data = channelIDs.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([String].self, from: data)) ?? []
     }
 
-    var decodedRelatedDigestIDs: [Int] {
+    public var decodedRelatedDigestIDs: [Int] {
         guard !relatedDigestIDs.isEmpty, relatedDigestIDs != "[]",
               let data = relatedDigestIDs.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([Int].self, from: data)) ?? []
     }
 
-    var decodedDecisionOptions: [TrackDecisionOption] {
+    public var decodedDecisionOptions: [TrackDecisionOption] {
         guard !decisionOptions.isEmpty, decisionOptions != "[]",
               let data = decisionOptions.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([TrackDecisionOption].self, from: data)) ?? []
     }
 
-    var decodedSubItems: [TrackSubItem] {
+    public var decodedSubItems: [TrackSubItem] {
         guard !subItems.isEmpty, subItems != "[]",
               let data = subItems.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([TrackSubItem].self, from: data)) ?? []
     }
 
-    var subItemsProgress: (done: Int, total: Int) {
+    public var subItemsProgress: (done: Int, total: Int) {
         let items = decodedSubItems
         let done = items.filter(\.isDone).count
         return (done, items.count)
@@ -288,7 +288,7 @@ struct Track: FetchableRecord, Identifiable, Equatable {
 
     // MARK: - Priority helpers
 
-    var priorityOrder: Int {
+    public var priorityOrder: Int {
         switch priority {
         case "high": return 0
         case "medium": return 1

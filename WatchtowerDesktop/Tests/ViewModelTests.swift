@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+@testable import WatchtowerKit
 
 // MARK: - DashboardViewModel
 

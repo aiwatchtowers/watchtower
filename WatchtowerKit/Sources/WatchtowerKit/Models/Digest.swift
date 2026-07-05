@@ -1,24 +1,24 @@
 import GRDB
 import Foundation
 
-struct Digest: FetchableRecord, Decodable, Identifiable, Equatable {
-    let id: Int
-    let channelID: String
-    let periodFrom: Double
-    let periodTo: Double
-    let type: String
-    let summary: String
-    let topics: String
-    let decisions: String
-    let tracksJSON: String
-    let messageCount: Int
-    let model: String
-    let inputTokens: Int?
-    let outputTokens: Int?
-    let costUSD: Double?
-    let createdAt: String
-    let readAt: String?
-    let runningSummary: String?
+public struct Digest: FetchableRecord, Decodable, Identifiable, Equatable {
+    public let id: Int
+    public let channelID: String
+    public let periodFrom: Double
+    public let periodTo: Double
+    public let type: String
+    public let summary: String
+    public let topics: String
+    public let decisions: String
+    public let tracksJSON: String
+    public let messageCount: Int
+    public let model: String
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let costUSD: Double?
+    public let createdAt: String
+    public let readAt: String?
+    public let runningSummary: String?
 
     enum CodingKeys: String, CodingKey {
         case id, type, summary, topics, decisions, model
@@ -35,27 +35,27 @@ struct Digest: FetchableRecord, Decodable, Identifiable, Equatable {
         case runningSummary = "running_summary"
     }
 
-    var isRead: Bool { readAt != nil }
+    public var isRead: Bool { readAt != nil }
 
     // M3: cache parsed JSON via lazy static decoder
     private static let decoder = JSONDecoder()
 
-    var parsedDecisions: [Decision] {
+    public var parsedDecisions: [Decision] {
         guard let data = decisions.data(using: .utf8) else { return [] }
         return (try? Self.decoder.decode([Decision].self, from: data)) ?? []
     }
 
-    var parsedTracks: [DigestTrack] {
+    public var parsedTracks: [DigestTrack] {
         guard let data = tracksJSON.data(using: .utf8) else { return [] }
         return (try? Self.decoder.decode([DigestTrack].self, from: data)) ?? []
     }
 
-    var parsedTopics: [String] {
+    public var parsedTopics: [String] {
         guard let data = topics.data(using: .utf8) else { return [] }
         return (try? Self.decoder.decode([String].self, from: data)) ?? []
     }
 
-    var parsedRunningSummary: RunningSummary? {
+    public var parsedRunningSummary: RunningSummary? {
         guard let raw = runningSummary, !raw.isEmpty,
               let data = raw.data(using: .utf8) else { return nil }
         return try? Self.decoder.decode(RunningSummary.self, from: data)
