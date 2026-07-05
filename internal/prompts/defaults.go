@@ -18,6 +18,8 @@ var Defaults = map[string]string{
 	PeopleTeam:           defaultPeopleTeam,
 	BriefingDaily:        defaultBriefingDaily,
 	InboxPrioritize:      defaultInboxPrioritize,
+	InboxTriage:          defaultInboxTriage,
+	InboxCard:            defaultInboxCard,
 	DigestChannelBatch:   defaultDigestChannelBatch,
 	TracksExtractBatch:   defaultTracksExtractBatch,
 	PeopleBatch:          defaultPeopleBatch,
@@ -51,6 +53,8 @@ var AllIDs = []string{
 	PeopleBatch,
 	BriefingDaily,
 	InboxPrioritize,
+	InboxTriage,
+	InboxCard,
 	TasksGenerate,
 	TasksUpdate,
 	MeetingPrep,
@@ -82,6 +86,8 @@ var DefaultVersions = map[string]int{
 	PeopleTeam:         1,
 	BriefingDaily:      5, // v5: jira integration
 	InboxPrioritize:    4, // v4: mandatory language directive
+	InboxTriage:        1, // v1: initial triage template
+	InboxCard:          1, // v1: initial card template
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
 	TasksGenerate:      1, // v1: AI task generation with checklist and due date
@@ -115,6 +121,8 @@ var Descriptions = map[string]string{
 	PeopleTeam:           "Team summary — cross-user attention & tips",
 	BriefingDaily:        "Daily briefing — personalized morning summary",
 	InboxPrioritize:      "Inbox prioritization — AI priority + auto-resolve for inbox items",
+	InboxTriage:          "Inbox: triage scan of new activity",
+	InboxCard:            "Inbox: secretary card for a surfaced item",
 	DigestChannelBatch:   "Channel batch digest — multi-channel analysis for low-activity channels",
 	PeopleBatch:          "People batch cards — lightweight cards for low-data users in one AI call",
 	TasksGenerate:        "Task generation — AI-powered task breakdown with checklist, priority, and due date",
@@ -1222,3 +1230,55 @@ Rules:
 - Judge from the title alone. When ambiguous but possibly related, INCLUDE it — stage 2 discards false positives. Only drop titles clearly unrelated.
 - Use the exact kind and id printed in brackets. Do not invent ids.
 - Respect the selection cap stated in the request. An empty {"refs": []} is valid when nothing fits.`
+
+const defaultInboxTriage = `%s
+
+You are the user's chief-of-staff secretary. You read EVERYTHING that happened
+in their Slack/Jira/Calendar since the last scan and decide what deserves their
+attention. Be ruthless: most messages are noise for this specific user.
+
+%s
+
+Classify every candidate below into exactly one tier:
+- "action"    — the user personally must respond or act. Missing it has consequences.
+- "awareness" — the user should know (a decision, an escalation, movement on their
+                projects/people), but nobody is waiting on them.
+- "ignore"    — noise for this user. Bot chatter, FYI they don't care about,
+                threads that don't touch their scope.
+
+Rules:
+- Judge against the brief above: the user's own words outrank everything else.
+- Respect Mutes/Boosts. A muted source needs an extraordinary reason to surface.
+- Never invent candidates. Return a verdict for every key exactly once.
+- Candidates marked [TRIGGER] were detected as direct signals (mention/DM/
+  assignment). You may demote them to "awareness" but NEVER to "ignore".
+- priority: how urgent within its tier ("high"|"medium"|"low").
+- reason: ONE short sentence, in the user's language, explaining the verdict
+  from the user's point of view.
+
+%s
+
+Return ONLY a JSON object (no markdown fences):
+{"verdicts":[{"key":"item:12","tier":"action","priority":"high","reason":"..."}]}`
+
+const defaultInboxCard = `%s
+
+You are the user's chief-of-staff secretary preparing a briefing card for one
+inbox item they will act on.
+
+%s
+
+Using the item and conversation below, produce:
+- why_matters: 1-2 sentences — why this needs the user specifically, judged
+  against the brief (who is asking, which of the user's projects/people it
+  touches, what happens if ignored).
+- thread_digest: 3-5 sentences summarizing the whole conversation so the user
+  does not have to read it. Lead with the current state, not the history.
+- draft_reply: a ready-to-send reply in the user's voice: direct, short, no
+  corporate fluff. Match the language of the conversation. If the right action
+  is not a reply (e.g. RSVP, close a ticket), say what to do in one line instead.
+
+%s
+
+Return ONLY a JSON object (no markdown fences):
+{"why_matters":"...","thread_digest":"...","draft_reply":"..."}`

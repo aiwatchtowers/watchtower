@@ -26,6 +26,8 @@ const (
 	PeopleTeam           = "people.team"
 	BriefingDaily        = "briefing.daily"
 	InboxPrioritize      = "inbox.prioritize"
+	InboxTriage          = "inbox.triage"
+	InboxCard            = "inbox.card"
 	DigestChannelBatch   = "digest.channel_batch"
 	TracksExtractBatch   = "tracks.extract_batch"
 	PeopleBatch          = "people.batch"
