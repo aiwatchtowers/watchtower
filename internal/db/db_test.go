@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-
 func TestOpenMemory(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
