@@ -137,8 +137,9 @@ final class TargetWatchesViewModel {
     }
 
     func dismissAction(for event: TrackEvent) {
-        do { try dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") } }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            try dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") }
+        } catch { errorMessage = error.localizedDescription }
     }
 
     func markRead(_ event: TrackEvent) {

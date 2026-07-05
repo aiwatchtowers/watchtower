@@ -72,7 +72,9 @@ struct CustomTrackManagementSheet: View {
                 .font(.subheadline).foregroundColor(.green)
             Text(draft.title).font(.headline)
             if !draft.instruction.isEmpty {
-                Text(draft.instruction).font(.caption).foregroundColor(.secondary)
+                Text(draft.instruction)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

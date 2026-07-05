@@ -110,7 +110,8 @@ struct CustomTrackTimelineView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Scan range").font(.headline)
             Text("Reads what's new for the chosen range and dedups against what the track already collected.")
-                .font(.caption).foregroundColor(.secondary)
+                .font(.caption)
+                .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             rangeRow("Since last check", systemImage: "arrow.clockwise") {

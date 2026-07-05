@@ -61,7 +61,9 @@ struct TargetWatchTabView: View {
                 get: { watch.enabled },
                 set: { viewModel.setCollecting(watch, $0) }
             )) { EmptyView() }
-            .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .labelsHidden()
             .help(watch.enabled ? "Collecting" : "Paused")
 
             Text(watch.text).font(.subheadline).lineLimit(1)
@@ -78,7 +80,8 @@ struct TargetWatchTabView: View {
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
-            .menuStyle(.borderlessButton).fixedSize()
+            .menuStyle(.borderlessButton)
+            .fixedSize()
             .disabled(viewModel.isScanning(watch.id))
 
             Button(role: .destructive) { viewModel.deleteWatch(watch) } label: {
@@ -124,10 +127,13 @@ private struct TargetWatchEventRow: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(viewModel.watchName(for: event.trackId).uppercased())
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Text(event.summary).font(.body)
                     if expanded, !event.detail.isEmpty {
-                        Text(event.detail).font(.callout).foregroundStyle(.secondary)
+                        Text(event.detail)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }

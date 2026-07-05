@@ -43,7 +43,7 @@ final class TrackEventDecodeTests: XCTestCase {
                     #"["http://x","http://y"]"#,
                     #"{"text":"Approved by finance","by":"@ann","importance":"high"}"#,
                     #"{"type":"update_status","reason":"resolved","status":"done"}"#,
-                    "pending", nil, "2026-07-04T00:00:00Z",
+                    "pending", nil, "2026-07-04T00:00:00Z"
                 ])
         }
         let event = try XCTUnwrap(dbQueue.read {

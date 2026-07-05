@@ -505,10 +505,11 @@ final class TargetChatViewModel {
             try TrackEventQueries.fetchForTarget(db, targetID: target.id, limit: 20)
         }) ?? []
         guard !events.isEmpty else { return "" }
-        let lines = events.map { e -> String in
+        let eventLines = events.map { e -> String in
             let action = e.decodedAction.map { " [proposed: \($0.type.rawValue)]" } ?? ""
             return "- \(e.summary)\(action)"
-        }.joined(separator: "\n")
+        }
+        let lines = eventLines.joined(separator: "\n")
         return """
 
         === WATCH ACTIVITY ===
