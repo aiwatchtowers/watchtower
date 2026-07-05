@@ -112,9 +112,13 @@ Assembled by `buildSecretaryBrief()` each cycle and injected into both prompts:
 
 - `class` values keep the actionable/ambient enum storage but the semantics
   become **action / awareness** (awareness auto-archives like ambient today).
-- New columns: `triage_reason` (one-liner from Layer 1), `why_matters`,
-  `thread_digest`, `draft_reply`,
+- The Layer-1 one-line reason is stored in the existing `ai_reason` column
+  (no separate `triage_reason` — two reason columns would duplicate each
+  other).
+- New columns: `why_matters`, `thread_digest`, `draft_reply`,
   `card_status` (`none`/`ready`/`failed`), `card_generated_at`.
+- New `trigger_type` value `stream` for items surfaced by the full-stream
+  triage (requires the CHECK-expansion table-recreation dance).
 - Dropped: `pinned`.
 - Prompt store: new `inbox.triage` (cheap tier) and `inbox.card` (strong
   tier); `inbox.prioritize` and the pinned prompt are removed.
@@ -123,12 +127,13 @@ Assembled by `buildSecretaryBrief()` each cycle and injected into both prompts:
 
 ## Desktop UI
 
-- Two tiers replace pinned+feed: **"Требует действия"** on top (cards
-  expanded), **"К сведению"** below (compact rows, expand on click).
+- Two tiers replace pinned+feed: **"Needs action"** on top (cards expanded),
+  **"FYI"** below (compact rows, expand on click). UI copy is English, like
+  the rest of the app.
 - Card: title + who/where + why-it-matters + thread digest + draft reply with
   a Copy button + actions (Done / Snooze / 👎 feedback / open in Slack).
 - Items appear immediately after triage with the snippet and a
-  "готовлю контекст…" placeholder; the card fills in when ready.
+  "Preparing context…" placeholder; the card fills in when ready.
 - The **Learned** tab stays; a **Profile** editor (the explicit brief) is
   added next to it.
 
