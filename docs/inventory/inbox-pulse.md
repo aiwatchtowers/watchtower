@@ -125,9 +125,23 @@
 
 **Locked since:** 2026-04-27
 
+## INBOX-09 — Detection failure never advances the watermark
+
+**Status:** Enforced
+
+**Observable:** The inbox watermark (`inbox_last_processed_ts`) tracks how far detection has scanned. When a detector pass fails (Slack sync error, a source detector returning an error), the watermark stays where it was — it never jumps forward on wall-clock time. The next cycle re-scans the same window, so a mention/DM that arrived during a failed pass is still surfaced once detection recovers. Nothing is silently skipped.
+
+**Why locked:** The watermark only ever moves forward, so any window it skips is lost forever. Advancing it on failure (by wall-clock time) means a transient Slack/detector error permanently drops every mention and DM in that gap — a silent data loss the user cannot detect or recover from. Freezing the watermark on failure trades a cheap re-scan for zero lost signals.
+
+**Test guards:**
+- `internal/inbox/pipeline_test.go::TestInbox09_WatermarkFrozenOnDetectorError`
+
+**Locked since:** 2026-07-05
+
 ## Changelog
 
 - 2026-04-27: file created with 8 contracts (INBOX-01..08). Five are Enforced (01, 02, 05, 06, 07), two are Partial (03, 04), one is Aspirational (08). Tracked gaps recorded inline on Partial/Aspirational entries.
 - 2026-04-28: INBOX-04 closed gap — explicit feedback now feeds into evidence pool via learner; never_show stays as one-click escape hatch (source='user_rule'). Migration v72 drops legacy source='explicit_feedback' rules.
 - 2026-04-28: INBOX-08 removed by owner — anti re-spam was Aspirational only, never implemented. Decision: not part of the product's behavior set. Re-introduce only if owner asks.
 - 2026-05-01: INBOX-02 extended to cover the new `target_due` trigger — closing the underlying target (status → done/dismissed) auto-resolves the inbox item. Migration 00002 adds `target_due` to `inbox_items.trigger_type` and `targets.notified_at`.
+- 2026-07-05: INBOX-09 added (owner-approved, audit 2026-07-05 batch 2.3) — the full `Run` now advances `inbox_last_processed_ts` only after a clean detector pass; any detector error freezes the watermark so the skipped window is not lost. `detectAll` returns an aggregated error to gate the advance.
