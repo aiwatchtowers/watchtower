@@ -253,3 +253,90 @@ func TestFindBinary_LoginShellFallback(t *testing.T) {
 		t.Error("FindBinary must always return a non-empty value")
 	}
 }
+
+// fakeShell writes an executable script that ignores its args and prints
+// `output` to stdout, then points $SHELL at it. This lets the login-shell
+// lookups be driven deterministically on any platform — the real `sh -l`
+// behaves differently across macOS and the Linux CI sandbox, so relying on
+// it leaves the success branches of loginShellWhich/loginShellPATH uncovered
+// on CI. The fake shell removes that platform dependence.
+func fakeShell(t *testing.T, output string) {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "fakeshell")
+	body := "#!/bin/sh\nprintf '%s' " + shellQuote(output) + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", script)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func TestLoginShellWhich_SuccessViaFakeShell(t *testing.T) {
+	// Fake shell echoes the path of a real executable file → loginShellWhich
+	// must os.Stat it and return it. Covers the success branch on any platform.
+	target := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeShell(t, target+"\n")
+
+	if got := loginShellWhich("claude"); got != target {
+		t.Errorf("loginShellWhich via fake shell = %q, want %q", got, target)
+	}
+}
+
+func TestLoginShellWhich_EmptyOutput(t *testing.T) {
+	// Fake shell prints nothing → the p == "" branch returns "".
+	fakeShell(t, "")
+
+	if got := loginShellWhich("claude"); got != "" {
+		t.Errorf("loginShellWhich with empty output = %q, want empty", got)
+	}
+}
+
+func TestLoginShellWhich_NonExistentPath(t *testing.T) {
+	// Fake shell echoes a path that does not exist → os.Stat fails → final
+	// return "" branch is taken.
+	fakeShell(t, filepath.Join(t.TempDir(), "does-not-exist")+"\n")
+
+	if got := loginShellWhich("claude"); got != "" {
+		t.Errorf("loginShellWhich with bad path = %q, want empty", got)
+	}
+}
+
+func TestLoginShellPATH_SuccessViaFakeShell(t *testing.T) {
+	// Fake shell echoes a PATH distinct from the current one → loginShellPATH
+	// returns it. Covers the success branch on any platform.
+	custom := "/opt/fake/bin:/opt/other/bin"
+	t.Setenv("PATH", "/usr/bin")
+	fakeShell(t, custom+"\n")
+
+	if got := loginShellPATH(); got != custom {
+		t.Errorf("loginShellPATH via fake shell = %q, want %q", got, custom)
+	}
+}
+
+func TestLoginShellPATH_EmptyOutput(t *testing.T) {
+	// Fake shell prints nothing → the p == "" branch returns "".
+	fakeShell(t, "")
+
+	if got := loginShellPATH(); got != "" {
+		t.Errorf("loginShellPATH with empty output = %q, want empty", got)
+	}
+}
+
+func TestRichPATH_SuccessViaFakeShell(t *testing.T) {
+	// A working login shell that yields a distinct PATH must be used verbatim
+	// by RichPATH (covers the non-fallback branch).
+	resetCache()
+	custom := "/opt/rich/bin:/opt/more/bin"
+	t.Setenv("PATH", "/usr/bin")
+	fakeShell(t, custom+"\n")
+
+	if got := RichPATH(); got != custom {
+		t.Errorf("RichPATH via fake shell = %q, want %q", got, custom)
+	}
+}
