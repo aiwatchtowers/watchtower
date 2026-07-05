@@ -34,7 +34,7 @@ public struct TargetSubItem: Codable, Identifiable, Equatable {
         guard !done, let date = dueDateParsed, let dueDate else { return false }
         if Target.isDateOnly(dueDate) {
             // Same "due ON the day" semantics as Target.isOverdue.
-            return dueDate < Target.todayUTCDayString()
+            return dueDate < Target.todayDayString()
         }
         return date < Date()
     }
@@ -219,11 +219,11 @@ public struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equat
         guard isActive, !dueDate.isEmpty else { return false }
         guard let due = Self.parseDueDate(dueDate) else { return false }
         if Self.isDateOnly(dueDate) {
-            // Date-only means "due ON that day": overdue only once the stored
-            // UTC day has fully passed, never mid-day just because the value
+            // Date-only means "due ON that day": overdue only once the user's
+            // local day has passed, never mid-day just because the value
             // parses as UTC midnight (which lies behind `Date()` for most of
             // the day west of UTC).
-            return dueDate < Self.todayUTCDayString()
+            return dueDate < Self.todayDayString()
         }
         return due < Date()
     }
@@ -232,8 +232,8 @@ public struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equat
         guard !dueDate.isEmpty else { return false }
         guard let due = Self.parseDueDate(dueDate) else { return false }
         if Self.isDateOnly(dueDate) {
-            // Compare UTC calendar days — the stored day IS the due day.
-            return dueDate == Self.todayUTCDayString()
+            // Compare local calendar days — the stored day IS the due day.
+            return dueDate == Self.todayDayString()
         }
         return Calendar.current.isDateInToday(due)
     }
@@ -243,11 +243,21 @@ public struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equat
         !stored.contains("T")
     }
 
-    /// Today's UTC calendar day as "yyyy-MM-dd" — lexicographically comparable
-    /// with stored date-only due dates.
-    public static func todayUTCDayString(now: Date = Date()) -> String {
-        periodFormatter.string(from: now)
+    /// Today's calendar day in the USER'S timezone as "yyyy-MM-dd" —
+    /// lexicographically comparable with stored date-only due dates.
+    /// Local, not UTC: "due today" must match the day on the user's wall
+    /// clock, east and west of UTC alike.
+    public static func todayDayString(now: Date = Date()) -> String {
+        localDayFormatter.string(from: now)
     }
+
+    private static let localDayFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone.current
+        return fmt
+    }()
 
     // MARK: - Level
 
