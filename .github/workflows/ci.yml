@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/*]
+    branches: [main, mobile-app, feature/*]
   pull_request:
-    branches: [main]
+    branches: [main, mobile-app]
 
 jobs:
   go-lint:
@@ -63,6 +63,36 @@ jobs:
     defaults:
       run:
         working-directory: WatchtowerDesktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+  kit-lint:
+    name: WatchtowerKit Lint
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: WatchtowerKit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: SwiftLint
+        run: swiftlint lint --strict
+
+  kit-test:
+    name: WatchtowerKit Test
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: WatchtowerKit
     steps:
       - uses: actions/checkout@v4
 
