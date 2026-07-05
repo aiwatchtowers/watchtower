@@ -50,5 +50,8 @@ public struct CloudChangeBatch: Equatable {
 public protocol CloudSyncTransport {
     func save(_ records: [CloudRecord]) async throws
     func delete(recordNames: [String], in zone: CloudZoneID) async throws
+    /// `changed` and `deletedRecordNames` are in first-seen event order.
+    /// Consumers should not rely on stricter ordering — the real CloudKit
+    /// adapter only guarantees this much.
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch
 }

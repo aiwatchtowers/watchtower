@@ -76,4 +76,18 @@ final class InMemoryCloudTransportTests: XCTestCase {
         XCTAssertTrue(batch.changed.isEmpty)
         XCTAssertTrue(batch.deletedRecordNames.isEmpty)
     }
+
+    func testResaveAfterDeleteWithinOneTokenWindowYieldsRecordNotTombstone() async throws {
+        // Latest event per recordName wins in BOTH orders: a re-save after a
+        // delete must surface the record and suppress the tombstone, matching
+        // what a CloudKit zone-changes delta reports for a recreated record.
+        let transport = InMemoryCloudTransport()
+        try await transport.delete(recordNames: ["target-1"], in: .data)
+        try await transport.save([record("target-1", payload: "{\"v\":2}")])
+
+        let batch = try await transport.changes(in: .data, since: nil)
+        XCTAssertEqual(batch.changed.map(\.recordName), ["target-1"])
+        XCTAssertEqual(batch.changed[0].payload, Data("{\"v\":2}".utf8))
+        XCTAssertTrue(batch.deletedRecordNames.isEmpty)
+    }
 }
