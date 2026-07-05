@@ -56,4 +56,32 @@ final class RelayPayloadTests: XCTestCase {
             ["target_done", "target_snooze", "inbox_resolve", "inbox_dismiss", "inbox_snooze", "task_create", "track_read"]
         )
     }
+
+    func testFrozenFixtureDecodesWithParamsKeysVerbatim() throws {
+        // Decode-direction pin: convertFromSnakeCase must not rewrite params
+        // dictionary keys (snooze_until must NOT become snoozeUntil).
+        let json = #"{"created_at":1700000000,"entity_id":"42","id":"A1","kind":"inbox_snooze","params":{"snooze_until":"2026-07-06T09:00:00Z"},"status":"pending"}"#
+        let decoded = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.params["snooze_until"], .string("2026-07-06T09:00:00Z"))
+        XCTAssertEqual(decoded.entityID, "42")
+    }
+
+    func testCamelCaseParamsKeyRoundTripsVerbatim() throws {
+        // Encode-direction pin: convertToSnakeCase must not rewrite params
+        // dictionary keys (dueDate must NOT become due_date).
+        let action = ActionRequestPayload(
+            id: "A3",
+            kind: .taskCreate,
+            entityID: nil,
+            params: ["dueDate": .string("2026-07-07")],
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let data = try RelayCoder.makeEncoder().encode(action)
+        let json = String(data: data, encoding: .utf8)!
+        XCTAssertTrue(json.contains(#""dueDate""#), "params key was rewritten on encode: \(json)")
+        XCTAssertFalse(json.contains(#""due_date""#))
+
+        let decoded = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: data)
+        XCTAssertEqual(decoded.params["dueDate"], .string("2026-07-07"))
+    }
 }
