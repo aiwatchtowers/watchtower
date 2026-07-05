@@ -694,13 +694,18 @@ func TestListStreamCandidatesSince_SkipsAlreadyInboxed(t *testing.T) {
 func TestListStreamCandidatesSince_SkipsThreadWithPendingItem(t *testing.T) {
 	d := openTestDB(t)
 	insertChannel(t, d, "C1", "public")
-	insertMessageWithThread(t, d, "C1", "100.1", "100.1", "U2", "root of thread")
-	insertMessageWithThread(t, d, "C1", "100.2", "100.1", "U2", "another reply in same thread")
-	// A pending inbox item already exists for this thread (e.g. from mention detection).
-	mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "100.1", ThreadTS: "100.1", SenderUserID: "U2", TriggerType: "mention"})
+	// Realistic ingestion shape (internal/sync/message_sync.go): the thread
+	// ROOT never has its own thread_ts set — only replies do.
+	insertMessage(t, d, "C1", "100.1", "U2", "root of thread")
+	insertMessageWithThread(t, d, "C1", "100.5", "100.1", "U2", "reply in thread")
+	// A pending inbox item already exists for a REPLY in this thread
+	// (e.g. from mention detection on the reply).
+	mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "100.5", ThreadTS: "100.1", SenderUserID: "U2", TriggerType: "mention"})
 
 	got, err := d.ListStreamCandidatesSince("U1", 0, 100)
 	require.NoError(t, err)
+	// Neither the root (100.1, matched via its own ts as the thread key) nor
+	// the reply (100.5, matched via thread_ts) may surface as candidates.
 	if len(got) != 0 {
 		t.Fatalf("messages in a thread with a pending item must not be stream candidates, got %+v", got)
 	}

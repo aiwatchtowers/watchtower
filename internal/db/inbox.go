@@ -574,7 +574,8 @@ func (db *DB) ListStreamCandidatesSince(currentUserID string, sinceTS float64, l
 		  AND NOT EXISTS (
 		      SELECT 1 FROM inbox_items i2
 		      WHERE i2.channel_id = m.channel_id
-		        AND i2.thread_ts != '' AND i2.thread_ts = COALESCE(m.thread_ts,'')
+		        AND i2.thread_ts != ''
+		        AND (i2.thread_ts = COALESCE(m.thread_ts,'') OR i2.thread_ts = m.ts)
 		        AND i2.status = 'pending')
 		ORDER BY m.ts_unix ASC
 		LIMIT ?`, sinceTS, currentUserID, limit)
