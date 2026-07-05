@@ -552,6 +552,96 @@ func (db *DB) FindReactionRequests(currentUserID string, sinceTS float64) ([]Inb
 	return candidates, rows.Err()
 }
 
+// ListStreamCandidatesSince returns non-trigger messages newer than sinceTS
+// for the full-stream triage scan, oldest first, capped at limit. Excludes
+// deleted/subtyped messages, empty/self authors, DM channels (DMs are
+// trigger-detected separately), messages already in inbox_items, and
+// messages whose thread already has a pending inbox item.
+func (db *DB) ListStreamCandidatesSince(currentUserID string, sinceTS float64, limit int) ([]InboxCandidate, error) {
+	rows, err := db.Query(`
+		SELECT m.channel_id, m.ts, COALESCE(m.thread_ts,''), m.user_id, m.text, COALESCE(m.permalink,''), m.ts_unix
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		WHERE m.ts_unix > ?
+		  AND m.is_deleted = 0
+		  AND COALESCE(m.subtype,'') = ''
+		  AND m.user_id != ''
+		  AND m.user_id != ?
+		  AND c.type != 'dm'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM inbox_items i
+		      WHERE i.channel_id = m.channel_id AND i.message_ts = m.ts)
+		  AND NOT EXISTS (
+		      SELECT 1 FROM inbox_items i2
+		      WHERE i2.channel_id = m.channel_id
+		        AND i2.thread_ts != '' AND i2.thread_ts = COALESCE(m.thread_ts,'')
+		        AND i2.status = 'pending')
+		ORDER BY m.ts_unix ASC
+		LIMIT ?`, sinceTS, currentUserID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing stream candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var candidates []InboxCandidate
+	for rows.Next() {
+		var c InboxCandidate
+		if err := rows.Scan(&c.ChannelID, &c.MessageTS, &c.ThreadTS, &c.SenderUserID, &c.Text, &c.Permalink, &c.TSUnix); err != nil {
+			return nil, fmt.Errorf("scanning stream candidate: %w", err)
+		}
+		c.TriggerType = "stream"
+		candidates = append(candidates, c)
+	}
+	return candidates, rows.Err()
+}
+
+// SetInboxCard stores a generated secretary card on an item.
+func (db *DB) SetInboxCard(id int, whyMatters, threadDigest, draftReply string) error {
+	_, err := db.Exec(`UPDATE inbox_items
+		SET why_matters = ?, thread_digest = ?, draft_reply = ?,
+		    card_status = 'ready',
+		    card_generated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+		    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ?`, whyMatters, threadDigest, draftReply, id)
+	if err != nil {
+		return fmt.Errorf("setting inbox card for item %d: %w", id, err)
+	}
+	return nil
+}
+
+// MarkInboxCardFailed flags a card generation failure; the item stays
+// eligible for retry on the next cycle.
+func (db *DB) MarkInboxCardFailed(id int) error {
+	_, err := db.Exec(`UPDATE inbox_items
+		SET card_status = 'failed',
+		    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("marking inbox card failed for item %d: %w", id, err)
+	}
+	return nil
+}
+
+// ListItemsNeedingCards returns pending items without a ready card: all
+// actionable ones plus at most awarenessLimit newest ambient ones.
+func (db *DB) ListItemsNeedingCards(awarenessLimit int) ([]InboxItem, error) {
+	rows, err := db.Query(`
+		SELECT `+inboxSelectCols+` FROM inbox_items
+		WHERE status = 'pending' AND archived_at IS NULL
+		  AND card_status IN ('none','failed')
+		  AND (item_class = 'actionable'
+		       OR id IN (SELECT id FROM inbox_items
+		                 WHERE status='pending' AND archived_at IS NULL
+		                   AND card_status IN ('none','failed') AND item_class='ambient'
+		                 ORDER BY created_at DESC LIMIT ?))
+		ORDER BY item_class, created_at DESC`, awarenessLimit)
+	if err != nil {
+		return nil, fmt.Errorf("listing items needing cards: %w", err)
+	}
+	defer rows.Close()
+	return scanInboxItems(rows)
+}
+
 // CheckUserReplied checks whether the current user has acted on a message:
 // replied in the thread/channel OR reacted with any emoji.
 // For threaded messages, checks if user posted in the thread after message_ts.
