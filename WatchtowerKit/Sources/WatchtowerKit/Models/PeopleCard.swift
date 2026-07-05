@@ -1,35 +1,35 @@
 import Foundation
 import GRDB
 
-struct PeopleCard: FetchableRecord, Decodable, Identifiable, Equatable {
-    var id: Int64
-    var userID: String
-    var periodFrom: Double
-    var periodTo: Double
-    var messageCount: Int
-    var channelsActive: Int
-    var threadsInitiated: Int
-    var threadsReplied: Int
-    var avgMessageLength: Double
-    var activeHoursJSON: String
-    var volumeChangePct: Double
-    var summary: String
-    var communicationStyle: String
-    var decisionRole: String
-    var redFlags: String      // JSON array
-    var highlights: String    // JSON array
-    var accomplishments: String // JSON array
-    var communicationGuide: String
-    var decisionStyle: String
-    var tactics: String       // JSON array
-    var relationshipContext: String
-    var status: String
-    var model: String
-    var inputTokens: Int
-    var outputTokens: Int
-    var costUSD: Double
-    var promptVersion: Int
-    var createdAt: String
+public struct PeopleCard: FetchableRecord, Decodable, Identifiable, Equatable {
+    public var id: Int64
+    public var userID: String
+    public var periodFrom: Double
+    public var periodTo: Double
+    public var messageCount: Int
+    public var channelsActive: Int
+    public var threadsInitiated: Int
+    public var threadsReplied: Int
+    public var avgMessageLength: Double
+    public var activeHoursJSON: String
+    public var volumeChangePct: Double
+    public var summary: String
+    public var communicationStyle: String
+    public var decisionRole: String
+    public var redFlags: String      // JSON array
+    public var highlights: String    // JSON array
+    public var accomplishments: String // JSON array
+    public var communicationGuide: String
+    public var decisionStyle: String
+    public var tactics: String       // JSON array
+    public var relationshipContext: String
+    public var status: String
+    public var model: String
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var costUSD: Double
+    public var promptVersion: Int
+    public var createdAt: String
 
     // Column mapping
     enum CodingKeys: String, CodingKey {
@@ -47,33 +47,33 @@ struct PeopleCard: FetchableRecord, Decodable, Identifiable, Equatable {
     }
 
     // Parsed helpers
-    var parsedRedFlags: [String] {
+    public var parsedRedFlags: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(redFlags.utf8))) ?? []
     }
-    var parsedHighlights: [String] {
+    public var parsedHighlights: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(highlights.utf8))) ?? []
     }
-    var parsedAccomplishments: [String] {
+    public var parsedAccomplishments: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(accomplishments.utf8))) ?? []
     }
-    var parsedTactics: [String] {
+    public var parsedTactics: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(tactics.utf8))) ?? []
     }
-    var parsedActiveHours: [String: Int] {
+    public var parsedActiveHours: [String: Int] {
         (try? JSONDecoder().decode([String: Int].self, from: Data(activeHoursJSON.utf8))) ?? [:]
     }
-    var periodFromDate: Date { Date(timeIntervalSince1970: periodFrom) }
-    var periodToDate: Date { Date(timeIntervalSince1970: periodTo) }
+    public var periodFromDate: Date { Date(timeIntervalSince1970: periodFrom) }
+    public var periodToDate: Date { Date(timeIntervalSince1970: periodTo) }
 
-    var hasRedFlags: Bool {
+    public var hasRedFlags: Bool {
         !parsedRedFlags.isEmpty
     }
 
-    var isInsufficientData: Bool {
+    public var isInsufficientData: Bool {
         status == "insufficient_data"
     }
 
-    var styleEmoji: String {
+    public var styleEmoji: String {
         switch communicationStyle.lowercased() {
         case "driver": return "🚀"
         case "collaborator": return "🤝"
@@ -85,19 +85,19 @@ struct PeopleCard: FetchableRecord, Decodable, Identifiable, Equatable {
     }
 }
 
-struct PeopleCardSummary: FetchableRecord, Decodable, Identifiable, Equatable {
-    var id: Int64
-    var periodFrom: Double
-    var periodTo: Double
-    var summary: String
-    var attention: String  // JSON array
-    var tips: String       // JSON array
-    var model: String
-    var inputTokens: Int
-    var outputTokens: Int
-    var costUSD: Double
-    var promptVersion: Int
-    var createdAt: String
+public struct PeopleCardSummary: FetchableRecord, Decodable, Identifiable, Equatable {
+    public var id: Int64
+    public var periodFrom: Double
+    public var periodTo: Double
+    public var summary: String
+    public var attention: String  // JSON array
+    public var tips: String       // JSON array
+    public var model: String
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var costUSD: Double
+    public var promptVersion: Int
+    public var createdAt: String
 
     enum CodingKeys: String, CodingKey {
         case id, periodFrom = "period_from", periodTo = "period_to"
@@ -106,10 +106,10 @@ struct PeopleCardSummary: FetchableRecord, Decodable, Identifiable, Equatable {
         case costUSD = "cost_usd", promptVersion = "prompt_version", createdAt = "created_at"
     }
 
-    var parsedAttention: [String] {
+    public var parsedAttention: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(attention.utf8))) ?? []
     }
-    var parsedTips: [String] {
+    public var parsedTips: [String] {
         (try? JSONDecoder().decode([String].self, from: Data(tips.utf8))) ?? []
     }
 }

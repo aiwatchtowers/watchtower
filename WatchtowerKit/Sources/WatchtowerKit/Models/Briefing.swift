@@ -3,15 +3,15 @@ import GRDB
 
 // MARK: - Section Item Types
 
-struct AttentionItem: Decodable, Identifiable, Equatable {
-    let id = UUID()
-    let text: String
-    let sourceType: String?
-    let sourceID: String?
-    let priority: String?
-    let reason: String?
-    let suggestTrack: Bool? // swiftlint:disable:this discouraged_optional_boolean
-    let suggestTask: Bool? // swiftlint:disable:this discouraged_optional_boolean
+public struct AttentionItem: Decodable, Identifiable, Equatable {
+    public let id = UUID()
+    public let text: String
+    public let sourceType: String?
+    public let sourceID: String?
+    public let priority: String?
+    public let reason: String?
+    public let suggestTrack: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    public let suggestTask: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     enum CodingKeys: String, CodingKey {
         case text
@@ -22,7 +22,7 @@ struct AttentionItem: Decodable, Identifiable, Equatable {
         case suggestTask = "suggest_task"
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         text = try container.decode(String.self, forKey: .text)
         sourceType = try container.decodeIfPresent(String.self, forKey: .sourceType)
@@ -40,7 +40,7 @@ struct AttentionItem: Decodable, Identifiable, Equatable {
         }
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.sourceType == rhs.sourceType
             && lhs.sourceID == rhs.sourceID && lhs.priority == rhs.priority
             && lhs.reason == rhs.reason && lhs.suggestTrack == rhs.suggestTrack
@@ -48,15 +48,15 @@ struct AttentionItem: Decodable, Identifiable, Equatable {
     }
 }
 
-struct YourDayItem: Decodable, Identifiable, Equatable {
-    let id = UUID()
-    let text: String
-    let trackID: Int?
-    let taskID: Int?
-    let dueDate: String?
-    let priority: String?
-    let status: String?
-    let ownership: String?
+public struct YourDayItem: Decodable, Identifiable, Equatable {
+    public let id = UUID()
+    public let text: String
+    public let trackID: Int?
+    public let taskID: Int?
+    public let dueDate: String?
+    public let priority: String?
+    public let status: String?
+    public let ownership: String?
 
     enum CodingKeys: String, CodingKey {
         case text
@@ -66,7 +66,7 @@ struct YourDayItem: Decodable, Identifiable, Equatable {
         case priority, status, ownership
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.trackID == rhs.trackID
             && lhs.taskID == rhs.taskID
             && lhs.dueDate == rhs.dueDate && lhs.priority == rhs.priority
@@ -74,13 +74,13 @@ struct YourDayItem: Decodable, Identifiable, Equatable {
     }
 }
 
-struct WhatHappenedItem: Decodable, Identifiable, Equatable {
-    let id = UUID()
-    let text: String
-    let digestID: Int?
-    let channelName: String?
-    let itemType: String?
-    let importance: String?
+public struct WhatHappenedItem: Decodable, Identifiable, Equatable {
+    public let id = UUID()
+    public let text: String
+    public let digestID: Int?
+    public let channelName: String?
+    public let itemType: String?
+    public let importance: String?
 
     enum CodingKeys: String, CodingKey {
         case text
@@ -90,19 +90,19 @@ struct WhatHappenedItem: Decodable, Identifiable, Equatable {
         case importance
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.digestID == rhs.digestID
             && lhs.channelName == rhs.channelName && lhs.itemType == rhs.itemType
             && lhs.importance == rhs.importance
     }
 }
 
-struct TeamPulseItem: Decodable, Identifiable, Equatable {
-    let id = UUID()
-    let text: String
-    let userID: String?
-    let signalType: String?
-    let detail: String?
+public struct TeamPulseItem: Decodable, Identifiable, Equatable {
+    public let id = UUID()
+    public let text: String
+    public let userID: String?
+    public let signalType: String?
+    public let detail: String?
 
     enum CodingKeys: String, CodingKey {
         case text
@@ -111,17 +111,17 @@ struct TeamPulseItem: Decodable, Identifiable, Equatable {
         case detail
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.userID == rhs.userID
             && lhs.signalType == rhs.signalType && lhs.detail == rhs.detail
     }
 }
 
-struct CoachingItem: Decodable, Identifiable, Equatable {
-    let id = UUID()
-    let text: String
-    let relatedUserID: String?
-    let category: String?
+public struct CoachingItem: Decodable, Identifiable, Equatable {
+    public let id = UUID()
+    public let text: String
+    public let relatedUserID: String?
+    public let category: String?
 
     enum CodingKeys: String, CodingKey {
         case text
@@ -129,7 +129,7 @@ struct CoachingItem: Decodable, Identifiable, Equatable {
         case category
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.relatedUserID == rhs.relatedUserID
             && lhs.category == rhs.category
     }
@@ -137,23 +137,23 @@ struct CoachingItem: Decodable, Identifiable, Equatable {
 
 // MARK: - Briefing
 
-struct Briefing: FetchableRecord, Decodable, Identifiable, Equatable {
-    let id: Int
-    let userID: String
-    let date: String
-    let role: String
-    let attention: String
-    let yourDay: String
-    let whatHappened: String
-    let teamPulse: String
-    let coaching: String
-    let model: String
-    let inputTokens: Int
-    let outputTokens: Int
-    let costUSD: Double
-    let promptVersion: Int
-    let readAt: String?
-    let createdAt: String
+public struct Briefing: FetchableRecord, Decodable, Identifiable, Equatable {
+    public let id: Int
+    public let userID: String
+    public let date: String
+    public let role: String
+    public let attention: String
+    public let yourDay: String
+    public let whatHappened: String
+    public let teamPulse: String
+    public let coaching: String
+    public let model: String
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let costUSD: Double
+    public let promptVersion: Int
+    public let readAt: String?
+    public let createdAt: String
 
     enum CodingKeys: String, CodingKey {
         case id, date, role, attention, coaching, model
@@ -169,36 +169,36 @@ struct Briefing: FetchableRecord, Decodable, Identifiable, Equatable {
         case createdAt = "created_at"
     }
 
-    var isRead: Bool { readAt != nil }
+    public var isRead: Bool { readAt != nil }
 
     private static let decoder = JSONDecoder()
 
-    var parsedAttention: [AttentionItem] {
+    public var parsedAttention: [AttentionItem] {
         guard let data = attention.data(using: .utf8) else { return [] }
         return (try? Self.decoder.decode([AttentionItem].self, from: data)) ?? []
     }
 
-    var parsedYourDay: [YourDayItem] {
+    public var parsedYourDay: [YourDayItem] {
         guard let data = yourDay.data(using: .utf8) else { return [] }
         return (try? Self.decoder.decode([YourDayItem].self, from: data)) ?? []
     }
 
-    var parsedWhatHappened: [WhatHappenedItem] {
+    public var parsedWhatHappened: [WhatHappenedItem] {
         guard let data = whatHappened.data(using: .utf8) else { return [] }
         return (try? Self.decoder.decode([WhatHappenedItem].self, from: data)) ?? []
     }
 
-    var parsedTeamPulse: [TeamPulseItem] {
+    public var parsedTeamPulse: [TeamPulseItem] {
         guard let data = teamPulse.data(using: .utf8) else { return [] }
         return (try? Self.decoder.decode([TeamPulseItem].self, from: data)) ?? []
     }
 
-    var parsedCoaching: [CoachingItem] {
+    public var parsedCoaching: [CoachingItem] {
         guard let data = coaching.data(using: .utf8) else { return [] }
         return (try? Self.decoder.decode([CoachingItem].self, from: data)) ?? []
     }
 
-    var dateLabel: String {
+    public var dateLabel: String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .none

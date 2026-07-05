@@ -3,13 +3,13 @@ import GRDB
 
 // MARK: - Attendee
 
-struct EventAttendee: Codable, Identifiable, Equatable {
+public struct EventAttendee: Codable, Identifiable, Equatable {
     // Note: uses email as identity; assumes no duplicate emails per event (standard for calendar APIs)
-    var id: String { email }
-    let email: String
-    let displayName: String
-    let responseStatus: String
-    let slackUserID: String
+    public var id: String { email }
+    public let email: String
+    public let displayName: String
+    public let responseStatus: String
+    public let slackUserID: String
 
     enum CodingKeys: String, CodingKey {
         case email
@@ -21,15 +21,15 @@ struct EventAttendee: Codable, Identifiable, Equatable {
 
 // MARK: - CalendarCalendarItem
 
-struct CalendarCalendarItem: FetchableRecord, Identifiable, Equatable {
-    let id: String
-    let name: String
-    let isPrimary: Bool
-    let isSelected: Bool
-    let color: String
-    let syncedAt: String
+public struct CalendarCalendarItem: FetchableRecord, Identifiable, Equatable {
+    public let id: String
+    public let name: String
+    public let isPrimary: Bool
+    public let isSelected: Bool
+    public let color: String
+    public let syncedAt: String
 
-    init(row: Row) {
+    public init(row: Row) {
         id = row["id"]
         name = row["name"] ?? ""
         isPrimary = (row["is_primary"] as Int? ?? 0) != 0
@@ -41,26 +41,26 @@ struct CalendarCalendarItem: FetchableRecord, Identifiable, Equatable {
 
 // MARK: - CalendarEvent
 
-struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
-    let id: String
-    let calendarID: String
-    let title: String
-    let description: String
-    let location: String
-    let startTime: String       // ISO8601
-    let endTime: String         // ISO8601
-    let organizerEmail: String
-    let attendees: String       // JSON array
-    let isRecurring: Bool
-    let isAllDay: Bool
-    let eventStatus: String
-    let eventType: String
-    let htmlLink: String
-    let rawJSON: String
-    let syncedAt: String
-    let updatedAt: String
+public struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
+    public let id: String
+    public let calendarID: String
+    public let title: String
+    public let description: String
+    public let location: String
+    public let startTime: String       // ISO8601
+    public let endTime: String         // ISO8601
+    public let organizerEmail: String
+    public let attendees: String       // JSON array
+    public let isRecurring: Bool
+    public let isAllDay: Bool
+    public let eventStatus: String
+    public let eventType: String
+    public let htmlLink: String
+    public let rawJSON: String
+    public let syncedAt: String
+    public let updatedAt: String
 
-    init(row: Row) {
+    public init(row: Row) {
         id = row["id"]
         calendarID = row["calendar_id"] ?? ""
         title = row["title"] ?? ""
@@ -90,45 +90,45 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
 
     // MARK: - Computed Dates
 
-    var startDate: Date {
+    public var startDate: Date {
         Self.iso8601Formatter.date(from: startTime) ?? Date.distantPast
     }
 
-    var endDate: Date {
+    public var endDate: Date {
         Self.iso8601Formatter.date(from: endTime) ?? Date.distantPast
     }
 
-    var duration: TimeInterval {
+    public var duration: TimeInterval {
         endDate.timeIntervalSince(startDate)
     }
 
     // MARK: - Attendees
 
     // Note: decodes JSON each time; acceptable for current use (row rendering, attendee count)
-    var parsedAttendees: [EventAttendee] {
+    public var parsedAttendees: [EventAttendee] {
         guard let data = attendees.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([EventAttendee].self, from: data)) ?? []
     }
 
     // MARK: - Status
 
-    var isHappeningNow: Bool {
+    public var isHappeningNow: Bool {
         let now = Date()
         return now >= startDate && now < endDate
     }
 
-    var isUpcoming: Bool {
+    public var isUpcoming: Bool {
         let now = Date()
         return startDate > now && startDate <= now.addingTimeInterval(3600)
     }
 
     // MARK: - Description
 
-    var plainDescription: String {
+    public var plainDescription: String {
         Self.stripHTML(description)
     }
 
-    static func stripHTML(_ input: String) -> String {
+    public static func stripHTML(_ input: String) -> String {
         guard !input.isEmpty else { return "" }
         var s = input
         s = s.replacingOccurrences(of: "(?i)<\\s*br\\s*/?\\s*>", with: "\n", options: .regularExpression)
@@ -144,7 +144,7 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
             "&gt;": ">",
             "&quot;": "\"",
             "&#39;": "'",
-            "&apos;": "'",
+            "&apos;": "'"
         ]
         for (k, v) in entities {
             s = s.replacingOccurrences(of: k, with: v)
@@ -155,14 +155,14 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
 
     // MARK: - Display
 
-    var formattedTimeRange: String {
+    public var formattedTimeRange: String {
         if isAllDay { return "All day" }
         let fmt = DateFormatter()
         fmt.dateFormat = "HH:mm"
         return "\(fmt.string(from: startDate)) - \(fmt.string(from: endDate))"
     }
 
-    var durationText: String {
+    public var durationText: String {
         let minutes = Int(duration / 60)
         if minutes < 60 { return "\(minutes)m" }
         let hours = minutes / 60
@@ -171,7 +171,7 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
         return "\(hours)h \(rem)m"
     }
 
-    var responseIcon: String {
+    public var responseIcon: String {
         switch eventStatus {
         case "confirmed": return "checkmark.circle.fill"
         case "tentative": return "questionmark.circle"
@@ -180,7 +180,7 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
         }
     }
 
-    var responseColor: String {
+    public var responseColor: String {
         switch eventStatus {
         case "confirmed": return "green"
         case "tentative": return "orange"
