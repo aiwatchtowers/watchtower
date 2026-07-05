@@ -146,15 +146,16 @@ struct DayPlanTimelineView: View {
                     .padding(.leading, 20)
                 }
             }
-            if !event.description.isEmpty {
-                Text(event.description)
+            let plain = event.plainDescription
+            if !plain.isEmpty {
+                Text(plain)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(4)
                     .padding(.top, 2)
             }
-            if !event.htmlLink.isEmpty {
-                Link(destination: URL(string: event.htmlLink) ?? URL(string: "https://calendar.google.com")!) {
+            if let eventURL = URL(string: event.htmlLink), !event.htmlLink.isEmpty {
+                Link(destination: eventURL) {
                     Label("Open in Google Calendar", systemImage: "arrow.up.right.square")
                         .font(.caption)
                 }

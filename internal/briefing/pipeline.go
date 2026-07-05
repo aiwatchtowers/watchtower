@@ -177,7 +177,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	// Build prompt.
 	userName := p.userName(currentUserID)
 	promptTmpl, promptVersion := p.getPrompt(prompts.BriefingDaily, role)
-	langDirective := fmt.Sprintf("Respond in %s", p.cfg.Digest.Language)
+	langDirective := prompts.Directive(p.cfg.Digest.Language)
 
 	systemPrompt := fmt.Sprintf(promptTmpl,
 		userName, date, role,
@@ -193,6 +193,12 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		profileCtx,
 		jiraCtx,
 	)
+
+	// Prepend learned preferences (derived from catch-up review feedback) so the
+	// briefing honors accumulated operator preferences. Best-effort; empty when none.
+	if prefs := p.learnedPrefs(); prefs != "" {
+		systemPrompt = prefs + "\n\n" + systemPrompt
+	}
 
 	// Generate.
 	p.logger.Printf("briefing: generating for %s on %s", userName, date)
@@ -252,6 +258,17 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		id, inTok, outTok)
 
 	return int(id), nil
+}
+
+// learnedPrefs loads this pipeline's learned rules (derived from catch-up
+// review feedback) and formats them for the prompt. Best-effort: empty on error.
+func (p *Pipeline) learnedPrefs() string {
+	rules, err := p.db.ListLearnedRulesByPipeline("briefing", 20)
+	if err != nil {
+		p.logger.Printf("briefing: error loading learned rules: %v", err)
+		return ""
+	}
+	return digest.LearnedPreferencesBlock(rules)
 }
 
 func (p *Pipeline) getPrompt(id, role string) (string, int) {

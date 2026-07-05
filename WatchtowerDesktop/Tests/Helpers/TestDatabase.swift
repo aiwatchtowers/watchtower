@@ -441,6 +441,31 @@ enum TestDatabase {
         created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS track_states (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        track_id           INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+        text               TEXT NOT NULL,
+        context            TEXT NOT NULL DEFAULT '',
+        category           TEXT NOT NULL,
+        ownership          TEXT NOT NULL,
+        ball_on            TEXT NOT NULL DEFAULT '',
+        owner_user_id      TEXT NOT NULL DEFAULT '',
+        requester_name     TEXT NOT NULL DEFAULT '',
+        requester_user_id  TEXT NOT NULL DEFAULT '',
+        blocking           TEXT NOT NULL DEFAULT '',
+        decision_summary   TEXT NOT NULL DEFAULT '',
+        decision_options   TEXT NOT NULL DEFAULT '[]',
+        sub_items          TEXT NOT NULL DEFAULT '[]',
+        participants       TEXT NOT NULL DEFAULT '[]',
+        tags               TEXT NOT NULL DEFAULT '[]',
+        priority           TEXT NOT NULL,
+        due_date           REAL,
+        source             TEXT NOT NULL CHECK(source IN ('extraction','manual')),
+        model              TEXT NOT NULL DEFAULT '',
+        prompt_version     INTEGER NOT NULL DEFAULT 0,
+        created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_track_states_track ON track_states(track_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS tasks (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         text            TEXT NOT NULL,
@@ -471,7 +496,13 @@ enum TestDatabase {
         message_ts      TEXT NOT NULL,
         thread_ts       TEXT NOT NULL DEFAULT '',
         sender_user_id  TEXT NOT NULL,
-        trigger_type    TEXT NOT NULL CHECK(trigger_type IN ('mention','dm')),
+        trigger_type    TEXT NOT NULL CHECK(trigger_type IN (
+            'mention','dm','thread_reply','reaction',
+            'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
+            'calendar_invite','calendar_time_change','calendar_cancelled',
+            'decision_made','briefing_ready',
+            'target_due'
+        )),
         snippet         TEXT NOT NULL DEFAULT '',
         context         TEXT NOT NULL DEFAULT '',
         raw_text        TEXT NOT NULL DEFAULT '',
@@ -506,6 +537,7 @@ enum TestDatabase {
         source         TEXT NOT NULL CHECK(source IN ('implicit','explicit_feedback','user_rule')),
         evidence_count INTEGER NOT NULL DEFAULT 0,
         last_updated   TEXT NOT NULL,
+        pipeline       TEXT NOT NULL DEFAULT 'inbox',
         UNIQUE(rule_type, scope_key)
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, scope_key);
@@ -559,7 +591,8 @@ enum TestDatabase {
 
     CREATE TABLE IF NOT EXISTS feedback (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox')),
+        entity_type TEXT NOT NULL CHECK(entity_type IN
+            ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox', 'catchup_theme')),
         entity_id   TEXT NOT NULL,
         rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
         comment     TEXT NOT NULL DEFAULT '',
@@ -824,6 +857,33 @@ enum TestDatabase {
     );
     CREATE INDEX IF NOT EXISTS idx_target_links_source ON target_links(source_target_id);
     CREATE INDEX IF NOT EXISTS idx_target_links_target ON target_links(target_target_id);
+
+    CREATE TABLE IF NOT EXISTS catchup_sessions (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at     TEXT NOT NULL,
+        status         TEXT NOT NULL CHECK(status IN ('building','active','done','failed')),
+        total_themes   INTEGER NOT NULL DEFAULT 0,
+        reviewed_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS catchup_themes (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id       INTEGER NOT NULL REFERENCES catchup_sessions(id) ON DELETE CASCADE,
+        order_idx        INTEGER NOT NULL DEFAULT 0,
+        title            TEXT NOT NULL DEFAULT '',
+        narrative        TEXT NOT NULL DEFAULT '',
+        priority         TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+        needs_you        INTEGER NOT NULL DEFAULT 0,
+        suggested_action TEXT NOT NULL DEFAULT '',
+        refs             TEXT NOT NULL DEFAULT '[]',
+        gen_state        TEXT NOT NULL DEFAULT 'skeleton' CHECK(gen_state IN ('skeleton','expanding','ready','failed')),
+        review_state     TEXT NOT NULL DEFAULT 'pending' CHECK(review_state IN ('pending','reviewed','snoozed')),
+        snooze_until     TEXT NOT NULL DEFAULT '',
+        task_id          INTEGER NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_catchup_themes_session ON catchup_themes(session_id, order_idx);
     """
 
     // MARK: - Briefing Fixtures
@@ -1023,6 +1083,25 @@ enum TestDatabase {
         return db.lastInsertedRowID
     }
 
+    @discardableResult
+    static func insertDigestTopic(
+        _ db: Database,
+        digestID: Int = 1,
+        idx: Int = 0,
+        title: String = "Sample topic",
+        summary: String = "Topic summary",
+        decisions: String = "[]",
+        actionItems: String = "[]",
+        situations: String = "[]",
+        keyMessages: String = "[]"
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [digestID, idx, title, summary, decisions, actionItems, situations, keyMessages])
+        return db.lastInsertedRowID
+    }
+
     // MARK: - Inbox Fixtures
 
     static func insertInboxItem(
@@ -1040,16 +1119,17 @@ enum TestDatabase {
         resolvedReason: String = "",
         snoozeUntil: String = "",
         taskID: Int? = nil,       // kept for call-site compat; maps to target_id column
-        readAt: String? = nil
+        readAt: String? = nil,
+        archivedAt: String? = nil
     ) throws {
         try db.execute(sql: """
             INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
                 trigger_type, snippet, permalink, status, priority, ai_reason,
-                resolved_reason, snooze_until, target_id, read_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resolved_reason, snooze_until, target_id, read_at, archived_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [channelID, messageTS, threadTS, senderUserID,
                              triggerType, snippet, permalink, status, priority, aiReason,
-                             resolvedReason, snoozeUntil, taskID, readAt])
+                             resolvedReason, snoozeUntil, taskID, readAt, archivedAt])
     }
 
     // MARK: - Inbox Learned Rules Fixtures

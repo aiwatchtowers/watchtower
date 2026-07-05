@@ -1186,14 +1186,16 @@ func TestLanguageInstruction(t *testing.T) {
 	database := testDB(t)
 	gen := &mockGenerator{}
 
+	// languageInstruction now delegates to prompts.Directive — empty falls back
+	// to the configured default language (Russian).
 	tests := []struct {
 		name     string
 		lang     string
 		expected string
 	}{
-		{"empty language", "", "Write in the language most commonly used"},
-		{"english", "English", "Write all text values in English"},
-		{"russian", "Russian", "You MUST write ALL text values"},
+		{"empty language", "", "Respond ONLY in Russian"},
+		{"english", "English", "Respond ONLY in English"},
+		{"russian", "Russian", "Respond ONLY in Russian"},
 	}
 
 	for _, tt := range tests {
@@ -1210,12 +1212,12 @@ func TestLanguageInstruction(t *testing.T) {
 func TestLanguageInstruction_CaseInsensitive(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
-	cfg.Digest.Language = "english" // lowercase
+	cfg.Digest.Language = "english" // lowercase passes through unchanged
 	gen := &mockGenerator{}
 	p := New(database, cfg, gen, testLogger())
 
 	result := p.languageInstruction()
-	assert.Contains(t, result, "Write all text values in English")
+	assert.Contains(t, result, "Respond ONLY in english")
 }
 
 func TestSanitizePromptValue(t *testing.T) {
@@ -2717,4 +2719,77 @@ func TestTieredBatching_HighMediumLow(t *testing.T) {
 	// Medium (2 channels in 1 batch) + Low (8 channels, maxCh*3=9 → 1 batch) = 2 batch calls.
 	assert.Equal(t, 2, gen.calls["digest.channel_batch"], "should have 2 batch calls: 1 medium + 1 low")
 	gen.mu.Unlock()
+}
+
+// TestLearnedPreferencesInjectedIntoDailyRollup verifies that a "digest"
+// learned rule (derived from catch-up review feedback) is prepended to the
+// assembled rollup prompt.
+func TestLearnedPreferencesInjectedIntoDailyRollup(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "frontend")
+	seedChannel(t, database, "C2", "backend")
+
+	// Learned rule addressed to the digest pipeline.
+	require.NoError(t, database.UpsertLearnedRule(db.InboxLearnedRule{
+		Pipeline:      "digest",
+		RuleType:      "source_mute",
+		ScopeKey:      "digest:channel:Ctest",
+		Weight:        -1.0,
+		Source:        "explicit_feedback",
+		EvidenceCount: 1,
+	}))
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	fromUnix := float64(dayStart.Unix())
+	toUnix := float64(now.Unix())
+
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Frontend team fixed CSS bugs", MessageCount: 15, Model: "haiku",
+	})
+	require.NoError(t, err)
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C2", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Backend team deployed API v2", MessageCount: 20, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen := &capturingGenerator{response: `{"summary":"day","topics":[]}`}
+	p := New(database, cfg, gen, testLogger())
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+
+	gen.mu.Lock()
+	captured := gen.capturedPrompt
+	gen.mu.Unlock()
+
+	assert.Contains(t, captured, "LEARNED PREFERENCES")
+	assert.Contains(t, captured, "digest:channel:Ctest")
+}
+
+// TestLearnedPrefsHelper verifies the helper formats loaded rules directly.
+func TestLearnedPrefsHelper(t *testing.T) {
+	database := testDB(t)
+	gen := &mockGenerator{}
+	p := New(database, testConfig(), gen, testLogger())
+
+	// No rules → empty block.
+	assert.Empty(t, p.learnedPrefs())
+
+	require.NoError(t, database.UpsertLearnedRule(db.InboxLearnedRule{
+		Pipeline:      "digest",
+		RuleType:      "source_mute",
+		ScopeKey:      "digest:channel:Ctest",
+		Weight:        -1.0,
+		Source:        "explicit_feedback",
+		EvidenceCount: 1,
+	}))
+
+	block := p.learnedPrefs()
+	assert.Contains(t, block, "LEARNED PREFERENCES")
+	assert.Contains(t, block, "digest:channel:Ctest")
 }

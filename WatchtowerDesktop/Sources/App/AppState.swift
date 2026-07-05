@@ -23,6 +23,10 @@ final class AppState {
     /// Map of custom emoji name → image URL, loaded from DB.
     var customEmojiMap: [String: String] = [:]
 
+    /// App-wide registry of in-flight custom-track scans, so the "scanning"
+    /// indicator survives navigating away from a track's detail.
+    let trackScanCenter = TrackScanCenter()
+
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?
@@ -32,6 +36,13 @@ final class AppState {
 
     /// Day Plan ViewModel — persists across tab switches.
     private(set) var dayPlanViewModel: DayPlanViewModel?
+
+    /// Catch-Up ViewModel — persists across tab switches.
+    private(set) var catchUpViewModel: CatchUpViewModel?
+
+    /// Sidebar badge counts — created during initialize() before the splash hides,
+    /// so badges are visible the moment the main UI appears.
+    private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
 
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
@@ -50,6 +61,12 @@ final class AppState {
 
     /// Set to navigate to the day plan for a specific date from anywhere in the app.
     var pendingDayPlanDate: String?
+
+    /// Set to focus a specific track from anywhere in the app.
+    var pendingTrackID: Int?
+
+    /// Set to focus a specific person card from anywhere in the app.
+    var pendingPersonUserID: String?
 
     /// Watches for new digests and sends notifications.
     private(set) var digestWatcher: DigestWatcher?
@@ -124,6 +141,16 @@ final class AppState {
         selectedDestination = .dayPlan
     }
 
+    func navigateToTrack(_ trackID: Int) {
+        pendingTrackID = trackID
+        selectedDestination = .tracks
+    }
+
+    func navigateToPerson(_ userID: String) {
+        pendingPersonUserID = userID
+        selectedDestination = .people
+    }
+
     private var isInitializing = false
 
     func initialize() {
@@ -161,6 +188,11 @@ final class AppState {
                 needsOnboarding = onboarding.currentStep != .complete
                 profileComplete = !needsOnboarding
                 analysisLegacyMode = ConfigService().analysisLegacyMode
+                // Pre-load sidebar badge counts so they're already visible when the splash hides.
+                // Skipped when onboarding is needed — the OnboardingView replaces the sidebar entirely.
+                if !needsOnboarding {
+                    await initSidebarCounts(dbPool: manager.dbPool)
+                }
                 // Hold splash for at least 2 seconds
                 let elapsed = ContinuousClock.now - splashStart
                 if elapsed < .seconds(2) {
@@ -170,6 +202,7 @@ final class AppState {
                 loadCustomEmoji(from: manager)
                 initCalendar(dbPool: manager.dbPool)
                 initDayPlan(dbPool: manager.dbPool)
+                initCatchUp(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -215,6 +248,19 @@ final class AppState {
         onboarding.markComplete()
         needsOnboarding = false
         profileComplete = true
+        // The initialize() path skips sidebar counts while onboarding is pending, so build
+        // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
+        if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
+            Task { await initSidebarCounts(dbPool: pool) }
+        }
+    }
+
+    /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
+    private func initSidebarCounts(dbPool: DatabasePool) async {
+        let countsVM = SidebarCountsViewModel(dbPool: dbPool)
+        await countsVM.loadInitial()
+        countsVM.startObserving()
+        sidebarCountsViewModel = countsVM
     }
 
     /// Re-triggers the onboarding flow (from Settings).
@@ -273,6 +319,10 @@ final class AppState {
     private func initDayPlan(dbPool: DatabasePool) {
         guard let runner = ProcessCLIRunner.makeDefault() else { return }
         dayPlanViewModel = DayPlanViewModel(databasePool: dbPool, cliRunner: runner)
+    }
+
+    private func initCatchUp(dbPool: DatabasePool) {
+        catchUpViewModel = CatchUpViewModel(dbPool: dbPool)
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

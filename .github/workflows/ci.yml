@@ -39,6 +39,9 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Coverage gate
+        run: make test-cover
+
   swift-lint:
     name: Swift Lint
     runs-on: macos-15
@@ -52,7 +55,7 @@ jobs:
         run: brew install swiftlint
 
       - name: SwiftLint
-        run: swiftlint lint
+        run: swiftlint lint --strict --baseline .swiftlint-baseline.json
 
   swift-test:
     name: Swift Test
@@ -68,3 +71,20 @@ jobs:
 
       - name: Test
         run: swift test
+
+  sentrux-quality:
+    name: Sentrux Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sentrux
+        run: curl -fsSL https://raw.githubusercontent.com/sentrux/sentrux/main/install.sh | sh
+
+      # check enforces .sentrux/rules.toml (max_cc, max_fn_lines, no_god_files).
+      - name: Architectural rules
+        run: sentrux check .
+
+      # gate blocks any structural regression vs .sentrux/baseline.json.
+      - name: Structural regression gate
+        run: sentrux gate .

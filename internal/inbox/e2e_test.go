@@ -67,7 +67,7 @@ func TestE2E_JiraMentionFlow(t *testing.T) {
 	assert.Equal(t, "source_mute", rule.RuleType)
 	assert.Equal(t, expectedScope, rule.ScopeKey)
 	assert.InDelta(t, -1.0, rule.Weight, 0.001, "weight should be -1.0 for never_show")
-	assert.Equal(t, "explicit_feedback", rule.Source)
+	assert.Equal(t, "user_rule", rule.Source)
 }
 
 // TestE2E_AmbientAutoArchive verifies that a high-importance decision_made item created via

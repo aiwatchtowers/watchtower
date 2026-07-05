@@ -197,6 +197,11 @@ type Track struct {
 	PromptVersion    int
 	CreatedAt        string
 	UpdatedAt        string
+	Origin           string // "auto" (default) or "custom"
+	Instruction      string // custom tracks: watch instruction
+	Enabled          bool   // custom tracks: scan on/off
+	LastRunAt        string // custom tracks: scan watermark, "" = never
+	LinkedTargetID   int    // custom tracks: linked target id, 0 = none
 }
 
 // Digest represents an AI-generated summary of channel activity.
@@ -484,6 +489,8 @@ type Target struct {
 	AILevelConfidence sql.NullFloat64
 	CreatedAt         string
 	UpdatedAt         string
+	NextStep          string // AI-suggested next action (JSON), "" when not yet generated
+	NextStepAt        string // when NextStep was generated; compared to UpdatedAt for staleness
 }
 
 // TargetNote represents a single note entry in a target's notes JSON array.

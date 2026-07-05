@@ -115,6 +115,13 @@ enum TrackQueries {
         }
     }
 
+    /// Marks multiple tracks read in one write, cascading to related digests per track.
+    static func markRead(_ db: Database, ids: [Int]) throws {
+        for id in ids {
+            try markRead(db, id: id)
+        }
+    }
+
     // MARK: - Priority
 
     static func updatePriority(_ db: Database, id: Int, priority: String) throws {
@@ -166,6 +173,48 @@ enum TrackQueries {
             sql: "UPDATE tracks SET dismissed_at = '' WHERE id = ?",
             arguments: [id]
         )
+    }
+
+    // MARK: - Custom tracks
+
+    static func fetchCustomTracks(_ db: Database) throws -> [Track] {
+        try Track.fetchAll(db, sql: """
+            SELECT * FROM tracks WHERE origin = 'custom' AND dismissed_at = ''
+            ORDER BY updated_at DESC
+            """)
+    }
+
+    /// Custom tracks (watches) linked to a given target, newest first.
+    static func fetchByLinkedTarget(_ db: Database, targetID: Int) throws -> [Track] {
+        try Track.fetchAll(db, sql: """
+            SELECT * FROM tracks
+            WHERE origin = 'custom' AND linked_target_id = ? AND dismissed_at = ''
+            ORDER BY updated_at DESC
+            """, arguments: [targetID])
+    }
+
+    static func setEnabled(_ db: Database, id: Int, enabled: Bool) throws {
+        try db.execute(sql: """
+            UPDATE tracks SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?
+            """, arguments: [enabled, id])
+    }
+
+    /// Edits a custom track's watch instruction in place.
+    static func updateInstruction(_ db: Database, id: Int, instruction: String) throws {
+        try db.execute(sql: """
+            UPDATE tracks SET instruction = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+            WHERE id = ? AND origin = 'custom'
+            """, arguments: [instruction, id])
+    }
+
+    static func fetchLastRunAt(_ db: Database, id: Int) throws -> String {
+        try String.fetchOne(db, sql: "SELECT last_run_at FROM tracks WHERE id = ?", arguments: [id]) ?? ""
+    }
+
+    /// Permanently deletes a track and cascades its track_events (FK ON DELETE
+    /// CASCADE). Used for user-created custom tracks; auto tracks use dismiss.
+    static func delete(_ db: Database, id: Int) throws {
+        try db.execute(sql: "DELETE FROM tracks WHERE id = ?", arguments: [id])
     }
 
     // MARK: - Workspace helper

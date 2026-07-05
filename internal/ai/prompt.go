@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"watchtower/internal/prompts"
 )
 
 const systemPromptTemplate = `You are Watchtower, an AI assistant that answers questions about a Slack workspace by querying its SQLite database.
@@ -105,13 +107,9 @@ var (
 	safeDomainRe = regexp.MustCompile(`[^a-zA-Z0-9_\-]`)    // domain: strict ASCII for URL context
 )
 
-// languageInstruction returns the response language directive for the system prompt.
-func languageInstruction(lang string) string {
-	if lang != "" && !strings.EqualFold(lang, "English") {
-		return fmt.Sprintf("IMPORTANT: Respond in %s. ALL text output MUST be in %s, not English.", lang, lang)
-	}
-	return "Match the user's language and tone"
-}
+// languageInstruction returns the response language directive for the
+// system prompt. Delegates to prompts.Directive for a single source of truth.
+func languageInstruction(lang string) string { return prompts.Directive(lang) }
 
 // BuildSystemPrompt generates the system prompt with database access context.
 func BuildSystemPrompt(workspaceName, domain, teamID, dbPath, schema, language string) string {

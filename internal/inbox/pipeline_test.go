@@ -117,7 +117,10 @@ func TestPipeline_Run_DetectDMs(t *testing.T) {
 	assert.Equal(t, "dm", items[0].TriggerType)
 }
 
-func TestPipeline_Run_AutoResolveWithoutAI(t *testing.T) {
+func TestInbox02_AutoResolveSlackOnUserReply(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// User replies in Slack → mention/dm/thread_reply auto-resolves.
+	// Do not weaken or remove without explicit owner approval.
 	database := testDB(t)
 	cfg := testConfig()
 
@@ -485,7 +488,10 @@ func seedJiraComment(t *testing.T, d *db.DB, issueKey, authorID, body string, cr
 	require.NoError(t, err, "insert jira_comment")
 }
 
-func TestAutoResolve_Jira_UserCommented(t *testing.T) {
+func TestInbox02_AutoResolveJiraOnUserComment(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// User comments on a Jira issue → jira_comment_mention auto-resolves.
+	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
 	// Open jira_comment_mention for WT-1, then user adds comment to the issue.
 	seedJiraIssue(t, d, "WT-1", "alice", time.Now().Add(-1*time.Hour))
@@ -504,7 +510,10 @@ func TestAutoResolve_Jira_UserCommented(t *testing.T) {
 	}
 }
 
-func TestAutoResolve_Calendar_UserResponded(t *testing.T) {
+func TestInbox02_AutoResolveCalendarOnUserRSVP(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// User responds to a calendar invite → calendar_invite auto-resolves.
+	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
 	seedCalendarEvent(t, d, "evt-1", "Sync",
 		`[{"email":"alice@x.com","rsvp_status":"needsAction"}]`,
@@ -524,4 +533,107 @@ func TestAutoResolve_Calendar_UserResponded(t *testing.T) {
 	if status != "resolved" {
 		t.Errorf("want resolved, got %q", status)
 	}
+}
+
+// TestPipeline_RunFastDetection verifies that RunFastDetection picks up Slack
+// DMs immediately, leaves the watermark untouched, and skips decision_made
+// detection (which depends on digests written later in the daemon cycle).
+func TestPipeline_RunFastDetection(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "alice")
+
+	// A Slack DM addressed to alice — should be picked up by fast detection.
+	dmTS := recentTS(20)
+	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-bob', 'dm', 'U_BOB')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_BOB', 'привет, есть минутка?')`, dmTS)
+	require.NoError(t, err)
+
+	// A digest with a high-importance decision — should NOT be picked up by fast
+	// detection (DetectWatchtowerInternal is skipped); the full Run picks it up.
+	seedDigestWithHighImportance(t, d, "C1",
+		`[{"type":"decision","topic":"Migrate to v2","importance":"high"}]`,
+		time.Now().Add(-5*time.Minute))
+
+	cfg := testConfig()
+	p := New(d, cfg, nil, log.Default())
+	p.SetCurrentUser("alice", "alice@x.com")
+
+	wmBefore, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+
+	require.NoError(t, p.RunFastDetection(context.Background()))
+
+	dmCount := func() int {
+		var n int
+		d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type='dm'`).Scan(&n) //nolint:errcheck
+		return n
+	}
+	decisionCount := func() int {
+		var n int
+		d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type='decision_made'`).Scan(&n) //nolint:errcheck
+		return n
+	}
+
+	assert.Equal(t, 1, dmCount(), "DM should be detected by fast pass")
+	assert.Equal(t, 0, decisionCount(), "decision_made must NOT be detected by fast pass")
+
+	wmAfter, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, wmBefore, wmAfter, "RunFastDetection must not advance the watermark")
+
+	// Subsequent full Run must pick up the digest decision and advance the watermark.
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, dmCount(), "full Run must not duplicate the DM detected by fast pass")
+	assert.Equal(t, 1, decisionCount(), "full Run must detect decision_made from the digest")
+
+	wmAfterFull, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Greater(t, wmAfterFull, wmBefore, "full Run must advance the watermark")
+}
+
+// TestPipeline_RunFastDetection_DisabledConfigNoOp: with inbox.enabled=false
+// the fast pass is a clean no-op — no detection, no writes.
+func TestPipeline_RunFastDetection_DisabledConfigNoOp(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "alice")
+
+	// A DM that WOULD be detected if the pipeline were enabled.
+	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-bob', 'dm', 'U_BOB')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_BOB', 'ping')`, recentTS(10))
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	cfg.Inbox.Enabled = false
+	p := New(d, cfg, nil, log.Default())
+	p.SetCurrentUser("alice", "alice@x.com")
+
+	require.NoError(t, p.RunFastDetection(context.Background()))
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&n))
+	assert.Equal(t, 0, n, "disabled pipeline must write nothing")
+}
+
+// TestPipeline_RunFastDetection_NoCurrentUserCleanExit: a workspace with no
+// current user (valid but degenerate — e.g. before the first auth.test) exits
+// cleanly with zero writes instead of erroring or mis-detecting.
+func TestPipeline_RunFastDetection_NoCurrentUserCleanExit(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "") // workspace row exists, current_user_id empty
+
+	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-bob', 'dm', 'U_BOB')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_BOB', 'ping')`, recentTS(10))
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+
+	require.NoError(t, p.RunFastDetection(context.Background()))
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&n))
+	assert.Equal(t, 0, n, "no-current-user fast pass must write nothing")
 }

@@ -207,4 +207,3 @@ final class TargetExtractServiceTests: XCTestCase {
         XCTAssertNil(result.extracted[0].secondaryLinks[1].targetId)
     }
 }
-

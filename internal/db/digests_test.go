@@ -43,6 +43,61 @@ func TestUpsertDigest(t *testing.T) {
 	assert.Equal(t, "haiku", got.Model)
 }
 
+// TestMarkDigestRead_CascadeDecisions locks the invariant that marking a digest
+// read also marks every decision in it read (a decision_reads row per index), so
+// the Decisions feed — which counts unread as total − COUNT(decision_reads) —
+// does not strand decisions of a digest that was read via catch-up.
+func TestMarkDigestRead_CascadeDecisions(t *testing.T) {
+	// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	id, err := db.UpsertDigest(Digest{
+		ChannelID:  "C1",
+		Type:       "channel",
+		PeriodFrom: 1000.0,
+		PeriodTo:   2000.0,
+		Summary:    "s",
+		Decisions:  `[{"text":"a"},{"text":"b"},{"text":"c"}]`,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.MarkDigestRead(int(id)))
+
+	var read int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM decision_reads WHERE digest_id = ?`, id).Scan(&read))
+	assert.Equal(t, 3, read, "all three decisions must be marked read")
+
+	// Idempotent: re-marking does not duplicate decision_reads rows.
+	require.NoError(t, db.MarkDigestRead(int(id)))
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM decision_reads WHERE digest_id = ?`, id).Scan(&read))
+	assert.Equal(t, 3, read, "re-marking read must not duplicate rows")
+}
+
+// TestMarkDigestRead_NoDecisionsIsNoop ensures a digest with an empty decisions
+// array creates no decision_reads rows (and does not error).
+func TestMarkDigestRead_NoDecisionsIsNoop(t *testing.T) {
+	// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	id, err := db.UpsertDigest(Digest{
+		ChannelID: "C1", Type: "channel", PeriodFrom: 1, PeriodTo: 2,
+		Summary: "s", Decisions: `[]`,
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.MarkDigestRead(int(id)))
+
+	var read int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM decision_reads WHERE digest_id = ?`, id).Scan(&read))
+	assert.Equal(t, 0, read)
+}
+
 func TestUpsertDigestReplacesExisting(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

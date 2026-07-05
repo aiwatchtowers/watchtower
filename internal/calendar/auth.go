@@ -22,10 +22,14 @@ const (
 	defaultRedirectPort       = 18501 // separate range from Slack (18491-18500)
 	callbackPath              = "/callback"
 	loginTimeout              = 5 * time.Minute
-	googleAuthEndpoint        = "https://accounts.google.com/o/oauth2/v2/auth"
-	googleTokenEndpoint       = "https://oauth2.googleapis.com/token"
 	calendarEventsScope       = "https://www.googleapis.com/auth/calendar.events.readonly"
 	calendarCalendarListScope = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+)
+
+// Google OAuth endpoints — vars so tests can point at httptest.Server.
+var (
+	googleAuthEndpoint  = "https://accounts.google.com/o/oauth2/v2/auth"
+	googleTokenEndpoint = "https://oauth2.googleapis.com/token"
 )
 
 // DefaultGoogleClientID and DefaultGoogleClientSecret are injected at build time via -ldflags:

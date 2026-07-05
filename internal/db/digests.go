@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -224,6 +225,54 @@ func (db *DB) GetDigestByID(id int) (*Digest, error) {
 		return nil, fmt.Errorf("getting digest by id: %w", err)
 	}
 	return &d, nil
+}
+
+// MarkDigestRead sets a single digest's read_at to now, idempotently (already-read
+// rows are left untouched). Used by the catch-up acknowledge cascade.
+func (db *DB) MarkDigestRead(id int) error {
+	_, err := db.Exec(`UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND read_at IS NULL`, id)
+	if err != nil {
+		return fmt.Errorf("marking digest %d read: %w", id, err)
+	}
+	// Cascade: a read digest implies its decisions are read. The Decisions feed
+	// counts unread as total − COUNT(decision_reads), so without this rows read
+	// via catch-up would stay stuck in that count. Mirrors the Desktop
+	// markAllDecisionsRead helper. Idempotent via the (digest_id, decision_idx) PK.
+	if err := db.markDigestDecisionsRead(id); err != nil {
+		return err
+	}
+	return nil
+}
+
+// markDigestDecisionsRead inserts a decision_reads row for every decision index
+// in the digest's decisions JSON array. Best-effort on malformed JSON: the digest
+// read itself stands and a corrupt decisions blob is skipped rather than failing.
+func (db *DB) markDigestDecisionsRead(digestID int) error {
+	var decisionsJSON string
+	err := db.QueryRow(`SELECT decisions FROM digests WHERE id = ?`, digestID).Scan(&decisionsJSON)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("loading decisions for digest %d: %w", digestID, err)
+	}
+	if decisionsJSON == "" || decisionsJSON == "[]" {
+		return nil
+	}
+	var decisions []json.RawMessage
+	if err := json.Unmarshal([]byte(decisionsJSON), &decisions); err != nil {
+		slog.Warn("skipping decision read-cascade: malformed decisions JSON", "digest_id", digestID, "err", err)
+		return nil
+	}
+	for idx := range decisions {
+		if _, err := db.Exec(
+			`INSERT INTO decision_reads (digest_id, decision_idx) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+			digestID, idx,
+		); err != nil {
+			return fmt.Errorf("marking decision %d of digest %d read: %w", idx, digestID, err)
+		}
+	}
+	return nil
 }
 
 // DeleteDigestsOlderThan removes digests with period_to before the given Unix timestamp.

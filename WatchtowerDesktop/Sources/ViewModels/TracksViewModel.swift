@@ -6,6 +6,10 @@ import GRDB
 final class TracksViewModel {
     var updatedTracks: [Track] = []
     var allTracks: [Track] = []
+    /// User-authored custom tracks, shown in a pinned "Custom" section above the
+    /// auto sections. Kept out of `updatedTracks`/`allTracks` so a custom track
+    /// is never listed twice.
+    var customTracks: [Track] = []
     var isLoading = false
     var errorMessage: String?
     var totalCount: Int = 0
@@ -139,8 +143,12 @@ final class TracksViewModel {
             }
 
             tracks = applySort(tracks)
-            updatedTracks = tracks.filter { $0.hasUpdates }
-            let rest = tracks.filter { !$0.hasUpdates }
+            // Custom tracks are pinned in their own section — partition them out
+            // of the auto sections so they aren't listed twice.
+            customTracks = tracks.filter { $0.isCustom }
+            let autoTracks = tracks.filter { !$0.isCustom }
+            updatedTracks = autoTracks.filter { $0.hasUpdates }
+            let rest = autoTracks.filter { !$0.hasUpdates }
             // Hide read tracks unless showRead is enabled
             allTracks = showRead ? rest : rest.filter { $0.isUnread }
             totalCount = result.3.total
@@ -150,6 +158,7 @@ final class TracksViewModel {
         } catch {
             updatedTracks = []
             allTracks = []
+            customTracks = []
             errorMessage = error.localizedDescription
         }
         isLoading = false
@@ -280,7 +289,7 @@ final class TracksViewModel {
     func slackMessageURL(channelID: String, messageTS: String, threadTS: String? = nil) -> URL? {
         guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
         // Use thread parent TS when available — Slack opens the thread context correctly.
-        let ts = (threadTS != nil && !threadTS!.isEmpty) ? threadTS! : messageTS
+        let ts = threadTS.flatMap { $0.isEmpty ? nil : $0 } ?? messageTS
         return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)&message=\(ts)")
     }
 

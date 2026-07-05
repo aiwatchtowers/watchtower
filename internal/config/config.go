@@ -56,6 +56,20 @@ type InboxConfig struct {
 	InitialLookbackDays int  `mapstructure:"initial_lookback_days"` // days to look back on first run (default: 7)
 }
 
+// CatchupConfig controls the on-demand unread summarizer.
+type CatchupConfig struct {
+	MaxAgeDays int         `mapstructure:"max_age_days"`
+	Caps       CatchupCaps `mapstructure:"caps"`
+}
+
+// CatchupCaps bounds how many unread items per area feed the AI rollup.
+type CatchupCaps struct {
+	Digests   int `mapstructure:"digests"`
+	Tracks    int `mapstructure:"tracks"`
+	Inbox     int `mapstructure:"inbox"`
+	Briefings int `mapstructure:"briefings"`
+}
+
 // TracksConfig holds settings for the tracks extraction pipeline.
 type TracksConfig struct {
 	MinMessages int `mapstructure:"min_messages"` // minimum visible messages for individual processing (default: 3)
@@ -147,8 +161,18 @@ type Config struct {
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
 	Targets         TargetsConfig               `mapstructure:"targets"`
+	Catchup         CatchupConfig               `mapstructure:"catchup"`
+	DB              DBConfig                    `mapstructure:"db"`
 	ClaudePath      string                      `mapstructure:"claude_path"`
 	CodexPath       string                      `mapstructure:"codex_path"`
+}
+
+// DBConfig captures database-runtime state that the binary tracks across
+// installs. Currently only schema_format, bumped when the migration engine
+// is replaced (legacy PRAGMA → goose). The runtime triggers a one-shot
+// upgrade when the on-disk value is below db.CurrentSchemaFormat.
+type DBConfig struct {
+	SchemaFormat int `mapstructure:"schema_format"`
 }
 
 // Load reads config from the given path, binds env vars, and returns the config.
@@ -180,6 +204,11 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.max_items_per_run", DefaultInboxMaxItems)
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
 	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
+	v.SetDefault("catchup.max_age_days", 30)
+	v.SetDefault("catchup.caps.digests", 150)
+	v.SetDefault("catchup.caps.tracks", 80)
+	v.SetDefault("catchup.caps.inbox", 120)
+	v.SetDefault("catchup.caps.briefings", 20)
 	v.SetDefault("calendar.enabled", DefaultCalendarEnabled)
 	v.SetDefault("calendar.sync_days_ahead", DefaultCalendarSyncDaysAhead)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
@@ -199,6 +228,11 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("targets.resolver.jira_enabled", DefaultTargetsResolverJiraEnabled)
 	v.SetDefault("targets.resolver.mcp_timeout_seconds", DefaultTargetsResolverMCPTimeoutSeconds)
 	v.SetDefault("targets.resolver.active_snapshot_limit", DefaultTargetsResolverActiveSnapshotLimit)
+	// db.schema_format defaults to 1 (legacy PRAGMA-based) so that any
+	// existing install triggers the one-shot upgrade on first run of the
+	// goose-based binary. cmd/root.go bumps it to db.CurrentSchemaFormat
+	// after RunSchemaUpgrade succeeds.
+	v.SetDefault("db.schema_format", 1)
 	// Config file
 	v.SetConfigFile(configPath)
 

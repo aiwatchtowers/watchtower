@@ -11,18 +11,30 @@ struct DigestDetailView: View {
     @State private var markReadError: String?
     @State private var digestTopics: [DigestTopic] = []
     @State private var showCreateTask = false
-    @State private var taskPrefillText = ""
-    @State private var taskPrefillSourceType = "digest"
+    @State private var targetPrefill: TargetPrefill?
+    @State private var targetPrefillError: String?
+    @State private var isBuildingPrefill = false
     @State private var jiraIssues: [String: JiraIssue] = [:]
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
     @State private var withoutJiraEnabled = false
     @State private var epicProgressVM: EpicProgressViewModel?
     @State private var channelsExpanded = false
+    // Deep link to the first Slack message inside this digest's time window, so
+    // opening Slack lands on the digested messages instead of the channel's
+    // latest. nil for cross-channel digests or when no message is in range.
+    @State private var firstMessageURL: URL?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let msg = targetPrefillError {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                }
+
                 // Header
                 header
 
@@ -66,11 +78,7 @@ struct DigestDetailView: View {
             .padding()
         }
         .sheet(isPresented: $showCreateTask) {
-            CreateTargetSheet(
-                prefillText: taskPrefillText,
-                prefillSourceType: taskPrefillSourceType,
-                prefillSourceID: String(digest.id)
-            )
+            CreateTargetSheet(prefill: targetPrefill)
         }
         .navigationTitle(channelName.map { "#\($0)" } ?? "Digest")
         .task {
@@ -82,6 +90,24 @@ struct DigestDetailView: View {
                 digestTopics = (try? dbManager.dbPool.read { db in
                     try DigestQueries.fetchTopics(db, digestID: digest.id)
                 }) ?? []
+
+                // Anchor the channel deep link to the first message in the
+                // digest window so Slack opens on the digested messages.
+                if !digest.channelID.isEmpty {
+                    let firstTS: String? = try? dbManager.dbPool.read { db in
+                        try MessageQueries.fetchByTimeRange(
+                            db,
+                            channelID: digest.channelID,
+                            from: digest.periodFrom,
+                            to: digest.periodTo
+                        ).first?.ts
+                    }
+                    if let ts = firstTS, !ts.isEmpty {
+                        firstMessageURL = viewModel.slackMessageURL(
+                            channelID: digest.channelID, messageTS: ts
+                        )
+                    }
+                }
 
                 // Load epic progress for weekly digests
                 if jiraConnected && digest.type == "weekly" {
@@ -126,7 +152,7 @@ struct DigestDetailView: View {
                 .background(typeColor.opacity(0.12), in: Capsule())
 
             if let name = channelName {
-                if let url = viewModel.slackChannelURL(channelID: digest.channelID) {
+                if let url = firstMessageURL ?? viewModel.slackChannelURL(channelID: digest.channelID) {
                     Link(destination: url) {
                         Text("#\(name)")
                             .font(.title3)
@@ -167,9 +193,18 @@ struct DigestDetailView: View {
             .foregroundStyle(.secondary)
 
             if digest.messageCount > 0 {
-                Label("\(digest.messageCount) messages", systemImage: "message")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let url = firstMessageURL {
+                    Link(destination: url) {
+                        Label("\(digest.messageCount) messages", systemImage: "message")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Open these messages in Slack")
+                } else {
+                    Label("\(digest.messageCount) messages", systemImage: "message")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer()
@@ -260,15 +295,14 @@ struct DigestDetailView: View {
                             .font(.headline)
                         Spacer()
                         Button {
-                            taskPrefillText = topic.title + (topic.summary.isEmpty ? "" : ": \(topic.summary)")
-                            taskPrefillSourceType = "digest"
-                            showCreateTask = true
+                            openCreateTarget()
                         } label: {
                             Image(systemName: "plus.circle")
                                 .foregroundStyle(.secondary)
                                 .font(.caption)
                         }
                         .buttonStyle(.plain)
+                        .disabled(isBuildingPrefill)
                         .help("Create task from topic")
                     }
                     if !topic.summary.isEmpty {
@@ -378,7 +412,7 @@ struct DigestDetailView: View {
                 Text("Jira Issues")
                     .font(.headline)
 
-                ForEach(Array(jiraIssues.values).sorted(by: { $0.key < $1.key }), id: \.key) { issue in
+                ForEach(Array(jiraIssues.values).sorted { $0.key < $1.key }, id: \.key) { issue in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
                             JiraBadgeView(
@@ -439,14 +473,13 @@ struct DigestDetailView: View {
                             HStack {
                                 Spacer()
                                 Button {
-                                    taskPrefillText = decision.text
-                                    taskPrefillSourceType = "digest"
-                                    showCreateTask = true
+                                    openCreateTarget()
                                 } label: {
                                     Label("Create task", systemImage: "plus.circle")
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(isBuildingPrefill)
                                 .foregroundStyle(.secondary)
                             }
                             .padding(.trailing, 4)
@@ -547,11 +580,28 @@ struct DigestDetailView: View {
     /// Returns nil when neither a usable channel nor a message timestamp is available.
     private func slackURL(for decision: Decision) -> URL? {
         guard let ts = decision.messageTS, !ts.isEmpty else { return nil }
-        let channelID = decision.channelID?.isEmpty == false
-            ? decision.channelID!
-            : digest.channelID
+        let channelID = decision.channelID.flatMap { $0.isEmpty ? nil : $0 } ?? digest.channelID
         guard !channelID.isEmpty else { return nil }
         return viewModel.slackMessageURL(channelID: channelID, messageTS: ts)
+    }
+
+    private func openCreateTarget() {
+        guard let db = appState.databaseManager else {
+            targetPrefillError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingPrefill = true
+            defer { isBuildingPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromDigest(digest, db: db)
+                targetPrefill = pf
+                targetPrefillError = nil
+                showCreateTask = true
+            } catch {
+                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func markChannelRead() {

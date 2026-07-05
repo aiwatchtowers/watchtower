@@ -182,7 +182,8 @@ enum TargetQueries {
         progress: Double = 0.0,
         sourceType: String = "manual",
         sourceID: String = "",
-        aiLevelConfidence: Double? = nil
+        aiLevelConfidence: Double? = nil,
+        secondaryLinks: [TargetPrefillLink] = []
     ) throws -> Int {
         try db.execute(sql: """
             INSERT INTO targets (text, intent, level, custom_label, period_start, period_end,
@@ -192,7 +193,23 @@ enum TargetQueries {
             """, arguments: [text, intent, level, customLabel, periodStart, periodEnd,
                              parentId, status, priority, ownership, ballOn, dueDate, snoozeUntil,
                              blocking, tags, subItems, notes, progress, sourceType, sourceID, aiLevelConfidence])
-        return Int(db.lastInsertedRowID)
+        let newID = Int(db.lastInsertedRowID)
+
+        for link in secondaryLinks {
+            let ref = link.externalRef
+            // Mirrors the Go-side allow-list `IsValidExternalRef`
+            // (internal/targets/extractor.go:146): only "jira:" and "slack:" pass.
+            guard ref.hasPrefix("jira:") || ref.hasPrefix("slack:") else { continue }
+            try db.execute(
+                sql: """
+                    INSERT INTO target_links (source_target_id, target_target_id, external_ref, relation, created_by)
+                    VALUES (?, NULL, ?, ?, 'user')
+                    """,
+                arguments: [newID, ref, link.relation]
+            )
+        }
+
+        return newID
     }
 
     // MARK: - Update
@@ -205,6 +222,25 @@ enum TargetQueries {
                 """,
             arguments: [status, id]
         )
+
+        // BEHAVIOR INBOX-02 — closing a target resolves its pending `target_due`
+        // inbox items so the user never has to close the same thing twice.
+        // Mirrors the Go-side cascade in `UpdateTargetStatus`
+        // (internal/db/targets.go); Desktop "Done" bypasses Go, so the two
+        // paths must stay in sync (same dual-path convention as
+        // `CatchUpQueries.acknowledge`).
+        if status == "done" || status == "dismissed" {
+            try db.execute(
+                sql: """
+                    UPDATE inbox_items
+                    SET status = 'resolved',
+                        resolved_reason = 'target_closed',
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    WHERE target_id = ? AND trigger_type = 'target_due' AND status = 'pending'
+                    """,
+                arguments: [id]
+            )
+        }
     }
 
     static func updatePriority(_ db: Database, id: Int, priority: String) throws {
@@ -214,6 +250,56 @@ enum TargetQueries {
                 WHERE id = ?
                 """,
             arguments: [priority, id]
+        )
+    }
+
+    /// Updates a target's horizon level. Switching to any standard level
+    /// (quarter/month/week/day) clears `custom_label`, which is only meaningful
+    /// for the "custom" level. When `periodStart`/`periodEnd` are supplied (the
+    /// natural window for the new level, see `Target.periodWindow`), the period is
+    /// updated too so it reflects the new granularity; pass nil to leave it as-is.
+    static func updateLevel(
+        _ db: Database,
+        id: Int,
+        level: String,
+        periodStart: String? = nil,
+        periodEnd: String? = nil
+    ) throws {
+        if let periodStart, let periodEnd {
+            try db.execute(
+                sql: """
+                    UPDATE targets
+                    SET level = ?,
+                        custom_label = CASE WHEN ? THEN '' ELSE custom_label END,
+                        period_start = ?,
+                        period_end = ?,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    WHERE id = ?
+                    """,
+                arguments: [level, level != "custom", periodStart, periodEnd, id]
+            )
+        } else {
+            try db.execute(
+                sql: """
+                    UPDATE targets
+                    SET level = ?,
+                        custom_label = CASE WHEN ? THEN '' ELSE custom_label END,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    WHERE id = ?
+                    """,
+                arguments: [level, level != "custom", id]
+            )
+        }
+    }
+
+    static func updateProgress(_ db: Database, id: Int, progress: Double) throws {
+        let clamped = min(max(progress, 0.0), 1.0)
+        try db.execute(
+            sql: """
+                UPDATE targets SET progress = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [clamped, id]
         )
     }
 
@@ -251,6 +337,26 @@ enum TargetQueries {
     }
 
     // MARK: - Links
+
+    /// Create a typed link between two existing targets. INSERT OR IGNORE respects
+    /// the UNIQUE(source, target, external_ref, relation) constraint, so re-proposing
+    /// an existing link is a no-op rather than an error.
+    static func createLink(
+        _ db: Database,
+        sourceID: Int,
+        targetID: Int,
+        relation: String,
+        createdBy: String = "user"
+    ) throws {
+        try db.execute(
+            sql: """
+                INSERT OR IGNORE INTO target_links
+                  (source_target_id, target_target_id, external_ref, relation, created_by)
+                VALUES (?, ?, '', ?, ?)
+                """,
+            arguments: [sourceID, targetID, relation, createdBy]
+        )
+    }
 
     static func fetchLinks(
         _ db: Database,

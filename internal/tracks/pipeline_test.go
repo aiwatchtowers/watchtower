@@ -2,6 +2,7 @@ package tracks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -211,14 +212,13 @@ func TestProgressCallback(t *testing.T) {
 
 func TestLanguageInstruction(t *testing.T) {
 	pipe := &Pipeline{cfg: &config.Config{}}
-	// Default (empty language)
-	assert.Contains(t, pipe.languageInstruction(), "language most commonly used")
+	// languageInstruction now delegates to prompts.Directive: empty falls back
+	// to the default language (Russian); explicit values pass through verbatim.
+	assert.Contains(t, pipe.languageInstruction(), "Respond ONLY in Russian")
 
-	// English (should also use default)
 	pipe.cfg.Digest.Language = "English"
-	assert.Contains(t, pipe.languageInstruction(), "language most commonly used")
+	assert.Contains(t, pipe.languageInstruction(), "Respond ONLY in English")
 
-	// Non-English
 	pipe.cfg.Digest.Language = "Russian"
 	assert.Contains(t, pipe.languageInstruction(), "Russian")
 	assert.Contains(t, pipe.languageInstruction(), "IMPORTANT")
@@ -1041,4 +1041,132 @@ func TestTopicDedupBySourceRefs(t *testing.T) {
 	tracks, err := database.GetAllActiveTracks()
 	require.NoError(t, err)
 	assert.Len(t, tracks, 2) // 1 existing + 1 new
+}
+
+// capturingGenerator records the system + user message of the most recent call.
+type capturingGenerator struct {
+	response   string
+	systemSeen string
+	userSeen   string
+}
+
+func (m *capturingGenerator) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
+	m.systemSeen = system
+	m.userSeen = user
+	return m.response, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0}, "mock-session", nil
+}
+
+// TestTracksLearnedPrefsInPrompt verifies a "tracks" learned rule is formatted
+// into the assembled batch prompt that reaches the generator.
+func TestTracksLearnedPrefsInPrompt(t *testing.T) {
+	database := testDB(t)
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
+
+	now := time.Now()
+	from := float64(now.Add(-2 * time.Hour).Unix())
+	to := float64(now.Unix())
+
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: from, PeriodTo: to,
+		Summary: "Backend review discussions", MessageCount: 10, Model: "test",
+	})
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+			VALUES (1, ?, ?, 'Topic summary', '[]', '[{"text":"review code"}]', '[]', '[]')`, i, fmt.Sprintf("Backend topic %d", i))
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, database.UpsertLearnedRule(db.InboxLearnedRule{
+		Pipeline:      "tracks",
+		RuleType:      "source_mute",
+		ScopeKey:      "tracks:channel:Ctest",
+		Weight:        -1.0,
+		Source:        "explicit_feedback",
+		EvidenceCount: 1,
+	}))
+
+	gen := &capturingGenerator{response: `[]`}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	_, _, err = pipe.Run(context.Background())
+	require.NoError(t, err)
+
+	combined := gen.systemSeen + "\n" + gen.userSeen
+	assert.Contains(t, combined, "LEARNED PREFERENCES")
+	assert.Contains(t, combined, "tracks:channel:Ctest")
+}
+
+// TestTracksLearnedPrefsHelper verifies learnedPrefs returns the formatted block.
+func TestTracksLearnedPrefsHelper(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertLearnedRule(db.InboxLearnedRule{
+		Pipeline:      "tracks",
+		RuleType:      "source_mute",
+		ScopeKey:      "tracks:channel:Ctest",
+		Weight:        -1.0,
+		Source:        "explicit_feedback",
+		EvidenceCount: 1,
+	}))
+
+	pipe := New(database, testConfig(), &mockGenerator{}, log.Default())
+	prefs := pipe.learnedPrefs()
+	assert.Contains(t, prefs, "LEARNED PREFERENCES")
+	assert.Contains(t, prefs, "tracks:channel:Ctest")
+}
+
+func TestAutoExtractionFoldsIntoCustomTrack(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	require.NoError(t, database.SetCurrentUserID("U1"))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
+
+	// Seed a custom track whose text/context match the auto item below.
+	custID, err := database.CreateCustomTrack(db.Track{
+		AssigneeUserID: "U1", Text: "Watch the HashBank refund decision",
+		Context: "refund ownership", Instruction: "watch refund", Fingerprint: `["hashbank"]`,
+	})
+	require.NoError(t, err)
+
+	pipe := New(database, testConfig(), &mockGenerator{}, log.Default())
+
+	// Pre-load cache (normally done in RunForWindow); includes the custom track.
+	allActive, _ := database.GetAllActiveTracks()
+	pipe.allActiveTracksRef = allActive
+
+	stored := pipe.storeTrackItems([]aiItem{{
+		Text: "Decide HashBank refund owner", Context: "who owns the hashbank refund",
+		Priority: "high", Ownership: "mine",
+		SourceRefs: json.RawMessage(`[{"ts":"1","author":"a","text":"x"}]`),
+	}}, "U1", "C1", "general", nil, 1, 0, 0)
+
+	// The auto item folded into the custom track → no new auto track created.
+	assert.Equal(t, 1, stored)
+
+	autos, _ := database.GetTracks(db.TrackFilter{})
+	customCount, autoCount := 0, 0
+	for _, tr := range autos {
+		if tr.Origin == "custom" {
+			customCount++
+		} else {
+			autoCount++
+		}
+	}
+	if autoCount != 0 || customCount != 1 {
+		t.Fatalf("expected fold into the 1 custom track, got auto=%d custom=%d", autoCount, customCount)
+	}
+
+	// Narrative preserved.
+	got, _ := database.GetTrackByID(int(custID))
+	if got.Text != "Watch the HashBank refund decision" {
+		t.Fatalf("custom narrative overwritten: %q", got.Text)
+	}
+	assert.True(t, got.HasUpdates, "fold should flag has_updates")
 }

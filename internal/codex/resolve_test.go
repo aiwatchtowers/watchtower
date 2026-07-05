@@ -7,7 +7,11 @@ import (
 	"testing"
 )
 
+var resetCacheMu sync.Mutex
+
 func resetCache() {
+	resetCacheMu.Lock()
+	defer resetCacheMu.Unlock()
 	cachedBinary = ""
 	cachedBinaryMu = sync.Once{}
 	cachedPATH = ""

@@ -102,6 +102,11 @@ struct Track: FetchableRecord, Identifiable, Equatable {
     let promptVersion: Int
     let createdAt: String
     let updatedAt: String
+    let origin: String
+    let instruction: String
+    let enabled: Bool
+    let lastRunAt: String
+    let linkedTargetID: Int?
 
     init(row: Row) {
         id = row["id"]
@@ -136,6 +141,11 @@ struct Track: FetchableRecord, Identifiable, Equatable {
         promptVersion = row["prompt_version"] ?? 0
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+        origin = row["origin"] ?? "auto"
+        instruction = row["instruction"] ?? ""
+        enabled = row["enabled"] ?? true
+        lastRunAt = row["last_run_at"] ?? ""
+        linkedTargetID = row["linked_target_id"]
     }
 
     // MARK: - Ownership predicates
@@ -143,6 +153,10 @@ struct Track: FetchableRecord, Identifiable, Equatable {
     var isMine: Bool { ownership == "mine" }
     var isDelegated: Bool { ownership == "delegated" }
     var isWatching: Bool { ownership == "watching" }
+
+    // MARK: - Origin
+
+    var isCustom: Bool { origin == "custom" }
 
     // MARK: - Read predicates
 

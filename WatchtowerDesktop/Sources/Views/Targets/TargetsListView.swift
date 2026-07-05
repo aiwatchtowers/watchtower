@@ -11,22 +11,34 @@ struct TargetsListView: View {
     var body: some View {
         HStack(spacing: 0) {
             if let vm = viewModel {
+                // Read the observed arrays at the top of `body` so SwiftUI registers
+                // the dependency for the whole view — not just inside `listPanel`'s
+                // helpers. This guarantees both the list and the detail pane below
+                // re-render when an in-pane edit (e.g. changing a target's level)
+                // calls `load()`, instead of waiting for an unrelated refresh.
+                let loaded = vm.todayTargets + vm.allTargets
+
                 listPanel(vm)
 
-                if let id = selectedItemID, let item = vm.itemByID(id) {
-                    Divider()
+                Divider()
+
+                if let id = selectedItemID,
+                   let item = loaded.first(where: { $0.id == id }) ?? vm.itemByID(id) {
                     TargetDetailView(target: item, viewModel: vm) {
                         selectedItemID = nil
                     }
                     .id(id)
-                    .frame(minWidth: 400, idealWidth: 500)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    emptyDetailPlaceholder
                 }
             } else {
                 ProgressView("Loading...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .animation(.easeInOut(duration: 0.25), value: selectedItemID)
         .onAppear {
             initViewModel()
@@ -137,13 +149,14 @@ struct TargetsListView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        todaySection(vm.todayTargets, vm: vm)
-                        allSection(vm.allTargets, vm: vm)
+                        let combined = vm.todayTargets + vm.allTargets
+                        todaySection(vm.todayTargets, allTargets: combined, vm: vm)
+                        allSection(vm.allTargets, allTargets: combined, vm: vm)
                     }
                 }
             }
         }
-        .frame(minWidth: 300, idealWidth: 350)
+        .frame(minWidth: 280, idealWidth: 320, maxWidth: 360)
     }
 
     // MARK: - Toolbar
@@ -215,24 +228,75 @@ struct TargetsListView: View {
 
     // MARK: - Sections
 
+    private var emptyDetailPlaceholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "scope")
+                .font(.system(size: 30))
+                .foregroundStyle(.tertiary)
+            Text("Select a target to see details")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     @ViewBuilder
-    private func todaySection(_ targets: [Target], vm: TargetsViewModel) -> some View {
-        if !targets.isEmpty {
-            sectionHeader("Today", count: targets.count)
-            ForEach(targets) { target in
-                targetRow(target, vm: vm, depth: 0)
+    private func todaySection(_ targets: [Target], allTargets: [Target], vm: TargetsViewModel) -> some View {
+        let entries = Self.rootEntries(targets, in: allTargets)
+        if !entries.isEmpty {
+            sectionHeader("Today", count: entries.filter { $0.depth == 0 }.count)
+            ForEach(entries) { entry in
+                targetRow(entry.target, vm: vm, depth: entry.depth)
             }
         }
     }
 
     @ViewBuilder
-    private func allSection(_ targets: [Target], vm: TargetsViewModel) -> some View {
-        if !targets.isEmpty {
-            sectionHeader("All Targets", count: targets.count)
-            ForEach(targets) { target in
-                targetRow(target, vm: vm, depth: 0)
+    private func allSection(_ targets: [Target], allTargets: [Target], vm: TargetsViewModel) -> some View {
+        let entries = Self.rootEntries(targets, in: allTargets)
+        if !entries.isEmpty {
+            sectionHeader("All Targets", count: entries.filter { $0.depth == 0 }.count)
+            ForEach(entries) { entry in
+                targetRow(entry.target, vm: vm, depth: entry.depth)
             }
         }
+    }
+
+    /// A target plus its nesting depth, for rendering parent→child hierarchy.
+    private struct HierEntry: Identifiable {
+        let target: Target
+        let depth: Int
+        var id: Int { target.id }
+    }
+
+    /// Build the rows for a section: every root in `sectionTargets` (a target whose
+    /// parent is not present anywhere in the list) followed by its full subtree.
+    /// Children are pulled from the whole `allTargets` set — so a parent in "Today"
+    /// nests its children even when they live in "All Targets" — and a child is never
+    /// rendered as its own root, so it appears exactly once, under its parent.
+    private static func rootEntries(_ sectionTargets: [Target], in allTargets: [Target]) -> [HierEntry] {
+        let presentIDs = Set(allTargets.map { $0.id })
+        var childrenByParent: [Int: [Target]] = [:]
+        for target in allTargets {
+            if let parentID = target.parentId, presentIDs.contains(parentID) {
+                childrenByParent[parentID, default: []].append(target)
+            }
+        }
+        func isRoot(_ target: Target) -> Bool {
+            guard let parentID = target.parentId else { return true }
+            return !presentIDs.contains(parentID)
+        }
+        var ordered: [HierEntry] = []
+        func visit(_ target: Target, _ depth: Int) {
+            ordered.append(HierEntry(target: target, depth: depth))
+            for child in childrenByParent[target.id] ?? [] {
+                visit(child, depth + 1)
+            }
+        }
+        for target in sectionTargets where isRoot(target) {
+            visit(target, 0)
+        }
+        return ordered
     }
 
     private func sectionHeader(_ title: String, count: Int) -> some View {
@@ -262,6 +326,9 @@ struct TargetsListView: View {
             HStack(spacing: 8) {
                 if indent > 0 {
                     Spacer().frame(width: indent)
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
 
                 Button {

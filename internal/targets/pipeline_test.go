@@ -3,22 +3,36 @@ package targets
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
 
-// mockGenerator implements digest.Generator for tests.
+// mockGenerator implements digest.Generator for tests. It is mutex-guarded
+// because GenerateAllNextSteps calls it from a worker pool.
+// failOnUserSubstring fails only calls whose user prompt contains the
+// substring (to fail one target out of a batch).
 type mockGenerator struct {
-	responses []string // returned in order; last is repeated if exhausted
-	callCount int
-	err       error
+	mu                  sync.Mutex
+	responses           []string // returned in order; last is repeated if exhausted
+	callCount           int
+	err                 error
+	failOnUserSubstring string
+	lastSystem          string
 }
 
-func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+func (m *mockGenerator) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastSystem = system
 	if m.err != nil {
 		return "", nil, "", m.err
+	}
+	if m.failOnUserSubstring != "" && strings.Contains(user, m.failOnUserSubstring) {
+		return "", nil, "", fmt.Errorf("simulated AI failure")
 	}
 	idx := m.callCount
 	if idx >= len(m.responses) {
@@ -26,6 +40,13 @@ func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *di
 	}
 	m.callCount++
 	return m.responses[idx], &digest.Usage{InputTokens: 100, OutputTokens: 50}, "", nil
+}
+
+// calls returns the number of successful Generate invocations, safely.
+func (m *mockGenerator) calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
 }
 
 // --- helpers ---
@@ -37,7 +58,7 @@ func makeTestPipeline(t *testing.T, gen digest.Generator) (*Pipeline, *db.DB) {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })
-	p := New(d, nil, gen, nil, nil)
+	p := New(d, nil, gen, nil, "", nil)
 	return p, d
 }
 
@@ -98,7 +119,7 @@ func TestPipeline_Extract_HappyPath(t *testing.T) {
 	}`, parentID)
 
 	gen := &mockGenerator{responses: []string{response}}
-	p := New(d, nil, gen, nil, nil)
+	p := New(d, nil, gen, nil, "", nil)
 
 	result, err := p.Extract(context.Background(), ExtractRequest{
 		RawText:    "Need to draft API spec (PROJ-42) and review PR",
@@ -322,7 +343,7 @@ func TestPipeline_CreateFromExtraction_PersistsSubItems(t *testing.T) {
 		},
 	}}
 
-	p := New(d, nil, nil, nil, nil)
+	p := New(d, nil, nil, nil, "", nil)
 	ids, err := p.CreateFromExtraction(context.Background(), items, "extract", "")
 	if err != nil {
 		t.Fatalf("CreateFromExtraction: %v", err)
@@ -435,7 +456,7 @@ func TestPipeline_CreateFromExtraction_HappyPath(t *testing.T) {
 		},
 	}
 
-	p := New(d, nil, nil, nil, nil)
+	p := New(d, nil, nil, nil, "", nil)
 	ids, err := p.CreateFromExtraction(context.Background(), items, "extract", "")
 	if err != nil {
 		t.Fatalf("CreateFromExtraction: %v", err)
@@ -479,7 +500,7 @@ func TestPipeline_CreateFromExtraction_TxRollbackOnFailure(t *testing.T) {
 		},
 	}
 
-	p := New(d, nil, nil, nil, nil)
+	p := New(d, nil, nil, nil, "", nil)
 	_, err = p.CreateFromExtraction(context.Background(), items, "extract", "")
 	if err == nil {
 		t.Fatal("expected error on constraint violation")

@@ -7,8 +7,20 @@ struct TrackDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var chatVM: TrackChatViewModel?
     @State private var showCreateTarget = false
+    @State private var targetPrefill: TargetPrefill?
+    @State private var targetPrefillError: String?
+    @State private var isBuildingPrefill = false
     @State private var linkedTargets: [Target] = []
     @State private var jiraIssues: [JiraIssue] = []
+    @State private var trackStates: [TrackState] = []
+    @State private var expandedTrackStateIDs: Set<Int> = []
+    @State private var timelineVM: CustomTrackTimelineViewModel?
+    // Custom-track manage state (local so edits reflect before a snapshot reload).
+    @State private var displayedInstruction = ""
+    @State private var collecting = true
+    @State private var isEditingInstruction = false
+    @State private var draftInstruction = ""
+    @State private var showDeleteConfirm = false
 
     var body: some View {
         VSplitView {
@@ -18,11 +30,13 @@ struct TrackDetailView: View {
                     textSection
                     requesterSection
                     contextSection
+                    customActivitySection
                     blockingSection
                     subItemsSection
                     decisionSection
                     decisionOptionsSection
                     participantsSection
+                    historySection
                     sourceRefsSection
                     relatedDigestsSection
                     linkedTasksSection
@@ -49,13 +63,146 @@ struct TrackDetailView: View {
                 )
                 loadLinkedTargets(db: db)
                 loadJiraIssues(db: db)
+                loadTrackStates(db: db)
+                startTimelineIfCustom(db: db)
+                displayedInstruction = track.instruction
+                collecting = track.enabled
             }
+        }
+        .onChange(of: track.id) {
+            timelineVM?.stop()
+            timelineVM = nil
+            isEditingInstruction = false
+            displayedInstruction = track.instruction
+            collecting = track.enabled
+            if let db = appState.databaseManager {
+                startTimelineIfCustom(db: db)
+            }
+        }
+        .onDisappear {
+            timelineVM?.stop()
+            timelineVM = nil
         }
         .onChange(of: showCreateTarget) { _, isShowing in
             if !isShowing, let db = appState.databaseManager {
                 loadLinkedTargets(db: db)
             }
         }
+    }
+
+    // MARK: - Custom-track Activity
+
+    /// Timeline of scan-produced events for a custom track. Standalone tracks
+    /// (no linked target) still see the timeline; only the per-event "Apply"
+    /// affordance is gated on the track being linked (see the VM's
+    /// `canApplyActions`).
+    @ViewBuilder
+    private var customActivitySection: some View {
+        if track.isCustom {
+            VStack(alignment: .leading, spacing: 12) {
+                // Manage row: collecting toggle + edit affordance.
+                HStack {
+                    Toggle(isOn: Binding(
+                        get: { collecting },
+                        set: { setCollecting($0) }
+                    )) {
+                        Text(collecting ? "Collecting" : "Paused")
+                            .font(.subheadline)
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help(collecting
+                          ? "The daemon scans this watch each cycle. Turn off to pause."
+                          : "Paused — the daemon skips this watch until re-enabled.")
+                    Spacer()
+                    if !isEditingInstruction {
+                        Button {
+                            draftInstruction = displayedInstruction
+                            isEditingInstruction = true
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Watch instruction").font(.headline)
+                    if isEditingInstruction {
+                        TextField("What to watch for…", text: $draftInstruction, axis: .vertical)
+                            .lineLimit(3...10)
+                            .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Spacer()
+                            Button("Cancel") { isEditingInstruction = false }
+                            Button("Save") { saveInstruction() }
+                                .keyboardShortcut(.defaultAction)
+                                .disabled(draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    } else if !displayedInstruction.isEmpty {
+                        Text(displayedInstruction)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                if let vm = timelineVM {
+                    CustomTrackTimelineView(viewModel: vm)
+                }
+            }
+        }
+    }
+
+    /// Persists an edited watch instruction and reflects it immediately.
+    private func saveInstruction() {
+        let text = draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let db = appState.databaseManager else { return }
+        try? db.dbPool.write { database in
+            try TrackQueries.updateInstruction(database, id: track.id, instruction: text)
+        }
+        displayedInstruction = text
+        isEditingInstruction = false
+    }
+
+    /// Toggles whether the daemon collects for this watch.
+    private func setCollecting(_ on: Bool) {
+        guard let db = appState.databaseManager else { return }
+        try? db.dbPool.write { database in
+            try TrackQueries.setEnabled(database, id: track.id, enabled: on)
+        }
+        collecting = on
+    }
+
+    /// Permanently deletes a custom track (and its events) and closes the pane;
+    /// the list's tracks-count observation drops it automatically.
+    private func deleteTrack() {
+        guard let db = appState.databaseManager else { return }
+        onClose?()
+        try? db.dbPool.write { database in
+            try TrackQueries.delete(database, id: track.id)
+        }
+    }
+
+    /// Builds and starts the custom-track timeline VM. When the track is linked
+    /// to a target, a TargetsViewModel is supplied so a confirmed proposed
+    /// action can mutate that target; standalone tracks pass nil.
+    private func startTimelineIfCustom(db: DatabaseManager) {
+        guard track.isCustom, timelineVM == nil,
+              let runner = ProcessCLIRunner.makeDefault() else { return }
+        let targetsVM: TargetsViewModel? = track.linkedTargetID != nil
+            ? TargetsViewModel(dbManager: db)
+            : nil
+        let vm = CustomTrackTimelineViewModel(
+            track: track,
+            dbManager: db,
+            scanService: TrackScanService(runner: runner),
+            targetsViewModel: targetsVM,
+            scanCenter: appState.trackScanCenter
+        )
+        vm.start()
+        timelineVM = vm
     }
 
     // MARK: - Header
@@ -488,22 +635,58 @@ struct TrackDetailView: View {
                 .buttonStyle(.borderedProminent)
             }
 
-            Button {
-                showCreateTarget = true
-            } label: {
-                Label("Create Target", systemImage: "scope")
-            }
-            .buttonStyle(.bordered)
-            .sheet(isPresented: $showCreateTarget) {
-                CreateTargetSheet(
-                    prefillText: track.text,
-                    prefillIntent: track.context,
-                    prefillSourceType: "track",
-                    prefillSourceID: String(track.id)
-                )
+            if let msg = targetPrefillError {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
-            if track.isDismissed {
+            // A custom track is a watch, not extracted work — "Create Target"
+            // makes no sense for it. When it's linked to a target, offer a jump
+            // to that target instead; standalone custom tracks show neither.
+            if track.isCustom {
+                if let linkedID = track.linkedTargetID {
+                    Button {
+                        appState.navigateToTarget(linkedID)
+                    } label: {
+                        Label("Go to Target", systemImage: "scope")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else {
+                Button {
+                    openCreateTarget()
+                } label: {
+                    Label("Create Target", systemImage: "scope")
+                }
+                .buttonStyle(.bordered)
+                .disabled(isBuildingPrefill)
+                .sheet(isPresented: $showCreateTarget) {
+                    CreateTargetSheet(prefill: targetPrefill)
+                }
+            }
+
+            if track.isCustom {
+                // A watch is user-created and one-off — offer a real delete
+                // (cascades its events) rather than the soft dismiss used for
+                // auto-extracted tracks.
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .confirmationDialog(
+                    "Delete this watch?",
+                    isPresented: $showDeleteConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete", role: .destructive) { deleteTrack() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The watch and its collected activity are removed. This can't be undone.")
+                }
+            } else if track.isDismissed {
                 Button {
                     viewModel.restoreTrack(track)
                 } label: {
@@ -699,6 +882,100 @@ struct TrackDetailView: View {
         }) ?? []
     }
 
+    /// Loads the narrative-state history for this track. See TRACKS-06.
+    private func loadTrackStates(db: DatabaseManager) {
+        trackStates = (try? db.dbPool.read { database in
+            try TrackStateQueries.fetchByTrackID(database, trackID: track.id)
+        }) ?? []
+    }
+
+    // MARK: - History (TRACKS-06)
+
+    private var historySection: some View {
+        Group {
+            if !trackStates.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("History")
+                            .font(.headline)
+                        Text("(\(trackStates.count))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(trackStates) { state in
+                        trackStateRow(state)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func trackStateRow(_ state: TrackState) -> some View {
+        let isExpanded = expandedTrackStateIDs.contains(state.id)
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                if isExpanded {
+                    expandedTrackStateIDs.remove(state.id)
+                } else {
+                    expandedTrackStateIDs.insert(state.id)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(state.createdAgo)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(state.sourceLabel)
+                        .font(.caption)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(state.isManual ? Color.blue.opacity(0.15) : Color.purple.opacity(0.15))
+                        .foregroundStyle(state.isManual ? .blue : .purple)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !state.text.isEmpty {
+                        Text(state.text)
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
+                    if !state.context.isEmpty {
+                        Text(state.context)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    HStack(spacing: 12) {
+                        Label(state.priority, systemImage: "flag")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Label(state.ownership, systemImage: "person")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Label(state.category, systemImage: "tag")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, 18)
+                .padding(.top, 2)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     private func taskStatusColor(_ status: String) -> Color {
         switch status {
         case "todo": .secondary
@@ -826,6 +1103,25 @@ struct TrackDetailView: View {
         case "reviewer": .purple
         case "neutral": .secondary
         default: .secondary
+        }
+    }
+
+    private func openCreateTarget() {
+        guard let db = appState.databaseManager else {
+            targetPrefillError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingPrefill = true
+            defer { isBuildingPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromTrack(track, db: db)
+                targetPrefill = pf
+                targetPrefillError = nil
+                showCreateTarget = true
+            } catch {
+                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
         }
     }
 }

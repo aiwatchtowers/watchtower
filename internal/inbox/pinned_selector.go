@@ -11,6 +11,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 //go:embed prompts/select_pinned.tmpl
@@ -20,14 +21,16 @@ const maxPinned = 5
 
 // PinnedSelector uses AI to select the most critical inbox items to pin.
 type PinnedSelector struct {
-	db     *db.DB
-	gen    digest.Generator
-	logger *log.Logger
+	db       *db.DB
+	gen      digest.Generator
+	language string
+	logger   *log.Logger
 }
 
-// NewPinnedSelector creates a PinnedSelector with the given DB and generator.
-func NewPinnedSelector(database *db.DB, gen digest.Generator) *PinnedSelector {
-	return &PinnedSelector{db: database, gen: gen, logger: log.Default()}
+// NewPinnedSelector creates a PinnedSelector with the given DB, generator,
+// and response language (empty falls back to prompts.DefaultLanguage).
+func NewPinnedSelector(database *db.DB, gen digest.Generator, language string) *PinnedSelector {
+	return &PinnedSelector{db: database, gen: gen, language: language, logger: log.Default()}
 }
 
 // pinnedResp is the expected JSON response from the AI.
@@ -54,7 +57,7 @@ func (p *PinnedSelector) Run(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	prompt, err := renderPinnedPrompt(items, prefs)
+	prompt, err := renderPinnedPrompt(items, prefs, prompts.Directive(p.language))
 	if err != nil {
 		return 0, err
 	}
@@ -87,18 +90,19 @@ func (p *PinnedSelector) Run(ctx context.Context) (int, error) {
 	return len(filtered), nil
 }
 
-func renderPinnedPrompt(items []db.InboxItem, prefs string) (string, error) {
+func renderPinnedPrompt(items []db.InboxItem, prefs, languageDirective string) (string, error) {
 	tmpl, err := template.New("select_pinned").Parse(selectPinnedTmpl)
 	if err != nil {
 		return "", err
 	}
 	var buf bytes.Buffer
 	err = tmpl.Execute(&buf, map[string]interface{}{
-		"Now":             time.Now().Format(time.RFC3339),
-		"CalendarContext": "",
-		"UserPreferences": prefs,
-		"Items":           items,
-		"MaxPinned":       maxPinned,
+		"Now":               time.Now().Format(time.RFC3339),
+		"CalendarContext":   "",
+		"UserPreferences":   prefs,
+		"Items":             items,
+		"MaxPinned":         maxPinned,
+		"LanguageDirective": languageDirective,
 	})
 	if err != nil {
 		return "", err

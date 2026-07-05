@@ -88,7 +88,7 @@ final class TargetPromoteSubItemServiceTests: XCTestCase {
             ("--due", "2026-05-01T10:00"),
             ("--period-start", "2026-04-30"),
             ("--period-end", "2026-04-30"),
-            ("--tags", "x,y"),
+            ("--tags", "x,y")
         ]
         for (flag, value) in pairs {
             guard let i = args.firstIndex(of: flag) else {

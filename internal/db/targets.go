@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,7 +12,8 @@ import (
 const targetSelectCols = `id, text, intent, level, custom_label, period_start, period_end,
 	parent_id, status, priority, ownership,
 	ball_on, due_date, snooze_until, blocking, tags, sub_items, notes,
-	progress, source_type, source_id, ai_level_confidence, created_at, updated_at`
+	progress, source_type, source_id, ai_level_confidence, created_at, updated_at,
+	next_step, next_step_at`
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 	var t Target
@@ -20,6 +22,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 		&t.ParentID, &t.Status, &t.Priority, &t.Ownership,
 		&t.BallOn, &t.DueDate, &t.SnoozeUntil, &t.Blocking, &t.Tags, &t.SubItems, &t.Notes,
 		&t.Progress, &t.SourceType, &t.SourceID, &t.AILevelConfidence, &t.CreatedAt, &t.UpdatedAt,
+		&t.NextStep, &t.NextStepAt,
 	); err != nil {
 		return nil, err
 	}
@@ -132,6 +135,54 @@ func (db *DB) GetTargetByID(id int) (*Target, error) {
 	return t, nil
 }
 
+// SetTargetNextStep stores an AI-generated next-step suggestion (JSON) and the
+// time it was generated. It deliberately does NOT bump updated_at: staleness is
+// detected by comparing next_step_at against updated_at, so a later user edit
+// (which does bump updated_at) makes the suggestion appear stale and eligible
+// for regeneration.
+func (db *DB) SetTargetNextStep(id int, nextStep, generatedAt string) error {
+	_, err := db.Exec(
+		`UPDATE targets SET next_step = ?, next_step_at = ? WHERE id = ?`,
+		nextStep, generatedAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("setting next_step for target %d: %w", id, err)
+	}
+	return nil
+}
+
+// GetTargetsNeedingNextStep returns active targets (todo/in_progress/blocked)
+// whose next_step is missing or stale — i.e. never generated, or generated
+// before the target's last edit. Ordered by priority then nearest due date so
+// the most pressing targets are refreshed first. limit <= 0 means no cap.
+func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
+	query := `SELECT ` + targetSelectCols + ` FROM targets
+		WHERE status IN ('todo','in_progress','blocked')
+		  AND (next_step_at = '' OR next_step_at < updated_at)
+		ORDER BY
+		  CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+		  CASE WHEN due_date = '' THEN 1 ELSE 0 END,
+		  due_date`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("querying targets needing next_step: %w", err)
+	}
+	defer rows.Close()
+
+	var targets []Target
+	for rows.Next() {
+		t, err := scanTarget(rows)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, *t)
+	}
+	return targets, rows.Err()
+}
+
 // GetTargets returns targets matching the filter.
 func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 	query := `SELECT ` + targetSelectCols + ` FROM targets`
@@ -225,10 +276,34 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 		NOT EXISTS (SELECT 1 FROM targets c WHERE c.parent_id = targets.id AND c.status != 'dismissed')`,
 		progress, id)
 
-	if parentID.Valid {
-		_ = db.RecomputeParentProgress(parentID.Int64)
+	// BEHAVIOR INBOX-02 — closing a target resolves its target_due inbox item
+	// so the user never has to close the same thing twice (mirrors how
+	// auto-resolve works for slack/jira/calendar). See
+	// docs/inventory/inbox-pulse.md.
+	// The status update above already persisted, so a cascade failure is
+	// reported to the caller rather than rolling anything back.
+	var cascadeErr error
+	if newStatus == "done" || newStatus == "dismissed" {
+		if _, err := db.Exec(`UPDATE inbox_items
+			SET status = 'resolved',
+			    resolved_reason = 'target_closed',
+			    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			WHERE target_id = ? AND trigger_type = 'target_due' AND status = 'pending'`, id); err != nil {
+			cascadeErr = fmt.Errorf("resolving target_due inbox items for target %d (status change persisted): %w", id, err)
+		}
 	}
-	return nil
+
+	// Like the inbox cascade above, a recompute failure is surfaced to the
+	// caller (joined with any cascade error) — the status change persisted,
+	// so the error only signals that the parent's progress is now stale.
+	if parentID.Valid {
+		if rerr := db.RecomputeParentProgress(parentID.Int64); rerr != nil {
+			cascadeErr = errors.Join(cascadeErr, fmt.Errorf(
+				"recomputing parent %d progress for target %d (status change persisted): %w",
+				parentID.Int64, id, rerr))
+		}
+	}
+	return cascadeErr
 }
 
 // DeleteTarget removes a target by ID.

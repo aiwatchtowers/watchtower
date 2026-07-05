@@ -35,7 +35,8 @@ opt_in_rules:
   - literal_expression_end_indentation
   - lower_acl_than_parent
   - modifier_order
-  - multiline_arguments
+  # multiline_arguments — disabled: pure cosmetic, 244 existing violations,
+  # and SwiftUI builders read fine with Apple-style argument wrapping.
   - multiline_function_chains
   - multiline_parameters
   - operator_usage_whitespace
@@ -105,19 +106,37 @@ identifier_name:
   allowed_symbols:
     - _
   excluded:
+    # Single-letter identifiers permitted as loop indices, math operands,
+    # and short-lived test fixtures. Two-letter common abbreviations live here too.
     - id
     - db
     - ts
+    - to
+    - a
+    - b
+    - c
+    - d
+    - e
+    - f
+    - g
+    - h
     - i
+    - j
+    - k
+    - l
+    - m
+    - n
+    - p
+    - q
+    - r
+    - s
+    - t
+    - u
+    - v
+    - w
     - x
     - y
-    - n
-    - e
-    - s
-    - w
-    - h
-    - r
-    - to
+    - z
 
 large_tuple:
   warning: 4

@@ -58,38 +58,6 @@ func TestPrintProgressJSON_AllFields(t *testing.T) {
 
 // --- Catchup with channel fallback ---
 
-func TestShowDigestCatchup_ChannelFallbackMultiple(t *testing.T) {
-	tmpDir := t.TempDir()
-	database, err := db.Open(tmpDir + "/test.db")
-	require.NoError(t, err)
-	defer database.Close()
-
-	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C001", Name: "general", Type: "public"}))
-	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C002", Name: "random", Type: "public"}))
-
-	now := float64(time.Now().Unix())
-	for _, ch := range []string{"C001", "C002"} {
-		_, err = database.UpsertDigest(db.Digest{
-			ChannelID:    ch,
-			PeriodFrom:   now - 3600,
-			PeriodTo:     now,
-			Type:         "channel",
-			Summary:      "Discussion in " + ch,
-			Topics:       `[]`,
-			Decisions:    `[{"text":"Some decision","by":"someone"}]`,
-			ActionItems:  `[{"text":"Do something","assignee":"person"}]`,
-			MessageCount: 10,
-			Model:        "haiku",
-		})
-		require.NoError(t, err)
-	}
-
-	buf := new(bytes.Buffer)
-	shown := showDigestCatchup(buf, database, now-100000)
-	assert.True(t, shown)
-	assert.NotEmpty(t, buf.String())
-}
-
 // --- Digest with multiple types ---
 
 func TestRunDigest_DailyDigest(t *testing.T) {

@@ -2,7 +2,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -11,6 +13,7 @@ import (
 	"watchtower/internal/repl"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var (
@@ -21,10 +24,50 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "watchtower",
-	Short: "Slack workspace intelligence tool",
-	Long:  "Watchtower syncs a Slack workspace into a local SQLite database and provides an AI-powered interface for analysis via the Claude API.",
-	RunE:  runREPL,
+	Use:               "watchtower",
+	Short:             "Slack workspace intelligence tool",
+	Long:              "Watchtower syncs a Slack workspace into a local SQLite database and provides an AI-powered interface for analysis via the Claude API.",
+	PersistentPreRunE: ensureSchemaFormat,
+	RunE:              runREPL,
+}
+
+// ensureSchemaFormat runs once before every command. When the on-disk
+// db.schema_format flag is below db.CurrentSchemaFormat, it invokes the
+// one-shot RunSchemaUpgrade against the live DB (idempotent) and bumps
+// the flag in config. Skips silently when no config / no DB exists.
+func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
+	if _, err := os.Stat(flagConfig); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking config file: %w", err)
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.DB.SchemaFormat >= db.CurrentSchemaFormat {
+		return nil
+	}
+
+	dbPath := cfg.DBPath()
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		if err := db.RunSchemaUpgrade(dbPath); err != nil {
+			return fmt.Errorf("schema upgrade: %w", err)
+		}
+	}
+
+	v := viper.New()
+	v.SetConfigFile(flagConfig)
+	if err := v.ReadInConfig(); err != nil {
+		return fmt.Errorf("re-reading config for schema_format bump: %w", err)
+	}
+	v.Set("db.schema_format", db.CurrentSchemaFormat)
+	if err := writeConfigAtomic(v, flagConfig); err != nil {
+		return fmt.Errorf("persisting schema_format: %w", err)
+	}
+	return nil
 }
 
 // Execute runs the root command and returns the exit code.

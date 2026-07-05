@@ -66,6 +66,10 @@ func TestLoad_DefaultValues(t *testing.T) {
 	assert.Equal(t, DefaultInitialHistDays, cfg.Sync.InitialHistoryDays)
 	assert.Equal(t, DefaultSyncThreads, cfg.Sync.SyncThreads)
 	assert.Equal(t, DefaultSyncOnWake, cfg.Sync.SyncOnWake)
+
+	// Catch-up gather caps feed the peel-off pool; raised so peel sees the real
+	// unread backlog instead of an arbitrarily truncated slice.
+	assert.Equal(t, CatchupCaps{Digests: 150, Tracks: 80, Inbox: 120, Briefings: 20}, cfg.Catchup.Caps)
 }
 
 func TestLoad_MissingFile(t *testing.T) {

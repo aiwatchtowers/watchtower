@@ -4,20 +4,61 @@ import GRDB
 struct SidebarView: View {
     @Binding var selection: SidebarDestination
     @Environment(AppState.self) private var appState
-    @State private var updatedTrackCount: Int = 0
-    @State private var totalTrackCount: Int = 0
-    @State private var unreadDigestCount: Int = 0
-    @State private var unreadBriefingCount: Int = 0
-    @State private var recommendationCount: Int = 0
-    @State private var activeTaskCount: Int = 0
-    @State private var overdueTaskCount: Int = 0
-    @State private var inboxPendingCount: Int = 0
-    @State private var inboxHighPriorityCount: Int = 0
-    @State private var countsObservationTask: Task<Void, Never>?
+
+    /// Per-section collapsed flag. Held in @State so toggling re-renders the view;
+    /// seeded from UserDefaults (persisted across launches) on first appearance.
+    @State private var collapsedSections: [String: Bool] = Self.loadCollapsedSections()
+
+    /// Destination ids the user has hidden into their section's "Hidden" sub-list.
+    /// Held in @State so hide/show re-renders; persisted to UserDefaults.
+    @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
+
+    private static func storageKey(_ section: SidebarSection) -> String {
+        "sidebar.section.\(section.id).collapsed"
+    }
+
+    private static func loadCollapsedSections() -> [String: Bool] {
+        var result: [String: Bool] = [:]
+        for section in SidebarSection.ordered {
+            result[section.id] = UserDefaults.standard.object(forKey: storageKey(section)) as? Bool
+                ?? section.collapsedByDefault
+        }
+        return result
+    }
+
+    private static let hiddenItemsKey = "sidebar.hiddenItems"
+
+    private static func loadHiddenItems() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: hiddenItemsKey) ?? [])
+    }
+
+    private func setHidden(_ item: SidebarDestination, _ hidden: Bool) {
+        if hidden { hiddenItems.insert(item.id) } else { hiddenItems.remove(item.id) }
+        UserDefaults.standard.set(Array(hiddenItems), forKey: Self.hiddenItemsKey)
+    }
+
+    private var counts: SidebarCountsViewModel? { appState.sidebarCountsViewModel }
+    private var updatedTrackCount: Int { counts?.updatedTrackCount ?? 0 }
+    private var unreadDigestCount: Int { counts?.unreadDigestCount ?? 0 }
+    private var unreadBriefingCount: Int { counts?.unreadBriefingCount ?? 0 }
+    private var recommendationCount: Int { counts?.recommendationCount ?? 0 }
+    private var activeTaskCount: Int { counts?.activeTaskCount ?? 0 }
+    private var overdueTaskCount: Int { counts?.overdueTaskCount ?? 0 }
+    private var inboxPendingCount: Int { counts?.inboxPendingCount ?? 0 }
+    private var inboxHighPriorityCount: Int { counts?.inboxHighPriorityCount ?? 0 }
+    private var catchUpTotalCount: Int { counts?.catchUpTotalCount ?? 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(SidebarDestination.mainItems) { item in
+            ForEach(SidebarDestination.rootItems) { item in
+                sidebarButton(item)
+            }
+
+            ForEach(SidebarSection.ordered) { section in
+                sectionView(section)
+            }
+
+            ForEach(SidebarDestination.mainTrailingItems) { item in
                 sidebarButton(item)
             }
 
@@ -96,8 +137,6 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { startObservingCounts() }
-        .onDisappear { countsObservationTask?.cancel() }
     }
 
     // MARK: - Main Sidebar Button
@@ -138,126 +177,130 @@ struct SidebarView: View {
                     .frame(width: 6, height: 6)
             }
         } else {
-            let count: Int = {
-                switch item {
-                case .briefings: return unreadBriefingCount
-                case .inbox: return inboxPendingCount
-                case .targets: return overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
-                case .tracks: return updatedTrackCount
-                case .digests: return unreadDigestCount
-                case .statistics: return recommendationCount
-                default: return 0
-                }
-            }()
+            let count = self.count(for: item)
             if count > 0 {
-                Text("\(count)")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(
-                        item == .tracks ? .orange
-                            : item == .inbox && inboxHighPriorityCount > 0 ? .red
-                            : item == .inbox ? .blue
-                            : item == .targets && overdueTaskCount > 0 ? .red
-                            : item == .targets ? .blue
-                            : .red,
-                        in: Capsule()
-                    )
+                capsuleBadge(count, color: item == .tracks ? .orange
+                    : item == .inbox && inboxHighPriorityCount > 0 ? .red
+                    : item == .inbox ? .blue
+                    : item == .targets && overdueTaskCount > 0 ? .red
+                    : item == .targets ? .blue
+                    : .red)
             }
         }
     }
 
-    // MARK: - Data Loading
+    @ViewBuilder
+    private func capsuleBadge(_ count: Int, color: Color) -> some View {
+        Text("\(count)")
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color, in: Capsule())
+    }
 
-    private func startObservingCounts() {
-        guard countsObservationTask == nil, let db = appState.databaseManager else { return }
-        loadCounts(db: db)
-        let dbPool = db.dbPool
-        countsObservationTask = Task {
-            let observation = ValueObservation.tracking { db -> (Int, Int, Int, Int) in
-                let tracks = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks") ?? 0
-                let briefings = try Int.fetchOne(
-                    db, sql: "SELECT COUNT(*) FROM briefings"
-                ) ?? 0
-                let targets = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0
-                let inbox = (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items")) ?? 0
-                return (tracks, briefings, targets, inbox)
-            }
-            do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled, let dbMgr = appState.databaseManager else { break }
-                    loadCounts(db: dbMgr)
-                }
-            } catch {}
+    /// The numeric badge value for a single destination (0 = no badge).
+    /// Shared by the per-item badge and the collapsed-section aggregate badge.
+    private func count(for item: SidebarDestination) -> Int {
+        switch item {
+        case .catchUp: catchUpTotalCount
+        case .briefings: unreadBriefingCount
+        case .inbox: inboxPendingCount
+        case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
+        case .tracks: updatedTrackCount
+        case .digests: unreadDigestCount
+        case .statistics: recommendationCount
+        default: 0
         }
     }
 
-    private struct SidebarCounts {
-        let updatedTrackCount: Int
-        let totalTrackCount: Int
-        let unreadDigestCount: Int
-        let unreadBriefingCount: Int
-        let recommendationCount: Int
-        let activeTaskCount: Int
-        let overdueTaskCount: Int
-        let inboxPendingCount: Int
-        let inboxHighPriorityCount: Int
+    /// Sum of badge counts for a section's VISIBLE items (drives the collapsed-header
+    /// badge). Hidden items are excluded — hiding an item also silences its noise.
+    private func sectionBadgeCount(_ section: SidebarSection) -> Int {
+        section.partition(hidden: hiddenItems).visible.reduce(0) { $0 + count(for: $1) }
     }
 
-    private func loadCounts(db: DatabaseManager) {
-        Task {
-            let result = try? await db.dbPool.read { db -> SidebarCounts in
-                let uid = try TrackQueries.fetchCurrentUserID(db)
+    /// Color of the collapsed-header badge: red if any visible child is a red source
+    /// (inbox-high/digests/briefings/statistics/catch-up), otherwise blue.
+    private func sectionBadgeColor(_ section: SidebarSection) -> Color {
+        let visible = section.partition(hidden: hiddenItems).visible
+        if visible.contains(.inbox), inboxHighPriorityCount > 0 { return .red }
+        if visible.contains(.digests), unreadDigestCount > 0 { return .red }
+        if visible.contains(.briefings), unreadBriefingCount > 0 { return .red }
+        if visible.contains(.statistics), recommendationCount > 0 { return .red }
+        if visible.contains(.catchUp), catchUpTotalCount > 0 { return .red }
+        return .blue
+    }
 
-                guard let uid else {
-                    return SidebarCounts(
-                        updatedTrackCount: 0,
-                        totalTrackCount: 0,
-                        unreadDigestCount: 0,
-                        unreadBriefingCount: 0,
-                        recommendationCount: 0,
-                        activeTaskCount: 0,
-                        overdueTaskCount: 0,
-                        inboxPendingCount: 0,
-                        inboxHighPriorityCount: 0
-                    )
+    private func isCollapsed(_ section: SidebarSection) -> Bool {
+        collapsedSections[section.id] ?? section.collapsedByDefault
+    }
+
+    private func toggleSection(_ section: SidebarSection) {
+        let newValue = !isCollapsed(section)
+        collapsedSections[section.id] = newValue
+        UserDefaults.standard.set(newValue, forKey: Self.storageKey(section))
+    }
+
+    @ViewBuilder
+    private func sectionView(_ section: SidebarSection) -> some View {
+        let collapsed = isCollapsed(section)
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    toggleSection(section)
                 }
-
-                let trackCounts = try TrackQueries.fetchCounts(db)
-                let taskCounts = try TargetQueries.fetchCounts(db)
-                let inboxCounts = (try? InboxQueries.fetchCounts(db)) ?? (pending: 0, unread: 0, highPriority: 0)
-
-                let recCount: Int
-                if let allStats = try? ChannelStatsQueries.fetchAll(db, currentUserID: uid) {
-                    recCount = ChannelStatsQueries.computeRecommendations(from: allStats).count
-                } else {
-                    recCount = 0
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 12)
+                    Text(section.title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    let badge = sectionBadgeCount(section)
+                    if collapsed, badge > 0 {
+                        capsuleBadge(badge, color: sectionBadgeColor(section))
+                    }
                 }
-                return SidebarCounts(
-                    updatedTrackCount: trackCounts.updated,
-                    totalTrackCount: trackCounts.total,
-                    unreadDigestCount: try DigestQueries.unreadDigestCount(db),
-                    unreadBriefingCount: try BriefingQueries.unreadCount(db),
-                    recommendationCount: recCount,
-                    activeTaskCount: taskCounts.active,
-                    overdueTaskCount: taskCounts.overdue,
-                    inboxPendingCount: inboxCounts.pending,
-                    inboxHighPriorityCount: inboxCounts.highPriority
-                )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
             }
-            if let r = result {
-                self.updatedTrackCount = r.updatedTrackCount
-                self.totalTrackCount = r.totalTrackCount
-                self.unreadDigestCount = r.unreadDigestCount
-                self.unreadBriefingCount = r.unreadBriefingCount
-                self.recommendationCount = r.recommendationCount
-                self.activeTaskCount = r.activeTaskCount
-                self.overdueTaskCount = r.overdueTaskCount
-                self.inboxPendingCount = r.inboxPendingCount
-                self.inboxHighPriorityCount = r.inboxHighPriorityCount
+            .buttonStyle(.plain)
+
+            if !collapsed {
+                let parts = section.partition(hidden: hiddenItems)
+                ForEach(parts.visible) { item in
+                    sidebarButton(item)
+                        .contextMenu {
+                            Button("Hide") {
+                                withAnimation(.easeInOut(duration: 0.15)) { setHidden(item, true) }
+                            }
+                        }
+                }
+
+                if !parts.hidden.isEmpty {
+                    Text("HIDDEN")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.quaternary)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                    ForEach(parts.hidden) { item in
+                        sidebarButton(item)
+                            .opacity(0.5)
+                            .contextMenu {
+                                Button("Show") {
+                                    withAnimation(.easeInOut(duration: 0.15)) { setHidden(item, false) }
+                                }
+                            }
+                    }
+                }
             }
         }
     }
+
 }

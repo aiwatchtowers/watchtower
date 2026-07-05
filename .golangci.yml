@@ -81,6 +81,15 @@ linters:
         - "all"
         - "-QF*"   # quick-fix suggestions are too noisy
 
+  exclusions:
+    rules:
+      # MCP handlers deliberately return tool-level errors (errResult content
+      # with IsError=true) and a nil Go error: a non-nil error is a
+      # protocol-level failure in the go-sdk, not a tool result.
+      - path: internal/mcp/
+        linters:
+          - nilerr
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

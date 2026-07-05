@@ -47,7 +47,10 @@ final class InboxLearnedRulesViewModelTests: XCTestCase {
     // MARK: - testAddManualRule
 
     @MainActor
-    func testAddManualRule() async throws {
+    func test_INBOX_05_add_manual_rule() async throws {
+        // BEHAVIOR INBOX-05 — see docs/inventory/inbox-pulse.md
+        // Learned tab adds a manual rule that surfaces immediately.
+        // Do not weaken or remove without explicit owner approval.
         let vm = InboxLearnedRulesViewModel(db: pool)
         await vm.addRule(ruleType: "source_mute", scopeKey: "sender:U9", weight: -0.5)
 
@@ -69,7 +72,10 @@ final class InboxLearnedRulesViewModelTests: XCTestCase {
     // MARK: - testRemoveRule
 
     @MainActor
-    func testRemoveRule() async throws {
+    func test_INBOX_05_remove_rule() async throws {
+        // BEHAVIOR INBOX-05 — see docs/inventory/inbox-pulse.md
+        // Learned tab removes a rule, persisted to DB.
+        // Do not weaken or remove without explicit owner approval.
         try await pool.write { db in
             try TestDatabase.insertLearnedRule(db, scopeKey: "sender:U1", weight: -0.5, source: "implicit", ruleType: "source_mute")
         }

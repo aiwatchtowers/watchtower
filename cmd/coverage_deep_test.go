@@ -169,44 +169,6 @@ func TestPrintLastLines_ExactN(t *testing.T) {
 	assert.Contains(t, output, "e")
 }
 
-// --- printDigestDetails ---
-
-func TestPrintDigestDetails_WithDecisionsAndActions(t *testing.T) {
-	d := db.Digest{
-		Decisions:   `[{"text":"Use REST","by":"alice"},{"text":"Freeze code"}]`,
-		ActionItems: `[{"text":"Update docs","assignee":"bob"},{"text":"Deploy","assignee":""}]`,
-	}
-	var buf bytes.Buffer
-	printDigestDetails(&buf, d)
-	output := buf.String()
-	assert.Contains(t, output, "Use REST")
-	assert.Contains(t, output, "by alice")
-	assert.Contains(t, output, "Freeze code")
-	assert.Contains(t, output, "Update docs")
-	assert.Contains(t, output, "-> bob")
-	assert.Contains(t, output, "Deploy")
-}
-
-func TestPrintDigestDetails_EmptyDecisionsAndActions(t *testing.T) {
-	d := db.Digest{
-		Decisions:   `[]`,
-		ActionItems: `[]`,
-	}
-	var buf bytes.Buffer
-	printDigestDetails(&buf, d)
-	assert.Empty(t, buf.String())
-}
-
-func TestPrintDigestDetails_InvalidJSON(t *testing.T) {
-	d := db.Digest{
-		Decisions:   `not json`,
-		ActionItems: `also not json`,
-	}
-	var buf bytes.Buffer
-	printDigestDetails(&buf, d)
-	assert.Empty(t, buf.String())
-}
-
 // --- maskValue ---
 
 func TestMaskValue_Long(t *testing.T) {

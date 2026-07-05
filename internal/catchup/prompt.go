@@ -1,0 +1,179 @@
+package catchup
+
+import (
+	"fmt"
+	"strings"
+
+	"watchtower/internal/db"
+)
+
+// peelSystemPrompt drives one round of the sequential peel pass: from the
+// remaining unread pool, extract the single most important coherent theme, or
+// signal done when only noise is left. The narrative is written later (expand).
+const peelSystemPrompt = `You are a chief-of-staff catching the operator up on everything they missed while away.
+
+You receive the operator's CURRENTLY-REMAINING unread items grouped by source (digests, tracks, inbox, briefings). Each item has a stable numeric id within its area. Items you already grouped in earlier rounds are gone from this list.
+
+Your job: identify the SINGLE most important coherent theme still in the pool — one real-world topic that may span multiple sources — and return ONLY that theme. Pull in every remaining item that genuinely belongs to it (across sources); leave everything else for later rounds. Do not force unrelated items together.
+
+If what remains is only noise, chatter, or trivia not worth its own catch-up theme, return {"done": true} instead of a theme.
+
+When you return a theme, produce ONLY a skeleton (the narrative is written later):
+- title: short, concrete (e.g. "Payments migration blocked on infra review").
+- priority: "high" | "medium" | "low".
+- refs: the remaining source items that belong to this theme, each as {area, id, label}. Use ONLY ids that appear in the input above. Never invent ids. label is a short human-readable name for the item.
+
+Respond with ONLY a JSON object, no markdown fences. Either:
+{"theme": {"title": "...", "priority": "high", "refs": [{"area": "tracks", "id": 1, "label": "..."}]}}
+or:
+{"done": true}`
+
+// buildPeelUserMessage renders the remaining unread pool (and optional targets
+// context) into one peel round's user message.
+func buildPeelUserMessage(sections []gatheredSection, targetsLine string) string {
+	var b strings.Builder
+	if targetsLine != "" {
+		b.WriteString("TARGETS CONTEXT (read-only): ")
+		b.WriteString(targetsLine)
+		b.WriteString("\n\n")
+	}
+	for _, s := range sections {
+		if len(s.items) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "=== %s (%d remaining) ===\n", strings.ToUpper(s.area), len(s.items))
+		for _, it := range s.items {
+			fmt.Fprintf(&b, "[id=%d] %s — %s\n", it.ID, it.Title, oneLine(it.Snippet))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// expandSystemPrompt drives the per-theme pass that turns one skeleton into a
+// reviewable narrative with priority and a suggested action.
+const expandSystemPrompt = `You are a chief-of-staff writing the catch-up entry for ONE theme the operator missed.
+
+You receive the theme's title and the source items that belong to it (digests, tracks, inbox mentions, briefings), each with a short snippet. Write a tight, concrete account of what happened and what (if anything) the operator must do.
+
+Stay strictly within the supplied sources. Do not invent facts, names, or decisions that are not present.
+
+Produce:
+- narrative: 2-4 sentences telling the operator what happened and why it matters. Specific, not generic.
+- priority: "high" | "medium" | "low".
+- needs_you: true only if the operator personally must act or decide; false if it is purely informational.
+- suggested_action: one short imperative next step, or "" when none is needed.
+
+If an OPERATOR CORRECTION is present, treat it as authoritative and rewrite accordingly.
+
+Respond with ONLY a JSON object, no markdown fences:
+{"narrative": "...", "priority": "medium", "needs_you": false, "suggested_action": "..."}`
+
+// buildExpandUserMessage renders one theme's title + source snippets (and an
+// optional operator correction for regen) into the expand user message.
+func buildExpandUserMessage(theme db.CatchupTheme, sources []expandSource, comment string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "THEME: %s\n\n", theme.Title)
+	b.WriteString("SOURCES:\n")
+	if len(sources) == 0 {
+		b.WriteString("(no source snippets available)\n")
+	}
+	for _, s := range sources {
+		fmt.Fprintf(&b, "- [%s #%d] %s — %s\n", s.Area, s.ID, s.Title, oneLine(s.Snippet))
+	}
+	if strings.TrimSpace(comment) != "" {
+		fmt.Fprintf(&b, "\nOPERATOR CORRECTION: %s\n", strings.TrimSpace(comment))
+	}
+	return b.String()
+}
+
+// learnSystemPrompt drives the learning interpreter: given a theme the operator
+// reviewed plus their free-text comment and rating, derive targeted learned-rules
+// addressed to whichever pipeline(s) produced the theme's sources.
+const learnSystemPrompt = `You are the learning interpreter for a chief-of-staff catch-up review tool.
+
+The operator just reviewed ONE theme (a cross-source cluster of unread items) and left a rating (+1 like / -1 dislike) and a free-text comment. The theme's source refs tell you which underlying pipeline produced each item:
+- area "digests"   → pipeline "digest"
+- area "tracks"    → pipeline "tracks"
+- area "inbox"     → pipeline "inbox"
+- area "briefings" → pipeline "briefing"
+A correction about how the theme itself was clustered, titled, or phrased belongs to pipeline "catchup".
+
+Your job is to turn the comment into durable, targeted learned-rules so the right system surfaces things better next time. Be conservative: only derive a rule when the comment expresses a clear, generalizable preference (e.g. "this channel is noise", "always show me anything from Jane"). Vague approval/disapproval with no actionable signal yields no rules.
+
+For each rule produce:
+- pipeline: "digest" | "tracks" | "inbox" | "briefing" | "catchup".
+- rule_type: "source_mute" (suppress/down-rank) or "source_boost" (surface/up-rank).
+- scope_key: build it ONLY from the channel_id / sender_user_id supplied with the relevant ref below — never invent ids. For the "inbox" pipeline use a BARE key, exactly "sender:<sender_user_id>" or "channel:<channel_id>", so it matches how inbox looks rules up. For every other pipeline ("digest"/"tracks"/"briefing"/"catchup") PREFIX the key with the pipeline, e.g. "digest:channel:<channel_id>". If no usable id is supplied for a target, emit no rule for it rather than guessing.
+- weight: a float in [-1.0, 1.0]; negative mutes, positive boosts; magnitude = confidence.
+- reason: one short sentence grounding the rule in the comment.
+
+Also decide "regenerate": true only when the comment is a presentation correction about THIS theme (wrong title/narrative/priority/grouping) that should be re-rendered now; false when the comment is purely a forward-looking preference.
+
+Respond with ONLY a JSON object, no markdown fences:
+{"rules": [{"pipeline": "digest", "rule_type": "source_mute", "scope_key": "digest:channel:Cxxx", "weight": -1.0, "reason": "..."}], "regenerate": false}`
+
+// buildLearnUserMessage renders a reviewed theme (title, narrative, refs with
+// their areas) plus the operator's rating and comment into the learn user
+// message.
+func buildLearnUserMessage(theme db.CatchupTheme, refs []learnRef, rating int, comment string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "THEME: %s\n", theme.Title)
+	if strings.TrimSpace(theme.Narrative) != "" {
+		fmt.Fprintf(&b, "NARRATIVE: %s\n", oneLine(theme.Narrative))
+	}
+	fmt.Fprintf(&b, "THEME PRIORITY: %s\n", theme.Priority)
+	b.WriteString("SOURCE REFS (use the supplied ids to build scope keys):\n")
+	if len(refs) == 0 {
+		b.WriteString("(none)\n")
+	}
+	for _, r := range refs {
+		b.WriteString("- area=" + r.Area)
+		if r.ChannelID != "" {
+			b.WriteString(" channel_id=" + r.ChannelID)
+		}
+		if r.SenderID != "" {
+			b.WriteString(" sender_user_id=" + r.SenderID)
+		}
+		if r.Label != "" {
+			b.WriteString(" label=" + r.Label)
+		}
+		b.WriteString("\n")
+	}
+	verdict := "dislike"
+	if rating > 0 {
+		verdict = "like"
+	}
+	fmt.Fprintf(&b, "\nOPERATOR RATING: %s\n", verdict)
+	fmt.Fprintf(&b, "OPERATOR COMMENT: %s\n", strings.TrimSpace(comment))
+	return b.String()
+}
+
+// learnRef is a theme ref enriched with the source item's real Slack ids, so the
+// learning interpreter can form scope keys the consuming pipelines match on.
+type learnRef struct {
+	Area      string
+	ChannelID string
+	SenderID  string
+	Label     string
+}
+
+// expandSource is one resolved source record for a theme's expand call.
+type expandSource struct {
+	Area    string
+	ID      int
+	Title   string
+	Snippet string
+}
+
+// refLabel builds a fallback label for a source item when the model omits one.
+func refLabel(area string, it db.UnreadItem) string {
+	if it.Title != "" {
+		return it.Title
+	}
+	return fmt.Sprintf("%s #%d", area, it.ID)
+}
+
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}

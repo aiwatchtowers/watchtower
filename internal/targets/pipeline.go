@@ -18,11 +18,14 @@ type Pipeline struct {
 	gen      digest.Generator
 	resolver *Resolver
 	store    *Store
+	lang     string // workspace response language (digest.language); "" falls back to the prompts default
 	logger   *log.Logger
 }
 
-// New creates a new Pipeline.
-func New(database *db.DB, cfg *config.TargetsConfig, gen digest.Generator, resolver *Resolver, logger *log.Logger) *Pipeline {
+// New creates a new Pipeline. lang is the workspace response language
+// (cfg.Digest.Language) injected into operator-facing prompts via
+// prompts.Directive; an empty value falls back to prompts.DefaultLanguage.
+func New(database *db.DB, cfg *config.TargetsConfig, gen digest.Generator, resolver *Resolver, lang string, logger *log.Logger) *Pipeline {
 	if logger == nil {
 		logger = log.Default()
 	}
@@ -32,6 +35,7 @@ func New(database *db.DB, cfg *config.TargetsConfig, gen digest.Generator, resol
 		gen:      gen,
 		resolver: resolver,
 		store:    NewStore(database),
+		lang:     lang,
 		logger:   logger,
 	}
 }

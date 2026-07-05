@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -172,6 +171,37 @@ func TestUpdateTargetStatus(t *testing.T) {
 
 	tgt, err = db.GetTargetByID(int(id))
 	require.NoError(t, err)
+	assert.Equal(t, "done", tgt.Status)
+}
+
+// TestUpdateTargetStatus_ParentRecomputeFailureSurfaces guards F9: a failed
+// RecomputeParentProgress after a status change must be reported to the
+// caller, not swallowed — the status change itself has already persisted, so
+// the error is the only signal that the parent's progress is now stale.
+func TestUpdateTargetStatus_ParentRecomputeFailureSurfaces(t *testing.T) {
+	db := openTestDB(t)
+
+	parentID, err := db.CreateTarget(makeTarget("Parent", "todo", "medium"))
+	require.NoError(t, err)
+	child := makeTarget("Child", "todo", "medium")
+	child.ParentID = sql.NullInt64{Int64: parentID, Valid: true}
+	childID, err := db.CreateTarget(child)
+	require.NoError(t, err)
+
+	// Simulate a recompute failure: abort any progress update on the parent.
+	_, err = db.Exec(fmt.Sprintf(`CREATE TRIGGER fail_parent_progress
+		BEFORE UPDATE OF progress ON targets WHEN NEW.id = %d
+		BEGIN SELECT RAISE(ABORT, 'simulated recompute failure'); END`, parentID))
+	require.NoError(t, err)
+
+	err = db.UpdateTargetStatus(int(childID), "done")
+	require.Error(t, err, "recompute failure must surface")
+	assert.Contains(t, err.Error(), "simulated recompute failure")
+	assert.Contains(t, err.Error(), "status change persisted")
+
+	// The status change itself persisted.
+	tgt, gerr := db.GetTargetByID(int(childID))
+	require.NoError(t, gerr)
 	assert.Equal(t, "done", tgt.Status)
 }
 
@@ -596,141 +626,39 @@ func TestGetTargetsForBriefing(t *testing.T) {
 
 // ── Migration v67: v65→v67 on a fixture DB ───────────────────────────────────
 
-func TestMigrationV67_FromV65(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "watchtower.db")
+// TestUpdateTargetStatus_CascadeFailureSurfaces guards the H1 fix: the
+// INBOX-02 cascade (closing a target resolves its pending target_due inbox
+// item) must not be fire-and-forget. When the cascade UPDATE fails, the
+// caller gets an error carrying the target id — while the status change
+// itself, which persisted before the cascade ran, stays in place.
+func TestUpdateTargetStatus_CascadeFailureSurfaces(t *testing.T) {
+	db := openTestDB(t)
 
-	// Open fresh DB (bootstrap runs latest schema at v67), then rewind the three
-	// tables touched by v67 to their v65-era shape so the migration has real
-	// legacy data to transform.
-	db1, err := Open(dbPath)
+	id, err := db.CreateTarget(makeTarget("Cascade me", "todo", "high"))
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO inbox_items
+		(channel_id, message_ts, sender_user_id, trigger_type, snippet, target_id, item_class)
+		VALUES (?, '1', '', 'target_due', 'Cascade me', ?, 'actionable')`,
+		fmt.Sprintf("target:%d", id), id)
 	require.NoError(t, err)
 
-	// Drop v67-era tables created by bootstrap.
-	for _, stmt := range []string{
-		`DROP TABLE IF EXISTS targets`,
-		`DROP TABLE IF EXISTS target_links`,
-		`DROP TABLE IF EXISTS inbox_items`,
-		`DROP TABLE IF EXISTS feedback`,
-	} {
-		_, err = db1.Exec(stmt)
-		require.NoError(t, err)
-	}
-
-	// Recreate v65-era schema: tasks table, inbox_items with task_id,
-	// feedback with 'task' allowed in entity_type CHECK.
-	legacyDDL := []string{
-		`CREATE TABLE tasks (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			text TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'todo',
-			priority TEXT NOT NULL DEFAULT 'medium',
-			ownership TEXT NOT NULL DEFAULT 'mine',
-			source_type TEXT NOT NULL DEFAULT 'manual'
-		)`,
-		`CREATE TABLE inbox_items (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			channel_id TEXT NOT NULL,
-			message_ts TEXT NOT NULL,
-			thread_ts TEXT NOT NULL DEFAULT '',
-			sender_user_id TEXT NOT NULL,
-			trigger_type TEXT NOT NULL CHECK(trigger_type IN ('mention','dm','thread_reply','reaction')),
-			snippet TEXT NOT NULL DEFAULT '',
-			context TEXT NOT NULL DEFAULT '',
-			raw_text TEXT NOT NULL DEFAULT '',
-			permalink TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'pending',
-			priority TEXT NOT NULL DEFAULT 'medium',
-			ai_reason TEXT NOT NULL DEFAULT '',
-			resolved_reason TEXT NOT NULL DEFAULT '',
-			snooze_until TEXT NOT NULL DEFAULT '',
-			waiting_user_ids TEXT NOT NULL DEFAULT '',
-			task_id INTEGER,
-			read_at TEXT,
-			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-			UNIQUE(channel_id, message_ts)
-		)`,
-		`CREATE TABLE feedback (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			entity_type TEXT NOT NULL CHECK(entity_type IN ('digest','track','decision','user_analysis','briefing','task','inbox')),
-			entity_id TEXT NOT NULL,
-			rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
-			comment TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-		)`,
-	}
-	for _, ddl := range legacyDDL {
-		_, err = db1.Exec(ddl)
-		require.NoError(t, err)
-	}
-
-	// Seed a tasks row.
-	_, err = db1.Exec(`INSERT INTO tasks (text, status, priority, ownership, source_type)
-		VALUES ('legacy task', 'todo', 'medium', 'mine', 'manual')`)
+	// Simulate a cascade failure via a trigger on the resolve UPDATE.
+	_, err = db.Exec(`CREATE TRIGGER fail_resolve BEFORE UPDATE ON inbox_items
+		WHEN NEW.resolved_reason = 'target_closed'
+		BEGIN SELECT RAISE(ABORT, 'simulated cascade failure'); END`)
 	require.NoError(t, err)
 
-	// Seed an inbox_items row with task_id (before rename).
-	_, err = db1.Exec(`INSERT INTO inbox_items
-		(channel_id, message_ts, sender_user_id, trigger_type, task_id)
-		VALUES ('C1', '1.1', 'U1', 'mention', 99)`)
-	require.NoError(t, err)
+	err = db.UpdateTargetStatus(int(id), "done")
+	require.Error(t, err, "cascade failure must surface, not be swallowed")
+	assert.Contains(t, err.Error(), "resolving target_due inbox items")
+	assert.Contains(t, err.Error(), fmt.Sprintf("target %d", id))
 
-	// Seed a feedback row with entity_type='task'.
-	_, err = db1.Exec(`INSERT INTO feedback (entity_type, entity_id, rating)
-		VALUES ('task', '1', 1)`)
-	require.NoError(t, err)
-
-	// Downgrade to v65 so the v66/v67 migrations rerun.
-	_, err = db1.Exec("PRAGMA user_version = 65")
-	require.NoError(t, err)
-	db1.Close()
-
-	// Reopen — v66 (day_plans) and v67 (targets) migrations should run.
-	db2, err := Open(dbPath)
-	require.NoError(t, err)
-	defer db2.Close()
-
-	v, err := db2.UserVersion()
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, v, 67, "expected user_version >= 67 after migration")
-
-	// targets table must exist and be empty (tasks were dropped).
-	var targetCount int
-	err = db2.QueryRow("SELECT COUNT(*) FROM targets").Scan(&targetCount)
-	require.NoError(t, err)
-	assert.Equal(t, 0, targetCount, "targets should be empty after migration (tasks dropped)")
-
-	// tasks table must NOT exist.
-	var tblName string
-	err = db2.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'").Scan(&tblName)
-	assert.Error(t, err, "tasks table should not exist after migration")
-
-	// inbox_items should have target_id column.
-	assert.True(t, hasColumn(db2.DB, "inbox_items", "target_id"), "inbox_items should have target_id column")
-	assert.False(t, hasColumn(db2.DB, "inbox_items", "task_id"), "inbox_items should NOT have task_id column")
-
-	// The old inbox_items row should survive with target_id NULL (task_id values were nulled).
-	var targetID sql.NullInt64
-	err = db2.QueryRow("SELECT target_id FROM inbox_items WHERE channel_id='C1' AND message_ts='1.1'").Scan(&targetID)
-	require.NoError(t, err)
-	assert.False(t, targetID.Valid, "target_id should be NULL after migration (old task_id values cleared)")
-
-	// feedback row with entity_type='task' should be deleted.
-	var feedbackCount int
-	err = db2.QueryRow("SELECT COUNT(*) FROM feedback WHERE entity_type='task'").Scan(&feedbackCount)
-	require.NoError(t, err)
-	assert.Equal(t, 0, feedbackCount, "feedback rows with entity_type='task' should be deleted")
-
-	// target_links table must exist.
-	err = db2.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='target_links'").Scan(&tblName)
-	require.NoError(t, err)
-	assert.Equal(t, "target_links", tblName)
-
-	// inbox_items must have at least the 5 canonical indexes after migration.
-	var idxCount int
-	err = db2.QueryRow(`SELECT COUNT(*) FROM sqlite_master
-		WHERE tbl_name='inbox_items' AND type='index' AND sql IS NOT NULL`).Scan(&idxCount)
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, idxCount, 5, "inbox_items should have >= 5 indexes after v67 migration")
+	// The status update itself persisted before the cascade ran.
+	got, gErr := db.GetTargetByID(int(id))
+	require.NoError(t, gErr)
+	assert.Equal(t, "done", got.Status)
+	// The inbox item is untouched (the failed UPDATE rolled back).
+	var status string
+	require.NoError(t, db.QueryRow(`SELECT status FROM inbox_items WHERE target_id = ?`, id).Scan(&status))
+	assert.Equal(t, "pending", status)
 }

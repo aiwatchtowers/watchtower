@@ -4,16 +4,24 @@ struct BriefingDetailView: View {
     let briefing: Briefing
     @Environment(AppState.self) private var appState
     @State private var showCreateTarget = false
-    @State private var targetPrefillText = ""
-    @State private var targetPrefillIntent = ""
+    @State private var targetPrefill: TargetPrefill?
+    @State private var targetPrefillError: String?
+    @State private var isBuildingPrefill = false
     @State private var calendarEvents: [CalendarEvent] = []
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
     @State private var dayPlanExists: Bool = false
+    @State private var allDayExpanded: Bool = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let msg = targetPrefillError {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                }
                 header
                 calendarSection
                 attentionSection
@@ -25,12 +33,7 @@ struct BriefingDetailView: View {
             .padding()
         }
         .sheet(isPresented: $showCreateTarget) {
-            CreateTargetSheet(
-                prefillText: targetPrefillText,
-                prefillIntent: targetPrefillIntent,
-                prefillSourceType: "briefing",
-                prefillSourceID: String(briefing.id)
-            )
+            CreateTargetSheet(prefill: targetPrefill)
         }
         .onAppear {
             jiraConnected = JiraQueries.isConnected()
@@ -55,14 +58,79 @@ struct BriefingDetailView: View {
     @ViewBuilder
     private var calendarSection: some View {
         if !calendarEvents.isEmpty {
+            let timed = calendarEvents.filter { !$0.isAllDay }
+            let allDay = calendarEvents.filter { $0.isAllDay }
+
             sectionView(
                 title: "Today's Schedule",
                 icon: "calendar",
                 iconColor: .blue
             ) {
-                ForEach(calendarEvents) { event in
+                if !allDay.isEmpty {
+                    allDayChip(allDay)
+                }
+                ForEach(timed) { event in
                     CalendarEventRow(event: event)
                 }
+            }
+        }
+    }
+
+    private func allDayChip(_ events: [CalendarEvent]) -> some View {
+        let previewTitles = events.prefix(3).map(\.title).joined(separator: " · ")
+        let extra = events.count - min(3, events.count)
+        let preview = extra > 0 ? "\(previewTitles) · +\(extra)" : previewTitles
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    allDayExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "sun.horizon")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text("\(events.count) all-day")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.secondary)
+                    Text("·")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Text(preview)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Image(systemName: allDayExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.08), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .help(events.map(\.title).joined(separator: "\n"))
+
+            if allDayExpanded {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(events) { event in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(.secondary.opacity(0.3))
+                                .frame(width: 6, height: 6)
+                            Text(event.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .padding(.leading, 12)
+                    }
+                }
+                .padding(.top, 2)
             }
         }
     }
@@ -72,6 +140,25 @@ struct BriefingDetailView: View {
         calendarEvents = (try? db.dbPool.read { db in
             try CalendarQueries.fetchTodayEvents(db)
         }) ?? []
+    }
+
+    private func openCreateTarget(for item: AttentionItem) {
+        guard let db = appState.databaseManager else {
+            targetPrefillError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingPrefill = true
+            defer { isBuildingPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromBriefingItem(item, briefing: briefing, db: db)
+                targetPrefill = pf
+                targetPrefillError = nil
+                showCreateTarget = true
+            } catch {
+                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
+        }
     }
 
     // MARK: - Header
@@ -186,15 +273,14 @@ struct BriefingDetailView: View {
             HStack {
                 Spacer()
                 Button {
-                    targetPrefillText = item.text
-                    targetPrefillIntent = item.reason ?? ""
-                    showCreateTarget = true
+                    openCreateTarget(for: item)
                 } label: {
                     Label("Create target", systemImage: "plus.circle")
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .disabled(isBuildingPrefill)
             }
             .padding(.trailing, 4)
             .padding(.top, 2)
@@ -457,8 +543,7 @@ struct BriefingDetailView: View {
                         Spacer()
 
                         Button {
-                            targetPrefillText = item.text
-                            targetPrefillIntent = item.category ?? ""
+                            targetPrefill = nil
                             showCreateTarget = true
                         } label: {
                             Image(systemName: "plus.circle")
@@ -483,7 +568,11 @@ struct BriefingDetailView: View {
         guard let type else { return }
         switch type {
         case "track":
-            appState.selectedDestination = .tracks
+            if let id, let intID = Int(id) {
+                appState.navigateToTrack(intID)
+            } else {
+                appState.selectedDestination = .tracks
+            }
         case "digest":
             if let id, let intID = Int(id) {
                 appState.navigateToDigest(intID)
@@ -491,7 +580,11 @@ struct BriefingDetailView: View {
                 appState.selectedDestination = .digests
             }
         case "people":
-            appState.selectedDestination = .people
+            if let userID = userID ?? id {
+                appState.navigateToPerson(userID)
+            } else {
+                appState.selectedDestination = .people
+            }
         default:
             break
         }

@@ -1,298 +1,236 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
-	"os/signal"
-	"strings"
-	"time"
-
-	"watchtower/internal/ai"
-	"watchtower/internal/config"
-	"watchtower/internal/db"
-	"watchtower/internal/ui"
+	"strconv"
 
 	"github.com/spf13/cobra"
+
+	"watchtower/internal/catchup"
+	"watchtower/internal/config"
+	"watchtower/internal/db"
 )
 
 var (
-	catchupFlagSince       time.Duration
-	catchupFlagWatchedOnly bool
-	catchupFlagChannel     string
+	catchupRunFlagJSON      bool
+	catchupRegenFlagComment string
+	catchupFeedbackRating   string
+	catchupFeedbackComment  string
 )
 
 var catchupCmd = &cobra.Command{
 	Use:   "catchup",
-	Short: "Get a summary of what happened since you last checked",
-	Long:  "Queries messages since your last catchup (or --since duration) and uses AI to provide a structured summary of activity.",
-	RunE:  runCatchup,
+	Short: "Review everything unread one theme at a time",
+	Long: "Catch-Up builds a persisted review session that clusters the currently-unread " +
+		"items across digests, tracks, inbox, and briefings into cross-source themes, then " +
+		"lets you review them one at a time. Per-theme feedback trains every pipeline.\n\n" +
+		"Subcommands:\n" +
+		"  run                build a new review session (gather → outline → expand)\n" +
+		"  regen <theme-id>   regenerate a single theme with an operator correction\n" +
+		"  feedback <theme-id> record 👍/👎 (+ optional comment that derives learned rules)\n" +
+		"  ack <theme-id>     acknowledge a theme (cascade mark-read over its sources)",
+}
+
+var catchupRunCmd = &cobra.Command{
+	Use:   "run",
+	Short: "Build a new catch-up review session",
+	RunE:  runCatchupRun,
+}
+
+var catchupRegenCmd = &cobra.Command{
+	Use:   "regen <theme-id>",
+	Short: "Regenerate a single theme with a correction comment",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runCatchupRegen,
+}
+
+var catchupFeedbackCmd = &cobra.Command{
+	Use:   "feedback <theme-id>",
+	Short: "Record feedback on a theme (--rating up|down [--comment])",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runCatchupFeedback,
+}
+
+var catchupAckCmd = &cobra.Command{
+	Use:   "ack <theme-id>",
+	Short: "Acknowledge a theme and mark its sources read",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runCatchupAck,
 }
 
 func init() {
 	rootCmd.AddCommand(catchupCmd)
-	catchupCmd.Flags().DurationVar(&catchupFlagSince, "since", 0, "override checkpoint with explicit duration (e.g., 2h, 24h)")
-	catchupCmd.Flags().BoolVar(&catchupFlagWatchedOnly, "watched-only", false, "only include watched channels and users")
-	catchupCmd.Flags().StringVar(&catchupFlagChannel, "channel", "", "limit catchup to a specific channel")
+	catchupCmd.AddCommand(catchupRunCmd, catchupRegenCmd, catchupFeedbackCmd, catchupAckCmd)
+
+	catchupRunCmd.Flags().BoolVar(&catchupRunFlagJSON, "json", false, "output the resulting themes as JSON")
+	catchupRegenCmd.Flags().StringVar(&catchupRegenFlagComment, "comment", "", "operator correction to apply when regenerating")
+	catchupFeedbackCmd.Flags().StringVar(&catchupFeedbackRating, "rating", "", "up or down")
+	catchupFeedbackCmd.Flags().StringVar(&catchupFeedbackComment, "comment", "", "free-text reason; a comment derives targeted learned rules")
 }
 
-func runCatchup(cmd *cobra.Command, args []string) error {
+// catchupPipeline loads config + DB and constructs a pooled-generator pipeline so
+// the per-theme expand fan-out is bounded. It returns the pipeline, the database,
+// and a cleanup func that closes the DB and the generator pool.
+func catchupPipeline() (*catchup.Pipeline, *db.DB, func(), error) {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	applyProviderOverride(cfg)
 	if err := cfg.ValidateWorkspace(); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
+		return nil, nil, nil, err
 	}
 
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer database.Close()
-
-	ws, err := database.GetWorkspace()
-	if err != nil {
-		return fmt.Errorf("getting workspace: %w", err)
-	}
-	if ws == nil {
-		return fmt.Errorf("no workspace data found — run 'watchtower sync' first")
+		return nil, nil, nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	// Determine the "since" time
-	sinceTime, err := database.DetermineSinceTime(catchupFlagSince)
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	gen, closeGen := cliPooledGenerator(cfg, logger)
+	p := catchup.New(database, cfg, gen, logger)
+	cleanup := func() {
+		closeGen()
+		_ = database.Close()
+	}
+	return p, database, cleanup, nil
+}
+
+func runCatchupRun(cmd *cobra.Command, _ []string) error {
+	p, database, cleanup, err := catchupPipeline()
 	if err != nil {
-		return fmt.Errorf("determining catchup window: %w", err)
+		return err
+	}
+	defer cleanup()
+
+	sessionID, err := p.Run(cmd.Context())
+	if err != nil {
+		return err
 	}
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Catching up since %s...\n\n", sinceTime.Format("2006-01-02 15:04 MST"))
-
-	now := time.Now()
-	fromUnix := float64(sinceTime.Unix()) + float64(sinceTime.Nanosecond())/1e9
-	toUnix := float64(now.Unix()) + float64(now.Nanosecond())/1e9
-
-	// Quick check: are there any messages in the catchup window?
-	msgCount, err := database.CountMessagesByTimeRange(fromUnix, toUnix)
-	if err != nil {
-		return fmt.Errorf("counting messages: %w", err)
-	}
-	if msgCount == 0 {
-		fmt.Fprintln(out, "No new activity found since your last catchup.")
-		if err := database.UpdateCheckpoint(now); err != nil {
-			return fmt.Errorf("updating checkpoint: %w", err)
+	if sessionID == 0 {
+		if catchupRunFlagJSON {
+			enc := json.NewEncoder(out)
+			enc.SetIndent("", "  ")
+			return enc.Encode([]db.CatchupTheme{})
 		}
+		fmt.Fprintln(out, "All caught up — nothing unread.")
 		return nil
 	}
 
-	// Fast path: if digests are available for this period, show them directly
-	if shown := showDigestCatchup(out, database, fromUnix); shown {
-		if err := database.UpdateCheckpoint(now); err != nil {
-			return fmt.Errorf("updating checkpoint: %w", err)
-		}
-		fmt.Fprintln(out)
-		return nil
-	}
-
-	// Slow path: no digests available, use AI query on raw messages
-	// Build time range for hints
-	pq := ai.ParsedQuery{
-		TimeRange: &ai.TimeRange{
-			From: sinceTime,
-			To:   now,
-		},
-	}
-
-	// Assemble prompt with DB access
-	dbPath := cfg.DBPath()
-	systemPrompt := ai.BuildSystemPrompt(ws.Name, ws.Domain, ws.ID, dbPath, db.Schema, cfg.Digest.Language)
-
-	// Inject Jira context if enabled
-	if cfg.Jira.Enabled {
-		systemPrompt += ai.JiraPromptSection()
-	}
-
-	timeHints := ai.FormatTimeHints(pq)
-
-	question := "What happened since I was last here? Give me a structured catchup summary."
-	if lang := cfg.Digest.Language; lang != "" && !strings.EqualFold(lang, "English") {
-		question = fmt.Sprintf("What happened since I was last here? Give me a structured catchup summary. Respond in %s.", lang)
-	}
-	if catchupFlagWatchedOnly {
-		question += " Focus only on watched channels and users."
-	}
-	if catchupFlagChannel != "" {
-		question += fmt.Sprintf(" Focus on #%s.", catchupFlagChannel)
-	}
-
-	userMessage := ai.AssembleUserMessage(question, timeHints)
-
-	// Create AI client and query
-	aiClient := newAIClient(cfg, dbPath)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	renderer := ai.NewResponseRenderer(database, ws.Domain, ws.ID)
-
-	runID, _ := database.CreatePipelineRun("catchup", "cli", cfg.AI.Model)
-
-	resp, usage, err := aiClient.QuerySync(ctx, systemPrompt, userMessage, "")
-
-	// Complete pipeline run regardless of outcome.
-	{
-		errMsg := ""
-		if err != nil {
-			errMsg = err.Error()
-		}
-		inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
-		if usage != nil {
-			inTok, outTok, totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
-		}
-		if runID > 0 {
-			_ = database.CompletePipelineRun(runID, 1, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
-		}
-	}
-
+	themes, err := database.ListCatchupThemes(sessionID)
 	if err != nil {
-		return fmt.Errorf("ai query failed: %w", err)
+		return err
 	}
 
-	rendered, err := renderer.Render(resp)
-	if err != nil {
-		fmt.Fprint(out, resp)
+	if catchupRunFlagJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(themes)
+	}
+
+	failed := 0
+	for _, t := range themes {
+		if t.GenState == "failed" {
+			failed++
+		}
+	}
+	if failed > 0 {
+		fmt.Fprintf(out, "Catch-Up — %d themes (%d failed to expand)\n\n", len(themes), failed)
 	} else {
-		fmt.Fprint(out, rendered)
+		fmt.Fprintf(out, "Catch-Up — %d themes\n\n", len(themes))
 	}
-
-	// Update checkpoint to now
-	if err := database.UpdateCheckpoint(now); err != nil {
-		return fmt.Errorf("updating checkpoint: %w", err)
+	for _, t := range themes {
+		flag := ""
+		if t.NeedsYou {
+			flag = " [needs you]"
+		}
+		fmt.Fprintf(out, "[%d] (%s)%s %s\n  %s\n", t.ID, t.Priority, flag, t.Title, t.Narrative)
 	}
-
-	fmt.Fprintln(out)
 	return nil
 }
 
-// showDigestCatchup displays pre-built digests for the catchup period.
-// Returns true if digests were shown, false if none were available.
-func showDigestCatchup(out interface{ Write([]byte) (int, error) }, database *db.DB, fromUnix float64) bool {
-	// Check for daily digest first
-	dailyDigests, err := database.GetDigests(db.DigestFilter{
-		Type:     "daily",
-		FromUnix: fromUnix,
-		Limit:    1,
-	})
-	if err == nil && len(dailyDigests) > 0 {
-		d := dailyDigests[0]
-		var buf strings.Builder
-		fmt.Fprintln(&buf, d.Summary)
-		printDigestDetails(&buf, d, database)
-		fmt.Fprint(out, ui.RenderMarkdown(buf.String()))
-		return true
+func runCatchupRegen(cmd *cobra.Command, args []string) error {
+	themeID, err := parseThemeID(args[0])
+	if err != nil {
+		return err
 	}
+	p, _, cleanup, err := catchupPipeline()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 
-	// Fall back to channel digests
-	channelDigests, err := database.GetDigests(db.DigestFilter{
-		Type:     "channel",
-		FromUnix: fromUnix,
-	})
-	if err != nil || len(channelDigests) == 0 {
-		return false
+	if err := p.RegenTheme(cmd.Context(), themeID, catchupRegenFlagComment); err != nil {
+		return err
 	}
-
-	var buf strings.Builder
-	for _, d := range channelDigests {
-		name := d.ChannelID
-		if ch, err := database.GetChannelByID(d.ChannelID); err == nil && ch != nil {
-			name = "#" + ch.Name
-		}
-		fmt.Fprintf(&buf, "**%s** (%d messages)\n%s\n\n", name, d.MessageCount, d.Summary)
-		printDigestDetails(&buf, d, database)
-	}
-	fmt.Fprint(out, ui.RenderMarkdown(buf.String()))
-	return true
+	fmt.Fprintf(cmd.OutOrStdout(), "Regenerated theme %d.\n", themeID)
+	return nil
 }
 
-func printDigestDetails(out interface{ Write([]byte) (int, error) }, d db.Digest, database ...*db.DB) {
-	// Try topic-structured data first
-	var topics []db.DigestTopic
-	if len(database) > 0 && database[0] != nil {
-		topics, _ = database[0].GetDigestTopics(d.ID)
+func runCatchupFeedback(cmd *cobra.Command, args []string) error {
+	themeID, err := parseThemeID(args[0])
+	if err != nil {
+		return err
 	}
-	if len(topics) > 0 {
-		for _, t := range topics {
-			fmt.Fprintf(out, "\n**%s**\n", t.Title)
-			if t.Summary != "" {
-				fmt.Fprintf(out, "%s\n", t.Summary)
-			}
+	rating, err := parseRating(catchupFeedbackRating)
+	if err != nil {
+		return err
+	}
+	p, _, cleanup, err := catchupPipeline()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 
-			var decisions []struct {
-				Text string `json:"text"`
-				By   string `json:"by"`
-			}
-			if err := json.Unmarshal([]byte(t.Decisions), &decisions); err == nil && len(decisions) > 0 {
-				for _, dec := range decisions {
-					if dec.By != "" {
-						fmt.Fprintf(out, "- **Decision:** %s (by %s)\n", dec.Text, dec.By)
-					} else {
-						fmt.Fprintf(out, "- **Decision:** %s\n", dec.Text)
-					}
-				}
-			}
+	if err := p.SubmitThemeFeedback(cmd.Context(), themeID, rating, catchupFeedbackComment); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Recorded feedback on theme %d.\n", themeID)
+	return nil
+}
 
-			var actions []struct {
-				Text     string `json:"text"`
-				Assignee string `json:"assignee"`
-			}
-			if err := json.Unmarshal([]byte(t.ActionItems), &actions); err == nil && len(actions) > 0 {
-				for _, a := range actions {
-					assignee := ""
-					if a.Assignee != "" {
-						assignee = " -> " + a.Assignee
-					}
-					fmt.Fprintf(out, "- %s%s\n", a.Text, assignee)
-				}
-			}
-		}
-		return
+func runCatchupAck(cmd *cobra.Command, args []string) error {
+	themeID, err := parseThemeID(args[0])
+	if err != nil {
+		return err
 	}
+	p, _, cleanup, err := catchupPipeline()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 
-	// Fallback to old flat fields for legacy digests
-	var decisions []struct {
-		Text string `json:"text"`
-		By   string `json:"by"`
+	if err := p.Acknowledge(themeID); err != nil {
+		return err
 	}
-	if err := json.Unmarshal([]byte(d.Decisions), &decisions); err == nil && len(decisions) > 0 {
-		fmt.Fprintln(out, "\n**Decisions:**")
-		fmt.Fprintln(out)
-		for _, dec := range decisions {
-			if dec.By != "" {
-				fmt.Fprintf(out, "- %s (by %s)\n", dec.Text, dec.By)
-			} else {
-				fmt.Fprintf(out, "- %s\n", dec.Text)
-			}
-		}
-	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Acknowledged theme %d.\n", themeID)
+	return nil
+}
 
-	var actions []struct {
-		Text     string `json:"text"`
-		Assignee string `json:"assignee"`
+func parseThemeID(s string) (int64, error) {
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid theme id %q: %w", s, err)
 	}
-	if err := json.Unmarshal([]byte(d.ActionItems), &actions); err == nil && len(actions) > 0 {
-		fmt.Fprintln(out, "\n**Action Items:**")
-		fmt.Fprintln(out)
-		for _, a := range actions {
-			assignee := ""
-			if a.Assignee != "" {
-				assignee = " -> " + a.Assignee
-			}
-			fmt.Fprintf(out, "- %s%s\n", a.Text, assignee)
-		}
+	return id, nil
+}
+
+// parseRating maps the CLI's up/down to the feedback rating (+1 / -1).
+func parseRating(s string) (int, error) {
+	switch s {
+	case "up":
+		return 1, nil
+	case "down":
+		return -1, nil
+	default:
+		return 0, fmt.Errorf("invalid --rating %q: must be up or down", s)
 	}
 }

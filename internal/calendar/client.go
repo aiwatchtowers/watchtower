@@ -12,9 +12,8 @@ import (
 	"time"
 )
 
-const (
-	calendarAPIBase = "https://www.googleapis.com/calendar/v3"
-)
+// calendarAPIBase is overridable in tests via httptest.Server.
+var calendarAPIBase = "https://www.googleapis.com/calendar/v3"
 
 // ErrAuthRevoked is returned when Google reports the refresh token is expired
 // or revoked (invalid_grant). It signals that the user must re-authenticate.

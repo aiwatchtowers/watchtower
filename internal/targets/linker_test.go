@@ -52,7 +52,7 @@ func TestLinkExisting_HappyPath(t *testing.T) {
 	}`
 
 	gen := &mockGenerator{responses: []string{response}}
-	p := New(d, nil, gen, nil, nil)
+	p := New(d, nil, gen, nil, "", nil)
 
 	result, err := p.LinkExisting(context.Background(), targetID)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestLinkExisting_UnknownParentNulled(t *testing.T) {
 	// AI proposes a parent_id that doesn't exist in snapshot.
 	response := `{"parent_id": 99999, "secondary_links": []}`
 	gen := &mockGenerator{responses: []string{response}}
-	p := New(d, nil, gen, nil, nil)
+	p := New(d, nil, gen, nil, "", nil)
 
 	result, err := p.LinkExisting(context.Background(), targetID)
 	if err != nil {
@@ -133,7 +133,7 @@ func TestLinkExisting_ExternalRefLink(t *testing.T) {
 		]
 	}`
 	gen := &mockGenerator{responses: []string{response}}
-	p := New(d, nil, gen, nil, nil)
+	p := New(d, nil, gen, nil, "", nil)
 
 	result, err := p.LinkExisting(context.Background(), targetID)
 	if err != nil {

@@ -29,6 +29,9 @@ var Defaults = map[string]string{
 	DayPlanGenerate:      defaultDayPlanGenerate,
 	TargetsExtract:       defaultTargetsExtract,
 	TargetsLink:          defaultTargetsLink,
+	TrackCompose:         defaultTrackCompose,
+	TrackRun:             defaultTrackRun,
+	TrackShortlist:       defaultTrackShortlist,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -56,6 +59,9 @@ var AllIDs = []string{
 	DayPlanGenerate,
 	TargetsExtract,
 	TargetsLink,
+	TrackCompose,
+	TrackRun,
+	TrackShortlist,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -75,16 +81,19 @@ var DefaultVersions = map[string]int{
 	PeopleReduce:       1,
 	PeopleTeam:         1,
 	BriefingDaily:      5, // v5: jira integration
-	InboxPrioritize:    3, // v3: closing signal resolution rules
+	InboxPrioritize:    4, // v4: mandatory language directive
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
 	TasksGenerate:      1, // v1: AI task generation with checklist and due date
 	TasksUpdate:        1, // v1: AI task update from user instruction
 	MeetingPrep:        3, // v3: Jira context for attendees (workload, shared issues)
 	MeetingRecap:       1, // v1: initial meeting recap template
-	DayPlanGenerate:    1, // v1: initial day plan template
+	DayPlanGenerate:    2, // v2: mandatory language directive at top
 	TargetsExtract:     1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:        1, // v1: single-target link proposal against active snapshot
+	TrackCompose:       1, // v1: draft custom-track title+instruction from a free-text request
+	TrackRun:           1, // v1: custom-track timeline events from recent cross-source activity
+	TrackShortlist:     1, // v1: cheap title-only relevance filter for custom-track backfill
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -116,6 +125,9 @@ var Descriptions = map[string]string{
 	DayPlanGenerate:      "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
 	TargetsExtract:       "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
 	TargetsLink:          "Target linking — single-target parent and secondary link proposal against active snapshot",
+	TrackRun:             "Custom track run — timeline events from recent cross-source activity",
+	TrackCompose:         "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
+	TrackShortlist:       "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -671,6 +683,9 @@ Rules:
 %s`
 
 const defaultInboxPrioritize = `You are prioritizing Slack messages that may need the user's response.
+
+%s
+
 User role: %s
 
 You will receive two lists:
@@ -1159,3 +1174,51 @@ Rules:
 - parent_id must be an id from the ACTIVE TARGETS snapshot, or null.
 - secondary_links: max 3, relation must be contributes_to|blocks|related|duplicates.
 - Only propose links that make semantic sense. Return null parent_id and empty secondary_links if nothing fits.`
+
+const defaultTrackRun = `You are a CUSTOM TRACK watcher. Your job: read the track's WATCH INSTRUCTION, scan the RECENT ACTIVITY from all sources, and emit only the events genuinely relevant to THIS track per the instruction. Ignore everything unrelated.
+
+Return ONLY a JSON object (no markdown, no prose):
+{
+  "events": [
+    {
+      "summary": "one-line, past-tense, what happened and why it matters to this track",
+      "detail": "optional 1-2 extra sentences, or \"\"",
+      "source_type": "digest | track | inbox | slack | jira | calendar | decision",
+      "source_id": "the id/ref from the activity item, or \"\"",
+      "source_refs": ["permalink or link backing this event", "..."],
+      "decision": {"text": "what was decided", "by": "@user or \"\"", "importance": "high|medium|low"},
+      "proposed_action": {"type": "...", "reason": "why", ...}
+    }
+  ]
+}
+
+Rules:
+- Emit an event ONLY when the activity is relevant to this specific track per the watch instruction. When unsure, leave it out. An empty {"events": []} is a correct and common answer.
+- "summary" is mandatory and specific — name the change, not "there was activity".
+- Omit "decision" unless a real decision was made.
+- Include "proposed_action" ONLY when this track is linked to a goal/task the operator owns AND the activity clearly justifies a mutation to it. Standalone tracks (no linked target) MUST omit "proposed_action". When present it MUST be one of:
+  {"type":"update_status","reason":"...","status":"todo|in_progress|blocked|done|dismissed|snoozed"}
+  {"type":"update_progress","reason":"...","progress":0-100}
+  {"type":"update_notes","reason":"...","note":"text to append"}
+  {"type":"add_sub_item","reason":"...","text":"checklist item"}
+- Do not invent activity. Every event must trace to an item in RECENT ACTIVITY.
+- Keep "summary"/"detail" in the operator's language.`
+
+const defaultTrackCompose = `You design a WATCH INSTRUCTION for a CUSTOM TRACK the operator wants to follow. A custom track scans recent cross-source activity (Slack digests, action-item tracks, inbox/Jira/calendar items) and surfaces ONLY updates relevant to its instruction.
+
+You are given the operator's free-text USER REQUEST describing what they want watched (and, when present, a linked TARGET for context). Produce:
+- "title": a short label (at most 6 words) naming what this track follows.
+- "instruction": a precise watch instruction. Name the concrete topics, people, decisions, or blockers to watch for, and explicitly exclude unrelated chatter. Another AI reads this as its relevance filter, so be specific and unambiguous. Write it in the operator's language.
+
+Return ONLY a JSON object (no markdown fences, no prose) with exactly this shape:
+{"title": "...", "instruction": "..."}`
+
+const defaultTrackShortlist = `You are the RELEVANCE FILTER (stage 1 of 2) for a CUSTOM TRACK. You are shown the WATCH INSTRUCTION and a numbered list of activity TITLES (one short headline per item, across Slack digests, action-item tracks, and inbox items). A second AI will read the FULL content of whatever you select, so your only job is to cast a sensible net: pick every item whose title could plausibly relate to this track per the instruction.
+
+Return ONLY a JSON object (no markdown, no prose):
+{"refs": [{"kind": "digest|track|inbox", "id": 123}, ...]}
+
+Rules:
+- Judge from the title alone. When ambiguous but possibly related, INCLUDE it — stage 2 discards false positives. Only drop titles clearly unrelated.
+- Use the exact kind and id printed in brackets. Do not invent ids.
+- Respect the selection cap stated in the request. An empty {"refs": []} is valid when nothing fits.`

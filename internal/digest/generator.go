@@ -52,6 +52,40 @@ func NewClaudeGenerator(model, claudePath string) *ClaudeGenerator {
 	return &ClaudeGenerator{model: model, claudePath: claudePath}
 }
 
+// validateModelArgs builds the CLI args for a minimal model-validation request.
+// --setting-sources project,local skips the user-level ~/.claude/settings.json so
+// its plugins/hooks/CLAUDE.md auto-discovery don't probe ~/Desktop or ~/Documents
+// at startup — those probes trigger macOS TCC prompts attributed to Watchtower.app.
+// Keychain-backed OAuth still works because CLAUDE_CONFIG_DIR is left untouched.
+func validateModelArgs(model string) []string {
+	return []string{
+		"-p", "reply ok",
+		"--output-format", "json",
+		"--model", model,
+		"--no-session-persistence",
+		"--tools", "",
+		"--max-tokens", "10",
+		"--setting-sources", "project,local",
+	}
+}
+
+// generateArgs builds the CLI args for a digest generation request.
+// See validateModelArgs for why --setting-sources project,local is required.
+func generateArgs(model, systemPrompt, userMessage string) []string {
+	args := []string{
+		"-p", userMessage,
+		"--output-format", "json",
+		"--model", model,
+		"--no-session-persistence",
+		"--tools", "",
+		"--setting-sources", "project,local",
+	}
+	if systemPrompt != "" {
+		args = append(args, "--system-prompt", systemPrompt)
+	}
+	return args
+}
+
 // ValidateModel sends a minimal request to verify the configured model is valid.
 // Returns nil if the model works, or an error describing the problem.
 func (g *ClaudeGenerator) ValidateModel() error {
@@ -59,17 +93,13 @@ func (g *ClaudeGenerator) ValidateModel() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, claudeBin,
-		"-p", "reply ok",
-		"--output-format", "json",
-		"--model", g.model,
-		"--no-session-persistence",
-		"--tools", "",
-		"--max-tokens", "10",
-	)
+	cmd := exec.CommandContext(ctx, claudeBin, validateModelArgs(g.model)...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = os.TempDir()
+	cmd.Env = append(os.Environ(),
+		"PATH="+claude.RichPATH(),
+	)
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -148,17 +178,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 		model = ModelForSource(s)
 	}
 
-	args := []string{
-		"-p", userMessage,
-		"--output-format", "json",
-		"--model", model,
-		"--no-session-persistence",
-		"--tools", "",
-	}
-
-	if systemPrompt != "" {
-		args = append(args, "--system-prompt", systemPrompt)
-	}
+	args := generateArgs(model, systemPrompt, userMessage)
 
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
@@ -182,6 +202,10 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	// - Enrich PATH so `#!/usr/bin/env node` resolves from macOS .app bundles.
 	// - Remove CLAUDECODE to avoid "nested session" detection when launched
 	//   from a parent process that is itself a Claude Code session.
+	//
+	// TCC isolation is handled via --setting-sources project,local on the args
+	// (skips ~/.claude/settings.json plugins/hooks). We leave CLAUDE_CONFIG_DIR
+	// alone — overriding it breaks keychain auth.
 	richPATH := "PATH=" + claude.RichPATH()
 	var env []string
 	for _, e := range os.Environ() {

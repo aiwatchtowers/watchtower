@@ -42,7 +42,7 @@ func TestPinnedSelector_MaxFive(t *testing.T) {
 		d.Exec(`UPDATE inbox_items SET item_class='actionable', priority='high' WHERE id=?`, id) //nolint:errcheck
 	}
 	mock := &mockGen{respJSON: fmt.Sprintf(`{"pinned_ids":%s,"reason":"urgent"}`, jsonArray(ids[:10]))}
-	p := NewPinnedSelector(d, mock)
+	p := NewPinnedSelector(d, mock, "")
 	n, err := p.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,10 @@ func TestPinnedSelector_MaxFive(t *testing.T) {
 	}
 }
 
-func TestPinnedSelector_AIFailureKeepsState(t *testing.T) {
+func TestInbox07_PinnedKeepsStateOnAIError(t *testing.T) {
+	// BEHAVIOR INBOX-07 — see docs/inventory/inbox-pulse.md
+	// AI error during pinned selection preserves the previous pinned set.
+	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
 	existing := seedInboxItem(t, d, "U1", "C1", "mention")
 	d.Exec(`UPDATE inbox_items SET item_class='actionable' WHERE id=?`, existing) //nolint:errcheck
@@ -64,7 +67,7 @@ func TestPinnedSelector_AIFailureKeepsState(t *testing.T) {
 		t.Fatal(err)
 	}
 	mock := &mockGen{err: errors.New("boom")}
-	p := NewPinnedSelector(d, mock)
+	p := NewPinnedSelector(d, mock, "")
 	_, err := p.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -75,18 +78,24 @@ func TestPinnedSelector_AIFailureKeepsState(t *testing.T) {
 	}
 }
 
-func TestPinnedSelector_InvalidJSONFallback(t *testing.T) {
+func TestInbox07_PinnedKeepsStateOnInvalidJSON(t *testing.T) {
+	// BEHAVIOR INBOX-07 — see docs/inventory/inbox-pulse.md
+	// Invalid JSON from AI preserves the previous pinned set.
+	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
 	id := seedInboxItem(t, d, "U1", "C1", "mention")
 	d.Exec(`UPDATE inbox_items SET item_class='actionable' WHERE id=?`, id) //nolint:errcheck
 	mock := &mockGen{respJSON: "not-json"}
-	p := NewPinnedSelector(d, mock)
+	p := NewPinnedSelector(d, mock, "")
 	if _, err := p.Run(context.Background()); err != nil {
 		t.Error("should not fail pipeline on invalid JSON")
 	}
 }
 
-func TestPinnedSelector_RespectsMuteRules(t *testing.T) {
+func TestInbox03_MutedSourcesNotPinned(t *testing.T) {
+	// BEHAVIOR INBOX-03 — see docs/inventory/inbox-pulse.md
+	// Muted sources are filtered from pinned regardless of AI suggestion.
+	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
 	muted := seedInboxItem(t, d, "Umuted", "C1", "mention")
 	ok := seedInboxItem(t, d, "Uok", "C1", "mention")
@@ -100,7 +109,7 @@ func TestPinnedSelector_RespectsMuteRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	mock := &mockGen{respJSON: fmt.Sprintf(`{"pinned_ids":[%d],"reason":"AI still tried"}`, muted)}
-	p := NewPinnedSelector(d, mock)
+	p := NewPinnedSelector(d, mock, "")
 	p.Run(context.Background()) //nolint:errcheck
 	pinned, _ := d.ListInboxPinned()
 	for _, it := range pinned {

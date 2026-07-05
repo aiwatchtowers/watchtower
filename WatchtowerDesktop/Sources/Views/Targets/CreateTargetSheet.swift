@@ -4,10 +4,11 @@ struct CreateTargetSheet: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
-    var prefillText: String = ""
-    var prefillIntent: String = ""
-    var prefillSourceType: String = "manual"
-    var prefillSourceID: String = ""
+    var prefill: TargetPrefill? = nil
+    /// Fires after a successful insert with the new target id. Used by the inbox
+    /// callsite (Task 14) to backfill `inbox_items.target_id` via
+    /// `InboxQueries.linkTarget`. Other callsites pass nil.
+    var onCreated: ((Int) -> Void)? = nil
 
     @State private var text: String = ""
     @State private var intent: String = ""
@@ -28,6 +29,13 @@ struct CreateTargetSheet: View {
     /// Indices are kept in sync with `subItems` mutations (see `removeSubItem`).
     @State private var pendingPromotions: Set<Int> = []
     @State private var isCreating: Bool = false
+    @State private var sourceType: String = "manual"
+    @State private var sourceID: String = ""
+    @State private var secondaryLinks: [TargetPrefillLink] = []
+    /// Optional parent target (`targets.parent_id`). nil = top-level target.
+    @State private var parentID: Int?
+    /// Active targets offered in the parent picker. Loaded once on appear.
+    @State private var candidateParents: [Target] = []
 
     private let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
@@ -46,14 +54,24 @@ struct CreateTargetSheet: View {
         }
         .frame(width: 520, height: 480)
         .onAppear {
-            text = prefillText
-            intent = prefillIntent
-            if !prefillIntent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let p = prefill {
+                text = p.text
+                intent = p.intent
+                sourceType = p.sourceType
+                sourceID = p.sourceID
+                secondaryLinks = p.secondaryLinks
+                parentID = p.parentID
+            }
+            if !intent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 showMoreOptions = true
             }
             if !subItems.isEmpty {
                 showChecklist = true
             }
+            loadCandidateParents()
+            // A preselected parent (sub-target creation) snaps the planning
+            // window to the parent's, matching `createChild` semantics.
+            if let pid = parentID { inheritFromParent(pid) }
         }
         .sheet(isPresented: $showExtractSheet) {
             if let result = extractedResult {
@@ -87,7 +105,9 @@ struct CreateTargetSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 textFieldWithAI
+                extractButton
                 levelPriorityRow
+                parentPickerRow
                 customPeriodRow
                 checklistSection
                 moreOptionsSection
@@ -112,32 +132,30 @@ struct CreateTargetSheet: View {
                 .scrollContentBackground(.hidden)
                 .padding(6)
                 .frame(minHeight: 56, maxHeight: 180)
-
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                HStack {
-                    Spacer()
-                    Button {
-                        Task { await runExtract() }
-                    } label: {
-                        if isExtracting {
-                            HStack(spacing: 4) {
-                                ProgressView().controlSize(.small)
-                                Text("Extracting…").font(.caption)
-                            }
-                        } else {
-                            Label("Extract with AI", systemImage: "sparkles")
-                                .font(.caption)
-                                .labelStyle(.titleAndIcon)
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(isExtracting)
-                    .padding(6)
-                }
-            }
         }
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var extractButton: some View {
+        HStack {
+            Button {
+                Task { await runExtract() }
+            } label: {
+                if isExtracting {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Extracting…")
+                    }
+                } else {
+                    Label("Extract with AI", systemImage: "sparkles")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(isExtracting || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("Run the entered text through the LLM to propose structured targets")
+            Spacer()
+        }
     }
 
     private var levelPriorityRow: some View {
@@ -177,6 +195,80 @@ struct CreateTargetSheet: View {
             }
             .font(.callout)
         }
+    }
+
+    private var parentPickerRow: some View {
+        HStack(spacing: 8) {
+            Text("Parent")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Menu {
+                Button("None (top-level)") { selectParent(nil) }
+                if !candidateParents.isEmpty {
+                    Divider()
+                    ForEach(candidateParents) { candidate in
+                        Button(candidate.text) { selectParent(candidate.id) }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(parentDisplayName)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Spacer()
+        }
+    }
+
+    private var parentDisplayName: String {
+        guard let parentID,
+              let parent = candidateParents.first(where: { $0.id == parentID })
+        else { return "None" }
+        return parent.text
+    }
+
+    /// Selects a parent and, when one is chosen, inherits its planning window.
+    private func selectParent(_ id: Int?) {
+        parentID = id
+        if let id { inheritFromParent(id) }
+    }
+
+    /// Snaps `level`/period to the parent's so a sub-target lands inside the
+    /// parent's planning window. The user can still override afterward.
+    private func inheritFromParent(_ id: Int) {
+        guard let parent = candidateParents.first(where: { $0.id == id }) else { return }
+        level = parent.level
+        if let start = dateFormatter.date(from: parent.periodStart) {
+            periodStart = start
+        }
+        if let end = dateFormatter.date(from: parent.periodEnd) {
+            periodEnd = end
+        }
+    }
+
+    private func loadCandidateParents() {
+        guard let db = appState.databaseManager else { return }
+        var loaded: [Target]
+        do {
+            loaded = try db.dbPool.read { dbConn in
+                try TargetQueries.fetchAll(dbConn, filter: TargetFilter())
+            }
+        } catch {
+            print("CreateTargetSheet: failed to load candidate parents: \(error)")
+            loaded = []
+        }
+        // Ensure a preselected parent is offered even if it's done/dismissed
+        // (active-only filter would otherwise drop it and blank the label).
+        if let pid = parentID, !loaded.contains(where: { $0.id == pid }),
+           let parent = try? db.dbPool.read({ try TargetQueries.fetchByID($0, id: pid) }) {
+            loaded.insert(parent, at: 0)
+        }
+        candidateParents = loaded
     }
 
     @ViewBuilder
@@ -272,11 +364,11 @@ struct CreateTargetSheet: View {
 
     @ViewBuilder
     private var sourceInfo: some View {
-        if prefillSourceType != "manual" {
+        if sourceType != "manual" {
             HStack(spacing: 4) {
                 Image(systemName: sourceIcon)
                     .foregroundStyle(.secondary)
-                Text("From \(prefillSourceType) #\(prefillSourceID)")
+                Text("From \(sourceType) #\(sourceID)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -321,7 +413,7 @@ struct CreateTargetSheet: View {
     }
 
     private var sourceIcon: String {
-        switch prefillSourceType {
+        switch sourceType {
         case "track": return "binoculars"
         case "digest": return "doc.text.magnifyingglass"
         case "briefing": return "sun.max"
@@ -382,8 +474,10 @@ struct CreateTargetSheet: View {
         let intentCopy = intent.trimmingCharacters(in: .whitespacesAndNewlines)
         let levelCopy = level
         let priorityCopy = priority
-        let sourceTypeCopy = prefillSourceType
-        let sourceIDCopy = prefillSourceID
+        let sourceTypeCopy = sourceType
+        let sourceIDCopy = sourceID
+        let secondaryLinksCopy = secondaryLinks
+        let parentIDCopy = parentID
 
         // 1. Insert the parent target.
         let newID: Int
@@ -396,10 +490,12 @@ struct CreateTargetSheet: View {
                     level: levelCopy,
                     periodStart: start,
                     periodEnd: end,
+                    parentId: parentIDCopy,
                     priority: priorityCopy,
                     subItems: subItemsJSON,
                     sourceType: sourceTypeCopy,
-                    sourceID: sourceIDCopy
+                    sourceID: sourceIDCopy,
+                    secondaryLinks: secondaryLinksCopy
                 )
             }
         } catch {
@@ -423,6 +519,7 @@ struct CreateTargetSheet: View {
             }
         }
 
+        onCreated?(newID)
         dismiss()
     }
 

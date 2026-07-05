@@ -36,10 +36,11 @@ func (p *Pipeline) ExtractDiscussionTopics(
 		return &ExtractTopicsResult{Topics: []ExtractedTopic{}}, nil
 	}
 
-	langDirective := ""
-	if p.cfg != nil && p.cfg.Digest.Language != "" {
-		langDirective = fmt.Sprintf("Respond in %s", p.cfg.Digest.Language)
+	lang := ""
+	if p.cfg != nil {
+		lang = p.cfg.Digest.Language
 	}
+	langDirective := prompts.Directive(lang)
 
 	titleCtx := "(no event title)"
 	if eventTitle != "" {

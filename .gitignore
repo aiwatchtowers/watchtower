@@ -42,9 +42,17 @@ cert
 # User config (contains tokens)
 config.yaml
 
+# Sentrux runtime artifacts (rules.toml is committed; baseline is local)
+.sentrux/baseline.json
+
 # Release artifacts
 dist/
 
 # App bundles (redundant safety)
 *.app/
 docs/strategy/*
+# Claude Code client-side MCP auth cache (created in cwd, not project data)
+mcp-needs-auth-cache.json
+
+# Stray Claude Code session data (transcripts/memory) accidentally created in-repo
+projects/-Users-user-PhpstormProjects-watchtower/

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -142,6 +144,82 @@ func TestPrintTracks(t *testing.T) {
 	output := buf.String()
 	assert.Contains(t, output, "Review PR #42")
 	assert.Contains(t, output, "Deploy new version")
+}
+
+func TestTracksCustomSubcommandsRegistered(t *testing.T) {
+	subs := map[string]bool{"create": false, "watch": false, "scan": false, "events": false, "enable": false, "disable": false}
+	for _, cmd := range tracksCmd.Commands() {
+		if _, ok := subs[cmd.Name()]; ok {
+			subs[cmd.Name()] = true
+		}
+	}
+	for name, found := range subs {
+		assert.True(t, found, "tracks %s subcommand should be registered", name)
+	}
+}
+
+func TestRunTracksEvents(t *testing.T) {
+	cleanup := setupTracksTestEnv(t)
+	defer cleanup()
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	tid, err := database.CreateCustomTrack(db.Track{
+		AssigneeUserID: "U001", Text: "Watch the release cut",
+		Instruction: "watch release", Context: "release cut",
+	})
+	require.NoError(t, err)
+	_, err = database.InsertTrackEvent(db.TrackEvent{
+		TrackID: int(tid), Summary: "release branch cut", SourceType: "digest",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	buf := new(bytes.Buffer)
+	tracksEventsCmd.SetOut(buf)
+	err = tracksEventsCmd.RunE(tracksEventsCmd, []string{strconv.Itoa(int(tid))})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "release branch cut")
+}
+
+func TestRunTracksEnableDisable(t *testing.T) {
+	cleanup := setupTracksTestEnv(t)
+	defer cleanup()
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	tid, err := database.CreateCustomTrack(db.Track{
+		AssigneeUserID: "U001", Text: "Watch refund", Instruction: "watch refund",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	buf := new(bytes.Buffer)
+	tracksDisableCmd.SetOut(buf)
+	err = tracksDisableCmd.RunE(tracksDisableCmd, []string{strconv.Itoa(int(tid))})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "enabled=false")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	enabled, err := database.GetEnabledCustomTracks()
+	require.NoError(t, err)
+	assert.Empty(t, enabled)
+	database.Close()
+
+	buf.Reset()
+	tracksEnableCmd.SetOut(buf)
+	err = tracksEnableCmd.RunE(tracksEnableCmd, []string{strconv.Itoa(int(tid))})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "enabled=true")
+}
+
+func TestRunTracksEventsInvalidID(t *testing.T) {
+	cleanup := setupTracksTestEnv(t)
+	defer cleanup()
+	err := tracksEventsCmd.RunE(tracksEventsCmd, []string{"not-a-number"})
+	assert.Error(t, err)
+	assert.True(t, strings.Contains(err.Error(), "invalid"))
 }
 
 func setupTracksTestEnv(t *testing.T) func() {

@@ -311,6 +311,27 @@ final class TargetsViewModel {
         }
     }
 
+    func updateLevel(_ target: Target, to level: String) {
+        // Expand the period to the new level's natural window, anchored on the
+        // target's existing period_start so its "when" is preserved (nil for
+        // custom/unknown levels → period left untouched).
+        let window = Target.periodWindow(for: level, anchoredOn: target.periodStart)
+        do {
+            try dbManager.dbPool.write { db in
+                try TargetQueries.updateLevel(
+                    db,
+                    id: target.id,
+                    level: level,
+                    periodStart: window?.start,
+                    periodEnd: window?.end
+                )
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update level: \(error.localizedDescription)"
+        }
+    }
+
     func updateStatus(_ target: Target, to status: String) {
         do {
             try dbManager.dbPool.write { db in
@@ -319,6 +340,57 @@ final class TargetsViewModel {
             load()
         } catch {
             errorMessage = "Failed to update status: \(error.localizedDescription)"
+        }
+    }
+
+    func updateProgress(_ target: Target, to progress: Double) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TargetQueries.updateProgress(db, id: target.id, progress: progress)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update progress: \(error.localizedDescription)"
+        }
+    }
+
+    /// Create a child target under `parent`, inheriting its planning period and
+    /// level. Used by the task AI agent. Returns the new id, or nil on failure.
+    @discardableResult
+    func createChild(_ parent: Target, text: String, intent: String, priority: String) -> Int? {
+        do {
+            let newID = try dbManager.dbPool.write { db in
+                try TargetQueries.create(
+                    db,
+                    text: text,
+                    intent: intent,
+                    level: parent.level,
+                    periodStart: parent.periodStart,
+                    periodEnd: parent.periodEnd,
+                    parentId: parent.id,
+                    priority: priority,
+                    sourceType: "chat",
+                    sourceID: "target:\(parent.id)"
+                )
+            }
+            load()
+            return newID
+        } catch {
+            errorMessage = "Failed to create child target: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Create a typed link (contributes_to/blocks/related/duplicates) from one
+    /// existing target to another. Used by the task AI agent.
+    func createLink(from sourceID: Int, to targetID: Int, relation: String) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TargetQueries.createLink(db, sourceID: sourceID, targetID: targetID, relation: relation)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to link target: \(error.localizedDescription)"
         }
     }
 

@@ -24,7 +24,7 @@ enum CLIRunnerError: LocalizedError {
             return "watchtower binary not found. Make sure it is installed and in your PATH."
         case .launchFailed(let err):
             return "Failed to launch watchtower: \(err.localizedDescription)"
-        case .nonZeroExit(let code, let stderr):
+        case let .nonZeroExit(code, stderr):
             let detail = stderr.isEmpty ? "exit \(code)" : stderr.prefix(300).description
             return "watchtower exited with error: \(detail)"
         }

@@ -37,6 +37,9 @@ const (
 	DayPlanGenerate      = "day_plan.generate"
 	TargetsExtract       = "targets.extract"
 	TargetsLink          = "targets.link"
+	TrackCompose         = "track.compose"
+	TrackRun             = "track.run"
+	TrackShortlist       = "track.shortlist"
 )
 
 // Store loads, caches, and persists prompt templates.

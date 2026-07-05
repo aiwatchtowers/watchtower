@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -854,14 +855,18 @@ func TestGetJiraTeamWorkload(t *testing.T) {
 		CreatedAt: "2026-03-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
 	}))
 	// Done issue for U1 (should NOT count as open/overdue/blocked, but contributes to avg cycle time).
+	// Use dynamic dates so the issue stays inside GetJiraTeamWorkload's 30-day cycle window.
+	now := time.Now()
+	createdAt := now.AddDate(0, 0, -15).Format("2006-01-02T15:04:05Z")
+	resolvedAt := now.AddDate(0, 0, -5).Format("2006-01-02T15:04:05Z")
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
 		Key: "P-4", ProjectKey: "P", Summary: "Done task",
 		Status: "Done", StatusCategory: "done",
 		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
 		Labels: `[]`, Components: `[]`,
-		CreatedAt:  "2026-03-20T00:00:00Z",
-		ResolvedAt: "2026-03-30T00:00:00Z",
-		UpdatedAt:  "2026-03-30T00:00:00Z", SyncedAt: "now",
+		CreatedAt:  createdAt,
+		ResolvedAt: resolvedAt,
+		UpdatedAt:  resolvedAt, SyncedAt: "now",
 	}))
 
 	// User U2: 1 open issue, no overdue, no blocked.
@@ -1072,4 +1077,32 @@ func TestClearJiraData_IncludesReleases(t *testing.T) {
 
 	releases, _ := db.GetJiraReleases("P")
 	assert.Empty(t, releases)
+}
+
+func TestGetJiraIssues(t *testing.T) {
+	db := openTestDB(t)
+
+	mustUpsert := func(key, project, status string) {
+		require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+			Key: key, ID: key, ProjectKey: project, Summary: "s",
+			Status: status, StatusCategory: "In Progress",
+			CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z",
+			SyncedAt: "2026-06-02T00:00:00Z",
+		}), "upsert %s", key)
+	}
+	mustUpsert("ABC-1", "ABC", "To Do")
+	mustUpsert("ABC-2", "ABC", "Done")
+	mustUpsert("XYZ-1", "XYZ", "To Do")
+
+	all, err := db.GetJiraIssues(JiraIssueFilter{})
+	require.NoError(t, err, "GetJiraIssues all")
+	assert.Len(t, all, 3)
+
+	byProject, err := db.GetJiraIssues(JiraIssueFilter{ProjectKey: "ABC"})
+	require.NoError(t, err, "GetJiraIssues project")
+	assert.Len(t, byProject, 2)
+
+	byStatus, err := db.GetJiraIssues(JiraIssueFilter{Status: "To Do"})
+	require.NoError(t, err, "GetJiraIssues status")
+	assert.Len(t, byStatus, 2)
 }

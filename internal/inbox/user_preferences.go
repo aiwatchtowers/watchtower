@@ -26,6 +26,7 @@ func buildUserPreferencesBlock(database *db.DB, items []db.InboxItem) (string, e
 		add("sender:" + it.SenderUserID)
 		add("channel:" + it.ChannelID)
 	}
+	// No items → no scopes → empty block (do not fall back to all inbox rules).
 	if len(scopes) == 0 {
 		return "", nil
 	}

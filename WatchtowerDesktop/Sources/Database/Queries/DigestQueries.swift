@@ -78,11 +78,22 @@ enum DigestQueries {
     // MARK: - Read tracking
 
     static func markDigestRead(_ db: Database, id: Int) throws {
-        let columns = try db.columns(in: "digests")
-        guard columns.contains(where: { $0.name == "read_at" }) else { return }
         try db.execute(
             sql: "UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND read_at IS NULL",
             arguments: [id]
+        )
+    }
+
+    /// Marks multiple digests read in one write. No-op on empty input.
+    static func markRead(_ db: Database, ids: [Int]) throws {
+        guard !ids.isEmpty else { return }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        try db.execute(
+            sql: """
+                UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id IN (\(placeholders)) AND read_at IS NULL
+                """,
+            arguments: StatementArguments(ids)
         )
     }
 
@@ -141,10 +152,7 @@ enum DigestQueries {
     }
 
     static func unreadDigestCount(_ db: Database) throws -> Int {
-        // read_at column may not exist on older schema — treat all as read
-        let columns = try db.columns(in: "digests")
-        guard columns.contains(where: { $0.name == "read_at" }) else { return 0 }
-        return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests WHERE read_at IS NULL") ?? 0
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests WHERE read_at IS NULL") ?? 0
     }
 
     static func unreadDecisionCount(_ db: Database, totalDecisionCount: Int) throws -> Int {

@@ -11,7 +11,6 @@ struct InboxFeedbackQueries {
     func record(item: InboxItem, rating: Int, reason: String) throws {
         let now = ISO8601DateFormatter().string(from: Date())
         let senderID = item.senderUserID
-        let triggerType = item.triggerType
 
         try dbPool.write { db in
             // Insert feedback row
@@ -23,7 +22,9 @@ struct InboxFeedbackQueries {
                 arguments: [item.id, rating, reason, now]
             )
 
-            // Derive rule update (mirrors Go SubmitFeedback logic)
+            // Derive rule update (mirrors Go SubmitFeedback logic — INBOX-04 gradual semantics)
+            // Only (-1, never_show) writes an instant learned rule; all other ratings
+            // are audit-only (the implicit learner aggregates them over time).
             switch (rating, reason) {
             case (-1, "never_show"):
                 try upsertRule(
@@ -31,51 +32,19 @@ struct InboxFeedbackQueries {
                     ruleType: "source_mute",
                     scopeKey: "sender:\(senderID)",
                     weight: -1.0,
-                    source: "explicit_feedback",
-                    now: now
-                )
-            case (-1, "source_noise"):
-                try upsertRule(
-                    db,
-                    ruleType: "source_mute",
-                    scopeKey: "sender:\(senderID)",
-                    weight: -0.8,
-                    source: "explicit_feedback",
+                    source: "user_rule",
                     now: now
                 )
             case (-1, "wrong_class"):
-                try db.execute(
-                    sql: "UPDATE inbox_items SET item_class = 'ambient' WHERE id = ?",
-                    arguments: [item.id]
-                )
-                try upsertRule(
-                    db,
-                    ruleType: "trigger_downgrade",
-                    scopeKey: "trigger:\(triggerType):sender:\(senderID)",
-                    weight: -0.6,
-                    source: "explicit_feedback",
-                    now: now
-                )
-            case (-1, "wrong_priority"):
-                try upsertRule(
-                    db,
-                    ruleType: "trigger_downgrade",
-                    scopeKey: "sender:\(senderID)",
-                    weight: -0.5,
-                    source: "explicit_feedback",
-                    now: now
-                )
-            case (1, _):
-                try upsertRule(
-                    db,
-                    ruleType: "source_boost",
-                    scopeKey: "sender:\(senderID)",
-                    weight: 0.6,
-                    source: "explicit_feedback",
-                    now: now
-                )
+                // Flip item class to ambient; no rule written (learner aggregates later).
+                if item.itemClass == .actionable {
+                    try db.execute(
+                        sql: "UPDATE inbox_items SET item_class = 'ambient' WHERE id = ?",
+                        arguments: [item.id]
+                    )
+                }
             default:
-                break
+                break  // audit row only; implicit learner aggregates explicit ratings later
             }
         }
     }

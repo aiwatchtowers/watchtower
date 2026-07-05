@@ -1,0 +1,10 @@
+## Periphery config for SPM (Package.swift) project.
+## Auto-detects targets from Package.swift; no project/schemes needed.
+##
+## To run: cd WatchtowerDesktop && swift build && periphery scan --skip-build
+## Or via Makefile: make periphery
+
+exclude_tests: false
+retain_public: false
+retain_objc_accessible: true
+relative_results: true

@@ -4,6 +4,7 @@ struct TracksListView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: TracksViewModel?
     @State private var selectedItemID: Int?
+    @State private var showCreateSheet = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -23,11 +24,20 @@ struct TracksListView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: selectedItemID)
+        .sheet(isPresented: $showCreateSheet) {
+            // Standalone custom track (no linked target). The tracks-table
+            // ValueObservation refreshes the Custom section on insert.
+            CustomTrackManagementSheet()
+        }
         .onAppear {
             if viewModel == nil, let db = appState.databaseManager {
                 let vm = TracksViewModel(dbManager: db)
                 viewModel = vm
                 vm.startObserving()
+            }
+            if let id = appState.pendingTrackID {
+                selectedItemID = id
+                appState.pendingTrackID = nil
             }
         }
         .onChange(of: appState.isDBAvailable) {
@@ -35,6 +45,12 @@ struct TracksListView: View {
                 let vm = TracksViewModel(dbManager: db)
                 viewModel = vm
                 vm.startObserving()
+            }
+        }
+        .onChange(of: appState.pendingTrackID) { _, newID in
+            if let id = newID {
+                selectedItemID = id
+                appState.pendingTrackID = nil
             }
         }
         .onChange(of: selectedItemID) { _, newID in
@@ -48,155 +64,195 @@ struct TracksListView: View {
 
     private func listPanel(_ vm: TracksViewModel) -> some View {
         VStack(spacing: 0) {
-            // Toolbar
-            VStack(spacing: 8) {
-                HStack {
-                    Text("Tracks")
-                        .font(.title2)
-                        .fontWeight(.bold)
-
-                    if vm.updatedCount > 0 {
-                        Text("\(vm.updatedCount)")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(.orange, in: Capsule())
-                    }
-
-                    Spacer()
-
-                    // Jira filter (hidden if not connected)
-                    if vm.isJiraConnected {
-                        Picker("Jira", selection: Bindable(vm).jiraFilter) {
-                            ForEach(
-                                TracksViewModel.JiraFilter.allCases,
-                                id: \.self
-                            ) { filter in
-                                Text(filter.rawValue).tag(filter)
-                            }
-                        }
-                        .frame(maxWidth: 120)
-                    }
-
-                    // Priority filter
-                    Picker("Priority", selection: Bindable(vm).priorityFilter) {
-                        Text("All").tag(String?.none)
-                        Label("High", systemImage: "exclamationmark.triangle.fill")
-                            .tag(String?.some("high"))
-                        Label("Medium", systemImage: "minus.circle")
-                            .tag(String?.some("medium"))
-                        Label("Low", systemImage: "arrow.down.circle")
-                            .tag(String?.some("low"))
-                    }
-                    .frame(maxWidth: 140)
-                }
-
-                // Ownership filter + view toggles
-                HStack(spacing: 4) {
-                    ownershipButton(vm, label: "All", value: nil)
-                    ownershipButton(vm, label: "Mine", value: "mine")
-                    ownershipButton(vm, label: "Delegated", value: "delegated")
-                    ownershipButton(vm, label: "Watching", value: "watching")
-                    Spacer()
-
-                    Menu {
-                        ForEach(TracksViewModel.SortOrder.allCases, id: \.self) { order in
-                            Button {
-                                vm.sortOrder = order
-                                vm.load()
-                            } label: {
-                                if vm.sortOrder == order {
-                                    Label(order.rawValue, systemImage: "checkmark")
-                                } else {
-                                    Text(order.rawValue)
-                                }
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .help("Sort: \(vm.sortOrder.rawValue)")
-
-                    Button {
-                        vm.showRead.toggle()
-                        vm.load()
-                    } label: {
-                        Image(systemName: vm.showRead ? "eye.fill" : "eye.slash")
-                            .font(.caption)
-                            .foregroundStyle(vm.showRead ? .primary : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(vm.showRead ? "Hide read tracks" : "Show read tracks")
-
-                    Button {
-                        vm.showDismissed.toggle()
-                        vm.load()
-                    } label: {
-                        Image(systemName: "archivebox")
-                            .font(.caption)
-                            .foregroundStyle(vm.showDismissed ? .primary : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(vm.showDismissed ? "Hide dismissed" : "Show dismissed")
-                }
-            }
-            .padding()
-            .onChange(of: vm.priorityFilter) { vm.load() }
-            .onChange(of: vm.ownershipFilter) { vm.load() }
-            .onChange(of: vm.jiraFilter) { vm.load() }
-
+            listPanelToolbar(vm)
             Divider()
-
-            if vm.isLoading {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if vm.updatedTracks.isEmpty && vm.allTracks.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "binoculars")
-                        .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
-                    Text("No tracks yet")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Text("Tracks are created automatically from your workspace activity")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        // Updates section
-                        if !vm.updatedTracks.isEmpty {
-                            sectionHeader("Updates", count: vm.updatedTracks.count, color: .orange)
-                            ForEach(vm.updatedTracks) { track in
-                                trackRow(track, vm: vm, isUpdate: true)
-                            }
-                        }
-
-                        // All tracks section
-                        if !vm.allTracks.isEmpty {
-                            sectionHeader(
-                                "All Tracks", count: vm.allTracks.count, color: .secondary
-                            )
-                            ForEach(vm.allTracks) { track in
-                                trackRow(track, vm: vm, isUpdate: false)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
+            listPanelContent(vm)
         }
         .frame(minWidth: 350, idealWidth: 420)
+    }
+
+    // MARK: - Toolbar
+
+    private func listPanelToolbar(_ vm: TracksViewModel) -> some View {
+        VStack(spacing: 8) {
+            panelHeaderRow(vm)
+            panelFilterRow(vm)
+        }
+        .padding()
+        .onChange(of: vm.priorityFilter) { vm.load() }
+        .onChange(of: vm.ownershipFilter) { vm.load() }
+        .onChange(of: vm.jiraFilter) { vm.load() }
+    }
+
+    private func panelHeaderRow(_ vm: TracksViewModel) -> some View {
+        HStack {
+            Text("Tracks")
+                .font(.title2)
+                .fontWeight(.bold)
+
+            if vm.updatedCount > 0 {
+                Text("\(vm.updatedCount)")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.orange, in: Capsule())
+            }
+
+            Button {
+                showCreateSheet = true
+            } label: {
+                Image(systemName: "plus.circle")
+                    .font(.body)
+            }
+            .buttonStyle(.plain)
+            .help("Create a custom track to watch")
+
+            Spacer()
+
+            // Jira filter (hidden if not connected)
+            if vm.isJiraConnected {
+                Picker("Jira", selection: Bindable(vm).jiraFilter) {
+                    ForEach(TracksViewModel.JiraFilter.allCases, id: \.self) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .frame(maxWidth: 120)
+            }
+
+            // Priority filter
+            Picker("Priority", selection: Bindable(vm).priorityFilter) {
+                Text("All").tag(String?.none)
+                Label("High", systemImage: "exclamationmark.triangle.fill")
+                    .tag(String?.some("high"))
+                Label("Medium", systemImage: "minus.circle")
+                    .tag(String?.some("medium"))
+                Label("Low", systemImage: "arrow.down.circle")
+                    .tag(String?.some("low"))
+            }
+            .frame(maxWidth: 140)
+        }
+    }
+
+    private func panelFilterRow(_ vm: TracksViewModel) -> some View {
+        HStack(spacing: 4) {
+            ownershipButton(vm, label: "All", value: nil)
+            ownershipButton(vm, label: "Mine", value: "mine")
+            ownershipButton(vm, label: "Delegated", value: "delegated")
+            ownershipButton(vm, label: "Watching", value: "watching")
+            Spacer()
+
+            Menu {
+                ForEach(TracksViewModel.SortOrder.allCases, id: \.self) { order in
+                    Button {
+                        vm.sortOrder = order
+                        vm.load()
+                    } label: {
+                        if vm.sortOrder == order {
+                            Label(order.rawValue, systemImage: "checkmark")
+                        } else {
+                            Text(order.rawValue)
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Sort: \(vm.sortOrder.rawValue)")
+
+            Button {
+                vm.showRead.toggle()
+                vm.load()
+            } label: {
+                Image(systemName: vm.showRead ? "eye.fill" : "eye.slash")
+                    .font(.caption)
+                    .foregroundStyle(vm.showRead ? .primary : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(vm.showRead ? "Hide read tracks" : "Show read tracks")
+
+            Button {
+                vm.showDismissed.toggle()
+                vm.load()
+            } label: {
+                Image(systemName: "archivebox")
+                    .font(.caption)
+                    .foregroundStyle(vm.showDismissed ? .primary : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(vm.showDismissed ? "Hide dismissed" : "Show dismissed")
+        }
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder
+    private func listPanelContent(_ vm: TracksViewModel) -> some View {
+        if vm.isLoading {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if vm.updatedTracks.isEmpty && vm.allTracks.isEmpty && vm.customTracks.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: "binoculars")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.secondary)
+                Text("No tracks yet")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                Text("Tracks are created automatically from your workspace activity")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            trackScrollView(vm)
+        }
+    }
+
+    private func trackScrollView(_ vm: TracksViewModel) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                // Pinned Custom section — user-authored tracks first.
+                if !vm.customTracks.isEmpty {
+                    sectionHeader("Custom", count: vm.customTracks.count, color: .accentColor)
+                    ForEach(vm.customTracks) { track in
+                        trackRow(track, vm: vm, isUpdate: false)
+                            .overlay(alignment: .trailing) {
+                                if appState.trackScanCenter.isRunning(track.id) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .padding(.trailing, 12)
+                                        .help("Scanning…")
+                                }
+                            }
+                    }
+                }
+
+                // Updates section
+                if !vm.updatedTracks.isEmpty {
+                    sectionHeader("Updates", count: vm.updatedTracks.count, color: .orange)
+                    ForEach(vm.updatedTracks) { track in
+                        trackRow(track, vm: vm, isUpdate: true)
+                    }
+                }
+
+                // All tracks section
+                if !vm.allTracks.isEmpty {
+                    sectionHeader("All Tracks", count: vm.allTracks.count, color: .secondary)
+                    ForEach(vm.allTracks) { track in
+                        trackRow(track, vm: vm, isUpdate: false)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 
     private func ownershipButton(
