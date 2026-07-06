@@ -18,6 +18,8 @@ settings:
     CODE_SIGNING_ALLOWED: NO
     CODE_SIGNING_REQUIRED: NO
     CODE_SIGN_IDENTITY: ""
+    # Project-level Swift language version (brief asked 5.10) — targets inherit.
+    SWIFT_VERSION: "5.10"
 
 targets:
   WatchtowerMobile:

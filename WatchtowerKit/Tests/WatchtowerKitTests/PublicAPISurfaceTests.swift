@@ -182,9 +182,13 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertEqual(store.corruptCount(), 0)
         XCTAssertNotNil(try store.storedToken())
 
-        // reader is the ValueObservation entry point for the UI.
-        let count = try await store.reader.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
+        // reader is the ValueObservation entry point for the UI, and
+        // fetchAll(_:kind:from:) is the overload the app's ReplicaObserver
+        // calls inside its tracking closure (the closure's own db) — both must
+        // be public for the app to build.
+        let count = try await store.reader.read { db -> Int in
+            _ = try store.fetchAll(Target.self, kind: .target, from: db)
+            return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
         }
         XCTAssertEqual(count, 1)
 

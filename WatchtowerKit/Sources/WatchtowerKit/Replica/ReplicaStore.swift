@@ -157,14 +157,31 @@ public final class ReplicaStore: Sendable {
         kind: SliceKind,
         orderedBy sql: String? = nil
     ) throws -> [T] {
+        try writer.read { db in try fetchAll(type, kind: kind, from: db, orderedBy: sql) }
+    }
+
+    /// Decodes stored payloads of `kind` from an ALREADY-OPEN database — for use
+    /// inside a ValueObservation tracking closure, where opening a nested
+    /// `writer.read` would trap on DatabasePool reentrancy. The observation must
+    /// call THIS overload with its own `db` so region tracking is recorded on the
+    /// tracked connection.
+    ///
+    /// `orderedBy` is a trusted compile-time ORDER BY fragment over
+    /// slice_records columns (`record_name`, `modified_at`) — never user
+    /// input. Typed sorting on model fields happens in memory after decode.
+    /// Default: most recent first.
+    public func fetchAll<T: FetchableRecord>(
+        _ type: T.Type,
+        kind: SliceKind,
+        from db: Database,
+        orderedBy sql: String? = nil
+    ) throws -> [T] {
         let order = sql ?? "modified_at DESC, record_name"
-        let rows = try writer.read { db in
-            try Row.fetchAll(
-                db,
-                sql: "SELECT record_name, payload FROM slice_records WHERE kind = ? ORDER BY \(order)",
-                arguments: [kind.rawValue]
-            )
-        }
+        let rows = try Row.fetchAll(
+            db,
+            sql: "SELECT record_name, payload FROM slice_records WHERE kind = ? ORDER BY \(order)",
+            arguments: [kind.rawValue]
+        )
         var decoded: [T] = []
         var badNames: [String] = []
         for row in rows {

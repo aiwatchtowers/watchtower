@@ -387,6 +387,43 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).first?.text, "on disk")
     }
 
+    /// The exact scenario ReplicaObserver drives: a ValueObservation whose
+    /// tracking closure calls `fetchAll(_:kind:from:)` on the closure's OWN
+    /// pool-reader `db`. The old code nested `fetchAll(_:kind:)` (which opens
+    /// `writer.read`) inside the closure and trapped on DatabasePool
+    /// reentrancy. This asserts the overload does NOT trap and DOES track the
+    /// region — the observation fires with the decoded model after apply.
+    func testObservationDecodesViaFromDbOverloadOnPoolPath() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("replica-pool-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path)
+
+        let observed = expectation(description: "observation decodes the applied target")
+        // Tracking closure decodes on its own db — NOT store.fetchAll(_:kind:),
+        // which would open a nested writer.read and fatalError on the pool.
+        let observation = ValueObservation.tracking { db -> [Target] in
+            try store.fetchAll(Target.self, kind: .target, from: db)
+        }
+        let cancellable = observation.start(
+            in: store.reader,
+            scheduling: .async(onQueue: .main),
+            onError: { XCTFail("observation error: \($0)") },
+            onChange: { targets in
+                if targets.first?.text == "observed via from-db" { observed.fulfill() }
+            }
+        )
+        defer { cancellable.cancel() }
+
+        let record = dataRecord(kind: .target, id: "1",
+                                payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "observed via from-db")))
+        try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+
+        await fulfillment(of: [observed], timeout: 5)
+    }
+
     // MARK: - Compaction failure is non-fatal
 
     private actor ThrowingCompactTransport: CompactingTransport {
