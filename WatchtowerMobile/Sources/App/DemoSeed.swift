@@ -133,7 +133,53 @@ enum DemoSeed {
             "created_at": Self.iso.string(from: now),
         ]))
 
+        // MARK: Desktop heartbeat (Chat liveness)
+        // Refreshed every launch so the Chat tab demos the reachable state;
+        // it goes stale — and the "Mac unreachable" banner appears — if the
+        // app stays in the foreground past the 12-minute threshold.
+        records.append(try CloudRecordFactory.record(
+            for: HeartbeatPayload(updatedAt: now, appVersion: "demo"),
+            modifiedAt: now
+        ))
+
         try await transport.save(records)
+    }
+
+    /// Seeds one canned chat exchange — a user question plus a streamed,
+    /// completed answer — so the Chat tab renders content on first boot.
+    /// It rides the REAL pipeline end-to-end: `assembler.send` writes the
+    /// turn + placeholder and ships the wire record, the answer chunks land
+    /// in the relay zone, and RelayFeed's first poll hands them back to the
+    /// assembler — exactly the path a live desktop answer takes.
+    ///
+    /// Skipped once any session exists: the replica persists across
+    /// launches, and re-seeding would mint a duplicate session per launch
+    /// (sessions have generated ids, unlike the fixed-id slice rows above).
+    static func loadChatExchange(
+        via assembler: ChatAssembler,
+        into transport: any CloudSyncTransport,
+        store: ReplicaStore
+    ) async throws {
+        guard try store.chatSessions().isEmpty else { return }
+        let ids = try await assembler.send(text: "What needs my attention today?", sessionID: nil)
+        let parts: [(text: String, done: Bool)] = [
+            ("Two things stand out. ", false),
+            ("The Q3 launch risk needs a decision by Friday, ", false),
+            ("and Alice is still blocked on API access.", true),
+        ]
+        let now = Date()
+        try await transport.save(try parts.enumerated().map { seq, part in
+            try CloudRecordFactory.record(
+                for: ChatChunkPayload(
+                    sessionID: ids.sessionID,
+                    messageID: ids.messageID,
+                    seq: seq,
+                    text: part.text,
+                    done: part.done
+                ),
+                modifiedAt: now
+            )
+        })
     }
 
     // MARK: - Helpers

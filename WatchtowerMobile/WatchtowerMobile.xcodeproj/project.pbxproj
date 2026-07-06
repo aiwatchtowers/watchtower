@@ -18,9 +18,11 @@
 		8AD90C1BCCC80D111A2E59E9 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53EEE394524E80319F081C9E /* TodayView.swift */; };
 		A7C17359424ABE62A6071D90 /* ActionsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F2DDF7DA595335A8946DA2 /* ActionsWiringTests.swift */; };
 		AC491EE585F1CB3A9F911402 /* QuickActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211E805C97CFC4405C7263AB /* QuickActions.swift */; };
+		CD65311F247770AEA6BC4E1B /* ChatWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */; };
 		D403FD362502AA5DC04AEDCE /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3240E546D853A416356E32D1 /* SettingsView.swift */; };
 		DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */; };
 		E93CAF336D1C1CB6ED76A4C5 /* TracksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0FBB330E7F18A51BAED059F /* TracksView.swift */; };
+		EB0C2BFE128E47FC5A80B2A0 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0374C759543223E96F51029A /* ChatView.swift */; };
 		ECBCFA171FBB2757D78073D8 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		EE5E4DA751DE6531DB4EB8F9 /* ReplicaObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */; };
 		F4FDFE8B73AAC6038E75BC76 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF609973C6F27C56B9BD9A9 /* TasksView.swift */; };
@@ -39,6 +41,7 @@
 
 /* Begin PBXFileReference section */
 		0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		0374C759543223E96F51029A /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		211E805C97CFC4405C7263AB /* QuickActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActions.swift; sourceTree = "<group>"; };
 		3240E546D853A416356E32D1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		3D6F6F3D895505750B9F5892 /* DemoSeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSeed.swift; sourceTree = "<group>"; };
@@ -50,6 +53,7 @@
 		ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaWiringTests.swift; sourceTree = "<group>"; };
 		B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaObserver.swift; sourceTree = "<group>"; };
 		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
+		D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWiringTests.swift; sourceTree = "<group>"; };
 		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD0D2129829244B8B949C65D /* SyncStatusFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStatusFooter.swift; sourceTree = "<group>"; };
@@ -93,6 +97,7 @@
 			isa = PBXGroup;
 			children = (
 				80F2DDF7DA595335A8946DA2 /* ActionsWiringTests.swift */,
+				D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */,
 				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
 			);
 			path = Tests;
@@ -147,6 +152,7 @@
 		CAACBBFD9417C7BE0E2A7C31 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				0374C759543223E96F51029A /* ChatView.swift */,
 				6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */,
 				916C33BA22DB5ABF55F50EBC /* InboxView.swift */,
 				211E805C97CFC4405C7263AB /* QuickActions.swift */,
@@ -243,6 +249,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */,
+				EB0C2BFE128E47FC5A80B2A0 /* ChatView.swift in Sources */,
 				6F4653DC7997A2F36BD7543F /* CreateTargetSheet.swift in Sources */,
 				4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */,
 				305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */,
@@ -262,6 +269,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A7C17359424ABE62A6071D90 /* ActionsWiringTests.swift in Sources */,
+				CD65311F247770AEA6BC4E1B /* ChatWiringTests.swift in Sources */,
 				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

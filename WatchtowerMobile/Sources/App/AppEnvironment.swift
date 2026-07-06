@@ -34,10 +34,17 @@ public final class AppEnvironment {
     /// the pending overlay rows it writes drive the optimistic UI.
     public let outbox: ActionOutbox
 
+    /// The phone's chat endpoint (Plan 4 Tasks 5+7): the Chat composer sends
+    /// THROUGH this — the assembler is the ONLY chat-table writer, no view
+    /// model touches `chat_sessions`/`chat_messages` directly — and the feed
+    /// hands every streamed chunk here for assembly.
+    public let chat: ChatAssembler
+
     /// The phone's SINGLE relay consumer (Plan 4 decision 3): routes desktop
-    /// action echoes into `outbox.applyEcho` and heartbeats into the store.
-    /// Internal so wiring tests can drive a deterministic `pollOnce`; the
-    /// chat assembler seam stays nil until Task 7 ships the Chat tab.
+    /// action echoes into `outbox.applyEcho`, chat chunks into `chat` (the
+    /// `ChatChunkAssembling` seam, wired since Task 7), and heartbeats into
+    /// the store. Internal so wiring tests can drive a deterministic
+    /// `pollOnce` and the chat view models can read `isDesktopReachable`.
     let feed: RelayFeed
 
     /// Daily silent-pending sweep loop; lives as long as the environment.
@@ -73,10 +80,13 @@ public final class AppEnvironment {
         self.hydrator = hydrator
         let outbox = ActionOutbox(transport: transport, store: store)
         self.outbox = outbox
+        let chat = ChatAssembler(transport: transport, store: store)
+        self.chat = chat
         feed = RelayFeed(
             transport: transport,
             store: store,
             outbox: outbox,
+            assembler: chat,
             // The flicker-window mitigation: an `applied` echo clears the
             // optimistic overlay, and without a nudge the row would show its
             // STALE pre-action state until the hydrator's next 30 s poll.
@@ -102,6 +112,10 @@ public final class AppEnvironment {
         #if DEBUG
         do {
             try await DemoSeed.load(into: transport)
+            // Canned chat exchange BEFORE feed.start(): the answer chunks sit
+            // in the relay zone when the feed's first poll runs, so the Chat
+            // tab shows a completed thread within the first cycle.
+            try await DemoSeed.loadChatExchange(via: chat, into: transport, store: store)
         } catch {
             print("DemoSeed failed: \(error)")
         }
