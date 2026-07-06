@@ -37,6 +37,7 @@
 **Test guards:**
 - `internal/inbox/compose_test.go::TestDash02_AIFailureTouchesNothing`
 - `internal/inbox/compose_test.go::TestDash02_InvalidJSONTouchesNothing`
+- `internal/inbox/compose_test.go::TestDash02_PartialApplyRollsBackEverything`
 - `internal/inbox/situation_card_test.go::TestDash02_CardFailureMarksFailedAndContinues`
 - `internal/inbox/e2e_test.go::TestDash_E2E_SignalToSituation` (end-to-end happy path: triage → compose → situation-card in one clean `Run`, the baseline this contract protects against regressing)
 
