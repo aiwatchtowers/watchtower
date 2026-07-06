@@ -13,20 +13,19 @@ final class MobileHubServiceTests: XCTestCase {
         dbPath = path
         dbPool = manager.dbPool
         sidecar = try HubSyncState.inMemory()
-        // start() guards on this key; enable it globally for tests that exercise
-        // the normal start path, and let individual tests override as needed.
-        UserDefaults.standard.set(true, forKey: Constants.mobileSyncEnabledKey)
     }
 
     override func tearDownWithError() throws {
-        UserDefaults.standard.removeObject(forKey: Constants.mobileSyncEnabledKey)
         sidecar = nil
         dbPool = nil
         TestDatabase.cleanup(path: dbPath)
     }
 
     @MainActor
-    private func makeService(transport: StubHubTransport) -> MobileHubService {
+    private func makeService(
+        transport: any HubTransport,
+        isEnabled: @escaping @Sendable () -> Bool = { true }
+    ) -> MobileHubService {
         let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: transport)
         let processor = RelayProcessor(
             dbPool: dbPool,
@@ -43,7 +42,9 @@ final class MobileHubServiceTests: XCTestCase {
             relayIdleInterval: .milliseconds(20),
             relayActiveInterval: .milliseconds(20),
             heartbeatInterval: .milliseconds(20),
-            appVersion: "9.9.9-test"
+            availabilityReprobeInterval: .milliseconds(20),
+            appVersion: "9.9.9-test",
+            isEnabled: isEnabled
         )
     }
 
@@ -124,19 +125,16 @@ final class MobileHubServiceTests: XCTestCase {
     @MainActor
     func testQueuedStartAfterStopDoesNotRun() async throws {
         // Simulate AppState.stopMobileHub() beating the queued Task { await hub.start() }:
-        // set the toggle to false so start() bails out immediately at the guard.
-        UserDefaults.standard.set(false, forKey: Constants.mobileSyncEnabledKey)
-        addTeardownBlock { UserDefaults.standard.removeObject(forKey: Constants.mobileSyncEnabledKey) }
-
+        // the injected enablement already reads false, so start() bails at the guard.
         let transport = StubHubTransport()
-        let service = makeService(transport: transport)
+        let service = makeService(transport: transport) { false }
 
-        // Call start() directly (same as the queued Task would) without setting
-        // the toggle — it must return without touching status or spawning loops.
+        // Call start() directly (same as the queued Task would) — it must
+        // return without touching status or spawning loops.
         await service.start()
 
-        XCTAssertEqual(service.status, .off, "start() with toggle off must not advance status")
-        XCTAssertFalse(transport.started, "start() with toggle off must not start the transport")
+        XCTAssertEqual(service.status, .off, "start() while disabled must not advance status")
+        XCTAssertFalse(transport.started, "start() while disabled must not start the transport")
 
         // Give any erroneously spawned loop time to write a heartbeat.
         try await Task.sleep(for: .milliseconds(100))
@@ -149,6 +147,7 @@ final class MobileHubServiceTests: XCTestCase {
         let transport = StubHubTransport(availability: .noAccount)
         let service = makeService(transport: transport)
         await service.start()
+        defer { service.stop() }
 
         guard case .unavailable(let reason) = service.status else {
             return XCTFail("expected .unavailable, got \(service.status)")
@@ -161,6 +160,85 @@ final class MobileHubServiceTests: XCTestCase {
         let data = try await transport.changes(in: .data, since: nil)
         XCTAssertTrue(relay.changed.isEmpty, "no heartbeat/relay writes while unavailable")
         XCTAssertTrue(data.changed.isEmpty, "no slice publishing while unavailable")
+    }
+
+    @MainActor
+    func testReprobeRecoversWhenICloudReturns() async throws {
+        let transport = StubHubTransport(availability: .noAccount)
+        let service = makeService(transport: transport)
+        await service.start()
+        defer { service.stop() }
+        guard case .unavailable = service.status else {
+            return XCTFail("expected .unavailable, got \(service.status)")
+        }
+
+        // iCloud comes back — the re-probe loop must notice and start the hub.
+        transport.setAvailability(.available)
+        try await eventually("hub must auto-recover once availability returns") {
+            service.status == .running
+        }
+        try await eventually("recovered hub must run its loops (heartbeat lands)") {
+            let batch = try await transport.changes(in: .relay, since: nil)
+            return batch.changed.contains { $0.kind == RelayRecordKind.heartbeat.rawValue }
+        }
+    }
+
+    @MainActor
+    func testStopWhileUnavailableCancelsReprobe() async throws {
+        let transport = StubHubTransport(availability: .noAccount)
+        let service = makeService(transport: transport)
+        await service.start()
+        guard case .unavailable = service.status else {
+            return XCTFail("expected .unavailable, got \(service.status)")
+        }
+
+        service.stop()
+        XCTAssertEqual(service.status, .off)
+
+        // Availability returning after stop() must not resurrect the hub —
+        // the re-probe loop died with stop().
+        transport.setAvailability(.available)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(service.status, .off, "re-probe loop must not outlive stop()")
+        let relay = try await transport.changes(in: .relay, since: nil)
+        XCTAssertTrue(relay.changed.isEmpty, "no loop may start after stop()")
+    }
+
+    @MainActor
+    func testStopDuringInFlightStartLeavesHubOff() async throws {
+        // The epoch race: stop() lands while start() is suspended inside
+        // transport.start(). The resumed start() must detect it lost and
+        // never flip status or spin up loops.
+        let transport = GatedHubTransport()
+        let service = makeService(transport: transport)
+
+        let startTask = Task { await service.start() }
+        try await eventually("start() must reach the gated transport.start()") {
+            transport.startEntered
+        }
+        XCTAssertEqual(service.status, .starting)
+
+        service.stop()
+        transport.releaseStart()
+        await startTask.value
+
+        XCTAssertEqual(service.status, .off, "a start() that lost to stop() must not advance status")
+        try await Task.sleep(for: .milliseconds(100))
+        let relay = try await transport.changes(in: .relay, since: nil)
+        XCTAssertTrue(relay.changed.isEmpty, "no heartbeat may appear from the lost start()")
+    }
+
+    /// The Settings status source: an init failure surfaces as .unavailable,
+    /// a live hub wins over a stale error, and no hub + no error is .off.
+    @MainActor
+    func testAppStateHubStatusSurfacesInitFailure() {
+        XCTAssertEqual(AppState.hubStatus(hub: nil, initError: nil), .off)
+        XCTAssertEqual(
+            AppState.hubStatus(hub: nil, initError: "cannot create MobileHub directory"),
+            .unavailable("cannot create MobileHub directory")
+        )
+        let service = makeService(transport: StubHubTransport())
+        XCTAssertEqual(AppState.hubStatus(hub: service, initError: nil), .off, "a built hub reports its own status")
     }
 
     @MainActor
@@ -203,23 +281,28 @@ final class MobileHubServiceTests: XCTestCase {
     }
 }
 
-/// HubTransport stub: InMemoryCloudTransport record I/O plus canned
-/// availability, so the gate is trivially steerable per test.
+/// HubTransport stub: InMemoryCloudTransport record I/O plus mutable
+/// availability, so the gate (and its re-probe recovery) is steerable per test.
 private final class StubHubTransport: HubTransport, @unchecked Sendable {
     private let inner = InMemoryCloudTransport()
-    private let availabilityResult: CloudAvailability
     private let lock = NSLock()
+    private var _availability: CloudAvailability
     private var _started = false
     private var _accountResetHandler: (@Sendable () -> Void)?
     var started: Bool { lock.withLock { _started } }
 
     init(availability: CloudAvailability = .available) {
-        availabilityResult = availability
+        _availability = availability
     }
 
     func start() async { lock.withLock { _started = true } }
     func pull() async throws {}
-    func availability() async -> CloudAvailability { availabilityResult }
+    func availability() async -> CloudAvailability { lock.withLock { _availability } }
+
+    /// Simulates iCloud availability changing under the running service.
+    func setAvailability(_ value: CloudAvailability) {
+        lock.withLock { _availability = value }
+    }
 
     func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async {
         lock.withLock { _accountResetHandler = handler }
@@ -230,6 +313,54 @@ private final class StubHubTransport: HubTransport, @unchecked Sendable {
         let handler = lock.withLock { _accountResetHandler }
         handler?()
     }
+
+    func save(_ records: [CloudRecord]) async throws {
+        try await inner.save(records)
+    }
+
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+        try await inner.delete(recordNames: recordNames, in: zone)
+    }
+
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+        try await inner.changes(in: zone, since: token)
+    }
+}
+
+/// HubTransport whose start() blocks on a gate until the test releases it —
+/// pins the stop-during-start epoch race.
+private final class GatedHubTransport: HubTransport, @unchecked Sendable {
+    private let inner = InMemoryCloudTransport()
+    private let lock = NSLock()
+    private var _startEntered = false
+    private var released = false
+    private var gate: CheckedContinuation<Void, Never>?
+    var startEntered: Bool { lock.withLock { _startEntered } }
+
+    func start() async {
+        lock.withLock { _startEntered = true }
+        await withCheckedContinuation { continuation in
+            let resumeNow: Bool = lock.withLock {
+                if released { return true }
+                gate = continuation
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func releaseStart() {
+        let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            released = true
+            defer { gate = nil }
+            return gate
+        }
+        continuation?.resume()
+    }
+
+    func pull() async throws {}
+    func availability() async -> CloudAvailability { .available }
+    func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async {}
 
     func save(_ records: [CloudRecord]) async throws {
         try await inner.save(records)

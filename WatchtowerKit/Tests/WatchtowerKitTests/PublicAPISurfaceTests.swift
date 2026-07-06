@@ -146,9 +146,11 @@ final class PublicAPISurfaceTests: XCTestCase {
     func testTransportStorePublicInit() throws {
         // Only init(path:) and inMemory() are public — the adapter internals are internal.
         let store = try TransportStore.inMemory()
-        // wipe() and compactEvents(in:keepSince:) stay public (reset path + CompactingTransport).
+        // wipe(), compactEvents(in:keepSince:) and sweepEvents(in:olderThan:upTo:)
+        // stay public (reset path + CompactingTransport + SweepingTransport).
         try store.wipe()
         try store.compactEvents(in: .data, keepSince: CloudChangeToken(value: 0))
+        _ = try store.sweepEvents(in: .relay, olderThan: .distantPast, upTo: CloudChangeToken(value: 0))
         // changes(in:since:) stays public (Task 4 hydrator may read the store directly,
         // though the transport wraps it — keeping it public avoids sealing the door
         // on that access pattern before Task 4 decides).

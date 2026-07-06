@@ -1,4 +1,5 @@
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
 @testable import WatchtowerKit
@@ -27,6 +28,49 @@ private actor CompactSpyTransport: CompactingTransport {
 
     func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
         compactCalled = true
+    }
+}
+
+/// Sweep-capable spy over a REAL TransportStore: `changes()` reads the same
+/// buffer `sweepEvents` deletes from, so hygiene-vs-sweep ordering is
+/// observable end-to-end. `save()` buffers own records immediately (InMemory
+/// semantics); `delete()` records the name and appends a tombstone event,
+/// like a CloudKit deletion fetched back.
+private actor StoreBackedSweepTransport: SweepingTransport {
+    private let store: TransportStore
+    private(set) var deletedNames: [String] = []
+    /// Names deleted before the first sweep ran — pins that hygiene's
+    /// aged-record scan happens BEFORE the buffer sweep.
+    private(set) var deletesBeforeFirstSweep: [String] = []
+    private(set) var sweptCounts: [Int] = []
+
+    init() throws {
+        store = try TransportStore.inMemory()
+    }
+
+    /// Seeds fetched-shaped events directly (as if pulled from the server).
+    func seed(_ records: [CloudRecord]) throws {
+        try store.bufferChanged(records)
+    }
+
+    func save(_ records: [CloudRecord]) async throws {
+        try store.bufferChanged(records)
+    }
+
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+        deletedNames += recordNames
+        if sweptCounts.isEmpty { deletesBeforeFirstSweep += recordNames }
+        try store.bufferDeleted(recordNames: recordNames, zone: zone)
+    }
+
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+        try store.changes(in: zone, since: token)
+    }
+
+    func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) async throws -> Int {
+        let swept = try store.sweepEvents(in: zone, olderThan: cutoff, upTo: token)
+        sweptCounts.append(swept)
+        return swept
     }
 }
 
@@ -101,5 +145,98 @@ final class RelayProcessorHygieneTests: XCTestCase {
             compacted,
             "RelayProcessor must never compact the relay buffer; hygiene's aged-record scan depends on full history"
         )
+    }
+
+    // MARK: - Buffer age sweep (SweepingTransport)
+
+    /// Builds a processor over a sweep-capable transport with a mutable clock.
+    private func makeSweepProcessor(
+        transport: StoreBackedSweepTransport
+    ) -> (RelayProcessor, OSAllocatedUnfairLock<Date>) {
+        let clock = OSAllocatedUnfairLock<Date>(initialState: fixedNow)
+        let processor = RelayProcessor(
+            dbPool: dbPool,
+            transport: transport,
+            sidecar: sidecar,
+            aiService: MockClaudeService()
+        ) { [clock] in clock.withLock { $0 } }
+        return (processor, clock)
+    }
+
+    private func chunkRecord(messageID: String, age: TimeInterval) throws -> CloudRecord {
+        let chunk = ChatChunkPayload(sessionID: "s", messageID: messageID, seq: 0, text: "old", done: true)
+        return try CloudRecordFactory.record(for: chunk, modifiedAt: fixedNow.addingTimeInterval(-age))
+    }
+
+    /// Ordering pinned: the aged-record scan (server-side retention) must run
+    /// BEFORE the buffer sweep. Had the sweep run first, the 35-day-old event
+    /// would be gone from the `since: nil` scan and its server record would
+    /// never be deleted.
+    func testHygieneSweepsConsumedAgedEventsAfterServerDeletePass() async throws {
+        let transport = try StoreBackedSweepTransport()
+        let (processor, _) = makeSweepProcessor(transport: transport)
+
+        let aged = try chunkRecord(messageID: "old-m", age: 35 * 86_400)
+        let fresh = try chunkRecord(messageID: "new-m", age: 86_400)
+        try await transport.seed([aged, fresh])
+        // The processor has consumed both events (chunks pass through, the
+        // token still advances) — they are below the stored relay token.
+        _ = try await processor.processOnce()
+
+        try await processor.runHygieneIfDue()
+
+        let orderedDeletes = await transport.deletesBeforeFirstSweep
+        XCTAssertTrue(
+            orderedDeletes.contains(aged.recordName),
+            "hygiene must server-delete the aged record BEFORE the sweep trims its buffer event"
+        )
+        let sweptCounts = await transport.sweptCounts
+        XCTAssertEqual(sweptCounts, [1], "the sweep trims exactly the aged consumed event")
+
+        let remaining = try await transport.changes(in: .relay, since: nil).changed.map(\.recordName)
+        XCTAssertTrue(remaining.contains(fresh.recordName), "a within-window event survives the sweep")
+        XCTAssertFalse(remaining.contains(aged.recordName))
+    }
+
+    /// The load-bearing sweep-vs-token interaction: a desktop that was off for
+    /// weeks buffers a 35-day-old PENDING action on its first pull, with a seq
+    /// ABOVE the stored token — and the relay loop runs hygiene before
+    /// processOnce. The token-floored sweep must spare it so the action is
+    /// still applied; once processed, the next hygiene pass reaps both the
+    /// server record and the buffered event.
+    func testSweepSparesUnconsumedAgedPendingActionUntilProcessed() async throws {
+        try await dbPool.write { db in try TestDatabase.insertInboxItem(db) } // id 1
+        let transport = try StoreBackedSweepTransport()
+        let (processor, clock) = makeSweepProcessor(transport: transport)
+
+        let staleDate = fixedNow.addingTimeInterval(-35 * 86_400)
+        let action = ActionRequestPayload(id: "late-1", kind: .inboxDismiss, entityID: "1", createdAt: staleDate)
+        let record = try CloudRecordFactory.record(for: action, modifiedAt: staleDate)
+        try await transport.seed([record])
+
+        // First relay-loop iteration after the long downtime: hygiene first.
+        try await processor.runHygieneIfDue()
+
+        let deletedEarly = await transport.deletedNames
+        XCTAssertFalse(
+            deletedEarly.contains(record.recordName),
+            "the pending-action guard must spare the unprocessed action server-side"
+        )
+        let firstSweeps = await transport.sweptCounts
+        XCTAssertEqual(firstSweeps, [0], "the sweep must not touch events above the stored token")
+
+        // …so the processor still applies it and mobile hears the outcome.
+        let applied = try await processor.processOnce()
+        XCTAssertEqual(applied, 1, "the aged pending action must survive hygiene and be applied")
+
+        // Eight days later (applied echo now beyond the 7-day action window):
+        // hygiene reaps the server record and the sweep trims the consumed event.
+        clock.withLock { $0 = fixedNow.addingTimeInterval(8 * 86_400) }
+        try await processor.runHygieneIfDue()
+
+        let deletedLate = await transport.deletedNames
+        XCTAssertTrue(deletedLate.contains(record.recordName), "processed action is reaped once aged")
+        let lastSwept = await transport.sweptCounts.last
+        XCTAssertEqual(lastSwept, 1, "the consumed original event is swept once below the token")
     }
 }

@@ -20,7 +20,9 @@ struct MobileSettings: View {
                     Syncs briefings, inbox, tasks, tracks, digests, calendar and people cards \
                     to the Watchtower iOS app through your private iCloud, and relays mobile \
                     actions and chat back to this Mac. Requires an iCloud account and a signed \
-                    build with iCloud entitlements — unsigned development builds show "unavailable".
+                    build with iCloud entitlements — unsigned development builds show "unavailable". \
+                    While unavailable, iCloud is re-checked every 10 minutes and sync starts \
+                    automatically once it returns.
                     """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -38,19 +40,19 @@ struct MobileSettings: View {
     }
 
     private var statusText: String {
-        switch appState.mobileHub?.status {
+        switch appState.mobileHubStatus {
         case .running: "Running"
         case .starting: "Starting…"
         case .unavailable(let reason): "Unavailable — \(reason)"
-        case .off, nil: mobileSyncEnabled ? "Not running" : "Off"
+        case .off: mobileSyncEnabled ? "Not running" : "Off"
         }
     }
 
     private var statusColor: Color {
-        switch appState.mobileHub?.status {
+        switch appState.mobileHubStatus {
         case .running: .green
         case .unavailable: .orange
-        case .starting, .off, nil: .secondary
+        case .starting, .off: .secondary
         }
     }
 }
