@@ -58,13 +58,10 @@ final class SlicePublisher: Sendable {
 
         for kind in SliceKind.allCases {
             guard let sql = Self.sliceSQL[kind] else { continue }
-            // Explicit await: in an async context newer compilers resolve
-            // dbPool.read to GRDB's async overload; older ones picked the
-            // sync one, which is why this built locally but not on CI.
-            // The tuple map stays OUTSIDE the read closure: labeled-tuple
-            // inference inside the generic @Sendable closure collapses to
-            // Void on CI's toolchain.
-            let fetched = try await dbPool.read { db in
+            // Fully annotated: CI's newer toolchain resolves un-annotated
+            // dbPool.read closures in async contexts to the Void overload
+            // (locally the sync generic wins), so leave nothing to infer.
+            let fetched: [Row] = try await dbPool.read { (db: Database) -> [Row] in
                 try Row.fetchAll(db, sql: sql)
             }
             let rows: [(id: String, row: Row)] = fetched.map { (id: Self.rowID($0), row: $0) }
