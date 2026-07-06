@@ -13,9 +13,13 @@ final class MobileHubServiceTests: XCTestCase {
         dbPath = path
         dbPool = manager.dbPool
         sidecar = try HubSyncState.inMemory()
+        // start() guards on this key; enable it globally for tests that exercise
+        // the normal start path, and let individual tests override as needed.
+        UserDefaults.standard.set(true, forKey: "mobileSyncEnabled")
     }
 
     override func tearDownWithError() throws {
+        UserDefaults.standard.removeObject(forKey: "mobileSyncEnabled")
         sidecar = nil
         dbPool = nil
         TestDatabase.cleanup(path: dbPath)
@@ -114,6 +118,29 @@ final class MobileHubServiceTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         let after = try await transport.changes(in: .relay, since: nil).newToken
         XCTAssertEqual(settled, after, "no heartbeat may be written after stop()")
+    }
+
+    @MainActor
+    func testQueuedStartAfterStopDoesNotRun() async throws {
+        // Simulate AppState.stopMobileHub() beating the queued Task { await hub.start() }:
+        // set the toggle to false so start() bails out immediately at the guard.
+        UserDefaults.standard.set(false, forKey: "mobileSyncEnabled")
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: "mobileSyncEnabled") }
+
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+
+        // Call start() directly (same as the queued Task would) without setting
+        // the toggle — it must return without touching status or spawning loops.
+        await service.start()
+
+        XCTAssertEqual(service.status, .off, "start() with toggle off must not advance status")
+        XCTAssertFalse(transport.started, "start() with toggle off must not start the transport")
+
+        // Give any erroneously spawned loop time to write a heartbeat.
+        try await Task.sleep(for: .milliseconds(100))
+        let relay = try await transport.changes(in: .relay, since: nil)
+        XCTAssertTrue(relay.changed.isEmpty, "no heartbeat may appear when start() was rejected")
     }
 
     @MainActor

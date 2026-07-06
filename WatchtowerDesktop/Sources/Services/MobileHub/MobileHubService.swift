@@ -42,6 +42,9 @@ final class MobileHubService {
     private var relayTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private let logger = Logger(subsystem: Constants.bundleID, category: "MobileHubService")
+    /// Bumped by stop() so a queued start() that was enqueued before stop() can
+    /// detect it lost the race and bail — even if it hasn't entered start() yet.
+    private var epoch = 0
 
     /// Relay activity younger than this keeps the fast poll cadence —
     /// chat stays responsive without push entitlements.
@@ -73,12 +76,17 @@ final class MobileHubService {
     /// dev builds is expected — records queue in the store), then spins up
     /// the three loops. Safe to call again after `.unavailable` or `stop()`.
     func start() async {
+        // Guard against a queued start() arriving after stop() already ran: if
+        // the toggle is off we must not proceed regardless of current status.
+        guard UserDefaults.standard.bool(forKey: "mobileSyncEnabled") else { return }
         guard status != .running, status != .starting else { return }
         status = .starting
+        let startEpoch = epoch
         await transport.start()
         let availability = await transport.availability()
-        // stop() may have flipped the toggle off while we awaited above.
-        guard status == .starting else { return }
+        // stop() may have flipped the toggle off or bumped the epoch while we
+        // awaited above — either condition means we lost the race.
+        guard status == .starting, epoch == startEpoch else { return }
         guard case .available = availability else {
             status = .unavailable(Self.describe(availability))
             return
@@ -95,6 +103,8 @@ final class MobileHubService {
         relayTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
+        // Bump epoch so any queued or in-flight start() detects it lost the race.
+        epoch &+= 1
         status = .off
     }
 
@@ -109,6 +119,8 @@ final class MobileHubService {
                     try await self.transport.pull()
                     try await self.processor.runHygieneIfDue()
                     _ = try await self.processor.processOnce()
+                } catch is CancellationError {
+                    break
                 } catch {
                     self.logger.error("relay cycle failed: \(error.localizedDescription, privacy: .public)")
                 }
@@ -134,6 +146,8 @@ final class MobileHubService {
                     let heartbeat = HeartbeatPayload(updatedAt: self.now(), appVersion: self.appVersion)
                     let record = try CloudRecordFactory.record(for: heartbeat, modifiedAt: self.now())
                     try await self.transport.save([record])
+                } catch is CancellationError {
+                    break
                 } catch {
                     self.logger.error("heartbeat failed: \(error.localizedDescription, privacy: .public)")
                 }

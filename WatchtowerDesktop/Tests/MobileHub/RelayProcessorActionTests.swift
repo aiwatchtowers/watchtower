@@ -173,6 +173,37 @@ final class RelayProcessorActionTests: XCTestCase {
         XCTAssertEqual(payload?.status, .applied)
     }
 
+    func testHygieneSparesUnprocessedPendingActionAndDeletesAppliedOne() async throws {
+        let age: TimeInterval = 8 * 86_400 // 8 days — past the 7-day threshold
+        // Use fixedNow as the reference so the injected clock and record ages align.
+        let staleModified = fixedNow.addingTimeInterval(-age)
+
+        // A pending action queued by mobile but never yet processed by this desktop.
+        let pending = ActionRequestPayload(id: "u1", kind: .targetDone, entityID: "1", createdAt: staleModified)
+        let pendingRecord = try CloudRecordFactory.record(for: pending, modifiedAt: staleModified)
+        try await transport.save([pendingRecord])
+
+        // An already-applied status echo (our own write-back) — safe to purge by age.
+        var applied = ActionRequestPayload(id: "p1", kind: .targetDone, entityID: "1", createdAt: staleModified)
+        applied.status = .applied
+        let appliedRecord = try CloudRecordFactory.record(for: applied, modifiedAt: staleModified)
+        try await transport.save([appliedRecord])
+
+        // Hygiene runs immediately (no prior stamp in the in-memory sidecar).
+        try await processor.runHygieneIfDue()
+
+        let batch = try await transport.changes(in: .relay, since: nil)
+        let names = Set(batch.changed.map(\.recordName))
+        XCTAssertTrue(
+            names.contains(pendingRecord.recordName),
+            "hygiene must not delete a stale pending action that was never processed"
+        )
+        XCTAssertFalse(
+            names.contains(appliedRecord.recordName),
+            "hygiene must delete a stale applied-status echo"
+        )
+    }
+
     func testTokenPersistedSoSecondCycleSeesOnlyNewActions() async throws {
         try await dbPool.write { db in
             try TestDatabase.insertInboxItem(db) // id 1

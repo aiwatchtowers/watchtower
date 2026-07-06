@@ -142,6 +142,16 @@ final class RelayProcessor: Sendable {
             let age = current.timeIntervalSince(record.modifiedAt)
             switch record.kind {
             case RelayRecordKind.action.rawValue where age > Self.actionMaxAge:
+                // Never delete a still-pending action that was never processed: it
+                // must survive for processOnce to apply/fail first so mobile hears
+                // the outcome. Applied/failed echoes (our own write-backs) are safe
+                // to purge by age alone.
+                if let action = try? RelayCoder.makeDecoder().decode(
+                    ActionRequestPayload.self, from: record.payload
+                ), action.status == .pending,
+                   !(try sidecar.isRelayProcessed(record.recordName)) {
+                    break
+                }
                 stale.append(record.recordName)
             case RelayRecordKind.chatMessage.rawValue, RelayRecordKind.chatChunk.rawValue:
                 if age > Self.chatMaxAge { stale.append(record.recordName) }
