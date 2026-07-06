@@ -94,10 +94,15 @@ func (p *Pipeline) buildSituationCardBlock(s db.DashboardSituation) string {
 		b.WriteString("(no signals)\n")
 		return b.String()
 	}
+	// Keep the NEWEST situationCardMemberCap signals (still rendered
+	// oldest-first within that window, since ListSituationSignals returns
+	// oldest-first). Dropping the newest signals on a large situation could
+	// produce a stale card — e.g. omitting a resolution — for a summary whose
+	// contract is "current state first".
 	shown := members
 	extra := 0
 	if len(members) > situationCardMemberCap {
-		shown = members[:situationCardMemberCap]
+		shown = members[len(members)-situationCardMemberCap:]
 		extra = len(members) - situationCardMemberCap
 	}
 	for _, it := range shown {

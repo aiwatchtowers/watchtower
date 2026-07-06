@@ -2,6 +2,7 @@ package inbox
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"testing"
 
@@ -70,6 +71,42 @@ func TestRunSituationCards_EmptySummaryMarksFailed(t *testing.T) {
 	s, err := d.GetSituation(int(sitID))
 	require.NoError(t, err)
 	assert.Equal(t, "failed", s.CardStatus)
+}
+
+func TestRunSituationCards_CapsToNewestMembers(t *testing.T) {
+	// 22 member signals: the newest 20 must survive into the prompt block
+	// (oldest-first within that window), the oldest 2 dropped with a "…and 2
+	// more" note. A stale card must not omit a resolution just because a
+	// situation grew past the cap.
+	d, p, gen := newComposePipeline(t)
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "long thread", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
+	require.NoError(t, err)
+	ids := make([]int, 0, 22)
+	for i := 1; i <= 22; i++ {
+		id := mustCreateInboxItem(t, d, db.InboxItem{
+			ChannelID:    "C1",
+			MessageTS:    fmt.Sprintf("%d.1", i),
+			SenderUserID: "U2",
+			TriggerType:  "stream",
+			Snippet:      fmt.Sprintf("signal number %d", i),
+		})
+		ids = append(ids, int(id))
+	}
+	require.NoError(t, d.AddSituationSignals(int(sitID), ids))
+
+	gen.responses = []string{`{"summary":"s","why_matters":"w","chronology":"c"}`}
+
+	n, err := p.runSituationCards(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	require.Len(t, gen.prompts, 1)
+	prompt := gen.prompts[0]
+	assert.Contains(t, prompt, "signal number 22", "newest signal must be in the prompt")
+	assert.Contains(t, prompt, "signal number 3", "the newest-20 window starts at signal 3")
+	assert.NotContains(t, prompt, "signal number 1 ", "oldest dropped signal must not be in the prompt")
+	assert.NotContains(t, prompt, "signal number 2 ", "second-oldest dropped signal must not be in the prompt")
+	assert.Contains(t, prompt, "…and 2 more")
 }
 
 func TestRunSituationCards_NilGeneratorSkips(t *testing.T) {
