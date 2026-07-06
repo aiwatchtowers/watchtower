@@ -51,6 +51,10 @@ final class TasksViewModel {
     }
 
     func snooze(_ target: Target, option: SnoozeOption, now: Date = Date()) async {
+        // Guard at the typed API, not only the menu: sub-day target snoozes
+        // are silent no-ops on the desktop (see SnoozeOption.targetCases).
+        assert(SnoozeOption.targetCases.contains(option),
+               "target snoozes must be day-granularity — see SnoozeOption.targetCases")
         await enqueue(.targetSnooze, target: target, params: ActionOutbox.snoozeParams(until: option.until(now: now)))
     }
 
