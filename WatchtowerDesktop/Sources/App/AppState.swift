@@ -4,7 +4,7 @@ import GRDB
 @MainActor
 @Observable
 final class AppState {
-    var selectedDestination: SidebarDestination = .chat
+    var selectedDestination: SidebarDestination = .inbox
     var databaseManager: DatabaseManager?
     var errorMessage: String?
     var isDBAvailable: Bool { databaseManager != nil }
