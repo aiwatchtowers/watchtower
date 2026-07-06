@@ -98,20 +98,11 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		}
 
 		syncState, _ := s.db.GetJiraSyncState(projectKey)
-		var jql string
-		if syncState != nil && syncState.LastSyncedAt != "" {
-			// Incremental sync: issues updated since last sync minus 2 minutes overlap.
-			t, err := time.Parse(time.RFC3339, syncState.LastSyncedAt)
-			if err == nil {
-				t = t.Add(-2 * time.Minute)
-				jql = fmt.Sprintf("project = %s AND updated >= \"%s\" ORDER BY updated ASC",
-					projectKey, t.Format("2006-01-02 15:04"))
-			} else {
-				jql = fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
-			}
-		} else {
-			jql = fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
+		lastSyncedAt := ""
+		if syncState != nil {
+			lastSyncedAt = syncState.LastSyncedAt
 		}
+		jql := buildIncrementalJQL(projectKey, lastSyncedAt, time.Now().UTC())
 
 		n, err := s.syncWithJQL(ctx, jql, board.ID)
 		if err != nil {
@@ -164,9 +155,38 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	return total, nil
 }
 
+// buildIncrementalJQL builds the JQL for an incremental project sync.
+//
+// The window is expressed as a relative "-Nm" (minutes ago) clause rather than
+// an absolute datetime literal. Jira interprets an absolute JQL datetime in the
+// caller's *profile* timezone, so a UTC watermark formatted as "2006-01-02 15:04"
+// silently skips issues for any profile west of UTC (their local wall clock is
+// behind UTC, so the effective window starts hours late). A relative "-Nm" clause
+// is evaluated against Jira's own clock identically in every timezone.
+func buildIncrementalJQL(projectKey, lastSyncedAt string, now time.Time) string {
+	if lastSyncedAt == "" {
+		return fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
+	}
+	t, err := time.Parse(time.RFC3339, lastSyncedAt)
+	if err != nil {
+		return fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
+	}
+	// Minutes since the watermark, plus a 2-minute overlap for indexing lag.
+	minutes := int(now.Sub(t).Minutes()) + 2
+	if minutes < 0 {
+		minutes = 0
+	}
+	return fmt.Sprintf("project = %s AND updated >= -%dm ORDER BY updated ASC", projectKey, minutes)
+}
+
 // SyncBoard syncs a single board by ID.
 // Only syncs non-terminal (active) issues for fast initial load.
-// Terminal/closed issues are picked up by the daemon's regular Sync() cycle.
+//
+// It deliberately does NOT record a sync watermark. The daemon's first regular
+// Sync() for this project therefore finds no state and does a full project scan,
+// backfilling the historical terminal/closed issues that this fast path skipped.
+// Writing a watermark here would pin every later Sync() to an incremental window
+// that never reaches those closed issues, so they would never be loaded.
 func (s *Syncer) SyncBoard(ctx context.Context, boardID int) (int, error) {
 	board, err := s.db.GetJiraBoardProfile(boardID)
 	if err != nil {
@@ -187,8 +207,8 @@ func (s *Syncer) SyncBoard(ctx context.Context, boardID int) (int, error) {
 		return n, fmt.Errorf("syncing active issues for %s: %w", board.ProjectKey, err)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	_ = s.db.UpdateJiraSyncState(board.ProjectKey, now, n)
+	// Intentionally no UpdateJiraSyncState here — see the doc comment above:
+	// leaving the watermark unset lets the daemon's first Sync() backfill closed issues.
 	_ = s.db.UpdateJiraBoardIssueCount(boardID)
 
 	if s.OnProgress != nil {
