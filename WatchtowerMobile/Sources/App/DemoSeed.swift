@@ -36,20 +36,24 @@ enum DemoSeed {
         ]))
 
         // MARK: Calendar events (today)
+        // Fixed LOCAL wall-clock times, not offsets from `now`: `now + 1 h`
+        // crosses midnight on late-evening runs, and the Today tab's
+        // `isDateInToday` filter would drop the events (a real near-midnight
+        // test/demo flake, same family as 615a75c/bc78989).
         records.append(try record(.calendarEvent, "evt-1", now, [
             "id": "evt-1",
             "title": "Daily Standup",
             "location": "Zoom",
-            "start_time": Self.iso.string(from: now.addingTimeInterval(3600)),
-            "end_time": Self.iso.string(from: now.addingTimeInterval(3600 + 900)),
+            "start_time": Self.iso.string(from: Self.todayAt(hour: 10, of: now)),
+            "end_time": Self.iso.string(from: Self.todayAt(hour: 10, minute: 15, of: now)),
             "event_status": "confirmed",
         ]))
         records.append(try record(.calendarEvent, "evt-2", now, [
             "id": "evt-2",
             "title": "Mobile app design review",
             "location": "Room 4B",
-            "start_time": Self.iso.string(from: now.addingTimeInterval(3 * 3600)),
-            "end_time": Self.iso.string(from: now.addingTimeInterval(4 * 3600)),
+            "start_time": Self.iso.string(from: Self.todayAt(hour: 15, of: now)),
+            "end_time": Self.iso.string(from: Self.todayAt(hour: 16, of: now)),
             "event_status": "tentative",
         ]))
 
@@ -133,6 +137,12 @@ enum DemoSeed {
     }
 
     // MARK: - Helpers
+
+    /// An instant pinned INSIDE `now`'s local day (see the calendar-events
+    /// note above). The nil fallback is unreachable for valid hour/minute.
+    private static func todayAt(hour: Int, minute: Int = 0, of now: Date) -> Date {
+        Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: now) ?? now
+    }
 
     private static func record(_ kind: SliceKind, _ id: String, _ at: Date, _ row: Row) throws -> CloudRecord {
         let slice = SliceRecord(
