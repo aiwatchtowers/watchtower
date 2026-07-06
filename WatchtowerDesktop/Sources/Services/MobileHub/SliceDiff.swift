@@ -37,6 +37,9 @@ enum SliceDiff {
             // Such a row must never enter the upsert path — doing so would assign
             // every invalid row the same record name (e.g. "target-0"), causing
             // silently incorrect CloudKit updates. Skip it with a distinct marker.
+            // Known conflation: a LEGITIMATE id of 0 (explicit INTEGER 0 or TEXT
+            // "0") is also skipped — unreachable for our autoincrement/calendar
+            // ids today; if it ever matters, make rowID return String? instead.
             if id == "0" {
                 let invalidName = "\(kind.rawValue)-invalid-id"
                 logger.warning("slice row with null/blob id skipped: \(invalidName, privacy: .public)")

@@ -336,7 +336,8 @@ public final class TransportStore: Sendable {
     /// transport's `saveZone` in `start()` and `handleFetchedDatabaseChanges`
     /// re-registers the zone as a pending database change, so the surviving
     /// pending rows re-send and land in a freshly created zone.
-    public func evictZone(_ zone: CloudZoneID) throws {
+    /// Internal: only the CloudKit adapter reacts to zone deletions.
+    func evictZone(_ zone: CloudZoneID) throws {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM events WHERE zone = ?", arguments: [zone.rawValue])
             try db.execute(sql: "DELETE FROM system_fields WHERE zone = ?", arguments: [zone.rawValue])
