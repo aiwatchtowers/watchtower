@@ -115,7 +115,7 @@ final class ReplicaWiringTests: XCTestCase {
         XCTAssertFalse(today.events.isEmpty, "Today tab should list today's calendar events")
 
         let inbox = InboxViewModel()
-        inbox.start(store: store)
+        inbox.start(store: store, outbox: ActionOutbox(transport: InMemoryCloudTransport(), store: store))
         try await poll { inbox.items.count == self.seededCounts[.inboxItem] }
         // Priority-sorted: the high-priority mention leads the medium DM.
         XCTAssertEqual(inbox.items.first?.priority, "high")
@@ -126,7 +126,7 @@ final class ReplicaWiringTests: XCTestCase {
         try await seed(into: store)
 
         let tasks = TasksViewModel()
-        tasks.start(store: store)
+        tasks.start(store: store, outbox: ActionOutbox(transport: InMemoryCloudTransport(), store: store))
         try await poll { tasks.targets.count == self.seededCounts[.target] }
         XCTAssertFalse(tasks.groups.isEmpty, "Tasks tab should group targets by status")
 

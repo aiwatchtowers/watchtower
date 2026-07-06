@@ -30,4 +30,28 @@ enum ReplicaObserver {
             onChange: { value in MainActor.assumeIsolated { onChange(value) } }
         )
     }
+
+    /// Same bridge, but the tracking closure ALSO reads the `pending_actions`
+    /// overlay — both through from-db overloads on the closure's own `db`
+    /// (the pool-reentrancy rule above applies to EVERY read inside the
+    /// closure). One observation spanning both tables delivers slice rows and
+    /// their overlay as a single consistent snapshot, so there is never a
+    /// frame where a chip and its host row disagree about a write.
+    static func observeWithPendingActions<T: FetchableRecord>(
+        _ type: T.Type,
+        kind: SliceKind,
+        in store: ReplicaStore,
+        onChange: @escaping @MainActor ([T], [PendingAction]) -> Void
+    ) -> AnyDatabaseCancellable {
+        let observation = ValueObservation.tracking { db -> ([T], [PendingAction]) in
+            (try store.fetchAll(T.self, kind: kind, from: db),
+             try store.pendingActions(from: db))
+        }
+        return observation.start(
+            in: store.reader,
+            scheduling: .async(onQueue: .main),
+            onError: { print("observation error for \(kind.rawValue)+pending: \($0)") },
+            onChange: { value in MainActor.assumeIsolated { onChange(value.0, value.1) } }
+        )
+    }
 }
