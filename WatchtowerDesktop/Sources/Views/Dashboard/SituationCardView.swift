@@ -14,6 +14,8 @@ struct SituationCardView: View {
     var memberSignalsLoaded: Bool = false
     var senderName: (InboxItem) -> String = { _ in "" }
     var channelName: (InboxItem) -> String = { _ in "" }
+    /// Builds a Slack deep link for a member signal; nil hides the affordance.
+    var slackURL: (InboxItem) -> URL? = { _ in nil }
     let onToggle: () -> Void
     let onDone: () -> Void
     let onDismiss: () -> Void
@@ -50,16 +52,34 @@ struct SituationCardView: View {
                 .fontWeight(.medium)
                 .lineLimit(1)
             Spacer()
-            if let updatedAt = situation.updatedAt {
-                Text(updatedAt, style: .relative)
+            if let displayDate = situation.lastSignalDate {
+                Text(displayDate, style: .relative)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+            }
+            if isExpanded, let url = newestMemberSignalURL {
+                Button {
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    Image(systemName: "arrow.up.right.square")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Open in Slack")
             }
             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(width: 16, height: 16)
         }
+    }
+
+    /// The Slack deep link for the newest member signal (member signals arrive
+    /// oldest-first — see `SituationQueries.memberSignals` — so the last element
+    /// is newest), used by the header's "Open in Slack" affordance.
+    private var newestMemberSignalURL: URL? {
+        guard memberSignalsLoaded, let newest = memberSignals.last else { return nil }
+        return slackURL(newest)
     }
 
     // MARK: - Line 2: one-line why-it-matters, falling back to the AI reason
@@ -162,11 +182,27 @@ struct SituationCardView: View {
 
     private func memberSignalBubble(_ item: InboxItem) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("\(senderName(item)) · \(channelName(item))")
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
-                .padding(.top, 6)
+            HStack(spacing: 4) {
+                Text("\(senderName(item)) · \(channelName(item))")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                Text(item.messageDate, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                if let url = slackURL(item) {
+                    Button {
+                        NSWorkspace.shared.open(url)
+                    } label: {
+                        Image(systemName: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Open in Slack")
+                }
+            }
+            .padding(.top, 6)
             Text(item.snippet)
                 .font(.callout)
                 .padding(.horizontal, 10)

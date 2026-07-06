@@ -79,6 +79,31 @@ final class SituationTests: XCTestCase {
         XCTAssertFalse(s.hasCard)
     }
 
+    // MARK: - lastSignalDate — real event time vs created_at, with updated_at fallback
+
+    func testLastSignalDateParsesLastSignalAtWhenPresent() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertSituation(db, lastSignalAt: "2026-04-28T10:00:00Z")
+        }
+        let situation = try XCTUnwrap(try db.read { try Situation.fetchOne($0, sql: "SELECT * FROM situations LIMIT 1") })
+
+        let expected = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-04-28T10:00:00Z"))
+        XCTAssertEqual(situation.lastSignalDate, expected)
+    }
+
+    func testLastSignalDateFallsBackToUpdatedAtWhenLastSignalAtEmpty() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertSituation(db, lastSignalAt: "")
+        }
+        let situation = try XCTUnwrap(try db.read { try Situation.fetchOne($0, sql: "SELECT * FROM situations LIMIT 1") })
+
+        XCTAssertTrue(situation.lastSignalAt.isEmpty)
+        XCTAssertEqual(situation.lastSignalDate, situation.updatedAt)
+        XCTAssertNotNil(situation.lastSignalDate, "target/track-update situations without member signals still get a displayable timestamp")
+    }
+
     func testStatusEnumCoversAllValues() throws {
         let db = try TestDatabase.create()
         let values: [(String, Situation.Status)] = [

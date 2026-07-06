@@ -202,6 +202,76 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertTrue(members.isEmpty)
     }
 
+    // MARK: - slackURL(for:) — deep links (mirrors the dead InboxViewModel.slackMessageURL)
+
+    private func fetchInboxItem(_ id: Int64) throws -> InboxItem {
+        try XCTUnwrap(try dbManager.dbPool.read { db in
+            try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [id])
+        })
+    }
+
+    func testSlackURLUsesTeamIDChannelAndMessageTSWhenWorkspaceKnown() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001", domain: "acme")
+        }
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(
+                db, channelID: "C001", messageTS: "1700000000.000100",
+                permalink: "https://acme.slack.com/archives/C001/p1700000000000100"
+            )
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let item = try fetchInboxItem(itemID)
+
+        let url = vm.slackURL(for: item)
+
+        XCTAssertEqual(url?.absoluteString, "slack://channel?team=T001&id=C001&message=1700000000.000100")
+    }
+
+    func testSlackURLPrefersThreadTSOverMessageTSWhenPresent() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001", domain: "acme")
+        }
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(
+                db, channelID: "C001", messageTS: "1700000100.000000", threadTS: "1700000000.000100"
+            )
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let item = try fetchInboxItem(itemID)
+
+        let url = vm.slackURL(for: item)
+
+        XCTAssertEqual(url?.absoluteString, "slack://channel?team=T001&id=C001&message=1700000000.000100")
+    }
+
+    func testSlackURLFallsBackToPermalinkWhenTeamIDUnavailable() throws {
+        // No workspace row at all — teamID stays nil.
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(db, permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let item = try fetchInboxItem(itemID)
+
+        let url = vm.slackURL(for: item)
+
+        XCTAssertEqual(url?.absoluteString, "https://acme.slack.com/archives/C001/p1700000000000100")
+    }
+
+    func testSlackURLNilWhenNeitherTeamIDNorPermalinkAvailable() throws {
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(db, permalink: "")
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let item = try fetchInboxItem(itemID)
+
+        XCTAssertNil(vm.slackURL(for: item))
+    }
+
     // MARK: - generateNow() — "Generate" button
 
     func testGenerateNowRunsPipelineReloadsFeedAndClearsIsGeneratingOnSuccess() async throws {

@@ -101,10 +101,10 @@ struct DashboardView: View {
                     if vm.isGenerating {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Text("Generate your dashboard")
+                            Text("Generate your inbox")
                         }
                     } else {
-                        Label("Generate your dashboard", systemImage: "arrow.clockwise")
+                        Label("Generate your inbox", systemImage: "arrow.clockwise")
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -125,6 +125,7 @@ struct DashboardView: View {
             memberSignalsLoaded: memberSignalsCache[situation.id] != nil,
             senderName: { vm.senderName(for: $0) },
             channelName: { vm.channelName(for: $0) },
+            slackURL: { vm.slackURL(for: $0) },
             onToggle: { toggleExpansion(situation) },
             onDone: { vm.done(situation) },
             onDismiss: { vm.dismiss(situation) },

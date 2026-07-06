@@ -66,6 +66,15 @@ struct Situation: FetchableRecord, Identifiable, Equatable {
     /// True when a secretary card has been successfully generated for this situation.
     var hasCard: Bool { cardStatus == .ready }
 
+    /// Parsed `last_signal_at` — the real time of the newest member signal (or
+    /// work-update event) composed into this situation, for display in place of
+    /// `created_at`/`updated_at`. Falls back to `updatedAt` when empty, which
+    /// happens for bare target/track-update situations with no member signals
+    /// (`AddSituationSignals` is what sets `last_signal_at` on the Go side).
+    var lastSignalDate: Date? {
+        Self.parseDate(lastSignalAt) ?? updatedAt
+    }
+
     init(row: Row) {
         id = row["id"]
         title = row["title"] ?? ""

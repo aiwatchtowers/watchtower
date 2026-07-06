@@ -53,7 +53,7 @@ struct InboxFeedView: View {
     private var toolbar: some View {
         VStack(spacing: 8) {
             HStack {
-                Text("Dashboard")
+                Text("Inbox")
                     .font(.title2)
                     .fontWeight(.bold)
 
@@ -88,7 +88,7 @@ struct InboxFeedView: View {
             }
 
             Picker("", selection: $tab) {
-                Text("Dashboard").tag(Tab.feed)
+                Text("Feed").tag(Tab.feed)
                 Text("Learned").tag(Tab.learned)
                 Text("Profile").tag(Tab.profile)
             }

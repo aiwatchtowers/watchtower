@@ -23,6 +23,12 @@ final class DashboardViewModel {
     private(set) var senderNames: [String: String] = [:]
     private(set) var channelNames: [String: String] = [:]
 
+    // Workspace identity, used to build `slack://` deep links — same fields/fetch
+    // as the dead `InboxViewModel.load()` (workspaceDomain unused today but kept
+    // alongside teamID for parity with the other view models' workspace cache).
+    private(set) var workspaceDomain: String?
+    private(set) var workspaceTeamID: String?
+
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
@@ -102,13 +108,16 @@ final class DashboardViewModel {
         isLoading = true
         do {
             let result = try dbManager.dbPool.read { db in
+                let ws = try WorkspaceQueries.fetchWorkspace(db)
                 let feed = try SituationQueries.fetchFeed(db, limit: self.pageSize, offset: 0)
                 let count = try SituationQueries.openCount(db)
-                return (feed, count)
+                return (ws?.domain, ws?.id, feed, count)
             }
-            situations = result.0
-            openCount = result.1
-            offset = result.0.count
+            workspaceDomain = result.0
+            workspaceTeamID = result.1
+            situations = result.2
+            openCount = result.3
+            offset = result.2.count
             errorMessage = nil
         } catch {
             situations = []
@@ -209,6 +218,19 @@ final class DashboardViewModel {
     func channelName(for item: InboxItem) -> String {
         if item.isDM { return "DM" }
         return channelNames[item.channelID] ?? item.channelID
+    }
+
+    /// Builds a Slack deep link for a member signal — mirrors the dead
+    /// `InboxViewModel.slackMessageURL(for:)`'s `channel + message_ts` construction
+    /// (using the thread parent ts when the item is a thread reply). Falls back to
+    /// the item's stored permalink when no workspace team id is known yet.
+    func slackURL(for item: InboxItem) -> URL? {
+        if let teamID = workspaceTeamID, !teamID.isEmpty {
+            let ts = item.threadTS.isEmpty ? item.messageTS : item.threadTS
+            return URL(string: "slack://channel?team=\(teamID)&id=\(item.channelID)&message=\(ts)")
+        }
+        guard !item.permalink.isEmpty else { return nil }
+        return URL(string: item.permalink)
     }
 
     private func resolveNames(for items: [InboxItem]) {
