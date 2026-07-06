@@ -236,4 +236,41 @@ final class PublicAPISurfaceTests: XCTestCase {
         try store.removePendingAction(id: id)
         XCTAssertTrue(try store.pendingActions().isEmpty)
     }
+
+    // MARK: - RelayFeed + ChatChunkAssembling (the iOS relay-consumer path)
+
+    /// The app never sees chunks directly — but Task 5's ChatAssembler must be
+    /// able to conform from outside the Kit's internals, so the seam is public.
+    private actor SurfaceAssembler: ChatChunkAssembling {
+        func ingest(_ chunk: ChatChunkPayload) async throws {}
+    }
+
+    func testRelayFeedSurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let outbox = ActionOutbox(transport: transport, store: store)
+        let feed = RelayFeed(
+            transport: transport,
+            store: store,
+            outbox: outbox,
+            assembler: SurfaceAssembler(),
+            pull: nil,
+            onActionApplied: nil
+        )
+
+        // pollOnce is what AppEnvironment.refresh calls alongside hydrateOnce.
+        let heartbeat = HeartbeatPayload(updatedAt: Date(), appVersion: "1.0.0")
+        try await transport.save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: heartbeat.updatedAt)])
+        let result = try await feed.pollOnce()
+        XCTAssertEqual(result.echoes, 0)
+        XCTAssertEqual(result.chunks, 0)
+
+        // Liveness reads: the view models' reachability banner.
+        XCTAssertTrue(feed.isDesktopReachable(now: heartbeat.updatedAt))
+        XCTAssertEqual(RelayFeed.heartbeatStaleAfter, .seconds(12 * 60))
+        XCTAssertNotNil(try store.heartbeatAge(now: heartbeat.updatedAt))
+
+        await feed.start(interval: .seconds(60))
+        await feed.stop()
+    }
 }

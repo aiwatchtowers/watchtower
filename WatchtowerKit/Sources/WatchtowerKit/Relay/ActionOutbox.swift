@@ -55,6 +55,14 @@ public actor ActionOutbox {
     /// saved, insert throws) means the desktop applies an action the overlay
     /// never knew about — harmless: its echo hits an unknown action_id, a
     /// no-op, and the result arrives with the next slice hydration anyway.
+    /// The reentrancy variant of that orphan: an echo delivered while this
+    /// actor is suspended in `save` also no-ops on the not-yet-inserted
+    /// action_id, and the later insert then leaves a pending row for an
+    /// already-applied action — which the 24 h sweep flips to a false
+    /// failure. Self-heals (the authoritative row change arrives via
+    /// hydration; the stale chip is dismissable) and is unreachable at real
+    /// cadence: an echo takes seconds at minimum, the insert follows the
+    /// save within the same call.
     @discardableResult
     public func enqueue(
         kind: ActionKind,

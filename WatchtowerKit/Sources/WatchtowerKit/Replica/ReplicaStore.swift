@@ -48,6 +48,11 @@ public final class ReplicaStore: Sendable {
     private let logger = Logger(subsystem: "WatchtowerKit", category: "ReplicaStore")
 
     private static let dataTokenKey = "data_change_token"
+    /// RelayFeed's cursor (Plan 4 decision 3: the phone's SINGLE relay
+    /// consumer). Lives beside the data token in `replica_meta`.
+    private static let relayTokenKey = "relay_change_token"
+    /// Last desktop heartbeat `updatedAt`, Unix seconds (via RelayFeed).
+    private static let heartbeatKey = "desktop_heartbeat_at"
 
     public init(path: String) throws {
         writer = try DatabasePool(path: path)
@@ -149,13 +154,7 @@ public final class ReplicaStore: Sendable {
                 try db.execute(sql: "DELETE FROM slice_records WHERE record_name = ?", arguments: [name])
             }
             if let tokenJSON {
-                try db.execute(
-                    sql: """
-                        INSERT INTO replica_meta (key, value) VALUES (?, ?)
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                        """,
-                    arguments: [Self.dataTokenKey, tokenJSON]
-                )
+                try Self.upsertMeta(db, key: Self.dataTokenKey, value: tokenJSON)
             }
             return true
         }
@@ -166,18 +165,85 @@ public final class ReplicaStore: Sendable {
         return try? JSONDecoder().decode(CloudChangeToken.self, from: Data(raw.utf8))
     }
 
-    public func storedToken() throws -> CloudChangeToken? {
-        let raw = try writer.read { db in
-            try String.fetchOne(db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [Self.dataTokenKey])
+    private static func upsertMeta(_ db: Database, key: String, value: String) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO replica_meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+            arguments: [key, value]
+        )
+    }
+
+    private func metaValue(_ key: String) throws -> String? {
+        try writer.read { db in
+            try String.fetchOne(db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [key])
         }
-        guard let raw else { return nil }
+    }
+
+    public func storedToken() throws -> CloudChangeToken? {
+        try token(forKey: Self.dataTokenKey, zoneLabel: "data")
+    }
+
+    private func token(forKey key: String, zoneLabel: String) throws -> CloudChangeToken? {
+        guard let raw = try metaValue(key) else { return nil }
         guard let token = Self.decodeToken(raw) else {
-            // Corrupted token → full re-read from the zone; apply is an
-            // idempotent upsert, so the replay is safe (mirrors RelayProcessor).
-            logger.warning("unreadable data-zone change token, re-reading the zone from scratch")
+            // Corrupted token → full re-read from the zone; both consumers
+            // replay safely (apply is an idempotent upsert, mirroring
+            // RelayProcessor; RelayFeed's routing is idempotent too).
+            logger.warning("unreadable \(zoneLabel, privacy: .public)-zone change token, re-reading the zone from scratch")
             return nil
         }
         return token
+    }
+
+    // MARK: - Relay token + heartbeat (RelayFeed state)
+
+    /// RelayFeed's persisted relay-zone cursor. Internal BY DESIGN (Plan 4
+    /// decision 3): the app consumes relay records through RelayFeed only,
+    /// so nothing outside the Kit can grow a second relay consumer.
+    func relayToken() throws -> CloudChangeToken? {
+        try token(forKey: Self.relayTokenKey, zoneLabel: "relay")
+    }
+
+    /// Persists RelayFeed's relay-zone cursor with the same monotonic guard
+    /// as `apply`'s data token: a token not newer than the stored one is a
+    /// stale/overlapping read — returns `false` without writing. RelayFeed
+    /// drops such batches before routing; this guard is the belt to that
+    /// suspenders (mirrors the replica's coalescing + guard pairing).
+    @discardableResult
+    func setRelayToken(_ token: CloudChangeToken) throws -> Bool {
+        // JSONEncoder always emits valid UTF-8; see the note in `apply`.
+        let tokenJSON = String(bytes: try JSONEncoder().encode(token), encoding: .utf8)
+        return try writer.write { db in
+            let storedRaw = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM replica_meta WHERE key = ?",
+                arguments: [Self.relayTokenKey]
+            )
+            if let stored = Self.decodeToken(storedRaw), token.value <= stored.value {
+                return false
+            }
+            if let tokenJSON {
+                try Self.upsertMeta(db, key: Self.relayTokenKey, value: tokenJSON)
+            }
+            return true
+        }
+    }
+
+    /// Records the desktop's heartbeat (routed here by RelayFeed).
+    func setHeartbeat(updatedAt: Date) throws {
+        try writer.write { db in
+            try Self.upsertMeta(db, key: Self.heartbeatKey, value: String(updatedAt.timeIntervalSince1970))
+        }
+    }
+
+    /// Age of the last desktop heartbeat relative to `now`; nil = never seen
+    /// (an unreadable stored value also reads as never — conservative).
+    /// Negative when the desktop clock runs ahead of the phone's.
+    public func heartbeatAge(now: Date = Date()) throws -> Duration? {
+        guard let raw = try metaValue(Self.heartbeatKey), let seconds = TimeInterval(raw) else { return nil }
+        return .seconds(now.timeIntervalSince(Date(timeIntervalSince1970: seconds)))
     }
 
     // MARK: - Typed reads
@@ -260,7 +326,7 @@ public final class ReplicaStore: Sendable {
     /// ValueObservation tracking closures, where a nested `writer.read` would
     /// trap on DatabasePool reentrancy (same rule as `fetchAll(_:kind:from:)`).
     public func pendingActions(from db: Database) throws -> [PendingAction] {
-        try decodePendingActions(Row.fetchAll(
+        decodePendingActions(try Row.fetchAll(
             db,
             sql: "SELECT * FROM pending_actions ORDER BY created_at, action_id"
         ))
@@ -269,7 +335,7 @@ public final class ReplicaStore: Sendable {
     /// Overlay rows targeting one slice record (`target-42`), oldest first.
     public func pendingActions(forEntity recordName: String) throws -> [PendingAction] {
         try writer.read { db in
-            try decodePendingActions(Row.fetchAll(
+            decodePendingActions(try Row.fetchAll(
                 db,
                 sql: """
                     SELECT * FROM pending_actions WHERE entity_record_name = ?
@@ -344,7 +410,7 @@ public final class ReplicaStore: Sendable {
     /// action_id) any whose payload no longer decodes. These blobs are written
     /// by this module from a just-encoded payload, so a failure here is a
     /// programmer error — but one bad row must never take down the overlay.
-    private func decodePendingActions(_ rows: [Row]) throws -> [PendingAction] {
+    private func decodePendingActions(_ rows: [Row]) -> [PendingAction] {
         let decoder = RelayCoder.makeDecoder()
         var decoded: [PendingAction] = []
         var badIDs: [String] = []
