@@ -102,7 +102,7 @@ final class SituationQueriesTests: XCTestCase {
         try db.write { try SituationQueries.done($0, id: Int(id)) }
 
         let (status, reason) = try db.read { db -> (String, String) in
-            let row = try Row.fetchOne(db, sql: "SELECT status, resolved_reason FROM situations WHERE id = ?", arguments: [id])!
+            let row = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT status, resolved_reason FROM situations WHERE id = ?", arguments: [id]))
             return (row["status"] as String, row["resolved_reason"] as String)
         }
         XCTAssertEqual(status, "done")
@@ -116,7 +116,7 @@ final class SituationQueriesTests: XCTestCase {
         try db.write { try SituationQueries.dismiss($0, id: Int(id)) }
 
         let (status, reason) = try db.read { db -> (String, String) in
-            let row = try Row.fetchOne(db, sql: "SELECT status, resolved_reason FROM situations WHERE id = ?", arguments: [id])!
+            let row = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT status, resolved_reason FROM situations WHERE id = ?", arguments: [id]))
             return (row["status"] as String, row["resolved_reason"] as String)
         }
         XCTAssertEqual(status, "dismissed")
@@ -213,9 +213,9 @@ final class SituationQueriesTests: XCTestCase {
         try db.write { try SituationQueries.recordFeedback($0, situationID: Int(situationID), rating: -1) }
 
         let row = try db.read { db in
-            try Row.fetchOne(db, sql: """
+            try XCTUnwrap(try Row.fetchOne(db, sql: """
                 SELECT weight, source, evidence_count FROM inbox_learned_rules WHERE scope_key = 'channel:C-alpha'
-                """)!
+                """))
         }
         XCTAssertEqual(row["weight"] as Double, -1.0)
         XCTAssertEqual(row["source"] as String, "user_rule")

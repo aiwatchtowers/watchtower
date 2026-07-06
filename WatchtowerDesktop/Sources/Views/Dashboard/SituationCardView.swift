@@ -282,8 +282,8 @@ struct SituationCardView: View {
 
     @ViewBuilder
     private var snoozeMenuItems: some View {
-        Button("1 hour")        { onSnooze(.oneHour) }
+        Button("1 hour") { onSnooze(.oneHour) }
         Button("Till tomorrow") { onSnooze(.tillTomorrow) }
-        Button("Till Monday")   { onSnooze(.tillMonday) }
+        Button("Till Monday") { onSnooze(.tillMonday) }
     }
 }

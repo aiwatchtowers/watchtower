@@ -107,7 +107,7 @@ final class DashboardViewModelTests: XCTestCase {
 
         XCTAssertTrue(vm.situations.isEmpty)
         let (status, until) = try dbManager.dbPool.read { db -> (String, String) in
-            let row = try Row.fetchOne(db, sql: "SELECT status, snooze_until FROM situations WHERE id = ?", arguments: [situation.id])!
+            let row = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT status, snooze_until FROM situations WHERE id = ?", arguments: [situation.id]))
             return (row["status"] as String, row["snooze_until"] as String)
         }
         XCTAssertEqual(status, "snoozed")
@@ -148,9 +148,9 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertTrue(vm.situations.isEmpty, "converted situations drop out of the open feed")
         XCTAssertEqual(vm.openCount, 0)
         let row = try dbManager.dbPool.read { db in
-            try Row.fetchOne(db, sql: """
+            try XCTUnwrap(try Row.fetchOne(db, sql: """
                 SELECT status, converted_target_id, converted_track_id FROM situations WHERE id = ?
-                """, arguments: [id])!
+                """, arguments: [id]))
         }
         XCTAssertEqual(row["status"] as String, "converted")
         XCTAssertEqual(row["converted_target_id"] as Int, 99)
@@ -166,9 +166,9 @@ final class DashboardViewModelTests: XCTestCase {
         vm.markConverted(situationID: situation.id, targetID: nil, trackID: 17)
 
         let row = try dbManager.dbPool.read { db in
-            try Row.fetchOne(db, sql: """
+            try XCTUnwrap(try Row.fetchOne(db, sql: """
                 SELECT converted_target_id, converted_track_id FROM situations WHERE id = ?
-                """, arguments: [situation.id])!
+                """, arguments: [situation.id]))
         }
         XCTAssertNil(row["converted_target_id"] as Int?)
         XCTAssertEqual(row["converted_track_id"] as Int, 17)

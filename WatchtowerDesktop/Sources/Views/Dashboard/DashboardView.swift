@@ -55,13 +55,10 @@ struct DashboardView: View {
             }
         }
         .sheet(isPresented: $showCreateTarget) {
-            CreateTargetSheet(
-                prefill: targetPrefill,
-                onCreated: { newID in
-                    guard let situationID = pendingSituationID else { return }
-                    vm.markConverted(situationID: situationID, targetID: newID, trackID: nil)
-                }
-            )
+            CreateTargetSheet(prefill: targetPrefill) { newID in
+                guard let situationID = pendingSituationID else { return }
+                vm.markConverted(situationID: situationID, targetID: newID, trackID: nil)
+            }
         }
         .sheet(isPresented: $showCreateTrack) {
             CustomTrackManagementSheet(linkedTargetID: nil) { _ in

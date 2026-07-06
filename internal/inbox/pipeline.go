@@ -763,6 +763,7 @@ func (p *Pipeline) autoResolveJira(_ context.Context) int {
 		p.logger.Printf("inbox: autoResolveJira: query: %v", err)
 		return 0
 	}
+	defer rows.Close()
 	type candidate struct {
 		id        int64
 		issueKey  string
@@ -772,13 +773,11 @@ func (p *Pipeline) autoResolveJira(_ context.Context) int {
 	for rows.Next() {
 		var c candidate
 		if err := rows.Scan(&c.id, &c.issueKey, &c.createdAt); err != nil {
-			rows.Close() //nolint:errcheck
 			p.logger.Printf("inbox: autoResolveJira: scan: %v", err)
 			return 0
 		}
 		candidates = append(candidates, c)
 	}
-	rows.Close() //nolint:errcheck
 
 	resolved := 0
 	for _, c := range candidates {
@@ -812,6 +811,7 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context) int {
 		p.logger.Printf("inbox: autoResolveCalendar: query: %v", err)
 		return 0
 	}
+	defer rows.Close()
 	type candidate struct {
 		id      int64
 		eventID string
@@ -820,13 +820,11 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context) int {
 	for rows.Next() {
 		var c candidate
 		if err := rows.Scan(&c.id, &c.eventID); err != nil {
-			rows.Close() //nolint:errcheck
 			p.logger.Printf("inbox: autoResolveCalendar: scan: %v", err)
 			return 0
 		}
 		candidates = append(candidates, c)
 	}
-	rows.Close() //nolint:errcheck
 
 	resolved := 0
 	for _, c := range candidates {
