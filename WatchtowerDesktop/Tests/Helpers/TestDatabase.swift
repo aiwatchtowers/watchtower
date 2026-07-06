@@ -223,7 +223,8 @@ enum TestDatabase {
         search_last_date  TEXT NOT NULL DEFAULT '',
         current_user_id   TEXT NOT NULL DEFAULT '',
         inbox_last_processed_ts REAL NOT NULL DEFAULT 0,
-        secretary_profile TEXT NOT NULL DEFAULT ''
+        secretary_profile TEXT NOT NULL DEFAULT '',
+        compose_last_run_ts REAL NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS users (
         id            TEXT PRIMARY KEY,
@@ -515,6 +516,7 @@ enum TestDatabase {
         draft_reply     TEXT NOT NULL DEFAULT '',
         card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
         card_generated_at TEXT,
+        composed_at     TEXT,
         UNIQUE(channel_id, message_ts)
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_items(status);
@@ -934,6 +936,39 @@ enum TestDatabase {
         updated_at       TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_catchup_themes_session ON catchup_themes(session_id, order_idx);
+
+    CREATE TABLE IF NOT EXISTS situations (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        title           TEXT NOT NULL,
+        kind            TEXT NOT NULL DEFAULT 'external' CHECK(kind IN ('external','target_update','track_update','mixed')),
+        status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done','dismissed','converted','stale','snoozed')),
+        snooze_until    TEXT NOT NULL DEFAULT '',
+        priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+        rank            REAL NOT NULL DEFAULT 0,
+        ai_reason       TEXT NOT NULL DEFAULT '',
+        summary         TEXT NOT NULL DEFAULT '',
+        why_matters     TEXT NOT NULL DEFAULT '',
+        chronology      TEXT NOT NULL DEFAULT '',
+        card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
+        card_generated_at TEXT,
+        target_id       INTEGER,
+        track_id        INTEGER,
+        converted_target_id INTEGER,
+        converted_track_id  INTEGER,
+        last_signal_at  TEXT NOT NULL DEFAULT '',
+        resolved_reason TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_situations_status_rank ON situations(status, rank DESC);
+    CREATE INDEX IF NOT EXISTS idx_situations_updated ON situations(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS situation_signals (
+        situation_id   INTEGER NOT NULL REFERENCES situations(id) ON DELETE CASCADE,
+        inbox_item_id  INTEGER NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
+        UNIQUE(situation_id, inbox_item_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_situation_signals_item ON situation_signals(inbox_item_id);
     """
 
     // MARK: - Briefing Fixtures
@@ -1154,6 +1189,7 @@ enum TestDatabase {
 
     // MARK: - Inbox Fixtures
 
+    @discardableResult
     static func insertInboxItem(
         _ db: Database,
         channelID: String = "C001",
@@ -1176,7 +1212,7 @@ enum TestDatabase {
         whyMatters: String = "",
         threadDigest: String = "",
         draftReply: String = ""
-    ) throws {
+    ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
                 trigger_type, snippet, permalink, status, priority, ai_reason,
@@ -1187,6 +1223,7 @@ enum TestDatabase {
                              triggerType, snippet, permalink, status, priority, aiReason,
                              resolvedReason, snoozeUntil, taskID, readAt, archivedAt,
                              itemClass, cardStatus, whyMatters, threadDigest, draftReply])
+        return db.lastInsertedRowID
     }
 
     // MARK: - Inbox Learned Rules Fixtures
@@ -1328,5 +1365,56 @@ enum TestDatabase {
                              description, rationale, startTime, endTime, durationMin,
                              priority, status, orderIndex, tags])
         return db.lastInsertedRowID
+    }
+
+    // MARK: - Situation Fixtures
+
+    @discardableResult
+    static func insertSituation(
+        _ db: Database,
+        title: String = "Renewal deal stalling",
+        kind: String = "external",
+        status: String = "open",
+        snoozeUntil: String = "",
+        priority: String = "medium",
+        rank: Double = 0,
+        aiReason: String = "",
+        summary: String = "",
+        whyMatters: String = "",
+        chronology: String = "",
+        cardStatus: String = "none",
+        targetID: Int? = nil,
+        trackID: Int? = nil,
+        convertedTargetID: Int? = nil,
+        convertedTrackID: Int? = nil,
+        lastSignalAt: String = "",
+        resolvedReason: String = "",
+        createdAt: String? = nil,
+        updatedAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO situations (title, kind, status, snooze_until, priority, rank,
+                ai_reason, summary, why_matters, chronology, card_status, target_id,
+                track_id, converted_target_id, converted_track_id, last_signal_at,
+                resolved_reason, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+            """, arguments: [title, kind, status, snoozeUntil, priority, rank,
+                             aiReason, summary, whyMatters, chronology, cardStatus, targetID,
+                             trackID, convertedTargetID, convertedTrackID, lastSignalAt,
+                             resolvedReason, createdAt, updatedAt])
+        return db.lastInsertedRowID
+    }
+
+    static func linkSituationSignal(
+        _ db: Database,
+        situationID: Int64,
+        inboxItemID: Int64
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO situation_signals (situation_id, inbox_item_id)
+            VALUES (?, ?)
+            """, arguments: [situationID, inboxItemID])
     }
 }
