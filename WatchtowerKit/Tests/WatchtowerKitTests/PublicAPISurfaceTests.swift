@@ -6,6 +6,10 @@
 /// Coverage: transport protocols, relay entry points, replica-relevant models.
 /// Intentionally NOT exhaustive — it exercises what list UIs and relay
 /// round-trips actually use, not every helper on every type.
+///
+/// GRDB is imported the way the iOS app imports it — alongside the Kit, for
+/// Row (payload building) and ValueObservation over ReplicaStore.reader.
+import GRDB
 import WatchtowerKit
 import XCTest
 
@@ -150,5 +154,41 @@ final class PublicAPISurfaceTests: XCTestCase {
         // on that access pattern before Task 4 decides).
         let batch = try store.changes(in: .data, since: nil)
         XCTAssertTrue(batch.changed.isEmpty)
+    }
+
+    // MARK: - ReplicaStore + ReplicaHydrator (the iOS replica read path)
+
+    func testReplicaStoreAndHydratorSurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let payload = try RowPayloadCoder.payload(from: Row(["id": 1, "text": "surface"]))
+        let record = CloudRecord(
+            recordName: SliceKind.target.recordName(id: "1"),
+            zone: .data,
+            kind: SliceKind.target.rawValue,
+            modifiedAt: Date(),
+            payload: payload
+        )
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        try await transport.save([record])
+
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        let result = try await hydrator.hydrateOnce()
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(result.deleted, 0)
+
+        // Typed reads: exactly what the iOS list UIs call.
+        let targets = try store.fetchAll(Target.self, kind: .target)
+        XCTAssertEqual(targets.first?.text, "surface")
+        XCTAssertEqual(store.corruptCount(), 0)
+        XCTAssertNotNil(try store.storedToken())
+
+        // reader is the ValueObservation entry point for the UI.
+        let count = try await store.reader.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
+        }
+        XCTAssertEqual(count, 1)
+
+        await hydrator.start(interval: .seconds(60))
+        await hydrator.stop()
     }
 }
