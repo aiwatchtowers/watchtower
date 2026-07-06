@@ -82,6 +82,9 @@ final class RelayProcessor: Sendable {
         }
 
         try persistToken(batch.newToken)
+        // The token is now durable, so the buffered prefix it covers is dead
+        // weight — let the transport drop it (no-op on the in-memory fake).
+        try await transport.compact(in: .relay, keepSince: batch.newToken)
         return applied
     }
 
@@ -169,6 +172,9 @@ final class RelayProcessor: Sendable {
             try await transport.delete(recordNames: stale, in: .relay)
             logger.info("hygiene: deleted \(stale.count) stale relay records")
         }
+        // Retention on the idempotency set: entries older than the longest relay
+        // record lifetime (chat) can never guard against a live duplicate again.
+        try sidecar.pruneRelayProcessed(olderThan: current.addingTimeInterval(-Self.chatMaxAge))
         try sidecar.setMetaValue(String(current.timeIntervalSince1970), forKey: Self.hygieneStampKey)
     }
 

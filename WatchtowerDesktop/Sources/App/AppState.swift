@@ -374,7 +374,7 @@ final class AppState {
             aiService: WatchtowerAIService(),
             dbPath: dbPool.path
         )
-        return MobileHubService(transport: transport, publisher: publisher, processor: processor)
+        return MobileHubService(transport: transport, publisher: publisher, processor: processor, sidecar: sidecar)
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

@@ -152,4 +152,93 @@ final class TransportStoreTests: XCTestCase {
         try store.saveEngineState(Data("state-blob-2".utf8))
         XCTAssertEqual(try store.loadEngineState(), Data("state-blob-2".utf8))
     }
+
+    // MARK: - wipe (account change)
+
+    func testWipeClearsAllFourTables() throws {
+        let store = try TransportStore.inMemory()
+        try store.bufferChanged([record("target-1")])
+        try store.enqueueSave([record("target-2")])
+        try store.saveSystemFields(Data("fields".utf8), recordName: "target-1", zone: .data)
+        try store.saveEngineState(Data("state".utf8))
+
+        try store.wipe()
+
+        XCTAssertTrue(try store.changes(in: .data, since: nil).changed.isEmpty, "events cleared")
+        XCTAssertTrue(try store.pendingBatch(limit: 10).saves.isEmpty, "pending cleared")
+        XCTAssertNil(try store.systemFields(recordName: "target-1", zone: .data), "system_fields cleared")
+        XCTAssertNil(try store.loadEngineState(), "engine_state cleared")
+
+        // Schema survives — the store is usable immediately after a wipe.
+        try store.bufferChanged([record("target-3")])
+        XCTAssertEqual(try store.changes(in: .data, since: nil).changed.map(\.recordName), ["target-3"])
+    }
+
+    // MARK: - compactEvents (retention)
+
+    func testCompactEventsPreservesChangesForConsumerAtToken() throws {
+        let store = try TransportStore.inMemory()
+        try store.bufferChanged([record("target-1"), record("target-2")]) // seq 1, 2
+        let token = try store.changes(in: .data, since: nil).newToken       // consumer floor
+        try store.bufferChanged([record("target-3")])                       // seq 3
+
+        let before = try store.changes(in: .data, since: token)
+        try store.compactEvents(in: .data, keepSince: token)
+        let after = try store.changes(in: .data, since: token)
+
+        // A consumer at its stored token sees identical results before/after.
+        XCTAssertEqual(before.changed.map(\.recordName), after.changed.map(\.recordName))
+        XCTAssertEqual(before.newToken, after.newToken)
+        XCTAssertEqual(after.changed.map(\.recordName), ["target-3"])
+
+        // The consumed events (<= floor) are physically gone from the buffer.
+        XCTAssertEqual(try store.changes(in: .data, since: nil).changed.map(\.recordName), ["target-3"])
+    }
+
+    func testCompactEventsIsZoneScoped() throws {
+        let store = try TransportStore.inMemory()
+        try store.bufferChanged([record("data-1", zone: .data)])   // seq 1
+        try store.bufferChanged([record("relay-1", zone: .relay)]) // seq 2
+
+        // Compact the data zone past every seq — the relay buffer is untouched.
+        try store.compactEvents(in: .data, keepSince: CloudChangeToken(value: 100))
+
+        XCTAssertTrue(try store.changes(in: .data, since: nil).changed.isEmpty)
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["relay-1"])
+    }
+
+    // MARK: - evictZone (server-side zone deletion)
+
+    func testEvictZoneDropsEventsAndSystemFieldsButKeepsPending() throws {
+        let store = try TransportStore.inMemory()
+        try store.bufferChanged([record("data-1", zone: .data)])
+        try store.saveSystemFields(Data("f".utf8), recordName: "data-1", zone: .data)
+        try store.enqueueSave([record("data-1", zone: .data)])
+        // Relay zone must survive an eviction of the data zone.
+        try store.bufferChanged([record("relay-1", zone: .relay)])
+        try store.saveSystemFields(Data("r".utf8), recordName: "relay-1", zone: .relay)
+
+        try store.evictZone(.data)
+
+        XCTAssertTrue(try store.changes(in: .data, since: nil).changed.isEmpty, "buffered events dropped")
+        XCTAssertNil(try store.systemFields(recordName: "data-1", zone: .data), "system fields dropped")
+        // Pending survives: it re-creates the zone via zone-setup on the next send.
+        XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["data-1"],
+                       "pending rows survive zone eviction")
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["relay-1"])
+        XCTAssertEqual(try store.systemFields(recordName: "relay-1", zone: .relay), Data("r".utf8))
+    }
+
+    func testPendingBatchEvictsUnmappableZoneRows() throws {
+        let store = try TransportStore.inMemory()
+        try store.enqueueSave([record("keep-1", zone: .data)])
+        // Inject a row whose zone no longer maps to a CloudZoneID (corruption
+        // / stale account artefact). pendingBatch must evict it, not loop on it.
+        try store.injectRawPendingRow(recordName: "orphan-1", zoneRaw: "GhostZone")
+
+        let batch = try store.pendingBatch(limit: 10)
+        XCTAssertEqual(batch.saves.map(\.recordName), ["keep-1"])
+        // A second read confirms the orphan was physically removed.
+        XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["keep-1"])
+    }
 }

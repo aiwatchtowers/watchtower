@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// Persistence for the CloudKit adapter: an incoming change buffer (the
 /// source of pull-shaped `changes(since:)` tokens — seqs in this store),
@@ -7,6 +8,7 @@ import GRDB
 /// Pure GRDB — fully unit-testable without CloudKit.
 public final class TransportStore: Sendable {
     private let queue: DatabaseQueue
+    private let logger = Logger(subsystem: "WatchtowerKit", category: "TransportStore")
 
     public init(path: String) throws {
         queue = try DatabaseQueue(path: path)
@@ -102,33 +104,47 @@ public final class TransportStore: Sendable {
     }
 
     public func pendingBatch(limit: Int) throws -> (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)]) {
-        try queue.read { db in
-            // rowid survives ON CONFLICT DO UPDATE, so batches are ordered by
-            // FIRST enqueue — a hot record cannot starve older pending sends.
-            // Do not "fix" to latest-write ordering.
-            let rows = try Row.fetchAll(
+        // rowid survives ON CONFLICT DO UPDATE, so batches are ordered by
+        // FIRST enqueue — a hot record cannot starve older pending sends.
+        // Do not "fix" to latest-write ordering.
+        let rows = try queue.read { db in
+            try Row.fetchAll(
                 db,
-                sql: "SELECT * FROM pending ORDER BY rowid LIMIT ?",
+                sql: "SELECT rowid, * FROM pending ORDER BY rowid LIMIT ?",
                 arguments: [limit]
             )
-            var saves: [CloudRecord] = []
-            var deletes: [(name: String, zone: CloudZoneID)] = []
-            for row in rows {
-                guard let zone = CloudZoneID(rawValue: row["zone"]) else { continue }
-                if (row["deleted"] as Int64? ?? 0) != 0 {
-                    deletes.append((name: row["record_name"], zone: zone))
-                } else {
-                    saves.append(CloudRecord(
-                        recordName: row["record_name"],
-                        zone: zone,
-                        kind: row["kind"],
-                        modifiedAt: Date(timeIntervalSince1970: row["modified_at"] ?? 0),
-                        payload: row["payload"] ?? Data()
-                    ))
+        }
+        var saves: [CloudRecord] = []
+        var deletes: [(name: String, zone: CloudZoneID)] = []
+        var orphanRowIDs: [Int64] = []
+        for row in rows {
+            guard let zone = CloudZoneID(rawValue: row["zone"]) else {
+                // A zone that no longer maps (corruption, a stale artefact of a
+                // previous account) would loop forever on every nudge — evict it.
+                orphanRowIDs.append(row["rowid"])
+                continue
+            }
+            if (row["deleted"] as Int64? ?? 0) != 0 {
+                deletes.append((name: row["record_name"], zone: zone))
+            } else {
+                saves.append(CloudRecord(
+                    recordName: row["record_name"],
+                    zone: zone,
+                    kind: row["kind"],
+                    modifiedAt: Date(timeIntervalSince1970: row["modified_at"] ?? 0),
+                    payload: row["payload"] ?? Data()
+                ))
+            }
+        }
+        if !orphanRowIDs.isEmpty {
+            try queue.write { db in
+                for rowID in orphanRowIDs {
+                    try db.execute(sql: "DELETE FROM pending WHERE rowid = ?", arguments: [rowID])
                 }
             }
-            return (saves, deletes)
+            logger.warning("evicted \(orphanRowIDs.count, privacy: .public) pending rows with an unmappable zone")
         }
+        return (saves, deletes)
     }
 
     public func clearPending(
@@ -286,4 +302,56 @@ public final class TransportStore: Sendable {
             try Data.fetchOne(db, sql: "SELECT data FROM engine_state WHERE id = 1")
         }
     }
+
+    // MARK: - Reset / retention / eviction
+
+    /// Clears ALL adapter state in one transaction (schema stays). Called on
+    /// a CloudKit account change: leaving stale system_fields behind would
+    /// re-introduce the stale-change-tag wedge (a re-save of an old-account
+    /// record carrying a change tag the new account's server never issued).
+    public func wipe() throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM events")
+            try db.execute(sql: "DELETE FROM pending")
+            try db.execute(sql: "DELETE FROM system_fields")
+            try db.execute(sql: "DELETE FROM engine_state")
+        }
+    }
+
+    /// Drops buffered events at or below a consumer's floor token for one zone.
+    /// Safe because `changes(since:)` only ever reads `seq > token`, so a
+    /// consumer sitting at `token` sees identical results before and after —
+    /// the consumed prefix is dead weight. Owners call it with their own floor.
+    public func compactEvents(in zone: CloudZoneID, keepSince token: CloudChangeToken) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM events WHERE zone = ? AND seq <= ?",
+                arguments: [zone.rawValue, token.value]
+            )
+        }
+    }
+
+    /// Drops a zone's buffered events and archived system fields after a
+    /// server-side zone deletion. Pending rows are intentionally kept: they
+    /// re-create the zone via zone-setup on the next send, preserving unsent
+    /// local edits instead of silently discarding them.
+    public func evictZone(_ zone: CloudZoneID) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM events WHERE zone = ?", arguments: [zone.rawValue])
+            try db.execute(sql: "DELETE FROM system_fields WHERE zone = ?", arguments: [zone.rawValue])
+        }
+    }
+
+    #if DEBUG
+    /// Test-only: inject a pending row with an arbitrary (possibly unmappable)
+    /// zone string to exercise pendingBatch's orphan-eviction path.
+    func injectRawPendingRow(recordName: String, zoneRaw: String) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO pending (record_name, zone, deleted) VALUES (?, ?, 0)",
+                arguments: [recordName, zoneRaw]
+            )
+        }
+    }
+    #endif
 }

@@ -151,4 +151,36 @@ final class HubSyncState: Sendable {
             )
         }
     }
+
+    /// Retention: drops processed-set entries older than `date`. The records
+    /// they de-duplicate are gone from the relay zone by then (hygiene purges
+    /// them), so a duplicate re-delivery can no longer occur.
+    func pruneRelayProcessed(olderThan date: Date) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM relay_processed WHERE processed_at < ?",
+                arguments: [date.timeIntervalSince1970]
+            )
+        }
+    }
+
+    // MARK: - Account-change reset
+
+    /// Clears all state derived from the CloudKit account: slice hashes (so the
+    /// next publish cycle re-pushes the full slice), the relay change token (so
+    /// the relay re-reads its zone from scratch), and the processed set. The set
+    /// can safely be emptied — desktop-authored echoes are skipped by status, so
+    /// a re-read never mis-applies an already-applied action. Chat-session and
+    /// hygiene-stamp rows are left intact: they key on opaque local ids and hold
+    /// no old-account records.
+    func wipeSyncState() throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM slice_state")
+            try db.execute(
+                sql: "DELETE FROM hub_meta WHERE key = ?",
+                arguments: [RelayProcessor.relayTokenKey]
+            )
+            try db.execute(sql: "DELETE FROM relay_processed")
+        }
+    }
 }

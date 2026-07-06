@@ -28,10 +28,20 @@ public actor CloudKitTransport: CloudSyncTransport {
     private var delegateBox: DelegateBox?
     /// Last recorded failure (startup or store I/O), surfaced via availability().
     private var lastError: String?
+    /// Number of CloudKit account changes that forced a local reset. Read via
+    /// `await transport.accountResetCount` (the hub surfaces it for diagnostics).
+    public private(set) var accountResetCount = 0
+    /// Fired after an account-change reset so an owner (the desktop hub) can
+    /// wipe its own derived state. Set before `start()` via `setAccountResetHandler`.
+    private var accountResetHandler: (@Sendable () -> Void)?
 
     public init(store: TransportStore, containerID: String = WatchtowerCloud.containerID) {
         self.store = store
         self.containerID = containerID
+    }
+
+    public func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) {
+        accountResetHandler = handler
     }
 
     // MARK: - CloudSyncTransport
@@ -48,6 +58,10 @@ public actor CloudKitTransport: CloudSyncTransport {
 
     public func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         try store.changes(in: zone, since: token)
+    }
+
+    public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
+        try store.compactEvents(in: zone, keepSince: token)
     }
 
     // MARK: - Lifecycle
@@ -152,9 +166,66 @@ public actor CloudKitTransport: CloudSyncTransport {
             bufferFetchedChanges(changes)
         case .sentRecordZoneChanges(let sent):
             clearSentChanges(sent)
+        case .fetchedDatabaseChanges(let changes):
+            handleFetchedDatabaseChanges(changes)
+        case .accountChange(let change):
+            handleAccountChange(change)
         default:
             break
         }
+    }
+
+    /// A server-side zone deletion evicts that zone's buffered events and
+    /// archived system fields, then re-registers the zone so the surviving
+    /// pending rows re-create it and re-send on the next batch.
+    private func handleFetchedDatabaseChanges(_ event: CKSyncEngine.Event.FetchedDatabaseChanges) {
+        let deletedZones = event.deletions.compactMap { CloudZoneID(rawValue: $0.zoneID.zoneName) }
+        guard !deletedZones.isEmpty else { return }
+        do {
+            for zone in deletedZones {
+                try store.evictZone(zone)
+                engine?.state.add(pendingDatabaseChanges: [
+                    .saveZone(CKRecordZone(zoneName: zone.rawValue))
+                ])
+            }
+            lastError = nil
+            nudgeEngine()
+        } catch {
+            recordError(error)
+        }
+    }
+
+    /// A CloudKit account sign-out or switch makes all local state belong to
+    /// the wrong account: wipe and relaunch with fresh engine state. A plain
+    /// sign-in has nothing local to discard (the reconcile fetch handles it).
+    private func handleAccountChange(_ event: CKSyncEngine.Event.AccountChange) {
+        switch event.changeType {
+        case .signIn:
+            return
+        case .signOut, .switchAccounts:
+            resetForAccountChange()
+        @unknown default:
+            resetForAccountChange()
+        }
+    }
+
+    /// Wipes the store, drops the engine, and relaunches it fresh, recording
+    /// the reset and notifying the owner. Internal so it is exercisable
+    /// without fabricating a CKSyncEngine account event.
+    func resetForAccountChange() {
+        do {
+            try store.wipe()
+        } catch {
+            recordError(error)
+        }
+        engine = nil
+        container = nil
+        delegateBox = nil
+        accountResetCount += 1
+        accountResetHandler?()
+        // Relaunch with fresh state (loadEngineState is now empty). No-op on
+        // unsigned dev builds — start() re-checks the entitlement and returns.
+        Task { await start() }
     }
 
     fileprivate func nextEngineBatch() -> CKSyncEngine.RecordZoneChangeBatch? {
@@ -253,6 +324,11 @@ public actor CloudKitTransport: CloudSyncTransport {
             guard let zone = CloudZoneID(rawValue: recordID.zoneID.zoneName) else { continue }
             deletes.append((name: recordID.recordName, zone: zone))
         }
+        // re-nudge: pendingBatch is capped at 200; without this a large offline
+        // backlog stalls — and it is also what reschedules the still-pending
+        // failed saves with their corrected system fields. Deferred so a store
+        // error mid-block cannot skip the reschedule (Task 1 review Minor 1).
+        defer { nudgeEngine() }
         do {
             try store.clearPending(saves: saves, deletes: deletes)
             for entry in savedFields {
@@ -263,10 +339,6 @@ public actor CloudKitTransport: CloudSyncTransport {
             }
             try fixSystemFieldsForFailedSaves(event.failedRecordSaves)
             lastError = nil
-            // re-nudge: pendingBatch is capped at 200; without this a large
-            // offline backlog stalls — and it is also what reschedules the
-            // still-pending failed saves with their corrected system fields.
-            nudgeEngine()
         } catch {
             recordError(error)
         }

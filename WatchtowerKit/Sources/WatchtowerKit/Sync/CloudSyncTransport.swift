@@ -60,4 +60,14 @@ public protocol CloudSyncTransport {
     /// fake sees them immediately, the CloudKit adapter only after the engine
     /// re-fetches them.
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch
+    /// Retention hook: a consumer that has durably persisted `token` may call
+    /// this to let the transport drop the now-dead buffered prefix (`seq <=
+    /// token`) for the zone. Backing stores that don't buffer (the in-memory
+    /// fake) treat it as a no-op — see the default implementation.
+    func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws
+}
+
+public extension CloudSyncTransport {
+    /// Default: nothing to compact (the transport keeps no bounded buffer).
+    func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {}
 }

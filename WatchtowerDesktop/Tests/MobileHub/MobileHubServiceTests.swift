@@ -38,6 +38,7 @@ final class MobileHubServiceTests: XCTestCase {
             transport: transport,
             publisher: publisher,
             processor: processor,
+            sidecar: sidecar,
             publishInterval: .milliseconds(20),
             relayIdleInterval: .milliseconds(20),
             relayActiveInterval: .milliseconds(20),
@@ -162,6 +163,30 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertTrue(data.changed.isEmpty, "no slice publishing while unavailable")
     }
 
+    @MainActor
+    func testAccountResetWipesSyncStateSoNextPublishRepushes() async throws {
+        // Seed the sidecar as if a full sync had already happened under the old account.
+        try sidecar.setHash("hash", for: "target-1")
+        try sidecar.setMetaValue("token-blob", forKey: RelayProcessor.relayTokenKey)
+        try sidecar.markRelayProcessed("action-1", at: Date())
+
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+        await service.start()
+        defer { service.stop() }
+        XCTAssertEqual(service.status, .running)
+
+        // The transport reports an account switch: the handler the hub registered
+        // before start() must clear the sync state.
+        transport.fireAccountReset()
+
+        try await eventually("account reset must wipe the hub sync state") {
+            try sidecar.hashes(forKind: .target).isEmpty
+                && (try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey)) == nil
+                && !(try sidecar.isRelayProcessed("action-1"))
+        }
+    }
+
     // MARK: - Fixtures
 
     /// An already-applied action echo, `age` seconds old.
@@ -185,6 +210,7 @@ private final class StubHubTransport: HubTransport, @unchecked Sendable {
     private let availabilityResult: CloudAvailability
     private let lock = NSLock()
     private var _started = false
+    private var _accountResetHandler: (@Sendable () -> Void)?
     var started: Bool { lock.withLock { _started } }
 
     init(availability: CloudAvailability = .available) {
@@ -194,6 +220,16 @@ private final class StubHubTransport: HubTransport, @unchecked Sendable {
     func start() async { lock.withLock { _started = true } }
     func pull() async throws {}
     func availability() async -> CloudAvailability { availabilityResult }
+
+    func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async {
+        lock.withLock { _accountResetHandler = handler }
+    }
+
+    /// Simulates the transport observing a CloudKit account switch.
+    func fireAccountReset() {
+        let handler = lock.withLock { _accountResetHandler }
+        handler?()
+    }
 
     func save(_ records: [CloudRecord]) async throws {
         try await inner.save(records)
