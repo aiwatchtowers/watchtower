@@ -67,8 +67,12 @@ enum SnoozeOption: String, CaseIterable, Identifiable {
     }
 
     /// Snooze menu offered on the Inbox tab: full horizon range, hour-level
-    /// granularity included (implicit/ambient items tolerate the desktop's
-    /// own `snooze_until` handling at that resolution).
+    /// granularity included. Honesty note: Go's `UnsnoozeExpiredInboxItems`
+    /// (internal/db/inbox.go) compares `snooze_until <= today` with a bare
+    /// UTC date, so a same-day timestamp stays snoozed until the NEXT day's
+    /// sweep — "1 hour" effectively means "tomorrow" today. Exact parity with
+    /// the desktop's own inbox menu; fixing it means changing the Go sweep,
+    /// not this list.
     static let inboxCases: [SnoozeOption] = [.oneHour, .tonight, .tomorrow]
 
     /// Snooze menu offered on the Tasks (targets) tab: DAY granularity only.
@@ -116,6 +120,12 @@ enum PendingOverlay {
     /// id), then drops the failed row. Enqueue FIRST: a transport throw keeps
     /// the old banner up for another try instead of losing the action.
     static func retry(_ failed: PendingAction, outbox: ActionOutbox, store: ReplicaStore) async throws {
+        // Enqueue-first so a transport throw keeps the banner (nothing lost).
+        // Known non-atomicity: if removePendingAction throws AFTER a
+        // successful re-enqueue, both rows briefly exist and a second retry
+        // double-sends — idempotent for resolve/done/snooze; task_create
+        // would mint a duplicate. Requires a local DB write failure inside a
+        // millisecond window; accepted for v1.
         _ = try await outbox.enqueue(
             kind: failed.action.kind,
             entityRecordName: failed.entityRecordName,
