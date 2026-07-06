@@ -4,6 +4,11 @@ build/
 WatchtowerDesktop/.build/
 WatchtowerDesktop/*.app
 
+# Xcode per-user state (WatchtowerMobile.xcodeproj is committed; user data is not)
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
 # macOS
 .DS_Store
 

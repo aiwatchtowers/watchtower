@@ -102,6 +102,22 @@ jobs:
       - name: Test
         run: swift test
 
+  mobile-build:
+    name: WatchtowerMobile Build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # xcodegen is NOT needed: the .xcodeproj is committed (generated from
+      # WatchtowerMobile/project.yml, the source of truth).
+      - name: Build
+        run: >
+          xcodebuild build
+          -project WatchtowerMobile/WatchtowerMobile.xcodeproj
+          -scheme WatchtowerMobile
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
+
   sentrux-quality:
     name: Sentrux Quality Gate
     runs-on: ubuntu-latest
