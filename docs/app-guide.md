@@ -22,39 +22,37 @@ A briefing contains five sections:
 The list panel shows briefings by date with unread indicator (blue dot), attention count, and task count. Selecting a briefing marks it as read. Briefings are generated once per day after the configured hour (default: 8:00 AM, configurable in Settings via `briefing.hour`).
 
 ### Inbox
-Messages from Slack that are waiting for your response — @mentions and direct messages where you haven't replied yet. The inbox pipeline automatically detects these after each sync and uses AI to prioritize them and auto-resolve items you've already responded to.
+Your AI secretary for Slack, Jira, and Calendar — everything that's waiting on you, triaged and written up so you can act without digging through threads. The inbox pipeline detects new signals after each sync, triages the whole stream (not just @mentions/DMs), and prepares a card for anything actionable.
 
-**How it works:** After each sync, the inbox pipeline scans recent messages for two trigger types:
-- **@Mentions** — messages where someone mentioned you and you haven't replied in the thread or channel
-- **Direct Messages** — DM messages from others where you haven't responded after
+**How it works:** After each sync, the inbox pipeline detects new items across Slack (@mentions, DMs, thread replies, reactions), Jira (assignments, comments, status/priority changes), and Calendar (invites, time changes), then runs a triage pass over every new trigger item *plus* a scan of ordinary channel traffic — so a message that never mentioned you but reads as signal in context can still surface. Triage assigns a tier (action/ambient) and priority; it may only **downgrade** a trigger item's class, never upgrade one. Actionable items then get a secretary card: why it matters, a thread digest, and a copyable draft reply.
 
-New items are added as "pending" with a default medium priority. AI then prioritizes items (high/medium/low) with a reason, and checks whether you've already responded to pending items — auto-resolving them if so.
+**Feed tab — two tiers:**
+- **Needs action** — expanded cards for actionable items: why-it-matters, thread digest, and a copyable draft reply. While the card is still being generated, the item shows "Preparing context…" and fills in on a later cycle.
+- **FYI** — compact rows for ambient/awareness items: a one-line reason, no card.
 
-**List view** — Split into two sections:
-- **Urgent** — high-priority items requiring immediate attention
-- **Pending** — medium and low-priority items
-
-Each item shows: trigger type icon (@ for mentions, envelope for DMs), priority badge, message snippet, and relative time. Selecting an item marks it as read and opens the detail panel.
-
-**Detail view** shows: trigger type, priority badge, status, message snippet, AI priority reason, resolved reason (if resolved), channel, sender, thread reference, linked task, permalink to open in Slack, action buttons, and feedback buttons (thumbs up/down).
+Selecting an item marks it as read. Expanding a row loads the surrounding conversation inline.
 
 **Lifecycle:**
 - **Pending** — awaiting your response
 - **Resolved** — you responded or manually resolved (with reason)
 - **Dismissed** — not relevant, manually dismissed
-- **Snoozed** — hidden until a specified date, then returns to Pending
+- **Snoozed** — hidden until a specified time, then returns to Pending
 
-**Actions** — right-click any item for: Resolve, Dismiss, Snooze (1 day / 3 days / 1 week), Create Task, Open in Slack.
+**Actions** — right-click (or use the card's controls) for: Resolve, Dismiss, Snooze (1 hour / till tomorrow / till Monday), Create Task, Open in Slack, copy draft reply.
 
 **Create Task** — converts an inbox item into a personal task, linking it back to the inbox item as source. The task inherits the item's priority and snippet text.
 
-**Filters** — filter by priority (high/medium/low), trigger type (@mentions/DMs), or toggle to show resolved/dismissed items.
+**Filters** — filter by priority (high/medium/low), trigger type, or toggle to show resolved/dismissed items.
+
+**Learned tab** — shows the system's current model of you: mutes, boosts, and manual rules with weight, source ("learned from 12 dismissals" / "I added this manually"), and inline remove/edit.
+
+**Profile tab** — a free-text brief you write about yourself (role, priorities, who/what matters), stored as `workspace.secretary_profile` and injected into the triage and card prompts so the secretary's judgment reflects your actual context, not just message content.
 
 **Sidebar badge** — shows pending item count. Turns red when high-priority items exist, blue otherwise.
 
 **Briefing integration** — Pending inbox items appear in the briefing's "Needs Attention" section with priority and sender info.
 
-**Daemon** — The inbox pipeline runs after each sync (Phase 0.5, before channel digests). The daemon also unsnoozes inbox items whose snooze date has passed, returning them to Pending.
+**Daemon** — The inbox pipeline runs after each sync (Phase 0.5, before channel digests): detect → triage → learn → auto-resolve → cards → archive/unsnooze. The daemon also unsnoozes inbox items whose snooze time has passed, returning them to Pending.
 
 ### Calendar
 Google Calendar integration showing upcoming events and AI-powered meeting preparation.
@@ -231,13 +229,13 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 
 Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Slack data. After each sync, AI pipelines run automatically:
 1. **Calendar sync** — fetches Google Calendar events for the configured days ahead (runs after Slack sync, before pipelines)
-2. **Inbox pipeline** — detects @mentions and DMs awaiting response, AI-prioritizes new items and auto-resolves responded ones (Phase 0.5, runs before digests)
+2. **Inbox pipeline** — detects new signals (Slack, Jira, Calendar), triages the full stream plus new trigger items, learns from feedback, auto-resolves responded items, and prepares secretary cards for actionable items (Phase 0.5, runs before digests)
 3. **Digest pipeline** — generates per-channel summaries (MAP phase for people signals)
 4. **Tracks pipeline** — auto-creates and updates tracks from unlinked digest topics, then injects track context into rollup digests
 5. **Rollup digests** — generates daily/weekly cross-channel rollups (track-aware)
 6. **People pipeline** — builds team member profiles from extracted situations (once per day)
 7. **Briefing pipeline** — generates a personalized daily briefing from all of the above (once per day, after the configured hour)
-8. **Maintenance** — unsnoozes tasks and inbox items whose snooze date has passed, returning them to active status
+8. **Maintenance** — unsnoozes tasks and inbox items whose snooze period has passed, returning them to active status
 
 ## Key Concepts
 
