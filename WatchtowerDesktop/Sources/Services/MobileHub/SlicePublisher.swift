@@ -58,12 +58,7 @@ final class SlicePublisher: Sendable {
 
         for kind in SliceKind.allCases {
             guard let sql = Self.sliceSQL[kind] else { continue }
-            // Fully annotated: CI's newer toolchain resolves un-annotated
-            // dbPool.read closures in async contexts to the Void overload
-            // (locally the sync generic wins), so leave nothing to infer.
-            let fetched: [Row] = try await dbPool.read { (db: Database) -> [Row] in
-                try Row.fetchAll(db, sql: sql)
-            }
+            let fetched = try fetchSliceRows(sql: sql)
             let rows: [(id: String, row: Row)] = fetched.map { (id: Self.rowID($0), row: $0) }
             let result = SliceDiff.compute(
                 kind: kind,
@@ -91,6 +86,17 @@ final class SlicePublisher: Sendable {
             logger.warning("skipped \(skipped.count) un-encodable slice records: \(skipped.joined(separator: ", "), privacy: .public)")
         }
         return (pushed, deleted, skipped)
+    }
+
+    /// Synchronous on purpose: GRDB's async `read` requires `T: Sendable`,
+    /// and `Row` is explicitly non-Sendable in GRDB 7, so `[Row]` can never
+    /// go through the async overload — local toolchains masked this by
+    /// accepting `await` on the sync overload, CI's does not. In a non-async
+    /// function only the sync overload exists; nothing is left to resolve.
+    private func fetchSliceRows(sql: String) throws -> [Row] {
+        try dbPool.read { db in
+            try Row.fetchAll(db, sql: sql)
+        }
     }
 
     // MARK: - Poll loop
