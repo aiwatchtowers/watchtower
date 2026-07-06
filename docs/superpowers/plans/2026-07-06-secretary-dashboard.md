@@ -304,7 +304,7 @@ func (db *DB) UpdateSituationRank(id int, rank float64, priority, reason string)
 func (db *DB) SetSituationCard(id int, summary, whyMatters, chronology string) error   // card_status='ready', card_generated_at=now
 func (db *DB) MarkSituationCardFailed(id int) error
 func (db *DB) ResetSituationCard(id int) error                              // card_status='none' (called on merge)
-func (db *DB) ListSituationsNeedingCards() ([]Situation, error)             // status='open' AND card_status IN ('none','failed')
+func (db *DB) ListSituationsNeedingCards() ([]DashboardSituation, error)     // status='open' AND card_status IN ('none','failed')  [Go type is DashboardSituation — db.Situation was already taken]
 // lifecycle
 func (db *DB) SetSituationStatus(id int, status, reason string) error
 func (db *DB) SnoozeSituation(id int, until string) error                   // status='snoozed' + snooze_until
