@@ -37,7 +37,8 @@ func CertPaths() (certPath, keyPath string, err error) {
 }
 
 // EnsureCert loads an existing cert/key pair or generates a new one.
-// The cert is valid for 10 years for 127.0.0.1 and localhost.
+// The cert is a leaf (non-CA) server cert for 127.0.0.1 and localhost, valid for
+// 397 days; it is regenerated once it is within 30 days of expiry.
 func EnsureCert() (tls.Certificate, error) {
 	certPath, keyPath, err := CertPaths()
 	if err != nil {
@@ -71,15 +72,20 @@ func generateAndSaveCert(certPath, keyPath string) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 
+	// Leaf-only self-signed cert for the localhost OAuth callback server. It must
+	// NOT be a CA: a trusted CA cert (with its private key on disk) could sign a
+	// server cert for ANY domain — the Superfish class of vulnerability. This cert
+	// authenticates 127.0.0.1/localhost and nothing else. NotAfter is capped at the
+	// 397-day industry limit for leaf certs; EnsureCert regenerates it before expiry.
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "Watchtower Localhost CA"},
+		Subject:               pkix.Name{CommonName: "Watchtower Localhost"},
 		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		NotAfter:              time.Now().Add(397 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		IsCA:                  true,
+		IsCA:                  false,
 		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
 		DNSNames:              []string{"localhost"},
 	}

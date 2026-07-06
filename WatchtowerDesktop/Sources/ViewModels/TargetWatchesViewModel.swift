@@ -97,9 +97,24 @@ final class TargetWatchesViewModel {
             note = created.isEmpty
                 ? "\(watch.text): no new activity (\(label))."
                 : "\(watch.text): \(created.count) new update(s)."
+            // The scan ran in a separate CLI process, so the write happened on a
+            // different SQLite connection than this one's ValueObservation is
+            // tracking — that observation only reacts to same-process writes and
+            // will not see the new rows. Refetch explicitly so the feed reflects
+            // what the CLI just wrote.
+            refreshEvents()
         } catch {
             note = "\(watch.text): scan failed — \(error.localizedDescription)"
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// One-shot refetch of the merged activity feed, used after a CLI scan
+    /// subprocess completes (see `scanWatch`) since ValueObservation cannot see
+    /// writes made by another process.
+    private func refreshEvents() {
+        if let rows = try? dbPool.read({ db in try TrackEventQueries.fetchForTarget(db, targetID: target.id) }) {
+            events = rows
         }
     }
 

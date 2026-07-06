@@ -24,8 +24,15 @@ func (p *Pipeline) syncCalendarItems(planID int64, date string, events []db.Cale
 		}
 	}
 
+	// All-day events (holidays, OOO) are excluded here on purpose: they span
+	// the whole day and are background context, not a schedulable slot. This
+	// also means a stale item from before this exclusion existed (inserted
+	// as a 1440-minute timeblock) is treated as an orphan below and removed.
 	eventByID := map[string]db.CalendarEvent{}
 	for _, e := range events {
+		if e.IsAllDay {
+			continue
+		}
 		eventByID[e.ID] = e
 	}
 

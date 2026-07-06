@@ -58,6 +58,58 @@ final class TargetWatchesViewModelTests: XCTestCase {
         XCTAssertEqual(events.map(\.summary), ["a2", "a1"], "only t1's watch events, newest-first")
     }
 
+    /// `scanWatch` runs the scan via a CLI subprocess, which writes on its own
+    /// SQLite connection — a same-process ValueObservation (as `start()` sets
+    /// up) never sees those rows. This never calls `start()` at all, so it
+    /// isolates the fix: the feed must refresh from `scanWatch` alone.
+    func testScanWatchRefreshesFeedWithoutAnyObservationRunning() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try await manager.dbPool.write { db in try db.execute(sql: Self.trackEventsSQL) }
+
+        let targetID = try await manager.dbPool.write { db -> Int in
+            try TargetQueries.create(db, text: "goal", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        // Inlined instead of the `makeWatch` helper: that helper is an instance
+        // method on this (@MainActor) test class, and the async `write` overload
+        // requires a `@Sendable`, non-isolated closure — it cannot call back
+        // into a MainActor-isolated method.
+        let watchID = try await manager.dbPool.write { db -> Int in
+            try db.execute(sql: """
+                INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
+                    origin, instruction, enabled, linked_target_id)
+                VALUES ('U1', 'watch A', '', 'task', 'watching', 'medium', 'custom', 'watch', 1, ?)
+                """, arguments: [targetID])
+            return Int(db.lastInsertedRowID)
+        }
+        let fetchedTarget = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
+        let target = try XCTUnwrap(fetchedTarget)
+        let fetchedWatch = try await manager.dbPool.read { db in try TrackQueries.fetchByID(db, id: watchID) }
+        let watch = try XCTUnwrap(fetchedWatch)
+
+        let vm = TargetWatchesViewModel(
+            target: target,
+            dbManager: manager,
+            scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
+            targetsViewModel: TargetsViewModel(dbManager: manager),
+            scanCenter: TrackScanCenter()
+        )
+        XCTAssertTrue(vm.events.isEmpty)
+
+        // Simulate the CLI subprocess having already written a new row (on its
+        // own connection) by the time scanWatch's await returns.
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO track_events (track_id, summary, created_at)
+                VALUES (?, 'new update', '2026-07-01T00:00:00Z')
+                """, arguments: [watchID])
+        }
+
+        await vm.scanWatch(watch, since: nil, label: "all history")
+
+        XCTAssertEqual(vm.events.map(\.summary), ["new update"], "the feed must reflect the CLI's write without an active observation")
+    }
+
     func testApplyActionMutatesTargetAndMarksApplied() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

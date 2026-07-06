@@ -11,6 +11,7 @@ final class WatchtowerAIService: AIServiceProtocol, Sendable {
         sessionID: String?,
         dbPath: String?,
         model: String?,
+        provider: String?,
         extraAllowedTools: [String]
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let processHandle = WatchtowerProcessHandle()
@@ -26,6 +27,7 @@ final class WatchtowerAIService: AIServiceProtocol, Sendable {
                         sessionID: sessionID,
                         dbPath: dbPath,
                         model: model,
+                        provider: provider,
                         extraAllowedTools: extraAllowedTools,
                         processHandle: processHandle,
                         continuation: continuation
@@ -82,18 +84,18 @@ final class WatchtowerAIService: AIServiceProtocol, Sendable {
 
     // MARK: - Private
 
-    private func run(
+    /// Build the `watchtower ai query` argument list. Pulled out of `run()` so
+    /// the CLI-flag mapping (in particular `--provider`) can be unit tested
+    /// without spawning a process.
+    static func buildArgs(
         prompt: String,
         systemPrompt: String?,
         sessionID: String?,
         dbPath: String?,
         model: String?,
-        extraAllowedTools: [String],
-        processHandle: WatchtowerProcessHandle,
-        continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
-    ) async throws {
-        let cliPath = try Self.findCLI()
-
+        provider: String?,
+        extraAllowedTools: [String]
+    ) -> [String] {
         var args = ["ai", "query", prompt]
 
         if let systemPrompt, !systemPrompt.isEmpty {
@@ -108,9 +110,38 @@ final class WatchtowerAIService: AIServiceProtocol, Sendable {
         if let model, !model.isEmpty {
             args += ["--model", model]
         }
+        if let provider, !provider.isEmpty {
+            args += ["--provider", provider]
+        }
         if !extraAllowedTools.isEmpty {
             args += ["--allowed-tools", extraAllowedTools.joined(separator: ",")]
         }
+        return args
+    }
+
+    // swiftlint:disable:next function_parameter_count
+    private func run(
+        prompt: String,
+        systemPrompt: String?,
+        sessionID: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        extraAllowedTools: [String],
+        processHandle: WatchtowerProcessHandle,
+        continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
+    ) async throws {
+        let cliPath = try Self.findCLI()
+
+        let args = Self.buildArgs(
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            sessionID: sessionID,
+            dbPath: dbPath,
+            model: model,
+            provider: provider,
+            extraAllowedTools: extraAllowedTools
+        )
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)

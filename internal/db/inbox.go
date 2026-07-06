@@ -323,7 +323,10 @@ func (db *DB) BulkUpdateInboxPriorities(updates map[int]struct {
 	return nil
 }
 
-// DeduplicateThreadInboxItems merges duplicate pending inbox items for the same thread.
+// DeduplicateThreadInboxItems merges duplicate pending inbox items for the same
+// thread and trigger type. A mention and a DM landing in the same thread are
+// distinct signals, not duplicates of each other, so trigger_type is part of
+// the dedup key alongside channel_id/thread_ts.
 // Keeps the most recently updated item and resolves the rest.
 func (db *DB) DeduplicateThreadInboxItems() (int, error) {
 	// Find threads (and non-threaded channel groups) with multiple pending items.
@@ -332,12 +335,13 @@ func (db *DB) DeduplicateThreadInboxItems() (int, error) {
 		AND id NOT IN (
 			SELECT MAX(id) FROM inbox_items
 			WHERE status = 'pending'
-			GROUP BY channel_id, thread_ts
+			GROUP BY channel_id, thread_ts, trigger_type
 		)
 		AND EXISTS (
 			SELECT 1 FROM inbox_items i2
 			WHERE i2.channel_id = inbox_items.channel_id
 			AND i2.thread_ts = inbox_items.thread_ts
+			AND i2.trigger_type = inbox_items.trigger_type
 			AND i2.status = 'pending'
 			AND i2.id != inbox_items.id
 		)`)

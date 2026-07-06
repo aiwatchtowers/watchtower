@@ -14,6 +14,9 @@ final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
     private var _prompts: [String] = []
     /// Every prompt passed to `stream`, in call order.
     var prompts: [String] { lock.withLock { _prompts } }
+    private var _providers: [String?] = []
+    /// Every provider passed to `stream`, in call order.
+    var providers: [String?] { lock.withLock { _providers } }
 
     init(events: [StreamEvent] = [.text("Hello from Claude"), .done]) {
         self.events = events
@@ -40,9 +43,13 @@ final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
         sessionID: String?,
         dbPath: String?,
         model: String?,
+        provider: String?,
         extraAllowedTools: [String]
     ) -> AsyncThrowingStream<StreamEvent, Error> {
-        lock.withLock { _prompts.append(prompt) }
+        lock.withLock {
+            _prompts.append(prompt)
+            _providers.append(provider)
+        }
         let eventsToUse: [StreamEvent]
         if !eventSequence.isEmpty {
             let idx = callIndex
