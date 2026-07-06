@@ -18,7 +18,7 @@ public enum CloudAvailability: Equatable, Sendable {
 /// pull-shaped changes(since:) reads that buffer, so consumer tokens are
 /// local seqs and CKServerChangeToken/engine state never leak (design
 /// decision 1 in the Plan 2 header).
-public actor CloudKitTransport: CloudSyncTransport {
+public actor CloudKitTransport: CloudSyncTransport, CompactingTransport {
     static let recordType = "WatchtowerRecord"
 
     private let store: TransportStore
@@ -216,7 +216,19 @@ public actor CloudKitTransport: CloudSyncTransport {
         do {
             try store.wipe()
         } catch {
+            // Wipe failed: the store may contain stale old-account state.
+            // Drop the engine so the transport is inert (.unavailable via lastError)
+            // until the operator restarts — relaunching against a partially-wiped
+            // store would reload old-account engine state/system_fields into the
+            // new account context, and clearing lastError would make availability()
+            // lie. The reset handler is intentionally NOT fired: the hub must not
+            // wipe its own derived state when the transport's store is in an
+            // unknown state.
             recordError(error)
+            engine = nil
+            container = nil
+            delegateBox = nil
+            return
         }
         engine = nil
         container = nil

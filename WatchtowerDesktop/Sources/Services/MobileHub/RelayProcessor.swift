@@ -82,9 +82,11 @@ final class RelayProcessor: Sendable {
         }
 
         try persistToken(batch.newToken)
-        // The token is now durable, so the buffered prefix it covers is dead
-        // weight — let the transport drop it (no-op on the in-memory fake).
-        try await transport.compact(in: .relay, keepSince: batch.newToken)
+        // The relay buffer intentionally retains full history: hygiene's aged-record
+        // scan calls changes(in: .relay, since: nil) and needs records to have aged
+        // 7/30 days before deleting them. Compacting here would silently drop those
+        // records before hygiene can find them, disabling server-side retention.
+        // Compaction is the responsibility of the Plan 3 Task 4 hydrator (CompactingTransport).
         return applied
     }
 

@@ -28,4 +28,18 @@ final class HubSyncStateTests: XCTestCase {
         XCTAssertFalse(try state.isRelayProcessed("old"), "old processed entry pruned")
         XCTAssertTrue(try state.isRelayProcessed("recent"), "recent processed entry retained")
     }
+
+    func testGenerationStartsAtZero() throws {
+        let state = try HubSyncState.inMemory()
+        XCTAssertEqual(try state.generation(), 0)
+    }
+
+    func testWipeSyncStateBumpsGeneration() throws {
+        let state = try HubSyncState.inMemory()
+        XCTAssertEqual(try state.generation(), 0)
+        try state.wipeSyncState()
+        XCTAssertEqual(try state.generation(), 1)
+        try state.wipeSyncState()
+        XCTAssertEqual(try state.generation(), 2)
+    }
 }

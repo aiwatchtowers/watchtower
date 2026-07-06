@@ -26,10 +26,10 @@ public final class TransportStore: Sendable {
 
     private func createSchema() throws {
         try queue.write { db in
-            // events is append-only in Plan 2: compaction (dropping events older
-            // than every consumer's floor token) is deliberately deferred — a
-            // single-consumer desktop hub grows this slowly. Owner: Plan 3 revisits
-            // when the mobile replica becomes a second consumer.
+            // events is append-only. Compaction (dropping seq ≤ consumer floor)
+            // is available via compactEvents(_:keepSince:) — called by a CompactingTransport
+            // consumer (Plan 3 Task 4 hydrator). The relay zone retains full history
+            // until hygiene has aged records out; see CompactingTransport.
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,9 +332,10 @@ public final class TransportStore: Sendable {
     }
 
     /// Drops a zone's buffered events and archived system fields after a
-    /// server-side zone deletion. Pending rows are intentionally kept: they
-    /// re-create the zone via zone-setup on the next send, preserving unsent
-    /// local edits instead of silently discarding them.
+    /// server-side zone deletion. Pending rows are intentionally kept: the
+    /// transport's `saveZone` in `start()` and `handleFetchedDatabaseChanges`
+    /// re-registers the zone as a pending database change, so the surviving
+    /// pending rows re-send and land in a freshly created zone.
     public func evictZone(_ zone: CloudZoneID) throws {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM events WHERE zone = ?", arguments: [zone.rawValue])

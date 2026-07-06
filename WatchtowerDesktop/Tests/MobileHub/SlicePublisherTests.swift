@@ -115,6 +115,29 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertTrue(delta.deletedRecordNames.isEmpty)
     }
 
+    /// Fix 4 regression: a mid-cycle wipeSyncState must cause publishOnce to abort
+    /// before recording hashes for the new account, so the next cycle re-pushes all records.
+    func testWipeBetweenCyclesTriggersFullRepushOnNextCycle() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertTarget(db, text: "Alpha")
+            try TestDatabase.insertTarget(db, text: "Beta")
+        }
+
+        // First cycle: hashes recorded, records pushed.
+        let first = try await publisher.publishOnce()
+        XCTAssertEqual(first.pushed, 2)
+
+        // Simulate account reset: wipe bumps generation.
+        let genBefore = try state.generation()
+        try state.wipeSyncState()
+        let genAfter = try state.generation()
+        XCTAssertGreaterThan(genAfter, genBefore, "wipeSyncState must bump generation")
+
+        // After wipe, hashes are gone — next publishOnce sees all records as new.
+        let second = try await publisher.publishOnce()
+        XCTAssertEqual(second.pushed, 2, "after wipeSyncState, all records must be re-pushed")
+    }
+
     // Exercises the two calendar_events-specific paths in publishOnce:
     //   1. rowID(.string) — calendar_events.id is TEXT PRIMARY KEY
     //   2. datetime(start_time) window — only events within −1d..+14d from now

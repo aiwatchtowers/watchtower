@@ -60,14 +60,19 @@ public protocol CloudSyncTransport {
     /// fake sees them immediately, the CloudKit adapter only after the engine
     /// re-fetches them.
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch
-    /// Retention hook: a consumer that has durably persisted `token` may call
-    /// this to let the transport drop the now-dead buffered prefix (`seq <=
-    /// token`) for the zone. Backing stores that don't buffer (the in-memory
-    /// fake) treat it as a no-op — see the default implementation.
-    func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws
 }
 
-public extension CloudSyncTransport {
-    /// Default: nothing to compact (the transport keeps no bounded buffer).
-    func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {}
+/// Transport extension for consumer-driven compaction. Separated from
+/// `CloudSyncTransport` (Plan 2 binding rule: the seam gains no new
+/// requirements) so conformers that don't buffer (e.g. the test fake) need
+/// not provide an implementation.
+///
+/// Retention/hygiene interaction: the relay buffer must retain full history
+/// until hygiene's aged-record scan (`changes(in: .relay, since: nil)`)
+/// finds and deletes stale records. Call `compact` only AFTER hygiene has
+/// had a chance to scan — the Plan 3 Task 4 hydrator is the intended consumer.
+/// A silent no-op default is intentionally absent: a conformer that forgets
+/// to implement compaction would silently accumulate the buffer forever.
+public protocol CompactingTransport: CloudSyncTransport {
+    func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws
 }
