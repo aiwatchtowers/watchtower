@@ -11,15 +11,14 @@ final class InboxItemTests: XCTestCase {
         try db.write { db in
             try db.execute(sql: """
                 INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type,
-                    status, priority, item_class, pinned, created_at, updated_at)
-                VALUES ('C1','1.0','U1','mention','pending','high','actionable',1,?,?)
+                    status, priority, item_class, created_at, updated_at)
+                VALUES ('C1','1.0','U1','mention','pending','high','actionable',?,?)
             """, arguments: ["2026-04-23T10:00:00Z", "2026-04-23T10:00:00Z"])
         }
         let item = try XCTUnwrap(db.read { db in
             try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
         })
         XCTAssertEqual(item.itemClass, .actionable)
-        XCTAssertTrue(item.pinned)
         XCTAssertNil(item.archivedAt)
         XCTAssertEqual(item.archiveReason, "")
     }
@@ -29,28 +28,27 @@ final class InboxItemTests: XCTestCase {
         try db.write { db in
             try db.execute(sql: """
                 INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type,
-                    status, priority, item_class, pinned, created_at, updated_at)
-                VALUES ('C1','2.0','U1','mention','pending','low','ambient',0,?,?)
+                    status, priority, item_class, created_at, updated_at)
+                VALUES ('C1','2.0','U1','mention','pending','low','ambient',?,?)
             """, arguments: ["2026-04-23T10:00:00Z", "2026-04-23T10:00:00Z"])
         }
         let item = try XCTUnwrap(db.read { db in
             try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
         })
         XCTAssertEqual(item.itemClass, .ambient)
-        XCTAssertFalse(item.pinned)
     }
 
-    func testDefaultsToAmbientWhenClassMissing() throws {
+    func testDefaultsToActionableWhenClassMissing() throws {
         let db = try TestDatabase.create()
-        // Insert without item_class — should default to ambient
+        // insertInboxItem writes item_class explicitly (default "actionable"), matching
+        // the inbox_items column default in schema.sql.
         try db.write { db in
             try TestDatabase.insertInboxItem(db)
         }
         let item = try XCTUnwrap(db.read { db in
             try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
         })
-        // Default column value is 'ambient', so ItemClass should decode to .ambient
-        XCTAssertEqual(item.itemClass, .ambient)
+        XCTAssertEqual(item.itemClass, .actionable)
     }
 
     func testDecodesArchivedAt() throws {
@@ -62,7 +60,7 @@ final class InboxItemTests: XCTestCase {
                 VALUES ('C1','3.0','U1','mention','resolved','low',?,?,?,?)
             """, arguments: [
                 "2026-04-23T12:00:00Z",
-                "auto-resolved",
+                "resolved",
                 "2026-04-23T10:00:00Z",
                 "2026-04-23T10:00:00Z"
             ])
@@ -71,21 +69,53 @@ final class InboxItemTests: XCTestCase {
             try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
         })
         XCTAssertNotNil(item.archivedAt)
-        XCTAssertEqual(item.archiveReason, "auto-resolved")
+        XCTAssertEqual(item.archiveReason, "resolved")
     }
 
-    func testIsPinnedPredicateTrue() throws {
+    // MARK: - Secretary card fields
+
+    func testMapsCardColumns() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try db.execute(sql: """
-                INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type,
-                    status, priority, pinned, created_at, updated_at)
-                VALUES ('C1','4.0','U1','mention','pending','high',1,?,?)
-            """, arguments: ["2026-04-23T10:00:00Z", "2026-04-23T10:00:00Z"])
+            try TestDatabase.insertInboxItem(
+                db,
+                cardStatus: "ready",
+                whyMatters: "w",
+                threadDigest: "t",
+                draftReply: "d"
+            )
         }
         let item = try XCTUnwrap(db.read { db in
             try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
         })
-        XCTAssertTrue(item.pinned)
+        XCTAssertEqual(item.cardStatus, .ready)
+        XCTAssertEqual(item.whyMatters, "w")
+        XCTAssertEqual(item.threadDigest, "t")
+        XCTAssertEqual(item.draftReply, "d")
+        XCTAssertTrue(item.hasCard)
+    }
+
+    func testCardStatusDefaultsToNone() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertInboxItem(db)
+        }
+        let item = try XCTUnwrap(db.read { db in
+            try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
+        })
+        XCTAssertEqual(item.cardStatus, .none)
+        XCTAssertFalse(item.hasCard)
+    }
+
+    func testCardStatusFailedIsNotHasCard() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertInboxItem(db, cardStatus: "failed")
+        }
+        let item = try XCTUnwrap(db.read { db in
+            try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
+        })
+        XCTAssertEqual(item.cardStatus, .failed)
+        XCTAssertFalse(item.hasCard)
     }
 }

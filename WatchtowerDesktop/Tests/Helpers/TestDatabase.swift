@@ -221,7 +221,9 @@ enum TestDatabase {
         domain            TEXT NOT NULL DEFAULT '',
         synced_at         TEXT,
         search_last_date  TEXT NOT NULL DEFAULT '',
-        current_user_id   TEXT NOT NULL DEFAULT ''
+        current_user_id   TEXT NOT NULL DEFAULT '',
+        inbox_last_processed_ts REAL NOT NULL DEFAULT 0,
+        secretary_profile TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS users (
         id            TEXT PRIMARY KEY,
@@ -359,6 +361,16 @@ enum TestDatabase {
         read_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         PRIMARY KEY (digest_id, decision_idx)
     );
+    CREATE TABLE IF NOT EXISTS decision_importance_corrections (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        digest_id            INTEGER NOT NULL,
+        decision_idx         INTEGER NOT NULL,
+        topic_id             INTEGER NOT NULL DEFAULT 0,
+        decision_text        TEXT NOT NULL DEFAULT '',
+        original_importance  TEXT NOT NULL CHECK(original_importance IN ('high', 'medium', 'low')),
+        new_importance       TEXT NOT NULL CHECK(new_importance IN ('high', 'medium', 'low')),
+        created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
     CREATE TABLE IF NOT EXISTS user_analyses (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id             TEXT NOT NULL,
@@ -466,29 +478,6 @@ enum TestDatabase {
         created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
     CREATE INDEX IF NOT EXISTS idx_track_states_track ON track_states(track_id, created_at DESC);
-    CREATE TABLE IF NOT EXISTS tasks (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        text            TEXT NOT NULL,
-        intent          TEXT NOT NULL DEFAULT '',
-        status          TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
-        priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
-        ownership       TEXT NOT NULL DEFAULT 'mine' CHECK(ownership IN ('mine','delegated','watching')),
-        ball_on         TEXT NOT NULL DEFAULT '',
-        due_date        TEXT NOT NULL DEFAULT '',
-        snooze_until    TEXT NOT NULL DEFAULT '',
-        blocking        TEXT NOT NULL DEFAULT '',
-        tags            TEXT NOT NULL DEFAULT '[]',
-        sub_items       TEXT NOT NULL DEFAULT '[]',
-        source_type     TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('track','digest','briefing','manual','chat','inbox')),
-        source_id       TEXT NOT NULL DEFAULT '',
-        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-    CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
-    CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
-    CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source_type, source_id);
-    CREATE INDEX IF NOT EXISTS idx_tasks_updated ON tasks(updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS inbox_items (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -501,7 +490,8 @@ enum TestDatabase {
             'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
             'calendar_invite','calendar_time_change','calendar_cancelled',
             'decision_made','briefing_ready',
-            'target_due'
+            'target_due',
+            'stream'
         )),
         snippet         TEXT NOT NULL DEFAULT '',
         context         TEXT NOT NULL DEFAULT '',
@@ -515,12 +505,16 @@ enum TestDatabase {
         waiting_user_ids TEXT NOT NULL DEFAULT '',
         target_id       INTEGER,
         read_at         TEXT,
-        item_class      TEXT NOT NULL DEFAULT 'ambient',
-        pinned          INTEGER NOT NULL DEFAULT 0,
-        archived_at     TEXT,
-        archive_reason  TEXT NOT NULL DEFAULT '',
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        item_class      TEXT NOT NULL DEFAULT 'actionable' CHECK(item_class IN ('actionable','ambient')),
+        archived_at     TEXT,
+        archive_reason  TEXT DEFAULT '' CHECK(archive_reason IN ('','resolved','seen_expired','stale','dismissed')),
+        why_matters     TEXT NOT NULL DEFAULT '',
+        thread_digest   TEXT NOT NULL DEFAULT '',
+        draft_reply     TEXT NOT NULL DEFAULT '',
+        card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
+        card_generated_at TEXT,
         UNIQUE(channel_id, message_ts)
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_items(status);
@@ -528,6 +522,8 @@ enum TestDatabase {
     CREATE INDEX IF NOT EXISTS idx_inbox_updated ON inbox_items(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_inbox_sender ON inbox_items(sender_user_id);
     CREATE INDEX IF NOT EXISTS idx_inbox_snooze ON inbox_items(snooze_until);
+    CREATE INDEX IF NOT EXISTS idx_inbox_items_class_status ON inbox_items(item_class, status);
+    CREATE INDEX IF NOT EXISTS idx_inbox_items_archived ON inbox_items(archived_at);
 
     CREATE TABLE IF NOT EXISTS inbox_learned_rules (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -639,6 +635,52 @@ enum TestDatabase {
         PRIMARY KEY (user_a, user_b, period_from, period_to)
     );
     CREATE INDEX IF NOT EXISTS idx_user_interactions_a ON user_interactions(user_a, period_from, period_to);
+
+    CREATE TABLE IF NOT EXISTS communication_guides (
+        id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id                   TEXT NOT NULL,
+        period_from               REAL NOT NULL,
+        period_to                 REAL NOT NULL,
+        message_count             INTEGER NOT NULL DEFAULT 0,
+        channels_active           INTEGER NOT NULL DEFAULT 0,
+        threads_initiated         INTEGER NOT NULL DEFAULT 0,
+        threads_replied           INTEGER NOT NULL DEFAULT 0,
+        avg_message_length        REAL NOT NULL DEFAULT 0,
+        active_hours_json         TEXT NOT NULL DEFAULT '{}',
+        volume_change_pct         REAL NOT NULL DEFAULT 0,
+        summary                   TEXT NOT NULL DEFAULT '',
+        communication_preferences TEXT NOT NULL DEFAULT '',
+        availability_patterns     TEXT NOT NULL DEFAULT '',
+        decision_process          TEXT NOT NULL DEFAULT '',
+        situational_tactics       TEXT NOT NULL DEFAULT '[]',
+        effective_approaches      TEXT NOT NULL DEFAULT '[]',
+        recommendations           TEXT NOT NULL DEFAULT '[]',
+        relationship_context      TEXT NOT NULL DEFAULT '',
+        model                     TEXT NOT NULL DEFAULT '',
+        input_tokens              INTEGER NOT NULL DEFAULT 0,
+        output_tokens             INTEGER NOT NULL DEFAULT 0,
+        cost_usd                  REAL NOT NULL DEFAULT 0,
+        prompt_version            INTEGER NOT NULL DEFAULT 0,
+        created_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        UNIQUE(user_id, period_from, period_to)
+    );
+    CREATE INDEX IF NOT EXISTS idx_communication_guides_user   ON communication_guides(user_id);
+    CREATE INDEX IF NOT EXISTS idx_communication_guides_period ON communication_guides(period_from, period_to);
+
+    CREATE TABLE IF NOT EXISTS guide_summaries (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        period_from    REAL NOT NULL,
+        period_to      REAL NOT NULL,
+        summary        TEXT NOT NULL DEFAULT '',
+        tips           TEXT NOT NULL DEFAULT '[]',
+        model          TEXT NOT NULL DEFAULT '',
+        input_tokens   INTEGER NOT NULL DEFAULT 0,
+        output_tokens  INTEGER NOT NULL DEFAULT 0,
+        cost_usd       REAL NOT NULL DEFAULT 0,
+        prompt_version INTEGER NOT NULL DEFAULT 0,
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        UNIQUE(period_from, period_to)
+    );
 
     CREATE TABLE IF NOT EXISTS people_cards (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -831,17 +873,25 @@ enum TestDatabase {
         notes               TEXT NOT NULL DEFAULT '[]',
         progress            REAL NOT NULL DEFAULT 0.0,
         source_type         TEXT NOT NULL DEFAULT 'manual'
-                            CHECK(source_type IN ('extract','briefing','manual','chat','inbox','jira','slack')),
+                            CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem')),
         source_id           TEXT NOT NULL DEFAULT '',
         ai_level_confidence REAL DEFAULT NULL,
         created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-        updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        notified_at         TEXT NOT NULL DEFAULT '',
+        next_step           TEXT NOT NULL DEFAULT '',
+        next_step_at        TEXT NOT NULL DEFAULT ''
     );
-    CREATE INDEX IF NOT EXISTS idx_targets_level    ON targets(level);
-    CREATE INDEX IF NOT EXISTS idx_targets_parent   ON targets(parent_id);
-    CREATE INDEX IF NOT EXISTS idx_targets_status   ON targets(status);
-    CREATE INDEX IF NOT EXISTS idx_targets_priority ON targets(priority);
-    CREATE INDEX IF NOT EXISTS idx_targets_source   ON targets(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
+    CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_targets_period      ON targets(period_start, period_end);
+    CREATE INDEX IF NOT EXISTS idx_targets_status      ON targets(status);
+    CREATE INDEX IF NOT EXISTS idx_targets_priority    ON targets(priority);
+    CREATE INDEX IF NOT EXISTS idx_targets_due         ON targets(due_date);
+    CREATE INDEX IF NOT EXISTS idx_targets_source      ON targets(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
+        WHERE notified_at = '' AND due_date != '';
 
     CREATE TABLE IF NOT EXISTS target_links (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1021,7 +1071,7 @@ enum TestDatabase {
         sourceID: String = ""
     ) throws {
         try db.execute(sql: """
-            INSERT INTO tasks (text, intent, status, priority, ownership, ball_on,
+            INSERT INTO targets (text, intent, status, priority, ownership, ball_on,
                 due_date, snooze_until, blocking, tags, sub_items, source_type, source_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [text, intent, status, priority, ownership, ballOn,
@@ -1120,16 +1170,23 @@ enum TestDatabase {
         snoozeUntil: String = "",
         taskID: Int? = nil,       // kept for call-site compat; maps to target_id column
         readAt: String? = nil,
-        archivedAt: String? = nil
+        archivedAt: String? = nil,
+        itemClass: String = "actionable",
+        cardStatus: String = "none",
+        whyMatters: String = "",
+        threadDigest: String = "",
+        draftReply: String = ""
     ) throws {
         try db.execute(sql: """
             INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
                 trigger_type, snippet, permalink, status, priority, ai_reason,
-                resolved_reason, snooze_until, target_id, read_at, archived_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resolved_reason, snooze_until, target_id, read_at, archived_at,
+                item_class, card_status, why_matters, thread_digest, draft_reply)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [channelID, messageTS, threadTS, senderUserID,
                              triggerType, snippet, permalink, status, priority, aiReason,
-                             resolvedReason, snoozeUntil, taskID, readAt, archivedAt])
+                             resolvedReason, snoozeUntil, taskID, readAt, archivedAt,
+                             itemClass, cardStatus, whyMatters, threadDigest, draftReply])
     }
 
     // MARK: - Inbox Learned Rules Fixtures

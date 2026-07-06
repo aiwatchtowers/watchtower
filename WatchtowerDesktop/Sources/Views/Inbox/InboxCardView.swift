@@ -6,7 +6,7 @@ import AppKit
 enum CardSize {
     case compact
     case medium
-    case pinned
+    case expanded
 }
 
 // MARK: - InboxCardView
@@ -49,7 +49,7 @@ struct InboxCardView: View {
             if size != .compact {
                 metadataLine
             }
-            if size == .pinned, !item.aiReason.isEmpty {
+            if size == .expanded, !item.aiReason.isEmpty {
                 aiReasonBlock
             }
             if isExpanded {
@@ -66,7 +66,7 @@ struct InboxCardView: View {
 
     private var headerLine: some View {
         HStack(alignment: .center, spacing: 6) {
-            if size == .pinned { priorityIcon }
+            if size == .expanded { priorityIcon }
             triggerCapsule
             channelOrDMBadge
             Spacer()
@@ -124,7 +124,7 @@ struct InboxCardView: View {
         }
     }
 
-    // MARK: - Pinned AI reason block (full)
+    // MARK: - Expanded AI reason block (full)
 
     private var aiReasonBlock: some View {
         HStack(alignment: .top, spacing: 6) {
