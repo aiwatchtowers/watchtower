@@ -13,7 +13,12 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-cover lint lint-swift lint-all install clean app app-dev dmg test-swift sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
+.PHONY: build test test-cover lint lint-swift lint-all install clean app app-dev dmg test-swift sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check mobile-gen mobile-build mobile-test mobile-run
+
+# Simulator device for the mobile targets; override: make mobile-run SIM="iPhone 17e"
+SIM ?= iPhone 17 Pro
+MOBILE_PROJ := WatchtowerMobile/WatchtowerMobile.xcodeproj
+MOBILE_DEST := platform=iOS Simulator,name=$(SIM)
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -23,6 +28,26 @@ app dmg:
 
 app-dev:
 	./scripts/build-app.sh --dev $(VERSION)
+
+# Regenerate the Xcode project after editing WatchtowerMobile/project.yml
+# (the yml is the source of truth; commit the regenerated .xcodeproj too).
+mobile-gen:
+	cd WatchtowerMobile && xcodegen generate
+
+mobile-build:
+	xcodebuild build -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO
+
+mobile-test:
+	xcodebuild test -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO
+
+# Build + boot the simulator + install + launch — the mobile app-dev.
+mobile-run: mobile-build
+	xcrun simctl boot "$(SIM)" 2>/dev/null || true
+	open -a Simulator
+	xcrun simctl install "$(SIM)" "$$(xcodebuild -project $(MOBILE_PROJ) -scheme WatchtowerMobile -destination '$(MOBILE_DEST)' -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{d=$$3} / FULL_PRODUCT_NAME/{n=$$3} END{print d "/" n}')"
+	xcrun simctl launch "$(SIM)" com.aiwatchtowers.watchtower.mobile
 
 test:
 	go test ./... -v

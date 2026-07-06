@@ -115,6 +115,78 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertTrue(delta.deletedRecordNames.isEmpty)
     }
 
+    /// Fix 4 regression: a mid-cycle wipeSyncState must cause publishOnce to abort
+    /// before recording hashes for the new account, so the next cycle re-pushes all records.
+    func testWipeBetweenCyclesTriggersFullRepushOnNextCycle() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertTarget(db, text: "Alpha")
+            try TestDatabase.insertTarget(db, text: "Beta")
+        }
+
+        // First cycle: hashes recorded, records pushed.
+        let first = try await publisher.publishOnce()
+        XCTAssertEqual(first.pushed, 2)
+
+        // Simulate account reset: wipe bumps generation.
+        let genBefore = try state.generation()
+        try state.wipeSyncState()
+        let genAfter = try state.generation()
+        XCTAssertGreaterThan(genAfter, genBefore, "wipeSyncState must bump generation")
+
+        // After wipe, hashes are gone — next publishOnce sees all records as new.
+        let second = try await publisher.publishOnce()
+        XCTAssertEqual(second.pushed, 2, "after wipeSyncState, all records must be re-pushed")
+    }
+
+    /// In-flight abort: a transport whose save() calls wipeSyncState() before
+    /// delegating simulates a mid-cycle account reset happening concurrently
+    /// with the first save. publishOnce must abort, record NO hashes for the
+    /// wiped generation, and the NEXT publishOnce must re-push everything.
+    func testInFlightWipeAbortsAndNextCycleRepushes() async throws {
+        final class WipingTransport: CloudSyncTransport, Sendable {
+            private let inner: InMemoryCloudTransport
+            private let state: HubSyncState
+            init(inner: InMemoryCloudTransport, state: HubSyncState) {
+                self.inner = inner
+                self.state = state
+            }
+            func save(_ records: [CloudRecord]) async throws {
+                try state.wipeSyncState()   // wipe BEFORE delegating — bumps generation
+                try await inner.save(records)
+            }
+            func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+                try await inner.delete(recordNames: recordNames, in: zone)
+            }
+            func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+                try await inner.changes(in: zone, since: token)
+            }
+        }
+
+        try await dbPool.write { db in
+            try TestDatabase.insertTarget(db, text: "Alpha")
+            try TestDatabase.insertTarget(db, text: "Beta")
+        }
+
+        let wipingTransport = WipingTransport(inner: transport, state: state)
+        let wipingPublisher = SlicePublisher(dbPool: dbPool, state: state, transport: wipingTransport)
+
+        // First publishOnce — save() triggers wipeSyncState, bumping generation mid-cycle.
+        let aborted = try await wipingPublisher.publishOnce()
+        // Abort fires after the FIRST save (targets), so pushed is 0 because
+        // the generation check fires before hashes are committed.
+        XCTAssertEqual(aborted.pushed + aborted.deleted, 0,
+                       "aborted cycle must not commit any pushed/deleted counts")
+
+        // No hashes recorded for the wiped generation.
+        let hashesAfterAbort = try state.hashes(forKind: .target)
+        XCTAssertTrue(hashesAfterAbort.isEmpty, "aborted cycle must not record hashes")
+
+        // Next cycle uses a clean transport (no mid-cycle wipe) — must re-push everything.
+        let cleanPublisher = SlicePublisher(dbPool: dbPool, state: state, transport: transport)
+        let repushed = try await cleanPublisher.publishOnce()
+        XCTAssertEqual(repushed.pushed, 2, "after abort, next cycle must re-push all records")
+    }
+
     // Exercises the two calendar_events-specific paths in publishOnce:
     //   1. rowID(.string) — calendar_events.id is TEXT PRIMARY KEY
     //   2. datetime(start_time) window — only events within −1d..+14d from now

@@ -151,4 +151,56 @@ final class HubSyncState: Sendable {
             )
         }
     }
+
+    /// Retention: drops processed-set entries older than `date`. Safety rests
+    /// on two guards: (1) the status-echo guard in processAction (a record whose
+    /// status is already applied/failed is skipped without touching the processed
+    /// set), and (2) the relay buffer retaining full history until hygiene deletes
+    /// aged records — a duplicate re-delivery of a very old record is still caught
+    /// by its echo status before any write occurs.
+    func pruneRelayProcessed(olderThan date: Date) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM relay_processed WHERE processed_at < ?",
+                arguments: [date.timeIntervalSince1970]
+            )
+        }
+    }
+
+    // MARK: - Account-change reset
+
+    /// Clears all sync state derived from the CloudKit account so the next
+    /// publish/relay cycle starts clean against the new account. Nothing
+    /// account-specific survives: slice hashes, relay change token, processed
+    /// set, and chat-session mapping are all wiped. The hygiene stamp in
+    /// hub_meta is intentionally retained — hygiene timing is account-agnostic.
+    /// The generation counter is bumped so any in-flight publishOnce cycle can
+    /// detect the reset and abort before recording stale hashes.
+    func wipeSyncState() throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM slice_state")
+            try db.execute(
+                sql: "DELETE FROM hub_meta WHERE key = ?",
+                arguments: [RelayProcessor.relayTokenKey]
+            )
+            try db.execute(sql: "DELETE FROM relay_processed")
+            try db.execute(sql: "DELETE FROM chat_sessions")
+            // Bump the generation so any in-flight publishOnce cycle can detect the
+            // wipe and abort before writing stale hashes for the new account.
+            try db.execute(sql: """
+                INSERT INTO hub_meta (key, value)
+                VALUES ('sync_generation',
+                        CAST(COALESCE((SELECT value FROM hub_meta WHERE key = 'sync_generation'), '0') AS INTEGER) + 1)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """)
+        }
+    }
+
+    /// Returns the current sync generation counter. Starts at 0; bumped by
+    /// `wipeSyncState()` so `SlicePublisher` can detect a mid-cycle account reset
+    /// and abort before recording stale hashes.
+    func generation() throws -> Int {
+        let raw = try metaValue(forKey: "sync_generation")
+        return raw.flatMap(Int.init) ?? 0
+    }
 }

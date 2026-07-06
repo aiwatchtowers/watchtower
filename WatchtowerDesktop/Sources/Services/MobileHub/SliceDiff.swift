@@ -1,10 +1,12 @@
 import CryptoKit
 import Foundation
 import GRDB
+import os
 
 /// Pure slice diffing: compares local DB rows against known pushed hashes
 /// to produce a set of upserts, deletions, and skipped (un-encodable) records.
 enum SliceDiff {
+    private static let logger = Logger(subsystem: Constants.bundleID, category: "SliceDiff")
     struct Result: Equatable {
         let upserts: [SliceRecord]
         let deletions: [String]
@@ -30,6 +32,20 @@ enum SliceDiff {
         var seenRecordNames = Set<String>()
 
         for (id, row) in rows {
+            // Guard: a row whose id fell through SlicePublisher.rowID's default
+            // branch (NULL or BLOB primary key) carries the sentinel "0".
+            // Such a row must never enter the upsert path — doing so would assign
+            // every invalid row the same record name (e.g. "target-0"), causing
+            // silently incorrect CloudKit updates. Skip it with a distinct marker.
+            // Known conflation: a LEGITIMATE id of 0 (explicit INTEGER 0 or TEXT
+            // "0") is also skipped — unreachable for our autoincrement/calendar
+            // ids today; if it ever matters, make rowID return String? instead.
+            if id == "0" {
+                let invalidName = "\(kind.rawValue)-invalid-id"
+                logger.warning("slice row with null/blob id skipped: \(invalidName, privacy: .public)")
+                skipped.append(invalidName)
+                continue
+            }
             let recordName = kind.recordName(id: id)
             seenRecordNames.insert(recordName)
 

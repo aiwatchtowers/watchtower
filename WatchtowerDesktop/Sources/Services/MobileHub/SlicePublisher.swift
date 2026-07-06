@@ -55,6 +55,7 @@ final class SlicePublisher: Sendable {
         var deleted = 0
         var skipped: [String] = []
         let now = Date()
+        let startGen = try state.generation()
 
         for kind in SliceKind.allCases {
             guard let sql = Self.sliceSQL[kind] else { continue }
@@ -69,6 +70,12 @@ final class SlicePublisher: Sendable {
 
             if !result.upserts.isEmpty {
                 try await transport.save(result.upserts.map { CloudRecordFactory.record(for: $0) })
+                // Guard: abort if a mid-cycle account reset wiped the state.
+                // The next cycle will re-diff against empty hashes and re-push everything.
+                guard try state.generation() == startGen else {
+                    logger.warning("publishOnce: generation changed mid-cycle — aborting to avoid recording stale hashes")
+                    return (pushed, deleted, skipped)
+                }
                 for record in result.upserts {
                     try state.setHash(SliceDiff.hashHex(record.payload), for: record.recordName)
                 }
@@ -76,6 +83,10 @@ final class SlicePublisher: Sendable {
             }
             if !result.deletions.isEmpty {
                 try await transport.delete(recordNames: result.deletions, in: .data)
+                guard try state.generation() == startGen else {
+                    logger.warning("publishOnce: generation changed mid-cycle — aborting to avoid recording stale hashes")
+                    return (pushed, deleted, skipped)
+                }
                 try state.removeHashes(result.deletions)
                 deleted += result.deletions.count
             }

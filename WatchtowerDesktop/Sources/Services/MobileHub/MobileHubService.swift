@@ -8,6 +8,8 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     func start() async
     func pull() async throws
     func availability() async -> CloudAvailability
+    /// Set the account-change reset callback before `start()`.
+    func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async
 }
 
 extension CloudKitTransport: HubTransport {}
@@ -33,6 +35,7 @@ final class MobileHubService {
     private let transport: any HubTransport
     private let publisher: SlicePublisher
     private let processor: RelayProcessor
+    private let sidecar: HubSyncState
     private let publishInterval: Duration
     private let relayIdleInterval: Duration
     private let relayActiveInterval: Duration
@@ -54,6 +57,7 @@ final class MobileHubService {
         transport: any HubTransport,
         publisher: SlicePublisher,
         processor: RelayProcessor,
+        sidecar: HubSyncState,
         publishInterval: Duration = .seconds(60),
         relayIdleInterval: Duration = .seconds(30),
         relayActiveInterval: Duration = .seconds(3),
@@ -64,6 +68,7 @@ final class MobileHubService {
         self.transport = transport
         self.publisher = publisher
         self.processor = processor
+        self.sidecar = sidecar
         self.publishInterval = publishInterval
         self.relayIdleInterval = relayIdleInterval
         self.relayActiveInterval = relayActiveInterval
@@ -82,6 +87,19 @@ final class MobileHubService {
         guard status != .running, status != .starting else { return }
         status = .starting
         let startEpoch = epoch
+        // Register the reset handler BEFORE start() so a CloudKit account change
+        // observed during startup wipes the derived sync state: cleared slice
+        // hashes make the next publish cycle re-push the full slice, and the
+        // cleared relay token makes the relay re-read its zone from scratch.
+        let sidecar = self.sidecar
+        let logger = self.logger
+        await transport.setAccountResetHandler {
+            do {
+                try sidecar.wipeSyncState()
+            } catch {
+                logger.error("account reset: wipeSyncState failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         await transport.start()
         let availability = await transport.availability()
         // stop() may have flipped the toggle off or bumped the epoch while we

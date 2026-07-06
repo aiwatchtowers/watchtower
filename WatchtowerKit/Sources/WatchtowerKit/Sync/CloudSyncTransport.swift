@@ -61,3 +61,18 @@ public protocol CloudSyncTransport {
     /// re-fetches them.
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch
 }
+
+/// Transport extension for consumer-driven compaction. Separated from
+/// `CloudSyncTransport` (Plan 2 binding rule: the seam gains no new
+/// requirements) so conformers that don't buffer (e.g. the test fake) need
+/// not provide an implementation.
+///
+/// Retention/hygiene interaction: the relay buffer must retain full history
+/// until hygiene's aged-record scan (`changes(in: .relay, since: nil)`)
+/// finds and deletes stale records. Call `compact` only AFTER hygiene has
+/// had a chance to scan — the Plan 3 Task 4 hydrator is the intended consumer.
+/// A silent no-op default is intentionally absent: a conformer that forgets
+/// to implement compaction would silently accumulate the buffer forever.
+public protocol CompactingTransport: CloudSyncTransport {
+    func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws
+}

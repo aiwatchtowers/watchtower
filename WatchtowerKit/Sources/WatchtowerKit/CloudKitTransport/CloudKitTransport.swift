@@ -18,7 +18,7 @@ public enum CloudAvailability: Equatable, Sendable {
 /// pull-shaped changes(since:) reads that buffer, so consumer tokens are
 /// local seqs and CKServerChangeToken/engine state never leak (design
 /// decision 1 in the Plan 2 header).
-public actor CloudKitTransport: CloudSyncTransport {
+public actor CloudKitTransport: CloudSyncTransport, CompactingTransport {
     static let recordType = "WatchtowerRecord"
 
     private let store: TransportStore
@@ -28,10 +28,20 @@ public actor CloudKitTransport: CloudSyncTransport {
     private var delegateBox: DelegateBox?
     /// Last recorded failure (startup or store I/O), surfaced via availability().
     private var lastError: String?
+    /// Number of CloudKit account changes that forced a local reset. Read via
+    /// `await transport.accountResetCount` (the hub surfaces it for diagnostics).
+    public private(set) var accountResetCount = 0
+    /// Fired after an account-change reset so an owner (the desktop hub) can
+    /// wipe its own derived state. Set before `start()` via `setAccountResetHandler`.
+    private var accountResetHandler: (@Sendable () -> Void)?
 
     public init(store: TransportStore, containerID: String = WatchtowerCloud.containerID) {
         self.store = store
         self.containerID = containerID
+    }
+
+    public func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) {
+        accountResetHandler = handler
     }
 
     // MARK: - CloudSyncTransport
@@ -48,6 +58,10 @@ public actor CloudKitTransport: CloudSyncTransport {
 
     public func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         try store.changes(in: zone, since: token)
+    }
+
+    public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
+        try store.compactEvents(in: zone, keepSince: token)
     }
 
     // MARK: - Lifecycle
@@ -152,16 +166,91 @@ public actor CloudKitTransport: CloudSyncTransport {
             bufferFetchedChanges(changes)
         case .sentRecordZoneChanges(let sent):
             clearSentChanges(sent)
+        case .fetchedDatabaseChanges(let changes):
+            handleFetchedDatabaseChanges(changes)
+        case .accountChange(let change):
+            handleAccountChange(change)
         default:
             break
         }
+    }
+
+    /// A server-side zone deletion evicts that zone's buffered events and
+    /// archived system fields, then re-registers the zone so the surviving
+    /// pending rows re-create it and re-send on the next batch.
+    private func handleFetchedDatabaseChanges(_ event: CKSyncEngine.Event.FetchedDatabaseChanges) {
+        let deletedZones = event.deletions.compactMap { CloudZoneID(rawValue: $0.zoneID.zoneName) }
+        guard !deletedZones.isEmpty else { return }
+        do {
+            for zone in deletedZones {
+                try store.evictZone(zone)
+                engine?.state.add(pendingDatabaseChanges: [
+                    .saveZone(CKRecordZone(zoneName: zone.rawValue))
+                ])
+            }
+            lastError = nil
+            nudgeEngine()
+        } catch {
+            recordError(error)
+        }
+    }
+
+    /// A CloudKit account sign-out or switch makes all local state belong to
+    /// the wrong account: wipe and relaunch with fresh engine state. A plain
+    /// sign-in has nothing local to discard (the reconcile fetch handles it).
+    private func handleAccountChange(_ event: CKSyncEngine.Event.AccountChange) {
+        switch event.changeType {
+        case .signIn:
+            return
+        case .signOut, .switchAccounts:
+            resetForAccountChange()
+        @unknown default:
+            resetForAccountChange()
+        }
+    }
+
+    /// Wipes the store, drops the engine, and relaunches it fresh, recording
+    /// the reset and notifying the owner. Internal so it is exercisable
+    /// without fabricating a CKSyncEngine account event.
+    func resetForAccountChange() {
+        do {
+            try store.wipe()
+        } catch {
+            // Wipe failed: the store may contain stale old-account state.
+            // Drop the engine so the transport is inert (.unavailable via lastError)
+            // until the operator restarts — relaunching against a partially-wiped
+            // store would reload old-account engine state/system_fields into the
+            // new account context, and clearing lastError would make availability()
+            // lie. The reset handler is intentionally NOT fired: the hub must not
+            // wipe its own derived state when the transport's store is in an
+            // unknown state.
+            recordError(error)
+            engine = nil
+            container = nil
+            delegateBox = nil
+            return
+        }
+        engine = nil
+        container = nil
+        delegateBox = nil
+        accountResetCount += 1
+        accountResetHandler?()
+        // Relaunch with fresh state (loadEngineState is now empty). No-op on
+        // unsigned dev builds — start() re-checks the entitlement and returns.
+        Task { await start() }
     }
 
     fileprivate func nextEngineBatch() -> CKSyncEngine.RecordZoneChangeBatch? {
         do {
             let pending = try store.pendingBatch(limit: 200)
             guard !pending.saves.isEmpty || !pending.deletes.isEmpty else { return nil }
-            let recordsToSave = pending.saves.map { Self.ckRecord(from: $0, in: Self.zoneID(for: $0.zone)) }
+            let recordsToSave = try pending.saves.map {
+                Self.ckRecord(
+                    from: $0,
+                    in: Self.zoneID(for: $0.zone),
+                    systemFields: try store.systemFields(recordName: $0.recordName, zone: $0.zone)
+                )
+            }
             let recordIDsToDelete = pending.deletes.map {
                 CKRecord.ID(recordName: $0.name, zoneID: Self.zoneID(for: $0.zone))
             }
@@ -195,8 +284,20 @@ public actor CloudKitTransport: CloudSyncTransport {
         }
         do {
             try store.bufferChanged(changed)
+            // Persist the fetched records' system fields so a later local save
+            // of the same recordName goes out with the server's change tag
+            // (e.g. desktop status write-backs onto mobile-created records).
+            for modification in event.modifications {
+                guard let zone = CloudZoneID(rawValue: modification.record.recordID.zoneID.zoneName) else { continue }
+                try store.saveSystemFields(
+                    Self.archivedSystemFields(of: modification.record),
+                    recordName: modification.record.recordID.recordName,
+                    zone: zone
+                )
+            }
             for (zone, names) in deletedByZone {
                 try store.bufferDeleted(recordNames: names, zone: zone)
+                try store.deleteSystemFields(recordNames: names, zone: zone)
             }
             lastError = nil
         } catch {
@@ -206,6 +307,7 @@ public actor CloudKitTransport: CloudSyncTransport {
 
     private func clearSentChanges(_ event: CKSyncEngine.Event.SentRecordZoneChanges) {
         var saves: [(name: String, zone: CloudZoneID, sentModifiedAt: Date)] = []
+        var savedFields: [(name: String, zone: CloudZoneID, data: Data)] = []
         for record in event.savedRecords {
             guard let zone = CloudZoneID(rawValue: record.recordID.zoneID.zoneName) else { continue }
             // Use the record's own modifiedAt as the stamp so that a newer
@@ -213,6 +315,14 @@ public actor CloudKitTransport: CloudSyncTransport {
             // Missing field → .distantFuture → clears unconditionally (old behaviour).
             let stamp = (record["modifiedAt"] as? Date) ?? .distantFuture
             saves.append((name: record.recordID.recordName, zone: zone, sentModifiedAt: stamp))
+            // The saved record carries the fresh server change tag — persist it
+            // so the NEXT save of this record (heartbeat re-save, status flip)
+            // doesn't hit .serverRecordChanged.
+            savedFields.append((
+                name: record.recordID.recordName,
+                zone: zone,
+                data: Self.archivedSystemFields(of: record)
+            ))
         }
         var deletes: [(name: String, zone: CloudZoneID)] = []
         for recordID in event.deletedRecordIDs {
@@ -226,13 +336,60 @@ public actor CloudKitTransport: CloudSyncTransport {
             guard let zone = CloudZoneID(rawValue: recordID.zoneID.zoneName) else { continue }
             deletes.append((name: recordID.recordName, zone: zone))
         }
+        // re-nudge: pendingBatch is capped at 200; without this a large offline
+        // backlog stalls — and it is also what reschedules the still-pending
+        // failed saves with their corrected system fields. Deferred so a store
+        // error mid-block cannot skip the reschedule (Task 1 review Minor 1).
+        defer { nudgeEngine() }
         do {
             try store.clearPending(saves: saves, deletes: deletes)
+            for entry in savedFields {
+                try store.saveSystemFields(entry.data, recordName: entry.name, zone: entry.zone)
+            }
+            for entry in deletes {
+                try store.deleteSystemFields(recordNames: [entry.name], zone: entry.zone)
+            }
+            try fixSystemFieldsForFailedSaves(event.failedRecordSaves)
             lastError = nil
-            // re-nudge: pendingBatch is capped at 200; without this a large offline backlog stalls
-            nudgeEngine()
         } catch {
             recordError(error)
+        }
+    }
+
+    /// Failed saves stay pending and the trailing re-nudge reschedules them,
+    /// but two error codes need system-field surgery first or the retry fails
+    /// identically forever.
+    private func fixSystemFieldsForFailedSaves(
+        _ failures: [CKSyncEngine.Event.SentRecordZoneChanges.FailedRecordSave]
+    ) throws {
+        for failure in failures {
+            guard let zone = CloudZoneID(rawValue: failure.record.recordID.zoneID.zoneName) else { continue }
+            let name = failure.record.recordID.recordName
+            switch failure.error.code {
+            case .serverRecordChanged:
+                // Conflict policy: this device's payload wins — desktop is the
+                // source of truth for DataZone, and for RelayZone the
+                // write-back/chunk author wins by protocol design. Persist the
+                // SERVER record's system fields (userInfo's
+                // CKRecordChangedErrorServerRecordKey, surfaced as
+                // CKError.serverRecord) so the retry carries the server change
+                // tag and succeeds instead of looping.
+                if let server = failure.error.serverRecord {
+                    try store.saveSystemFields(
+                        Self.archivedSystemFields(of: server),
+                        recordName: name,
+                        zone: zone
+                    )
+                }
+            case .unknownItem:
+                // The server-side record vanished while we held its change tag
+                // (deleted by another device). Drop the stale system fields so
+                // the retry goes out as a fresh record instead of wedging on a
+                // tag the server no longer knows.
+                try store.deleteSystemFields(recordNames: [name], zone: zone)
+            default:
+                break
+            }
         }
     }
 
@@ -268,13 +425,34 @@ public actor CloudKitTransport: CloudSyncTransport {
 
     // MARK: - Mapping (pure, unit-tested)
 
-    static func ckRecord(from record: CloudRecord, in zoneID: CKRecordZone.ID) -> CKRecord {
-        let id = CKRecord.ID(recordName: record.recordName, zoneID: zoneID)
-        let ck = CKRecord(recordType: Self.recordType, recordID: id)
+    /// Builds the outgoing CKRecord, seeded from archived system fields when
+    /// present so the save carries the server change tag (identity + metadata
+    /// come from the archive). nil or undecodable blob → fresh record, the
+    /// pre-system-fields behaviour. Payload/kind/modifiedAt always come from
+    /// the CloudRecord — the archive never carries payload fields.
+    static func ckRecord(from record: CloudRecord, in zoneID: CKRecordZone.ID, systemFields: Data?) -> CKRecord {
+        let ck: CKRecord
+        if let systemFields,
+           let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: systemFields),
+           let decoded = CKRecord(coder: unarchiver) {
+            unarchiver.finishDecoding()
+            ck = decoded
+        } else {
+            let id = CKRecord.ID(recordName: record.recordName, zoneID: zoneID)
+            ck = CKRecord(recordType: Self.recordType, recordID: id)
+        }
         ck.encryptedValues["payload"] = record.payload
         ck["kind"] = record.kind
         ck["modifiedAt"] = record.modifiedAt
         return ck
+    }
+
+    /// Archives identity + server metadata (change tag) without payload fields.
+    static func archivedSystemFields(of record: CKRecord) -> Data {
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        record.encodeSystemFields(with: archiver)
+        archiver.finishEncoding()
+        return archiver.encodedData
     }
 
     static func cloudRecord(from ck: CKRecord) -> CloudRecord? {

@@ -82,6 +82,11 @@ final class RelayProcessor: Sendable {
         }
 
         try persistToken(batch.newToken)
+        // The relay buffer intentionally retains full history: hygiene's aged-record
+        // scan calls changes(in: .relay, since: nil) and needs records to have aged
+        // 7/30 days before deleting them. Compacting here would silently drop those
+        // records before hygiene can find them, disabling server-side retention.
+        // Compaction is the responsibility of the Plan 3 Task 4 hydrator (CompactingTransport).
         return applied
     }
 
@@ -169,6 +174,9 @@ final class RelayProcessor: Sendable {
             try await transport.delete(recordNames: stale, in: .relay)
             logger.info("hygiene: deleted \(stale.count) stale relay records")
         }
+        // Retention on the idempotency set: entries older than the longest relay
+        // record lifetime (chat) can never guard against a live duplicate again.
+        try sidecar.pruneRelayProcessed(olderThan: current.addingTimeInterval(-Self.chatMaxAge))
         try sidecar.setMetaValue(String(current.timeIntervalSince1970), forKey: Self.hygieneStampKey)
     }
 

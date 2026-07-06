@@ -1,0 +1,97 @@
+name: WatchtowerMobile
+
+options:
+  bundleIdPrefix: com.aiwatchtowers.watchtower
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  # xcuserdata is machine-local (window state, breakpoints) — never commit it.
+  xcodeVersion: "16.0"
+
+packages:
+  WatchtowerKit:
+    path: ../WatchtowerKit
+  # GRDB is transitive through WatchtowerKit, but the app + tests reference its
+  # types directly (`ValueObservation`, `Row`). Autolink alone links it for a
+  # plain `build`, but a testability build (build-for-testing) dead-strips the
+  # autolink hint and the app fails with undefined GRDB symbols — so declare it
+  # explicitly. Same URL/version as WatchtowerKit's dependency → SPM dedupes.
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: "7.0.0"
+
+settings:
+  base:
+    # Simulator / generic builds only in v1 — no signing until entitlements land.
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGN_IDENTITY: ""
+    # Project-level Swift language version (brief asked 5.10) — targets inherit.
+    SWIFT_VERSION: "5.10"
+
+targets:
+  WatchtowerMobile:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources
+    dependencies:
+      - package: WatchtowerKit
+        product: WatchtowerKit
+      - package: GRDB
+        product: GRDB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobile
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.10"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        # SwiftUI-generated launch screen (UILaunchScreen empty dict equivalent).
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+      configs:
+        # @testable import WatchtowerMobile needs testability in the Debug
+        # config the Test action builds; scoped to Debug so Release stays lean.
+        Debug:
+          ENABLE_TESTABILITY: YES
+
+  # Unit-test bundle hosted in WatchtowerMobile. Proves the app WIRING (env
+  # boot, demo-seed hydrate, per-tab view models, ReplicaObserver re-fire) —
+  # the heavy replica logic is already covered by WatchtowerKit's tests.
+  WatchtowerMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests
+    # Depending on the app target makes xcodegen wire TEST_HOST + BUNDLE_LOADER.
+    dependencies:
+      - target: WatchtowerMobile
+      - package: WatchtowerKit
+        product: WatchtowerKit
+      - package: GRDB
+        product: GRDB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobileTests
+        SWIFT_VERSION: "5.10"
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  WatchtowerMobile:
+    build:
+      targets:
+        WatchtowerMobile: all
+        WatchtowerMobileTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - WatchtowerMobileTests
+    archive:
+      config: Release

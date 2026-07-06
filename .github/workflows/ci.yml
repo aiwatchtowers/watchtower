@@ -102,6 +102,47 @@ jobs:
       - name: Test
         run: swift test
 
+  mobile-build:
+    name: WatchtowerMobile Build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # xcodegen is NOT needed: the .xcodeproj is committed (generated from
+      # WatchtowerMobile/project.yml, the source of truth).
+      - name: Build
+        run: >
+          xcodebuild build
+          -project WatchtowerMobile/WatchtowerMobile.xcodeproj
+          -scheme WatchtowerMobile
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
+
+      # Runtime smoke tests (WatchtowerMobileTests) — a `build` cannot catch the
+      # ValueObservation reentrancy class of bug that crashed the tabs on-device
+      # in Task 5; only running on a booted simulator does. The device name
+      # varies by runner image (the macos-15 image's default Xcode ships iPhone
+      # 16-class sims; our local box runs iPhone 17 Pro under Xcode 26), so we
+      # pick the first AVAILABLE iPhone simulator at runtime and target OS=latest
+      # rather than hardcoding a name that may not exist on the runner.
+      - name: Test (simulator)
+        run: |
+          # `|| true` keeps set -e from aborting inside the substitution when
+          # grep matches nothing — control must reach the guard below so the
+          # no-simulator diagnostic actually prints. The name filter demands
+          # a numbered iPhone ("iPhone 16", "iPhone 17 Pro"), skipping SE-class
+          # names whose parenthetical suffix would truncate to an unmatchable
+          # destination.
+          DEVICE=$(xcrun simctl list devices available \
+            | grep -E 'iPhone [0-9]+' | head -1 | sed -E 's/^ *//; s/ \(.*//' || true)
+          echo "Selected simulator: ${DEVICE:-<none found>}"
+          test -n "$DEVICE" || { echo "No iPhone simulator available on this runner"; exit 1; }
+          xcodebuild test \
+            -project WatchtowerMobile/WatchtowerMobile.xcodeproj \
+            -scheme WatchtowerMobile \
+            -destination "platform=iOS Simulator,OS=latest,name=$DEVICE" \
+            CODE_SIGNING_ALLOWED=NO
+
   sentrux-quality:
     name: Sentrux Quality Gate
     runs-on: ubuntu-latest

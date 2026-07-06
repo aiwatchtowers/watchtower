@@ -1,0 +1,550 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */; };
+		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
+		305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916C33BA22DB5ABF55F50EBC /* InboxView.swift */; };
+		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
+		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
+		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
+		6E7B3F11235C858E711FE47D /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
+		8AD90C1BCCC80D111A2E59E9 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53EEE394524E80319F081C9E /* TodayView.swift */; };
+		D403FD362502AA5DC04AEDCE /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3240E546D853A416356E32D1 /* SettingsView.swift */; };
+		DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */; };
+		E93CAF336D1C1CB6ED76A4C5 /* TracksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0FBB330E7F18A51BAED059F /* TracksView.swift */; };
+		ECBCFA171FBB2757D78073D8 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
+		EE5E4DA751DE6531DB4EB8F9 /* ReplicaObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */; };
+		F4FDFE8B73AAC6038E75BC76 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF609973C6F27C56B9BD9A9 /* TasksView.swift */; };
+		FB8013BC2F645E939B2A0E44 /* SyncStatusFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0D2129829244B8B949C65D /* SyncStatusFooter.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A897B56BFE07E2FD325D2469 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9B1FFF752C81D22007C233AF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 29B2C64EE70EB083FCF14A74;
+			remoteInfo = WatchtowerMobile;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		3240E546D853A416356E32D1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		3D6F6F3D895505750B9F5892 /* DemoSeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSeed.swift; sourceTree = "<group>"; };
+		53EEE394524E80319F081C9E /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
+		5DF609973C6F27C56B9BD9A9 /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
+		916C33BA22DB5ABF55F50EBC /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
+		ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaWiringTests.swift; sourceTree = "<group>"; };
+		B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaObserver.swift; sourceTree = "<group>"; };
+		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
+		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DD0D2129829244B8B949C65D /* SyncStatusFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStatusFooter.swift; sourceTree = "<group>"; };
+		DD5811CC2EAE68324393DCDB /* WatchtowerKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WatchtowerKit; path = ../WatchtowerKit; sourceTree = SOURCE_ROOT; };
+		E0FBB330E7F18A51BAED059F /* TracksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TracksView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1B17DC0E1441EED4BDB46F01 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */,
+				ECBCFA171FBB2757D78073D8 /* GRDB in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6CA16831CFAAB8D1129DBF29 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */,
+				6E7B3F11235C858E711FE47D /* GRDB in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		07F497CE33EEF4C1704BA787 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				B49576F65C5F65C311E0CAD8 /* App */,
+				2718DF123EBA6E28C9F67E4A /* Components */,
+				CAACBBFD9417C7BE0E2A7C31 /* Features */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		1C5ACBF8CC271AA4653F3151 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		2718DF123EBA6E28C9F67E4A /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				DD0D2129829244B8B949C65D /* SyncStatusFooter.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		4BBAEC9D313266F0A1986AE4 = {
+			isa = PBXGroup;
+			children = (
+				B20270D5970103A55888D3C5 /* Packages */,
+				07F497CE33EEF4C1704BA787 /* Sources */,
+				1C5ACBF8CC271AA4653F3151 /* Tests */,
+				802B65C47F0038840E7CBA70 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		802B65C47F0038840E7CBA70 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */,
+				D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B20270D5970103A55888D3C5 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				DD5811CC2EAE68324393DCDB /* WatchtowerKit */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		B49576F65C5F65C311E0CAD8 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */,
+				3D6F6F3D895505750B9F5892 /* DemoSeed.swift */,
+				B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */,
+				B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		CAACBBFD9417C7BE0E2A7C31 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				916C33BA22DB5ABF55F50EBC /* InboxView.swift */,
+				3240E546D853A416356E32D1 /* SettingsView.swift */,
+				5DF609973C6F27C56B9BD9A9 /* TasksView.swift */,
+				53EEE394524E80319F081C9E /* TodayView.swift */,
+				E0FBB330E7F18A51BAED059F /* TracksView.swift */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		29B2C64EE70EB083FCF14A74 /* WatchtowerMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F82D44D2B8EEB447D73215A3 /* Build configuration list for PBXNativeTarget "WatchtowerMobile" */;
+			buildPhases = (
+				7F524EA75B34C1BED76F0C7E /* Sources */,
+				6CA16831CFAAB8D1129DBF29 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WatchtowerMobile;
+			packageProductDependencies = (
+				507F22E0F36461C091AD6154 /* WatchtowerKit */,
+				73828104AEDF42B7DD8514E7 /* GRDB */,
+			);
+			productName = WatchtowerMobile;
+			productReference = D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+		36F4F1051A4270361351E3CC /* WatchtowerMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB6216661A8BDDC36764147C /* Build configuration list for PBXNativeTarget "WatchtowerMobileTests" */;
+			buildPhases = (
+				C6ECA671E3B5ADAB3DA8541A /* Sources */,
+				1B17DC0E1441EED4BDB46F01 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				67B6518D5AD18ECF1FD61564 /* PBXTargetDependency */,
+			);
+			name = WatchtowerMobileTests;
+			packageProductDependencies = (
+				EB447CB107767855A2DBBA0F /* WatchtowerKit */,
+				5CF9E51BB968298C0AAB2FD5 /* GRDB */,
+			);
+			productName = WatchtowerMobileTests;
+			productReference = D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		9B1FFF752C81D22007C233AF /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 267BDAF21673B9EE2DA899C6 /* Build configuration list for PBXProject "WatchtowerMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 4BBAEC9D313266F0A1986AE4;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 802B65C47F0038840E7CBA70 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				29B2C64EE70EB083FCF14A74 /* WatchtowerMobile */,
+				36F4F1051A4270361351E3CC /* WatchtowerMobileTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7F524EA75B34C1BED76F0C7E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */,
+				4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */,
+				305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */,
+				EE5E4DA751DE6531DB4EB8F9 /* ReplicaObserver.swift in Sources */,
+				D403FD362502AA5DC04AEDCE /* SettingsView.swift in Sources */,
+				FB8013BC2F645E939B2A0E44 /* SyncStatusFooter.swift in Sources */,
+				F4FDFE8B73AAC6038E75BC76 /* TasksView.swift in Sources */,
+				8AD90C1BCCC80D111A2E59E9 /* TodayView.swift in Sources */,
+				E93CAF336D1C1CB6ED76A4C5 /* TracksView.swift in Sources */,
+				DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C6ECA671E3B5ADAB3DA8541A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		67B6518D5AD18ECF1FD61564 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 29B2C64EE70EB083FCF14A74 /* WatchtowerMobile */;
+			targetProxy = A897B56BFE07E2FD325D2469 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		181F4452963DE83A9ADF763C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.10;
+			};
+			name = Debug;
+		};
+		308DDF52E71653EC48B6FA86 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobileTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WatchtowerMobile.app/WatchtowerMobile";
+			};
+			name = Release;
+		};
+		4EF2760F7B56A6AB4616BFF7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobileTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WatchtowerMobile.app/WatchtowerMobile";
+			};
+			name = Debug;
+		};
+		7801978A3183BC2FAFE1DE8F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobile;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		ADEAA2E526189D76891FF69D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.10;
+			};
+			name = Release;
+		};
+		BA06701CDEF8F3D4AF6E9C65 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobile;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		267BDAF21673B9EE2DA899C6 /* Build configuration list for PBXProject "WatchtowerMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				181F4452963DE83A9ADF763C /* Debug */,
+				ADEAA2E526189D76891FF69D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AB6216661A8BDDC36764147C /* Build configuration list for PBXNativeTarget "WatchtowerMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4EF2760F7B56A6AB4616BFF7 /* Debug */,
+				308DDF52E71653EC48B6FA86 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F82D44D2B8EEB447D73215A3 /* Build configuration list for PBXNativeTarget "WatchtowerMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BA06701CDEF8F3D4AF6E9C65 /* Debug */,
+				7801978A3183BC2FAFE1DE8F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../WatchtowerKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		507F22E0F36461C091AD6154 /* WatchtowerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerKit;
+		};
+		5CF9E51BB968298C0AAB2FD5 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		73828104AEDF42B7DD8514E7 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		EB447CB107767855A2DBBA0F /* WatchtowerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 9B1FFF752C81D22007C233AF /* Project object */;
+}
