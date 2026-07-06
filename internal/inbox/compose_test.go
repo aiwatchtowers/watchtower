@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"testing"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -228,6 +229,59 @@ func TestCompose_AutoClosePreStep(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "done", s.Status)
 	assert.Equal(t, "signals_resolved", s.ResolvedReason)
+}
+
+// TestDash02_PartialApplyRollsBackEverything pins DASH-02's all-or-nothing
+// contract at the point where it was previously violated: a genuine DB error
+// partway through the apply loop, after at least one earlier op has already
+// written to the DB. Before the fix, applyComposeOps ran each op as its own
+// auto-committed write, so the first "create" would survive even though the
+// second failed — leaving a half-composed pass (a persisted situation, plus
+// signals/watermark still frozen because the failure happened before
+// MarkSignalsComposed/SetComposeLastRunTS). applyComposeAndAdvance now wraps
+// the whole block in one transaction, so nothing from a failed pass survives.
+//
+// The second op's signal id (99999) is a fabricated entry in validSigIDs that
+// doesn't correspond to a real inbox_items row — real compose cycles can
+// never construct such a map (validSigIDs is always built from rows that were
+// actually fetched), but injecting it here is the deterministic way to force
+// a genuine DB-layer failure (a foreign key violation on situation_signals)
+// partway through the loop, exactly where an arbitrary DB error would land
+// in production.
+func TestDash02_PartialApplyRollsBackEverything(t *testing.T) {
+	d, _, _ := newComposePipeline(t)
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "1.1", "U2", "real signal")
+	sig1 := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "real signal"})
+
+	baselineID, err := d.CreateSituation(db.DashboardSituation{Title: "pre-existing baseline", Kind: "external", Priority: "medium", Rank: 0.3})
+	require.NoError(t, err)
+
+	ops := []composeOp{
+		{Op: "create", Title: "first op succeeds in-tx", Kind: "external", Priority: "high", Rank: 0.7, Reason: "x",
+			Signals: []string{"sig:" + strconv.FormatInt(sig1, 10)}},
+		{Op: "create", Title: "second op fails mid-apply", Kind: "external", Priority: "medium", Rank: 0.5, Reason: "y",
+			Signals: []string{"sig:99999"}}, // 99999: fabricated, no backing inbox_items row (see doc comment above)
+	}
+	validSigIDs := map[int]bool{int(sig1): true, 99999: true}
+	openByID := map[int]db.DashboardSituation{}
+	allIDs := []int{int(sig1)}
+
+	_, _, err = applyComposeAndAdvance(d, ops, validSigIDs, openByID, allIDs, float64(time.Now().Unix()))
+	require.Error(t, err, "the fabricated FK violation on the second op must surface as a genuine DB error")
+
+	open, err := d.ListOpenSituations()
+	require.NoError(t, err)
+	require.Len(t, open, 1, "only the pre-existing baseline situation must remain — neither op's situation may survive")
+	assert.Equal(t, int(baselineID), open[0].ID)
+
+	it, err := d.GetInboxItem(sig1)
+	require.NoError(t, err)
+	assert.Empty(t, it.ComposedAt, "the real signal must not be marked composed after a rolled-back pass")
+
+	ts, err := d.GetComposeLastRunTS()
+	require.NoError(t, err)
+	assert.Equal(t, 0.0, ts, "the watermark must stay frozen after a rolled-back pass")
 }
 
 func TestCompose_MutedSignalsExcludedButMarked(t *testing.T) {

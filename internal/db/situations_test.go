@@ -138,6 +138,41 @@ func TestListTargetsUpdatedSince_ActiveOnly(t *testing.T) {
 	require.Equal(t, int(activeAfterID), targets[0].ID)
 }
 
+// TestListTargetsUpdatedSince_ExcludesJustConvertedTarget pins the fix for a
+// duplication bug: converting a situation into a target bumps the target's
+// own updated_at, so without this exclusion the very next compose cycle
+// would pick the freshly-converted target back up and spawn a target_update
+// situation about the target's own creation. The exclusion only holds while
+// the owning situation's updated_at is itself within the query window — once
+// the compose watermark advances past the conversion moment (simulated here
+// by backdating the situation), a later, genuine update to the target
+// surfaces normally again.
+func TestListTargetsUpdatedSince_ExcludesJustConvertedTarget(t *testing.T) {
+	d := openTestDB(t)
+	ts := "2020-01-01T00:00:00Z"
+
+	targetID, err := d.CreateTarget(Target{Text: "converted target", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	situationID, err := d.CreateSituation(DashboardSituation{Title: "convert me"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.MarkSituationConverted(int(situationID), int(targetID), 0))
+
+	targets, err := d.ListTargetsUpdatedSince(ts)
+	require.NoError(t, err)
+	require.Empty(t, targets, "just-converted target must not surface as its own target_update")
+
+	// Backdate the situation's updated_at to before the watermark, simulating
+	// the compose cycle having already moved past the conversion moment.
+	_, err = d.Exec(`UPDATE situations SET updated_at = ? WHERE id = ?`, "2019-01-01T00:00:00Z", situationID)
+	require.NoError(t, err)
+
+	targets, err = d.ListTargetsUpdatedSince(ts)
+	require.NoError(t, err)
+	require.Len(t, targets, 1, "a later real update to the target must surface once the conversion ages out of the window")
+	require.Equal(t, int(targetID), targets[0].ID)
+}
+
 func TestSituationCardLifecycle(t *testing.T) {
 	d := openTestDB(t)
 	id, err := d.CreateSituation(DashboardSituation{Title: "needs card"})

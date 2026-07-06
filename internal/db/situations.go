@@ -1,9 +1,20 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
+
+// situationsExecer is the subset of *sql.DB / *sql.Tx used by the situation
+// mutation helpers below, so the same statement logic can run auto-committed
+// against the pool (the existing single-call methods) or as part of a
+// caller-supplied transaction (the compose apply loop in internal/inbox,
+// which needs the whole post-parse mutation block to commit atomically —
+// DASH-02).
+type situationsExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
 
 // situationSelectCols is the standard SELECT column list for situations.
 const situationSelectCols = `id, title, kind, status, snooze_until, priority, rank,
@@ -27,6 +38,17 @@ func scanSituation(row interface{ Scan(...any) error }) (*DashboardSituation, er
 
 // CreateSituation inserts a new situation and returns its ID.
 func (db *DB) CreateSituation(s DashboardSituation) (int64, error) {
+	return createSituationOn(db, s)
+}
+
+// CreateSituationTx is the transactional variant of CreateSituation, for
+// callers (the compose apply loop) that need it to commit atomically with
+// other mutations from the same pass.
+func (db *DB) CreateSituationTx(tx *sql.Tx, s DashboardSituation) (int64, error) {
+	return createSituationOn(tx, s)
+}
+
+func createSituationOn(q situationsExecer, s DashboardSituation) (int64, error) {
 	if s.Status == "" {
 		s.Status = "open"
 	}
@@ -40,7 +62,7 @@ func (db *DB) CreateSituation(s DashboardSituation) (int64, error) {
 		s.CardStatus = "none"
 	}
 	now := "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
-	res, err := db.Exec(`INSERT INTO situations (title, kind, status, priority, rank, ai_reason,
+	res, err := q.Exec(`INSERT INTO situations (title, kind, status, priority, rank, ai_reason,
 		summary, why_matters, chronology, card_status, target_id, track_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+now+`, `+now+`)`,
 		s.Title, s.Kind, s.Status, s.Priority, s.Rank, s.AIReason,
@@ -95,20 +117,37 @@ func (db *DB) AddSituationSignals(situationID int, inboxItemIDs []int) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	if err := addSituationSignalsOn(tx, situationID, inboxItemIDs); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing situation signals: %w", err)
+	}
+	return nil
+}
+
+// AddSituationSignalsTx is the transactional variant of AddSituationSignals,
+// for callers (the compose apply loop) that already hold an open tx spanning
+// multiple mutations from the same pass.
+func (db *DB) AddSituationSignalsTx(tx *sql.Tx, situationID int, inboxItemIDs []int) error {
+	return addSituationSignalsOn(tx, situationID, inboxItemIDs)
+}
+
+func addSituationSignalsOn(q situationsExecer, situationID int, inboxItemIDs []int) error {
+	if len(inboxItemIDs) == 0 {
+		return nil
+	}
 	for _, itemID := range inboxItemIDs {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO situation_signals (situation_id, inbox_item_id) VALUES (?, ?)`,
+		if _, err := q.Exec(`INSERT OR IGNORE INTO situation_signals (situation_id, inbox_item_id) VALUES (?, ?)`,
 			situationID, itemID); err != nil {
 			return fmt.Errorf("adding signal %d to situation %d: %w", itemID, situationID, err)
 		}
 	}
-	if _, err := tx.Exec(`UPDATE situations SET
+	if _, err := q.Exec(`UPDATE situations SET
 		last_signal_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ?`, situationID); err != nil {
 		return fmt.Errorf("touching situation %d: %w", situationID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing situation signals: %w", err)
 	}
 	return nil
 }
@@ -148,11 +187,22 @@ func (db *DB) ListUncomposedSignals(limit int) ([]InboxItem, error) {
 // MarkSignalsComposed sets composed_at on the given inbox items so the
 // composer doesn't reprocess them on the next run.
 func (db *DB) MarkSignalsComposed(ids []int) error {
+	return markSignalsComposedOn(db, ids)
+}
+
+// MarkSignalsComposedTx is the transactional variant of MarkSignalsComposed,
+// for callers (the compose apply loop) that need it to commit atomically
+// with the rest of that pass's mutations.
+func (db *DB) MarkSignalsComposedTx(tx *sql.Tx, ids []int) error {
+	return markSignalsComposedOn(tx, ids)
+}
+
+func markSignalsComposedOn(q situationsExecer, ids []int) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	args := append([]any{}, intArgs(ids)...)
-	_, err := db.Exec(`UPDATE inbox_items SET composed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+	_, err := q.Exec(`UPDATE inbox_items SET composed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id IN (`+placeholders(len(ids))+`)`, args...)
 	if err != nil {
 		return fmt.Errorf("marking signals composed: %w", err)
@@ -186,11 +236,23 @@ func (db *DB) ListTrackEventsSince(ts string) ([]TrackEvent, error) {
 }
 
 // ListTargetsUpdatedSince returns active targets (todo|in_progress|blocked|snoozed)
-// whose updated_at is strictly after ts (ISO8601 string compare).
+// whose updated_at is strictly after ts (ISO8601 string compare), excluding
+// targets that are the conversion product of a situation converted within
+// the same window. Creating a target from a situation bumps the target's
+// updated_at, but that creation is not "subsequent activity" on the target —
+// composing it right back into a target_update situation about its own birth
+// would read as duplication. A later, genuine update to the target still
+// surfaces normally, because the owning situation's updated_at doesn't move
+// again after the conversion.
 func (db *DB) ListTargetsUpdatedSince(ts string) ([]Target, error) {
-	rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets
-		WHERE status IN ('todo','in_progress','blocked','snoozed') AND updated_at > ?
-		ORDER BY updated_at ASC`, ts)
+	rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets t
+		WHERE t.status IN ('todo','in_progress','blocked','snoozed') AND t.updated_at > ?
+		  AND t.id NOT IN (
+		      SELECT converted_target_id FROM situations
+		      WHERE status = 'converted' AND converted_target_id IS NOT NULL
+		        AND updated_at > ?
+		  )
+		ORDER BY t.updated_at ASC`, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("listing targets updated since %q: %w", ts, err)
 	}
@@ -211,7 +273,18 @@ func (db *DB) ListTargetsUpdatedSince(ts string) ([]Target, error) {
 
 // UpdateSituationRank updates a situation's ranking score, priority, and AI reason.
 func (db *DB) UpdateSituationRank(id int, rank float64, priority, reason string) error {
-	_, err := db.Exec(`UPDATE situations SET rank = ?, priority = ?, ai_reason = ?,
+	return updateSituationRankOn(db, id, rank, priority, reason)
+}
+
+// UpdateSituationRankTx is the transactional variant of UpdateSituationRank,
+// for callers (the compose apply loop) that need it to commit atomically
+// with the rest of that pass's mutations.
+func (db *DB) UpdateSituationRankTx(tx *sql.Tx, id int, rank float64, priority, reason string) error {
+	return updateSituationRankOn(tx, id, rank, priority, reason)
+}
+
+func updateSituationRankOn(q situationsExecer, id int, rank float64, priority, reason string) error {
+	_, err := q.Exec(`UPDATE situations SET rank = ?, priority = ?, ai_reason = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, rank, priority, reason, id)
 	if err != nil {
 		return fmt.Errorf("updating situation %d rank: %w", id, err)
@@ -244,7 +317,18 @@ func (db *DB) MarkSituationCardFailed(id int) error {
 // ResetSituationCard resets card_status to 'none', e.g. when a situation is
 // merged with new signals and needs its card regenerated.
 func (db *DB) ResetSituationCard(id int) error {
-	_, err := db.Exec(`UPDATE situations SET card_status = 'none',
+	return resetSituationCardOn(db, id)
+}
+
+// ResetSituationCardTx is the transactional variant of ResetSituationCard,
+// for callers (the compose apply loop) that need it to commit atomically
+// with the rest of that pass's mutations.
+func (db *DB) ResetSituationCardTx(tx *sql.Tx, id int) error {
+	return resetSituationCardOn(tx, id)
+}
+
+func resetSituationCardOn(q situationsExecer, id int) error {
+	_, err := q.Exec(`UPDATE situations SET card_status = 'none',
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("resetting situation %d card: %w", id, err)

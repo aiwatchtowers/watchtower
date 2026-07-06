@@ -108,7 +108,18 @@ func (db *DB) GetComposeLastRunTS() (float64, error) {
 
 // SetComposeLastRunTS updates the last processed timestamp for the situation composer.
 func (db *DB) SetComposeLastRunTS(ts float64) error {
-	_, err := db.Exec(`UPDATE workspace SET compose_last_run_ts = ?`, ts)
+	return setComposeLastRunTSOn(db, ts)
+}
+
+// SetComposeLastRunTSTx is the transactional variant of SetComposeLastRunTS,
+// for callers (the compose apply loop) that need the watermark advance to
+// commit atomically with the rest of that pass's mutations (DASH-02).
+func (db *DB) SetComposeLastRunTSTx(tx *sql.Tx, ts float64) error {
+	return setComposeLastRunTSOn(tx, ts)
+}
+
+func setComposeLastRunTSOn(q situationsExecer, ts float64) error {
+	_, err := q.Exec(`UPDATE workspace SET compose_last_run_ts = ?`, ts)
 	if err != nil {
 		return fmt.Errorf("setting compose last run ts: %w", err)
 	}

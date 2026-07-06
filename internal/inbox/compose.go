@@ -2,6 +2,7 @@ package inbox
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -51,7 +52,11 @@ const recentSnippetsPerSituation = 3
 // On success, every signal id sent this cycle (including muted-skipped ones)
 // is marked composed and the watermark advances. On any failure (AI call,
 // parse, or apply), nothing is marked and the watermark stays frozen so the
-// same material is retried next cycle.
+// same material is retried next cycle. The entire post-parse mutation block —
+// applying the AI's ops, marking signals composed, and advancing the
+// watermark — runs as a single transaction (applyComposeAndAdvance), so a
+// DB error partway through an apply can never leave some situations
+// half-persisted while the watermark and signal state disagree (DASH-02).
 func (p *Pipeline) runCompose(ctx context.Context, currentUserID string) (created, merged int, err error) {
 	if _, aerr := p.db.AutoCloseResolvedSituations(); aerr != nil {
 		p.logger.Printf("inbox: compose auto-close error: %v", aerr)
@@ -133,35 +138,62 @@ func (p *Pipeline) runCompose(ctx context.Context, currentUserID string) (create
 		openByID[s.ID] = s
 	}
 
-	created, merged, err = applyComposeOps(p.db, res.Ops, validSigIDs, openByID)
-	if err != nil {
-		return created, merged, err
-	}
-
 	allIDs := make([]int, 0, len(kept)+len(mutedIDs))
 	for _, s := range kept {
 		allIDs = append(allIDs, s.ID)
 	}
 	allIDs = append(allIDs, mutedIDs...)
-	if err := p.db.MarkSignalsComposed(allIDs); err != nil {
-		return created, merged, fmt.Errorf("marking signals composed: %w", err)
-	}
-	if err := p.db.SetComposeLastRunTS(float64(now.Unix())); err != nil {
-		return created, merged, fmt.Errorf("advancing compose watermark: %w", err)
+
+	created, merged, err = applyComposeAndAdvance(p.db, res.Ops, validSigIDs, openByID, allIDs, float64(now.Unix()))
+	if err != nil {
+		// The whole pass rolled back — nothing was created/merged/marked/
+		// advanced, regardless of how far the loop got before the error.
+		return 0, 0, err
 	}
 	return created, merged, nil
 }
 
-// applyComposeOps applies each op returned by the AI. Ops referencing a
-// situation id that isn't open (hallucinated, or since resolved) are skipped
-// silently; "sig:" signal keys not among validSigIDs (hallucinated) are
-// dropped from membership without failing the op. Only a genuine DB error
-// aborts the loop.
-func applyComposeOps(database *db.DB, ops []composeOp, validSigIDs map[int]bool, openByID map[int]db.DashboardSituation) (created, merged int, err error) {
+// applyComposeAndAdvance runs the entire post-parse mutation block for one
+// compose cycle — applying the AI's ops, marking this cycle's signals
+// composed, and advancing the compose watermark — as a single transaction.
+// A genuine DB error at any point (a bad op, or the mark/advance writes)
+// rolls back every mutation from this pass: no situation is left
+// half-created, no signal is marked composed, and the watermark stays frozen
+// (DASH-02).
+func applyComposeAndAdvance(database *db.DB, ops []composeOp, validSigIDs map[int]bool,
+	openByID map[int]db.DashboardSituation, allIDs []int, nowUnix float64) (created, merged int, err error) {
+	tx, err := database.Begin()
+	if err != nil {
+		return 0, 0, fmt.Errorf("beginning compose apply tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	created, merged, err = applyComposeOps(database, tx, ops, validSigIDs, openByID)
+	if err != nil {
+		return created, merged, err
+	}
+	if err := database.MarkSignalsComposedTx(tx, allIDs); err != nil {
+		return created, merged, fmt.Errorf("marking signals composed: %w", err)
+	}
+	if err := database.SetComposeLastRunTSTx(tx, nowUnix); err != nil {
+		return created, merged, fmt.Errorf("advancing compose watermark: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return created, merged, fmt.Errorf("committing compose apply: %w", err)
+	}
+	return created, merged, nil
+}
+
+// applyComposeOps applies each op returned by the AI within tx. Ops
+// referencing a situation id that isn't open (hallucinated, or since
+// resolved) are skipped silently; "sig:" signal keys not among validSigIDs
+// (hallucinated) are dropped from membership without failing the op. Only a
+// genuine DB error aborts the loop.
+func applyComposeOps(database *db.DB, tx *sql.Tx, ops []composeOp, validSigIDs map[int]bool, openByID map[int]db.DashboardSituation) (created, merged int, err error) {
 	for _, op := range ops {
 		switch op.Op {
 		case "create":
-			id, cerr := database.CreateSituation(db.DashboardSituation{
+			id, cerr := database.CreateSituationTx(tx, db.DashboardSituation{
 				Title:    op.Title,
 				Kind:     normalizeSituationKind(op.Kind),
 				Priority: normalizeSituationPriority(op.Priority),
@@ -174,7 +206,7 @@ func applyComposeOps(database *db.DB, ops []composeOp, validSigIDs map[int]bool,
 				return created, merged, fmt.Errorf("creating situation %q: %w", op.Title, cerr)
 			}
 			if memberIDs := signalMemberIDs(op.Signals, validSigIDs); len(memberIDs) > 0 {
-				if aerr := database.AddSituationSignals(int(id), memberIDs); aerr != nil {
+				if aerr := database.AddSituationSignalsTx(tx, int(id), memberIDs); aerr != nil {
 					return created, merged, fmt.Errorf("attaching signals to situation %d: %w", id, aerr)
 				}
 			}
@@ -186,15 +218,15 @@ func applyComposeOps(database *db.DB, ops []composeOp, validSigIDs map[int]bool,
 				continue // hallucinated situation id, or not open — skip
 			}
 			if memberIDs := signalMemberIDs(op.Signals, validSigIDs); len(memberIDs) > 0 {
-				if aerr := database.AddSituationSignals(sit.ID, memberIDs); aerr != nil {
+				if aerr := database.AddSituationSignalsTx(tx, sit.ID, memberIDs); aerr != nil {
 					return created, merged, fmt.Errorf("merging signals into situation %d: %w", sit.ID, aerr)
 				}
 			}
-			if rerr := database.ResetSituationCard(sit.ID); rerr != nil {
+			if rerr := database.ResetSituationCardTx(tx, sit.ID); rerr != nil {
 				return created, merged, fmt.Errorf("resetting card for situation %d: %w", sit.ID, rerr)
 			}
 			if op.Rerank > 0 || op.Reason != "" {
-				if uerr := rerankSituation(database, sit, op.Rerank, op.Priority, op.Reason); uerr != nil {
+				if uerr := rerankSituation(database, tx, sit, op.Rerank, op.Priority, op.Reason); uerr != nil {
 					return created, merged, uerr
 				}
 			}
@@ -205,7 +237,7 @@ func applyComposeOps(database *db.DB, ops []composeOp, validSigIDs map[int]bool,
 			if !ok {
 				continue // hallucinated situation id, or not open — skip
 			}
-			if uerr := rerankSituation(database, sit, op.Rank, op.Priority, op.Reason); uerr != nil {
+			if uerr := rerankSituation(database, tx, sit, op.Rank, op.Priority, op.Reason); uerr != nil {
 				return created, merged, uerr
 			}
 		}
@@ -215,7 +247,7 @@ func applyComposeOps(database *db.DB, ops []composeOp, validSigIDs map[int]bool,
 
 // rerankSituation updates a situation's rank/priority/reason, falling back to
 // the situation's current value for any field the op left blank/zero.
-func rerankSituation(database *db.DB, sit db.DashboardSituation, rank float64, priority, reason string) error {
+func rerankSituation(database *db.DB, tx *sql.Tx, sit db.DashboardSituation, rank float64, priority, reason string) error {
 	if rank <= 0 {
 		rank = sit.Rank
 	}
@@ -226,7 +258,7 @@ func rerankSituation(database *db.DB, sit db.DashboardSituation, rank float64, p
 	if reason == "" {
 		reason = sit.AIReason
 	}
-	if err := database.UpdateSituationRank(sit.ID, clampRank(rank), prio, reason); err != nil {
+	if err := database.UpdateSituationRankTx(tx, sit.ID, clampRank(rank), prio, reason); err != nil {
 		return fmt.Errorf("reranking situation %d: %w", sit.ID, err)
 	}
 	return nil
