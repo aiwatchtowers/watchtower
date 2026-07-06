@@ -14,8 +14,11 @@ final class RelayProcessor: Sendable {
     private let dbPool: DatabasePool
     private let transport: any CloudSyncTransport & Sendable
     private let sidecar: HubSyncState
-    /// Unused until Task 7 wires chat handling; stored so the init is stable.
     private let aiService: any AIServiceProtocol
+    /// Main DB path handed to the AI CLI so chat can query it; nil in tests.
+    private let dbPath: String?
+    /// Minimum spacing between non-final chat chunks (pseudo-streaming cadence).
+    private let chunkInterval: Duration
     private let now: @Sendable () -> Date
     private let logger = Logger(subsystem: Constants.bundleID, category: "RelayProcessor")
 
@@ -26,12 +29,16 @@ final class RelayProcessor: Sendable {
         transport: any CloudSyncTransport & Sendable,
         sidecar: HubSyncState,
         aiService: any AIServiceProtocol,
-        now: @escaping @Sendable () -> Date = Date.init
+        dbPath: String? = nil,
+        chunkInterval: Duration = .milliseconds(1500),
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.dbPool = dbPool
         self.transport = transport
         self.sidecar = sidecar
         self.aiService = aiService
+        self.dbPath = dbPath
+        self.chunkInterval = chunkInterval
         self.now = now
     }
 
@@ -40,47 +47,139 @@ final class RelayProcessor: Sendable {
     /// One poll cycle over the relay zone. Returns the number of actions applied.
     /// One bad action (missing entity, unknown id, unparseable date, …) becomes
     /// a `.failed` status record and never stops the rest of the batch.
+    /// Chat messages are relayed to the AI service and answered as chunk
+    /// records; they never count toward the returned total.
     func processOnce() async throws -> Int {
         let token = try storedToken()
         let batch = try await transport.changes(in: .relay, since: token)
         var applied = 0
 
-        for record in batch.changed where record.kind == RelayRecordKind.action.rawValue {
-            let action: ActionRequestPayload
-            do {
-                action = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
-            } catch {
-                // No decodable id → no status record to write back; log and move on.
-                logger.warning("""
-                    undecodable action record \(record.recordName, privacy: .public): \
-                    \(error.localizedDescription, privacy: .public)
-                    """)
+        for record in batch.changed {
+            switch record.kind {
+            case RelayRecordKind.action.rawValue:
+                if try await processAction(record) { applied += 1 }
+            case RelayRecordKind.chatMessage.rawValue:
+                try await processChatMessage(record)
+            default:
+                // Our own write-backs (chat chunks) and future kinds pass through.
                 continue
             }
-            // Echo of our own status write-back (same recordName, applied/failed).
-            guard action.status == .pending else { continue }
-            // Duplicate delivery of an already-applied action (spec Section 4).
-            guard try !sidecar.isRelayProcessed(record.recordName) else { continue }
-
-            var result = action
-            do {
-                try await dbPool.write { [self] db in try apply(action, db: db) }
-                result.status = .applied
-                applied += 1
-            } catch {
-                result.status = .failed
-                result.errorMessage = error.localizedDescription
-                logger.warning("""
-                    action \(record.recordName, privacy: .public) failed: \
-                    \(error.localizedDescription, privacy: .public)
-                    """)
-            }
-            try await transport.save([CloudRecordFactory.record(for: result, modifiedAt: now())])
-            try sidecar.markRelayProcessed(record.recordName, at: now())
         }
 
         try persistToken(batch.newToken)
         return applied
+    }
+
+    /// Returns true when the action was applied to the local DB.
+    private func processAction(_ record: CloudRecord) async throws -> Bool {
+        let action: ActionRequestPayload
+        do {
+            action = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
+        } catch {
+            // No decodable id → no status record to write back; log and move on.
+            logger.warning("""
+                undecodable action record \(record.recordName, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            return false
+        }
+        // Echo of our own status write-back (same recordName, applied/failed).
+        guard action.status == .pending else { return false }
+        // Duplicate delivery of an already-applied action (spec Section 4).
+        guard try !sidecar.isRelayProcessed(record.recordName) else { return false }
+
+        var result = action
+        var applied = true
+        do {
+            try await dbPool.write { [self] db in try apply(action, db: db) }
+            result.status = .applied
+        } catch {
+            applied = false
+            result.status = .failed
+            result.errorMessage = error.localizedDescription
+            logger.warning("""
+                action \(record.recordName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+        }
+        try await transport.save([CloudRecordFactory.record(for: result, modifiedAt: now())])
+        try sidecar.markRelayProcessed(record.recordName, at: now())
+        return applied
+    }
+
+    // MARK: - Chat relay
+
+    /// Streams one mobile chat turn through the AI service, publishing the
+    /// response as monotonic chunk records (flushed at most every
+    /// `chunkInterval`). A stream failure becomes the final chunk's text —
+    /// the message is marked processed either way, so there is no retry loop.
+    private func processChatMessage(_ record: CloudRecord) async throws {
+        let message: ChatMessagePayload
+        do {
+            message = try RelayCoder.makeDecoder().decode(ChatMessagePayload.self, from: record.payload)
+        } catch {
+            logger.warning("""
+                undecodable chat message record \(record.recordName, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            return
+        }
+        guard try !sidecar.isRelayProcessed(record.recordName) else { return }
+
+        // First turn of a mobile session has no CLI session yet and needs the
+        // full system prompt; resumed sessions carry their context in the CLI.
+        let cliSessionID = try sidecar.cliSessionID(forMobileSession: message.sessionID)
+        let systemPrompt: String? = cliSessionID == nil ? ChatViewModel.buildSystemPrompt(dbPool: dbPool) : nil
+
+        var seq = 0
+        var pending = ""
+        let clock = ContinuousClock()
+        var lastFlush = clock.now
+
+        func flush(_ text: String, done: Bool) async throws {
+            let chunk = ChatChunkPayload(
+                sessionID: message.sessionID,
+                messageID: message.id,
+                seq: seq,
+                text: text,
+                done: done
+            )
+            seq += 1
+            try await transport.save([try CloudRecordFactory.record(for: chunk, modifiedAt: now())])
+        }
+
+        do {
+            let stream = aiService.stream(
+                prompt: message.text,
+                systemPrompt: systemPrompt,
+                sessionID: cliSessionID,
+                dbPath: dbPath
+            )
+            for try await event in stream {
+                switch event {
+                case .text(let delta):
+                    pending += delta
+                    if lastFlush.duration(to: clock.now) >= chunkInterval, !pending.isEmpty {
+                        try await flush(pending, done: false)
+                        pending = ""
+                        lastFlush = clock.now
+                    }
+                case .sessionID(let id):
+                    // Persist immediately: a crash mid-stream must not orphan the session.
+                    try sidecar.setCLISessionID(id, forMobileSession: message.sessionID)
+                case .turnComplete, .done:
+                    break
+                }
+            }
+            try await flush(pending, done: true)
+        } catch {
+            logger.warning("""
+                chat message \(record.recordName, privacy: .public) stream failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            try await flush("⚠️ " + error.localizedDescription, done: true)
+        }
+        try sidecar.markRelayProcessed(record.recordName, at: now())
     }
 
     // MARK: - Action → Query mapping

@@ -37,6 +37,10 @@ final class HubSyncState: Sendable {
                     record_name TEXT PRIMARY KEY,
                     processed_at REAL NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    mobile_session_id TEXT PRIMARY KEY,
+                    cli_session_id TEXT
+                );
                 """)
         }
     }
@@ -99,6 +103,30 @@ final class HubSyncState: Sendable {
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value
                     """,
                 arguments: [key, value]
+            )
+        }
+    }
+
+    // MARK: - Chat session mapping (mobile session → CLI session)
+
+    func cliSessionID(forMobileSession mobileSessionID: String) throws -> String? {
+        try queue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT cli_session_id FROM chat_sessions WHERE mobile_session_id = ?",
+                arguments: [mobileSessionID]
+            )
+        }
+    }
+
+    func setCLISessionID(_ cliSessionID: String, forMobileSession mobileSessionID: String) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO chat_sessions (mobile_session_id, cli_session_id) VALUES (?, ?)
+                    ON CONFLICT(mobile_session_id) DO UPDATE SET cli_session_id = excluded.cli_session_id
+                    """,
+                arguments: [mobileSessionID, cliSessionID]
             )
         }
     }
