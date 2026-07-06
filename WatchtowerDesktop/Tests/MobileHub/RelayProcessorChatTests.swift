@@ -26,14 +26,16 @@ final class RelayProcessorChatTests: XCTestCase {
 
     private func makeProcessor(
         aiService: any AIServiceProtocol,
-        chunkInterval: Duration = .milliseconds(10)
+        chunkInterval: Duration = .milliseconds(10),
+        streamTimeout: Duration = .seconds(300)
     ) -> RelayProcessor {
         RelayProcessor(
             dbPool: dbPool,
             transport: transport,
             sidecar: sidecar,
             aiService: aiService,
-            chunkInterval: chunkInterval
+            chunkInterval: chunkInterval,
+            streamTimeout: streamTimeout
         )
     }
 
@@ -141,5 +143,37 @@ final class RelayProcessorChatTests: XCTestCase {
         _ = try await processor.processOnce()
         let after = try await self.chunks(messageID: "m1")
         XCTAssertEqual(after.count, 1)
+    }
+
+    func testHungStreamTimesOutEmitsErrorChunkAndMarksProcessed() async throws {
+        let processor = makeProcessor(
+            aiService: HungAIService(),
+            streamTimeout: .milliseconds(100)
+        )
+        let recordName = try await enqueueChat(id: "m1", sessionID: "s1")
+
+        _ = try await processor.processOnce()
+
+        let chunks = try await chunks(messageID: "m1")
+        XCTAssertEqual(chunks.count, 1, "a hung stream must produce exactly the error-path final chunk")
+        XCTAssertEqual(chunks.first?.done, true)
+        XCTAssertEqual(chunks.first?.text, "⚠️ chat stream timed out")
+        XCTAssertTrue(try sidecar.isRelayProcessed(recordName), "timed-out chat must still be marked processed")
+    }
+}
+
+/// A stream that never yields and never finishes — a wedged CLI stand-in.
+/// Task cancellation terminates the stream (AsyncThrowingStream honors it),
+/// which is exactly what the processor's watchdog must trigger.
+private final class HungAIService: AIServiceProtocol {
+    func stream(
+        prompt: String,
+        systemPrompt: String?,
+        sessionID: String?,
+        dbPath: String?,
+        model: String?,
+        extraAllowedTools: [String]
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { _ in }
     }
 }

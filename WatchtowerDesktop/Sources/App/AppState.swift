@@ -71,6 +71,10 @@ final class AppState {
     /// Watches for new digests and sends notifications.
     private(set) var digestWatcher: DigestWatcher?
 
+    /// Syncs product slices to the iOS app via CloudKit and relays mobile
+    /// actions/chat back. Built lazily when mobile sync is enabled.
+    private(set) var mobileHub: MobileHubService?
+
     /// Manages app updates from GitHub Releases.
     let updateService = UpdateService()
 
@@ -204,6 +208,9 @@ final class AppState {
                 initDayPlan(dbPool: manager.dbPool)
                 initCatchUp(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
+                if UserDefaults.standard.bool(forKey: "mobileSyncEnabled") {
+                    startMobileHub()
+                }
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
                     backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode)
@@ -323,6 +330,51 @@ final class AppState {
 
     private func initCatchUp(dbPool: DatabasePool) {
         catchUpViewModel = CatchUpViewModel(dbPool: dbPool)
+    }
+
+    /// Builds the hub chain on first use (TransportStore → CloudKitTransport →
+    /// HubSyncState → SlicePublisher/RelayProcessor → MobileHubService) and
+    /// starts it. Called from initialize() and from the Settings toggle.
+    func startMobileHub() {
+        guard let manager = databaseManager else { return }
+        if mobileHub == nil {
+            do {
+                mobileHub = try makeMobileHub(dbPool: manager.dbPool)
+            } catch {
+                print("[AppState] mobile hub init failed: \(error.localizedDescription)")
+                return
+            }
+        }
+        guard let hub = mobileHub else { return }
+        Task { await hub.start() }
+    }
+
+    func stopMobileHub() {
+        mobileHub?.stop()
+    }
+
+    private func makeMobileHub(dbPool: DatabasePool) throws -> MobileHubService {
+        let dir = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent("Watchtower/MobileHub", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
+        let transport = CloudKitTransport(store: store)
+        let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
+        let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: transport)
+        let processor = RelayProcessor(
+            dbPool: dbPool,
+            transport: transport,
+            sidecar: sidecar,
+            aiService: WatchtowerAIService(),
+            dbPath: dbPool.path
+        )
+        return MobileHubService(transport: transport, publisher: publisher, processor: processor)
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

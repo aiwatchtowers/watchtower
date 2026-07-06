@@ -19,10 +19,23 @@ final class RelayProcessor: Sendable {
     private let dbPath: String?
     /// Minimum spacing between non-final chat chunks (pseudo-streaming cadence).
     private let chunkInterval: Duration
+    /// Watchdog window: max silence between stream events before the chat
+    /// turn is aborted with an error chunk — a hung CLI must not wedge the
+    /// relay pipeline (actions later in the batch, the change token).
+    private let streamTimeout: Duration
     private let now: @Sendable () -> Date
     private let logger = Logger(subsystem: Constants.bundleID, category: "RelayProcessor")
+    private let lastActivity = OSAllocatedUnfairLock<Date?>(initialState: nil)
 
     static let relayTokenKey = "relay_change_token"
+    static let hygieneStampKey = "hygiene_last_run"
+    private static let hygieneInterval: TimeInterval = 86_400
+    private static let actionMaxAge: TimeInterval = 7 * 86_400
+    private static let chatMaxAge: TimeInterval = 30 * 86_400
+
+    /// When the relay last did real work (action applied/failed, chat turn
+    /// streamed). Drives the hub's adaptive poll cadence; nil until then.
+    var lastActivityAt: Date? { lastActivity.withLock { $0 } }
 
     init(
         dbPool: DatabasePool,
@@ -31,6 +44,7 @@ final class RelayProcessor: Sendable {
         aiService: any AIServiceProtocol,
         dbPath: String? = nil,
         chunkInterval: Duration = .milliseconds(1500),
+        streamTimeout: Duration = .seconds(300),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.dbPool = dbPool
@@ -39,6 +53,7 @@ final class RelayProcessor: Sendable {
         self.aiService = aiService
         self.dbPath = dbPath
         self.chunkInterval = chunkInterval
+        self.streamTimeout = streamTimeout
         self.now = now
     }
 
@@ -104,15 +119,51 @@ final class RelayProcessor: Sendable {
         }
         try await transport.save([CloudRecordFactory.record(for: result, modifiedAt: now())])
         try sidecar.markRelayProcessed(record.recordName, at: now())
+        lastActivity.withLock { $0 = now() }
         return applied
+    }
+
+    // MARK: - Hygiene (relay retention)
+
+    /// Daily retention pass over the relay zone: action records older than
+    /// 7 days and chat records older than 30 are deleted via a full zone
+    /// scan (`since: nil` — the relay change token is untouched). Guarded by
+    /// a hub_meta last-run stamp so it runs at most once per day.
+    func runHygieneIfDue() async throws {
+        let current = now()
+        if let raw = try sidecar.metaValue(forKey: Self.hygieneStampKey),
+           let last = TimeInterval(raw),
+           current.timeIntervalSince1970 - last < Self.hygieneInterval {
+            return
+        }
+        let batch = try await transport.changes(in: .relay, since: nil)
+        var stale: [String] = []
+        for record in batch.changed {
+            let age = current.timeIntervalSince(record.modifiedAt)
+            switch record.kind {
+            case RelayRecordKind.action.rawValue where age > Self.actionMaxAge:
+                stale.append(record.recordName)
+            case RelayRecordKind.chatMessage.rawValue, RelayRecordKind.chatChunk.rawValue:
+                if age > Self.chatMaxAge { stale.append(record.recordName) }
+            default:
+                // Heartbeat (perpetually rewritten) and future kinds are kept.
+                break
+            }
+        }
+        if !stale.isEmpty {
+            try await transport.delete(recordNames: stale, in: .relay)
+            logger.info("hygiene: deleted \(stale.count) stale relay records")
+        }
+        try sidecar.setMetaValue(String(current.timeIntervalSince1970), forKey: Self.hygieneStampKey)
     }
 
     // MARK: - Chat relay
 
     /// Streams one mobile chat turn through the AI service, publishing the
     /// response as monotonic chunk records (flushed at most every
-    /// `chunkInterval`). A stream failure becomes the final chunk's text —
-    /// the message is marked processed either way, so there is no retry loop.
+    /// `chunkInterval`). A stream failure — including the `streamTimeout`
+    /// watchdog tripping — becomes the final chunk's text; the message is
+    /// marked processed either way, so there is no retry loop.
     private func processChatMessage(_ record: CloudRecord) async throws {
         let message: ChatMessagePayload
         do {
@@ -125,61 +176,109 @@ final class RelayProcessor: Sendable {
             return
         }
         guard try !sidecar.isRelayProcessed(record.recordName) else { return }
+        lastActivity.withLock { $0 = now() }
 
         // First turn of a mobile session has no CLI session yet and needs the
         // full system prompt; resumed sessions carry their context in the CLI.
         let cliSessionID = try sidecar.cliSessionID(forMobileSession: message.sessionID)
         let systemPrompt: String? = cliSessionID == nil ? ChatViewModel.buildSystemPrompt(dbPool: dbPool) : nil
 
-        var seq = 0
-        var pending = ""
-        let clock = ContinuousClock()
-        var lastFlush = clock.now
-
-        func flush(_ text: String, done: Bool) async throws {
-            let chunk = ChatChunkPayload(
-                sessionID: message.sessionID,
-                messageID: message.id,
-                seq: seq,
-                text: text,
-                done: done
-            )
-            seq += 1
-            try await transport.save([try CloudRecordFactory.record(for: chunk, modifiedAt: now())])
-        }
-
+        // Shared with the consumer child task; the group awaits that child
+        // before returning, so the error path below never races it.
+        let seq = OSAllocatedUnfairLock(initialState: 0)
         do {
-            let stream = aiService.stream(
-                prompt: message.text,
-                systemPrompt: systemPrompt,
-                sessionID: cliSessionID,
-                dbPath: dbPath
-            )
-            for try await event in stream {
-                switch event {
-                case .text(let delta):
-                    pending += delta
-                    if lastFlush.duration(to: clock.now) >= chunkInterval, !pending.isEmpty {
-                        try await flush(pending, done: false)
-                        pending = ""
-                        lastFlush = clock.now
-                    }
-                case .sessionID(let id):
-                    // Persist immediately: a crash mid-stream must not orphan the session.
-                    try sidecar.setCLISessionID(id, forMobileSession: message.sessionID)
-                case .turnComplete, .done:
-                    break
-                }
-            }
-            try await flush(pending, done: true)
+            try await streamTurn(for: message, cliSessionID: cliSessionID, systemPrompt: systemPrompt, seq: seq)
         } catch {
             logger.warning("""
                 chat message \(record.recordName, privacy: .public) stream failed: \
                 \(error.localizedDescription, privacy: .public)
                 """)
-            try await flush("⚠️ " + error.localizedDescription, done: true)
+            try await saveChunk(for: message, seq: seq, text: "⚠️ " + error.localizedDescription, done: true)
         }
         try sidecar.markRelayProcessed(record.recordName, at: now())
+        lastActivity.withLock { $0 = now() }
+    }
+
+    /// Consumes one AI stream, racing it against an inactivity watchdog: if
+    /// no stream event arrives within `streamTimeout` the group throws
+    /// `RelayChatError.streamTimeout`, cancelling the stream task (the
+    /// caller then emits the error-path final chunk). Whichever child loses
+    /// is cancelled and awaited before the group returns.
+    private func streamTurn(
+        for message: ChatMessagePayload,
+        cliSessionID: String?,
+        systemPrompt: String?,
+        seq: OSAllocatedUnfairLock<Int>
+    ) async throws {
+        let lastEvent = OSAllocatedUnfairLock(initialState: ContinuousClock.now)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [self] in
+                let stream = aiService.stream(
+                    prompt: message.text,
+                    systemPrompt: systemPrompt,
+                    sessionID: cliSessionID,
+                    dbPath: dbPath
+                )
+                var pending = ""
+                let clock = ContinuousClock()
+                var lastFlush = clock.now
+                for try await event in stream {
+                    lastEvent.withLock { $0 = clock.now }
+                    switch event {
+                    case .text(let delta):
+                        pending += delta
+                        if lastFlush.duration(to: clock.now) >= chunkInterval, !pending.isEmpty {
+                            try await saveChunk(for: message, seq: seq, text: pending, done: false)
+                            pending = ""
+                            lastFlush = clock.now
+                        }
+                    case .sessionID(let id):
+                        // Persist immediately: a crash mid-stream must not orphan the session.
+                        try sidecar.setCLISessionID(id, forMobileSession: message.sessionID)
+                    case .turnComplete, .done:
+                        // .turnComplete duplicates the accumulated .text deltas for
+                        // WatchtowerAIService — revisit if a provider ever emits only
+                        // turnComplete, whose text would be dropped here.
+                        break
+                    }
+                }
+                // A cancelled stream ends by returning nil — don't let the
+                // watchdog's loser flush a bogus done-chunk on its way out.
+                try Task.checkCancellation()
+                try await saveChunk(for: message, seq: seq, text: pending, done: true)
+            }
+            group.addTask { [streamTimeout] in
+                while true {
+                    let deadline = lastEvent.withLock { $0 }.advanced(by: streamTimeout)
+                    if ContinuousClock.now >= deadline { throw RelayChatError.streamTimeout }
+                    try await Task.sleep(until: deadline, clock: .continuous)
+                }
+            }
+            defer { group.cancelAll() }
+            // First child to finish decides: stream done (watchdog cancelled,
+            // its CancellationError discarded) or timeout/stream error rethrown.
+            try await group.next()
+        }
+    }
+
+    /// Saves one chunk record. `seq` advances only after a successful save,
+    /// so a transient transport failure retries the same slot instead of
+    /// leaving a permanent gap before the error-path flush.
+    private func saveChunk(
+        for message: ChatMessagePayload,
+        seq: OSAllocatedUnfairLock<Int>,
+        text: String,
+        done: Bool
+    ) async throws {
+        let chunk = ChatChunkPayload(
+            sessionID: message.sessionID,
+            messageID: message.id,
+            seq: seq.withLock { $0 },
+            text: text,
+            done: done
+        )
+        try await transport.save([try CloudRecordFactory.record(for: chunk, modifiedAt: now())])
+        seq.withLock { $0 += 1 }
     }
 
     // MARK: - Action → Query mapping
@@ -284,6 +383,19 @@ final class RelayProcessor: Sendable {
         fmt.locale = Locale(identifier: "en_US_POSIX")
         return fmt
     }()
+}
+
+/// Chat-relay failures. `errorDescription` becomes the final chunk's text
+/// (prefixed with "⚠️ ") echoed back to mobile.
+enum RelayChatError: Error, LocalizedError, Equatable {
+    case streamTimeout
+
+    var errorDescription: String? {
+        switch self {
+        case .streamTimeout:
+            return "chat stream timed out"
+        }
+    }
 }
 
 /// Why an action could not be applied. `errorDescription` becomes the
