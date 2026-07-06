@@ -16,7 +16,7 @@ struct InboxFeedView: View {
     @State private var inboxPrefillError: String?
     @State private var isBuildingInboxPrefill = false
 
-    enum Tab { case feed, learned }
+    enum Tab { case feed, learned, profile }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,15 +31,18 @@ struct InboxFeedView: View {
                     .padding(.horizontal)
             }
 
-            if tab == .feed {
+            switch tab {
+            case .feed:
                 if let vm {
                     feedContent(vm)
                 } else {
                     ProgressView("Loading...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
+            case .learned:
                 learnedContent
+            case .profile:
+                profileContent
             }
         }
         .onAppear {
@@ -109,6 +112,7 @@ struct InboxFeedView: View {
             Picker("", selection: $tab) {
                 Text("Feed").tag(Tab.feed)
                 Text("Learned").tag(Tab.learned)
+                Text("Profile").tag(Tab.profile)
             }
             .pickerStyle(.segmented)
         }
@@ -131,6 +135,19 @@ struct InboxFeedView: View {
     private var learnedContent: some View {
         if let dbPool = appState.databaseManager?.dbPool {
             InboxLearnedRulesView(db: dbPool)
+        } else {
+            Text("Database unavailable")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    // MARK: - Profile Tab
+
+    @ViewBuilder
+    private var profileContent: some View {
+        if let dbPool = appState.databaseManager?.dbPool {
+            SecretaryProfileView(db: dbPool)
         } else {
             Text("Database unavailable")
                 .foregroundStyle(.secondary)
