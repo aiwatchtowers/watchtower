@@ -162,3 +162,49 @@ func TestInbox03_StreamSignalSurfaced(t *testing.T) {
 	assert.Equal(t, "actionable", it.ItemClass)
 	assert.Equal(t, "high", it.Priority)
 }
+
+// TestDash_E2E_SignalToSituation is the Secretary Dashboard end-to-end guard:
+// a plain channel message that triage marks actionable must flow all the way
+// through the composer into a single open dashboard situation carrying a ready
+// secretary card, feed-able via ListOpenSituations.
+//
+// Flow (one Run, three scripted AI calls):
+//  1. triage surfaces the stream message as an actionable signal.
+//  2. compose folds that signal into a fresh "create" situation.
+//  3. the situation-card stage generates its summary/why-it-matters/chronology.
+func TestDash_E2E_SignalToSituation(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	insertChannel(t, d, "C1", "public")
+	// Within the first-run lookback window so triage sees it (see testConfig).
+	ts := recentTS(60)
+	insertMessage(t, d, "C1", ts, "U2", "prod is on fire, need a direction owner")
+
+	cfg := testConfig()
+	// The stream signal is the first inbox_items row on a fresh DB, so its id is
+	// 1 — the "sig:1" the compose op links.
+	gen := &seqGenerator{responses: []string{
+		fmt.Sprintf(`{"verdicts":[{"key":"msg:C1:%s","tier":"action","priority":"high","reason":"prod incident, no owner yet"}]}`, ts),
+		`{"ops":[{"op":"create","title":"prod incident","kind":"external","priority":"high","rank":0.9,"reason":"prod is down and unowned","signals":["sig:1"]}]}`,
+		`{"summary":"Prod has been down since morning.","why_matters":"No owner yet — you should step in.","chronology":"U2 — reported prod on fire."}`,
+	}}
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 3, gen.calls, "expected triage → compose → situation-card AI calls")
+
+	open, err := d.ListOpenSituations()
+	require.NoError(t, err)
+	require.Len(t, open, 1, "the actionable signal should compose into one open situation")
+	s := open[0]
+	assert.Equal(t, "prod incident", s.Title)
+	assert.Equal(t, "ready", s.CardStatus, "the situation must carry a ready secretary card")
+	assert.Equal(t, "Prod has been down since morning.", s.Summary)
+
+	members, err := d.ListSituationSignals(s.ID)
+	require.NoError(t, err)
+	assert.Len(t, members, 1, "the surfaced signal should be linked to the situation")
+}

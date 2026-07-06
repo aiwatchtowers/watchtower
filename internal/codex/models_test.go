@@ -20,7 +20,6 @@ func TestModelForSource(t *testing.T) {
 		{"catchup.peel", ModelLightweight},
 		{"digest.channel", ModelDefault},
 		{"digest.daily", ModelDefault},
-		{"inbox.card", ModelDefault},
 		{"tracks.create", ModelDefault},
 		{"briefing.daily", ModelDefault},
 		{"unknown", ModelDefault},

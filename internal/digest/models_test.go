@@ -17,7 +17,7 @@ func TestModelForSource(t *testing.T) {
 	sonnet := []string{
 		"digest.channel", "digest.daily", "digest.weekly",
 		"tracks.extract_batch", "people.reduce", "people.team",
-		"briefing.daily", "inbox.card", "", "unknown.source",
+		"briefing.daily", "", "unknown.source",
 		prompts.InboxCompose, prompts.InboxSituationCard,
 	}
 	for _, src := range sonnet {

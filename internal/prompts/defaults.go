@@ -18,7 +18,6 @@ var Defaults = map[string]string{
 	PeopleTeam:           defaultPeopleTeam,
 	BriefingDaily:        defaultBriefingDaily,
 	InboxTriage:          defaultInboxTriage,
-	InboxCard:            defaultInboxCard,
 	DigestChannelBatch:   defaultDigestChannelBatch,
 	TracksExtractBatch:   defaultTracksExtractBatch,
 	PeopleBatch:          defaultPeopleBatch,
@@ -54,7 +53,6 @@ var AllIDs = []string{
 	PeopleBatch,
 	BriefingDaily,
 	InboxTriage,
-	InboxCard,
 	TasksGenerate,
 	TasksUpdate,
 	MeetingPrep,
@@ -88,7 +86,6 @@ var DefaultVersions = map[string]int{
 	PeopleTeam:         1,
 	BriefingDaily:      5, // v5: jira integration
 	InboxTriage:        1, // v1: initial triage template
-	InboxCard:          1, // v1: initial card template
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
 	TasksGenerate:      1, // v1: AI task generation with checklist and due date
@@ -124,7 +121,6 @@ var Descriptions = map[string]string{
 	PeopleTeam:           "Team summary — cross-user attention & tips",
 	BriefingDaily:        "Daily briefing — personalized morning summary",
 	InboxTriage:          "Inbox: triage scan of new activity",
-	InboxCard:            "Inbox: secretary card for a surfaced item",
 	DigestChannelBatch:   "Channel batch digest — multi-channel analysis for low-activity channels",
 	PeopleBatch:          "People batch cards — lightweight cards for low-data users in one AI call",
 	TasksGenerate:        "Task generation — AI-powered task breakdown with checklist, priority, and due date",
@@ -1225,28 +1221,6 @@ Rules:
 
 Return ONLY a JSON object (no markdown fences):
 {"verdicts":[{"key":"item:12","tier":"action","priority":"high","reason":"..."}]}`
-
-const defaultInboxCard = `%s
-
-You are the user's chief-of-staff secretary preparing a briefing card for one
-inbox item they will act on.
-
-%s
-
-Using the item and conversation below, produce:
-- why_matters: 1-2 sentences — why this needs the user specifically, judged
-  against the brief (who is asking, which of the user's projects/people it
-  touches, what happens if ignored).
-- thread_digest: 3-5 sentences summarizing the whole conversation so the user
-  does not have to read it. Lead with the current state, not the history.
-- draft_reply: a ready-to-send reply in the user's voice: direct, short, no
-  corporate fluff. Match the language of the conversation. If the right action
-  is not a reply (e.g. RSVP, close a ticket), say what to do in one line instead.
-
-%s
-
-Return ONLY a JSON object (no markdown fences):
-{"why_matters":"...","thread_digest":"...","draft_reply":"..."}`
 
 const defaultInboxCompose = `%s
 
