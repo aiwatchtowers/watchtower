@@ -66,6 +66,10 @@ const (
 	DefaultTargetsResolverJiraEnabled         = true
 	DefaultTargetsResolverMCPTimeoutSeconds   = 10
 	DefaultTargetsResolverActiveSnapshotLimit = 100
+
+	// Dashboard (situation composer) defaults
+	DefaultDashboardStaleAfterDays    = 7
+	DefaultDashboardMaxComposeSignals = 200
 )
 
 // RoleDisplayNames maps role keys to human-readable display names.

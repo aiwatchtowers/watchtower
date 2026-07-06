@@ -58,6 +58,13 @@ type InboxConfig struct {
 	MaxAwarenessCards   int  `mapstructure:"max_awareness_cards"`   // max ambient items given a secretary card per cycle (default: 3)
 }
 
+// DashboardConfig holds settings for the secretary dashboard's situation
+// composer (internal/inbox/compose.go).
+type DashboardConfig struct {
+	StaleAfterDays    int `mapstructure:"stale_after_days"`    // days of inactivity before an open situation is marked stale (default: 7)
+	MaxComposeSignals int `mapstructure:"max_compose_signals"` // max uncomposed signals considered per compose cycle (default: 200)
+}
+
 // CatchupConfig controls the on-demand unread summarizer.
 type CatchupConfig struct {
 	MaxAgeDays int         `mapstructure:"max_age_days"`
@@ -157,6 +164,7 @@ type Config struct {
 	Digest          DigestConfig                `mapstructure:"digest"`
 	Briefing        BriefingConfig              `mapstructure:"briefing"`
 	Inbox           InboxConfig                 `mapstructure:"inbox"`
+	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
 	Jira            JiraConfig                  `mapstructure:"jira"`
@@ -207,6 +215,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
 	v.SetDefault("inbox.max_triage_messages", DefaultInboxMaxTriageMessages)
 	v.SetDefault("inbox.max_awareness_cards", DefaultInboxMaxAwarenessCards)
+	v.SetDefault("dashboard.stale_after_days", DefaultDashboardStaleAfterDays)
+	v.SetDefault("dashboard.max_compose_signals", DefaultDashboardMaxComposeSignals)
 	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
 	v.SetDefault("catchup.max_age_days", 30)
 	v.SetDefault("catchup.caps.digests", 150)
