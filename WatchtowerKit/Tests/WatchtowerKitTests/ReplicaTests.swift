@@ -198,6 +198,11 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(targets[0].text, "good")
         XCTAssertEqual(store.corruptCount(), 1)
 
+        // Re-fetching the same persistently-corrupt row must not inflate the
+        // distinct count (nor re-log) — corruptCount tracks record_names.
+        _ = try store.fetchAll(Target.self, kind: .target)
+        XCTAssertEqual(store.corruptCount(), 1)
+
         // The token advanced past the corrupt record: hydration is not wedged.
         let second = try await hydrator.hydrateOnce()
         XCTAssertEqual(second.applied, 0)
