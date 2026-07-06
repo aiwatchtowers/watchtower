@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 import WatchtowerKit
 
 /// Bridges the Kit's `ReplicaStore.fetchAll` into a live SwiftUI stream: sets up
@@ -14,6 +15,8 @@ import WatchtowerKit
 /// already runs on a pool reader connection, and a nested `DatabasePool.read`
 /// traps on reentrancy (`fatalError`, release and debug).
 enum ReplicaObserver {
+    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ReplicaObserver")
+
     static func observe<T: FetchableRecord>(
         _ type: T.Type,
         kind: SliceKind,
@@ -26,7 +29,9 @@ enum ReplicaObserver {
         return observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
-            onError: { print("observation error for \(kind.rawValue): \($0)") },
+            onError: {
+                Self.logger.error("observation error for \(kind.rawValue, privacy: .public): \($0.localizedDescription, privacy: .public)")
+            },
             onChange: { value in MainActor.assumeIsolated { onChange(value) } }
         )
     }
@@ -50,7 +55,9 @@ enum ReplicaObserver {
         return observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
-            onError: { print("observation error for \(kind.rawValue)+pending: \($0)") },
+            onError: {
+                Self.logger.error("observation error for \(kind.rawValue, privacy: .public)+pending: \($0.localizedDescription, privacy: .public)")
+            },
             onChange: { value in MainActor.assumeIsolated { onChange(value.0, value.1) } }
         )
     }

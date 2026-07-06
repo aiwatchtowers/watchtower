@@ -11,7 +11,7 @@ final class ReplicaTests: XCTestCase {
 
     /// A realistic targets row: only `id` is structurally required by
     /// Target.init(row:); the rest exercises typed decode assertions.
-    private func targetRow(id: Int, text: String, status: String = "todo") -> Row {
+    private func targetRow(id: Int, text: String, status: String = "todo", priority: String = "high") -> Row {
         Row([
             "id": id,
             "text": text,
@@ -20,7 +20,7 @@ final class ReplicaTests: XCTestCase {
             "period_start": "2026-07-06",
             "period_end": "2026-07-12",
             "status": status,
-            "priority": "high",
+            "priority": priority,
             "ownership": "mine",
             "progress": 0.4,
             "source_type": "manual",
@@ -170,6 +170,29 @@ final class ReplicaTests: XCTestCase {
         // Default (no explicit sort) must stay newestFirst — the behavior
         // every existing call site relies on.
         XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).map(\.id), [1, 3, 2])
+    }
+
+    /// The Tasks tab colors its PRIORITY badge off `priorityColor` (Task 9 —
+    /// it previously borrowed `statusColor`, a semantic mismatch). Pins the
+    /// high/medium/low mapping, including low → "secondary" (NOT gray), and
+    /// that the mapping reads priority, never status.
+    func testTargetPriorityColorMapsPriorityNotStatus() throws {
+        let store = try ReplicaStore.inMemory()
+        try store.apply(CloudChangeBatch(
+            changed: [
+                dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(
+                    from: targetRow(id: 1, text: "p-high", status: "done", priority: "high"))),
+                dataRecord(kind: .target, id: "2", payload: try RowPayloadCoder.payload(
+                    from: targetRow(id: 2, text: "p-med", status: "blocked", priority: "medium"))),
+                dataRecord(kind: .target, id: "3", payload: try RowPayloadCoder.payload(
+                    from: targetRow(id: 3, text: "p-low", status: "in_progress", priority: "low")))
+            ],
+            deletedRecordNames: [],
+            newToken: CloudChangeToken(value: 1)
+        ))
+
+        let byName = try store.fetchAll(Target.self, kind: .target, sort: .recordName)
+        XCTAssertEqual(byName.map(\.priorityColor), ["red", "orange", "secondary"])
     }
 
     /// Pins the `, record_name` tie-break half of the time-based sorts: two

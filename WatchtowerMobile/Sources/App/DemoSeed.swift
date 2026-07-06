@@ -186,6 +186,9 @@ enum DemoSeed {
 
     /// An instant pinned INSIDE `now`'s local day (see the calendar-events
     /// note above). The nil fallback is unreachable for valid hour/minute.
+    /// Residual straddle (accepted, Task 7 review): a run that seeds just
+    /// before local midnight and asserts after it derives "today" twice on
+    /// different days.
     private static func todayAt(hour: Int, minute: Int = 0, of now: Date) -> Date {
         Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: now) ?? now
     }

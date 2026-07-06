@@ -61,19 +61,19 @@ public final class AppEnvironment {
     // nonisolated: logged from @Sendable hook/sweep closures off the actor.
     private nonisolated static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppEnvironment")
 
-    public convenience init() {
+    public convenience init() throws {
         // TRANSPORT SWAP POINT (see the four-step doc comment above).
-        self.init(transport: InMemoryCloudTransport(), replicaPath: Self.replicaPath())
+        try self.init(transport: InMemoryCloudTransport(), replicaPath: Self.replicaPath())
     }
 
     /// Designated init with an injectable transport + replica path — wiring
     /// tests build isolated environments; production uses `init()` above.
-    init(transport: any CloudSyncTransport, replicaPath: String) {
-        do {
-            store = try ReplicaStore(path: replicaPath)
-        } catch {
-            fatalError("failed to open replica store: \(error)")
-        }
+    ///
+    /// Throws when the replica pool cannot open (the app renders that as the
+    /// degraded `BootFailureView` — see `WatchtowerMobileApp.Boot` — instead
+    /// of the pre-Task-9 `fatalError`).
+    init(transport: any CloudSyncTransport, replicaPath: String) throws {
+        store = try ReplicaStore(path: replicaPath)
 
         self.transport = transport
         let hydrator = ReplicaHydrator(transport: transport, store: store)
@@ -117,7 +117,7 @@ public final class AppEnvironment {
             // tab shows a completed thread within the first cycle.
             try await DemoSeed.loadChatExchange(via: chat, into: transport, store: store)
         } catch {
-            print("DemoSeed failed: \(error)")
+            Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
         }
         #endif
         await refresh()
@@ -133,7 +133,7 @@ public final class AppEnvironment {
         do {
             lastHydrate = try await hydrator.hydrateOnce()
         } catch {
-            print("hydration failed: \(error)")
+            Self.logger.error("hydration failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

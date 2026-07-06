@@ -208,7 +208,9 @@ struct TasksView: View {
                 // Optimistic done: struck through while the echo is pending.
                 .strikethrough(chip?.action.kind == .targetDone)
             HStack(spacing: 6) {
-                Badge(text: target.priority, color: color(target.statusColor))
+                // Priority badge colors by PRIORITY (status rendering, when
+                // it lands, keeps `statusColor`) — Task 9 mismatch fix.
+                Badge(text: target.priority, color: color(target.priorityColor))
                 if let due = target.dueDateFormatted {
                     Badge(text: due, color: target.isOverdue ? .red : .gray)
                 }

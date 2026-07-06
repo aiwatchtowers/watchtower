@@ -102,8 +102,10 @@ final class PublicAPISurfaceTests: XCTestCase {
         let keyPath1: KeyPath<Target, String> = \.text
         let keyPath2: KeyPath<Target, String> = \.status
         let keyPath3: KeyPath<Target, String> = \.priority
+        // The Tasks tab's priority badge (Task 9) — must stay public.
+        let keyPath4: KeyPath<Target, String> = \.priorityColor
         // Suppress unused-variable warnings; the point is the compile, not the value.
-        _ = keyPath1; _ = keyPath2; _ = keyPath3
+        _ = keyPath1; _ = keyPath2; _ = keyPath3; _ = keyPath4
     }
 
     // MARK: - InboxItem model fields (feed UI)

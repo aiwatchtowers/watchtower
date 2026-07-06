@@ -164,6 +164,42 @@ final class ChatWiringTests: XCTestCase {
         XCTAssertEqual(vm.messages.last?.isError, false)
     }
 
+    // MARK: - Mid-stream scroll following (Task 7 review Minor 3)
+
+    /// The thread view follows STREAMING growth, not just new rows: its
+    /// scroll trigger (`scrollKey`) must move when a chunk grows the last
+    /// message's text in place — `messages.count` is unchanged there — and
+    /// keep moving on every appended row.
+    func testScrollKeyMovesOnMidStreamGrowthAndOnAppend() async throws {
+        let fx = try makeFixture()
+        let vm = makeThreadVM(fx)
+        vm.draft = "Follow the stream"
+        await vm.send()
+        try await poll { vm.messages.count == 2 }
+        let sessionID = try XCTUnwrap(vm.sessionID)
+        let replyID = try XCTUnwrap(vm.messages.last?.id)
+        let keyAfterSend = vm.scrollKey
+
+        try await fx.assembler.ingest(
+            ChatChunkPayload(sessionID: sessionID, messageID: replyID, seq: 0, text: "chunk one", done: false)
+        )
+        try await poll { vm.messages.last?.text == "chunk one" }
+        XCTAssertEqual(vm.messages.count, 2, "chunk growth is in place — no new row")
+        let keyMidStream = vm.scrollKey
+        XCTAssertNotEqual(keyMidStream, keyAfterSend, "in-place text growth must move the scroll key")
+
+        try await fx.assembler.ingest(
+            ChatChunkPayload(sessionID: sessionID, messageID: replyID, seq: 1, text: " and two", done: true)
+        )
+        try await poll { vm.messages.last?.isComplete == true }
+        XCTAssertNotEqual(vm.scrollKey, keyMidStream, "the final chunk still grows the text")
+
+        vm.draft = "Another turn"
+        await vm.send()
+        try await poll { vm.messages.count == 4 }
+        XCTAssertNotEqual(vm.scrollKey, keyMidStream, "appended rows keep moving the key")
+    }
+
     // MARK: - Error styling (flag-driven, NEVER prefix-sniffing)
 
     /// The error bubble is keyed EXCLUSIVELY off `isError`: an error-flagged
@@ -281,7 +317,7 @@ final class ChatWiringTests: XCTestCase {
     /// with a warning before this task — now assemble into a completed
     /// assistant reply through the feed's own poll loop.
     func testEnvironmentWiresAssemblerIntoFeedViaDemoExchange() async throws {
-        let env = AppEnvironment(transport: InMemoryCloudTransport(), replicaPath: try makeReplicaPath())
+        let env = try AppEnvironment(transport: InMemoryCloudTransport(), replicaPath: makeReplicaPath())
 
         try await poll(timeout: 10, {
             guard let session = (try? env.store.chatSessions())?.first,

@@ -324,7 +324,7 @@ final class ActionsWiringTests: XCTestCase {
     /// 30 s poll could have delivered it).
     func testAppliedEchoThroughEnvironmentClearsOverlayAndNudgesHydration() async throws {
         let transport = InMemoryCloudTransport()
-        let env = AppEnvironment(transport: transport, replicaPath: try makeReplicaPath())
+        let env = try AppEnvironment(transport: transport, replicaPath: makeReplicaPath())
         try await poll { env.lastHydrate != nil }
 
         let vm = TasksViewModel()

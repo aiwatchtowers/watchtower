@@ -1,13 +1,52 @@
+import os
 import SwiftUI
 
 @main
 struct WatchtowerMobileApp: App {
-    @State private var env = AppEnvironment()
+    /// Boot outcome: the live environment, or why the replica pool could not
+    /// open. Every tab is useless without the store, so a pool-open failure
+    /// is a degraded state the user can read and report — a full-screen
+    /// error instead of the tabs — never a `fatalError` (Task 9).
+    private enum Boot {
+        case ready(AppEnvironment)
+        case failed(String)
+
+        @MainActor
+        static func make() -> Boot {
+            do {
+                return .ready(try AppEnvironment())
+            } catch {
+                Logger(subsystem: "WatchtowerMobile", category: "Boot")
+                    .critical("replica store failed to open: \(error.localizedDescription, privacy: .public)")
+                return .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    @State private var boot = Boot.make()
 
     var body: some Scene {
         WindowGroup {
-            RootTabView()
-                .environment(env)
+            switch boot {
+            case .ready(let env):
+                RootTabView()
+                    .environment(env)
+            case .failed(let message):
+                BootFailureView(message: message)
+            }
+        }
+    }
+}
+
+/// Minimal full-screen degraded state for an unopenable replica store.
+struct BootFailureView: View {
+    let message: String
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Watchtower can't start", systemImage: "externaldrive.badge.xmark")
+        } description: {
+            Text("The on-device database could not be opened.\n\(message)")
         }
     }
 }

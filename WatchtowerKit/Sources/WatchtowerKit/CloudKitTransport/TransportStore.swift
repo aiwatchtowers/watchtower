@@ -353,14 +353,21 @@ public final class TransportStore: Sendable {
     /// action the processor never consumed (and CKSyncEngine never redelivers
     /// fetched records), losing the action permanently. The floor makes the sweep
     /// touch only events every token consumer has already read, so it can never
-    /// change what `changes(since: storedToken)` returns.
+    /// change what `changes(since: storedToken)` returns. Known liveness limit
+    /// (pre-existing class): a persistently-throwing consumer loop never advances
+    /// its stored token, freezing the floor — buffered-event growth returns for
+    /// as long as that consumer is dead, and the first successful pass unfreezes
+    /// the sweep.
     ///
     /// Deletion events (tombstones, `modified_at` = 0) fall below any real cutoff
     /// once consumed — intended, or hygiene's own server-side deletes would grow
     /// the buffer forever. Known bounded quirk: sweeping a record's tombstone
     /// while its younger-than-cutoff change event survives makes the next
     /// full-zone scan see the record as changed again, so hygiene re-issues an
-    /// idempotent server delete daily until the change event ages out.
+    /// idempotent server delete daily until the change event ages out — worst
+    /// case for the relay's actions, whose server lifetime (`actionMaxAge`) is
+    /// far shorter than the zone's shared chat-length sweep cutoff, that is
+    /// roughly `chatMaxAge − actionMaxAge` of daily no-op deletes per record.
     @discardableResult
     public func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) throws -> Int {
         try queue.write { db in

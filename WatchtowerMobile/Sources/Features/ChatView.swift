@@ -14,6 +14,8 @@ import WatchtowerKit
 final class ChatSessionsViewModel {
     private(set) var sessions: [ChatSession] = []
     private var cancellable: AnyDatabaseCancellable?
+    // nonisolated: logged from the @Sendable observation onError closure.
+    private nonisolated static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatSessionsViewModel")
     /// `RelayFeed.isDesktopReachable` in the app; injectable-clock closures
     /// in tests so the banner math is pinned against fixed instants.
     private var isReachable: ((Date) -> Bool)?
@@ -29,7 +31,7 @@ final class ChatSessionsViewModel {
         cancellable = observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
-            onError: { print("chat sessions observation error: \($0)") },
+            onError: { Self.logger.error("chat sessions observation error: \($0.localizedDescription, privacy: .public)") },
             onChange: { [weak self] value in MainActor.assumeIsolated { self?.sessions = value } }
         )
     }
@@ -67,7 +69,8 @@ final class ChatThreadViewModel {
     private var store: ReplicaStore?
     private var assembler: ChatAssembler?
     private var isReachable: ((Date) -> Bool)?
-    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatThreadViewModel")
+    // nonisolated: logged from the @Sendable observation onError closure.
+    private nonisolated static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatThreadViewModel")
 
     /// Send gate: whitespace-only drafts can never send — a blank send would
     /// mint a blank-titled session (Task 5 review note). Gates the button AND
@@ -115,6 +118,19 @@ final class ChatThreadViewModel {
         sendErrorMessage = nil
     }
 
+    /// Scroll-follow trigger for the thread view: moves on every appended row
+    /// AND whenever the LAST message's text grows in place (per applied
+    /// chunk), so the view keeps following mid-stream output —
+    /// `messages.count` alone misses in-place growth (Task 7 review Minor 3).
+    struct ScrollKey: Equatable {
+        let count: Int
+        let lastTextLength: Int
+    }
+
+    var scrollKey: ScrollKey {
+        ScrollKey(count: messages.count, lastTextLength: messages.last?.text.count ?? 0)
+    }
+
     /// Same heartbeat-driven banner as the sessions list (see
     /// `ChatSessionsViewModel.isDesktopUnreachable`).
     func isDesktopUnreachable(now: Date) -> Bool {
@@ -142,7 +158,7 @@ final class ChatThreadViewModel {
         cancellable = observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
-            onError: { print("chat messages observation error: \($0)") },
+            onError: { Self.logger.error("chat messages observation error: \($0.localizedDescription, privacy: .public)") },
             onChange: { [weak self] value in MainActor.assumeIsolated { self?.messages = value } }
         )
     }
@@ -260,7 +276,11 @@ struct ChatThreadView: View {
                             }
                             .padding(12)
                         }
-                        .onChange(of: model.messages.count) {
+                        // Keyed on `scrollKey`, not messages.count: the key
+                        // also moves as chunks grow the last bubble in place,
+                        // so the view follows mid-stream output. Unanimated
+                        // on purpose — a spring per chunk would be jarring.
+                        .onChange(of: model.scrollKey) {
                             if let last = model.messages.last {
                                 proxy.scrollTo(last.id, anchor: .bottom)
                             }

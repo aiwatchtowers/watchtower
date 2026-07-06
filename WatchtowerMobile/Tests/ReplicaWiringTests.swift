@@ -72,7 +72,7 @@ final class ReplicaWiringTests: XCTestCase {
     /// apply() is an idempotent upsert — if the seed ever generates ids or
     /// appends, these tests will flake; fix the seed, not the assertions.
     func testAppEnvironmentBootsAndHydratesDemoSeed() async throws {
-        let env = AppEnvironment()
+        let env = try AppEnvironment()
 
         // Bootstrap runs in a detached Task; wait for the first cycle to land.
         try await poll { env.lastHydrate != nil }
@@ -93,13 +93,28 @@ final class ReplicaWiringTests: XCTestCase {
     /// bootstrap cycle completes the spinner is off and a result is recorded —
     /// which is exactly what `SyncStatusFooter` reads to show "Synced".
     func testSyncFooterReflectsCompletedHydrate() async throws {
-        let env = AppEnvironment()
+        let env = try AppEnvironment()
         try await poll { env.lastHydrate != nil }
 
         XCTAssertFalse(env.isHydrating, "footer would still show the spinner")
         let last = try XCTUnwrap(env.lastHydrate, "footer has no completed cycle to show")
         XCTAssertGreaterThanOrEqual(last.applied, 0)
         XCTAssertGreaterThanOrEqual(last.deleted, 0)
+    }
+
+    // MARK: - Degraded boot (unopenable replica)
+
+    /// A pool-open failure must surface as a THROW — the app catches it and
+    /// renders the full-screen `BootFailureView` instead of the tabs — never
+    /// a `fatalError`. `/dev/null/sub/…` is a deterministic unopenable path
+    /// in the simulator: the parent "directory" is a device file.
+    func testInitThrowsWhenReplicaPathIsUnopenable() {
+        XCTAssertThrowsError(
+            try AppEnvironment(
+                transport: InMemoryCloudTransport(),
+                replicaPath: "/dev/null/sub/replica.sqlite"
+            )
+        )
     }
 
     // MARK: - Per-tab view models

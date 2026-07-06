@@ -72,6 +72,8 @@ final class SlicePublisher: Sendable {
                 try await transport.save(result.upserts.map { CloudRecordFactory.record(for: $0) })
                 // Guard: abort if a mid-cycle account reset wiped the state.
                 // The next cycle will re-diff against empty hashes and re-push everything.
+                // Residual race (accepted, Plan 3 final review): a reset landing in the
+                // few statements between this check and the setHash writes still slips through.
                 guard try state.generation() == startGen else {
                     logger.warning("publishOnce: generation changed mid-cycle — aborting to avoid recording stale hashes")
                     return (pushed, deleted, skipped)

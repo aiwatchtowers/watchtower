@@ -282,6 +282,18 @@ public struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equat
         }
     }
 
+    /// Priority badge color name — mirrors `InboxItem.priorityColor` so both
+    /// tabs render the same priority the same way. NOT `statusColor`: the
+    /// priority badge colors by priority (Task 9 fixed a mismatch there).
+    public var priorityColor: String {
+        switch priority {
+        case "high":   return "red"
+        case "medium": return "orange"
+        case "low":    return "secondary"
+        default:       return "orange"
+        }
+    }
+
     // MARK: - Status Display
 
     public var statusIcon: String {

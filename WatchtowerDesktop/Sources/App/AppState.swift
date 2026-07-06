@@ -373,6 +373,10 @@ final class AppState {
 
     func stopMobileHub() {
         mobileHub?.stop()
+        // Toggle-off after a failed init has no hub to stop — only the stale
+        // error, which must clear so Settings reads "Off", not "Unavailable"
+        // (Task 8 review Minor 1).
+        mobileHubInitError = nil
     }
 
     private func makeMobileHub(dbPool: DatabasePool) throws -> MobileHubService {

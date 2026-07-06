@@ -210,32 +210,3 @@ struct ActionErrorRow: View {
         }
     }
 }
-
-// MARK: - Shared badge
-
-struct Badge: View {
-    let text: String
-    let color: Color
-
-    var body: some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.18), in: Capsule())
-            .foregroundStyle(color)
-    }
-}
-
-/// Maps the models' string color names to SwiftUI colors.
-func color(_ name: String) -> Color {
-    switch name {
-    case "red": return .red
-    case "orange": return .orange
-    case "green": return .green
-    case "blue": return .blue
-    case "purple": return .purple
-    case "gray": return .gray
-    default: return .gray
-    }
-}
