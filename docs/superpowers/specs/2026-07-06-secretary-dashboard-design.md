@@ -65,8 +65,11 @@ One batched strong-model call per cycle. Input:
 
 1. New/updated pending signals (`inbox_items`, all trigger types incl.
    `stream`) since the last compose pass.
-2. New `track_events` and target changes (status transitions, observer/watch
-   events) for ACTIVE tracks/targets.
+2. New `track_events` (created_at past the compose watermark) and targets
+   whose `updated_at` moved past it (targets have no event log — the diff on
+   `updated_at` IS the change signal), for ACTIVE tracks/targets only. The
+   compose watermark is a `workspace.compose_last_run_ts` scalar, advanced
+   only on a successful compose pass.
 3. All currently OPEN situations (id, title, kind, linked signal summaries) —
    so new signals merge into existing situations instead of duplicating them.
 4. The secretary brief (existing `buildSecretaryBrief`) + learned rules
@@ -110,7 +113,8 @@ New tables (goose migration, mirrored into schema.sql, golden regenerated):
 ```
 situations:
   id, title, kind CHECK(external|target_update|track_update|mixed),
-  status CHECK(open|done|dismissed|converted|stale),
+  status CHECK(open|done|dismissed|converted|stale|snoozed),
+  snooze_until TEXT NOT NULL DEFAULT '',
   priority CHECK(high|medium|low), rank REAL,
   ai_reason, summary, why_matters, chronology,
   card_status CHECK(none|ready|failed), card_generated_at,
@@ -130,6 +134,8 @@ pass). Signal lifecycle stays owned by the existing engine.
 ## Lifecycle
 
 - `open` → `done`/`dismissed` by explicit user action on the dashboard.
+- `open` → `snoozed` (1h / tomorrow / Monday) hides the situation until
+  `snooze_until`; the existing unsnooze phase flips it back to `open`.
 - `open` → `stale` automatically when no new signals for
   `dashboard.stale_after_days` (default 7); stale situations leave the feed.
 - `open` → `converted` when the user creates a target/track from it (link
@@ -152,10 +158,12 @@ pass). Signal lifecycle stays owned by the existing engine.
 - Click expands inline (single-open, like the current feed): context packet
   (summary, why-it-matters, chronology with expandable original signals) +
   action row:
-  - **Create target** / **Create track** / **Attach to track** — explicit
-    buttons, prefilled from the situation via the existing prefill mechanisms
-    (`TargetPrefillBuilder` pattern); user stays on the dashboard after
-    creation.
+  - **Create target** / **Create track** — explicit buttons, prefilled from
+    the situation via the existing mechanisms (`TargetPrefillBuilder` for
+    targets; the compose-flow `CustomTrackManagementSheet` for tracks); user
+    stays on the dashboard after creation. ("Attach to existing track" is
+    deferred — no linking mechanism exists in the app today and the owner
+    asked only for create.)
   - Done / Dismiss / Snooze (1h / tomorrow / Monday), 👍/👎 feedback.
   - "Open in Slack" / "Open target/track" — explicit second-click navigation.
 - AI failure never blanks the feed: existing situations render from the DB
