@@ -40,6 +40,12 @@ final class AppState {
     /// Catch-Up ViewModel — persists across tab switches.
     private(set) var catchUpViewModel: CatchUpViewModel?
 
+    /// Dashboard ViewModel — persists across tab switches so an in-flight
+    /// "Generate" run (and its `isGenerating` flag) survives navigating away
+    /// from and back to the Dashboard tab, instead of being orphaned when a
+    /// view-local instance was torn down.
+    private(set) var dashboardViewModel: DashboardViewModel?
+
     /// Sidebar badge counts — created during initialize() before the splash hides,
     /// so badges are visible the moment the main UI appears.
     private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
@@ -203,6 +209,7 @@ final class AppState {
                 initCalendar(dbPool: manager.dbPool)
                 initDayPlan(dbPool: manager.dbPool)
                 initCatchUp(dbPool: manager.dbPool)
+                initDashboard(dbManager: manager)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -323,6 +330,15 @@ final class AppState {
 
     private func initCatchUp(dbPool: DatabasePool) {
         catchUpViewModel = CatchUpViewModel(dbPool: dbPool)
+    }
+
+    /// Not marked `private` (unlike its siblings above) so XCTest can call it directly via
+    /// `@testable import` to prove `dashboardViewModel` identity persists across accesses,
+    /// without going through the real-filesystem/CLI-subprocess machinery in `initialize()`.
+    func initDashboard(dbManager: DatabaseManager) {
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.startObserving()
+        dashboardViewModel = vm
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

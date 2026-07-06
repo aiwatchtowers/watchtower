@@ -11,8 +11,12 @@ import SwiftUI
 /// (still unit-tested) but are no longer wired into this container.
 struct InboxFeedView: View {
     @Environment(AppState.self) private var appState
-    @State private var dashboardVM: DashboardViewModel?
     @State private var tab: Tab = .feed
+
+    /// The dashboard VM is owned by `AppState` (survives tab switches so an
+    /// in-flight "Generate" run isn't orphaned on navigation) rather than
+    /// created locally here.
+    private var dashboardVM: DashboardViewModel? { appState.dashboardViewModel }
 
     enum Tab { case feed, learned, profile }
 
@@ -37,13 +41,11 @@ struct InboxFeedView: View {
             }
         }
         .onAppear {
-            initViewModel()
             // Cross-process daemon writes don't fire GRDB ValueObservation, so
             // reload on every tab-appear to pick up situations composed while
             // the dashboard tab was inactive.
             dashboardVM?.refresh()
         }
-        .onChange(of: appState.isDBAvailable) { initViewModel() }
     }
 
     // MARK: - Toolbar (Tracks-style: title + count badge + tab picker)
@@ -94,15 +96,6 @@ struct InboxFeedView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-    }
-
-    // MARK: - Init
-
-    private func initViewModel() {
-        guard dashboardVM == nil, let db = appState.databaseManager else { return }
-        let newVM = DashboardViewModel(dbManager: db)
-        dashboardVM = newVM
-        newVM.startObserving()
     }
 
     // MARK: - Learned Tab
