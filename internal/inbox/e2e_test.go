@@ -88,7 +88,7 @@ func TestE2E_AmbientAutoArchive(t *testing.T) {
 		time.Now().Add(-5*time.Minute))
 
 	cfg := testConfig()
-	gen := &mockGenerator{response: `{"pinned_ids":[]}`}
+	gen := &mockGenerator{response: `{"verdicts":[]}`}
 	p := New(d, cfg, gen, log.Default())
 	p.SetCurrentUser("U1", "u1@test.com")
 
@@ -136,11 +136,15 @@ func TestInbox03_StreamSignalSurfaced(t *testing.T) {
 	seedWorkspaceAndUser(t, d, "U1")
 
 	insertChannel(t, d, "C1", "public")
-	insertMessage(t, d, "C1", "500.1", "U2", "prod is on fire, need a direction owner")
+	// Must be within the first-run lookback window (see testConfig's
+	// InitialLookbackDays): Run floors a fresh/zero watermark to
+	// now-lookbackDays before triage ever sees the message.
+	ts := recentTS(60)
+	insertMessage(t, d, "C1", ts, "U2", "prod is on fire, need a direction owner")
 
 	cfg := testConfig()
 	gen := &seqGenerator{responses: []string{
-		`{"verdicts":[{"key":"msg:C1:500.1","tier":"action","priority":"high","reason":"prod incident, no owner yet"}]}`,
+		fmt.Sprintf(`{"verdicts":[{"key":"msg:C1:%s","tier":"action","priority":"high","reason":"prod incident, no owner yet"}]}`, ts),
 		`{"why_matters":"Production incident needs an owner","thread_digest":"Prod fire reported, unowned.","draft_reply":"I can take this."}`,
 	}}
 	p := New(d, cfg, gen, log.Default())
@@ -150,7 +154,7 @@ func TestInbox03_StreamSignalSurfaced(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, created, "the stream candidate should surface as a new inbox item")
 
-	it, err := d.GetInboxItemByMessage("C1", "500.1")
+	it, err := d.GetInboxItemByMessage("C1", ts)
 	require.NoError(t, err)
 	require.NotNil(t, it, "a triage-surfaced stream item must exist even without any trigger")
 	assert.Equal(t, "stream", it.TriggerType)

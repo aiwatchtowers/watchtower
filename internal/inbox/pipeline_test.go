@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -764,4 +766,77 @@ func TestInbox07_FeedUntouchedOnTriageError(t *testing.T) {
 	assert.Equal(t, "pending", it.Status, "status must be untouched on triage error")
 	assert.Equal(t, "medium", it.Priority, "priority must be untouched on triage error")
 	assert.Equal(t, "actionable", it.ItemClass, "item_class must be untouched on triage error")
+}
+
+// triageKeyRegexp matches the "key=<candidate-key>" token emitted on every
+// triage candidate line (see triage.go's line formats for trigger items and
+// stream messages).
+var triageKeyRegexp = regexp.MustCompile(`key=(\S+)`)
+
+// keyEchoGenerator is a stub AI generator that records every prompt it sees
+// and, for triage calls, echoes back a low-priority "awareness" verdict for
+// each candidate key actually present in the prompt — mirroring how a real
+// model can only judge what it was shown. Non-triage prompts (e.g. card
+// generation) contain no "key=" tokens, so they get an empty verdict list,
+// which is harmless (card parsing just fails and the item is retried later).
+type keyEchoGenerator struct {
+	prompts []string
+}
+
+func (g *keyEchoGenerator) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
+	g.prompts = append(g.prompts, system)
+	matches := triageKeyRegexp.FindAllStringSubmatch(system, -1)
+	verdicts := make([]string, 0, len(matches))
+	for _, m := range matches {
+		verdicts = append(verdicts, fmt.Sprintf(`{"key":%q,"tier":"awareness","priority":"low","reason":"recent"}`, m[1]))
+	}
+	return fmt.Sprintf(`{"verdicts":[%s]}`, strings.Join(verdicts, ",")), &digest.Usage{}, "", nil
+}
+
+// TestTriage_FreshWatermarkUsesLookbackFloor guards the first-run path: Run
+// floors a fresh/zero watermark to now-InitialLookbackDays before calling
+// into triage (see docs/inventory/inbox-pulse.md). Before the fix, runTriage
+// re-read the raw (zero) watermark internally, so a fresh install's first
+// cycle scanned the entire backfilled message history — this test seeds one
+// message far outside the lookback window and one inside it, and asserts the
+// triage prompt only ever contains the recent one.
+func TestTriage_FreshWatermarkUsesLookbackFloor(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+	insertChannel(t, d, "C1", "public")
+
+	oldTS := fmt.Sprintf("%d.000100", time.Now().AddDate(0, 0, -30).Unix())
+	newTS := recentTS(60)
+	insertMessage(t, d, "C1", oldTS, "U2", "ancient channel chatter well before the lookback window")
+	insertMessage(t, d, "C1", newTS, "U2", "recent channel chatter needs a look")
+
+	cfg := testConfig() // InitialLookbackDays: 7
+	gen := &keyEchoGenerator{}
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+
+	var triagePrompt string
+	found := false
+	for _, pr := range gen.prompts {
+		if strings.Contains(pr, "=== CANDIDATES ===") {
+			require.False(t, found, "expected exactly one triage call for this small fixture")
+			triagePrompt = pr
+			found = true
+		}
+	}
+	require.True(t, found, "expected a triage call")
+	assert.Contains(t, triagePrompt, "recent channel chatter needs a look",
+		"the recent message must be inside the lookback-floored triage window")
+	assert.NotContains(t, triagePrompt, "ancient channel chatter",
+		"a fresh watermark must be floored to now-lookbackDays, not scan the entire backfilled history")
+
+	// The recent message should have been created as a stream item; the
+	// ancient one was never even offered to the AI, so it can't exist.
+	recentItem, _ := d.GetInboxItemByMessage("C1", newTS)
+	assert.NotNil(t, recentItem, "recent stream message should become an inbox item")
+	oldItem, _ := d.GetInboxItemByMessage("C1", oldTS)
+	assert.Nil(t, oldItem, "ancient stream message outside the lookback window must not become an inbox item")
 }

@@ -264,7 +264,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	var triageErr error
 	if p.generator != nil {
 		stepStart = time.Now()
-		outcome, triageErr = p.runTriage(ctx, currentUserID, newItems)
+		outcome, triageErr = p.runTriage(ctx, currentUserID, newItems, lastTS)
 		p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 		if triageErr != nil {
 			p.logger.Printf("inbox: triage error: %v", triageErr)

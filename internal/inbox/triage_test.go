@@ -79,7 +79,7 @@ func TestTriage_StreamCandidateBecomesItem(t *testing.T) {
 	insertMessage(t, d, "C1", "100.1", "U2", "prod is on fire, need direction owner")
 	gen.responses = []string{`{"verdicts":[{"key":"msg:C1:100.1","tier":"action","priority":"high","reason":"prod incident in your area"}]}`}
 
-	out, err := p.runTriage(context.Background(), "U1", nil)
+	out, err := p.runTriage(context.Background(), "U1", nil, 0)
 	if err != nil || out.Created != 1 {
 		t.Fatalf("created=%d err=%v", out.Created, err)
 	}
@@ -98,7 +98,7 @@ func TestTriage_IgnoreVerdictCreatesNothing(t *testing.T) {
 	insertMessage(t, d, "C1", "100.1", "U2", "someone joined the project channel")
 	gen.responses = []string{`{"verdicts":[{"key":"msg:C1:100.1","tier":"ignore","priority":"low","reason":"noise"}]}`}
 
-	out, err := p.runTriage(context.Background(), "U1", nil)
+	out, err := p.runTriage(context.Background(), "U1", nil, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 0, out.Created)
 
@@ -114,7 +114,7 @@ func TestInbox01_TriggerNeverIgnored(t *testing.T) {
 	gen.responses = []string{fmt.Sprintf(`{"verdicts":[{"key":"item:%d","tier":"ignore","priority":"low","reason":"bot noise"}]}`, id)}
 	items, err := d.GetInboxItems(db.InboxFilter{Status: "pending"})
 	require.NoError(t, err)
-	if _, err := p.runTriage(context.Background(), "U1", items); err != nil {
+	if _, err := p.runTriage(context.Background(), "U1", items, 0); err != nil {
 		t.Fatal(err)
 	}
 	it, err := d.GetInboxItem(id)
@@ -133,7 +133,7 @@ func TestInbox01_TriageNeverUpgrades(t *testing.T) {
 	items, err := d.GetInboxItems(db.InboxFilter{Status: "pending"})
 	require.NoError(t, err)
 
-	_, err = p.runTriage(context.Background(), "U1", items)
+	_, err = p.runTriage(context.Background(), "U1", items, 0)
 	require.NoError(t, err)
 
 	it, err := d.GetInboxItem(id)
@@ -149,7 +149,7 @@ func TestTriage_HardMutedStreamCandidateSkipped(t *testing.T) {
 	insertMessage(t, d, "C9", "100.1", "U2", "noise in muted channel")
 	require.NoError(t, d.UpsertLearnedRule(db.InboxLearnedRule{RuleType: "source_mute", ScopeKey: "channel:C9", Weight: -1.0, Source: "user_rule"}))
 
-	out, err := p.runTriage(context.Background(), "U1", nil)
+	out, err := p.runTriage(context.Background(), "U1", nil, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 0, gen.calls, "muted candidate must never reach the generator")
 	assert.Equal(t, 0, out.Created)
@@ -171,7 +171,7 @@ func TestTriage_MutedBeyondFailedChunkDoesNotAdvanceWatermark(t *testing.T) {
 	require.NoError(t, d.UpsertLearnedRule(db.InboxLearnedRule{RuleType: "source_mute", ScopeKey: "channel:C9", Weight: -1.0, Source: "user_rule"}))
 	gen.responses = []string{""} // the single chunk (containing ts=10) errors
 
-	out, err := p.runTriage(context.Background(), "U1", nil)
+	out, err := p.runTriage(context.Background(), "U1", nil, 0)
 	require.Error(t, err)
 	assert.Equal(t, float64(0), out.MaxProcessedTS,
 		"muted ts=20 must not advance the watermark past the untriaged ts=10 message")
@@ -187,7 +187,7 @@ func TestTriage_ChunkingAndPartialFailure(t *testing.T) {
 	// Chunk 1 (150 candidates): all ignored. Chunk 2 (1 candidate): AI error.
 	gen.responses = []string{`{"verdicts":[]}`, ""}
 
-	out, err := p.runTriage(context.Background(), "U1", nil)
+	out, err := p.runTriage(context.Background(), "U1", nil, 0)
 	require.Error(t, err)
 	assert.Equal(t, 2, gen.calls, "both chunks must be attempted")
 	assert.Equal(t, 0, out.Created)
@@ -201,7 +201,7 @@ func TestInbox07_InvalidJSONLeavesStateUntouched(t *testing.T) {
 	insertMessage(t, d, "C1", "100.1", "U2", "prod is on fire")
 	gen.responses = []string{"not json"}
 
-	out, err := p.runTriage(context.Background(), "U1", nil)
+	out, err := p.runTriage(context.Background(), "U1", nil, 0)
 	require.Error(t, err)
 	assert.Equal(t, 0, out.Created)
 	assert.Equal(t, float64(0), out.MaxProcessedTS, "a failing first chunk must not advance the watermark")

@@ -52,12 +52,16 @@ type triageCandidate struct {
 // into action/awareness/ignore. Trigger items may only be demoted
 // (actionable→ambient); stream messages become new inbox items when the
 // verdict is action or awareness. See INBOX-01 in docs/inventory/inbox-pulse.md.
-func (p *Pipeline) runTriage(ctx context.Context, currentUserID string, newItems []db.InboxItem) (triageOutcome, error) {
+//
+// sinceTS is the caller's already lookback-floored watermark (Run floors a
+// fresh/zero watermark to now-lookbackDays before calling in, so a fresh
+// install triages the recent window instead of the entire backfilled
+// history — see docs/inventory/inbox-pulse.md).
+func (p *Pipeline) runTriage(ctx context.Context, currentUserID string, newItems []db.InboxItem, sinceTS float64) (triageOutcome, error) {
 	var out triageOutcome
 
 	maxStream := p.cfg.Inbox.MaxTriageMessages
-	lastTS, _ := p.db.GetInboxLastProcessedTS()
-	streamCands, err := p.db.ListStreamCandidatesSince(currentUserID, lastTS, maxStream)
+	streamCands, err := p.db.ListStreamCandidatesSince(currentUserID, sinceTS, maxStream)
 	if err != nil {
 		return out, fmt.Errorf("listing stream candidates: %w", err)
 	}
