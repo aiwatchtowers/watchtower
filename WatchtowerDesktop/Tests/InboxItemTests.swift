@@ -118,4 +118,44 @@ final class InboxItemTests: XCTestCase {
         XCTAssertEqual(item.cardStatus, .failed)
         XCTAssertFalse(item.hasCard)
     }
+
+    func testReadyCardWithEmptyOptionalFieldsHidesTheirBlocks() throws {
+        // Go pipeline contract: only why_matters is guaranteed non-empty on a ready card.
+        // hasThreadDigest / hasDraftReply gate the digest paragraph and the copyable
+        // draft box in InboxCardView, so empty sections must report false here.
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertInboxItem(
+                db,
+                cardStatus: "ready",
+                whyMatters: "w",
+                threadDigest: "",
+                draftReply: ""
+            )
+        }
+        let item = try XCTUnwrap(db.read { db in
+            try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
+        })
+        XCTAssertTrue(item.hasCard)
+        XCTAssertFalse(item.hasThreadDigest)
+        XCTAssertFalse(item.hasDraftReply)
+    }
+
+    func testCardPresentationPredicatesTrueWhenFieldsPresent() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertInboxItem(
+                db,
+                cardStatus: "ready",
+                whyMatters: "w",
+                threadDigest: "t",
+                draftReply: "d"
+            )
+        }
+        let item = try XCTUnwrap(db.read { db in
+            try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items LIMIT 1")
+        })
+        XCTAssertTrue(item.hasThreadDigest)
+        XCTAssertTrue(item.hasDraftReply)
+    }
 }

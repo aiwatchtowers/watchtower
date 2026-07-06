@@ -74,6 +74,12 @@ struct InboxItem: FetchableRecord, Identifiable, Equatable {
     /// True when a secretary card has been successfully generated for this item.
     var hasCard: Bool { cardStatus == .ready }
 
+    /// The Go pipeline guarantees only `why_matters` is non-empty on a ready card;
+    /// digest and draft are optional. These predicates gate their blocks in the card
+    /// UI so an empty section never renders a bare header or an empty copyable box.
+    var hasThreadDigest: Bool { !threadDigest.isEmpty }
+    var hasDraftReply: Bool { !draftReply.isEmpty }
+
     init(row: Row) {
         id = row["id"]
         channelID = row["channel_id"] ?? ""

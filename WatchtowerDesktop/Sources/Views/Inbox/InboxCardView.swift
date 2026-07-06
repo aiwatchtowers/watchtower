@@ -146,6 +146,10 @@ struct InboxCardView: View {
     /// Chooses between the secretary card body, a "preparing"/"failed" placeholder for
     /// actionable items still waiting on card generation, or the legacy one-line AI reason
     /// block for items that never get a card (ambient rows).
+    ///
+    /// Deliberate: ambient rows fall back to `aiReasonBlock` for BOTH `.none` and `.failed`.
+    /// Awareness-tier cards are best-effort by design (capped by MaxAwarenessCards), so
+    /// failure messaging is scoped to actionable rows only.
     @ViewBuilder
     private var secretaryCardOrReasonBlock: some View {
         if item.hasCard {
@@ -157,11 +161,17 @@ struct InboxCardView: View {
         }
     }
 
+    /// On a ready card only `whyMatters` is guaranteed non-empty (Go pipeline contract);
+    /// digest and draft render only when present so no bare header / empty box appears.
     private var secretaryCardSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             cardParagraph(title: "Why it matters", text: item.whyMatters)
-            cardParagraph(title: "Thread digest", text: item.threadDigest)
-            draftReplyBlock
+            if item.hasThreadDigest {
+                cardParagraph(title: "Thread digest", text: item.threadDigest)
+            }
+            if item.hasDraftReply {
+                draftReplyBlock
+            }
         }
         .padding(.top, 2)
     }
