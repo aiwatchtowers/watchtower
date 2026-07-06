@@ -251,6 +251,35 @@ final class InboxViewModelPinnedFeedTests: XCTestCase {
         XCTAssertEqual(vm.awarenessItems.count, countBefore)
     }
 
+    // MARK: - Secretary card fields surfaced through load()
+
+    @MainActor
+    func testLoadSurfacesCardFieldsOnActionItems() throws {
+        let (dbManager, path) = try makeDB()
+        defer { TestDatabase.cleanup(path: path) }
+
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(
+                db,
+                messageTS: "1.0",
+                itemClass: "actionable",
+                cardStatus: "ready",
+                whyMatters: "w",
+                threadDigest: "t",
+                draftReply: "d"
+            )
+        }
+
+        let vm = InboxViewModel(dbManager: dbManager)
+        vm.load()
+
+        let item = try XCTUnwrap(vm.actionItems.first)
+        XCTAssertTrue(item.hasCard)
+        XCTAssertEqual(item.whyMatters, "w")
+        XCTAssertEqual(item.threadDigest, "t")
+        XCTAssertEqual(item.draftReply, "d")
+    }
+
     // MARK: - Backward-compat: allItems still populated
 
     @MainActor

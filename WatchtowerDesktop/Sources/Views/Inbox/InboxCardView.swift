@@ -32,6 +32,8 @@ struct InboxCardView: View {
     let onMarkRead: () -> Void
     let onFeedback: (Int, String) -> Void
 
+    @State private var didCopyDraft = false
+
     // MARK: - Snooze Options
 
     enum SnoozeOption {
@@ -49,8 +51,8 @@ struct InboxCardView: View {
             if size != .compact {
                 metadataLine
             }
-            if size == .expanded, !item.aiReason.isEmpty {
-                aiReasonBlock
+            if size == .expanded {
+                secretaryCardOrReasonBlock
             }
             if isExpanded {
                 conversationSection
@@ -137,6 +139,104 @@ struct InboxCardView: View {
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.yellow.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Secretary card (why it matters / thread digest / draft reply)
+
+    /// Chooses between the secretary card body, a "preparing"/"failed" placeholder for
+    /// actionable items still waiting on card generation, or the legacy one-line AI reason
+    /// block for items that never get a card (ambient rows).
+    @ViewBuilder
+    private var secretaryCardOrReasonBlock: some View {
+        if item.hasCard {
+            secretaryCardSection
+        } else if item.itemClass == .actionable {
+            cardPlaceholder
+        } else if !item.aiReason.isEmpty {
+            aiReasonBlock
+        }
+    }
+
+    private var secretaryCardSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            cardParagraph(title: "Why it matters", text: item.whyMatters)
+            cardParagraph(title: "Thread digest", text: item.threadDigest)
+            draftReplyBlock
+        }
+        .padding(.top, 2)
+    }
+
+    private func cardParagraph(title: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+            Text(SlackTextParser.toAttributedString(text, userNames: userNames))
+                .font(.caption)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var draftReplyBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Draft reply")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                copyDraftButton
+            }
+            Text(item.draftReply)
+                .font(.caption)
+                .textSelection(.enabled)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1)
+        )
+    }
+
+    private var copyDraftButton: some View {
+        Button(action: copyDraftReply) {
+            Image(systemName: didCopyDraft ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(.plain)
+        .help("Copy draft reply")
+    }
+
+    private func copyDraftReply() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(item.draftReply, forType: .string)
+        withAnimation(.easeInOut(duration: 0.15)) { didCopyDraft = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            withAnimation(.easeInOut(duration: 0.15)) { didCopyDraft = false }
+        }
+    }
+
+    @ViewBuilder
+    private var cardPlaceholder: some View {
+        if item.cardStatus == .failed {
+            Text("Context unavailable — will retry")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 4)
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Preparing context…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+        }
     }
 
     // MARK: - Trigger Capsule (replaces the bare colour-coded icon with a Tracks-style chip)
