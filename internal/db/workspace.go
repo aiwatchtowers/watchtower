@@ -96,6 +96,25 @@ func (db *DB) SetSearchLastDate(date string) error {
 	return nil
 }
 
+// GetComposeLastRunTS returns the last processed timestamp for the situation composer.
+func (db *DB) GetComposeLastRunTS() (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT COALESCE(compose_last_run_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	if err != nil {
+		return 0, fmt.Errorf("getting compose last run ts: %w", err)
+	}
+	return ts, nil
+}
+
+// SetComposeLastRunTS updates the last processed timestamp for the situation composer.
+func (db *DB) SetComposeLastRunTS(ts float64) error {
+	_, err := db.Exec(`UPDATE workspace SET compose_last_run_ts = ?`, ts)
+	if err != nil {
+		return fmt.Errorf("setting compose last run ts: %w", err)
+	}
+	return nil
+}
+
 // GetSecretaryProfile returns the user-written secretary brief text.
 func (db *DB) GetSecretaryProfile() (string, error) {
 	var s string

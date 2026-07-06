@@ -13,7 +13,8 @@ const inboxSelectCols = `id, channel_id, message_ts, thread_ts, sender_user_id,
 	ai_reason, resolved_reason, snooze_until, COALESCE(waiting_user_ids,''), target_id,
 	COALESCE(read_at,''), created_at, updated_at,
 	COALESCE(item_class,'actionable'), COALESCE(archived_at,''), COALESCE(archive_reason,''),
-	COALESCE(why_matters,''), COALESCE(thread_digest,''), COALESCE(draft_reply,''), COALESCE(card_status,'none'), COALESCE(card_generated_at,'')`
+	COALESCE(why_matters,''), COALESCE(thread_digest,''), COALESCE(draft_reply,''), COALESCE(card_status,'none'), COALESCE(card_generated_at,''),
+	COALESCE(composed_at,'')`
 
 // inboxItemColumns is an alias for inboxSelectCols used by feed queries.
 const inboxItemColumns = inboxSelectCols
@@ -29,6 +30,7 @@ func scanInboxItem(row interface{ Scan(...any) error }) (*InboxItem, error) {
 		&it.ReadAt, &it.CreatedAt, &it.UpdatedAt,
 		&it.ItemClass, &it.ArchivedAt, &it.ArchiveReason,
 		&it.WhyMatters, &it.ThreadDigest, &it.DraftReply, &it.CardStatus, &cardGeneratedAt,
+		&it.ComposedAt,
 	); err != nil {
 		return nil, err
 	}

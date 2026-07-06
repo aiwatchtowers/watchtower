@@ -555,6 +555,35 @@ type InboxItem struct {
 	DraftReply      string
 	CardStatus      string // none|ready|failed
 	CardGeneratedAt string
+	ComposedAt      string // empty if not yet folded into a situation by the composer
+}
+
+// DashboardSituation is a cluster of inbox signals composed into a single
+// narrative unit (e.g. "release X blocked") for the secretary dashboard.
+// Named distinctly from the pre-existing digest-pipeline Situation type
+// (a channel-digest interaction pattern) to avoid a type collision.
+type DashboardSituation struct {
+	ID                int
+	Title             string
+	Kind              string // external|target_update|track_update|mixed
+	Status            string // open|done|dismissed|converted|stale|snoozed
+	SnoozeUntil       string
+	Priority          string // high|medium|low
+	Rank              float64
+	AIReason          string
+	Summary           string
+	WhyMatters        string
+	Chronology        string
+	CardStatus        string // none|ready|failed
+	CardGeneratedAt   string
+	TargetID          *int
+	TrackID           *int
+	ConvertedTargetID *int
+	ConvertedTrackID  *int
+	LastSignalAt      string
+	ResolvedReason    string
+	CreatedAt         string
+	UpdatedAt         string
 }
 
 // InboxCandidate is a potential inbox item found by detection queries.
