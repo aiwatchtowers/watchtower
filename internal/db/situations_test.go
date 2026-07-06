@@ -85,6 +85,19 @@ func TestListUncomposedSignals_OrderCapAndMark(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, items, 1)
 	require.Equal(t, int(id3), items[0].ID)
+
+	// Auto-archived items (ArchiveExpiredAmbient/ArchiveStaleActionable) keep
+	// status='pending' — only archived_at/archive_reason are set — so without
+	// an archived_at filter the oldest-first scan would resurface months-old
+	// auto-archived junk ahead of id3. Archive id3 directly (mirroring what
+	// the archive helpers actually write) and assert it's excluded.
+	_, err = d.Exec(`UPDATE inbox_items SET archived_at = ?, archive_reason = 'seen_expired' WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339), id3)
+	require.NoError(t, err)
+
+	items, err = d.ListUncomposedSignals(10)
+	require.NoError(t, err)
+	require.Empty(t, items, "archived-but-still-pending signals must be excluded from the compose feed")
 }
 
 func TestListTrackEventsSince_OnlyNewAndNonDismissed(t *testing.T) {

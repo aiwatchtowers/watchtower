@@ -169,13 +169,17 @@ func (db *DB) ListSituationSignals(situationID int) ([]InboxItem, error) {
 // ---- Compose inputs (Task 4's composer feeds off these) ----
 
 // ListUncomposedSignals returns pending inbox items not yet folded into a
-// situation by the composer, oldest first, capped at limit.
+// situation by the composer, oldest first, capped at limit. Archived items
+// (auto-archived ambient/stale-actionable, which keep status='pending' —
+// only archived_at/archive_reason are set) are excluded, otherwise the
+// oldest-first scan surfaces months-old auto-archived noise ahead of any
+// real recent signal.
 func (db *DB) ListUncomposedSignals(limit int) ([]InboxItem, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := db.Query(`SELECT `+inboxSelectCols+` FROM inbox_items
-		WHERE status = 'pending' AND composed_at IS NULL
+		WHERE status = 'pending' AND composed_at IS NULL AND archived_at IS NULL
 		ORDER BY created_at ASC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing uncomposed signals: %w", err)

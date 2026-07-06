@@ -67,6 +67,17 @@ func (p *Pipeline) runCompose(ctx context.Context, currentUserID string) (create
 	if err != nil {
 		return 0, 0, fmt.Errorf("getting compose watermark: %w", err)
 	}
+	// Fresh install (watermark 0): floor to now-lookbackDays, mirroring
+	// resolveWatermarkWindow's fix for the inbox/triage watermark. Without
+	// this, sinceISO falls back to the Unix epoch and the very first compose
+	// pass pulls every track event and every active target ever created.
+	if lastTS == 0 {
+		lookbackDays := DefaultLookbackDays
+		if p.cfg != nil && p.cfg.Inbox.InitialLookbackDays > 0 {
+			lookbackDays = p.cfg.Inbox.InitialLookbackDays
+		}
+		lastTS = float64(now.AddDate(0, 0, -lookbackDays).Unix())
+	}
 	sinceISO := time.Unix(int64(lastTS), 0).UTC().Format("2006-01-02T15:04:05Z")
 
 	signals, err := p.db.ListUncomposedSignals(p.cfg.Dashboard.MaxComposeSignals)

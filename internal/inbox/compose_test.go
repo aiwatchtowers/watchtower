@@ -284,6 +284,45 @@ func TestDash02_PartialApplyRollsBackEverything(t *testing.T) {
 	assert.Equal(t, 0.0, ts, "the watermark must stay frozen after a rolled-back pass")
 }
 
+// TestCompose_FreshWatermarkUsesLookbackFloor guards the first compose pass on
+// an existing DB: runCompose used to derive sinceISO straight from the raw
+// compose watermark (GetComposeLastRunTS), which returns 0 on a fresh
+// install/first run. time.Unix(0,0) is the 1970 epoch, so ListTrackEventsSince
+// and ListTargetsUpdatedSince would return the entire backfilled history
+// instead of only recent material — the same bug class as the inbox/triage
+// fresh-watermark issue (see TestTriage_FreshWatermarkUsesLookbackFloor). This
+// seeds one track event far outside the lookback window and one inside it,
+// and asserts the compose prompt only ever contains the recent one.
+func TestCompose_FreshWatermarkUsesLookbackFloor(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+
+	trackID, err := d.UpsertTrack(db.Track{Text: "ongoing track", Priority: "medium"})
+	require.NoError(t, err)
+
+	// Old event inserted via raw SQL with an explicit past created_at, since
+	// InsertTrackEvent always defaults created_at=now (mirrors
+	// TestListTrackEventsSince_OnlyNewAndNonDismissed in internal/db).
+	oldTS := time.Now().AddDate(0, 0, -30).UTC().Format("2006-01-02T15:04:05Z")
+	_, err = d.Exec(`INSERT INTO track_events (track_id, summary, source_type, source_id, created_at)
+		VALUES (?, ?, ?, ?, ?)`, trackID, "ancient track event from a month ago", "test", "1", oldTS)
+	require.NoError(t, err)
+
+	_, err = d.InsertTrackEvent(db.TrackEvent{TrackID: int(trackID), Summary: "recent track event needs a look", SourceType: "test", SourceID: "2"})
+	require.NoError(t, err)
+
+	gen.responses = []string{`{"ops":[]}`}
+
+	_, _, err = p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+
+	require.Len(t, gen.prompts, 1, "expected exactly one compose AI call for this small fixture")
+	prompt := gen.prompts[0]
+	assert.Contains(t, prompt, "recent track event needs a look",
+		"the recent track event must be inside the lookback-floored compose window")
+	assert.NotContains(t, prompt, "ancient track event from a month ago",
+		"a fresh compose watermark must be floored to now-lookbackDays, not pull the entire backfilled history")
+}
+
 func TestCompose_MutedSignalsExcludedButMarked(t *testing.T) {
 	d, p, gen := newComposePipeline(t)
 	insertChannel(t, d, "C1", "public")
