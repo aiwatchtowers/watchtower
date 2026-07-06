@@ -216,7 +216,11 @@ final class RelayProcessor: Sendable {
                 chat message \(record.recordName, privacy: .public) stream failed: \
                 \(error.localizedDescription, privacy: .public)
                 """)
-            try await saveChunk(for: message, seq: seq, text: "⚠️ " + error.localizedDescription, done: true)
+            // Covers both error paths — stream failure and the watchdog
+            // timeout (streamTurn rethrows RelayChatError.streamTimeout here).
+            try await saveChunk(
+                for: message, seq: seq, text: "⚠️ " + error.localizedDescription, done: true, isError: true
+            )
         }
         try sidecar.markRelayProcessed(record.recordName, at: now())
         lastActivity.withLock { $0 = now() }
@@ -298,14 +302,16 @@ final class RelayProcessor: Sendable {
         for message: ChatMessagePayload,
         seq: OSAllocatedUnfairLock<Int>,
         text: String,
-        done: Bool
+        done: Bool,
+        isError: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
     ) async throws {
         let chunk = ChatChunkPayload(
             sessionID: message.sessionID,
             messageID: message.id,
             seq: seq.withLock { $0 },
             text: text,
-            done: done
+            done: done,
+            isError: isError
         )
         try await transport.save([try CloudRecordFactory.record(for: chunk, modifiedAt: now())])
         seq.withLock { $0 += 1 }

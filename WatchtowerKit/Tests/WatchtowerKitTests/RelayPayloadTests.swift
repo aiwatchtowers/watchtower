@@ -108,6 +108,43 @@ final class RelayPayloadTests: XCTestCase {
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: Data(json.utf8)), beat)
     }
 
+    func testChatChunkErrorFlagWireFormatIsFrozen() throws {
+        let chunk = ChatChunkPayload(
+            sessionID: "S1", messageID: "M1", seq: 3, text: "partial", done: true, isError: true
+        )
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(chunk), encoding: .utf8))
+        XCTAssertEqual(json, #"{"done":true,"is_error":true,"message_id":"M1","seq":3,"session_id":"S1","text":"partial"}"#)
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(ChatChunkPayload.self, from: Data(json.utf8)), chunk)
+    }
+
+    func testChatChunkNilErrorFlagMatchesLegacyWireFormat() throws {
+        // nil isError must be byte-identical to the pre-flag wire format —
+        // the key is absent, so old desktops/mobiles see no change at all.
+        let chunk = ChatChunkPayload(
+            sessionID: "S1", messageID: "M1", seq: 3, text: "partial", done: true, isError: nil
+        )
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(chunk), encoding: .utf8))
+        XCTAssertEqual(json, #"{"done":true,"message_id":"M1","seq":3,"session_id":"S1","text":"partial"}"#)
+    }
+
+    func testChatChunkDecodesLegacyWireWithoutErrorFlag() throws {
+        // Records written by old desktop versions carry no is_error key.
+        let json = #"{"done":true,"message_id":"M1","seq":3,"session_id":"S1","text":"partial"}"#
+        let decoded = try RelayCoder.makeDecoder().decode(ChatChunkPayload.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.isError)
+        XCTAssertEqual(decoded, ChatChunkPayload(sessionID: "S1", messageID: "M1", seq: 3, text: "partial", done: true))
+    }
+
+    func testChatChunkErrorFlagRoundTrip() throws {
+        let chunk = ChatChunkPayload(
+            sessionID: "S1", messageID: "M9", seq: 0, text: "⚠️ boom", done: true, isError: true
+        )
+        let data = try RelayCoder.makeEncoder().encode(chunk)
+        let decoded = try RelayCoder.makeDecoder().decode(ChatChunkPayload.self, from: data)
+        XCTAssertEqual(decoded, chunk)
+        XCTAssertEqual(decoded.isError, true)
+    }
+
     func testFailedActionWireFormatIsFrozen() throws {
         var action = ActionRequestPayload(
             id: "A1",
