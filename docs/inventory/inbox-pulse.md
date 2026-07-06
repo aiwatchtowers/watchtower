@@ -16,7 +16,7 @@
 
 **Status:** Enforced
 
-**Observable:** Inbox shows two kinds of signals. **Actionable** ("Needs action") items demand a response and persist until handled. **Ambient** ("FYI") items are awareness-only and fade on their own. The UI distinguishes them visually — expanded cards vs compact rows. Triage (the `inbox.triage` AI call) may only **downgrade** a class (actionable → ambient), never upgrade one; a trigger-created item is never dropped outright even on an `ignore` verdict, it is at most demoted to ambient. Upgrades require explicit user action.
+**Observable:** Every signal still carries one of two classes. **Actionable** items demand a response and persist until handled. **Ambient** items are awareness-only and fade on their own. Triage (the `inbox.triage` AI call) may only **downgrade** a class (actionable → ambient), never upgrade one; a trigger-created item is never dropped outright even on an `ignore` verdict, it is at most demoted to ambient. Upgrades require explicit user action. Both classes still feed the composer (`inbox.compose`, see `docs/inventory/dashboard.md`) that clusters signals into situations. What changed is presentation only: the dashboard no longer shows two visual sections ("Needs action" expanded cards vs "FYI" compact rows) — it surfaces action/ambient signals through a single secretary-ranked situation feed instead, with the class informing rank/priority rather than which section an item lands in.
 
 **Why locked:** Without this split, Inbox collapses into a single noisy feed and the "no inbox-zero pressure" promise dies.
 
@@ -114,17 +114,15 @@
 
 **Status:** Enforced
 
-**Observable:** When either secretary AI call — triage (`inbox.triage`) or cards (`inbox.card`) — errors out or returns unparseable JSON, existing state is preserved untouched until a future cycle succeeds. A triage failure leaves the feed as-is: no item is created, reclassified, or dropped for the untriaged messages, and the failure is reflected in the watermark (see INBOX-09). A per-item card failure marks that item `card_status='failed'` and keeps its raw snippet/reason visible; the pipeline moves on to the next item and retries the failed one next cycle. The feed never blanks out, items do not reshuffle, the user can keep working on whatever they were focused on.
+**Observable:** When the secretary's triage AI call (`inbox.triage`) errors out or returns unparseable JSON, existing state is preserved untouched until a future cycle succeeds. No item is created, reclassified, or dropped for the untriaged messages, and the failure is reflected in the watermark (see INBOX-09). The feed never blanks out, items do not reshuffle, the user can keep working on whatever they were focused on. (The equivalent guarantee for the dashboard's compose/situation-card AI calls, which replaced the per-item secretary card stage this contract used to also cover, is DASH-02 in `docs/inventory/dashboard.md`.)
 
 **Why locked:** Inbox is a "pulse" surface. A flapping AI call that periodically blanks the feed would teach the user to distrust the screen. Stability beats freshness when the alternative is chaos.
 
 **Test guards:**
 - `internal/inbox/triage_test.go::TestInbox07_InvalidJSONLeavesStateUntouched`
 - `internal/inbox/pipeline_test.go::TestInbox07_FeedUntouchedOnTriageError`
-- `internal/inbox/card_test.go::TestInbox07_CardFailureMarksFailedAndContinues`
-- `internal/inbox/card_test.go::TestRunCards_InvalidJSONMarksFailed`
 
-**Locked since:** 2026-04-27 (extended to triage + cards 2026-07-06, see changelog)
+**Locked since:** 2026-04-27 (extended to cards 2026-07-05, narrowed back to triage 2026-07-06 when per-item cards were retired, see changelog)
 
 ## INBOX-09 — Detection failure never advances the watermark
 
@@ -153,3 +151,4 @@
 - 2026-05-01: INBOX-02 extended to cover the new `target_due` trigger — closing the underlying target (status → done/dismissed) auto-resolves the inbox item. Migration 00002 adds `target_due` to `inbox_items.trigger_type` and `targets.notified_at`.
 - 2026-07-05: INBOX-09 added (owner-approved, audit 2026-07-05 batch 2.3) — the full `Run` now advances `inbox_last_processed_ts` only after a clean detector pass; any detector error freezes the watermark so the skipped window is not lost. `detectAll` returns an aggregated error to gate the advance.
 - 2026-07-06: secretary redesign (owner-approved, spec `docs/superpowers/specs/2026-07-05-inbox-secretary-redesign-design.md`) — INBOX-01/07 rewritten for triage+cards, INBOX-03 closed, pinned guards retired. Pinned selection (`pinned_selector.go`, the `inbox_items.pinned` column) is removed entirely, replaced by full-stream triage (`inbox.triage`, cheap tier) classifying every new trigger item plus ordinary channel traffic, and secretary cards (`inbox.card`, strong tier) generating why-it-matters/thread-digest/draft-reply write-ups for actionable items. INBOX-09 extended with the partial-advance rule for capped/partially-failed triage runs.
+- 2026-07-06: secretary dashboard (owner-approved, spec `docs/superpowers/specs/2026-07-06-secretary-dashboard-design.md`) — INBOX-01's Observable reworded only: action/ambient classes still live on signals, still feed the composer, and triage still only downgrades (guard tests unchanged). The two visual sections ("Needs action"/"FYI") are replaced by the dashboard's single secretary-ranked situation feed — see `docs/inventory/dashboard.md` for the new DASH-01..03 contracts this introduces. Also: INBOX-07 narrowed back to triage only — the per-item secretary card stage (`inbox.card`, `card.go`/`card_test.go`) it used to also cover was retired by migration 00012 (dropped by an earlier commit on this branch, `feat(inbox): compose + situation-card phases replace per-item cards`), and the card-failure-isolation guarantee now lives on DASH-02 for situation cards. This is a stale-reference fix (the guard test files no longer existed), not a weakening of the contract.
