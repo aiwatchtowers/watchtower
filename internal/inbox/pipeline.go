@@ -188,6 +188,126 @@ func (p *Pipeline) accumulateUsage(usage *digest.Usage) {
 	p.LastStepOutputTokens = usage.OutputTokens
 }
 
+// resolveCurrentUserID returns the pipeline's current user ID, preferring the
+// explicitly-set identity (SetCurrentUser) and falling back to the
+// DB-persisted identity.
+func (p *Pipeline) resolveCurrentUserID() (string, error) {
+	if p.currentUserID != "" {
+		return p.currentUserID, nil
+	}
+	return p.db.GetCurrentUserID()
+}
+
+// resolveWatermarkWindow returns the last processed timestamp (falling back
+// to now-lookbackDays for a fresh install) and the equivalent time.Time.
+// logPrefix distinguishes Run's log lines from RunFastDetection's.
+func (p *Pipeline) resolveWatermarkWindow(logPrefix string) (float64, time.Time) {
+	lastTS, err := p.db.GetInboxLastProcessedTS()
+	if err != nil {
+		p.logger.Printf("%s: error getting last processed ts, using default: %v", logPrefix, err)
+		lastTS = 0
+	}
+	lookbackDays := DefaultLookbackDays
+	if p.cfg != nil && p.cfg.Inbox.InitialLookbackDays > 0 {
+		lookbackDays = p.cfg.Inbox.InitialLookbackDays
+	}
+	if lastTS == 0 {
+		lastTS = float64(time.Now().AddDate(0, 0, -lookbackDays).Unix())
+	}
+	return lastTS, time.Unix(int64(lastTS), 0)
+}
+
+// dedupThreadItems merges duplicate pending thread inbox items (cleanup from
+// before thread-grouping). logPrefix distinguishes Run's log lines from
+// RunFastDetection's.
+func (p *Pipeline) dedupThreadItems(logPrefix string) {
+	if deduped, err := p.db.DeduplicateThreadInboxItems(); err != nil {
+		p.logger.Printf("%s: dedup error: %v", logPrefix, err)
+	} else if deduped > 0 {
+		p.logger.Printf("%s: merged %d duplicate thread items", logPrefix, deduped)
+	}
+}
+
+// loadUntriaged returns pending inbox items that have not yet been through
+// triage (no AI reason recorded).
+func (p *Pipeline) loadUntriaged() ([]db.InboxItem, error) {
+	pendingItems, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
+	if err != nil {
+		return nil, fmt.Errorf("loading pending items for triage: %w", err)
+	}
+	var newItems []db.InboxItem
+	for _, item := range pendingItems {
+		if item.AIReason == "" {
+			newItems = append(newItems, item)
+		}
+	}
+	return newItems, nil
+}
+
+// runTriagePhase runs triage over newItems when a generator is configured,
+// recording step timing/logging identically to the inline version it replaced.
+func (p *Pipeline) runTriagePhase(ctx context.Context, currentUserID string, newItems []db.InboxItem, lastTS float64) (triageOutcome, error) {
+	if p.generator == nil {
+		return triageOutcome{}, nil
+	}
+	stepStart := time.Now()
+	outcome, err := p.runTriage(ctx, currentUserID, newItems, lastTS)
+	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
+	if err != nil {
+		p.logger.Printf("inbox: triage error: %v", err)
+	}
+	return outcome, err
+}
+
+// runArchiveAndUnsnooze runs phase 6: auto-archive expired ambient / stale
+// actionable items, then unsnooze anything whose snooze has expired. Returns
+// the total number of items archived.
+func (p *Pipeline) runArchiveAndUnsnooze() int {
+	var archived int
+	if n, err := p.db.ArchiveExpiredAmbient(7 * 24 * time.Hour); err != nil {
+		p.logger.Printf("inbox: archive ambient error: %v", err)
+	} else {
+		archived += n
+	}
+	if n, err := p.db.ArchiveStaleActionable(14 * 24 * time.Hour); err != nil {
+		p.logger.Printf("inbox: archive stale error: %v", err)
+	} else {
+		archived += n
+	}
+	if _, err := p.db.UnsnoozeExpiredInboxItems(); err != nil {
+		p.logger.Printf("inbox: unsnooze error: %v", err)
+	}
+	return archived
+}
+
+// decideWatermark computes the new watermark timestamp per INBOX-09 (see
+// docs/inventory/inbox-pulse.md). A detector error ALWAYS freezes the
+// watermark, even when triage capped or made partial progress: detectors and
+// triage scan the same ts window, so advancing over triage's progress would
+// still skip the mentions/DMs the failed detector never saw. Only when
+// detection is clean may triage outcomes move the watermark — over exactly
+// what was processed (capped scan, or the chunks completed before a triage
+// failure), never below lastTS. ok is false when the watermark must stay
+// frozen.
+func decideWatermark(lastTS float64, detectErr, triageErr error, outcome triageOutcome) (ts float64, ok bool) {
+	switch {
+	case detectErr != nil:
+		return 0, false
+	case triageErr != nil:
+		if outcome.MaxProcessedTS > lastTS {
+			return outcome.MaxProcessedTS, true
+		}
+		return 0, false
+	case outcome.Capped:
+		return outcome.MaxProcessedTS, true
+	default:
+		// Use a 30-minute buffer instead of wall-clock time to account for
+		// Slack search API indexing delays — messages may arrive in the DB
+		// with ts_unix values behind wall-clock time.
+		return float64(time.Now().Add(-30 * time.Minute).Unix()), true
+	}
+}
+
 // Run executes the inbox pipeline: dedup, detect new items, triage (trigger
 // items plus a stream scan), learn, auto-resolve, prepare secretary cards,
 // auto-archive, then unsnooze. Returns (created count, resolved count, error).
@@ -201,43 +321,21 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 		return 0, 0, nil
 	}
 
-	// Resolve current user: prefer explicitly set identity, fall back to DB.
-	currentUserID := p.currentUserID
-	if currentUserID == "" {
-		var err error
-		currentUserID, err = p.db.GetCurrentUserID()
-		if err != nil {
-			return 0, 0, fmt.Errorf("getting current user: %w", err)
-		}
+	currentUserID, err := p.resolveCurrentUserID()
+	if err != nil {
+		return 0, 0, fmt.Errorf("getting current user: %w", err)
 	}
 	if currentUserID == "" {
 		p.logger.Println("inbox: no current user set, skipping")
 		return 0, 0, nil
 	}
 
-	// Get last processed timestamp.
-	lastTS, err := p.db.GetInboxLastProcessedTS()
-	if err != nil {
-		p.logger.Printf("inbox: error getting last processed ts, using default: %v", err)
-		lastTS = 0
-	}
-	lookbackDays := DefaultLookbackDays
-	if p.cfg != nil && p.cfg.Inbox.InitialLookbackDays > 0 {
-		lookbackDays = p.cfg.Inbox.InitialLookbackDays
-	}
-	if lastTS == 0 {
-		lastTS = float64(time.Now().AddDate(0, 0, -lookbackDays).Unix())
-	}
-	sinceTime := time.Unix(int64(lastTS), 0)
+	lastTS, sinceTime := p.resolveWatermarkWindow("inbox")
 
 	const totalSteps = 7
 
 	// Phase 0: Deduplicate existing thread inbox items (cleanup from before thread-grouping).
-	if deduped, err := p.db.DeduplicateThreadInboxItems(); err != nil {
-		p.logger.Printf("inbox: dedup error: %v", err)
-	} else if deduped > 0 {
-		p.logger.Printf("inbox: merged %d duplicate thread items", deduped)
-	}
+	p.dedupThreadItems("inbox")
 
 	// Phase 1: Detection — Slack + external sources (individually non-fatal, but a
 	// failure freezes/partially advances the watermark below so no window is skipped).
@@ -250,26 +348,11 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// Phase 2: Triage — the secretary reviews every new trigger item plus a
 	// full scan of ordinary channel traffic (INBOX-01/INBOX-03).
 	p.progress(2, totalSteps, "triaging")
-	pendingItems, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
+	newItems, err := p.loadUntriaged()
 	if err != nil {
-		return created, 0, fmt.Errorf("loading pending items for triage: %w", err)
+		return created, 0, err
 	}
-	var newItems []db.InboxItem
-	for _, item := range pendingItems {
-		if item.AIReason == "" {
-			newItems = append(newItems, item)
-		}
-	}
-	var outcome triageOutcome
-	var triageErr error
-	if p.generator != nil {
-		stepStart = time.Now()
-		outcome, triageErr = p.runTriage(ctx, currentUserID, newItems, lastTS)
-		p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
-		if triageErr != nil {
-			p.logger.Printf("inbox: triage error: %v", triageErr)
-		}
-	}
+	outcome, triageErr := p.runTriagePhase(ctx, currentUserID, newItems, lastTS)
 	created += outcome.Created
 
 	// Phase 3: Implicit learning — update mute rules from dismiss patterns.
@@ -298,48 +381,13 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	// Phase 6: Auto-archive expired/stale items, then unsnooze expired snoozes.
 	p.progress(6, totalSteps, "archiving")
-	var archived int
-	if n, err := p.db.ArchiveExpiredAmbient(7 * 24 * time.Hour); err != nil {
-		p.logger.Printf("inbox: archive ambient error: %v", err)
-	} else {
-		archived += n
-	}
-	if n, err := p.db.ArchiveStaleActionable(14 * 24 * time.Hour); err != nil {
-		p.logger.Printf("inbox: archive stale error: %v", err)
-	} else {
-		archived += n
-	}
-	if _, err := p.db.UnsnoozeExpiredInboxItems(); err != nil {
-		p.logger.Printf("inbox: unsnooze error: %v", err)
-	}
+	archived := p.runArchiveAndUnsnooze()
 
-	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09. A
-	// detector or triage failure means part of the window was never scanned;
-	// advancing the watermark past it would silently drop what was missed.
-	//
-	// A detector error ALWAYS freezes the watermark, even when triage capped
-	// or made partial progress: detectors and triage scan the same ts window,
-	// so advancing over triage's progress would still skip the mentions/DMs
-	// the failed detector never saw. Only when detection is clean may triage
-	// outcomes move the watermark — over exactly what was processed (capped
-	// scan, or the chunks completed before a triage failure), never below
-	// lastTS.
-	switch {
-	case detectErr != nil:
+	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09.
+	if ts, ok := decideWatermark(lastTS, detectErr, triageErr, outcome); ok {
+		p.advanceWatermark(ts, lastTS)
+	} else {
 		p.logger.Printf("inbox: detector/triage error, leaving watermark unchanged to avoid losing the skipped window (detectErr=%v triageErr=%v)", detectErr, triageErr)
-	case triageErr != nil:
-		if outcome.MaxProcessedTS > lastTS {
-			p.advanceWatermark(outcome.MaxProcessedTS, lastTS)
-		} else {
-			p.logger.Printf("inbox: detector/triage error, leaving watermark unchanged to avoid losing the skipped window (detectErr=%v triageErr=%v)", detectErr, triageErr)
-		}
-	case outcome.Capped:
-		p.advanceWatermark(outcome.MaxProcessedTS, lastTS)
-	default:
-		// Use a 30-minute buffer instead of wall-clock time to account for
-		// Slack search API indexing delays — messages may arrive in the DB
-		// with ts_unix values behind wall-clock time.
-		p.advanceWatermark(float64(time.Now().Add(-30*time.Minute).Unix()), lastTS)
 	}
 
 	p.progress(totalSteps, totalSteps, "done")
@@ -383,37 +431,17 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 		return nil
 	}
 
-	currentUserID := p.currentUserID
-	if currentUserID == "" {
-		var err error
-		currentUserID, err = p.db.GetCurrentUserID()
-		if err != nil {
-			return fmt.Errorf("getting current user: %w", err)
-		}
+	currentUserID, err := p.resolveCurrentUserID()
+	if err != nil {
+		return fmt.Errorf("getting current user: %w", err)
 	}
 	if currentUserID == "" {
 		return nil
 	}
 
-	lastTS, err := p.db.GetInboxLastProcessedTS()
-	if err != nil {
-		p.logger.Printf("inbox fast: error getting last processed ts, using default: %v", err)
-		lastTS = 0
-	}
-	lookbackDays := DefaultLookbackDays
-	if p.cfg != nil && p.cfg.Inbox.InitialLookbackDays > 0 {
-		lookbackDays = p.cfg.Inbox.InitialLookbackDays
-	}
-	if lastTS == 0 {
-		lastTS = float64(time.Now().AddDate(0, 0, -lookbackDays).Unix())
-	}
-	sinceTime := time.Unix(int64(lastTS), 0)
+	lastTS, sinceTime := p.resolveWatermarkWindow("inbox fast")
 
-	if deduped, err := p.db.DeduplicateThreadInboxItems(); err != nil {
-		p.logger.Printf("inbox fast: dedup error: %v", err)
-	} else if deduped > 0 {
-		p.logger.Printf("inbox fast: merged %d duplicate thread items", deduped)
-	}
+	p.dedupThreadItems("inbox fast")
 
 	// RunFastDetection never advances the watermark (the full Run owns that), so
 	// a detector error is already surfaced via the per-detector logs inside

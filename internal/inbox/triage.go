@@ -161,10 +161,17 @@ func loadMuteScopes(database *db.DB) map[string]bool {
 	return m
 }
 
-// triageChunk sends one chunk of candidates to the AI and applies the
-// verdicts. On any error (AI call, parse), it returns before mutating
-// anything so the caller's outcome reflects only fully-triaged chunks (INBOX-07).
-func (p *Pipeline) triageChunk(ctx context.Context, brief, tmpl string, chunk []triageCandidate, out *triageOutcome) error {
+// prioUpdateMap is an alias for db.BulkUpdateInboxPriorities' parameter type
+// (kept unnamed there), so triageChunk and its helpers share one spelling.
+type prioUpdateMap = map[int]struct {
+	Priority string
+	AIReason string
+}
+
+// buildTriageBlock renders the "=== CANDIDATES ===" section of the triage
+// prompt and returns a by-key lookup plus the trigger items in this chunk
+// (used to scope the learned-preferences block).
+func buildTriageBlock(chunk []triageCandidate) (string, map[string]*triageCandidate, []db.InboxItem) {
 	var block strings.Builder
 	block.WriteString("=== CANDIDATES ===\n")
 	byKey := make(map[string]*triageCandidate, len(chunk))
@@ -176,86 +183,127 @@ func (p *Pipeline) triageChunk(ctx context.Context, brief, tmpl string, chunk []
 			chunkItems = append(chunkItems, *chunk[i].item)
 		}
 	}
-	// Scoped learned rules (mutes/boosts) for the trigger items in this chunk.
-	if prefs, err := buildUserPreferencesBlock(p.db, chunkItems); err == nil && prefs != "" {
-		block.WriteString("\n" + prefs)
-	}
+	return block.String(), byKey, chunkItems
+}
 
-	system := fmt.Sprintf(tmpl, prompts.Directive(p.cfg.Digest.Language), brief, block.String())
+// normalizeTriagePriority coerces an AI-returned priority to one of the three
+// known values, defaulting to "medium" (INBOX-01 priority-default logic).
+func normalizeTriagePriority(prio string) string {
+	if prio != "high" && prio != "medium" && prio != "low" {
+		return "medium"
+	}
+	return prio
+}
+
+// applyTriggerVerdict records the verdict's priority/reason for a trigger
+// item and demotes it to ambient when the AI voted to ignore it. Trigger
+// items are only ever demoted, never dropped, and never re-upgraded
+// (INBOX-01).
+func (p *Pipeline) applyTriggerVerdict(c *triageCandidate, v triageVerdict, prio string, prioUpdates prioUpdateMap) {
+	tier := v.Tier
+	if tier == "ignore" { // INBOX-01: triggers can be demoted, never dropped
+		tier = "awareness"
+	}
+	prioUpdates[c.item.ID] = struct {
+		Priority string
+		AIReason string
+	}{prio, v.Reason}
+	if tier == "awareness" && c.item.ItemClass == "actionable" {
+		_ = p.db.SetInboxItemClass(int64(c.item.ID), "ambient")
+	}
+	// tier == "action" on an already-ambient item: no upgrade (INBOX-01).
+}
+
+// createStreamItem persists a stream candidate as a new inbox item when the
+// verdict is action or awareness; an ignore verdict persists nothing.
+func (p *Pipeline) createStreamItem(c *triageCandidate, v triageVerdict, prio string, out *triageOutcome) {
+	if v.Tier != "action" && v.Tier != "awareness" {
+		return // ignore → nothing persisted
+	}
+	class := "actionable"
+	if v.Tier == "awareness" {
+		class = "ambient"
+	}
+	if _, err := p.db.CreateInboxItem(db.InboxItem{
+		ChannelID:    c.stream.ChannelID,
+		MessageTS:    c.stream.MessageTS,
+		ThreadTS:     c.stream.ThreadTS,
+		SenderUserID: c.stream.SenderUserID,
+		TriggerType:  "stream",
+		Snippet:      cleanSnippet(c.stream.Text),
+		RawText:      c.stream.Text,
+		Permalink:    c.stream.Permalink,
+		Priority:     prio,
+		AIReason:     v.Reason,
+		ItemClass:    class,
+	}); err == nil {
+		out.Created++
+	}
+}
+
+// callTriageAI sends the assembled system prompt to the AI and parses the
+// structured verdict response.
+func (p *Pipeline) callTriageAI(ctx context.Context, system string) (triageResult, error) {
 	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "inbox.triage"), system, "Triage these candidates.", "")
 	if err != nil {
-		return fmt.Errorf("triage AI call: %w", err)
+		return triageResult{}, fmt.Errorf("triage AI call: %w", err)
 	}
 	p.accumulateUsage(usage)
 
 	jsonStr, err := prompts.ExtractJSONObject(raw)
 	if err != nil {
-		return fmt.Errorf("triage response: %w", err)
+		return triageResult{}, fmt.Errorf("triage response: %w", err)
 	}
 	var res triageResult
 	if err := json.Unmarshal([]byte(jsonStr), &res); err != nil {
-		return fmt.Errorf("triage response parse: %w", err)
+		return triageResult{}, fmt.Errorf("triage response parse: %w", err)
 	}
+	return res, nil
+}
 
-	prioUpdates := make(map[int]struct {
-		Priority string
-		AIReason string
-	})
-	for _, v := range res.Verdicts {
-		c, ok := byKey[v.Key]
-		if !ok {
-			continue // hallucinated key
-		}
-		prio := v.Priority
-		if prio != "high" && prio != "medium" && prio != "low" {
-			prio = "medium"
-		}
-		switch {
-		case c.item != nil:
-			tier := v.Tier
-			if tier == "ignore" { // INBOX-01: triggers can be demoted, never dropped
-				tier = "awareness"
-			}
-			prioUpdates[c.item.ID] = struct {
-				Priority string
-				AIReason string
-			}{prio, v.Reason}
-			if tier == "awareness" && c.item.ItemClass == "actionable" {
-				_ = p.db.SetInboxItemClass(int64(c.item.ID), "ambient")
-			}
-			// tier == "action" on an already-ambient item: no upgrade (INBOX-01).
-		case c.stream != nil:
-			if v.Tier != "action" && v.Tier != "awareness" {
-				continue // ignore → nothing persisted
-			}
-			class := "actionable"
-			if v.Tier == "awareness" {
-				class = "ambient"
-			}
-			if _, err := p.db.CreateInboxItem(db.InboxItem{
-				ChannelID:    c.stream.ChannelID,
-				MessageTS:    c.stream.MessageTS,
-				ThreadTS:     c.stream.ThreadTS,
-				SenderUserID: c.stream.SenderUserID,
-				TriggerType:  "stream",
-				Snippet:      cleanSnippet(c.stream.Text),
-				RawText:      c.stream.Text,
-				Permalink:    c.stream.Permalink,
-				Priority:     prio,
-				AIReason:     v.Reason,
-				ItemClass:    class,
-			}); err == nil {
-				out.Created++
-			}
-		}
-	}
-	// All stream candidates in this chunk are now processed regardless of
-	// their verdict (including "ignore"), so the watermark can advance past them.
+// advanceMaxProcessedTS raises out.MaxProcessedTS over every stream
+// candidate's ts in chunk. All stream candidates in a chunk are processed
+// regardless of their verdict (including "ignore"), so the watermark can
+// advance past them.
+func advanceMaxProcessedTS(chunk []triageCandidate, out *triageOutcome) {
 	for _, c := range chunk {
 		if c.stream != nil && c.stream.TSUnix > out.MaxProcessedTS {
 			out.MaxProcessedTS = c.stream.TSUnix
 		}
 	}
+}
+
+// triageChunk sends one chunk of candidates to the AI and applies the
+// verdicts. On any error (AI call, parse), it returns before mutating
+// anything so the caller's outcome reflects only fully-triaged chunks (INBOX-07).
+func (p *Pipeline) triageChunk(ctx context.Context, brief, tmpl string, chunk []triageCandidate, out *triageOutcome) error {
+	blockStr, byKey, chunkItems := buildTriageBlock(chunk)
+	// Scoped learned rules (mutes/boosts) for the trigger items in this chunk.
+	if prefs, err := buildUserPreferencesBlock(p.db, chunkItems); err == nil && prefs != "" {
+		blockStr += "\n" + prefs
+	}
+
+	system := fmt.Sprintf(tmpl, prompts.Directive(p.cfg.Digest.Language), brief, blockStr)
+	res, err := p.callTriageAI(ctx, system)
+	if err != nil {
+		return err
+	}
+
+	prioUpdates := make(prioUpdateMap)
+	for _, v := range res.Verdicts {
+		c, ok := byKey[v.Key]
+		if !ok {
+			continue // hallucinated key
+		}
+		prio := normalizeTriagePriority(v.Priority)
+		switch {
+		case c.item != nil:
+			p.applyTriggerVerdict(c, v, prio, prioUpdates)
+		case c.stream != nil:
+			p.createStreamItem(c, v, prio, out)
+		}
+	}
+	advanceMaxProcessedTS(chunk, out)
 	if len(prioUpdates) > 0 {
 		if err := p.db.BulkUpdateInboxPriorities(prioUpdates); err != nil {
 			return fmt.Errorf("applying triage priorities: %w", err)
