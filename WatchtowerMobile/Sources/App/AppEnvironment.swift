@@ -14,10 +14,17 @@ public final class AppEnvironment {
     /// v1 wiring: an in-memory transport seeded with demo data (`DemoSeed`).
     ///
     /// TRANSPORT SWAP POINT — when the CloudKit entitlements land (packaging
-    /// plan), replace the single line below that constructs
-    /// `InMemoryCloudTransport()` with the real `CloudKitTransport(...)`.
-    /// Nothing else here changes: the hydrator and every view already talk to
-    /// the `CloudSyncTransport` protocol, not the concrete type.
+    /// plan), the swap is these four steps, all local to this file:
+    ///   1. `let transportStore = try TransportStore(path: …/cloudkit-transport.sqlite)`
+    ///   2. `let transport = CloudKitTransport(store: transportStore)`,
+    ///      plus `await transport.start()` in `bootstrap`
+    ///   3. pass `pull: { try await transport.pull() }` to the ReplicaHydrator
+    ///      (the hook exists for exactly this)
+    ///   4. update `transportLabel`
+    /// Everything downstream already talks to the `CloudSyncTransport`
+    /// protocol, not the concrete type. Plan 4 note: the actions producer
+    /// will need `save` access into `.relay` — expose the transport (or add
+    /// a Kit-side action queue) rather than reaching into this `private let`.
     private let transport: any CloudSyncTransport
     private let hydrator: ReplicaHydrator
 
@@ -36,7 +43,7 @@ public final class AppEnvironment {
             fatalError("failed to open replica store: \(error)")
         }
 
-        // TRANSPORT SWAP POINT (see doc comment above): one line to CloudKit.
+        // TRANSPORT SWAP POINT (see the four-step doc comment above).
         let transport = InMemoryCloudTransport()
         self.transport = transport
         hydrator = ReplicaHydrator(transport: transport, store: store)

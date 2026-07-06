@@ -435,6 +435,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport {
         if let systemFields,
            let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: systemFields),
            let decoded = CKRecord(coder: unarchiver) {
+            unarchiver.finishDecoding()
             ck = decoded
         } else {
             let id = CKRecord.ID(recordName: record.recordName, zoneID: zoneID)
