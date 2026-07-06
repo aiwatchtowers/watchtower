@@ -58,7 +58,10 @@ final class SlicePublisher: Sendable {
 
         for kind in SliceKind.allCases {
             guard let sql = Self.sliceSQL[kind] else { continue }
-            let rows = try dbPool.read { db in
+            // Explicit await: in an async context newer compilers resolve
+            // dbPool.read to GRDB's async overload; older ones picked the
+            // sync one, which is why this built locally but not on CI.
+            let rows = try await dbPool.read { db in
                 try Row.fetchAll(db, sql: sql).map { (id: Self.rowID($0), row: $0) }
             }
             let result = SliceDiff.compute(
