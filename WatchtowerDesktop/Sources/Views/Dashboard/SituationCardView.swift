@@ -19,6 +19,11 @@ struct SituationCardView: View {
     let onDismiss: () -> Void
     let onSnooze: (SnoozeOption) -> Void
     let onFeedback: (Int) -> Void
+    /// Disables the Target button while its async prefill is being built, to
+    /// avoid a double-tap racing two `CreateTargetSheet` presentations.
+    var isCreatingTarget: Bool = false
+    let onCreateTarget: () -> Void
+    let onCreateTrack: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -171,7 +176,7 @@ struct SituationCardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Action row (Done / Dismiss / Snooze / feedback — Create-buttons land in a later task)
+    // MARK: - Action row (Done / Dismiss / Snooze / Create target / Create track / feedback)
 
     private var actionRow: some View {
         HStack(spacing: 10) {
@@ -186,6 +191,15 @@ struct SituationCardView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            Button(action: onCreateTarget) {
+                Label("Target", systemImage: "checkmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .disabled(isCreatingTarget)
+            Button(action: onCreateTrack) {
+                Label("Track", systemImage: "binoculars")
+            }
+            .buttonStyle(.bordered)
             Spacer()
             feedbackButtons
         }

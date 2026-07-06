@@ -132,6 +132,20 @@ final class DashboardViewModel {
         }
     }
 
+    /// Marks a situation converted into a target and/or track, recording the
+    /// resulting id(s) so the link isn't lost (DASH-03), then reloads. Called
+    /// once the create-target/create-track sheet has produced a real id.
+    func markConverted(situationID: Int, targetID: Int?, trackID: Int?) {
+        do {
+            try dbManager.dbPool.write { db in
+                try SituationQueries.markConverted(db, id: situationID, targetID: targetID, trackID: trackID)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to record conversion: \(error.localizedDescription)"
+        }
+    }
+
     /// Records thumbs-up/down feedback for a situation (rating -1 derives a learned
     /// mute rule for its member signals' channels; +1 is a no-op — see
     /// `SituationQueries.recordFeedback`), then reloads.

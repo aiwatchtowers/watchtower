@@ -9,8 +9,23 @@ import SwiftUI
 /// (`InboxFeedView`), mirroring how `InboxViewModel` is owned/passed there.
 struct DashboardView: View {
     let vm: DashboardViewModel
+    @Environment(AppState.self) private var appState
     @State private var expandedSituationID: Situation.ID?
     @State private var memberSignalsCache: [Int: [InboxItem]] = [:]
+
+    // Create-target flow (DASH-03): fromSituation prefill → CreateTargetSheet →
+    // onCreated marks the situation converted with the new target id.
+    @State private var showCreateTarget = false
+    @State private var targetPrefill: TargetPrefill?
+    @State private var pendingSituationID: Int?
+    @State private var isBuildingPrefill = false
+    @State private var conversionError: String?
+
+    // Create-track flow (DASH-03): CustomTrackManagementSheet's onCreated yields a
+    // TrackDraft with no id, so the id is resolved afterwards via
+    // TrackQueries.fetchLatestCustom — best-effort in v1 (see openCreateTrack).
+    @State private var showCreateTrack = false
+    @State private var trackSituationID: Int?
 
     var body: some View {
         Group {
@@ -18,6 +33,12 @@ struct DashboardView: View {
                 emptyState
             } else {
                 ScrollView {
+                    if let msg = conversionError {
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 12)
+                    }
                     LazyVStack(alignment: .leading, spacing: 1) {
                         ForEach(vm.situations) { situation in
                             situationRow(situation)
@@ -31,6 +52,20 @@ struct DashboardView: View {
                     }
                     .padding(.vertical, 4)
                 }
+            }
+        }
+        .sheet(isPresented: $showCreateTarget) {
+            CreateTargetSheet(
+                prefill: targetPrefill,
+                onCreated: { newID in
+                    guard let situationID = pendingSituationID else { return }
+                    vm.markConverted(situationID: situationID, targetID: newID, trackID: nil)
+                }
+            )
+        }
+        .sheet(isPresented: $showCreateTrack) {
+            CustomTrackManagementSheet(linkedTargetID: nil) { _ in
+                resolveCreatedTrack()
             }
         }
     }
@@ -66,7 +101,10 @@ struct DashboardView: View {
             onDone: { vm.done(situation) },
             onDismiss: { vm.dismiss(situation) },
             onSnooze: { option in vm.snooze(situation, until: SnoozeDates.until(option)) },
-            onFeedback: { rating in vm.submitFeedback(situation, rating: rating) }
+            onFeedback: { rating in vm.submitFeedback(situation, rating: rating) },
+            isCreatingTarget: isBuildingPrefill,
+            onCreateTarget: { openCreateTarget(for: situation) },
+            onCreateTrack: { openCreateTrack(for: situation) }
         )
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -89,5 +127,55 @@ struct DashboardView: View {
             memberSignalsCache[situation.id] = vm.loadMemberSignals(situation.id)
         }
         expandedSituationID = situation.id
+    }
+
+    // MARK: - Create target / Create track (DASH-03)
+
+    private func openCreateTarget(for situation: Situation) {
+        guard let db = appState.databaseManager else {
+            conversionError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingPrefill = true
+            defer { isBuildingPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromSituation(situation, db: db)
+                targetPrefill = pf
+                pendingSituationID = situation.id
+                conversionError = nil
+                showCreateTarget = true
+            } catch {
+                conversionError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func openCreateTrack(for situation: Situation) {
+        trackSituationID = situation.id
+        showCreateTrack = true
+    }
+
+    /// Resolves the id of the custom track `CustomTrackManagementSheet` just
+    /// created (its `onCreated` yields a `TrackDraft`, not an id) by looking up
+    /// the newest `origin='custom'` track. Best-effort: if that lookup fails or
+    /// finds nothing, the situation is left open rather than guessing wrong —
+    /// the user can retry from the dashboard.
+    private func resolveCreatedTrack() {
+        guard let situationID = trackSituationID, let db = appState.databaseManager else { return }
+        Task { @MainActor in
+            do {
+                let track = try await db.dbPool.read { dbConn in
+                    try TrackQueries.fetchLatestCustom(dbConn)
+                }
+                guard let track else {
+                    conversionError = "Track created, but couldn't resolve its id — situation left open."
+                    return
+                }
+                vm.markConverted(situationID: situationID, targetID: nil, trackID: track.id)
+            } catch {
+                conversionError = "Track created, but couldn't resolve its id: \(error.localizedDescription)"
+            }
+        }
     }
 }

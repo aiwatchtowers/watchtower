@@ -135,6 +135,45 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertNil(vm.errorMessage)
     }
 
+    // MARK: - markConverted (DASH-03: conversion keeps the link)
+
+    func test_DASH_03_conversionRecordsLinks() throws {
+        let id = try dbManager.dbPool.write { try TestDatabase.insertSituation($0, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        vm.markConverted(situationID: situation.id, targetID: 99, trackID: nil)
+
+        XCTAssertTrue(vm.situations.isEmpty, "converted situations drop out of the open feed")
+        XCTAssertEqual(vm.openCount, 0)
+        let row = try dbManager.dbPool.read { db in
+            try Row.fetchOne(db, sql: """
+                SELECT status, converted_target_id, converted_track_id FROM situations WHERE id = ?
+                """, arguments: [id])!
+        }
+        XCTAssertEqual(row["status"] as String, "converted")
+        XCTAssertEqual(row["converted_target_id"] as Int, 99)
+        XCTAssertNil(row["converted_track_id"] as Int?)
+    }
+
+    func test_DASH_03_conversionRecordsTrackLink() throws {
+        _ = try dbManager.dbPool.write { try TestDatabase.insertSituation($0, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        vm.markConverted(situationID: situation.id, targetID: nil, trackID: 17)
+
+        let row = try dbManager.dbPool.read { db in
+            try Row.fetchOne(db, sql: """
+                SELECT converted_target_id, converted_track_id FROM situations WHERE id = ?
+                """, arguments: [situation.id])!
+        }
+        XCTAssertNil(row["converted_target_id"] as Int?)
+        XCTAssertEqual(row["converted_track_id"] as Int, 17)
+    }
+
     // MARK: - loadMemberSignals
 
     func testLoadMemberSignalsReturnsJoinedItemsOrderedByMessageTS() throws {
