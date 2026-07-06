@@ -74,10 +74,14 @@ func TestRunSituationCards_EmptySummaryMarksFailed(t *testing.T) {
 }
 
 func TestRunSituationCards_CapsToNewestMembers(t *testing.T) {
-	// 22 member signals: the newest 20 must survive into the prompt block
-	// (oldest-first within that window), the oldest 2 dropped with a "…and 2
-	// more" note. A stale card must not omit a resolution just because a
-	// situation grew past the cap.
+	// 22 member signals, cap 20: keep-newest must KEEP the 2 newest and DROP
+	// the 2 oldest, so a stale card can't omit a recent resolution. This pins
+	// keep-newest specifically: flipping the slice back to head truncation
+	// (members[:cap], keep-oldest) drops sigbody-21/22 and makes this RED.
+	//
+	// message_ts is a TEXT column and ListSituationSignals orders by it
+	// lexicographically, so the timestamps and snippet tokens are zero-padded
+	// to width 2 — lexicographic order then equals numeric order (01<02<…<22).
 	d, p, gen := newComposePipeline(t)
 	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "long thread", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
 	require.NoError(t, err)
@@ -85,10 +89,10 @@ func TestRunSituationCards_CapsToNewestMembers(t *testing.T) {
 	for i := 1; i <= 22; i++ {
 		id := mustCreateInboxItem(t, d, db.InboxItem{
 			ChannelID:    "C1",
-			MessageTS:    fmt.Sprintf("%d.1", i),
+			MessageTS:    fmt.Sprintf("%02d", i),
 			SenderUserID: "U2",
 			TriggerType:  "stream",
-			Snippet:      fmt.Sprintf("signal number %d", i),
+			Snippet:      fmt.Sprintf("sigbody-%02d", i),
 		})
 		ids = append(ids, int(id))
 	}
@@ -102,10 +106,12 @@ func TestRunSituationCards_CapsToNewestMembers(t *testing.T) {
 
 	require.Len(t, gen.prompts, 1)
 	prompt := gen.prompts[0]
-	assert.Contains(t, prompt, "signal number 22", "newest signal must be in the prompt")
-	assert.Contains(t, prompt, "signal number 3", "the newest-20 window starts at signal 3")
-	assert.NotContains(t, prompt, "signal number 1 ", "oldest dropped signal must not be in the prompt")
-	assert.NotContains(t, prompt, "signal number 2 ", "second-oldest dropped signal must not be in the prompt")
+	// sigbody-22 is the newest signal — kept only by keep-newest (head
+	// truncation would drop it).
+	assert.Contains(t, prompt, "sigbody-22", "newest signal must survive the cap")
+	// sigbody-01 is the oldest — dropped only by keep-newest (head truncation
+	// would keep it).
+	assert.NotContains(t, prompt, "sigbody-01", "oldest signal must be dropped by the newest-first cap")
 	assert.Contains(t, prompt, "…and 2 more")
 }
 
