@@ -283,6 +283,138 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).first?.text, "pulled")
     }
 
+    // MARK: - Monotonic apply guard
+
+    func testApplyDropsStaleBatchAndKeepsNewerPayload() throws {
+        let store = try ReplicaStore.inMemory()
+        let v2 = dataRecord(kind: .target, id: "1",
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "v2")))
+        XCTAssertTrue(try store.apply(CloudChangeBatch(changed: [v2], deletedRecordNames: [], newToken: CloudChangeToken(value: 5))))
+
+        // A later-arriving OLDER batch (token 3 <= stored 5) with an earlier
+        // version of the same record must be dropped wholesale.
+        let v1 = dataRecord(kind: .target, id: "1",
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "v1")))
+        XCTAssertFalse(try store.apply(CloudChangeBatch(changed: [v1], deletedRecordNames: [], newToken: CloudChangeToken(value: 3))))
+
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).first?.text, "v2")
+        XCTAssertEqual(try store.storedToken(), CloudChangeToken(value: 5))
+    }
+
+    // MARK: - Reentrancy coalescing
+
+    /// Transport whose `changes` blocks on an external gate and counts calls,
+    /// so two concurrent hydrate cycles can be forced to overlap.
+    private actor GatedTransport: CloudSyncTransport {
+        private let inner = InMemoryCloudTransport()
+        private(set) var changesCalls = 0
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func seed(_ records: [CloudRecord]) async throws { try await inner.save(records) }
+
+        func openGate() {
+            for waiter in waiters { waiter.resume() }
+            waiters.removeAll()
+        }
+
+        func save(_ records: [CloudRecord]) async throws { try await inner.save(records) }
+        func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+            try await inner.delete(recordNames: recordNames, in: zone)
+        }
+
+        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+            changesCalls += 1
+            await withCheckedContinuation { waiters.append($0) }
+            return try await inner.changes(in: zone, since: token)
+        }
+    }
+
+    func testConcurrentHydrateOnceCoalescesIntoOneCycle() async throws {
+        let transport = GatedTransport()
+        try await transport.seed([
+            dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "gated")))
+        ])
+        let store = try ReplicaStore.inMemory()
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+
+        async let first = hydrator.hydrateOnce()
+        async let second = hydrator.hydrateOnce()
+        // Let both calls enter and the first suspend inside changes().
+        try await Task.sleep(for: .milliseconds(50))
+        await transport.openGate()
+
+        let (a, b) = try await (first, second)
+        XCTAssertEqual(a.applied, b.applied)
+        // Coalesced: exactly one real cycle ran, so changes() was hit once.
+        let calls = await transport.changesCalls
+        XCTAssertEqual(calls, 1)
+    }
+
+    // MARK: - DatabasePool (production mechanism) path
+
+    func testHydrateAndObserveOnDatabasePoolPath() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("replica-pool-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let transport = InMemoryCloudTransport()
+        try await transport.save([
+            dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "on disk")))
+        ])
+        let store = try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path)
+
+        let observed = expectation(description: "pool observation sees the row")
+        let observation = ValueObservation.tracking { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
+        }
+        let cancellable = observation.start(
+            in: store.reader,
+            onError: { XCTFail("observation error: \($0)") },
+            onChange: { if $0 == 1 { observed.fulfill() } }
+        )
+        defer { cancellable.cancel() }
+
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        _ = try await hydrator.hydrateOnce()
+
+        await fulfillment(of: [observed], timeout: 5)
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).first?.text, "on disk")
+    }
+
+    // MARK: - Compaction failure is non-fatal
+
+    private actor ThrowingCompactTransport: CompactingTransport {
+        private let inner = InMemoryCloudTransport()
+        struct CompactError: Error {}
+
+        func seed(_ records: [CloudRecord]) async throws { try await inner.save(records) }
+        func save(_ records: [CloudRecord]) async throws { try await inner.save(records) }
+        func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+            try await inner.delete(recordNames: recordNames, in: zone)
+        }
+        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+            try await inner.changes(in: zone, since: token)
+        }
+        func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
+            throw CompactError()
+        }
+    }
+
+    func testCompactionFailureDoesNotFailAppliedCycle() async throws {
+        let transport = ThrowingCompactTransport()
+        try await transport.seed([
+            dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "applied")))
+        ])
+        let store = try ReplicaStore.inMemory()
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+
+        // compact throws, but the cycle already applied — it must succeed.
+        let result = try await hydrator.hydrateOnce()
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).first?.text, "applied")
+    }
+
     // MARK: - Loop
 
     func testStartLoopHydratesAndStopCancels() async throws {

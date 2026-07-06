@@ -13,7 +13,9 @@ import os
 /// same code paths.
 public final class ReplicaStore: Sendable {
     private let writer: any DatabaseWriter
-    private let corrupt = OSAllocatedUnfairLock(initialState: 0)
+    /// Distinct record_names whose payloads failed to decode, so the count is
+    /// a true tally of bad rows (not fetch passes) and each is logged once.
+    private let corrupt = OSAllocatedUnfairLock(initialState: Set<String>())
     private let logger = Logger(subsystem: "WatchtowerKit", category: "ReplicaStore")
 
     private static let dataTokenKey = "data_change_token"
@@ -63,12 +65,32 @@ public final class ReplicaStore: Sendable {
     /// Payloads are stored as opaque blobs without decoding, so a corrupt
     /// payload can never fail the batch or stall the token — corruption
     /// surfaces (and is skipped) in `fetchAll`.
-    public func apply(_ batch: CloudChangeBatch) throws {
+    ///
+    /// Returns `true` if the batch was applied, `false` if it was dropped by
+    /// the monotonic guard (a stale/overlapping read). Callers should skip
+    /// compaction when `false` — the batch's events are already behind the
+    /// stored token.
+    @discardableResult
+    public func apply(_ batch: CloudChangeBatch) throws -> Bool {
         // JSONEncoder always emits valid UTF-8, so the nil branch is
         // unreachable; skipping only the token persistence would just
         // re-read the zone next cycle (safe — upserts are idempotent).
         let tokenJSON = String(bytes: try JSONEncoder().encode(batch.newToken), encoding: .utf8)
-        try writer.write { db in
+        return try writer.write { db in
+            // Monotonic guard: a batch whose token is not newer than what we
+            // already applied is a stale or overlapping read — e.g. a
+            // reentrant hydration cycle that resumed after a newer one
+            // committed. Its records are older versions of rows we already
+            // hold, and compaction may have dropped the events it is based
+            // on, so applying it would silently regress payloads. Drop it.
+            let storedRaw = try String.fetchOne(
+                db,
+                sql: "SELECT value FROM replica_meta WHERE key = ?",
+                arguments: [Self.dataTokenKey]
+            )
+            if let stored = Self.decodeToken(storedRaw), batch.newToken.value <= stored.value {
+                return false
+            }
             for record in batch.changed where record.zone == .data {
                 try db.execute(
                     sql: """
@@ -97,7 +119,13 @@ public final class ReplicaStore: Sendable {
                     arguments: [Self.dataTokenKey, tokenJSON]
                 )
             }
+            return true
         }
+    }
+
+    private static func decodeToken(_ raw: String?) -> CloudChangeToken? {
+        guard let raw else { return nil }
+        return try? JSONDecoder().decode(CloudChangeToken.self, from: Data(raw.utf8))
     }
 
     public func storedToken() throws -> CloudChangeToken? {
@@ -105,7 +133,7 @@ public final class ReplicaStore: Sendable {
             try String.fetchOne(db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [Self.dataTokenKey])
         }
         guard let raw else { return nil }
-        guard let token = try? JSONDecoder().decode(CloudChangeToken.self, from: Data(raw.utf8)) else {
+        guard let token = Self.decodeToken(raw) else {
             // Corrupted token → full re-read from the zone; apply is an
             // idempotent upsert, so the replay is safe (mirrors RelayProcessor).
             logger.warning("unreadable data-zone change token, re-reading the zone from scratch")
@@ -130,32 +158,41 @@ public final class ReplicaStore: Sendable {
         orderedBy sql: String? = nil
     ) throws -> [T] {
         let order = sql ?? "modified_at DESC, record_name"
-        let payloads = try writer.read { db in
-            try Data.fetchAll(
+        let rows = try writer.read { db in
+            try Row.fetchAll(
                 db,
-                sql: "SELECT payload FROM slice_records WHERE kind = ? ORDER BY \(order)",
+                sql: "SELECT record_name, payload FROM slice_records WHERE kind = ? ORDER BY \(order)",
                 arguments: [kind.rawValue]
             )
         }
         var decoded: [T] = []
-        var skipped = 0
-        for payload in payloads {
+        var badNames: [String] = []
+        for row in rows {
+            let payload: Data = row["payload"]
             do {
                 decoded.append(try T(row: RowPayloadCoder.row(from: payload)))
             } catch {
-                skipped += 1
+                badNames.append(row["record_name"])
             }
         }
-        if skipped > 0 {
-            let count = skipped // immutable copy for the @Sendable withLock closure
-            corrupt.withLock { $0 += count }
-            logger.warning("skipped \(count, privacy: .public) undecodable \(kind.rawValue, privacy: .public) payloads")
+        if !badNames.isEmpty {
+            // Track distinct corrupt record_names, and log only on the first
+            // sighting of each — an observation-driven list refetches on every
+            // change, so a persistently-bad row must not re-log forever.
+            let names = badNames // immutable copy for the @Sendable withLock closure
+            let firstSeen = corrupt.withLock { seen -> [String] in
+                names.filter { seen.insert($0).inserted }
+            }
+            for name in firstSeen {
+                logger.warning("undecodable \(kind.rawValue, privacy: .public) payload skipped: \(name, privacy: .public)")
+            }
         }
         return decoded
     }
 
-    /// Cumulative count of payloads skipped by `fetchAll` since init.
+    /// Number of DISTINCT record_names whose payloads failed to decode across
+    /// all `fetchAll` passes since init.
     public func corruptCount() -> Int {
-        corrupt.withLock { $0 }
+        corrupt.withLock { $0.count }
     }
 }

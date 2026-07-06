@@ -12,6 +12,9 @@ public actor ReplicaHydrator {
     /// (InMemoryCloudTransport has no engine to nudge).
     private let pull: (@Sendable () async throws -> Void)?
     private var loopTask: Task<Void, Never>?
+    /// The currently-running cycle, if any. Concurrent `hydrateOnce` callers
+    /// await this instead of starting their own — see `hydrateOnce`.
+    private var inFlight: Task<(applied: Int, deleted: Int), Error>?
     private let logger = Logger(subsystem: "WatchtowerKit", category: "ReplicaHydrator")
 
     public init(
@@ -28,11 +31,33 @@ public actor ReplicaHydrator {
 
     /// One hydration cycle: optional engine pull, read data-zone changes
     /// since the store's persisted token, apply them in one transaction.
+    ///
+    /// Cycles are coalesced: actors are reentrant, so a caller arriving while
+    /// a cycle is suspended (at `pull`/`changes`) would otherwise start a
+    /// second overlapping cycle whose older batch could regress the token and
+    /// overwrite fresher payloads. Concurrent callers instead await the
+    /// running cycle's own result. (The store's monotonic `apply` guard is
+    /// the belt to this suspenders.)
     @discardableResult
     public func hydrateOnce() async throws -> (applied: Int, deleted: Int) {
+        if let inFlight {
+            return try await inFlight.value
+        }
+        let task = Task { try await self.performHydration() }
+        inFlight = task
+        defer { inFlight = nil }
+        return try await task.value
+    }
+
+    private func performHydration() async throws -> (applied: Int, deleted: Int) {
         try await pull?()
         let batch = try await transport.changes(in: .data, since: store.storedToken())
-        try store.apply(batch)
+        guard try store.apply(batch) else {
+            // Dropped by the monotonic guard — a stale/overlapping batch whose
+            // events are already behind our stored token. Nothing applied,
+            // nothing to compact.
+            return (applied: 0, deleted: 0)
+        }
 
         // Consumer-driven compaction of the CONSUMED data-zone buffer (see
         // CompactingTransport's retention note): safe here because the
