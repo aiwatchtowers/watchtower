@@ -44,9 +44,14 @@ struct InboxItem: FetchableRecord, Identifiable, Equatable {
     let readAt: String          // "" = unread
     // New fields (v67)
     let itemClassRaw: String    // column: item_class
-    let pinned: Bool            // column: pinned (INTEGER 0/1)
     let archivedAt: Date?       // column: archived_at (nullable TEXT ISO8601)
     let archiveReason: String   // column: archive_reason
+    // Secretary card fields (v68)
+    let whyMatters: String      // column: why_matters
+    let threadDigest: String    // column: thread_digest
+    let draftReply: String      // column: draft_reply
+    let cardStatusRaw: String   // column: card_status
+    let cardGeneratedAt: Date?  // column: card_generated_at (nullable TEXT ISO8601)
     let createdAt: String
     let updatedAt: String
 
@@ -54,6 +59,26 @@ struct InboxItem: FetchableRecord, Identifiable, Equatable {
     var itemClass: ItemClass {
         ItemClass(rawValue: itemClassRaw) ?? .ambient
     }
+
+    enum CardStatus: String {
+        case none
+        case ready
+        case failed
+    }
+
+    /// Typed card status derived from `card_status` column.
+    var cardStatus: CardStatus {
+        CardStatus(rawValue: cardStatusRaw) ?? .none
+    }
+
+    /// True when a secretary card has been successfully generated for this item.
+    var hasCard: Bool { cardStatus == .ready }
+
+    /// The Go pipeline guarantees only `why_matters` is non-empty on a ready card;
+    /// digest and draft are optional. These predicates gate their blocks in the card
+    /// UI so an empty section never renders a bare header or an empty copyable box.
+    var hasThreadDigest: Bool { !threadDigest.isEmpty }
+    var hasDraftReply: Bool { !draftReply.isEmpty }
 
     init(row: Row) {
         id = row["id"]
@@ -75,7 +100,6 @@ struct InboxItem: FetchableRecord, Identifiable, Equatable {
         targetID = row["target_id"] as Int?
         readAt = row["read_at"] ?? ""
         itemClassRaw = row["item_class"] ?? "ambient"
-        pinned = (row["pinned"] as Int? ?? 0) != 0
         if let archivedAtStr = row["archived_at"] as String?, !archivedAtStr.isEmpty {
             archivedAt = Self.iso8601WithFractional.date(from: archivedAtStr)
                 ?? Self.iso8601Standard.date(from: archivedAtStr)
@@ -83,6 +107,16 @@ struct InboxItem: FetchableRecord, Identifiable, Equatable {
             archivedAt = nil
         }
         archiveReason = row["archive_reason"] ?? ""
+        whyMatters = row["why_matters"] ?? ""
+        threadDigest = row["thread_digest"] ?? ""
+        draftReply = row["draft_reply"] ?? ""
+        cardStatusRaw = row["card_status"] ?? "none"
+        if let cardGeneratedAtStr = row["card_generated_at"] as String?, !cardGeneratedAtStr.isEmpty {
+            cardGeneratedAt = Self.iso8601WithFractional.date(from: cardGeneratedAtStr)
+                ?? Self.iso8601Standard.date(from: cardGeneratedAtStr)
+        } else {
+            cardGeneratedAt = nil
+        }
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
     }

@@ -387,7 +387,7 @@ final class TargetChatViewModel {
     private func persistMessage(conversationID: Int64, role: String, text: String) {
         do {
             try dbManager.dbPool.write { db in
-                try ChatMessageQueries.insert(
+                _ = try ChatMessageQueries.insert(
                     db, conversationID: conversationID, role: role, text: text
                 )
             }

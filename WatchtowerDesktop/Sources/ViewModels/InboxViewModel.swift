@@ -12,10 +12,10 @@ final class InboxViewModel {
     var isLoading = false
     var errorMessage: String?
 
-    // Pinned / Feed split (Task 20)
-    var pinnedItems: [InboxItem] = []
-    var feedItems: [InboxItem] = []
-    var hasHighPriorityPinned: Bool = false
+    // Action / Awareness tier split (Task 9)
+    var actionItems: [InboxItem] = []
+    var awarenessItems: [InboxItem] = []
+    var hasHighPriorityAction: Bool = false
     var feedPageSize: Int = 50
     private var feedOffset: Int = 0
 
@@ -128,20 +128,20 @@ final class InboxViewModel {
                     triggerType: self.triggerTypeFilter,
                     includeResolved: self.showResolved
                 )
-                let pinned = try InboxQueries.fetchPinned(
+                let action = try InboxQueries.fetchActionTier(
                     db,
                     unreadOnly: self.unreadOnly,
                     keepIDs: self.sessionStickyIDs
                 )
-                let feed = try InboxQueries.fetchFeed(
+                let awareness = try InboxQueries.fetchAwarenessTier(
                     db,
                     limit: self.feedPageSize,
                     offset: 0,
                     unreadOnly: self.unreadOnly,
                     keepIDs: self.sessionStickyIDs
                 )
-                let highPriorityPinned = try InboxQueries.hasHighPriorityPinned(db)
-                return (ws?.domain, ws?.id, all, counts, pinned, feed, highPriorityPinned)
+                let highPriorityAction = try InboxQueries.hasHighPriorityAction(db)
+                return (ws?.domain, ws?.id, all, counts, action, awareness, highPriorityAction)
             }
 
             workspaceDomain = result.0
@@ -152,10 +152,10 @@ final class InboxViewModel {
             pendingCount = counts.pending
             unreadCount = counts.unread
             highPriorityCount = counts.highPriority
-            pinnedItems = result.4
-            feedItems = result.5
+            actionItems = result.4
+            awarenessItems = result.5
             feedOffset = result.5.count
-            hasHighPriorityPinned = result.6
+            hasHighPriorityAction = result.6
 
             // Resolve sender and channel names
             let senderIDs = Set(items.map(\.senderUserID).filter { !$0.isEmpty })
@@ -184,19 +184,19 @@ final class InboxViewModel {
         } catch {
             allItems = []
             senderGroups = []
-            pinnedItems = []
-            feedItems = []
-            hasHighPriorityPinned = false
+            actionItems = []
+            awarenessItems = []
+            hasHighPriorityAction = false
             errorMessage = error.localizedDescription
         }
         isLoading = false
     }
 
-    /// Appends the next page of feed items (infinite scroll).
+    /// Appends the next page of awareness-tier items (infinite scroll).
     func loadMore() {
         do {
             let next = try dbManager.dbPool.read { db in
-                try InboxQueries.fetchFeed(
+                try InboxQueries.fetchAwarenessTier(
                     db,
                     limit: feedPageSize,
                     offset: feedOffset,
@@ -204,7 +204,7 @@ final class InboxViewModel {
                     keepIDs: self.sessionStickyIDs
                 )
             }
-            feedItems.append(contentsOf: next)
+            awarenessItems.append(contentsOf: next)
             feedOffset += next.count
         } catch {
             errorMessage = error.localizedDescription

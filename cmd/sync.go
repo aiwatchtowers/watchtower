@@ -284,7 +284,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 				d.SetBriefingPipeline(briefing.New(database, cfg, gen, logger))
 			}
 			if cfg.Inbox.Enabled {
-				d.SetInboxPipeline(inbox.New(database, cfg, gen, logger))
+				inboxPipe := inbox.New(database, cfg, gen, logger)
+				inboxPipe.SetPromptStore(prompts.New(database, nil))
+				d.SetInboxPipeline(inboxPipe)
 			}
 			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
 			customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)

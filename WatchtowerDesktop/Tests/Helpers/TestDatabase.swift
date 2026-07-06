@@ -222,7 +222,8 @@ enum TestDatabase {
         synced_at         TEXT,
         search_last_date  TEXT NOT NULL DEFAULT '',
         current_user_id   TEXT NOT NULL DEFAULT '',
-        inbox_last_processed_ts REAL NOT NULL DEFAULT 0
+        inbox_last_processed_ts REAL NOT NULL DEFAULT 0,
+        secretary_profile TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS users (
         id            TEXT PRIMARY KEY,
@@ -489,7 +490,8 @@ enum TestDatabase {
             'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
             'calendar_invite','calendar_time_change','calendar_cancelled',
             'decision_made','briefing_ready',
-            'target_due'
+            'target_due',
+            'stream'
         )),
         snippet         TEXT NOT NULL DEFAULT '',
         context         TEXT NOT NULL DEFAULT '',
@@ -503,12 +505,16 @@ enum TestDatabase {
         waiting_user_ids TEXT NOT NULL DEFAULT '',
         target_id       INTEGER,
         read_at         TEXT,
-        item_class      TEXT NOT NULL DEFAULT 'ambient',
-        pinned          INTEGER NOT NULL DEFAULT 0,
-        archived_at     TEXT,
-        archive_reason  TEXT NOT NULL DEFAULT '',
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        item_class      TEXT NOT NULL DEFAULT 'actionable' CHECK(item_class IN ('actionable','ambient')),
+        archived_at     TEXT,
+        archive_reason  TEXT DEFAULT '' CHECK(archive_reason IN ('','resolved','seen_expired','stale','dismissed')),
+        why_matters     TEXT NOT NULL DEFAULT '',
+        thread_digest   TEXT NOT NULL DEFAULT '',
+        draft_reply     TEXT NOT NULL DEFAULT '',
+        card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
+        card_generated_at TEXT,
         UNIQUE(channel_id, message_ts)
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_items(status);
@@ -516,6 +522,8 @@ enum TestDatabase {
     CREATE INDEX IF NOT EXISTS idx_inbox_updated ON inbox_items(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_inbox_sender ON inbox_items(sender_user_id);
     CREATE INDEX IF NOT EXISTS idx_inbox_snooze ON inbox_items(snooze_until);
+    CREATE INDEX IF NOT EXISTS idx_inbox_items_class_status ON inbox_items(item_class, status);
+    CREATE INDEX IF NOT EXISTS idx_inbox_items_archived ON inbox_items(archived_at);
 
     CREATE TABLE IF NOT EXISTS inbox_learned_rules (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1162,16 +1170,23 @@ enum TestDatabase {
         snoozeUntil: String = "",
         taskID: Int? = nil,       // kept for call-site compat; maps to target_id column
         readAt: String? = nil,
-        archivedAt: String? = nil
+        archivedAt: String? = nil,
+        itemClass: String = "actionable",
+        cardStatus: String = "none",
+        whyMatters: String = "",
+        threadDigest: String = "",
+        draftReply: String = ""
     ) throws {
         try db.execute(sql: """
             INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
                 trigger_type, snippet, permalink, status, priority, ai_reason,
-                resolved_reason, snooze_until, target_id, read_at, archived_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resolved_reason, snooze_until, target_id, read_at, archived_at,
+                item_class, card_status, why_matters, thread_digest, draft_reply)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [channelID, messageTS, threadTS, senderUserID,
                              triggerType, snippet, permalink, status, priority, aiReason,
-                             resolvedReason, snoozeUntil, taskID, readAt, archivedAt])
+                             resolvedReason, snoozeUntil, taskID, readAt, archivedAt,
+                             itemClass, cardStatus, whyMatters, threadDigest, draftReply])
     }
 
     // MARK: - Inbox Learned Rules Fixtures

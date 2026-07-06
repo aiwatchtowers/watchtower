@@ -8,13 +8,17 @@
 
 ## Feature Notes
 
-### Inbox Pulse (v67+)
-- `internal/inbox/` — Pipeline now runs phases in order: detectors (slack / jira / calendar / watchtower) → classifier → implicit learner → AI prioritize → AI pinned selector (separate call, max 5) → auto-resolve/archive → unsnooze
-- Two item classes: `actionable` (pending/resolved lifecycle) vs `ambient` (auto-seen, auto-archive after 7 days; actionable stale after 14 days)
-- `inbox_items.pinned` column; pinned selection is a dedicated AI call that respects learned mute rules (weight ≤ -0.8 filtered out)
-- `inbox_learned_rules` table (implicit + explicit_feedback + user_rule sources) — `source='user_rule'` is protected from implicit overwrite. Rules are injected into AI prompts via `buildUserPreferencesBlock`.
+### Inbox Secretary (v73+, replaces Inbox Pulse pinned model)
+- `internal/inbox/` — `Pipeline.Run` phases in order: detectors (slack / jira / calendar / watchtower) → full-stream triage (`inbox.triage`, cheap model tier) → implicit learner → auto-resolve → secretary cards (`inbox.card`, strong model tier) → archive → unsnooze. See `pipeline.go`'s `Run` for the authoritative order.
+- Triage (`triage.go`) reviews every new trigger item plus a chunked scan of ordinary channel traffic (`cfg.Inbox.MaxTriageMessages` per cycle), assigning tier (action/ambient) and priority. It may only downgrade a trigger item's class, never upgrade one (INBOX-01). Hard-muted sources are skipped before reaching the AI call.
+- Two item classes: `actionable` (pending/resolved lifecycle, gets a card) vs `ambient` (auto-seen, auto-archive after 7 days; actionable stale after 14 days)
+- The old pinned-selection AI call and `inbox_items.pinned` column are **removed** (migration 00010) — there is no separate "top 5" call anymore; the two-tier feed (Needs action / FYI) replaces it.
+- Cards (`card.go`, `runCards`) generate why-it-matters / thread digest / draft reply for actionable items via a stronger model, capped per cycle (`cfg.Inbox.MaxAwarenessCards`). Per-item failures are recorded via `MarkInboxCardFailed` and retried next cycle; they never fail `Run` (INBOX-07).
+- Watermark advance (INBOX-09): a detector error always freezes `inbox_last_processed_ts`; a triage error or cap advances it only to the last fully-triaged message, never past an unprocessed one — see `Run`'s watermark-decision block and `docs/inventory/inbox-pulse.md`.
+- `workspace.secretary_profile` — a free-text brief the user writes about themselves, injected into both the triage and card prompts via `buildSecretaryBrief` so AI judgment reflects real context. Edited from the Desktop "Profile" tab (`SecretaryProfileView`).
+- `inbox_learned_rules` table (implicit + user_rule sources) — `source='user_rule'` is protected from implicit overwrite. Rules are injected into AI prompts via `buildUserPreferencesBlock`. Mechanics unchanged from the pinned-era design.
 - `inbox_feedback` table records raw 👍/👎 + reason; `inbox.SubmitFeedback` in Go maps (rating, reason) → rule upsert or class downgrade.
-- Desktop: `InboxFeedView` (replaces the removed `InboxListView`) with pinned section + chronological feed + "Learned" tab for rules management.
+- Desktop: `InboxFeedView` with a two-tier feed (expanded "Needs action" secretary cards + compact "FYI" rows), a "Learned" tab for rules management, and a "Profile" tab for the secretary brief.
 - Desktop feedback path: Swift `InboxFeedbackQueries.record(...)` mirrors the Go rule derivation logic so UI is immediately consistent.
 
 ---

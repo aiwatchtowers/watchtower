@@ -79,7 +79,7 @@ func WithSource(ctx context.Context, source string) context.Context {
 //
 //	SourceLight → lightweight/fast model (e.g. Haiku, gpt-5.4-mini, ...)
 //
-// Per-pipeline source names (e.g. "digest.channel", "inbox.prioritize") remain
+// Per-pipeline source names (e.g. "digest.channel", "inbox.triage") remain
 // valid and are routed by each harness's ModelForSource for finer control.
 // An unknown or empty source falls back to the harness's default model.
 const (

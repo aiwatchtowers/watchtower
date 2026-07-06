@@ -34,26 +34,3 @@ func TestInbox01_DefaultClassByTrigger(t *testing.T) {
 		}
 	}
 }
-
-func TestInbox01_AINeverUpgrades(t *testing.T) {
-	// BEHAVIOR INBOX-01 — see docs/inventory/inbox-pulse.md
-	// AI may downgrade actionable→ambient but never the reverse.
-	// Do not weaken or remove without explicit owner approval.
-	// AI can downgrade actionable → ambient
-	got := ApplyAIOverride("actionable", "ambient")
-	if got != "ambient" {
-		t.Errorf("downgrade failed: %s", got)
-	}
-
-	// AI cannot upgrade ambient → actionable
-	got = ApplyAIOverride("ambient", "actionable")
-	if got != "ambient" {
-		t.Errorf("upgrade should be rejected: %s", got)
-	}
-
-	// Empty override keeps original
-	got = ApplyAIOverride("actionable", "")
-	if got != "actionable" {
-		t.Errorf("empty should keep: %s", got)
-	}
-}

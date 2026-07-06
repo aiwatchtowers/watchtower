@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +48,8 @@ func testConfig() *config.Config {
 			Enabled:             true,
 			MaxItemsPerRun:      100,
 			InitialLookbackDays: 7,
+			MaxTriageMessages:   config.DefaultInboxMaxTriageMessages,
+			MaxAwarenessCards:   config.DefaultInboxMaxAwarenessCards,
 		},
 	}
 }
@@ -184,7 +188,7 @@ func TestPipeline_Run_WithAI(t *testing.T) {
 	require.NoError(t, err)
 
 	gen := &mockGenerator{
-		response: `{"items": [{"id": 1, "priority": "high", "reason": "Production blocker from team lead", "resolved": false}]}`,
+		response: `{"verdicts": [{"key": "item:1", "tier": "action", "priority": "high", "reason": "Production blocker from team lead"}]}`,
 	}
 
 	p := New(database, cfg, gen, log.Default())
@@ -197,43 +201,6 @@ func TestPipeline_Run_WithAI(t *testing.T) {
 	require.Len(t, items, 1)
 	assert.Equal(t, "high", items[0].Priority)
 	assert.Equal(t, "Production blocker from team lead", items[0].AIReason)
-}
-
-func TestParseAIResult(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantLen int
-		wantErr bool
-	}{
-		{
-			name:    "valid JSON",
-			input:   `{"items": [{"id": 1, "priority": "high", "reason": "urgent", "resolved": false}]}`,
-			wantLen: 1,
-		},
-		{
-			name:    "with markdown fences",
-			input:   "```json\n{\"items\": [{\"id\": 1, \"priority\": \"high\", \"reason\": \"urgent\", \"resolved\": false}]}\n```",
-			wantLen: 1,
-		},
-		{
-			name:    "invalid JSON",
-			input:   "not json",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := parseAIResult(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Len(t, result.Items, tt.wantLen)
-		})
-	}
 }
 
 func TestPipeline_LastProcessedTS(t *testing.T) {
@@ -386,7 +353,7 @@ func TestPipeline_Run_OrderedPhases(t *testing.T) {
 		time.Now().Add(-5*time.Minute))
 
 	cfg := testConfig()
-	gen := &mockGenerator{response: `{"pinned_ids":[]}`}
+	gen := &mockGenerator{response: `{}`}
 	p := New(d, cfg, gen, log.Default())
 	p.SetCurrentUser("alice", "alice@x.com")
 
@@ -429,6 +396,11 @@ func TestPipeline_Run_AutoArchiveRuns(t *testing.T) {
 	assert.Equal(t, "seen_expired", reason)
 }
 
+// TestPipeline_AIResolvedField verifies that a triage "awareness" verdict on
+// an actionable trigger item demotes it to ambient (INBOX-01), the new
+// analogue of the old AI-resolve mechanic: an item like a closing-signal
+// mention no longer needs to be resolved outright, just deprioritized —
+// only a rule-based auto-resolve (see autoResolveByRules) can close it.
 func TestPipeline_AIResolvedField(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
@@ -442,20 +414,20 @@ func TestPipeline_AIResolvedField(t *testing.T) {
 	require.NoError(t, err)
 
 	gen := &mockGenerator{
-		response: `{"items": [{"id": 1, "priority": "", "reason": "Closing signal — no reply needed", "resolved": true}]}`,
+		response: `{"verdicts": [{"key": "item:1", "tier": "awareness", "priority": "low", "reason": "Closing signal — no reply needed"}]}`,
 	}
 
 	p := New(database, cfg, gen, log.Default())
-	created, resolved, err := p.Run(context.Background())
+	created, _, err := p.Run(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
-	assert.Equal(t, 1, resolved, "AI resolved=true should resolve the item")
 
-	items, err := database.GetInboxItems(db.InboxFilter{IncludeResolved: true})
+	items, err := database.GetInboxItems(db.InboxFilter{})
 	require.NoError(t, err)
 	require.Len(t, items, 1)
-	assert.Equal(t, "resolved", items[0].Status)
-	assert.Contains(t, items[0].ResolvedReason, "AI:")
+	assert.Equal(t, "pending", items[0].Status)
+	assert.Equal(t, "ambient", items[0].ItemClass, "triage awareness verdict should demote an actionable trigger item")
+	assert.Equal(t, "Closing signal — no reply needed", items[0].AIReason)
 }
 
 // newPipelineForTest creates a Pipeline with the given user identity pre-set.
@@ -463,7 +435,7 @@ func newPipelineForTest(t *testing.T, d *db.DB, userID, email string) *Pipeline 
 	t.Helper()
 	seedWorkspaceAndUser(t, d, userID)
 	cfg := testConfig()
-	p := New(d, cfg, &mockGenerator{response: `{"pinned_ids":[]}`}, log.Default())
+	p := New(d, cfg, &mockGenerator{response: `{}`}, log.Default())
 	p.SetCurrentUser(userID, email)
 	return p
 }
@@ -663,4 +635,208 @@ func TestInbox09_WatermarkFrozenOnDetectorError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, frozen, ts,
 		"detector failure must leave the inbox watermark untouched to avoid losing the skipped window")
+}
+
+// TestInbox09_WatermarkFrozenOnTriageError guards INBOX-09 for the triage
+// stage: when runTriage itself fails (AI call/parse error), the watermark
+// must NOT advance past what was never fully triaged, and Run must surface
+// the error (unlike a lone detector error, which is swallowed — see
+// TestInbox09_WatermarkFrozenOnDetectorError).
+func TestInbox09_WatermarkFrozenOnTriageError(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+
+	// A stream candidate (no mention/DM) so triage has something to chunk,
+	// but nothing was triaged successfully before the AI call fails.
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "1100.0", "U2", "channel chatter after the watermark")
+
+	cfg := testConfig()
+	gen := &seqGenerator{responses: []string{""}} // triage AI call errors
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	_, _, err := p.Run(context.Background())
+	require.Error(t, err, "a triage failure must be surfaced, unlike a detector-only failure")
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts,
+		"triage failure with no progress must leave the inbox watermark untouched")
+}
+
+// TestInbox09_DetectorErrorFreezesEvenWhenTriageCapped guards INBOX-09: a
+// detector error must ALWAYS freeze the watermark, even when the capped
+// stream triage succeeds. Detectors and triage scan the same ts window, so
+// advancing over triage's progress would still permanently skip the
+// mentions/DMs the failed detector never saw.
+func TestInbox09_DetectorErrorFreezesEvenWhenTriageCapped(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	const frozen = 50.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+
+	// Stream candidates above the watermark, more than the triage cap.
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "101.0", "U2", "first")
+	insertMessage(t, d, "C1", "102.0", "U2", "second")
+	insertMessage(t, d, "C1", "103.0", "U2", "third — beyond the cap")
+
+	// Break one detector: DetectJira queries jira_issues, so dropping it makes
+	// the detector pass return an error while triage still runs and caps.
+	_, err := d.Exec(`DROP TABLE jira_issues`)
+	require.NoError(t, err)
+
+	cfg := testConfig()
+	cfg.Inbox.MaxTriageMessages = 2 // triage caps at ts=102 and succeeds
+	gen := &seqGenerator{responses: []string{`{"verdicts":[]}`}}
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err, "a detector failure alone must not fail the whole run")
+	require.Equal(t, 1, gen.calls, "triage must still have run (and capped) despite the detector error")
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts,
+		"a detector error must freeze the watermark even when the capped triage succeeded")
+}
+
+// TestInbox09_CappedTriageAdvancesWatermarkPartially guards INBOX-09: when
+// the stream scan hits its per-cycle cap (MaxTriageMessages) but triage
+// otherwise succeeds, the watermark advances only over what was actually
+// scanned — not to the standard now-30min buffer, which would skip whatever
+// lies beyond the cap.
+func TestInbox09_CappedTriageAdvancesWatermarkPartially(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	// Seed a small non-zero watermark so Run doesn't fall back to the
+	// "no prior watermark" lookback default (now-N-days), which would sit
+	// far above the ts=101..103 test messages and mask the capped-advance
+	// under the "never below lastTS" clamp.
+	require.NoError(t, d.SetInboxLastProcessedTS(50))
+
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "101.0", "U2", "first")
+	insertMessage(t, d, "C1", "102.0", "U2", "second")
+	insertMessage(t, d, "C1", "103.0", "U2", "third — beyond the cap")
+
+	cfg := testConfig()
+	cfg.Inbox.MaxTriageMessages = 2
+	gen := &seqGenerator{responses: []string{`{"verdicts":[]}`}}
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, float64(102), ts,
+		"a capped-but-successful triage must advance the watermark only over the scanned window")
+}
+
+// TestInbox07_FeedUntouchedOnTriageError guards INBOX-07: when triage fails,
+// pending items already in the feed must keep their prior status, priority,
+// and item_class — a failed AI call must never look like a silent decision.
+func TestInbox07_FeedUntouchedOnTriageError(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	id := mustCreateInboxItem(t, d, db.InboxItem{
+		ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "mention",
+	})
+
+	cfg := testConfig()
+	gen := &seqGenerator{responses: []string{"", ""}} // triage call, then a possible card call — both error
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	_, _, err := p.Run(context.Background())
+	require.Error(t, err)
+
+	it, err := d.GetInboxItem(id)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", it.Status, "status must be untouched on triage error")
+	assert.Equal(t, "medium", it.Priority, "priority must be untouched on triage error")
+	assert.Equal(t, "actionable", it.ItemClass, "item_class must be untouched on triage error")
+}
+
+// triageKeyRegexp matches the "key=<candidate-key>" token emitted on every
+// triage candidate line (see triage.go's line formats for trigger items and
+// stream messages).
+var triageKeyRegexp = regexp.MustCompile(`key=(\S+)`)
+
+// keyEchoGenerator is a stub AI generator that records every prompt it sees
+// and, for triage calls, echoes back a low-priority "awareness" verdict for
+// each candidate key actually present in the prompt — mirroring how a real
+// model can only judge what it was shown. Non-triage prompts (e.g. card
+// generation) contain no "key=" tokens, so they get an empty verdict list,
+// which is harmless (card parsing just fails and the item is retried later).
+type keyEchoGenerator struct {
+	prompts []string
+}
+
+func (g *keyEchoGenerator) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
+	g.prompts = append(g.prompts, system)
+	matches := triageKeyRegexp.FindAllStringSubmatch(system, -1)
+	verdicts := make([]string, 0, len(matches))
+	for _, m := range matches {
+		verdicts = append(verdicts, fmt.Sprintf(`{"key":%q,"tier":"awareness","priority":"low","reason":"recent"}`, m[1]))
+	}
+	return fmt.Sprintf(`{"verdicts":[%s]}`, strings.Join(verdicts, ",")), &digest.Usage{}, "", nil
+}
+
+// TestTriage_FreshWatermarkUsesLookbackFloor guards the first-run path: Run
+// floors a fresh/zero watermark to now-InitialLookbackDays before calling
+// into triage (see docs/inventory/inbox-pulse.md). Before the fix, runTriage
+// re-read the raw (zero) watermark internally, so a fresh install's first
+// cycle scanned the entire backfilled message history — this test seeds one
+// message far outside the lookback window and one inside it, and asserts the
+// triage prompt only ever contains the recent one.
+func TestTriage_FreshWatermarkUsesLookbackFloor(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+	insertChannel(t, d, "C1", "public")
+
+	oldTS := fmt.Sprintf("%d.000100", time.Now().AddDate(0, 0, -30).Unix())
+	newTS := recentTS(60)
+	insertMessage(t, d, "C1", oldTS, "U2", "ancient channel chatter well before the lookback window")
+	insertMessage(t, d, "C1", newTS, "U2", "recent channel chatter needs a look")
+
+	cfg := testConfig() // InitialLookbackDays: 7
+	gen := &keyEchoGenerator{}
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+
+	var triagePrompt string
+	found := false
+	for _, pr := range gen.prompts {
+		if strings.Contains(pr, "=== CANDIDATES ===") {
+			require.False(t, found, "expected exactly one triage call for this small fixture")
+			triagePrompt = pr
+			found = true
+		}
+	}
+	require.True(t, found, "expected a triage call")
+	assert.Contains(t, triagePrompt, "recent channel chatter needs a look",
+		"the recent message must be inside the lookback-floored triage window")
+	assert.NotContains(t, triagePrompt, "ancient channel chatter",
+		"a fresh watermark must be floored to now-lookbackDays, not scan the entire backfilled history")
+
+	// The recent message should have been created as a stream item; the
+	// ancient one was never even offered to the AI, so it can't exist.
+	recentItem, _ := d.GetInboxItemByMessage("C1", newTS)
+	assert.NotNil(t, recentItem, "recent stream message should become an inbox item")
+	oldItem, _ := d.GetInboxItemByMessage("C1", oldTS)
+	assert.Nil(t, oldItem, "ancient stream message outside the lookback window must not become an inbox item")
 }

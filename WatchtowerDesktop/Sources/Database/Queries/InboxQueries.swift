@@ -150,19 +150,19 @@ enum InboxQueries {
         )
     }
 
-    // MARK: - Pinned / Feed / Seen
+    // MARK: - Action Tier / Awareness Tier / Seen
 
-    /// Returns pinned pending items that are not archived, ordered by priority then created_at DESC.
+    /// Returns actionable pending items that are not archived, ordered by priority then updated_at DESC.
     /// When `unreadOnly` is true, hides items with a non-empty `read_at` unless their id is in `keepIDs`
     /// (the session-sticky set so just-read items don't vanish under the user's cursor).
-    static func fetchPinned(
+    static func fetchActionTier(
         _ db: Database,
         unreadOnly: Bool = false,
         keepIDs: Set<Int> = []
     ) throws -> [InboxItem] {
         var sql = """
             SELECT * FROM inbox_items
-            WHERE pinned = 1
+            WHERE item_class = 'actionable'
               AND status = 'pending'
               AND archived_at IS NULL
             """
@@ -179,14 +179,14 @@ enum InboxQueries {
         sql += """
              ORDER BY
               CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 1 END,
-              created_at DESC
+              updated_at DESC
             """
         return try InboxItem.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
-    /// Returns non-pinned, non-archived, active items ordered by created_at DESC with pagination.
-    /// `unreadOnly` and `keepIDs` work the same as in `fetchPinned`.
-    static func fetchFeed(
+    /// Returns ambient, non-archived, active items ordered by created_at DESC with pagination.
+    /// `unreadOnly` and `keepIDs` work the same as in `fetchActionTier`.
+    static func fetchAwarenessTier(
         _ db: Database,
         limit: Int,
         offset: Int,
@@ -195,7 +195,7 @@ enum InboxQueries {
     ) throws -> [InboxItem] {
         var sql = """
             SELECT * FROM inbox_items
-            WHERE pinned = 0
+            WHERE item_class = 'ambient'
               AND archived_at IS NULL
               AND status NOT IN ('resolved', 'dismissed', 'snoozed')
             """
@@ -215,23 +215,16 @@ enum InboxQueries {
         return try InboxItem.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
-    /// Returns true if any pinned item has high priority and is pending.
-    static func hasHighPriorityPinned(_ db: Database) throws -> Bool {
+    /// Returns true if any actionable item has high priority and is pending.
+    static func hasHighPriorityAction(_ db: Database) throws -> Bool {
         let count = try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM inbox_items
-            WHERE pinned = 1
+            WHERE item_class = 'actionable'
               AND priority = 'high'
               AND status = 'pending'
               AND archived_at IS NULL
             """) ?? 0
         return count > 0
-    }
-
-    /// Reactive observation of the pinned list (same filter as fetchPinned).
-    static func observePinned() -> ValueObservation<ValueReducers.Fetch<[InboxItem]>> {
-        ValueObservation.tracking { db in
-            try InboxQueries.fetchPinned(db)
-        }
     }
 
     /// Sets read_at to now for the given item only if it has not been seen before.

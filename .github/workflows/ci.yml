@@ -34,7 +34,9 @@ jobs:
           go-version: "1.25"
 
       - name: Test
-        run: go test ./... -race -count=1
+        # cmd takes ~8min under -race (login-shell/daemon process tests);
+        # the default 10m per-package timeout is too tight on shared runners.
+        run: go test ./... -race -count=1 -timeout 25m
 
       - name: Build
         run: go build ./...
