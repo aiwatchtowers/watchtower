@@ -39,12 +39,12 @@ public actor RelayFeed {
     private let transport: any CloudSyncTransport
     private let store: ReplicaStore
     private let outbox: ActionOutbox
-    /// nil until Task 5 wires `ChatAssembler`. SEAM NOTE — with no assembler,
-    /// decodable chat chunks are DROPPED: the token still advances, so they
-    /// will never replay. Acceptable strictly because no chat UI exists yet
-    /// (nothing on the phone can start a session, so real chunks addressed to
-    /// it cannot occur); Task 5 must wire the assembler before the Chat tab
-    /// ships.
+    /// `ChatAssembler` in the app (wired by AppEnvironment). SEAM NOTE —
+    /// with no assembler, decodable chat chunks are DROPPED: the token still
+    /// advances, so they will never replay. Acceptable strictly while no
+    /// chat UI exists (nothing on the phone can start a session, so real
+    /// chunks addressed to it cannot occur); the Chat tab (Task 7) must not
+    /// ship without the assembler wired.
     private let assembler: (any ChatChunkAssembling)?
     /// Wraps CloudKitTransport.pull() at composition time; nil in tests
     /// (InMemoryCloudTransport has no engine to nudge).
@@ -54,7 +54,10 @@ public actor RelayFeed {
     /// `hydrator.hydrateOnce()` (Task 6) so the authoritative slice change
     /// lands right as the optimistic overlay disappears — collapsing the
     /// flicker window. Because it is detached, a slow or hung hook can never
-    /// delay `pollOnce`'s return or the next cycle.
+    /// delay `pollOnce`'s return or the next cycle. The fire-and-forget Task
+    /// is untracked: `stop()` does not cancel it and it may outlive the feed
+    /// — harmless for the hydrate-nudge purpose (a spurious re-hydration is
+    /// an idempotent no-op).
     private let onActionApplied: (@Sendable () async -> Void)?
     private var loopTask: Task<Void, Never>?
     /// The currently-running cycle, if any. Concurrent `pollOnce` callers

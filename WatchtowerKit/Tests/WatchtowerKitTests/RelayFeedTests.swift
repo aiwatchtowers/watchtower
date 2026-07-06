@@ -412,6 +412,31 @@ final class RelayFeedTests: XCTestCase {
         XCTAssertEqual(hookCalls.withLock { $0 }, 1)
     }
 
+    func testTwoAppliedEchoesInOneBatchFireHookExactlyOnce() async throws {
+        // One fire per batch is enough — the consumer re-hydrates everything
+        // anyway. The expectation's default assertForOverFulfill turns a
+        // second fire into a failure.
+        let hookCalls = OSAllocatedUnfairLock(initialState: 0)
+        let fired = expectation(description: "hook fired once for the whole batch")
+        let hook: @Sendable () async -> Void = {
+            hookCalls.withLock { $0 += 1 }
+            fired.fulfill()
+        }
+        let f = try makeFixtures(onActionApplied: hook)
+        _ = try await f.outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
+        _ = try await f.outbox.enqueue(kind: .inboxResolve, entityRecordName: "inbox_item-2")
+        _ = try await f.feed.pollOnce() // consume the two own-pending reflections
+        for pending in try f.store.pendingActions() {
+            try await f.transport.save([try echoRecord(pending.action, status: .applied)])
+        }
+
+        let result = try await f.feed.pollOnce()
+
+        XCTAssertEqual(result.echoes, 2)
+        await fulfillment(of: [fired], timeout: 5)
+        XCTAssertEqual(hookCalls.withLock { $0 }, 1)
+    }
+
     /// Gate the hook can hang on, so the test can prove a slow hook never
     /// blocks the feed.
     private actor Gate {

@@ -273,4 +273,49 @@ final class PublicAPISurfaceTests: XCTestCase {
         await feed.start(interval: .seconds(60))
         await feed.stop()
     }
+
+    // MARK: - ChatAssembler + chat replica (the iOS chat path)
+
+    func testChatAssemblerAndChatReplicaSurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let assembler = ChatAssembler(transport: transport, store: store)
+
+        // send + firstChunkPending + the liveness threshold: the Task 7 VM's calls.
+        let (sessionID, messageID) = try await assembler.send(text: "hello from the surface", sessionID: nil)
+        var pending = await assembler.firstChunkPending(messageID: messageID)
+        XCTAssertTrue(pending)
+        XCTAssertEqual(ChatAssembler.unreachableAfter, .seconds(45))
+
+        // ingest through the ChatChunkAssembling seam RelayFeed consumes.
+        let assembling: any ChatChunkAssembling = assembler
+        try await assembling.ingest(
+            ChatChunkPayload(sessionID: sessionID, messageID: messageID, seq: 0, text: "Hi!", done: true)
+        )
+        pending = await assembler.firstChunkPending(messageID: messageID)
+        XCTAssertFalse(pending)
+
+        // Chat reads: sessions list + one thread, with the public model fields
+        // the chat UI renders.
+        let session = try XCTUnwrap(store.chatSessions().first)
+        XCTAssertEqual(session.id, sessionID)
+        XCTAssertEqual(session.title, "hello from the surface")
+        XCTAssertLessThanOrEqual(session.createdAt, session.updatedAt)
+        let messages = try store.chatMessages(inSession: sessionID)
+        XCTAssertEqual(messages.map(\.role), [ChatMessage.Role.user, .assistant])
+        XCTAssertEqual(messages.first?.text, "hello from the surface")
+        XCTAssertEqual(messages.last?.id, messageID)
+        XCTAssertEqual(messages.last?.text, "Hi!")
+        XCTAssertEqual(messages.last?.isComplete, true)
+        XCTAssertEqual(messages.last?.isError, false)
+
+        // The from-db overloads the app's ValueObservation tracking closures
+        // must use (same reentrancy rule as fetchAll(_:kind:from:)).
+        let counts = try await store.reader.read { db in
+            (sessions: try store.chatSessions(from: db).count,
+             messages: try store.chatMessages(inSession: sessionID, from: db).count)
+        }
+        XCTAssertEqual(counts.sessions, 1)
+        XCTAssertEqual(counts.messages, 2)
+    }
 }
