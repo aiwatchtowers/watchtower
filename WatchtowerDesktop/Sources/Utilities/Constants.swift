@@ -25,6 +25,9 @@ enum Constants {
     /// UserDefaults key for tracking whether initial pipelines have completed.
     static let pipelinesCompletedKey = "pipelines_completed"
 
+    /// UserDefaults key that enables the mobile hub (slice publishing + relay).
+    static let mobileSyncEnabledKey = "mobileSyncEnabled"
+
     enum NotificationCategory {
         static let decision = "DECISION"
         static let dailySummary = "DAILY_SUMMARY"

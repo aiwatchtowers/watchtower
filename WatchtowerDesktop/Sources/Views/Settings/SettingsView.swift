@@ -16,6 +16,10 @@ struct SettingsView: View {
             NotificationSettings()
                 .tabItem { Label("Notifications", systemImage: "bell") }
 
+            MobileSettings()
+                .environment(appState)
+                .tabItem { Label("Mobile", systemImage: "iphone") }
+
             DaemonSettings()
                 .tabItem { Label("Daemon", systemImage: "arrow.triangle.2.circlepath") }
 
