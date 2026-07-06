@@ -136,7 +136,7 @@ final class ReplicaTests: XCTestCase {
     // MARK: - Sort order
 
     /// Pins that `ReplicaSort` cases actually change fetch order — the old
-    /// String `orderedBy` param had zero order-variation coverage. Ids and
+    /// String sort-fragment param had zero order-variation coverage. Ids and
     /// modifiedAt are deliberately staggered so record_name order,
     /// newestFirst, and oldestFirst each produce a distinct sequence.
     func testFetchAllSortOrdersDiffer() throws {
@@ -170,6 +170,32 @@ final class ReplicaTests: XCTestCase {
         // Default (no explicit sort) must stay newestFirst — the behavior
         // every existing call site relies on.
         XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).map(\.id), [1, 3, 2])
+    }
+
+    /// Pins the `, record_name` tie-break half of the time-based sorts: two
+    /// records sharing one modifiedAt must order by record_name in BOTH
+    /// directions — a regression dropping the secondary key ships undetected
+    /// by testFetchAllSortOrdersDiffer (its stamps are all distinct).
+    func testFetchAllTimeSortsTieBreakByRecordName() throws {
+        let store = try ReplicaStore.inMemory()
+        let stamp = Date(timeIntervalSince1970: 1_720_000_000)
+        try store.apply(CloudChangeBatch(
+            changed: [
+                CloudRecord(recordName: SliceKind.target.recordName(id: "9"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: stamp,
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 9, text: "tie-b"))),
+                CloudRecord(recordName: SliceKind.target.recordName(id: "8"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: stamp,
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 8, text: "tie-a")))
+            ],
+            deletedRecordNames: [],
+            newToken: CloudChangeToken(value: 1)
+        ))
+
+        // Same timestamp → record_name ("target-8" < "target-9") decides,
+        // identically for both time-based directions.
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target, sort: .newestFirst).map(\.id), [8, 9])
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target, sort: .oldestFirst).map(\.id), [8, 9])
     }
 
     // MARK: - Relay records ignored
