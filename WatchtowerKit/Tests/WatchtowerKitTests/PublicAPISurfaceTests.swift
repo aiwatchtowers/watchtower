@@ -195,4 +195,45 @@ final class PublicAPISurfaceTests: XCTestCase {
         await hydrator.start(interval: .seconds(60))
         await hydrator.stop()
     }
+
+    // MARK: - ActionOutbox + PendingAction (the iOS action-producer path)
+
+    func testActionOutboxAndPendingOverlaySurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let outbox = ActionOutbox(transport: transport, store: store)
+
+        // enqueue + snoozeParams: what the app's swipe actions call.
+        let id = try await outbox.enqueue(
+            kind: .targetSnooze,
+            entityRecordName: "target-42",
+            params: ActionOutbox.snoozeParams(until: Date())
+        )
+
+        // Overlay reads: full list, per-entity join, and the from-db overload
+        // the app's ValueObservation tracking closures must use.
+        let row = try XCTUnwrap(store.pendingActions().first)
+        XCTAssertEqual(row.id, id)
+        XCTAssertEqual(row.state, .pending)
+        XCTAssertEqual(row.action.kind, .targetSnooze)
+        XCTAssertEqual(row.entityRecordName, "target-42")
+        XCTAssertEqual(try store.pendingActions(forEntity: "target-42").count, 1)
+        let observedCount = try await store.reader.read { db in
+            try store.pendingActions(from: db).count
+        }
+        XCTAssertEqual(observedCount, 1)
+
+        // applyEcho: app-target tests drive echoes directly (Plan 4 Task 6).
+        var echo = row.action
+        echo.status = .failed
+        echo.errorMessage = "surface"
+        try await outbox.applyEcho(echo)
+
+        // sweepSilentPending + removePendingAction: daily sweep + the
+        // "Dismiss" affordance on failed rows.
+        let swept = try await outbox.sweepSilentPending()
+        XCTAssertTrue(swept.isEmpty)
+        try store.removePendingAction(id: id)
+        XCTAssertTrue(try store.pendingActions().isEmpty)
+    }
 }
