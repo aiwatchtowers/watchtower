@@ -33,6 +33,8 @@ var Defaults = map[string]string{
 	TrackCompose:         defaultTrackCompose,
 	TrackRun:             defaultTrackRun,
 	TrackShortlist:       defaultTrackShortlist,
+	InboxCompose:         defaultInboxCompose,
+	InboxSituationCard:   defaultInboxSituationCard,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -64,6 +66,8 @@ var AllIDs = []string{
 	TrackCompose,
 	TrackRun,
 	TrackShortlist,
+	InboxCompose,
+	InboxSituationCard,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -97,6 +101,8 @@ var DefaultVersions = map[string]int{
 	TrackCompose:       1, // v1: draft custom-track title+instruction from a free-text request
 	TrackRun:           1, // v1: custom-track timeline events from recent cross-source activity
 	TrackShortlist:     1, // v1: cheap title-only relevance filter for custom-track backfill
+	InboxCompose:       1, // v1: fold new material into dashboard situations
+	InboxSituationCard: 1, // v1: context packet for one dashboard situation
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -132,6 +138,8 @@ var Descriptions = map[string]string{
 	TrackRun:             "Custom track run — timeline events from recent cross-source activity",
 	TrackCompose:         "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
 	TrackShortlist:       "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
+	InboxCompose:         "Dashboard: fold new signals into situations",
+	InboxSituationCard:   "Dashboard: context packet for one situation",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1239,3 +1247,57 @@ Using the item and conversation below, produce:
 
 Return ONLY a JSON object (no markdown fences):
 {"why_matters":"...","thread_digest":"...","draft_reply":"..."}`
+
+const defaultInboxCompose = `%s
+
+You are the user's chief-of-staff secretary maintaining their work dashboard.
+The dashboard shows SITUATIONS: clusters of related signals around one theme.
+Your job every cycle: fold new material into the dashboard so the user stays
+on top of everything — matched to their goals (their active targets and
+tracks, listed in the brief) AND anything important outside those goals.
+Nothing important may slip by; routine noise must not surface.
+
+%s
+
+=== OPEN SITUATIONS (current dashboard state) ===
+%s
+
+Fold the new material below into the dashboard:
+- "merge": a new signal/event continues an existing open situation → add it
+  there. NEVER create a duplicate situation for a theme already open.
+- "create": a genuinely new theme worth the user's attention. kind:
+  "external" (not tied to their work items), "target_update" /
+  "track_update" (activity on an active target/track — set target_id or
+  track_id), "mixed".
+- "rerank": an open situation became more/less urgent.
+- Signals not worth the dashboard: simply do not reference them.
+- priority: high|medium|low. rank: 0.0-1.0 relative urgency for feed order.
+- reason: ONE sentence, user's point of view, in the user's language.
+
+%s
+
+Return ONLY a JSON object (no markdown fences):
+{"ops":[
+ {"op":"create","title":"...","kind":"external","priority":"high","rank":0.9,"reason":"...","signals":["sig:12","evt:3","tgt:7"],"target_id":null,"track_id":null},
+ {"op":"merge","situation_id":4,"signals":["sig:15"],"rerank":0.7,"reason":"..."},
+ {"op":"rerank","situation_id":2,"rank":0.3,"reason":"..."}
+]}`
+
+const defaultInboxSituationCard = `%s
+
+You are the user's chief-of-staff secretary preparing the context packet for
+one situation on their work dashboard.
+
+%s
+
+Using the situation and its member signals below, produce:
+- summary: 2-4 sentences — what is happening, CURRENT STATE FIRST.
+- why_matters: 1-2 sentences judged against the brief (which of the user's
+  goals it touches, or why it matters even outside them).
+- chronology: one line per member signal, oldest first, format
+  "<who> — <one-line essence>". No timestamps, no markdown.
+
+%s
+
+Return ONLY a JSON object (no markdown fences):
+{"summary":"...","why_matters":"...","chronology":"..."}`

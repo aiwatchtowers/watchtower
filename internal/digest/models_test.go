@@ -1,6 +1,10 @@
 package digest
 
-import "testing"
+import (
+	"testing"
+
+	"watchtower/internal/prompts"
+)
 
 func TestModelForSource(t *testing.T) {
 	haiku := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel"}
@@ -14,6 +18,7 @@ func TestModelForSource(t *testing.T) {
 		"digest.channel", "digest.daily", "digest.weekly",
 		"tracks.extract_batch", "people.reduce", "people.team",
 		"briefing.daily", "inbox.card", "", "unknown.source",
+		prompts.InboxCompose, prompts.InboxSituationCard,
 	}
 	for _, src := range sonnet {
 		if got := ModelForSource(src); got != ModelSonnet {

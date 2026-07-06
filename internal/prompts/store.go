@@ -41,6 +41,8 @@ const (
 	TrackCompose         = "track.compose"
 	TrackRun             = "track.run"
 	TrackShortlist       = "track.shortlist"
+	InboxCompose         = "inbox.compose"
+	InboxSituationCard   = "inbox.situation_card"
 )
 
 // Store loads, caches, and persists prompt templates.

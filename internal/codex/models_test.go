@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 func TestModelForSource(t *testing.T) {
@@ -24,6 +25,8 @@ func TestModelForSource(t *testing.T) {
 		{"briefing.daily", ModelDefault},
 		{"unknown", ModelDefault},
 		{"", ModelDefault},
+		{prompts.InboxCompose, ModelDefault},
+		{prompts.InboxSituationCard, ModelDefault},
 	}
 
 	for _, tt := range tests {
