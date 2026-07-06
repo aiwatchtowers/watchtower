@@ -8,12 +8,14 @@ final class HubSyncStateTests: XCTestCase {
         try state.setHash("hash", for: "target-1")
         try state.setMetaValue("token-blob", forKey: RelayProcessor.relayTokenKey)
         try state.markRelayProcessed("action-1", at: Date())
+        try state.setCLISessionID("cli-session-abc", forMobileSession: "mobile-session-xyz")
 
         try state.wipeSyncState()
 
         XCTAssertTrue(try state.hashes(forKind: .target).isEmpty, "slice hashes cleared → next publish re-pushes")
         XCTAssertNil(try state.metaValue(forKey: RelayProcessor.relayTokenKey), "relay token cleared → relay re-read from scratch")
         XCTAssertFalse(try state.isRelayProcessed("action-1"), "processed set cleared")
+        XCTAssertNil(try state.cliSessionID(forMobileSession: "mobile-session-xyz"), "chat_sessions cleared → stale CLI-session mapping evicted")
     }
 
     func testPruneRelayProcessedRemovesOnlyOlderEntries() throws {

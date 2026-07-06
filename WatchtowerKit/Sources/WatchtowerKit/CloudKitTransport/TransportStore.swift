@@ -65,7 +65,7 @@ public final class TransportStore: Sendable {
 
     // MARK: - Pending sends
 
-    public func enqueueSave(_ records: [CloudRecord]) throws {
+    func enqueueSave(_ records: [CloudRecord]) throws {
         try queue.write { db in
             for record in records {
                 try db.execute(
@@ -87,7 +87,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    public func enqueueDelete(recordNames: [String], zone: CloudZoneID) throws {
+    func enqueueDelete(recordNames: [String], zone: CloudZoneID) throws {
         try queue.write { db in
             for name in recordNames {
                 try db.execute(
@@ -103,7 +103,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    public func pendingBatch(limit: Int) throws -> (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)]) {
+    func pendingBatch(limit: Int) throws -> (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)]) {
         // rowid survives ON CONFLICT DO UPDATE, so batches are ordered by
         // FIRST enqueue — a hot record cannot starve older pending sends.
         // Do not "fix" to latest-write ordering.
@@ -147,7 +147,7 @@ public final class TransportStore: Sendable {
         return (saves, deletes)
     }
 
-    public func clearPending(
+    func clearPending(
         saves: [(name: String, zone: CloudZoneID, sentModifiedAt: Date)],
         deletes: [(name: String, zone: CloudZoneID)]
     ) throws {
@@ -177,7 +177,7 @@ public final class TransportStore: Sendable {
 
     // MARK: - Incoming buffer
 
-    public func bufferChanged(_ records: [CloudRecord]) throws {
+    func bufferChanged(_ records: [CloudRecord]) throws {
         try queue.write { db in
             for record in records {
                 try db.execute(
@@ -194,7 +194,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    public func bufferDeleted(recordNames: [String], zone: CloudZoneID) throws {
+    func bufferDeleted(recordNames: [String], zone: CloudZoneID) throws {
         try queue.write { db in
             for name in recordNames {
                 try db.execute(
@@ -252,7 +252,7 @@ public final class TransportStore: Sendable {
     /// (recordName, zone). Seeding outgoing saves from these is what lets a
     /// re-save of a server-known record carry the change tag instead of
     /// colliding with .serverRecordChanged forever.
-    public func saveSystemFields(_ data: Data, recordName: String, zone: CloudZoneID) throws {
+    func saveSystemFields(_ data: Data, recordName: String, zone: CloudZoneID) throws {
         try queue.write { db in
             try db.execute(
                 sql: """
@@ -265,7 +265,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    public func systemFields(recordName: String, zone: CloudZoneID) throws -> Data? {
+    func systemFields(recordName: String, zone: CloudZoneID) throws -> Data? {
         try queue.read { db in
             try Data.fetchOne(
                 db,
@@ -275,7 +275,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    public func deleteSystemFields(recordNames: [String], zone: CloudZoneID) throws {
+    func deleteSystemFields(recordNames: [String], zone: CloudZoneID) throws {
         try queue.write { db in
             for name in recordNames {
                 try db.execute(
@@ -288,7 +288,7 @@ public final class TransportStore: Sendable {
 
     // MARK: - Engine state
 
-    public func saveEngineState(_ data: Data) throws {
+    func saveEngineState(_ data: Data) throws {
         try queue.write { db in
             try db.execute(
                 sql: "INSERT INTO engine_state (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
@@ -297,7 +297,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    public func loadEngineState() throws -> Data? {
+    func loadEngineState() throws -> Data? {
         try queue.read { db in
             try Data.fetchOne(db, sql: "SELECT data FROM engine_state WHERE id = 1")
         }

@@ -99,4 +99,34 @@ final class SliceDiffTests: XCTestCase {
         XCTAssertTrue(result.deletions.isEmpty, "a temporarily unencodable row must not delete the synced record")
         XCTAssertTrue(result.upserts.isEmpty)
     }
+
+    /// A row with a NULL or BLOB primary key maps to id "0" via SlicePublisher.rowID.
+    /// Such a row must go to skipped with a distinct marker, never into upserts
+    /// (assigning every invalid row the same record name would cause silent CloudKit collisions).
+    func testNullIdRowIsSkippedWithInvalidIdMarker() throws {
+        let nullIdRow = Row(["id": DatabaseValue.null, "text": "ghost"])
+        let result = SliceDiff.compute(
+            kind: .target,
+            rows: [(id: "0", row: nullIdRow)],
+            knownHashes: [:],
+            now: now
+        )
+        XCTAssertEqual(result.skipped, ["target-invalid-id"])
+        XCTAssertTrue(result.upserts.isEmpty, "null-id row must not become an upsert")
+        XCTAssertTrue(result.deletions.isEmpty)
+    }
+
+    /// Multiple null-id rows in the same batch all collapse to the same skipped marker;
+    /// none becomes an upsert.
+    func testMultipleNullIdRowsAllSkipped() throws {
+        let row = Row(["text": "x"])
+        let result = SliceDiff.compute(
+            kind: .target,
+            rows: [(id: "0", row: row), (id: "0", row: row)],
+            knownHashes: [:],
+            now: now
+        )
+        XCTAssertEqual(result.skipped, ["target-invalid-id", "target-invalid-id"])
+        XCTAssertTrue(result.upserts.isEmpty)
+    }
 }
