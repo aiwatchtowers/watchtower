@@ -321,6 +321,16 @@ final class ChatAssemblerTests: XCTestCase {
         let reply = try assistantRow(f.store, sessionID: sessionID)
         XCTAssertTrue(reply.isComplete)
         XCTAssertTrue(reply.isError)
+
+        // Replay of the error done (feed batch redelivery) must be a no-op:
+        // the is_complete guard fires before is_error is ever touched.
+        try await f.assembler.ingest(
+            chunk(messageID: messageID, seq: 0, text: "⚠️ chat stream timed out", done: true, isError: true)
+        )
+        let replayed = try assistantRow(f.store, sessionID: sessionID)
+        XCTAssertEqual(replayed.text, reply.text)
+        XCTAssertTrue(replayed.isError)
+        XCTAssertTrue(replayed.isComplete)
     }
 
     func testNilErrorFlagReadsAsNotError() async throws {

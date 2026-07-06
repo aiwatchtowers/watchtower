@@ -158,6 +158,10 @@ public actor ChatAssembler: ChatChunkAssembling {
                 return
             case .gap:
                 return
+            // .unknownMessage is unreachable here today: the message row
+            // existed when the chunk was buffered and rows are never deleted.
+            // If a deletion feature ever lands, buffered chunks would be
+            // silently discarded on this arm — log it then.
             case .applied, .ignored, .unknownMessage:
                 buffered[messageID]?[seq] = nil
                 if buffered[messageID]?.isEmpty == true {
