@@ -51,6 +51,12 @@ public final class TransportStore: Sendable {
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     data BLOB NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS system_fields (
+                    record_name TEXT NOT NULL,
+                    zone TEXT NOT NULL,
+                    data BLOB NOT NULL,
+                    PRIMARY KEY (record_name, zone)
+                );
                 """)
         }
     }
@@ -221,6 +227,46 @@ public final class TransportStore: Sendable {
                 }
             }
             return CloudChangeBatch(changed: changed, deletedRecordNames: deleted, newToken: CloudChangeToken(value: maxSeq))
+        }
+    }
+
+    // MARK: - CK system fields
+
+    /// Archived CKRecord system fields (identity + server change tag) per
+    /// (recordName, zone). Seeding outgoing saves from these is what lets a
+    /// re-save of a server-known record carry the change tag instead of
+    /// colliding with .serverRecordChanged forever.
+    public func saveSystemFields(_ data: Data, recordName: String, zone: CloudZoneID) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO system_fields (record_name, zone, data)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(record_name, zone) DO UPDATE SET data = excluded.data
+                    """,
+                arguments: [recordName, zone.rawValue, data]
+            )
+        }
+    }
+
+    public func systemFields(recordName: String, zone: CloudZoneID) throws -> Data? {
+        try queue.read { db in
+            try Data.fetchOne(
+                db,
+                sql: "SELECT data FROM system_fields WHERE record_name = ? AND zone = ?",
+                arguments: [recordName, zone.rawValue]
+            )
+        }
+    }
+
+    public func deleteSystemFields(recordNames: [String], zone: CloudZoneID) throws {
+        try queue.write { db in
+            for name in recordNames {
+                try db.execute(
+                    sql: "DELETE FROM system_fields WHERE record_name = ? AND zone = ?",
+                    arguments: [name, zone.rawValue]
+                )
+            }
         }
     }
 

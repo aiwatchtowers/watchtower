@@ -108,6 +108,42 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertTrue(after.deletedRecordNames.isEmpty)
     }
 
+    func testSystemFieldsRoundTrip() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertNil(try store.systemFields(recordName: "target-1", zone: .data))
+
+        try store.saveSystemFields(Data("fields-v1".utf8), recordName: "target-1", zone: .data)
+        XCTAssertEqual(try store.systemFields(recordName: "target-1", zone: .data), Data("fields-v1".utf8))
+
+        // Re-save overwrites (server record changed → newer fields win).
+        try store.saveSystemFields(Data("fields-v2".utf8), recordName: "target-1", zone: .data)
+        XCTAssertEqual(try store.systemFields(recordName: "target-1", zone: .data), Data("fields-v2".utf8))
+
+        try store.deleteSystemFields(recordNames: ["target-1"], zone: .data)
+        XCTAssertNil(try store.systemFields(recordName: "target-1", zone: .data))
+    }
+
+    func testSystemFieldsAreZoneScoped() throws {
+        let store = try TransportStore.inMemory()
+        try store.saveSystemFields(Data("data-zone".utf8), recordName: "shared-name", zone: .data)
+        try store.saveSystemFields(Data("relay-zone".utf8), recordName: "shared-name", zone: .relay)
+        XCTAssertEqual(try store.systemFields(recordName: "shared-name", zone: .data), Data("data-zone".utf8))
+        XCTAssertEqual(try store.systemFields(recordName: "shared-name", zone: .relay), Data("relay-zone".utf8))
+
+        try store.deleteSystemFields(recordNames: ["shared-name"], zone: .data)
+        XCTAssertNil(try store.systemFields(recordName: "shared-name", zone: .data))
+        XCTAssertEqual(try store.systemFields(recordName: "shared-name", zone: .relay), Data("relay-zone".utf8))
+    }
+
+    func testDeleteSystemFieldsRemovesOnlyNamed() throws {
+        let store = try TransportStore.inMemory()
+        try store.saveSystemFields(Data("a".utf8), recordName: "target-1", zone: .data)
+        try store.saveSystemFields(Data("b".utf8), recordName: "target-2", zone: .data)
+        try store.deleteSystemFields(recordNames: ["target-1", "never-saved"], zone: .data)
+        XCTAssertNil(try store.systemFields(recordName: "target-1", zone: .data))
+        XCTAssertEqual(try store.systemFields(recordName: "target-2", zone: .data), Data("b".utf8))
+    }
+
     func testEngineStateRoundTrip() throws {
         let store = try TransportStore.inMemory()
         XCTAssertNil(try store.loadEngineState())
