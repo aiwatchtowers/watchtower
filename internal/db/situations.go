@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // situationSelectCols is the standard SELECT column list for situations.
 const situationSelectCols = `id, title, kind, status, snooze_until, priority, rank,
@@ -122,4 +125,242 @@ func (db *DB) ListSituationSignals(situationID int) ([]InboxItem, error) {
 	}
 	defer rows.Close()
 	return scanInboxItems(rows)
+}
+
+// ---- Compose inputs (Task 4's composer feeds off these) ----
+
+// ListUncomposedSignals returns pending inbox items not yet folded into a
+// situation by the composer, oldest first, capped at limit.
+func (db *DB) ListUncomposedSignals(limit int) ([]InboxItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.Query(`SELECT `+inboxSelectCols+` FROM inbox_items
+		WHERE status = 'pending' AND composed_at IS NULL
+		ORDER BY created_at ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing uncomposed signals: %w", err)
+	}
+	defer rows.Close()
+	return scanInboxItems(rows)
+}
+
+// MarkSignalsComposed sets composed_at on the given inbox items so the
+// composer doesn't reprocess them on the next run.
+func (db *DB) MarkSignalsComposed(ids []int) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	args := append([]any{}, intArgs(ids)...)
+	_, err := db.Exec(`UPDATE inbox_items SET composed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id IN (`+placeholders(len(ids))+`)`, args...)
+	if err != nil {
+		return fmt.Errorf("marking signals composed: %w", err)
+	}
+	return nil
+}
+
+// ListTrackEventsSince returns track_events created strictly after ts
+// (ISO8601 string compare), restricted to non-dismissed tracks, oldest first.
+func (db *DB) ListTrackEventsSince(ts string) ([]TrackEvent, error) {
+	rows, err := db.Query(`SELECT te.id, te.track_id, te.summary, te.detail, te.source_type, te.source_id,
+		te.source_refs, te.decision, te.proposed_action, te.action_status, COALESCE(te.read_at,''), te.created_at
+		FROM track_events te
+		JOIN tracks t ON t.id = te.track_id
+		WHERE te.created_at > ? AND t.dismissed_at = ''
+		ORDER BY te.created_at ASC`, ts)
+	if err != nil {
+		return nil, fmt.Errorf("listing track events since %q: %w", ts, err)
+	}
+	defer rows.Close()
+
+	var out []TrackEvent
+	for rows.Next() {
+		e, err := scanTrackEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning track event: %w", err)
+		}
+		out = append(out, *e)
+	}
+	return out, rows.Err()
+}
+
+// ListTargetsUpdatedSince returns active targets (todo|in_progress|blocked|snoozed)
+// whose updated_at is strictly after ts (ISO8601 string compare).
+func (db *DB) ListTargetsUpdatedSince(ts string) ([]Target, error) {
+	rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets
+		WHERE status IN ('todo','in_progress','blocked','snoozed') AND updated_at > ?
+		ORDER BY updated_at ASC`, ts)
+	if err != nil {
+		return nil, fmt.Errorf("listing targets updated since %q: %w", ts, err)
+	}
+	defer rows.Close()
+
+	var out []Target
+	for rows.Next() {
+		t, err := scanTarget(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning target: %w", err)
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
+// ---- Situation mutations ----
+
+// UpdateSituationRank updates a situation's ranking score, priority, and AI reason.
+func (db *DB) UpdateSituationRank(id int, rank float64, priority, reason string) error {
+	_, err := db.Exec(`UPDATE situations SET rank = ?, priority = ?, ai_reason = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, rank, priority, reason, id)
+	if err != nil {
+		return fmt.Errorf("updating situation %d rank: %w", id, err)
+	}
+	return nil
+}
+
+// SetSituationCard stores the AI-generated card content and marks card_status ready.
+func (db *DB) SetSituationCard(id int, summary, whyMatters, chronology string) error {
+	_, err := db.Exec(`UPDATE situations SET summary = ?, why_matters = ?, chronology = ?,
+		card_status = 'ready', card_generated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
+		summary, whyMatters, chronology, id)
+	if err != nil {
+		return fmt.Errorf("setting situation %d card: %w", id, err)
+	}
+	return nil
+}
+
+// MarkSituationCardFailed marks a situation's card generation as failed.
+func (db *DB) MarkSituationCardFailed(id int) error {
+	_, err := db.Exec(`UPDATE situations SET card_status = 'failed',
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("marking situation %d card failed: %w", id, err)
+	}
+	return nil
+}
+
+// ResetSituationCard resets card_status to 'none', e.g. when a situation is
+// merged with new signals and needs its card regenerated.
+func (db *DB) ResetSituationCard(id int) error {
+	_, err := db.Exec(`UPDATE situations SET card_status = 'none',
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("resetting situation %d card: %w", id, err)
+	}
+	return nil
+}
+
+// ListSituationsNeedingCards returns open situations whose card hasn't been
+// generated yet or whose last generation attempt failed.
+func (db *DB) ListSituationsNeedingCards() ([]DashboardSituation, error) {
+	rows, err := db.Query(`SELECT ` + situationSelectCols + ` FROM situations
+		WHERE status = 'open' AND card_status IN ('none','failed')
+		ORDER BY rank DESC, updated_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listing situations needing cards: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DashboardSituation
+	for rows.Next() {
+		s, err := scanSituation(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning situation: %w", err)
+		}
+		out = append(out, *s)
+	}
+	return out, rows.Err()
+}
+
+// ---- Lifecycle ----
+
+// SetSituationStatus changes a situation's status and records the reason.
+func (db *DB) SetSituationStatus(id int, status, reason string) error {
+	_, err := db.Exec(`UPDATE situations SET status = ?, resolved_reason = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, status, reason, id)
+	if err != nil {
+		return fmt.Errorf("setting situation %d status: %w", id, err)
+	}
+	return nil
+}
+
+// SnoozeSituation moves a situation to status='snoozed' until the given ISO8601 timestamp.
+func (db *DB) SnoozeSituation(id int, until string) error {
+	_, err := db.Exec(`UPDATE situations SET status = 'snoozed', snooze_until = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, until, id)
+	if err != nil {
+		return fmt.Errorf("snoozing situation %d: %w", id, err)
+	}
+	return nil
+}
+
+// UnsnoozeExpiredSituations moves snoozed situations with an expired
+// snooze_until back to open, and returns the number of rows affected.
+func (db *DB) UnsnoozeExpiredSituations() (int, error) {
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	res, err := db.Exec(`UPDATE situations SET status = 'open', snooze_until = '',
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE status = 'snoozed' AND snooze_until != '' AND snooze_until <= ?`, now)
+	if err != nil {
+		return 0, fmt.Errorf("unsnoozing situations: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// MarkStaleSituations moves open situations whose last_signal_at is older
+// than threshold to status='stale'. Situations with an empty last_signal_at
+// (no signal ever attached) are skipped. Returns the number of rows affected.
+func (db *DB) MarkStaleSituations(threshold time.Duration) (int, error) {
+	cutoff := time.Now().UTC().Add(-threshold).Format("2006-01-02T15:04:05Z")
+	res, err := db.Exec(`UPDATE situations SET status = 'stale',
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE status = 'open' AND last_signal_at != '' AND last_signal_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("marking stale situations: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// AutoCloseResolvedSituations closes open situations that have at least one
+// member signal and zero pending member signals (every attached inbox item
+// has moved past pending), setting resolved_reason='signals_resolved'.
+// Returns the number of rows affected.
+func (db *DB) AutoCloseResolvedSituations() (int, error) {
+	res, err := db.Exec(`UPDATE situations SET status='done', resolved_reason='signals_resolved',
+		       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE status='open'
+		  AND EXISTS (SELECT 1 FROM situation_signals ss WHERE ss.situation_id = situations.id)
+		  AND NOT EXISTS (
+		      SELECT 1 FROM situation_signals ss
+		      JOIN inbox_items i ON i.id = ss.inbox_item_id
+		      WHERE ss.situation_id = situations.id AND i.status = 'pending')`)
+	if err != nil {
+		return 0, fmt.Errorf("auto-closing resolved situations: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// MarkSituationConverted marks a situation as converted into a target and/or
+// track. A zero targetID/trackID is stored as NULL (not converted to that kind).
+func (db *DB) MarkSituationConverted(id int, targetID, trackID int) error {
+	var convertedTarget, convertedTrack any
+	if targetID != 0 {
+		convertedTarget = targetID
+	}
+	if trackID != 0 {
+		convertedTrack = trackID
+	}
+	_, err := db.Exec(`UPDATE situations SET status = 'converted',
+		converted_target_id = ?, converted_track_id = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
+		convertedTarget, convertedTrack, id)
+	if err != nil {
+		return fmt.Errorf("marking situation %d converted: %w", id, err)
+	}
+	return nil
 }
