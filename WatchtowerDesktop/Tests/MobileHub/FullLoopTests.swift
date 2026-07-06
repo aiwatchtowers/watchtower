@@ -10,6 +10,11 @@ import XCTest
 /// different plans — wired over ONE shared InMemoryCloudTransport. Every
 /// loop asserts BOTH sides' state: desktop DB rows AND the mobile overlay /
 /// assembled chat thread, never just an absence of errors.
+///
+/// Scope note: InMemoryCloudTransport gives instant read-your-writes and
+/// latest-state-per-recordName; real CloudKit propagates asynchronously.
+/// These tests gate CONTRACT INTERLOCK between the halves, not transport
+/// timing — liveness/latency behavior is covered by the per-side suites.
 final class FullLoopTests: XCTestCase {
     // Desktop side.
     private var dbPath: String!
@@ -118,6 +123,12 @@ final class FullLoopTests: XCTestCase {
     // MARK: - Failed loop
 
     func testFailedActionLoopCarriesDesktopErrorToOverlay() async throws {
+        // A real row to prove "untouched" means something: the failed action
+        // for 999 must not disturb row 1's pending state.
+        try await dbPool.write { db in
+            // First insert on an empty table → autoincrement id 1.
+            try TestDatabase.insertInboxItem(db, snippet: "bystander", status: "pending")
+        }
         // No inbox_items row 999 anywhere — the desktop must refuse it.
         try await outbox.enqueue(kind: .inboxResolve, entityRecordName: "inbox_item-999")
 
@@ -132,10 +143,10 @@ final class FullLoopTests: XCTestCase {
         // verbatim — not a mobile-side placeholder.
         XCTAssertEqual(row.errorMessage, "no row in inbox_items with id 999")
 
-        let count = try await dbPool.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items")
+        let bystanderStatus = try await dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM inbox_items WHERE id = 1")
         }
-        XCTAssertEqual(count, 0, "a failed action must leave the desktop DB untouched")
+        XCTAssertEqual(bystanderStatus, "pending", "a failed action must leave the desktop DB untouched")
     }
 
     // MARK: - Chat loop
