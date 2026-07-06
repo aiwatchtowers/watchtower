@@ -10,15 +10,29 @@
 		0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */; };
 		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
 		305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916C33BA22DB5ABF55F50EBC /* InboxView.swift */; };
+		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
+		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
+		6E7B3F11235C858E711FE47D /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
 		8AD90C1BCCC80D111A2E59E9 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53EEE394524E80319F081C9E /* TodayView.swift */; };
 		D403FD362502AA5DC04AEDCE /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3240E546D853A416356E32D1 /* SettingsView.swift */; };
 		DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */; };
 		E93CAF336D1C1CB6ED76A4C5 /* TracksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0FBB330E7F18A51BAED059F /* TracksView.swift */; };
+		ECBCFA171FBB2757D78073D8 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		EE5E4DA751DE6531DB4EB8F9 /* ReplicaObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */; };
 		F4FDFE8B73AAC6038E75BC76 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF609973C6F27C56B9BD9A9 /* TasksView.swift */; };
 		FB8013BC2F645E939B2A0E44 /* SyncStatusFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0D2129829244B8B949C65D /* SyncStatusFooter.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A897B56BFE07E2FD325D2469 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9B1FFF752C81D22007C233AF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 29B2C64EE70EB083FCF14A74;
+			remoteInfo = WatchtowerMobile;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
@@ -27,20 +41,32 @@
 		53EEE394524E80319F081C9E /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		5DF609973C6F27C56B9BD9A9 /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
 		916C33BA22DB5ABF55F50EBC /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
+		ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaWiringTests.swift; sourceTree = "<group>"; };
 		B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaObserver.swift; sourceTree = "<group>"; };
 		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
 		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD0D2129829244B8B949C65D /* SyncStatusFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStatusFooter.swift; sourceTree = "<group>"; };
 		DD5811CC2EAE68324393DCDB /* WatchtowerKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WatchtowerKit; path = ../WatchtowerKit; sourceTree = SOURCE_ROOT; };
 		E0FBB330E7F18A51BAED059F /* TracksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TracksView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		1B17DC0E1441EED4BDB46F01 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */,
+				ECBCFA171FBB2757D78073D8 /* GRDB in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6CA16831CFAAB8D1129DBF29 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */,
+				6E7B3F11235C858E711FE47D /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -57,6 +83,14 @@
 			path = Sources;
 			sourceTree = "<group>";
 		};
+		1C5ACBF8CC271AA4653F3151 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
 		2718DF123EBA6E28C9F67E4A /* Components */ = {
 			isa = PBXGroup;
 			children = (
@@ -70,6 +104,7 @@
 			children = (
 				B20270D5970103A55888D3C5 /* Packages */,
 				07F497CE33EEF4C1704BA787 /* Sources */,
+				1C5ACBF8CC271AA4653F3151 /* Tests */,
 				802B65C47F0038840E7CBA70 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -78,6 +113,7 @@
 			isa = PBXGroup;
 			children = (
 				D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */,
+				D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -130,10 +166,32 @@
 			name = WatchtowerMobile;
 			packageProductDependencies = (
 				507F22E0F36461C091AD6154 /* WatchtowerKit */,
+				73828104AEDF42B7DD8514E7 /* GRDB */,
 			);
 			productName = WatchtowerMobile;
 			productReference = D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */;
 			productType = "com.apple.product-type.application";
+		};
+		36F4F1051A4270361351E3CC /* WatchtowerMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB6216661A8BDDC36764147C /* Build configuration list for PBXNativeTarget "WatchtowerMobileTests" */;
+			buildPhases = (
+				C6ECA671E3B5ADAB3DA8541A /* Sources */,
+				1B17DC0E1441EED4BDB46F01 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				67B6518D5AD18ECF1FD61564 /* PBXTargetDependency */,
+			);
+			name = WatchtowerMobileTests;
+			packageProductDependencies = (
+				EB447CB107767855A2DBBA0F /* WatchtowerKit */,
+				5CF9E51BB968298C0AAB2FD5 /* GRDB */,
+			);
+			productName = WatchtowerMobileTests;
+			productReference = D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -156,6 +214,7 @@
 			mainGroup = 4BBAEC9D313266F0A1986AE4;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 				163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -164,6 +223,7 @@
 			projectRoot = "";
 			targets = (
 				29B2C64EE70EB083FCF14A74 /* WatchtowerMobile */,
+				36F4F1051A4270361351E3CC /* WatchtowerMobileTests */,
 			);
 		};
 /* End PBXProject section */
@@ -186,7 +246,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C6ECA671E3B5ADAB3DA8541A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		67B6518D5AD18ECF1FD61564 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 29B2C64EE70EB083FCF14A74 /* WatchtowerMobile */;
+			targetProxy = A897B56BFE07E2FD325D2469 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		181F4452963DE83A9ADF763C /* Debug */ = {
@@ -252,6 +328,44 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.10;
+			};
+			name = Debug;
+		};
+		308DDF52E71653EC48B6FA86 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobileTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WatchtowerMobile.app/WatchtowerMobile";
+			};
+			name = Release;
+		};
+		4EF2760F7B56A6AB4616BFF7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobileTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WatchtowerMobile.app/WatchtowerMobile";
 			};
 			name = Debug;
 		};
@@ -343,6 +457,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -372,6 +487,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		AB6216661A8BDDC36764147C /* Build configuration list for PBXNativeTarget "WatchtowerMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4EF2760F7B56A6AB4616BFF7 /* Debug */,
+				308DDF52E71653EC48B6FA86 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		F82D44D2B8EEB447D73215A3 /* Build configuration list for PBXNativeTarget "WatchtowerMobile" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -390,8 +514,33 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		507F22E0F36461C091AD6154 /* WatchtowerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerKit;
+		};
+		5CF9E51BB968298C0AAB2FD5 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		73828104AEDF42B7DD8514E7 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		EB447CB107767855A2DBBA0F /* WatchtowerKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = WatchtowerKit;
 		};

@@ -11,6 +11,14 @@ options:
 packages:
   WatchtowerKit:
     path: ../WatchtowerKit
+  # GRDB is transitive through WatchtowerKit, but the app + tests reference its
+  # types directly (`ValueObservation`, `Row`). Autolink alone links it for a
+  # plain `build`, but a testability build (build-for-testing) dead-strips the
+  # autolink hint and the app fails with undefined GRDB symbols — so declare it
+  # explicitly. Same URL/version as WatchtowerKit's dependency → SPM dedupes.
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: "7.0.0"
 
 settings:
   base:
@@ -31,6 +39,8 @@ targets:
     dependencies:
       - package: WatchtowerKit
         product: WatchtowerKit
+      - package: GRDB
+        product: GRDB
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobile
@@ -43,13 +53,45 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+      configs:
+        # @testable import WatchtowerMobile needs testability in the Debug
+        # config the Test action builds; scoped to Debug so Release stays lean.
+        Debug:
+          ENABLE_TESTABILITY: YES
+
+  # Unit-test bundle hosted in WatchtowerMobile. Proves the app WIRING (env
+  # boot, demo-seed hydrate, per-tab view models, ReplicaObserver re-fire) —
+  # the heavy replica logic is already covered by WatchtowerKit's tests.
+  WatchtowerMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests
+    # Depending on the app target makes xcodegen wire TEST_HOST + BUNDLE_LOADER.
+    dependencies:
+      - target: WatchtowerMobile
+      - package: WatchtowerKit
+        product: WatchtowerKit
+      - package: GRDB
+        product: GRDB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobileTests
+        SWIFT_VERSION: "5.10"
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   WatchtowerMobile:
     build:
       targets:
         WatchtowerMobile: all
+        WatchtowerMobileTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - WatchtowerMobileTests
     archive:
       config: Release

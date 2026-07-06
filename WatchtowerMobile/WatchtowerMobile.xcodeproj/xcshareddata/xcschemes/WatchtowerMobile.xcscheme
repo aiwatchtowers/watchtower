@@ -21,6 +21,20 @@
                ReferencedContainer = "container:WatchtowerMobile.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "36F4F1051A4270361351E3CC"
+               BuildableName = "WatchtowerMobileTests.xctest"
+               BlueprintName = "WatchtowerMobileTests"
+               ReferencedContainer = "container:WatchtowerMobile.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -39,7 +53,20 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "36F4F1051A4270361351E3CC"
+               BuildableName = "WatchtowerMobileTests.xctest"
+               BlueprintName = "WatchtowerMobileTests"
+               ReferencedContainer = "container:WatchtowerMobile.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
