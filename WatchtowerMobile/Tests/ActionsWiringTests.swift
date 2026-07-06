@@ -220,6 +220,48 @@ final class ActionsWiringTests: XCTestCase {
         XCTAssertTrue(try fx.store.pendingActions().isEmpty)
     }
 
+    /// Failed `task_create`: `PendingOverlay.taskCreateText` surfaces the
+    /// typed text so the banner can show WHICH create failed — otherwise
+    /// Dismiss discards it invisibly (review Fix 2).
+    func testFailedTaskCreateExposesTypedTextViaPendingOverlay() async throws {
+        let fx = try await makeFixture()
+        let vm = TasksViewModel()
+        vm.start(store: fx.store, outbox: fx.outbox)
+        try await poll { vm.targets.count == 3 }
+
+        await vm.createTarget(text: "Buy milk")
+        let pendingID = try XCTUnwrap(fx.store.pendingActions().first?.id)
+        var echo = ActionRequestPayload(id: pendingID, kind: .taskCreate, entityID: nil, createdAt: Date())
+        echo.status = .failed
+        echo.errorMessage = "boom"
+        try await fx.outbox.applyEcho(echo)
+
+        try await poll { vm.failedActions.count == 1 }
+        let failed = try XCTUnwrap(vm.failedActions.first)
+        XCTAssertEqual(PendingOverlay.taskCreateText(of: failed), "Buy milk")
+    }
+
+    /// Non-`task_create` failures (e.g. `target_done`) have no typed text to
+    /// show — the computed property must stay nil rather than guess.
+    func testTaskCreateTextIsNilForOtherKinds() async throws {
+        let fx = try await makeFixture()
+        let vm = TasksViewModel()
+        vm.start(store: fx.store, outbox: fx.outbox)
+        try await poll { vm.targets.count == 3 }
+        let target = try XCTUnwrap(vm.targets.first { $0.status == "in_progress" })
+
+        await vm.markDone(target)
+        let pendingID = try XCTUnwrap(fx.store.pendingActions().first?.id)
+        var echo = ActionRequestPayload(id: pendingID, kind: .targetDone, entityID: "1", createdAt: Date())
+        echo.status = .failed
+        echo.errorMessage = "boom"
+        try await fx.outbox.applyEcho(echo)
+
+        try await poll { vm.failedActions.count == 1 }
+        let failed = try XCTUnwrap(vm.failedActions.first)
+        XCTAssertNil(PendingOverlay.taskCreateText(of: failed))
+    }
+
     // MARK: - Snooze wall-clock math
 
     /// The menu instants are computed on the USER's local calendar and only
@@ -254,6 +296,23 @@ final class ActionsWiringTests: XCTestCase {
             try XCTUnwrap(iso.date(from: "2026-07-07T22:00:00Z")),
             "tonight after 6 pm = tomorrow 18:00 local (never in the past)"
         )
+        XCTAssertEqual(
+            SnoozeOption.nextWeek.until(now: morning, calendar: calendar),
+            try XCTUnwrap(iso.date(from: "2026-07-13T04:00:00Z")),
+            "next week = local midnight 7 days out"
+        )
+    }
+
+    /// Menu regression guard: the Tasks tab must offer ONLY day-granularity
+    /// snooze options. `TargetQueries.snooze` (desktop) truncates to a bare
+    /// `yyyy-MM-dd`, and Go's `UnsnoozeExpiredTargets` (internal/db/targets.go)
+    /// compares that string lexicographically against `<= "now"` — a same-day
+    /// bare date always sorts before any timestamp later that day, so
+    /// `.oneHour`/`.tonight` would unsnooze the target IMMEDIATELY (a silent
+    /// no-op the user has no way to notice). If this test ever needs
+    /// loosening, the desktop storage/comparison must change FIRST.
+    func testTargetSnoozeCasesAreDayGranularityOnly() {
+        XCTAssertEqual(SnoozeOption.targetCases, [.tomorrow, .nextWeek])
     }
 
     // MARK: - AppEnvironment relay wiring

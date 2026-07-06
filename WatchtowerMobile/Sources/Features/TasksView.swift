@@ -186,7 +186,7 @@ struct TasksView: View {
                 titleVisibility: .visible
             ) {
                 if let target = snoozeTarget {
-                    ForEach(SnoozeOption.allCases) { option in
+                    ForEach(SnoozeOption.targetCases) { option in
                         Button(option.label) { Task { await model.snooze(target, option: option) } }
                     }
                 }

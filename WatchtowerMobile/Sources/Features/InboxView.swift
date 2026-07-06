@@ -144,7 +144,7 @@ struct InboxView: View {
                 titleVisibility: .visible
             ) {
                 if let item = snoozeItem {
-                    ForEach(SnoozeOption.allCases) { option in
+                    ForEach(SnoozeOption.inboxCases) { option in
                         Button(option.label) { Task { await model.snooze(item, option: option) } }
                     }
                 }

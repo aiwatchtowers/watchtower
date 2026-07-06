@@ -4,9 +4,10 @@ import WatchtowerKit
 
 // MARK: - Snooze menu
 
-/// The three snooze horizons offered by the swipe menus. Instants are computed
-/// on the user's LOCAL calendar (wall-clock semantics — "tonight" means
-/// tonight where the user is standing), then shipped through
+/// The snooze horizons offered by the swipe menus (see `inboxCases` /
+/// `targetCases` for which tab offers which). Instants are computed on the
+/// user's LOCAL calendar (wall-clock semantics — "tonight" means tonight
+/// where the user is standing), then shipped through
 /// `ActionOutbox.snoozeParams` as plain UTC ISO8601 — the wire form the
 /// desktop parser accepts (pinned in Plan 2/3). Timezone correctness lives in
 /// the Date computation here; the UTC rendering of that instant is exact.
@@ -14,6 +15,7 @@ enum SnoozeOption: String, CaseIterable, Identifiable {
     case oneHour
     case tonight
     case tomorrow
+    case nextWeek
 
     var id: String { rawValue }
 
@@ -22,6 +24,7 @@ enum SnoozeOption: String, CaseIterable, Identifiable {
         case .oneHour: return "1 hour"
         case .tonight: return "Tonight"
         case .tomorrow: return "Tomorrow"
+        case .nextWeek: return "Next week"
         }
     }
 
@@ -30,6 +33,8 @@ enum SnoozeOption: String, CaseIterable, Identifiable {
     ///   6 pm, tomorrow evening after; never an instant in the past.
     /// - `tomorrow`: the next local midnight (start of tomorrow), matching
     ///   the desktop's own "Till tomorrow" preset (InboxFeedView.snoozeItem).
+    /// - `nextWeek`: local midnight of `now + 7 days` — same day-granularity
+    ///   discipline as `tomorrow` (see `targetCases`).
     /// `now` and `calendar` are injectable so tests pin the math against a
     /// fixed instant in a fixed zone.
     func until(now: Date = Date(), calendar: Calendar = .current) -> Date {
@@ -37,16 +42,45 @@ enum SnoozeOption: String, CaseIterable, Identifiable {
         case .oneHour:
             return now.addingTimeInterval(3600)
         case .tonight:
-            return calendar.nextDate(
+            if let next = calendar.nextDate(
                 after: now,
                 matching: DateComponents(hour: 18, minute: 0),
                 matchingPolicy: .nextTime
-            ) ?? now.addingTimeInterval(3600)
+            ) {
+                return next
+            }
+            assertionFailure("SnoozeOption.tonight: calendar could not compute the next 18:00")
+            return now.addingTimeInterval(3600)
         case .tomorrow:
-            let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now
+            guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) else {
+                assertionFailure("SnoozeOption.tomorrow: calendar could not add 1 day to \(now)")
+                return calendar.startOfDay(for: now)
+            }
             return calendar.startOfDay(for: tomorrow)
+        case .nextWeek:
+            guard let nextWeek = calendar.date(byAdding: .day, value: 7, to: now) else {
+                assertionFailure("SnoozeOption.nextWeek: calendar could not add 7 days to \(now)")
+                return calendar.startOfDay(for: now)
+            }
+            return calendar.startOfDay(for: nextWeek)
         }
     }
+
+    /// Snooze menu offered on the Inbox tab: full horizon range, hour-level
+    /// granularity included (implicit/ambient items tolerate the desktop's
+    /// own `snooze_until` handling at that resolution).
+    static let inboxCases: [SnoozeOption] = [.oneHour, .tonight, .tomorrow]
+
+    /// Snooze menu offered on the Tasks (targets) tab: DAY granularity only.
+    /// `TargetQueries.snooze` (desktop) stores a bare Mac-local `yyyy-MM-dd`
+    /// with no time-of-day, and Go's `UnsnoozeExpiredTargets`
+    /// (internal/db/targets.go) compares `snooze_until <= "YYYY-MM-DDTHH:mm"`
+    /// lexicographically — a same-day bare date sorts before any timestamp
+    /// later that same day, so it unsnoozes IMMEDIATELY. Offering `.oneHour`
+    /// or `.tonight` here would be a silent no-op: the menu would look like it
+    /// worked, but the target reappears at the next unsnooze sweep. Match the
+    /// desktop's own target UI, which only offers day-level presets.
+    static let targetCases: [SnoozeOption] = [.tomorrow, .nextWeek]
 }
 
 // MARK: - Pending overlay join
@@ -114,6 +148,16 @@ enum PendingOverlay {
         case .trackRead: return "Mark read"
         }
     }
+
+    /// The typed text of a failed `task_create` action, or nil for any other
+    /// kind. `task_create` is entity-less (no slice row to show), so without
+    /// this the failed-action banner is just "Create task failed" with no way
+    /// to see WHICH text failed — Dismiss would then discard it invisibly.
+    static func taskCreateText(of failed: PendingAction) -> String? {
+        guard failed.action.kind == .taskCreate else { return nil }
+        guard case .string(let text) = failed.action.params["text"] else { return nil }
+        return text
+    }
 }
 
 // MARK: - Failed-action banner
@@ -137,6 +181,13 @@ struct FailedActionBanner: View {
             Text(failed.errorMessage ?? "Unknown error")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let text = PendingOverlay.taskCreateText(of: failed) {
+                Text(text)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+            }
             HStack(spacing: 16) {
                 Button("Retry", action: onRetry)
                 Button("Dismiss", role: .cancel, action: onDismiss)
