@@ -127,8 +127,14 @@ jobs:
       # rather than hardcoding a name that may not exist on the runner.
       - name: Test (simulator)
         run: |
+          # `|| true` keeps set -e from aborting inside the substitution when
+          # grep matches nothing — control must reach the guard below so the
+          # no-simulator diagnostic actually prints. The name filter demands
+          # a numbered iPhone ("iPhone 16", "iPhone 17 Pro"), skipping SE-class
+          # names whose parenthetical suffix would truncate to an unmatchable
+          # destination.
           DEVICE=$(xcrun simctl list devices available \
-            | grep -E 'iPhone' | head -1 | sed -E 's/^ *//; s/ \(.*//')
+            | grep -E 'iPhone [0-9]+' | head -1 | sed -E 's/^ *//; s/ \(.*//' || true)
           echo "Selected simulator: ${DEVICE:-<none found>}"
           test -n "$DEVICE" || { echo "No iPhone simulator available on this runner"; exit 1; }
           xcodebuild test \

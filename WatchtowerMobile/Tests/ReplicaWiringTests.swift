@@ -65,6 +65,12 @@ final class ReplicaWiringTests: XCTestCase {
 
     /// AppEnvironment's init kicks off an async bootstrap: seed → hydrate →
     /// poll loop. After it settles, the replica holds exactly the demo seed.
+    ///
+    /// Coupling note: this env (and the host app's own AppEnvironment, booted
+    /// by TEST_HOST) share ONE on-disk replica path. The exact-count
+    /// assertions hold only because DemoSeed uses fixed record ids and
+    /// apply() is an idempotent upsert — if the seed ever generates ids or
+    /// appends, these tests will flake; fix the seed, not the assertions.
     func testAppEnvironmentBootsAndHydratesDemoSeed() async throws {
         let env = AppEnvironment()
 
