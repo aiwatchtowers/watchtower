@@ -15,11 +15,11 @@ final class MobileHubServiceTests: XCTestCase {
         sidecar = try HubSyncState.inMemory()
         // start() guards on this key; enable it globally for tests that exercise
         // the normal start path, and let individual tests override as needed.
-        UserDefaults.standard.set(true, forKey: "mobileSyncEnabled")
+        UserDefaults.standard.set(true, forKey: Constants.mobileSyncEnabledKey)
     }
 
     override func tearDownWithError() throws {
-        UserDefaults.standard.removeObject(forKey: "mobileSyncEnabled")
+        UserDefaults.standard.removeObject(forKey: Constants.mobileSyncEnabledKey)
         sidecar = nil
         dbPool = nil
         TestDatabase.cleanup(path: dbPath)
@@ -124,8 +124,8 @@ final class MobileHubServiceTests: XCTestCase {
     func testQueuedStartAfterStopDoesNotRun() async throws {
         // Simulate AppState.stopMobileHub() beating the queued Task { await hub.start() }:
         // set the toggle to false so start() bails out immediately at the guard.
-        UserDefaults.standard.set(false, forKey: "mobileSyncEnabled")
-        addTeardownBlock { UserDefaults.standard.removeObject(forKey: "mobileSyncEnabled") }
+        UserDefaults.standard.set(false, forKey: Constants.mobileSyncEnabledKey)
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: Constants.mobileSyncEnabledKey) }
 
         let transport = StubHubTransport()
         let service = makeService(transport: transport)

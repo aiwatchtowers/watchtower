@@ -208,7 +208,7 @@ final class AppState {
                 initDayPlan(dbPool: manager.dbPool)
                 initCatchUp(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
-                if UserDefaults.standard.bool(forKey: "mobileSyncEnabled") {
+                if UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey) {
                     startMobileHub()
                 }
                 // Resume pipelines if app was closed mid-generation

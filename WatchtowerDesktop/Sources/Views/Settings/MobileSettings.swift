@@ -2,7 +2,7 @@ import SwiftUI
 
 struct MobileSettings: View {
     @Environment(AppState.self) private var appState
-    @AppStorage("mobileSyncEnabled") private var mobileSyncEnabled = false
+    @AppStorage(Constants.mobileSyncEnabledKey) private var mobileSyncEnabled = false
 
     var body: some View {
         Form {

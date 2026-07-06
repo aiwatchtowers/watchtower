@@ -78,7 +78,7 @@ final class MobileHubService {
     func start() async {
         // Guard against a queued start() arriving after stop() already ran: if
         // the toggle is off we must not proceed regardless of current status.
-        guard UserDefaults.standard.bool(forKey: "mobileSyncEnabled") else { return }
+        guard UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey) else { return }
         guard status != .running, status != .starting else { return }
         status = .starting
         let startEpoch = epoch

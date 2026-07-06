@@ -129,6 +129,11 @@ final class RelayProcessor: Sendable {
     /// 7 days and chat records older than 30 are deleted via a full zone
     /// scan (`since: nil` — the relay change token is untouched). Guarded by
     /// a hub_meta last-run stamp so it runs at most once per day.
+    ///
+    /// Note: the full-zone scan may not yet see records authored by this desktop
+    /// (status echoes, chat chunks, heartbeat) if the CloudKit engine has not
+    /// re-fetched them — hygiene of self-authored records is best-effort until
+    /// the Plan 3 transport work that provides read-your-writes guarantees.
     func runHygieneIfDue() async throws {
         let current = now()
         if let raw = try sidecar.metaValue(forKey: Self.hygieneStampKey),
@@ -267,6 +272,13 @@ final class RelayProcessor: Sendable {
             defer { group.cancelAll() }
             // First child to finish decides: stream done (watchdog cancelled,
             // its CancellationError discarded) or timeout/stream error rethrown.
+            // Duplicate-done edge: if the consumer's final done-chunk save stalls
+            // past the watchdog budget but ultimately succeeds while the watchdog's
+            // throw wins the race, the error-path in processChatMessage emits a
+            // second done chunk ("⚠️ chat stream timed out") after a complete
+            // answer has already landed — an extremely narrow race, accepted;
+            // do NOT reorder the save-then-seq-increment to "fix" this, the
+            // seq-after-save ordering is load-bearing for gap-free delivery.
             try await group.next()
         }
     }
@@ -348,7 +360,13 @@ final class RelayProcessor: Sendable {
 
     private func dateParam(_ action: ActionRequestPayload, _ key: String) throws -> Date {
         let raw = try stringParam(action, key)
-        guard let date = ISO8601DateFormatter().date(from: raw) else {
+        // Try the plain formatter first (no fractional seconds), then one that
+        // accepts sub-second precision (e.g. "2026-07-10T12:00:00.500Z").
+        let plain = ISO8601DateFormatter()
+        if let date = plain.date(from: raw) { return date }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = fractional.date(from: raw) else {
             throw RelayActionError.unparseableDate(raw)
         }
         return date

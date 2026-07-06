@@ -131,6 +131,23 @@ final class RelayProcessorActionTests: XCTestCase {
         XCTAssertEqual(payload?.status, .applied)
     }
 
+    func testTargetSnoozeAcceptsFractionalSecondsISO8601() async throws {
+        let targetID = try await dbPool.write { db in try TestDatabase.insertTarget(db) }
+        let until = "2026-07-10T12:00:00.500Z"
+        let recordName = try await enqueue(
+            .targetSnooze,
+            id: "a2b",
+            entityID: String(targetID),
+            params: ["snooze_until": .string(until)]
+        )
+
+        let applied = try await processor.processOnce()
+
+        XCTAssertEqual(applied, 1)
+        let payload = try await statusPayload(recordName: recordName)
+        XCTAssertEqual(payload?.status, .applied, "fractional-seconds ISO8601 must parse as .applied, not .failed")
+    }
+
     func testFailedActionReportsErrorAndBatchContinues() async throws {
         try await dbPool.write { db in try TestDatabase.insertInboxItem(db) } // id 1
         let badName = try await enqueue(.inboxDismiss, id: "bad", entityID: "999")
