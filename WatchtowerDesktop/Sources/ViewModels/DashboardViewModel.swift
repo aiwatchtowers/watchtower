@@ -11,6 +11,7 @@ final class DashboardViewModel {
     var situations: [Situation] = []
     var openCount: Int = 0
     var isLoading = false
+    var isGenerating = false
     var errorMessage: String?
 
     /// Page size for `fetchFeed`; overridable by tests to exercise pagination cheaply.
@@ -26,13 +27,18 @@ final class DashboardViewModel {
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
 
+    /// Overrides CLI resolution for tests; production falls back to
+    /// `ProcessCLIRunner.makeDefault()` (mirrors `TargetsViewModel.resolveCLIRunner`).
+    private let cliRunner: CLIRunnerProtocol?
+
     /// Interval for the safety-net poll. GRDB ValueObservation cannot see writes
     /// from the Go daemon (separate process, separate SQLite update hooks), so
     /// the feed needs a periodic reload to surface daemon-composed situations.
     private let pollInterval: Duration = .seconds(30)
 
-    init(dbManager: DatabaseManager) {
+    init(dbManager: DatabaseManager, cliRunner: CLIRunnerProtocol? = nil) {
         self.dbManager = dbManager
+        self.cliRunner = cliRunner
     }
 
     func startObserving() {
@@ -58,6 +64,26 @@ final class DashboardViewModel {
     /// situations surface even when the user takes no action while away.
     func refresh() {
         load()
+    }
+
+    /// Runs `watchtower inbox generate` on demand (toolbar/empty-state "Generate"
+    /// action) so a user can pull a fresh feed without waiting for the daemon's
+    /// next cycle, then reloads. Guards re-entry via `isGenerating` since the
+    /// pipeline can take minutes to run.
+    func generateNow() async {
+        guard !isGenerating else { return }
+        isGenerating = true
+        defer { isGenerating = false }
+        guard let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else {
+            errorMessage = "watchtower CLI not found in PATH"
+            return
+        }
+        do {
+            try await DashboardGenerateService(runner: runner).generate()
+            load()
+        } catch {
+            errorMessage = "Failed to generate dashboard: \(error.localizedDescription)"
+        }
     }
 
     private func startPolling() {

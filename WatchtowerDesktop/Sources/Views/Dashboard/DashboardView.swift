@@ -28,6 +28,30 @@ struct DashboardView: View {
     @State private var trackSituationID: Int?
 
     var body: some View {
+        VStack(spacing: 0) {
+            if let msg = vm.errorMessage {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+            }
+            content
+        }
+        .sheet(isPresented: $showCreateTarget) {
+            CreateTargetSheet(prefill: targetPrefill) { newID in
+                guard let situationID = pendingSituationID else { return }
+                vm.markConverted(situationID: situationID, targetID: newID, trackID: nil)
+            }
+        }
+        .sheet(isPresented: $showCreateTrack) {
+            CustomTrackManagementSheet(linkedTargetID: nil) { _ in
+                resolveCreatedTrack()
+            }
+        }
+    }
+
+    private var content: some View {
         Group {
             if vm.situations.isEmpty {
                 emptyState
@@ -54,17 +78,6 @@ struct DashboardView: View {
                 }
             }
         }
-        .sheet(isPresented: $showCreateTarget) {
-            CreateTargetSheet(prefill: targetPrefill) { newID in
-                guard let situationID = pendingSituationID else { return }
-                vm.markConverted(situationID: situationID, targetID: newID, trackID: nil)
-            }
-        }
-        .sheet(isPresented: $showCreateTrack) {
-            CustomTrackManagementSheet(linkedTargetID: nil) { _ in
-                resolveCreatedTrack()
-            }
-        }
     }
 
     private var emptyState: some View {
@@ -80,6 +93,24 @@ struct DashboardView: View {
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
+
+            if !vm.isLoading {
+                Button {
+                    Task { await vm.generateNow() }
+                } label: {
+                    if vm.isGenerating {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Generate your dashboard")
+                        }
+                    } else {
+                        Label("Generate your dashboard", systemImage: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(vm.isGenerating)
+                .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

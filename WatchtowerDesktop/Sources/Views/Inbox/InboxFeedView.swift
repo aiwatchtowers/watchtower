@@ -66,6 +66,23 @@ struct InboxFeedView: View {
                 }
 
                 Spacer()
+
+                if tab == .feed, let dashboardVM {
+                    Button {
+                        Task { await dashboardVM.generateNow() }
+                    } label: {
+                        if dashboardVM.isGenerating {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Generate")
+                            }
+                        } else {
+                            Label("Generate", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(dashboardVM.isGenerating)
+                    .help("Run the inbox pipeline now")
+                }
             }
 
             Picker("", selection: $tab) {

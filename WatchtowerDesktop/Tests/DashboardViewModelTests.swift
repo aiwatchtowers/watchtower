@@ -201,4 +201,43 @@ final class DashboardViewModelTests: XCTestCase {
 
         XCTAssertTrue(members.isEmpty)
     }
+
+    // MARK: - generateNow() — "Generate" button
+
+    func testGenerateNowRunsPipelineReloadsFeedAndClearsIsGeneratingOnSuccess() async throws {
+        let runner = FakeCLIRunner(stdout: Data())
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        // Inserted after vm construction so `load()` inside generateNow() (not the
+        // absent startObserving()) is what picks it up — proves the reload really ran.
+        try await dbManager.dbPool.write { db in try TestDatabase.insertSituation(db, status: "open") }
+
+        await vm.generateNow()
+
+        XCTAssertEqual(runner.invocations, [["inbox", "generate"]])
+        XCTAssertFalse(vm.isGenerating)
+        XCTAssertEqual(vm.situations.count, 1, "generateNow must reload the feed after the pipeline finishes")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testGenerateNowSetsErrorMessageOnServiceFailureAndClearsIsGenerating() async throws {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+
+        await vm.generateNow()
+
+        XCTAssertFalse(vm.isGenerating)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(vm.errorMessage?.contains("boom") == true)
+    }
+
+    func testGenerateNowGuardsReentryWhileAlreadyGenerating() async throws {
+        let runner = FakeCLIRunner(stdout: Data())
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.isGenerating = true
+
+        await vm.generateNow()
+
+        XCTAssertTrue(runner.invocations.isEmpty, "generateNow must no-op while a run is already in flight")
+        XCTAssertTrue(vm.isGenerating, "the guard must leave the in-flight flag untouched, not clear it")
+    }
 }
