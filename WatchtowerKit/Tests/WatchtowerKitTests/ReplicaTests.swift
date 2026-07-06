@@ -133,6 +133,45 @@ final class ReplicaTests: XCTestCase {
         XCTAssertTrue(try store.fetchAll(Target.self, kind: .target).isEmpty)
     }
 
+    // MARK: - Sort order
+
+    /// Pins that `ReplicaSort` cases actually change fetch order — the old
+    /// String `orderedBy` param had zero order-variation coverage. Ids and
+    /// modifiedAt are deliberately staggered so record_name order,
+    /// newestFirst, and oldestFirst each produce a distinct sequence.
+    func testFetchAllSortOrdersDiffer() throws {
+        let store = try ReplicaStore.inMemory()
+        let base = Date(timeIntervalSince1970: 1_720_000_000)
+        try store.apply(CloudChangeBatch(
+            changed: [
+                CloudRecord(recordName: SliceKind.target.recordName(id: "1"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: base.addingTimeInterval(300),
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "newest"))),
+                CloudRecord(recordName: SliceKind.target.recordName(id: "2"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: base.addingTimeInterval(100),
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 2, text: "oldest"))),
+                CloudRecord(recordName: SliceKind.target.recordName(id: "3"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: base.addingTimeInterval(200),
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 3, text: "middle")))
+            ],
+            deletedRecordNames: [],
+            newToken: CloudChangeToken(value: 1)
+        ))
+
+        let newest = try store.fetchAll(Target.self, kind: .target, sort: .newestFirst)
+        XCTAssertEqual(newest.map(\.id), [1, 3, 2])
+
+        let oldest = try store.fetchAll(Target.self, kind: .target, sort: .oldestFirst)
+        XCTAssertEqual(oldest.map(\.id), [2, 3, 1])
+
+        let byName = try store.fetchAll(Target.self, kind: .target, sort: .recordName)
+        XCTAssertEqual(byName.map(\.id), [1, 2, 3])
+
+        // Default (no explicit sort) must stay newestFirst — the behavior
+        // every existing call site relies on.
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).map(\.id), [1, 3, 2])
+    }
+
     // MARK: - Relay records ignored
 
     func testApplyIgnoresRelayZoneRecords() throws {

@@ -2,6 +2,25 @@ import Foundation
 import GRDB
 import os
 
+/// Sort order for `ReplicaStore.fetchAll`. Replaces a raw ORDER BY SQL
+/// fragment param: callers pick one of a fixed set of orderings instead of
+/// interpolating SQL into the replica API.
+public enum ReplicaSort: Sendable {
+    case newestFirst
+    case oldestFirst
+    case recordName
+
+    /// The ORDER BY fragment over `slice_records` columns
+    /// (`record_name`, `modified_at`) this case maps to.
+    fileprivate var orderByFragment: String {
+        switch self {
+        case .newestFirst: return "modified_at DESC, record_name"
+        case .oldestFirst: return "modified_at ASC, record_name"
+        case .recordName: return "record_name"
+        }
+    }
+}
+
 /// The mobile-side mirror of DataZone: one generic table of slice payloads
 /// (`slice_records`) plus the persisted data-zone change token. The UI reads
 /// it via `fetchAll` (typed decode) or ValueObservation on `reader`.
@@ -148,16 +167,15 @@ public final class ReplicaStore: Sendable {
     /// RowPayloadCoder → `init(row:)`. Undecodable payloads are skipped and
     /// counted (`corruptCount()`) — one bad record must never crash a list.
     ///
-    /// `orderedBy` is a trusted compile-time ORDER BY fragment over
-    /// slice_records columns (`record_name`, `modified_at`) — never user
-    /// input. Typed sorting on model fields happens in memory after decode.
-    /// Default: most recent first.
+    /// Typed sorting on model fields happens in memory after decode; `sort`
+    /// only orders the underlying `slice_records` scan. Default: most recent
+    /// first.
     public func fetchAll<T: FetchableRecord>(
         _ type: T.Type,
         kind: SliceKind,
-        orderedBy sql: String? = nil
+        sort: ReplicaSort = .newestFirst
     ) throws -> [T] {
-        try writer.read { db in try fetchAll(type, kind: kind, from: db, orderedBy: sql) }
+        try writer.read { db in try fetchAll(type, kind: kind, from: db, sort: sort) }
     }
 
     /// Decodes stored payloads of `kind` from an ALREADY-OPEN database — for use
@@ -166,20 +184,18 @@ public final class ReplicaStore: Sendable {
     /// call THIS overload with its own `db` so region tracking is recorded on the
     /// tracked connection.
     ///
-    /// `orderedBy` is a trusted compile-time ORDER BY fragment over
-    /// slice_records columns (`record_name`, `modified_at`) — never user
-    /// input. Typed sorting on model fields happens in memory after decode.
-    /// Default: most recent first.
+    /// Typed sorting on model fields happens in memory after decode; `sort`
+    /// only orders the underlying `slice_records` scan. Default: most recent
+    /// first.
     public func fetchAll<T: FetchableRecord>(
         _ type: T.Type,
         kind: SliceKind,
         from db: Database,
-        orderedBy sql: String? = nil
+        sort: ReplicaSort = .newestFirst
     ) throws -> [T] {
-        let order = sql ?? "modified_at DESC, record_name"
         let rows = try Row.fetchAll(
             db,
-            sql: "SELECT record_name, payload FROM slice_records WHERE kind = ? ORDER BY \(order)",
+            sql: "SELECT record_name, payload FROM slice_records WHERE kind = ? ORDER BY \(sort.orderByFragment)",
             arguments: [kind.rawValue]
         )
         var decoded: [T] = []
