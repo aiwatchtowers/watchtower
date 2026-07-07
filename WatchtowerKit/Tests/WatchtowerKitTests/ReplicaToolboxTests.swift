@@ -122,7 +122,8 @@ final class ReplicaToolboxTests: XCTestCase {
         Row([
             "id": id, "channel_id": channelID, "period_from": periodFrom,
             "period_to": periodTo, "type": type, "summary": "digest \(id) summary",
-            "topics": #"["deploys"]"#, "decisions": "[]", "action_items": "[]",
+            "topics": #"["deploys"]"#, "decisions": "[]",
+            "action_items": #"[{"title":"ship the fix"}]"#,
             "message_count": 12, "model": "haiku", "created_at": "2026-07-01T10:00:00Z"
         ])
     }
@@ -365,6 +366,9 @@ final class ReplicaToolboxTests: XCTestCase {
 
         let detail = try objectResult(await execute(fixtures.toolbox, "get_digest", #"{"id":5}"#))
         XCTAssertEqual(detail["summary"] as? String, "digest 5 summary")
+        // Owner decision: action_items ride the detail (parsed, not raw JSON string).
+        let actionItems = try XCTUnwrap(detail["action_items"] as? [[String: Any]])
+        XCTAssertEqual(actionItems.first?["title"] as? String, "ship the fix")
 
         let missing = await execute(fixtures.toolbox, "get_digest", #"{"id":404}"#)
         XCTAssertEqual(missing, "null")
@@ -452,16 +456,20 @@ final class ReplicaToolboxTests: XCTestCase {
             (.calendarEvent, "tomorrow", eventRow(
                 id: "tomorrow", title: "after midnight",
                 start: now.addingTimeInterval(7_200), end: now.addingTimeInterval(10_800))),
+            (.calendarEvent, "edge", eventRow(
+                id: "edge", title: "starts exactly at now+48h",
+                start: now.addingTimeInterval(48 * 3_600), end: now.addingTimeInterval(48 * 3_600 + 1_800))),
             (.calendarEvent, "far", eventRow(
                 id: "far", title: "beyond 48h",
                 start: now.addingTimeInterval(49 * 3_600), end: now.addingTimeInterval(50 * 3_600)))
         ])
 
         // Go parity: end_time >= now AND start_time <= now+48h — an event
-        // already in progress counts; ordered by start_time ascending.
+        // already in progress counts, the exact +48h boundary is INCLUSIVE
+        // (start_time <= to), ordered by start_time ascending.
         let titles = try arrayResult(await execute(fixtures.toolbox, "list_upcoming_events"))
             .map { $0["id"] as? String ?? "" }
-        XCTAssertEqual(titles, ["live", "tonight", "tomorrow"])
+        XCTAssertEqual(titles, ["live", "tonight", "tomorrow", "edge"])
 
         // Narrow window: only events starting within the next hour (+ live one).
         let narrow = try arrayResult(await execute(fixtures.toolbox, "list_upcoming_events", #"{"hours":1}"#))

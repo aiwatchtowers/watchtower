@@ -260,9 +260,12 @@ public struct ReplicaToolbox: Sendable {
     }
 
     private static func digestDetail(_ digest: Digest) -> WireJSON {
+        // Owner decision (Task 4 review): action_items included — model-useful.
+        // people_signals/situations/running_summary stay out as noise.
         merged(digestSummary(digest), [
             "summary": .string(digest.summary),
-            "decisions": parsedJSON(digest.decisions)
+            "decisions": parsedJSON(digest.decisions),
+            "action_items": parsedJSON(digest.tracksJSON)
         ])
     }
 
@@ -747,14 +750,15 @@ extension ReplicaToolbox {
     private static let snoozeItemTool = APITool(
         name: "snooze_item",
         description: "Snooze a target or inbox item until a date/time (queued; applies when your Mac processes the queue). "
-            + "IMPORTANT: target snoozes are day-granularity on the desktop — time-of-day is ignored, "
-            + "so pass a midnight timestamp for targets; sub-day snoozes only make sense for inbox items.",
+            + "IMPORTANT: target snoozes are day-granularity on the desktop — it truncates the timestamp "
+            + "to a calendar day in the MAC'S local time zone, so pass noon of the intended LOCAL day "
+            + "(a UTC midnight lands on the previous day west of UTC); sub-day snoozes only make sense for inbox items.",
         inputSchema: [
             "type": "object",
             "properties": [
                 "entity_type": ["type": "string", "description": "what to snooze: target|inbox_item"],
                 "id": ["type": "integer", "description": "the target or inbox item id"],
-                "until": ["type": "string", "description": "snooze until, ISO8601 (e.g. 2026-07-10T00:00:00Z)"]
+                "until": ["type": "string", "description": "snooze until, ISO8601 (e.g. 2026-07-10T12:00:00Z for the July 10 local day)"]
             ],
             "required": ["entity_type", "id", "until"]
         ]
