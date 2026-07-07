@@ -40,10 +40,18 @@ final class MobileHubService {
     private let relayIdleInterval: Duration
     private let relayActiveInterval: Duration
     private let heartbeatInterval: Duration
+    private let availabilityReprobeInterval: Duration
+    /// Whether mobile sync is enabled — injected by AppState (the UserDefaults
+    /// read lives there), so the service itself has no settings dependency.
+    private let isEnabled: @Sendable () -> Bool
     private let appVersion: String
     private let now: @Sendable () -> Date
     private var relayTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    /// Runs only while `.unavailable`: periodically re-probes iCloud and
+    /// restarts the hub when it comes back. Cancelled by stop() and on any
+    /// successful start.
+    private var reprobeTask: Task<Void, Never>?
     private let logger = Logger(subsystem: Constants.bundleID, category: "MobileHubService")
     /// Bumped by stop() so a queued start() that was enqueued before stop() can
     /// detect it lost the race and bail — even if it hasn't entered start() yet.
@@ -62,8 +70,10 @@ final class MobileHubService {
         relayIdleInterval: Duration = .seconds(30),
         relayActiveInterval: Duration = .seconds(3),
         heartbeatInterval: Duration = .seconds(300),
+        availabilityReprobeInterval: Duration = .seconds(600),
         appVersion: String = Constants.appVersion,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        isEnabled: @escaping @Sendable () -> Bool
     ) {
         self.transport = transport
         self.publisher = publisher
@@ -73,6 +83,8 @@ final class MobileHubService {
         self.relayIdleInterval = relayIdleInterval
         self.relayActiveInterval = relayActiveInterval
         self.heartbeatInterval = heartbeatInterval
+        self.availabilityReprobeInterval = availabilityReprobeInterval
+        self.isEnabled = isEnabled
         self.appVersion = appVersion
         self.now = now
     }
@@ -80,10 +92,12 @@ final class MobileHubService {
     /// Starts the transport, gates on availability (unavailable on unsigned
     /// dev builds is expected — records queue in the store), then spins up
     /// the three loops. Safe to call again after `.unavailable` or `stop()`.
+    /// While `.unavailable`, a re-probe loop retries availability every
+    /// `availabilityReprobeInterval` and auto-recovers when iCloud returns.
     func start() async {
         // Guard against a queued start() arriving after stop() already ran: if
-        // the toggle is off we must not proceed regardless of current status.
-        guard UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey) else { return }
+        // sync is disabled we must not proceed regardless of current status.
+        guard isEnabled() else { return }
         guard status != .running, status != .starting else { return }
         status = .starting
         let startEpoch = epoch
@@ -107,8 +121,13 @@ final class MobileHubService {
         guard status == .starting, epoch == startEpoch else { return }
         guard case .available = availability else {
             status = .unavailable(Self.describe(availability))
+            startReprobeLoop()
             return
         }
+        // A stale re-probe loop (e.g. start() called manually while one was
+        // waiting) must not fire into a running hub.
+        reprobeTask?.cancel()
+        reprobeTask = nil
         publisher.start(interval: publishInterval)
         startRelayLoop()
         startHeartbeatLoop()
@@ -121,6 +140,8 @@ final class MobileHubService {
         relayTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
+        reprobeTask?.cancel()
+        reprobeTask = nil
         // Bump epoch so any queued or in-flight start() detects it lost the race.
         epoch &+= 1
         status = .off
@@ -170,6 +191,28 @@ final class MobileHubService {
                     self.logger.error("heartbeat failed: \(error.localizedDescription, privacy: .public)")
                 }
                 try? await Task.sleep(for: self.heartbeatInterval)
+            }
+        }
+    }
+
+    /// While `.unavailable`, periodically re-probes iCloud; when it returns,
+    /// runs the full start() path (which re-probes, spins up the loops, and
+    /// re-arms this loop should availability have flipped back). Exits on
+    /// stop() (cancel + epoch bump), on leaving `.unavailable`, or after
+    /// handing off to start().
+    private func startReprobeLoop() {
+        reprobeTask?.cancel()
+        let startEpoch = epoch
+        reprobeTask = Task { [weak self, interval = availabilityReprobeInterval] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard let self, !Task.isCancelled else { return }
+                guard self.epoch == startEpoch, case .unavailable = self.status else { return }
+                guard case .available = await self.transport.availability() else { continue }
+                // Re-check after the await: stop() may have landed mid-probe.
+                guard self.epoch == startEpoch, case .unavailable = self.status else { return }
+                await self.start()
+                return
             }
         }
     }

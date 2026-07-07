@@ -1,4 +1,5 @@
 import Observation
+import os
 import SwiftUI
 import WatchtowerKit
 import GRDB
@@ -9,6 +10,8 @@ final class SettingsViewModel {
     /// Replica record counts per slice kind (rawValue → count).
     private(set) var counts: [(kind: String, count: Int)] = []
     private var cancellable: AnyDatabaseCancellable?
+    // nonisolated: logged from the @Sendable observation onError closure.
+    private nonisolated static let logger = Logger(subsystem: "WatchtowerMobile", category: "SettingsViewModel")
 
     func start(store: ReplicaStore) {
         guard cancellable == nil else { return }
@@ -19,7 +22,7 @@ final class SettingsViewModel {
         cancellable = observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
-            onError: { print("settings counts error: \($0)") },
+            onError: { Self.logger.error("settings counts error: \($0.localizedDescription, privacy: .public)") },
             onChange: { [weak self] rows in MainActor.assumeIsolated { self?.counts = rows.map { (kind: $0.0, count: $0.1) } } }
         )
     }

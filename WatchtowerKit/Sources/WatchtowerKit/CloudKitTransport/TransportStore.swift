@@ -26,10 +26,13 @@ public final class TransportStore: Sendable {
 
     private func createSchema() throws {
         try queue.write { db in
-            // events is append-only. Compaction (dropping seq ≤ consumer floor)
-            // is available via compactEvents(_:keepSince:) — called by a CompactingTransport
-            // consumer (Plan 3 Task 4 hydrator). The relay zone retains full history
-            // until hygiene has aged records out; see CompactingTransport.
+            // events is append-only. Two retention primitives trim it:
+            // compactEvents(_:keepSince:) drops seq ≤ consumer floor — called by a
+            // CompactingTransport consumer (the Plan 3 replica hydrator, .data zone).
+            // sweepEvents(in:olderThan:upTo:) drops consumed events past an age
+            // cutoff — called by the desktop's daily relay hygiene, which needs the
+            // .relay zone to retain history until its aged-record scan has seen a
+            // record through the full 7/30-day windows (see SweepingTransport).
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -328,6 +331,51 @@ public final class TransportStore: Sendable {
                 sql: "DELETE FROM events WHERE zone = ? AND seq <= ?",
                 arguments: [zone.rawValue, token.value]
             )
+        }
+    }
+
+    /// Drops buffered events that are BOTH older than `cutoff` (by `modified_at`)
+    /// AND at or below the consumer floor `token`. Returns the number of rows deleted.
+    ///
+    /// Why AGE-based and not purely token-based (the Plan 3 final-review argument):
+    /// sweeping everything ≤ the consumer token is `compactEvents` — it deletes
+    /// events the moment they are consumed, which would re-blind the relay
+    /// hygiene's full-zone aged-record scan (`changes(since: nil)`) and silently
+    /// disable server-side retention. An age cutoff with a margin past the longest
+    /// hygiene window cannot: anything older than the cutoff has had a daily scan
+    /// every day it was in-window.
+    ///
+    /// Why the `token` floor on top of age: an event's `modified_at` is the
+    /// RECORD's timestamp, not the buffering time. A device that was offline past
+    /// the cutoff window buffers old-modifiedAt records on its first pull, with
+    /// seqs ABOVE its stored token — and the relay loop runs hygiene before
+    /// processing. An unguarded age sweep would delete a still-pending mobile
+    /// action the processor never consumed (and CKSyncEngine never redelivers
+    /// fetched records), losing the action permanently. The floor makes the sweep
+    /// touch only events every token consumer has already read, so it can never
+    /// change what `changes(since: storedToken)` returns. Known liveness limit
+    /// (pre-existing class): a persistently-throwing consumer loop never advances
+    /// its stored token, freezing the floor — buffered-event growth returns for
+    /// as long as that consumer is dead, and the first successful pass unfreezes
+    /// the sweep.
+    ///
+    /// Deletion events (tombstones, `modified_at` = 0) fall below any real cutoff
+    /// once consumed — intended, or hygiene's own server-side deletes would grow
+    /// the buffer forever. Known bounded quirk: sweeping a record's tombstone
+    /// while its younger-than-cutoff change event survives makes the next
+    /// full-zone scan see the record as changed again, so hygiene re-issues an
+    /// idempotent server delete daily until the change event ages out — worst
+    /// case for the relay's actions, whose server lifetime (`actionMaxAge`) is
+    /// far shorter than the zone's shared chat-length sweep cutoff, that is
+    /// roughly `chatMaxAge − actionMaxAge` of daily no-op deletes per record.
+    @discardableResult
+    public func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) throws -> Int {
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM events WHERE zone = ? AND modified_at < ? AND seq <= ?",
+                arguments: [zone.rawValue, cutoff.timeIntervalSince1970, token.value]
+            )
+            return db.changesCount
         }
     }
 

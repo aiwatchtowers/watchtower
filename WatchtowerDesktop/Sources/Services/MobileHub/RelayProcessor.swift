@@ -32,6 +32,10 @@ final class RelayProcessor: Sendable {
     private static let hygieneInterval: TimeInterval = 86_400
     private static let actionMaxAge: TimeInterval = 7 * 86_400
     private static let chatMaxAge: TimeInterval = 30 * 86_400
+    /// Buffer-sweep cutoff sits one day past the LONGEST record window, so a
+    /// record is only swept locally after hygiene has had a full window of
+    /// daily scans (plus margin) to delete it server-side first.
+    private static let eventSweepMargin: TimeInterval = 86_400
 
     /// When the relay last did real work (action applied/failed, chat turn
     /// streamed). Drives the hub's adaptive poll cadence; nil until then.
@@ -82,11 +86,13 @@ final class RelayProcessor: Sendable {
         }
 
         try persistToken(batch.newToken)
-        // The relay buffer intentionally retains full history: hygiene's aged-record
-        // scan calls changes(in: .relay, since: nil) and needs records to have aged
-        // 7/30 days before deleting them. Compacting here would silently drop those
-        // records before hygiene can find them, disabling server-side retention.
-        // Compaction is the responsibility of the Plan 3 Task 4 hydrator (CompactingTransport).
+        // The relay buffer intentionally retains history well past consumption:
+        // hygiene's aged-record scan calls changes(in: .relay, since: nil) and needs
+        // records to have aged 7/30 days before deleting them. Compacting here would
+        // silently drop those records before hygiene can find them, disabling
+        // server-side retention. The buffer is trimmed only by hygiene's own
+        // age sweep (runHygieneIfDue → SweepingTransport), one day past the
+        // longest record window.
         return applied
     }
 
@@ -133,7 +139,10 @@ final class RelayProcessor: Sendable {
     /// Daily retention pass over the relay zone: action records older than
     /// 7 days and chat records older than 30 are deleted via a full zone
     /// scan (`since: nil` — the relay change token is untouched). Guarded by
-    /// a hub_meta last-run stamp so it runs at most once per day.
+    /// a hub_meta last-run stamp so it runs at most once per day. After the
+    /// server-side record pass, an age sweep trims the LOCAL event buffer
+    /// (which otherwise grows forever — even these deletes only append
+    /// tombstone events); the ordering is load-bearing, see below.
     ///
     /// Note: the full-zone scan may not yet see records authored by this desktop
     /// (status echoes, chat chunks, heartbeat) if the CloudKit engine has not
@@ -173,6 +182,31 @@ final class RelayProcessor: Sendable {
         if !stale.isEmpty {
             try await transport.delete(recordNames: stale, in: .relay)
             logger.info("hygiene: deleted \(stale.count) stale relay records")
+        }
+        // Local-buffer age sweep — strictly AFTER the record pass above: sweeping
+        // first would remove aged events from the `since: nil` scan before their
+        // server records were ever deleted, silently disabling retention.
+        // AGE-based with a margin past the longest record window, so it cannot
+        // re-blind the aged-record scan (anything older than the cutoff has had a
+        // daily scan every day it was in-window — the Plan 3 final-review
+        // argument). The stored relay token bounds the sweep so an UNCONSUMED
+        // event is never swept regardless of age: a desktop that was off for
+        // weeks buffers old-modifiedAt records on its first pull, and hygiene
+        // runs before processOnce in the relay loop — an unguarded sweep would
+        // delete a still-pending mobile action before the processor ever saw it
+        // (CKSyncEngine never redelivers fetched records). See
+        // TransportStore.sweepEvents for the full walk.
+        if let sweeping = transport as? any SweepingTransport {
+            do {
+                let cutoff = current.addingTimeInterval(-(Self.chatMaxAge + Self.eventSweepMargin))
+                let floor = try storedToken() ?? CloudChangeToken(value: 0)
+                let swept = try await sweeping.sweepEvents(in: .relay, olderThan: cutoff, upTo: floor)
+                if swept > 0 { logger.info("hygiene: swept \(swept) aged relay buffer events") }
+            } catch {
+                // Local trim only — never fail the hygiene pass over it; the
+                // next daily run retries.
+                logger.warning("relay event sweep failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
         // Retention on the idempotency set: entries older than the longest relay
         // record lifetime (chat) can never guard against a live duplicate again.
@@ -216,7 +250,11 @@ final class RelayProcessor: Sendable {
                 chat message \(record.recordName, privacy: .public) stream failed: \
                 \(error.localizedDescription, privacy: .public)
                 """)
-            try await saveChunk(for: message, seq: seq, text: "⚠️ " + error.localizedDescription, done: true)
+            // Covers both error paths — stream failure and the watchdog
+            // timeout (streamTurn rethrows RelayChatError.streamTimeout here).
+            try await saveChunk(
+                for: message, seq: seq, text: "⚠️ " + error.localizedDescription, done: true, isError: true
+            )
         }
         try sidecar.markRelayProcessed(record.recordName, at: now())
         lastActivity.withLock { $0 = now() }
@@ -298,14 +336,16 @@ final class RelayProcessor: Sendable {
         for message: ChatMessagePayload,
         seq: OSAllocatedUnfairLock<Int>,
         text: String,
-        done: Bool
+        done: Bool,
+        isError: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
     ) async throws {
         let chunk = ChatChunkPayload(
             sessionID: message.sessionID,
             messageID: message.id,
             seq: seq.withLock { $0 },
             text: text,
-            done: done
+            done: done,
+            isError: isError
         )
         try await transport.save([try CloudRecordFactory.record(for: chunk, modifiedAt: now())])
         seq.withLock { $0 += 1 }

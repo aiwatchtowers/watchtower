@@ -80,6 +80,7 @@ final class RelayProcessorChatTests: XCTestCase {
         XCTAssertEqual(chunks.map(\.done), [false, false, false, true], "only the last chunk is done")
         XCTAssertEqual(chunks.map(\.text).joined(), "Hello streaming world")
         XCTAssertTrue(chunks.allSatisfy { $0.sessionID == "s1" })
+        XCTAssertTrue(chunks.allSatisfy { $0.isError == nil }, "success chunks must not carry the error flag")
 
         // Coalescing side of the cadence: deltas faster than the interval are
         // batched — with a huge interval everything lands in one done chunk.
@@ -137,6 +138,7 @@ final class RelayProcessorChatTests: XCTestCase {
         XCTAssertEqual(chunks.count, 1)
         XCTAssertEqual(chunks.first?.done, true)
         XCTAssertEqual(chunks.first?.text, "⚠️ model exploded")
+        XCTAssertEqual(chunks.first?.isError, true, "stream-error final chunk must carry the error flag")
         XCTAssertTrue(try sidecar.isRelayProcessed(recordName), "failed chat must still be marked processed")
 
         // No retry loop: another cycle re-runs nothing and emits no new chunks.
@@ -158,6 +160,7 @@ final class RelayProcessorChatTests: XCTestCase {
         XCTAssertEqual(chunks.count, 1, "a hung stream must produce exactly the error-path final chunk")
         XCTAssertEqual(chunks.first?.done, true)
         XCTAssertEqual(chunks.first?.text, "⚠️ chat stream timed out")
+        XCTAssertEqual(chunks.first?.isError, true, "timeout final chunk must carry the error flag")
         XCTAssertTrue(try sidecar.isRelayProcessed(recordName), "timed-out chat must still be marked processed")
     }
 }

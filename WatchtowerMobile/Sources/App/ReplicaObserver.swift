@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 import WatchtowerKit
 
 /// Bridges the Kit's `ReplicaStore.fetchAll` into a live SwiftUI stream: sets up
@@ -14,6 +15,8 @@ import WatchtowerKit
 /// already runs on a pool reader connection, and a nested `DatabasePool.read`
 /// traps on reentrancy (`fatalError`, release and debug).
 enum ReplicaObserver {
+    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ReplicaObserver")
+
     static func observe<T: FetchableRecord>(
         _ type: T.Type,
         kind: SliceKind,
@@ -26,8 +29,36 @@ enum ReplicaObserver {
         return observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
-            onError: { print("observation error for \(kind.rawValue): \($0)") },
+            onError: {
+                Self.logger.error("observation error for \(kind.rawValue, privacy: .public): \($0.localizedDescription, privacy: .public)")
+            },
             onChange: { value in MainActor.assumeIsolated { onChange(value) } }
+        )
+    }
+
+    /// Same bridge, but the tracking closure ALSO reads the `pending_actions`
+    /// overlay — both through from-db overloads on the closure's own `db`
+    /// (the pool-reentrancy rule above applies to EVERY read inside the
+    /// closure). One observation spanning both tables delivers slice rows and
+    /// their overlay as a single consistent snapshot, so there is never a
+    /// frame where a chip and its host row disagree about a write.
+    static func observeWithPendingActions<T: FetchableRecord>(
+        _ type: T.Type,
+        kind: SliceKind,
+        in store: ReplicaStore,
+        onChange: @escaping @MainActor ([T], [PendingAction]) -> Void
+    ) -> AnyDatabaseCancellable {
+        let observation = ValueObservation.tracking { db -> ([T], [PendingAction]) in
+            (try store.fetchAll(T.self, kind: kind, from: db),
+             try store.pendingActions(from: db))
+        }
+        return observation.start(
+            in: store.reader,
+            scheduling: .async(onQueue: .main),
+            onError: {
+                Self.logger.error("observation error for \(kind.rawValue, privacy: .public)+pending: \($0.localizedDescription, privacy: .public)")
+            },
+            onChange: { value in MainActor.assumeIsolated { onChange(value.0, value.1) } }
         )
     }
 }

@@ -76,3 +76,20 @@ public protocol CloudSyncTransport {
 public protocol CompactingTransport: CloudSyncTransport {
     func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws
 }
+
+/// Transport extension for age-based retention of the local event buffer —
+/// like `CompactingTransport`, kept off the seam so conformers that don't
+/// buffer need not implement it. Intended caller: the desktop relay hygiene,
+/// whose server-side deletes only ever APPEND (deletion) events, so without
+/// a sweep the relay buffer grows forever.
+///
+/// Semantics (see `TransportStore.sweepEvents` for the full argument): delete
+/// only events older than `cutoff` AND at or below the consumer floor `token`.
+/// Age-based so it cannot re-blind hygiene's full-zone aged-record scan;
+/// token-floored so it can never delete an event a consumer has not read yet
+/// (a device offline past the cutoff buffers old-modifiedAt records on its
+/// first pull — those must survive until processed).
+public protocol SweepingTransport: CloudSyncTransport {
+    @discardableResult
+    func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) async throws -> Int
+}

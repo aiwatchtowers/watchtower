@@ -102,8 +102,10 @@ final class PublicAPISurfaceTests: XCTestCase {
         let keyPath1: KeyPath<Target, String> = \.text
         let keyPath2: KeyPath<Target, String> = \.status
         let keyPath3: KeyPath<Target, String> = \.priority
+        // The Tasks tab's priority badge (Task 9) — must stay public.
+        let keyPath4: KeyPath<Target, String> = \.priorityColor
         // Suppress unused-variable warnings; the point is the compile, not the value.
-        _ = keyPath1; _ = keyPath2; _ = keyPath3
+        _ = keyPath1; _ = keyPath2; _ = keyPath3; _ = keyPath4
     }
 
     // MARK: - InboxItem model fields (feed UI)
@@ -146,9 +148,11 @@ final class PublicAPISurfaceTests: XCTestCase {
     func testTransportStorePublicInit() throws {
         // Only init(path:) and inMemory() are public — the adapter internals are internal.
         let store = try TransportStore.inMemory()
-        // wipe() and compactEvents(in:keepSince:) stay public (reset path + CompactingTransport).
+        // wipe(), compactEvents(in:keepSince:) and sweepEvents(in:olderThan:upTo:)
+        // stay public (reset path + CompactingTransport + SweepingTransport).
         try store.wipe()
         try store.compactEvents(in: .data, keepSince: CloudChangeToken(value: 0))
+        _ = try store.sweepEvents(in: .relay, olderThan: .distantPast, upTo: CloudChangeToken(value: 0))
         // changes(in:since:) stays public (Task 4 hydrator may read the store directly,
         // though the transport wraps it — keeping it public avoids sealing the door
         // on that access pattern before Task 4 decides).
@@ -194,5 +198,128 @@ final class PublicAPISurfaceTests: XCTestCase {
 
         await hydrator.start(interval: .seconds(60))
         await hydrator.stop()
+    }
+
+    // MARK: - ActionOutbox + PendingAction (the iOS action-producer path)
+
+    func testActionOutboxAndPendingOverlaySurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let outbox = ActionOutbox(transport: transport, store: store)
+
+        // enqueue + snoozeParams: what the app's swipe actions call.
+        let id = try await outbox.enqueue(
+            kind: .targetSnooze,
+            entityRecordName: "target-42",
+            params: ActionOutbox.snoozeParams(until: Date())
+        )
+
+        // Overlay reads: full list, per-entity join, and the from-db overload
+        // the app's ValueObservation tracking closures must use.
+        let row = try XCTUnwrap(store.pendingActions().first)
+        XCTAssertEqual(row.id, id)
+        XCTAssertEqual(row.state, .pending)
+        XCTAssertEqual(row.action.kind, .targetSnooze)
+        XCTAssertEqual(row.entityRecordName, "target-42")
+        XCTAssertEqual(try store.pendingActions(forEntity: "target-42").count, 1)
+        let observedCount = try await store.reader.read { db in
+            try store.pendingActions(from: db).count
+        }
+        XCTAssertEqual(observedCount, 1)
+
+        // applyEcho: app-target tests drive echoes directly (Plan 4 Task 6).
+        var echo = row.action
+        echo.status = .failed
+        echo.errorMessage = "surface"
+        try await outbox.applyEcho(echo)
+
+        // sweepSilentPending + removePendingAction: daily sweep + the
+        // "Dismiss" affordance on failed rows.
+        let swept = try await outbox.sweepSilentPending()
+        XCTAssertTrue(swept.isEmpty)
+        try store.removePendingAction(id: id)
+        XCTAssertTrue(try store.pendingActions().isEmpty)
+    }
+
+    // MARK: - RelayFeed + ChatChunkAssembling (the iOS relay-consumer path)
+
+    /// The app never sees chunks directly — but Task 5's ChatAssembler must be
+    /// able to conform from outside the Kit's internals, so the seam is public.
+    private actor SurfaceAssembler: ChatChunkAssembling {
+        func ingest(_ chunk: ChatChunkPayload) async throws {}
+    }
+
+    func testRelayFeedSurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let outbox = ActionOutbox(transport: transport, store: store)
+        let feed = RelayFeed(
+            transport: transport,
+            store: store,
+            outbox: outbox,
+            assembler: SurfaceAssembler(),
+            pull: nil,
+            onActionApplied: nil
+        )
+
+        // pollOnce is what AppEnvironment.refresh calls alongside hydrateOnce.
+        let heartbeat = HeartbeatPayload(updatedAt: Date(), appVersion: "1.0.0")
+        try await transport.save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: heartbeat.updatedAt)])
+        let result = try await feed.pollOnce()
+        XCTAssertEqual(result.echoes, 0)
+        XCTAssertEqual(result.chunks, 0)
+
+        // Liveness reads: the view models' reachability banner.
+        XCTAssertTrue(feed.isDesktopReachable(now: heartbeat.updatedAt))
+        XCTAssertEqual(RelayFeed.heartbeatStaleAfter, .seconds(12 * 60))
+        XCTAssertNotNil(try store.heartbeatAge(now: heartbeat.updatedAt))
+
+        await feed.start(interval: .seconds(60))
+        await feed.stop()
+    }
+
+    // MARK: - ChatAssembler + chat replica (the iOS chat path)
+
+    func testChatAssemblerAndChatReplicaSurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let assembler = ChatAssembler(transport: transport, store: store)
+
+        // send + firstChunkPending + the liveness threshold: the Task 7 VM's calls.
+        let (sessionID, messageID) = try await assembler.send(text: "hello from the surface", sessionID: nil)
+        var pending = await assembler.firstChunkPending(messageID: messageID)
+        XCTAssertTrue(pending)
+        XCTAssertEqual(ChatAssembler.unreachableAfter, .seconds(45))
+
+        // ingest through the ChatChunkAssembling seam RelayFeed consumes.
+        let assembling: any ChatChunkAssembling = assembler
+        try await assembling.ingest(
+            ChatChunkPayload(sessionID: sessionID, messageID: messageID, seq: 0, text: "Hi!", done: true)
+        )
+        pending = await assembler.firstChunkPending(messageID: messageID)
+        XCTAssertFalse(pending)
+
+        // Chat reads: sessions list + one thread, with the public model fields
+        // the chat UI renders.
+        let session = try XCTUnwrap(store.chatSessions().first)
+        XCTAssertEqual(session.id, sessionID)
+        XCTAssertEqual(session.title, "hello from the surface")
+        XCTAssertLessThanOrEqual(session.createdAt, session.updatedAt)
+        let messages = try store.chatMessages(inSession: sessionID)
+        XCTAssertEqual(messages.map(\.role), [ChatMessage.Role.user, .assistant])
+        XCTAssertEqual(messages.first?.text, "hello from the surface")
+        XCTAssertEqual(messages.last?.id, messageID)
+        XCTAssertEqual(messages.last?.text, "Hi!")
+        XCTAssertEqual(messages.last?.isComplete, true)
+        XCTAssertEqual(messages.last?.isError, false)
+
+        // The from-db overloads the app's ValueObservation tracking closures
+        // must use (same reentrancy rule as fetchAll(_:kind:from:)).
+        let counts = try await store.reader.read { db in
+            (sessions: try store.chatSessions(from: db).count,
+             messages: try store.chatMessages(inSession: sessionID, from: db).count)
+        }
+        XCTAssertEqual(counts.sessions, 1)
+        XCTAssertEqual(counts.messages, 2)
     }
 }

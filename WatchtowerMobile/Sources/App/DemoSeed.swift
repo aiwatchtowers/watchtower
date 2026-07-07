@@ -36,20 +36,24 @@ enum DemoSeed {
         ]))
 
         // MARK: Calendar events (today)
+        // Fixed LOCAL wall-clock times, not offsets from `now`: `now + 1 h`
+        // crosses midnight on late-evening runs, and the Today tab's
+        // `isDateInToday` filter would drop the events (a real near-midnight
+        // test/demo flake, same family as 615a75c/bc78989).
         records.append(try record(.calendarEvent, "evt-1", now, [
             "id": "evt-1",
             "title": "Daily Standup",
             "location": "Zoom",
-            "start_time": Self.iso.string(from: now.addingTimeInterval(3600)),
-            "end_time": Self.iso.string(from: now.addingTimeInterval(3600 + 900)),
+            "start_time": Self.iso.string(from: Self.todayAt(hour: 10, of: now)),
+            "end_time": Self.iso.string(from: Self.todayAt(hour: 10, minute: 15, of: now)),
             "event_status": "confirmed",
         ]))
         records.append(try record(.calendarEvent, "evt-2", now, [
             "id": "evt-2",
             "title": "Mobile app design review",
             "location": "Room 4B",
-            "start_time": Self.iso.string(from: now.addingTimeInterval(3 * 3600)),
-            "end_time": Self.iso.string(from: now.addingTimeInterval(4 * 3600)),
+            "start_time": Self.iso.string(from: Self.todayAt(hour: 15, of: now)),
+            "end_time": Self.iso.string(from: Self.todayAt(hour: 16, of: now)),
             "event_status": "tentative",
         ]))
 
@@ -129,10 +133,65 @@ enum DemoSeed {
             "created_at": Self.iso.string(from: now),
         ]))
 
+        // MARK: Desktop heartbeat (Chat liveness)
+        // Refreshed every launch so the Chat tab demos the reachable state;
+        // it goes stale — and the "Mac unreachable" banner appears — if the
+        // app stays in the foreground past the 12-minute threshold.
+        records.append(try CloudRecordFactory.record(
+            for: HeartbeatPayload(updatedAt: now, appVersion: "demo"),
+            modifiedAt: now
+        ))
+
         try await transport.save(records)
     }
 
+    /// Seeds one canned chat exchange — a user question plus a streamed,
+    /// completed answer — so the Chat tab renders content on first boot.
+    /// It rides the REAL pipeline end-to-end: `assembler.send` writes the
+    /// turn + placeholder and ships the wire record, the answer chunks land
+    /// in the relay zone, and RelayFeed's first poll hands them back to the
+    /// assembler — exactly the path a live desktop answer takes.
+    ///
+    /// Skipped once any session exists: the replica persists across
+    /// launches, and re-seeding would mint a duplicate session per launch
+    /// (sessions have generated ids, unlike the fixed-id slice rows above).
+    static func loadChatExchange(
+        via assembler: ChatAssembler,
+        into transport: any CloudSyncTransport,
+        store: ReplicaStore
+    ) async throws {
+        guard try store.chatSessions().isEmpty else { return }
+        let ids = try await assembler.send(text: "What needs my attention today?", sessionID: nil)
+        let parts: [(text: String, done: Bool)] = [
+            ("Two things stand out. ", false),
+            ("The Q3 launch risk needs a decision by Friday, ", false),
+            ("and Alice is still blocked on API access.", true),
+        ]
+        let now = Date()
+        try await transport.save(try parts.enumerated().map { seq, part in
+            try CloudRecordFactory.record(
+                for: ChatChunkPayload(
+                    sessionID: ids.sessionID,
+                    messageID: ids.messageID,
+                    seq: seq,
+                    text: part.text,
+                    done: part.done
+                ),
+                modifiedAt: now
+            )
+        })
+    }
+
     // MARK: - Helpers
+
+    /// An instant pinned INSIDE `now`'s local day (see the calendar-events
+    /// note above). The nil fallback is unreachable for valid hour/minute.
+    /// Residual straddle (accepted, Task 7 review): a run that seeds just
+    /// before local midnight and asserts after it derives "today" twice on
+    /// different days.
+    private static func todayAt(hour: Int, minute: Int = 0, of now: Date) -> Date {
+        Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: now) ?? now
+    }
 
     private static func record(_ kind: SliceKind, _ id: String, _ at: Date, _ row: Row) throws -> CloudRecord {
         let slice = SliceRecord(

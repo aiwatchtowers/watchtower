@@ -207,6 +207,89 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["relay-1"])
     }
 
+    // MARK: - sweepEvents (age-based retention)
+
+    func testSweepEventsDeletesAgedConsumedEventsAndKeepsFresh() throws {
+        let store = try TransportStore.inMemory()
+        let now = Date()
+        let aged = CloudRecord(
+            recordName: "chunk-old", zone: .relay, kind: "chat_chunk",
+            modifiedAt: now.addingTimeInterval(-35 * 86_400), payload: Data("{}".utf8)
+        )
+        let fresh = CloudRecord(
+            recordName: "chunk-new", zone: .relay, kind: "chat_chunk",
+            modifiedAt: now.addingTimeInterval(-60), payload: Data("{}".utf8)
+        )
+        try store.bufferChanged([aged, fresh])
+        // Consumer has read everything (floor = max seq).
+        let floor = try store.changes(in: .relay, since: nil).newToken
+
+        let cutoff = now.addingTimeInterval(-31 * 86_400)
+        let swept = try store.sweepEvents(in: .relay, olderThan: cutoff, upTo: floor)
+
+        XCTAssertEqual(swept, 1, "exactly the aged event row is deleted")
+        let names = try store.changes(in: .relay, since: nil).changed.map(\.recordName)
+        XCTAssertEqual(names, ["chunk-new"], "within-window event must survive the sweep")
+    }
+
+    func testSweepEventsSparesUnconsumedEventsRegardlessOfAge() throws {
+        // A desktop that was off for weeks buffers old-modifiedAt records on its
+        // first pull; their seqs sit ABOVE the stored relay token. The sweep must
+        // never delete them — the processor still has to consume them.
+        let store = try TransportStore.inMemory()
+        let now = Date()
+        let pendingAction = CloudRecord(
+            recordName: "action-old", zone: .relay, kind: "action",
+            modifiedAt: now.addingTimeInterval(-35 * 86_400), payload: Data("{}".utf8)
+        )
+        try store.bufferChanged([pendingAction])
+
+        // Consumer floor is 0 — nothing consumed yet.
+        let swept = try store.sweepEvents(
+            in: .relay, olderThan: now.addingTimeInterval(-31 * 86_400), upTo: CloudChangeToken(value: 0)
+        )
+
+        XCTAssertEqual(swept, 0)
+        XCTAssertEqual(
+            try store.changes(in: .relay, since: nil).changed.map(\.recordName),
+            ["action-old"],
+            "an unconsumed event survives the sweep regardless of age"
+        )
+    }
+
+    func testSweepEventsIsZoneScoped() throws {
+        let store = try TransportStore.inMemory()
+        let old = Date(timeIntervalSince1970: 1)
+        try store.bufferChanged([
+            CloudRecord(recordName: "data-old", zone: .data, kind: "target", modifiedAt: old, payload: Data()),
+            CloudRecord(recordName: "relay-old", zone: .relay, kind: "action", modifiedAt: old, payload: Data())
+        ])
+        let floor = CloudChangeToken(value: 100)
+
+        _ = try store.sweepEvents(in: .relay, olderThan: Date(), upTo: floor)
+
+        XCTAssertEqual(try store.changes(in: .data, since: nil).changed.map(\.recordName), ["data-old"])
+        XCTAssertTrue(try store.changes(in: .relay, since: nil).changed.isEmpty)
+    }
+
+    func testSweepEventsDeletesConsumedTombstones() throws {
+        // Deletion events carry modified_at = 0, so any cutoff covers them once
+        // they are below the consumer floor — hygiene's own server-side deletes
+        // must not accumulate tombstone events forever.
+        let store = try TransportStore.inMemory()
+        try store.bufferDeleted(recordNames: ["action-gone"], zone: .relay)
+        let floor = try store.changes(in: .relay, since: nil).newToken
+
+        let swept = try store.sweepEvents(
+            in: .relay, olderThan: Date().addingTimeInterval(-31 * 86_400), upTo: floor
+        )
+
+        XCTAssertEqual(swept, 1)
+        let batch = try store.changes(in: .relay, since: nil)
+        XCTAssertTrue(batch.changed.isEmpty)
+        XCTAssertTrue(batch.deletedRecordNames.isEmpty)
+    }
+
     // MARK: - evictZone (server-side zone deletion)
 
     func testEvictZoneDropsEventsAndSystemFieldsButKeepsPending() throws {

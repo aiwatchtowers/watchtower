@@ -1,9 +1,12 @@
-import SwiftUI
 import GRDB
+import os
+import SwiftUI
 
 @MainActor
 @Observable
 final class AppState {
+    private static let logger = Logger(subsystem: Constants.bundleID, category: "AppState")
+
     var selectedDestination: SidebarDestination = .chat
     var databaseManager: DatabaseManager?
     var errorMessage: String?
@@ -74,6 +77,23 @@ final class AppState {
     /// Syncs product slices to the iOS app via CloudKit and relays mobile
     /// actions/chat back. Built lazily when mobile sync is enabled.
     private(set) var mobileHub: MobileHubService?
+
+    /// Why makeMobileHub failed (nil once a hub exists) — surfaced in Settings
+    /// via `mobileHubStatus` instead of dying silently in a log.
+    private(set) var mobileHubInitError: String?
+
+    /// What Settings shows: the hub's own status, or the init failure when
+    /// the hub could not even be built.
+    var mobileHubStatus: HubStatus {
+        Self.hubStatus(hub: mobileHub, initError: mobileHubInitError)
+    }
+
+    /// Split out so the mapping is unit-testable without building an AppState.
+    static func hubStatus(hub: MobileHubService?, initError: String?) -> HubStatus {
+        if let hub { return hub.status }
+        if let initError { return .unavailable(initError) }
+        return .off
+    }
 
     /// Manages app updates from GitHub Releases.
     let updateService = UpdateService()
@@ -340,8 +360,10 @@ final class AppState {
         if mobileHub == nil {
             do {
                 mobileHub = try makeMobileHub(dbPool: manager.dbPool)
+                mobileHubInitError = nil
             } catch {
-                print("[AppState] mobile hub init failed: \(error.localizedDescription)")
+                Self.logger.error("mobile hub init failed: \(error.localizedDescription, privacy: .public)")
+                mobileHubInitError = error.localizedDescription
                 return
             }
         }
@@ -351,6 +373,10 @@ final class AppState {
 
     func stopMobileHub() {
         mobileHub?.stop()
+        // Toggle-off after a failed init has no hub to stop — only the stale
+        // error, which must clear so Settings reads "Off", not "Unavailable"
+        // (Task 8 review Minor 1).
+        mobileHubInitError = nil
     }
 
     private func makeMobileHub(dbPool: DatabasePool) throws -> MobileHubService {
@@ -374,7 +400,17 @@ final class AppState {
             aiService: WatchtowerAIService(),
             dbPath: dbPool.path
         )
-        return MobileHubService(transport: transport, publisher: publisher, processor: processor, sidecar: sidecar)
+        return MobileHubService(
+            transport: transport,
+            publisher: publisher,
+            processor: processor,
+            sidecar: sidecar
+        ) {
+            // isEnabled — the hub's start() re-checks the Settings toggle so a
+            // queued start cannot outrun a stop; the UserDefaults read lives
+            // here, not in the service.
+            UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey)
+        }
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

@@ -11,7 +11,7 @@ final class ReplicaTests: XCTestCase {
 
     /// A realistic targets row: only `id` is structurally required by
     /// Target.init(row:); the rest exercises typed decode assertions.
-    private func targetRow(id: Int, text: String, status: String = "todo") -> Row {
+    private func targetRow(id: Int, text: String, status: String = "todo", priority: String = "high") -> Row {
         Row([
             "id": id,
             "text": text,
@@ -20,7 +20,7 @@ final class ReplicaTests: XCTestCase {
             "period_start": "2026-07-06",
             "period_end": "2026-07-12",
             "status": status,
-            "priority": "high",
+            "priority": priority,
             "ownership": "mine",
             "progress": 0.4,
             "source_type": "manual",
@@ -131,6 +131,94 @@ final class ReplicaTests: XCTestCase {
         let result = try await hydrator.hydrateOnce()
         XCTAssertEqual(result.deleted, 1)
         XCTAssertTrue(try store.fetchAll(Target.self, kind: .target).isEmpty)
+    }
+
+    // MARK: - Sort order
+
+    /// Pins that `ReplicaSort` cases actually change fetch order — the old
+    /// String sort-fragment param had zero order-variation coverage. Ids and
+    /// modifiedAt are deliberately staggered so record_name order,
+    /// newestFirst, and oldestFirst each produce a distinct sequence.
+    func testFetchAllSortOrdersDiffer() throws {
+        let store = try ReplicaStore.inMemory()
+        let base = Date(timeIntervalSince1970: 1_720_000_000)
+        try store.apply(CloudChangeBatch(
+            changed: [
+                CloudRecord(recordName: SliceKind.target.recordName(id: "1"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: base.addingTimeInterval(300),
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "newest"))),
+                CloudRecord(recordName: SliceKind.target.recordName(id: "2"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: base.addingTimeInterval(100),
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 2, text: "oldest"))),
+                CloudRecord(recordName: SliceKind.target.recordName(id: "3"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: base.addingTimeInterval(200),
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 3, text: "middle")))
+            ],
+            deletedRecordNames: [],
+            newToken: CloudChangeToken(value: 1)
+        ))
+
+        let newest = try store.fetchAll(Target.self, kind: .target, sort: .newestFirst)
+        XCTAssertEqual(newest.map(\.id), [1, 3, 2])
+
+        let oldest = try store.fetchAll(Target.self, kind: .target, sort: .oldestFirst)
+        XCTAssertEqual(oldest.map(\.id), [2, 3, 1])
+
+        let byName = try store.fetchAll(Target.self, kind: .target, sort: .recordName)
+        XCTAssertEqual(byName.map(\.id), [1, 2, 3])
+
+        // Default (no explicit sort) must stay newestFirst — the behavior
+        // every existing call site relies on.
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).map(\.id), [1, 3, 2])
+    }
+
+    /// The Tasks tab colors its PRIORITY badge off `priorityColor` (Task 9 —
+    /// it previously borrowed `statusColor`, a semantic mismatch). Pins the
+    /// high/medium/low mapping, including low → "secondary" (NOT gray), and
+    /// that the mapping reads priority, never status.
+    func testTargetPriorityColorMapsPriorityNotStatus() throws {
+        let store = try ReplicaStore.inMemory()
+        try store.apply(CloudChangeBatch(
+            changed: [
+                dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(
+                    from: targetRow(id: 1, text: "p-high", status: "done", priority: "high"))),
+                dataRecord(kind: .target, id: "2", payload: try RowPayloadCoder.payload(
+                    from: targetRow(id: 2, text: "p-med", status: "blocked", priority: "medium"))),
+                dataRecord(kind: .target, id: "3", payload: try RowPayloadCoder.payload(
+                    from: targetRow(id: 3, text: "p-low", status: "in_progress", priority: "low")))
+            ],
+            deletedRecordNames: [],
+            newToken: CloudChangeToken(value: 1)
+        ))
+
+        let byName = try store.fetchAll(Target.self, kind: .target, sort: .recordName)
+        XCTAssertEqual(byName.map(\.priorityColor), ["red", "orange", "secondary"])
+    }
+
+    /// Pins the `, record_name` tie-break half of the time-based sorts: two
+    /// records sharing one modifiedAt must order by record_name in BOTH
+    /// directions — a regression dropping the secondary key ships undetected
+    /// by testFetchAllSortOrdersDiffer (its stamps are all distinct).
+    func testFetchAllTimeSortsTieBreakByRecordName() throws {
+        let store = try ReplicaStore.inMemory()
+        let stamp = Date(timeIntervalSince1970: 1_720_000_000)
+        try store.apply(CloudChangeBatch(
+            changed: [
+                CloudRecord(recordName: SliceKind.target.recordName(id: "9"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: stamp,
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 9, text: "tie-b"))),
+                CloudRecord(recordName: SliceKind.target.recordName(id: "8"), zone: .data, kind: SliceKind.target.rawValue,
+                            modifiedAt: stamp,
+                            payload: try RowPayloadCoder.payload(from: targetRow(id: 8, text: "tie-a")))
+            ],
+            deletedRecordNames: [],
+            newToken: CloudChangeToken(value: 1)
+        ))
+
+        // Same timestamp → record_name ("target-8" < "target-9") decides,
+        // identically for both time-based directions.
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target, sort: .newestFirst).map(\.id), [8, 9])
+        XCTAssertEqual(try store.fetchAll(Target.self, kind: .target, sort: .oldestFirst).map(\.id), [8, 9])
     }
 
     // MARK: - Relay records ignored

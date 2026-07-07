@@ -18,7 +18,7 @@ public enum CloudAvailability: Equatable, Sendable {
 /// pull-shaped changes(since:) reads that buffer, so consumer tokens are
 /// local seqs and CKServerChangeToken/engine state never leak (design
 /// decision 1 in the Plan 2 header).
-public actor CloudKitTransport: CloudSyncTransport, CompactingTransport {
+public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
     static let recordType = "WatchtowerRecord"
 
     private let store: TransportStore
@@ -62,6 +62,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport {
 
     public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
         try store.compactEvents(in: zone, keepSince: token)
+    }
+
+    @discardableResult
+    public func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) async throws -> Int {
+        try store.sweepEvents(in: zone, olderThan: cutoff, upTo: token)
     }
 
     // MARK: - Lifecycle
