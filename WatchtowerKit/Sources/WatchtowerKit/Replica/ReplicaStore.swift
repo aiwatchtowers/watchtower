@@ -65,6 +65,10 @@ public final class ReplicaStore: Sendable {
     private static let relayTokenKey = "relay_change_token"
     /// Last desktop heartbeat `updatedAt`, Unix seconds (via RelayFeed).
     private static let heartbeatKey = "desktop_heartbeat_at"
+    /// NotificationCoordinator's alert-dedup high-water mark, Unix seconds
+    /// (Plan 6 Task 4) — the newest `modifiedAt` the app has already alerted
+    /// (or deliberately suppressed) about.
+    private static let alertWatermarkKey = "notify_alert_watermark"
 
     public init(path: String) throws {
         writer = try DatabasePool(path: path)
@@ -286,6 +290,27 @@ public final class ReplicaStore: Sendable {
     public func heartbeatAge(now: Date = Date()) throws -> Duration? {
         guard let raw = try metaValue(Self.heartbeatKey), let seconds = TimeInterval(raw) else { return nil }
         return .seconds(now.timeIntervalSince(Date(timeIntervalSince1970: seconds)))
+    }
+
+    // MARK: - Alert watermark (NotificationCoordinator dedup state)
+
+    /// High-water `modifiedAt` of slice records the app has already raised
+    /// (or deliberately suppressed) local notifications for. nil = never
+    /// alerted — the state the coordinator's initial-hydrate storm
+    /// suppression keys on, so an unreadable stored value also reads as nil:
+    /// the failure mode is one silent re-arm of that suppression, never a
+    /// notification storm.
+    public func lastAlertedWatermark() throws -> Date? {
+        guard let raw = try metaValue(Self.alertWatermarkKey), let seconds = TimeInterval(raw) else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    /// Persists the alert watermark. Not monotonic-guarded: the coordinator
+    /// is the single writer and only ever moves it forward.
+    public func setLastAlertedWatermark(_ date: Date) throws {
+        try writer.write { db in
+            try Self.upsertMeta(db, key: Self.alertWatermarkKey, value: String(date.timeIntervalSince1970))
+        }
     }
 
     // MARK: - Typed reads

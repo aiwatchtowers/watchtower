@@ -1,8 +1,42 @@
 import os
 import SwiftUI
+import UIKit
+
+/// Minimal delegate for the silent-push wake path (Plan 6 Decision 6):
+/// CKSyncEngine owns subscriptions/push registration internally; the app
+/// side only turns a `content-available` push into a sync nudge.
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    /// Set by `Boot.make()` once the environment exists. Static because a
+    /// background push launch reaches the delegate without any view having
+    /// appeared; weak because the Boot state is the owner.
+    @MainActor static weak var environment: AppEnvironment?
+
+    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppDelegate")
+
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        // Silent CloudKit push: nudge the engine (refresh → hydrateOnce →
+        // pull hook) and let the hydrator hook raise any local alerts.
+        Task { @MainActor in
+            guard let env = Self.environment else {
+                // Degraded boot (unopenable replica) — nothing to hydrate.
+                Self.logger.warning("remote notification with no environment — degraded boot?")
+                completionHandler(.noData)
+                return
+            }
+            await env.refresh()
+            completionHandler(.newData)
+        }
+    }
+}
 
 @main
 struct WatchtowerMobileApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     /// Boot outcome: the live environment, or why the replica pool could not
     /// open. Every tab is useless without the store, so a pool-open failure
     /// is a degraded state the user can read and report — a full-screen
@@ -14,7 +48,17 @@ struct WatchtowerMobileApp: App {
         @MainActor
         static func make() -> Boot {
             do {
-                return .ready(try AppEnvironment())
+                let env = try AppEnvironment()
+                AppDelegate.environment = env
+                // Silent pushes need an APNs registration, but only the live
+                // transport has an engine to wake — the demo path must stay
+                // free of ANY push machinery (and of prompts; registering for
+                // remote notifications never prompts, but the discipline is
+                // cheap). CKSyncEngine creates its own zone subscriptions.
+                if env.transportKind == .cloudKit {
+                    UIApplication.shared.registerForRemoteNotifications()
+                }
+                return .ready(env)
             } catch {
                 Logger(subsystem: "WatchtowerMobile", category: "Boot")
                     .critical("replica store failed to open: \(error.localizedDescription, privacy: .public)")

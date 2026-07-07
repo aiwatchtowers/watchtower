@@ -60,6 +60,14 @@ public final class AppEnvironment {
     /// `pollOnce` and the chat view models can read `isDesktopReachable`.
     let feed: RelayFeed
 
+    /// Local-notification raiser (Plan 6 Task 4): consumes the hydrator's
+    /// `onRecordsApplied` hook and alerts on fresh desktop-tagged rows, with
+    /// the initial-hydrate storm suppression. Owned HERE for the app's
+    /// lifetime (async-ops-survive-navigation rule) — its watermark/permission
+    /// state must outlive any view. Internal like `feed`; Settings reads
+    /// `permission` through it.
+    let notifications: NotificationCoordinator
+
     /// The BYOK answer loop (Plan 5 Task 6): answers chat turns on-device
     /// against `api.anthropic.com` with the user's own key. Owned HERE for
     /// the app's lifetime — its in-flight answer tasks hold the agent weakly,
@@ -171,7 +179,19 @@ public final class AppEnvironment {
         // engine to nudge and correctly gets nil.
         let pull: (@Sendable () async throws -> Void)? = (transport as? CloudKitTransport)
             .map { cloud in { try await cloud.pull() } }
-        let hydrator = ReplicaHydrator(transport: transport, store: store, pull: pull)
+        let notifications = NotificationCoordinator(store: store)
+        self.notifications = notifications
+        let hydrator = ReplicaHydrator(
+            transport: transport,
+            store: store,
+            pull: pull,
+            // Fire-and-forget hop onto the coordinator's actor (the hook is
+            // synchronous by contract so it can never delay a hydration
+            // cycle); the coordinator dedups/suppresses before any alert.
+            onRecordsApplied: { records in
+                Task { @MainActor in await notifications.recordsApplied(records) }
+            }
+        )
         self.hydrator = hydrator
         let outbox = ActionOutbox(transport: transport, store: store)
         self.outbox = outbox

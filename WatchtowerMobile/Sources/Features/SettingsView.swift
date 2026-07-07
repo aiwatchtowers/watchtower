@@ -45,6 +45,7 @@ struct SettingsView: View {
                     LabeledContent("Version", value: appVersion)
                     LabeledContent("WatchtowerKit", value: WatchtowerKitInfo.version)
                     LabeledContent("Sync", value: Self.syncValue(for: env.transportKind))
+                    LabeledContent("Notifications", value: Self.notificationsValue(for: env.notifications.permission))
                 }
                 Section {
                     if env.hasAPIKey {
@@ -90,6 +91,9 @@ struct SettingsView: View {
             .navigationTitle("Settings")
         }
         .onAppear { model.start(store: env.store) }
+        // Re-read the system authorization on each visit — the user can flip
+        // it in iOS Settings behind the app's back. Never prompts.
+        .task { await env.notifications.refreshPermission() }
     }
 
     /// Saves the drafted key on SecureField commit; the draft is cleared so
@@ -121,6 +125,16 @@ struct SettingsView: View {
         switch kind {
         case .cloudKit: "iCloud"
         case .inMemoryDemo: "Demo"
+        }
+    }
+
+    /// Display value for the "Notifications" row — the remembered permission
+    /// state (Decision 5: asked contextually, decline remembered).
+    static func notificationsValue(for permission: NotificationPermission) -> String {
+        switch permission {
+        case .notAsked: "Not requested"
+        case .authorized: "Allowed"
+        case .denied: "Denied"
         }
     }
 

@@ -2,7 +2,7 @@ import Foundation
 
 /// The product-slice entity kinds synced through DataZone.
 /// rawValue is part of the wire format — never rename existing cases.
-public enum SliceKind: String, Codable, CaseIterable {
+public enum SliceKind: String, Codable, CaseIterable, Sendable {
     case briefing
     case inboxItem = "inbox_item"
     case target

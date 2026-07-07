@@ -225,6 +225,28 @@ final class PublicAPISurfaceTests: XCTestCase {
 
         await hydrator.start(interval: .seconds(60))
         await hydrator.stop()
+
+        // Plan 6 Task 4 surface: the post-batch hook the app's
+        // NotificationCoordinator consumes, its payload's fields, and the
+        // alert-dedup watermark accessors — all called from the app target.
+        let hook: @Sendable ([AppliedSliceRecord]) -> Void = { records in
+            for applied in records {
+                _ = applied.recordName
+                _ = applied.kind
+                _ = applied.notifyLevel
+                _ = applied.modifiedAt
+            }
+        }
+        let hooked = ReplicaHydrator(
+            transport: transport,
+            store: store,
+            pull: nil,
+            onRecordsApplied: hook
+        )
+        _ = try await hooked.hydrateOnce()
+        XCTAssertNil(try store.lastAlertedWatermark())
+        try store.setLastAlertedWatermark(Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertNotNil(try store.lastAlertedWatermark())
     }
 
     // MARK: - ActionOutbox + PendingAction (the iOS action-producer path)
