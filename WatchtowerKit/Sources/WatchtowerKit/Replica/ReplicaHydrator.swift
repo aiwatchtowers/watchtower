@@ -1,6 +1,26 @@
 import Foundation
 import os
 
+/// One record surfaced by `ReplicaHydrator.onRecordsApplied`: the identity +
+/// notification metadata of a data-zone record a hydration batch actually
+/// persisted. Deliberately payload-free — the consumer that needs row content
+/// (e.g. an alert snippet) reads it back from the store by recordName.
+public struct AppliedSliceRecord: Equatable, Sendable {
+    public let recordName: String
+    public let kind: SliceKind
+    /// Desktop-computed notification tag ("urgent"/"briefing"), nil for
+    /// untagged records — see `SliceRecord.notifyLevel`.
+    public let notifyLevel: String?
+    public let modifiedAt: Date
+
+    public init(recordName: String, kind: SliceKind, notifyLevel: String?, modifiedAt: Date) {
+        self.recordName = recordName
+        self.kind = kind
+        self.notifyLevel = notifyLevel
+        self.modifiedAt = modifiedAt
+    }
+}
+
 /// Pulls DataZone changes from the transport into the local ReplicaStore —
 /// the mobile counterpart of the desktop's SlicePublisher, with the same
 /// Task-loop shape (start/stop, per-cycle error logging, sleep between
@@ -11,6 +31,16 @@ public actor ReplicaHydrator {
     /// Wraps CloudKitTransport.pull() at composition time; nil in tests
     /// (InMemoryCloudTransport has no engine to nudge).
     private let pull: (@Sendable () async throws -> Void)?
+    /// Fired once per APPLIED batch, after persist, with the data-zone
+    /// records of known kinds that batch landed (RelayFeed's
+    /// `onActionApplied` precedent: fire-and-forget, never on the cycle's
+    /// error path). A batch dropped by the store's monotonic guard fires
+    /// nothing — none of its records actually landed. Records of unknown
+    /// kinds are stored but NOT surfaced: this build cannot render them, so
+    /// it must not alert about them either. The closure is synchronous;
+    /// consumers hop to their own actor/Task (AppEnvironment wires it to the
+    /// NotificationCoordinator that way).
+    private let onRecordsApplied: (@Sendable ([AppliedSliceRecord]) -> Void)?
     private var loopTask: Task<Void, Never>?
     /// The currently-running cycle, if any. Concurrent `hydrateOnce` callers
     /// await this instead of starting their own — see `hydrateOnce`.
@@ -20,11 +50,13 @@ public actor ReplicaHydrator {
     public init(
         transport: any CloudSyncTransport,
         store: ReplicaStore,
-        pull: (@Sendable () async throws -> Void)? = nil
+        pull: (@Sendable () async throws -> Void)? = nil,
+        onRecordsApplied: (@Sendable ([AppliedSliceRecord]) -> Void)? = nil
     ) {
         self.transport = transport
         self.store = store
         self.pull = pull
+        self.onRecordsApplied = onRecordsApplied
     }
 
     // MARK: - One cycle
@@ -74,8 +106,26 @@ public actor ReplicaHydrator {
         }
 
         // apply ignores relay records, so count only what actually landed.
-        let applied = batch.changed.filter { $0.zone == .data }.count
-        return (applied: applied, deleted: batch.deletedRecordNames.count)
+        let dataRecords = batch.changed.filter { $0.zone == .data }
+
+        // Post-batch hook, AFTER persist (and compaction — both belong to the
+        // applied cycle): surface what landed so the app can raise local
+        // notifications for tagged rows. See the doc on `onRecordsApplied`.
+        if let onRecordsApplied {
+            let appliedRecords = dataRecords.compactMap { record -> AppliedSliceRecord? in
+                guard let kind = SliceKind(rawValue: record.kind) else { return nil }
+                return AppliedSliceRecord(
+                    recordName: record.recordName,
+                    kind: kind,
+                    notifyLevel: record.notifyLevel,
+                    modifiedAt: record.modifiedAt
+                )
+            }
+            if !appliedRecords.isEmpty {
+                onRecordsApplied(appliedRecords)
+            }
+        }
+        return (applied: dataRecords.count, deleted: batch.deletedRecordNames.count)
     }
 
     // MARK: - Poll loop

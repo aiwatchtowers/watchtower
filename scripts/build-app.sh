@@ -15,6 +15,13 @@ BUILD_DIR="$PROJECT_ROOT/build"
 APP_NAME="Watchtower"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 ENTITLEMENTS="$SCRIPT_DIR/Watchtower.entitlements"
+# CloudKit + push (Mobile Hub, Plan 6 Decision 10) are RESTRICTED entitlements:
+# they need a real signing identity + an embedded provisioning profile, and an
+# ad-hoc signed app carrying them is killed by amfid at launch. So the cloud
+# variant is used ONLY on the real-identity branch below; dev/ad-hoc builds
+# keep the base entitlements and the hub's availability probe simply reports
+# unavailable (same optional-include philosophy as WatchtowerMobile signing).
+ENTITLEMENTS_CLOUD="$SCRIPT_DIR/Watchtower-cloud.entitlements"
 
 # Parse flags
 DEV_MODE=false
@@ -165,9 +172,21 @@ if $DEV_MODE; then
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 elif [ "$SIGN_IDENTITY" != "-" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
-    echo "==> Code signing with: $SIGN_IDENTITY"
+    echo "==> Code signing with: $SIGN_IDENTITY (CloudKit + push entitlements)"
+    # Restricted entitlements only take effect with a provisioning profile that
+    # grants them (a Developer ID provisioning profile with the iCloud container,
+    # from developer.apple.com > Profiles). Point WATCHTOWER_PROVISION_PROFILE
+    # at the downloaded .provisionprofile to embed it.
+    if [ -n "${WATCHTOWER_PROVISION_PROFILE:-}" ] && [ -f "$WATCHTOWER_PROVISION_PROFILE" ]; then
+        cp "$WATCHTOWER_PROVISION_PROFILE" "$APP_BUNDLE/Contents/embedded.provisionprofile"
+        echo "    Embedded provisioning profile: $WATCHTOWER_PROVISION_PROFILE"
+    else
+        echo "    WARNING: WATCHTOWER_PROVISION_PROFILE not set/found — without an embedded"
+        echo "    Developer ID provisioning profile the CloudKit/push entitlements will get"
+        echo "    the app killed at launch. Set it, or expect to strip the cloud entitlements."
+    fi
     codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
-    codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS_CLOUD" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
     echo "==> Ad-hoc code signing..."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"

@@ -13,7 +13,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-cover lint lint-swift lint-all install clean app app-dev dmg test-swift sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check mobile-gen mobile-build mobile-test mobile-run
+.PHONY: build test test-cover lint lint-swift lint-all install clean app app-dev dmg test-swift sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check mobile-gen mobile-build mobile-test mobile-run mobile-archive smoke-live
 
 # Simulator device for the mobile targets; override: make mobile-run SIM="iPhone 17e"
 SIM ?= iPhone 17 Pro
@@ -48,6 +48,44 @@ mobile-run: mobile-build
 	open -a Simulator
 	xcrun simctl install "$(SIM)" "$$(xcodebuild -project $(MOBILE_PROJ) -scheme WatchtowerMobile -destination '$(MOBILE_DEST)' -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{d=$$3} / FULL_PRODUCT_NAME/{n=$$3} END{print d "/" n}')"
 	xcrun simctl launch "$(SIM)" com.aiwatchtowers.watchtower.mobile
+
+# TestFlight archive lane (Decision 9): Release archive for generic iOS +
+# .ipa export via the committed app-store-connect ExportOptions.plist.
+# Requires the gitignored WatchtowerMobile/Signing.xcconfig (real
+# DEVELOPMENT_TEAM) — checked first so a missing file fails with instructions
+# instead of a cryptic xcodebuild signing dump. The ASC upload itself is a
+# USER GATE: open build/WatchtowerMobile.xcarchive in Xcode Organizer
+# ("Distribute App"), or hand build/WatchtowerMobile-export/*.ipa to
+# Transporter. ASC API-key automation is out of v1.
+MOBILE_ARCHIVE := build/WatchtowerMobile.xcarchive
+mobile-archive:
+	@if [ ! -f WatchtowerMobile/Signing.xcconfig ]; then \
+		echo "error: WatchtowerMobile/Signing.xcconfig not found — archiving needs a real signing identity."; \
+		echo ""; \
+		echo "  1. cp WatchtowerMobile/Signing.xcconfig.template WatchtowerMobile/Signing.xcconfig"; \
+		echo "  2. Fill in DEVELOPMENT_TEAM (developer.apple.com > Membership)."; \
+		echo "  3. One-time: open WatchtowerMobile/WatchtowerMobile.xcodeproj in Xcode with"; \
+		echo "     automatic signing so it mints the iCloud container + provisioning profiles."; \
+		echo ""; \
+		echo "Signing.xcconfig is gitignored on purpose — never commit a team ID."; \
+		exit 1; \
+	fi
+	xcodebuild archive -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
+		-configuration Release -destination 'generic/platform=iOS' \
+		-archivePath $(MOBILE_ARCHIVE)
+	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
+		-exportOptionsPlist WatchtowerMobile/ExportOptions.plist \
+		-exportPath build/WatchtowerMobile-export
+	@echo "✓ .ipa in build/WatchtowerMobile-export — upload via Xcode Organizer or Transporter (user gate)."
+
+# Live-API smoke — the ONLY place the frozen BYOK wire format meets the real
+# Anthropic server (WatchtowerKit/LiveAPISmokeTests). Needs ANTHROPIC_LIVE_KEY
+# in the environment (passed through at runtime, never persisted — do NOT put
+# it in .env); without the key the suite skips. Costs real money (~a few cents
+# on claude-haiku-4-5). MUST be run green once before any user-facing ship:
+#   ANTHROPIC_LIVE_KEY=sk-ant-... make smoke-live
+smoke-live:
+	cd WatchtowerKit && swift test --filter LiveAPISmokeTests
 
 test:
 	go test ./... -v

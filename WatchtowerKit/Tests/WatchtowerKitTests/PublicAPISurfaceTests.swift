@@ -33,6 +33,9 @@ final class PublicAPISurfaceTests: XCTestCase {
         let batch = try await transport.changes(in: .data, since: nil)
         XCTAssertEqual(batch.changed.count, 1)
         XCTAssertEqual(batch.changed[0].recordName, record.recordName)
+        // Plan 6: CloudRecord.notifyLevel is public — the Task 4 hydrator
+        // hook reads it off applied batches.
+        XCTAssertNil(batch.changed[0].notifyLevel)
         XCTAssertEqual(batch.newToken.value, 1)
 
         try await transport.delete(recordNames: ["target-1"], in: .data)
@@ -52,6 +55,17 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertEqual(record.recordName, "target-42")
         XCTAssertEqual(record.kind, .target)
         XCTAssertEqual(record.id, "42")
+        // Plan 6: notifyLevel is public (the Task 4 notification coordinator
+        // reads it) and defaults to nil for the pre-Plan-6 initializer shape.
+        XCTAssertNil(record.notifyLevel)
+        let tagged = SliceRecord(
+            kind: .inboxItem,
+            id: "7",
+            modifiedAt: Date(),
+            payload: Data("{}".utf8),
+            notifyLevel: "urgent"
+        )
+        XCTAssertEqual(tagged.notifyLevel, "urgent")
     }
 
     // MARK: - RelayCoder
@@ -143,6 +157,19 @@ final class PublicAPISurfaceTests: XCTestCase {
         _ = keyPath1; _ = keyPath2; _ = keyPath3
     }
 
+    // MARK: - CloudKit entitlement probe (the AppEnvironment transport swap)
+
+    func testEntitlementProbeIsPublicAndFalseInUnsignedHost() {
+        // The SwiftPM test host is NOT signed with the Watchtower iCloud
+        // container — the exact reality of every CI/sim run. The probe must
+        // report that honestly (false), which is what keeps unsigned builds
+        // on the InMemory+DemoSeed path instead of crashing into CloudKit.
+        XCTAssertFalse(CloudKitTransport.entitlementPresent())
+        // The default containerID is the frozen WatchtowerCloud one; an
+        // explicit pass-through must behave identically.
+        XCTAssertFalse(CloudKitTransport.entitlementPresent(containerID: WatchtowerCloud.containerID))
+    }
+
     // MARK: - TransportStore public surface
 
     func testTransportStorePublicInit() throws {
@@ -198,6 +225,28 @@ final class PublicAPISurfaceTests: XCTestCase {
 
         await hydrator.start(interval: .seconds(60))
         await hydrator.stop()
+
+        // Plan 6 Task 4 surface: the post-batch hook the app's
+        // NotificationCoordinator consumes, its payload's fields, and the
+        // alert-dedup watermark accessors — all called from the app target.
+        let hook: @Sendable ([AppliedSliceRecord]) -> Void = { records in
+            for applied in records {
+                _ = applied.recordName
+                _ = applied.kind
+                _ = applied.notifyLevel
+                _ = applied.modifiedAt
+            }
+        }
+        let hooked = ReplicaHydrator(
+            transport: transport,
+            store: store,
+            pull: nil,
+            onRecordsApplied: hook
+        )
+        _ = try await hooked.hydrateOnce()
+        XCTAssertNil(try store.lastAlertedWatermark())
+        try store.setLastAlertedWatermark(Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertNotNil(try store.lastAlertedWatermark())
     }
 
     // MARK: - ActionOutbox + PendingAction (the iOS action-producer path)
@@ -313,6 +362,13 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertEqual(messages.last?.isComplete, true)
         XCTAssertEqual(messages.last?.isError, false)
 
+        // Plan 5 Task 7 surface: the per-session direct-mode opt-in flag the
+        // thread VM routes on, and its only write path.
+        XCTAssertFalse(session.directMode)
+        try store.setDirectMode(sessionID: sessionID, enabled: true)
+        XCTAssertEqual(try store.chatSessions().first?.directMode, true)
+        try store.setDirectMode(sessionID: sessionID, enabled: false)
+
         // The from-db overloads the app's ValueObservation tracking closures
         // must use (same reentrancy rule as fetchAll(_:kind:from:)).
         let counts = try await store.reader.read { db in
@@ -321,5 +377,82 @@ final class PublicAPISurfaceTests: XCTestCase {
         }
         XCTAssertEqual(counts.sessions, 1)
         XCTAssertEqual(counts.messages, 2)
+
+        // Plan 5 surface: the route parameter with both SendRoute cases, and
+        // the empty-text guard's public error (the VM catches it by case).
+        let relayRoute: SendRoute = .relay
+        _ = try await assembler.send(text: "explicit relay route", sessionID: sessionID, route: relayRoute)
+        _ = try await assembler.send(text: "offline turn", sessionID: sessionID, route: .localOnly)
+        do {
+            _ = try await assembler.send(text: "   ", sessionID: sessionID, route: .localOnly)
+            XCTFail("expected ChatSendError.emptyText")
+        } catch ChatSendError.emptyText {
+            XCTAssertEqual(ChatSendError.emptyText, ChatSendError.emptyText) // Equatable is public API
+        }
+    }
+
+    // MARK: - MobileAgentBackend + both backends (Plan 5 BYOK agent)
+
+    /// The app injects its own scripted client in tests — the seam must be
+    /// conformable from outside the Kit.
+    private struct SurfaceClient: AnthropicStreaming {
+        func streamMessage(request: AnthropicRequest) -> AsyncThrowingStream<AnthropicEvent, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+    }
+
+    func testMobileAgentBackendSurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let assembler = ChatAssembler(transport: transport, store: store)
+
+        // RelayAgentBackend through the protocol existential — the exact shape
+        // ChatThreadViewModel holds (Task 7).
+        let relay: any MobileAgentBackend = RelayAgentBackend(assembler: assembler)
+        let (sessionID, messageID) = try await relay.sendTurn(text: "surface relay turn", sessionID: nil)
+        XCTAssertFalse(sessionID.isEmpty)
+        XCTAssertFalse(messageID.isEmpty)
+
+        // DirectAPIAgent constructible from public API alone, including the
+        // injectable client factory and clock; missingKey is public and
+        // catchable by case.
+        let outbox = ActionOutbox(transport: transport, store: store)
+        let toolbox = ReplicaToolbox(store: store, outbox: outbox)
+        let direct: any MobileAgentBackend = DirectAPIAgent(
+            assembler: assembler,
+            store: store,
+            toolbox: toolbox,
+            apiKey: { nil },
+            model: { .sonnet5 },
+            clientFactory: { _ in SurfaceClient() }
+        )
+        do {
+            _ = try await direct.sendTurn(text: "no key configured", sessionID: nil)
+            XCTFail("expected DirectAPIAgentError.missingKey")
+        } catch DirectAPIAgentError.missingKey {}
+
+        // The static system prompt is public (Settings may preview it) and
+        // errors render readable copy via LocalizedError.
+        XCTAssertFalse(MobileSystemPrompt.build().isEmpty)
+        XCTAssertNotNil(DirectAPIAgentError.missingKey.errorDescription)
+        XCTAssertNotNil(AnthropicClientError.invalidKey.errorDescription)
+        XCTAssertNotNil(ChatSendError.emptyText.errorDescription)
+    }
+
+    // MARK: - ReplicaToolbox (Plan 5 BYOK agent tools)
+
+    func testReplicaToolboxSurface() async throws {
+        // Constructible from public API alone (default `now` clock), tool
+        // definitions readable as APITool, execute callable without throwing.
+        let store = try ReplicaStore.inMemory()
+        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store)
+        let toolbox = ReplicaToolbox(store: store, outbox: outbox)
+
+        XCTAssertEqual(toolbox.tools.count, 12)
+        let tool: APITool? = toolbox.tools.first
+        XCTAssertEqual(tool?.name, "list_targets")
+
+        let result = await toolbox.execute(name: "list_targets", inputJSON: Data())
+        XCTAssertEqual(result, "[]")
     }
 }

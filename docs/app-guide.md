@@ -228,6 +228,30 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 **Logs:** Live daemon logs with filtering.
 **Data:** Storage info, regenerate AI data, delete everything.
 
+## Mobile App
+
+The Watchtower iOS app mirrors your data from this Mac (see the Mobile setting above) and normally relays chat questions back here for the desktop AI to answer.
+
+### Sync transport
+
+The phone picks its data source automatically at launch — there is nothing to configure. The app probes its own code signature for the iCloud entitlement: signed builds (TestFlight / device) connect to your private iCloud (CloudKit) and hydrate their local replica from the data this Mac publishes; unsigned development builds (simulator, CI) fall back to built-in demo data. The iOS Settings tab shows which path won in the "Sync" row: **iCloud** or **Demo**. Real sync requires the phone and the Mac to be signed in to the same Apple ID; all data stays in your private CloudKit zone — nothing goes through third-party servers.
+
+### Notifications (phone)
+
+The desktop decides what deserves an alert; the phone never re-derives importance. When this Mac publishes data it tags two kinds of rows: **urgent** (a pending high-priority inbox item) and **briefing** (the first publish of today's briefing). When a tagged row newly arrives on the phone — typically woken by a silent iCloud push — the phone raises a local notification: "Urgent inbox item" with the message snippet, or "Your briefing is ready". A re-publish of the same row never re-alerts.
+
+Notification permission is asked contextually — the first time a genuinely new alertable row arrives, never on cold launch. Declining is remembered; the iOS Settings "Notifications" row shows the state (Not requested / Allowed / Denied). The first hydration after install is storm-proof: historical urgent items synced during setup never fire a burst of notifications — only rows that arrive after that first sync can alert.
+
+### Offline agent (BYOK)
+
+When your Mac is unreachable, the phone can answer chat turns itself using your own Anthropic API key:
+
+- **Setting the key:** iOS Settings → "Offline agent" — paste your `sk-ant-…` API key (stored in the device Keychain, never synced) and pick a model (Sonnet recommended, Opus most capable, Haiku fastest).
+- **When the offer appears:** if a chat turn gets no answer for ~45 seconds and the Mac's heartbeat is stale, the chat shows a "Mac unreachable" banner. With a key saved, the banner offers **"Answer directly"**; without one, it offers "Set up offline agent…" which opens Settings. New chats started while the Mac is unreachable ask once before the first send.
+- **Per-conversation opt-in:** answering directly is confirmed per conversation and never switched silently. While active, the thread shows a **"Direct API"** chip in the toolbar with a "Back to Mac relay" action.
+- **What it can see:** the phone's mirrored copy only — briefings, inbox items, tasks/targets, tracks, digest summaries, calendar events, and people cards. It has **no raw Slack messages**; quote-level or deep-history questions still need the desktop.
+- **Write actions:** tasks created or items snoozed by the offline agent are queued and applied when your Mac next processes the mobile queue — they show as pending on the phone until then.
+
 ## Background Processes
 
 Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Slack data. After each sync, AI pipelines run automatically:

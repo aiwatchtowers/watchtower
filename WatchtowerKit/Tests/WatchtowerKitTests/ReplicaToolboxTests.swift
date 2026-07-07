@@ -1,0 +1,634 @@
+import GRDB
+import XCTest
+@testable import WatchtowerKit
+
+/// ReplicaToolbox mirrors the Go MCP v1 read tools (`internal/mcp/*.go` is
+/// the contract) over the phone's replica, plus the two mobile write tools.
+/// Pinned here: filter/ordering parity with the Go SQL, the MCP mirror rule
+/// (unknown id → `null`, empty replica → `[]`, never an error), the queued
+/// reply + outbox wiring of the write tools, and the near-midnight window
+/// discipline for `list_upcoming_events` (injected `now`, never wall-clock).
+final class ReplicaToolboxTests: XCTestCase {
+
+    // MARK: - Fixtures
+
+    private struct Fixtures {
+        let transport: InMemoryCloudTransport
+        let store: ReplicaStore
+        let toolbox: ReplicaToolbox
+    }
+
+    /// Frozen near-midnight LOCAL instant (2026-07-06 23:30) — the boundary
+    /// this project has burned on four times. Everything time-dependent in
+    /// these tests derives from this injected value, never the wall clock.
+    private func frozenNow() throws -> Date {
+        try XCTUnwrap(Calendar.current.date(
+            from: DateComponents(year: 2026, month: 7, day: 6, hour: 23, minute: 30)
+        ))
+    }
+
+    private func makeFixtures() throws -> Fixtures {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let base = try frozenNow()
+        let outbox = ActionOutbox(transport: transport, store: store) { base }
+        let toolbox = ReplicaToolbox(store: store, outbox: outbox) { base }
+        return Fixtures(transport: transport, store: store, toolbox: toolbox)
+    }
+
+    private func seed(_ store: ReplicaStore, _ records: [(kind: SliceKind, id: String, row: Row)]) throws {
+        let changed = try records.map { record in
+            CloudRecord(
+                recordName: record.kind.recordName(id: record.id),
+                zone: .data,
+                kind: record.kind.rawValue,
+                modifiedAt: Date(timeIntervalSince1970: 1_720_000_000),
+                payload: try RowPayloadCoder.payload(from: record.row)
+            )
+        }
+        try store.apply(CloudChangeBatch(
+            changed: changed,
+            deletedRecordNames: [],
+            newToken: CloudChangeToken(value: 1)
+        ))
+    }
+
+    private func execute(_ toolbox: ReplicaToolbox, _ name: String, _ json: String = "") async -> String {
+        await toolbox.execute(name: name, inputJSON: Data(json.utf8))
+    }
+
+    private func objectResult(_ json: String) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
+    private func arrayResult(_ json: String) throws -> [[String: Any]] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+    }
+
+    private func ids(_ json: String) throws -> [Int] {
+        try arrayResult(json).map { $0["id"] as? Int ?? -1 }
+    }
+
+    private let queuedReply = #"{"note":"will apply when your Mac processes the queue","status":"queued"}"#
+
+    // MARK: - Row builders
+
+    private func targetRow(
+        id: Int,
+        text: String = "target",
+        status: String = "todo",
+        priority: String = "medium",
+        level: String = "week",
+        ownership: String = "mine",
+        periodStart: String = "2026-07-06",
+        dueDate: String = "",
+        createdAt: String = "2026-07-01T10:00:00Z"
+    ) -> Row {
+        Row([
+            "id": id, "text": text, "intent": "do it", "level": level,
+            "period_start": periodStart, "period_end": "2026-07-12",
+            "status": status, "priority": priority, "ownership": ownership,
+            "due_date": dueDate, "progress": 0.5, "source_type": "manual",
+            "sub_items": #"[{"text":"step one","done":false}]"#,
+            "notes": #"[{"text":"a note","created_at":"2026-07-01T10:00:00Z"}]"#,
+            "created_at": createdAt, "updated_at": "2026-07-02T10:00:00Z"
+        ])
+    }
+
+    private func trackRow(
+        id: Int,
+        text: String = "track",
+        priority: String = "medium",
+        ownership: String = "mine",
+        hasUpdates: Bool = false,
+        updatedAt: String = "2026-07-01T10:00:00Z",
+        dismissedAt: String = ""
+    ) -> Row {
+        Row([
+            "id": id, "text": text, "category": "task", "priority": priority,
+            "ownership": ownership, "has_updates": hasUpdates,
+            "updated_at": updatedAt, "dismissed_at": dismissedAt,
+            "created_at": "2026-06-30T10:00:00Z", "context": "why it matters"
+        ])
+    }
+
+    private func digestRow(
+        id: Int,
+        type: String = "channel",
+        channelID: String = "C1",
+        periodFrom: Double,
+        periodTo: Double
+    ) -> Row {
+        Row([
+            "id": id, "channel_id": channelID, "period_from": periodFrom,
+            "period_to": periodTo, "type": type, "summary": "digest \(id) summary",
+            "topics": #"["deploys"]"#, "decisions": "[]",
+            "action_items": #"[{"title":"ship the fix"}]"#,
+            "message_count": 12, "model": "haiku", "created_at": "2026-07-01T10:00:00Z"
+        ])
+    }
+
+    private func briefingRow(id: Int, date: String) -> Row {
+        Row([
+            "id": id, "user_id": "U1", "date": date, "role": "ic",
+            "attention": #"[{"text":"look at this"}]"#, "your_day": "[]",
+            "what_happened": "[]", "team_pulse": "[]", "coaching": "[]",
+            "model": "haiku", "input_tokens": 1, "output_tokens": 1,
+            "cost_usd": 0.01, "prompt_version": 1, "created_at": "2026-07-06T05:00:00Z"
+        ])
+    }
+
+    private func personRow(id: Int, userID: String, periodTo: Double, summary: String = "profile") -> Row {
+        Row([
+            "id": id, "user_id": userID, "period_from": periodTo - 604_800,
+            "period_to": periodTo, "message_count": 40, "channels_active": 3,
+            "threads_initiated": 2, "threads_replied": 5, "avg_message_length": 80.0,
+            "active_hours_json": "{}", "volume_change_pct": 0.0, "summary": summary,
+            "communication_style": "driver", "decision_role": "decider",
+            "red_flags": "[]", "highlights": #"["shipped the thing"]"#,
+            "accomplishments": "[]", "communication_guide": "be brief",
+            "decision_style": "fast", "tactics": "[]",
+            "relationship_context": "peer", "status": "ok", "model": "haiku",
+            "input_tokens": 1, "output_tokens": 1, "cost_usd": 0.01,
+            "prompt_version": 1, "created_at": "2026-07-01T10:00:00Z"
+        ])
+    }
+
+    private func eventRow(id: String, title: String, start: Date, end: Date) -> Row {
+        let iso = ISO8601DateFormatter()
+        return Row([
+            "id": id, "calendar_id": "primary", "title": title,
+            "start_time": iso.string(from: start), "end_time": iso.string(from: end),
+            "location": "room 1", "event_status": "confirmed",
+            "organizer_email": "boss@example.com",
+            "attendees": #"[{"email":"a@example.com","display_name":"Aly","response_status":"accepted","slack_user_id":"U9"}]"#
+        ])
+    }
+
+    // MARK: - Tool definitions
+
+    func testToolDefinitionsCoverContract() throws {
+        let fixtures = try makeFixtures()
+        let tools = fixtures.toolbox.tools
+
+        XCTAssertEqual(tools.map(\.name), [
+            "list_targets", "get_target",
+            "get_today_briefing", "list_digests", "get_digest",
+            "list_tracks", "get_track",
+            "list_people", "get_person",
+            "list_upcoming_events",
+            "create_task", "snooze_item"
+        ])
+        for tool in tools {
+            XCTAssertFalse(tool.description.isEmpty, tool.name)
+            guard case let .object(schema) = tool.inputSchema else {
+                XCTFail("\(tool.name) schema is not an object"); continue
+            }
+            XCTAssertEqual(schema["type"], .string("object"), tool.name)
+        }
+
+        // The documented desktop trap (SnoozeOption.targetCases): the model
+        // must be told target snoozes are day-granularity on the desktop.
+        let snooze = try XCTUnwrap(tools.first { $0.name == "snooze_item" })
+        XCTAssertTrue(snooze.description.contains("day-granularity"))
+    }
+
+    // MARK: - MCP mirror rule: empty replica / unknown id → empty, never error
+
+    func testEmptyReplicaReturnsEmptyArraysAndNulls() async throws {
+        let fixtures = try makeFixtures()
+
+        for name in ["list_targets", "list_digests", "list_tracks", "list_people", "list_upcoming_events"] {
+            let out = await execute(fixtures.toolbox, name)
+            XCTAssertEqual(out, "[]", name)
+        }
+        for name in ["get_target", "get_digest", "get_track"] {
+            let out = await execute(fixtures.toolbox, name, #"{"id":1}"#)
+            XCTAssertEqual(out, "null", name)
+        }
+        let person = await execute(fixtures.toolbox, "get_person", #"{"query":"U404"}"#)
+        XCTAssertEqual(person, "null")
+        let briefing = await execute(fixtures.toolbox, "get_today_briefing")
+        XCTAssertEqual(briefing, "null")
+    }
+
+    // MARK: - list_targets
+
+    func testListTargetsExcludesDoneByDefaultAndFiltersByStatus() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.target, "1", targetRow(id: 1, status: "todo")),
+            (.target, "2", targetRow(id: 2, status: "done")),
+            (.target, "3", targetRow(id: 3, status: "in_progress")),
+            (.target, "4", targetRow(id: 4, status: "snoozed"))
+        ])
+
+        // Default: done/dismissed are excluded (Go GetTargets IncludeDone=false).
+        let all = try ids(await execute(fixtures.toolbox, "list_targets"))
+        XCTAssertEqual(Set(all), [1, 3, 4])
+
+        // status filter parity.
+        let todo = try ids(await execute(fixtures.toolbox, "list_targets", #"{"status":"todo"}"#))
+        XCTAssertEqual(todo, [1])
+
+        // status=done flips IncludeDone (Go parity) — without it this would be [].
+        let done = try ids(await execute(fixtures.toolbox, "list_targets", #"{"status":"done"}"#))
+        XCTAssertEqual(done, [2])
+    }
+
+    func testListTargetsFiltersByPriorityLevelOwnership() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.target, "1", targetRow(id: 1, priority: "high", level: "week", ownership: "mine")),
+            (.target, "2", targetRow(id: 2, priority: "low", level: "day", ownership: "delegated"))
+        ])
+
+        let high = try ids(await execute(fixtures.toolbox, "list_targets", #"{"priority":"high"}"#))
+        XCTAssertEqual(high, [1])
+        let day = try ids(await execute(fixtures.toolbox, "list_targets", #"{"level":"day"}"#))
+        XCTAssertEqual(day, [2])
+        let delegated = try ids(await execute(fixtures.toolbox, "list_targets", #"{"ownership":"delegated"}"#))
+        XCTAssertEqual(delegated, [2])
+    }
+
+    func testListTargetsOrderingMirrorsGoSQL() async throws {
+        // Go ORDER BY: level rank, period_start ASC, priority rank,
+        // dated-before-undated, due_date ASC, created_at DESC.
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.target, "1", targetRow(id: 1, level: "day", periodStart: "2026-07-06")),
+            (.target, "2", targetRow(id: 2, level: "quarter", periodStart: "2026-07-01")),
+            (.target, "3", targetRow(id: 3, priority: "low", level: "week", periodStart: "2026-07-06")),
+            (.target, "4", targetRow(id: 4, priority: "high", level: "week", periodStart: "2026-07-06", dueDate: "2026-07-08T12:00")),
+            (.target, "5", targetRow(id: 5, priority: "high", level: "week", periodStart: "2026-07-06"))
+        ])
+
+        let order = try ids(await execute(fixtures.toolbox, "list_targets"))
+        XCTAssertEqual(order, [2, 4, 5, 3, 1])
+    }
+
+    func testListTargetsLimitAndInvalidEnum() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.target, "1", targetRow(id: 1)),
+            (.target, "2", targetRow(id: 2))
+        ])
+
+        let limited = try ids(await execute(fixtures.toolbox, "list_targets", #"{"limit":1}"#))
+        XCTAssertEqual(limited.count, 1)
+
+        let invalid = await execute(fixtures.toolbox, "list_targets", #"{"status":"bogus"}"#)
+        let error = try objectResult(invalid)
+        XCTAssertEqual(
+            error["error"] as? String,
+            #"invalid status "bogus": must be one of todo|in_progress|blocked|done|dismissed|snoozed"#
+        )
+    }
+
+    // MARK: - get_target
+
+    func testGetTargetReturnsDetailAndNullForUnknownID() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [(.target, "7", targetRow(id: 7, text: "Ship the toolbox"))])
+
+        let detail = try objectResult(await execute(fixtures.toolbox, "get_target", #"{"id":7}"#))
+        XCTAssertEqual(detail["id"] as? Int, 7)
+        XCTAssertEqual(detail["text"] as? String, "Ship the toolbox")
+        XCTAssertEqual(detail["intent"] as? String, "do it")
+        // sub_items/notes come back as parsed JSON, not embedded strings.
+        let subItems = try XCTUnwrap(detail["sub_items"] as? [[String: Any]])
+        XCTAssertEqual(subItems.first?["text"] as? String, "step one")
+
+        let missing = await execute(fixtures.toolbox, "get_target", #"{"id":404}"#)
+        XCTAssertEqual(missing, "null")
+    }
+
+    // MARK: - get_today_briefing
+
+    func testGetTodayBriefingUsesInjectedLocalDate() async throws {
+        let fixtures = try makeFixtures()
+        // frozenNow is 23:30 LOCAL on 2026-07-06 — "today" must be computed
+        // from the injected instant in the local calendar, never wall-clock.
+        try seed(fixtures.store, [
+            (.briefing, "1", briefingRow(id: 1, date: "2026-07-05")),
+            (.briefing, "2", briefingRow(id: 2, date: "2026-07-06"))
+        ])
+
+        let out = try objectResult(await execute(fixtures.toolbox, "get_today_briefing"))
+        XCTAssertEqual(out["id"] as? Int, 2)
+        XCTAssertEqual(out["date"] as? String, "2026-07-06")
+        let attention = try XCTUnwrap(out["attention"] as? [[String: Any]])
+        XCTAssertEqual(attention.first?["text"] as? String, "look at this")
+    }
+
+    func testGetTodayBriefingNullWhenOnlyOlderBriefingsExist() async throws {
+        let fixtures = try makeFixtures()
+        // Go GetBriefing returns nil (→ JSON null) rather than a stale briefing.
+        try seed(fixtures.store, [(.briefing, "1", briefingRow(id: 1, date: "2026-07-05"))])
+
+        let out = await execute(fixtures.toolbox, "get_today_briefing")
+        XCTAssertEqual(out, "null")
+    }
+
+    // MARK: - list_digests / get_digest
+
+    func testListDigestsMostRecentFirstWithTypeFilterAndLimit() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.digest, "1", digestRow(id: 1, type: "channel", periodFrom: 1_000, periodTo: 2_000)),
+            (.digest, "2", digestRow(id: 2, type: "daily", periodFrom: 3_000, periodTo: 4_000)),
+            (.digest, "3", digestRow(id: 3, type: "channel", periodFrom: 5_000, periodTo: 6_000))
+        ])
+
+        // Go ORDER BY period_to DESC, period_from DESC.
+        let all = try ids(await execute(fixtures.toolbox, "list_digests"))
+        XCTAssertEqual(all, [3, 2, 1])
+
+        let daily = try ids(await execute(fixtures.toolbox, "list_digests", #"{"type":"daily"}"#))
+        XCTAssertEqual(daily, [2])
+
+        let limited = try ids(await execute(fixtures.toolbox, "list_digests", #"{"limit":1}"#))
+        XCTAssertEqual(limited, [3])
+
+        let invalid = await execute(fixtures.toolbox, "list_digests", #"{"since":"not-a-date"}"#)
+        XCTAssertEqual(
+            try objectResult(invalid)["error"] as? String,
+            #"invalid since "not-a-date": use YYYY-MM-DD or RFC3339"#
+        )
+    }
+
+    func testGetDigestIncludesFullSummaryAndNullForUnknown() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [(.digest, "5", digestRow(id: 5, periodFrom: 1_000, periodTo: 2_000))])
+
+        let list = try arrayResult(await execute(fixtures.toolbox, "list_digests"))
+        XCTAssertNil(list.first?["summary"], "list stays compact; the full summary is get_digest's job")
+
+        let detail = try objectResult(await execute(fixtures.toolbox, "get_digest", #"{"id":5}"#))
+        XCTAssertEqual(detail["summary"] as? String, "digest 5 summary")
+        // Owner decision: action_items ride the detail (parsed, not raw JSON string).
+        let actionItems = try XCTUnwrap(detail["action_items"] as? [[String: Any]])
+        XCTAssertEqual(actionItems.first?["title"] as? String, "ship the fix")
+
+        let missing = await execute(fixtures.toolbox, "get_digest", #"{"id":404}"#)
+        XCTAssertEqual(missing, "null")
+    }
+
+    // MARK: - list_tracks / get_track
+
+    func testListTracksActiveByDefaultOrderedByUpdatesThenRecency() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.track, "1", trackRow(id: 1, updatedAt: "2026-07-02T10:00:00Z")),
+            (.track, "2", trackRow(id: 2, hasUpdates: true, updatedAt: "2026-07-01T10:00:00Z")),
+            (.track, "3", trackRow(id: 3, updatedAt: "2026-07-03T10:00:00Z")),
+            (.track, "4", trackRow(id: 4, dismissedAt: "2026-07-01T10:00:00Z"))
+        ])
+
+        // Go ORDER BY has_updates DESC, updated_at DESC; dismissed excluded.
+        let all = try ids(await execute(fixtures.toolbox, "list_tracks"))
+        XCTAssertEqual(all, [2, 3, 1])
+
+        let high = try ids(await execute(fixtures.toolbox, "list_tracks", #"{"priority":"high"}"#))
+        XCTAssertEqual(high, [])
+
+        let invalid = await execute(fixtures.toolbox, "list_tracks", #"{"ownership":"theirs"}"#)
+        XCTAssertEqual(
+            try objectResult(invalid)["error"] as? String,
+            #"invalid ownership "theirs": must be one of mine|delegated|watching"#
+        )
+    }
+
+    func testGetTrackReturnsDetailAndNullForUnknownID() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [(.track, "9", trackRow(id: 9, text: "migration saga"))])
+
+        let detail = try objectResult(await execute(fixtures.toolbox, "get_track", #"{"id":9}"#))
+        XCTAssertEqual(detail["id"] as? Int, 9)
+        XCTAssertEqual(detail["text"] as? String, "migration saga")
+        XCTAssertEqual(detail["context"] as? String, "why it matters")
+
+        let missing = await execute(fixtures.toolbox, "get_track", #"{"id":404}"#)
+        XCTAssertEqual(missing, "null")
+    }
+
+    // MARK: - list_people / get_person
+
+    func testListPeopleNewestFirstAndGetPersonPicksLatestCard() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.personCard, "1", personRow(id: 1, userID: "U1", periodTo: 1_000, summary: "old card")),
+            (.personCard, "2", personRow(id: 2, userID: "U1", periodTo: 2_000, summary: "new card")),
+            (.personCard, "3", personRow(id: 3, userID: "U2", periodTo: 1_500))
+        ])
+
+        // Go ORDER BY period_to DESC, period_from DESC.
+        let all = try ids(await execute(fixtures.toolbox, "list_people"))
+        XCTAssertEqual(all, [2, 3, 1])
+
+        // Go GetLatestPeopleCard: ORDER BY period_to DESC LIMIT 1.
+        let person = try objectResult(await execute(fixtures.toolbox, "get_person", #"{"query":"U1"}"#))
+        XCTAssertEqual(person["summary"] as? String, "new card")
+        XCTAssertEqual(person["user_id"] as? String, "U1")
+
+        // Name search needs the users table, which the replica does not carry:
+        // an unmatched query is null (MCP mirror rule), not an error.
+        let unknown = await execute(fixtures.toolbox, "get_person", #"{"query":"Alice"}"#)
+        XCTAssertEqual(unknown, "null")
+    }
+
+    // MARK: - list_upcoming_events
+
+    func testListUpcomingEventsWindowAcrossMidnightWithFrozenNow() async throws {
+        let fixtures = try makeFixtures()
+        let now = try frozenNow() // 23:30 local — the burned-four-times boundary
+
+        try seed(fixtures.store, [
+            (.calendarEvent, "past", eventRow(
+                id: "past", title: "ended earlier",
+                start: now.addingTimeInterval(-7_200), end: now.addingTimeInterval(-3_600))),
+            (.calendarEvent, "live", eventRow(
+                id: "live", title: "in progress",
+                start: now.addingTimeInterval(-1_800), end: now.addingTimeInterval(1_800))),
+            (.calendarEvent, "tonight", eventRow(
+                id: "tonight", title: "before midnight",
+                start: now.addingTimeInterval(900), end: now.addingTimeInterval(2_700))),
+            (.calendarEvent, "tomorrow", eventRow(
+                id: "tomorrow", title: "after midnight",
+                start: now.addingTimeInterval(7_200), end: now.addingTimeInterval(10_800))),
+            (.calendarEvent, "edge", eventRow(
+                id: "edge", title: "starts exactly at now+48h",
+                start: now.addingTimeInterval(48 * 3_600), end: now.addingTimeInterval(48 * 3_600 + 1_800))),
+            (.calendarEvent, "far", eventRow(
+                id: "far", title: "beyond 48h",
+                start: now.addingTimeInterval(49 * 3_600), end: now.addingTimeInterval(50 * 3_600)))
+        ])
+
+        // Go parity: end_time >= now AND start_time <= now+48h — an event
+        // already in progress counts, the exact +48h boundary is INCLUSIVE
+        // (start_time <= to), ordered by start_time ascending.
+        let titles = try arrayResult(await execute(fixtures.toolbox, "list_upcoming_events"))
+            .map { $0["id"] as? String ?? "" }
+        XCTAssertEqual(titles, ["live", "tonight", "tomorrow", "edge"])
+
+        // Narrow window: only events starting within the next hour (+ live one).
+        let narrow = try arrayResult(await execute(fixtures.toolbox, "list_upcoming_events", #"{"hours":1}"#))
+            .map { $0["id"] as? String ?? "" }
+        XCTAssertEqual(narrow, ["live", "tonight"])
+    }
+
+    func testListUpcomingEventsShapesAttendees() async throws {
+        let fixtures = try makeFixtures()
+        let now = try frozenNow()
+        try seed(fixtures.store, [
+            (.calendarEvent, "e1", eventRow(
+                id: "e1", title: "standup",
+                start: now.addingTimeInterval(600), end: now.addingTimeInterval(1_200)))
+        ])
+
+        let events = try arrayResult(await execute(fixtures.toolbox, "list_upcoming_events"))
+        let event = try XCTUnwrap(events.first)
+        XCTAssertEqual(event["title"] as? String, "standup")
+        let attendees = try XCTUnwrap(event["attendees"] as? [[String: Any]])
+        XCTAssertEqual(attendees.first?["display_name"] as? String, "Aly")
+        XCTAssertEqual(attendees.first?["response_status"] as? String, "accepted")
+        XCTAssertNil(event["raw_json"], "raw_json must not be dumped to the model")
+    }
+
+    // MARK: - create_task
+
+    func testCreateTaskEnqueuesTaskCreateAndReturnsQueuedReply() async throws {
+        let fixtures = try makeFixtures()
+
+        let reply = await execute(fixtures.toolbox, "create_task", #"{"text":"Buy milk"}"#)
+        XCTAssertEqual(reply, queuedReply)
+
+        let pending = try fixtures.store.pendingActions()
+        XCTAssertEqual(pending.count, 1)
+        let row = try XCTUnwrap(pending.first)
+        XCTAssertEqual(row.action.kind, .taskCreate)
+        XCTAssertNil(row.entityRecordName)
+
+        let records = try await fixtures.transport.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(records.count, 1)
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(record.kind, RelayRecordKind.action.rawValue)
+        let wire = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
+        XCTAssertEqual(wire.kind, .taskCreate)
+        XCTAssertNil(wire.entityID)
+        XCTAssertEqual(wire.params["text"], .string("Buy milk"))
+    }
+
+    func testCreateTaskRejectsEmptyText() async throws {
+        let fixtures = try makeFixtures()
+
+        let reply = await execute(fixtures.toolbox, "create_task", #"{"text":"   "}"#)
+        XCTAssertEqual(try objectResult(reply)["error"] as? String, "text is required")
+        XCTAssertTrue(try fixtures.store.pendingActions().isEmpty)
+    }
+
+    // MARK: - snooze_item
+
+    func testSnoozeItemTargetUsesPlanFourRecordNameConvention() async throws {
+        let fixtures = try makeFixtures()
+
+        let reply = await execute(
+            fixtures.toolbox, "snooze_item",
+            #"{"entity_type":"target","id":42,"until":"2026-07-10T00:00:00Z"}"#
+        )
+        XCTAssertEqual(reply, queuedReply)
+
+        let row = try XCTUnwrap(fixtures.store.pendingActions().first)
+        XCTAssertEqual(row.action.kind, .targetSnooze)
+        XCTAssertEqual(row.entityRecordName, "target-42")
+
+        let records = try await fixtures.transport.changes(in: .relay, since: nil).changed
+        let wire = try RelayCoder.makeDecoder().decode(
+            ActionRequestPayload.self, from: try XCTUnwrap(records.first).payload
+        )
+        XCTAssertEqual(wire.kind, .targetSnooze)
+        XCTAssertEqual(wire.entityID, "42")
+        XCTAssertEqual(wire.params["snooze_until"], .string("2026-07-10T00:00:00Z"))
+    }
+
+    func testSnoozeItemInboxItemKindAndRecordName() async throws {
+        let fixtures = try makeFixtures()
+
+        let reply = await execute(
+            fixtures.toolbox, "snooze_item",
+            #"{"entity_type":"inbox_item","id":7,"until":"2026-07-08T09:00:00Z"}"#
+        )
+        XCTAssertEqual(reply, queuedReply)
+
+        let row = try XCTUnwrap(fixtures.store.pendingActions().first)
+        XCTAssertEqual(row.action.kind, .inboxSnooze)
+        XCTAssertEqual(row.entityRecordName, "inbox_item-7")
+        XCTAssertEqual(row.action.entityID, "7")
+    }
+
+    func testSnoozeItemRejectsBadEntityTypeAndBadUntil() async throws {
+        let fixtures = try makeFixtures()
+
+        let badType = await execute(
+            fixtures.toolbox, "snooze_item",
+            #"{"entity_type":"track","id":1,"until":"2026-07-10T00:00:00Z"}"#
+        )
+        XCTAssertEqual(
+            try objectResult(badType)["error"] as? String,
+            #"invalid entity_type "track": must be one of target|inbox_item"#
+        )
+
+        let badUntil = await execute(
+            fixtures.toolbox, "snooze_item",
+            #"{"entity_type":"target","id":1,"until":"next tuesday"}"#
+        )
+        XCTAssertEqual(
+            try objectResult(badUntil)["error"] as? String,
+            #"invalid until "next tuesday": use ISO8601, e.g. 2026-07-10T00:00:00Z"#
+        )
+
+        XCTAssertTrue(try fixtures.store.pendingActions().isEmpty, "no action may be enqueued on invalid input")
+    }
+
+    // MARK: - Malformed input / unknown tool
+
+    func testMalformedInputReturnsErrorJSONNotACrash() async throws {
+        let fixtures = try makeFixtures()
+
+        let out = await execute(fixtures.toolbox, "list_targets", "this is not json")
+        let error = try XCTUnwrap(try objectResult(out)["error"] as? String)
+        XCTAssertTrue(error.hasPrefix("invalid tool input"), error)
+
+        // Missing required field on a get tool is also an input error, not a trap.
+        let missingID = await execute(fixtures.toolbox, "get_target", #"{"nope":true}"#)
+        XCTAssertNotNil(try objectResult(missingID)["error"])
+    }
+
+    func testEmptyInputMeansDefaultsAndUnknownToolErrors() async throws {
+        let fixtures = try makeFixtures()
+
+        let out = await fixtures.toolbox.execute(name: "list_targets", inputJSON: Data())
+        XCTAssertEqual(out, "[]")
+
+        let unknown = await execute(fixtures.toolbox, "does_not_exist")
+        XCTAssertEqual(try objectResult(unknown)["error"] as? String, #"unknown tool "does_not_exist""#)
+    }
+
+    // MARK: - WireJSON literal sugar (Task 3 carried instruction)
+
+    func testWireJSONLiteralsBuildTheSameValuesAsExplicitCases() {
+        let literal: WireJSON = [
+            "type": "object",
+            "count": 2,
+            "flag": true,
+            "items": ["a", "b"]
+        ]
+        let explicit = WireJSON.object([
+            "type": .string("object"),
+            "count": .int(2),
+            "flag": .bool(true),
+            "items": .array([.string("a"), .string("b")])
+        ])
+        XCTAssertEqual(literal, explicit)
+    }
+}

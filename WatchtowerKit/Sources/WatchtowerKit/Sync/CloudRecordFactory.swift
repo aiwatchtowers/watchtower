@@ -25,7 +25,8 @@ public enum CloudRecordFactory {
             zone: .data,
             kind: slice.kind.rawValue,
             modifiedAt: slice.modifiedAt,
-            payload: slice.payload
+            payload: slice.payload,
+            notifyLevel: slice.notifyLevel
         )
     }
 

@@ -2,6 +2,8 @@ import CloudKit
 import Foundation
 #if os(macOS)
 import Security
+#elseif targetEnvironment(simulator)
+import MachO
 #endif
 
 /// Result of probing the CloudKit account. `.unavailable` carries a
@@ -78,7 +80,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// degrade to store-only operation (records wait in the pending queue).
     public func start() async {
         guard engine == nil else { return }
-        guard Self.hasCloudKitEntitlement(containerID: containerID) else {
+        guard Self.entitlementPresent(containerID: containerID) else {
             lastError = "missing iCloud entitlement (unsigned dev build?)"
             return
         }
@@ -123,7 +125,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     public func availability() async -> CloudAvailability {
         if let lastError { return .unavailable(lastError) }
-        guard Self.hasCloudKitEntitlement(containerID: containerID) else {
+        guard Self.entitlementPresent(containerID: containerID) else {
             return .unavailable("missing iCloud entitlement (unsigned dev build?)")
         }
         let container = self.container ?? CKContainer(identifier: containerID)
@@ -406,14 +408,25 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         CKRecordZone.ID(zoneName: zone.rawValue, ownerName: CKCurrentUserDefaultName)
     }
 
-    /// On macOS an unsigned dev build has no iCloud entitlement, and CloudKit
-    /// raises an uncatchable ObjC exception when touched without one — so we
-    /// probe the entitlement first and degrade instead. The uncatchable
-    /// exception fires specifically when the container ID is absent from
-    /// `com.apple.developer.icloud-container-identifiers`, so we check that
-    /// list rather than the presence of `icloud-services`.
-    /// iOS builds always carry entitlements from the provisioning profile.
-    private static func hasCloudKitEntitlement(containerID: String) -> Bool {
+    /// Whether the RUNNING PROCESS is code-signed with the given iCloud
+    /// container. Public because it is the composition-time transport switch
+    /// (Plan 6 Decision 1): `AppEnvironment.init()` probes this to pick
+    /// CloudKitTransport (entitled) vs InMemory+DemoSeed (unsigned sim/CI),
+    /// and `start()`/`availability()` probe it to degrade instead of crash —
+    /// CloudKit raises an uncatchable ObjC exception when touched without
+    /// the entitlement. That exception fires specifically when the container
+    /// ID is absent from `com.apple.developer.icloud-container-identifiers`,
+    /// so we check that list rather than the presence of `icloud-services`.
+    ///
+    /// Per platform:
+    /// - macOS: read the code-sign entitlements of the running process.
+    /// - iOS simulator: signing embeds entitlements as the main executable's
+    ///   `__TEXT,__entitlements` Mach-O section; `CODE_SIGNING_ALLOWED=NO`
+    ///   builds (CI, `make mobile-test`/`mobile-run`) have no section and
+    ///   probe false — the sim stays on the demo path.
+    /// - iOS device: always true — an unsigned build cannot install on a
+    ///   device, and entitlements come from the provisioning profile.
+    public static func entitlementPresent(containerID: String = WatchtowerCloud.containerID) -> Bool {
         #if os(macOS)
         guard let task = SecTaskCreateFromSelf(nil) else { return false }
         guard let value = SecTaskCopyValueForEntitlement(
@@ -423,10 +436,40 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         ) else { return false }
         guard let list = value as? [String] else { return false }
         return list.contains(containerID)
+        #elseif targetEnvironment(simulator)
+        guard let data = simulatorEntitlementsSection(),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let entitlements = plist as? [String: Any],
+              let list = entitlements["com.apple.developer.icloud-container-identifiers"] as? [String]
+        else { return false }
+        return list.contains(containerID)
         #else
         return true
         #endif
     }
+
+    #if targetEnvironment(simulator)
+    /// The main executable's `__TEXT,__entitlements` section (XML plist),
+    /// present only when the simulator build was actually code-signed. Found
+    /// by scanning loaded images for MH_EXECUTE rather than referencing
+    /// `_mh_execute_header`, which does not link from a test bundle.
+    private static func simulatorEntitlementsSection() -> Data? {
+        for index in 0..<_dyld_image_count() {
+            guard let header = _dyld_get_image_header(index),
+                  header.pointee.filetype == UInt32(MH_EXECUTE),
+                  // 64-bit magic before the mach_header_64 rebind — iOS 17
+                  // sims are 64-bit-only, this makes the safety self-evident.
+                  header.pointee.magic == MH_MAGIC_64 else { continue }
+            var size: UInt = 0
+            let bytes = header.withMemoryRebound(to: mach_header_64.self, capacity: 1) {
+                getsectiondata($0, "__TEXT", "__entitlements", &size)
+            }
+            guard let bytes, size > 0 else { return nil }
+            return Data(bytes: bytes, count: Int(size))
+        }
+        return nil
+    }
+    #endif
 
     // MARK: - Mapping (pure, unit-tested)
 
@@ -449,6 +492,13 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         ck.encryptedValues["payload"] = record.payload
         ck["kind"] = record.kind
         ck["modifiedAt"] = record.modifiedAt
+        // nil REMOVES the field (isError discipline: absent, never null) —
+        // an untagged save is byte-identical to a pre-Plan-6 one, and a
+        // system-fields-seeded re-save cannot carry a stale tag.
+        // Owner ruling (Task 3 review): encryptedValues, not a plain field —
+        // "user has an urgent item right now" is content-adjacent under ADP,
+        // no server query needs it, and the phone decrypts everything anyway.
+        ck.encryptedValues["notifyLevel"] = record.notifyLevel
         return ck
     }
 
@@ -468,7 +518,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             zone: zone,
             kind: (ck["kind"] as? String) ?? "",
             modifiedAt: (ck["modifiedAt"] as? Date) ?? Date(timeIntervalSince1970: 0),
-            payload: payload
+            payload: payload,
+            notifyLevel: ck.encryptedValues["notifyLevel"] as? String
         )
     }
 }

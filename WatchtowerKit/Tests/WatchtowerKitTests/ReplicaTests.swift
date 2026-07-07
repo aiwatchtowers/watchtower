@@ -1,4 +1,5 @@
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerKit
 
@@ -43,13 +44,20 @@ final class ReplicaTests: XCTestCase {
         ])
     }
 
-    private func dataRecord(kind: SliceKind, id: String, payload: Data) -> CloudRecord {
+    private func dataRecord(
+        kind: SliceKind,
+        id: String,
+        payload: Data,
+        notifyLevel: String? = nil,
+        modifiedAt: Date = Date(timeIntervalSince1970: 1_720_000_000)
+    ) -> CloudRecord {
         CloudRecord(
             recordName: kind.recordName(id: id),
             zone: .data,
             kind: kind.rawValue,
-            modifiedAt: Date(timeIntervalSince1970: 1_720_000_000),
-            payload: payload
+            modifiedAt: modifiedAt,
+            payload: payload,
+            notifyLevel: notifyLevel
         )
     }
 
@@ -543,6 +551,119 @@ final class ReplicaTests: XCTestCase {
         let result = try await hydrator.hydrateOnce()
         XCTAssertEqual(result.applied, 1)
         XCTAssertEqual(try store.fetchAll(Target.self, kind: .target).first?.text, "applied")
+    }
+
+    // MARK: - onRecordsApplied hook (Plan 6 Task 4)
+
+    /// Thread-safe collector for hook payloads fired from the actor's
+    /// @Sendable callback.
+    private final class HookLog: @unchecked Sendable {
+        private let batches = OSAllocatedUnfairLock(initialState: [[AppliedSliceRecord]]())
+        func append(_ records: [AppliedSliceRecord]) {
+            batches.withLock { $0.append(records) }
+        }
+        var all: [[AppliedSliceRecord]] { batches.withLock { $0 } }
+    }
+
+    /// The hook fires exactly once per applied batch, carrying ONLY the
+    /// data-zone records of kinds this build knows — relay records and
+    /// unknown future kinds are excluded (the app cannot render them, so it
+    /// must not alert about them) — with notifyLevel/modifiedAt passed through.
+    func testOnRecordsAppliedFiresOncePerBatchWithOnlyKnownDataRecords() async throws {
+        let transport = InMemoryCloudTransport()
+        let urgentAt = Date(timeIntervalSince1970: 1_720_000_100)
+        try await transport.save([
+            dataRecord(kind: .inboxItem, id: "3",
+                       payload: try RowPayloadCoder.payload(from: inboxRow(id: 3, snippet: "check the deploy")),
+                       notifyLevel: "urgent", modifiedAt: urgentAt),
+            dataRecord(kind: .target, id: "7",
+                       payload: try RowPayloadCoder.payload(from: targetRow(id: 7, text: "untagged"))),
+            // Excluded from the hook: a relay-zone record …
+            CloudRecord(recordName: "action-r1", zone: .relay, kind: "action",
+                        modifiedAt: urgentAt, payload: Data()),
+            // … and a data-zone record of a kind this build does not know
+            // (it still lands in slice_records, but never in the hook).
+            CloudRecord(recordName: "future_thing-1", zone: .data, kind: "future_thing",
+                        modifiedAt: urgentAt, payload: Data())
+        ])
+        let store = try ReplicaStore.inMemory()
+        let log = HookLog()
+        // A local, not a literal argument: trailing-closure syntax would
+        // forward-scan onto `pull` and fail to type-check.
+        let hook: @Sendable ([AppliedSliceRecord]) -> Void = { log.append($0) }
+        let hydrator = ReplicaHydrator(transport: transport, store: store, onRecordsApplied: hook)
+
+        _ = try await hydrator.hydrateOnce()
+
+        XCTAssertEqual(log.all.count, 1, "the hook must fire exactly once per applied batch")
+        let records = try XCTUnwrap(log.all.first)
+        XCTAssertEqual(
+            Set(records.map(\.recordName)),
+            [SliceKind.inboxItem.recordName(id: "3"), SliceKind.target.recordName(id: "7")]
+        )
+        let urgent = try XCTUnwrap(records.first { $0.kind == .inboxItem })
+        XCTAssertEqual(urgent.notifyLevel, "urgent")
+        XCTAssertEqual(urgent.modifiedAt, urgentAt)
+        let untagged = try XCTUnwrap(records.first { $0.kind == .target })
+        XCTAssertNil(untagged.notifyLevel)
+
+        // A cycle that applies nothing (no new events) must not fire.
+        _ = try await hydrator.hydrateOnce()
+        XCTAssertEqual(log.all.count, 1)
+    }
+
+    /// Transport that ignores `since` and always replays the same batch with
+    /// an old token — the shape of a stale/overlapping read.
+    private struct StaleReplayTransport: CloudSyncTransport {
+        let record: CloudRecord
+        func save(_ records: [CloudRecord]) async throws {}
+        func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+            CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1))
+        }
+    }
+
+    /// Monotonic-guard interplay: a record-carrying batch DROPPED by the
+    /// store's guard (stale token) applies nothing — and the hook must stay
+    /// silent, because none of its records actually landed.
+    func testOnRecordsAppliedStaysSilentForStaleDroppedBatch() async throws {
+        let store = try ReplicaStore.inMemory()
+        // Advance the stored token past the replayed batch's token 1.
+        try store.apply(CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 5)))
+
+        let stale = dataRecord(kind: .inboxItem, id: "9",
+                               payload: try RowPayloadCoder.payload(from: inboxRow(id: 9, snippet: "old news")),
+                               notifyLevel: "urgent")
+        let log = HookLog()
+        let hook: @Sendable ([AppliedSliceRecord]) -> Void = { log.append($0) }
+        let hydrator = ReplicaHydrator(
+            transport: StaleReplayTransport(record: stale),
+            store: store,
+            onRecordsApplied: hook
+        )
+
+        let result = try await hydrator.hydrateOnce()
+        XCTAssertEqual(result.applied, 0)
+        XCTAssertTrue(log.all.isEmpty, "a dropped stale batch must not fire the hook")
+        XCTAssertTrue(try store.fetchAll(InboxItem.self, kind: .inboxItem).isEmpty)
+    }
+
+    // MARK: - Last-alerted watermark (Plan 6 Task 4)
+
+    /// The notification dedup watermark round-trips through replica_meta:
+    /// nil until first set (the "never alerted" state the coordinator's
+    /// initial-hydrate suppression keys on), then exact-value reads.
+    func testLastAlertedWatermarkRoundTrip() throws {
+        let store = try ReplicaStore.inMemory()
+        XCTAssertNil(try store.lastAlertedWatermark(), "a fresh replica has never alerted")
+
+        let mark = Date(timeIntervalSince1970: 1_720_000_123.5)
+        try store.setLastAlertedWatermark(mark)
+        XCTAssertEqual(try store.lastAlertedWatermark()?.timeIntervalSince1970, mark.timeIntervalSince1970)
+
+        let newer = mark.addingTimeInterval(60)
+        try store.setLastAlertedWatermark(newer)
+        XCTAssertEqual(try store.lastAlertedWatermark()?.timeIntervalSince1970, newer.timeIntervalSince1970)
     }
 
     // MARK: - Loop

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Watchtower-cloud.entitlements — Watchtower.entitlements PLUS the
+         CloudKit/push entitlements for the Mobile Hub (Plan 6 Decision 10).
+         Used ONLY by build-app.sh's real-identity signing branch: CloudKit and
+         APS are RESTRICTED entitlements — an ad-hoc (dev) signed app carrying
+         them is killed by amfid at launch, so `make app-dev` keeps signing
+         with the base Watchtower.entitlements. Mirrors the mobile optional
+         Signing.xcconfig philosophy: unsigned/dev flows never depend on a
+         paid identity. Keep the base keys below in sync with
+         Watchtower.entitlements. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <!-- Must match WatchtowerCloud.containerID (FROZEN) — the desktop hub
+         publishes slices into this container's private zone. -->
+    <key>com.apple.developer.icloud-container-identifiers</key>
+    <array>
+        <string>iCloud.com.aiwatchtowers.watchtower</string>
+    </array>
+    <key>com.apple.developer.icloud-services</key>
+    <array>
+        <string>CloudKit</string>
+    </array>
+    <!-- CKSyncEngine push notifications; `production` is what Developer ID /
+         distribution signing requires (macOS spells the key with the
+         com.apple.developer. prefix, unlike iOS's bare aps-environment). -->
+    <key>com.apple.developer.aps-environment</key>
+    <string>production</string>
+</dict>
+</plist>

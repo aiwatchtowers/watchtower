@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Must match WatchtowerCloud.containerID (FROZEN) exactly — the replica hydrates from this container's private zone. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.aiwatchtowers.watchtower</string>
+	</array>
+	<!-- CloudKit is the only iCloud service used (CKSyncEngine transport) — no key-value store, no iCloud Documents. -->
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<!-- Silent pushes (content-available) wake the hydrator; development for dev builds — App Store export rewrites this to production. -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>
