@@ -38,6 +38,33 @@ final class CloudRecordFactoryTests: XCTestCase {
         XCTAssertEqual(record.payload, Data("{}".utf8))
     }
 
+    // MARK: - notifyLevel (Plan 6 Decision 3)
+
+    func testSliceNotifyLevelCarriesThroughToCloudRecord() {
+        let tagged = SliceRecord(
+            kind: .inboxItem, id: "3", modifiedAt: stamp,
+            payload: Data("{}".utf8), notifyLevel: "urgent"
+        )
+        XCTAssertEqual(tagged.notifyLevel, "urgent")
+        XCTAssertEqual(CloudRecordFactory.record(for: tagged).notifyLevel, "urgent")
+    }
+
+    func testUntaggedSliceRecordDefaultsToNilNotifyLevel() {
+        // The pre-Plan-6 initializer shape must keep producing the
+        // pre-Plan-6 record: notifyLevel defaults to nil and the payload
+        // bytes pass through untouched.
+        let slice = SliceRecord(kind: .target, id: "9", modifiedAt: stamp, payload: Data("{}".utf8))
+        XCTAssertNil(slice.notifyLevel)
+        let record = CloudRecordFactory.record(for: slice)
+        XCTAssertNil(record.notifyLevel)
+        XCTAssertEqual(record.payload, Data("{}".utf8))
+    }
+
+    func testRelayRecordsNeverCarryNotifyLevel() throws {
+        let action = ActionRequestPayload(id: "A1", kind: .inboxResolve, entityID: "5", createdAt: stamp)
+        XCTAssertNil(try CloudRecordFactory.record(for: action, modifiedAt: stamp).notifyLevel)
+    }
+
     func testRelayRecordKindRawValuesAreFrozen() {
         XCTAssertEqual(
             RelayRecordKind.allCases.map(\.rawValue),

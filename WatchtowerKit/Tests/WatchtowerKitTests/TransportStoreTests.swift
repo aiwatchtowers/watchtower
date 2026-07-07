@@ -1,3 +1,4 @@
+import GRDB
 import XCTest
 @testable import WatchtowerKit
 
@@ -323,5 +324,78 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertEqual(batch.saves.map(\.recordName), ["keep-1"])
         // A second read confirms the orphan was physically removed.
         XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["keep-1"])
+    }
+
+    // MARK: - notifyLevel (Plan 6 Decision 3)
+
+    func testNotifyLevelSurvivesPendingQueueAndEventBuffer() throws {
+        let store = try TransportStore.inMemory()
+        let tagged = CloudRecord(
+            recordName: "inbox_item-1", zone: .data, kind: "inbox_item",
+            modifiedAt: stamp, payload: Data("{}".utf8), notifyLevel: "urgent"
+        )
+
+        try store.enqueueSave([tagged, record("target-1")])
+        let pending = try store.pendingBatch(limit: 10)
+        XCTAssertEqual(pending.saves.map(\.notifyLevel), ["urgent", nil])
+
+        try store.bufferChanged([tagged, record("target-1")])
+        let batch = try store.changes(in: .data, since: nil)
+        XCTAssertEqual(batch.changed.map(\.notifyLevel), ["urgent", nil])
+    }
+
+    func testLegacyStoreFileGainsNotifyLevelColumn() throws {
+        // A store created before Plan 6 has no notify_level column.
+        // CREATE TABLE IF NOT EXISTS cannot add it, so opening the store must
+        // migrate the tables in place — otherwise every INSERT fails forever.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+
+        // The exact pre-Plan-6 events/pending schema.
+        do {
+            let legacy = try DatabaseQueue(path: path)
+            try legacy.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE events (
+                        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                        zone TEXT NOT NULL,
+                        record_name TEXT NOT NULL,
+                        kind TEXT NOT NULL DEFAULT '',
+                        modified_at REAL NOT NULL DEFAULT 0,
+                        payload BLOB,
+                        deleted INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE pending (
+                        record_name TEXT NOT NULL,
+                        zone TEXT NOT NULL,
+                        kind TEXT NOT NULL DEFAULT '',
+                        modified_at REAL NOT NULL DEFAULT 0,
+                        payload BLOB,
+                        deleted INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (record_name, zone)
+                    );
+                    INSERT INTO events (zone, record_name, kind, modified_at, payload, deleted)
+                    VALUES ('DataZone', 'target-1', 'target', 1700000000, X'7B7D', 0);
+                    """)
+            }
+        }
+
+        let store = try TransportStore(path: path)
+        // Pre-existing rows read back with nil notifyLevel.
+        let legacyBatch = try store.changes(in: .data, since: nil)
+        XCTAssertEqual(legacyBatch.changed.map(\.recordName), ["target-1"])
+        XCTAssertNil(legacyBatch.changed[0].notifyLevel)
+
+        // New tagged writes work on the migrated tables.
+        let tagged = CloudRecord(
+            recordName: "briefing-1", zone: .data, kind: "briefing",
+            modifiedAt: stamp, payload: Data("{}".utf8), notifyLevel: "briefing"
+        )
+        try store.bufferChanged([tagged])
+        try store.enqueueSave([tagged])
+        XCTAssertEqual(try store.changes(in: .data, since: nil).changed.last?.notifyLevel, "briefing")
+        XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.notifyLevel), ["briefing"])
     }
 }

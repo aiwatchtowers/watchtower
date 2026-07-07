@@ -492,6 +492,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         ck.encryptedValues["payload"] = record.payload
         ck["kind"] = record.kind
         ck["modifiedAt"] = record.modifiedAt
+        // nil REMOVES the field (isError discipline: absent, never null) —
+        // an untagged save is byte-identical to a pre-Plan-6 one, and a
+        // system-fields-seeded re-save cannot carry a stale tag.
+        ck["notifyLevel"] = record.notifyLevel
         return ck
     }
 
@@ -511,7 +515,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             zone: zone,
             kind: (ck["kind"] as? String) ?? "",
             modifiedAt: (ck["modifiedAt"] as? Date) ?? Date(timeIntervalSince1970: 0),
-            payload: payload
+            payload: payload,
+            notifyLevel: ck["notifyLevel"] as? String
         )
     }
 }

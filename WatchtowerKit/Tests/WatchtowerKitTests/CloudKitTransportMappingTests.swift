@@ -79,6 +79,52 @@ final class CloudKitTransportMappingTests: XCTestCase {
         XCTAssertNil(CloudKitTransport.cloudRecord(from: ck))
     }
 
+    // MARK: - notifyLevel (Plan 6 Decision 3 — the isError discipline)
+
+    func testNotifyLevelRoundTripsThroughCKRecord() {
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.data.rawValue, ownerName: CKCurrentUserDefaultName)
+        let original = CloudRecord(
+            recordName: "briefing-7",
+            zone: .data,
+            kind: "briefing",
+            modifiedAt: stamp,
+            payload: Data("{\"id\":7}".utf8),
+            notifyLevel: "briefing"
+        )
+        let ck = CloudKitTransport.ckRecord(from: original, in: zoneID, systemFields: nil)
+        XCTAssertEqual(ck["notifyLevel"] as? String, "briefing")
+        XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck), original)
+    }
+
+    func testNilNotifyLevelOmitsTheCKRecordField() {
+        // The freeze pin: an untagged record produces a CKRecord with NO
+        // notifyLevel key at all — byte-identical shape to pre-Plan-6 saves,
+        // so old and new versions interoperate without a wire change.
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.data.rawValue, ownerName: CKCurrentUserDefaultName)
+        let original = CloudRecord(
+            recordName: "target-9",
+            zone: .data,
+            kind: "target",
+            modifiedAt: stamp,
+            payload: Data("{\"id\":9}".utf8)
+        )
+        let ck = CloudKitTransport.ckRecord(from: original, in: zoneID, systemFields: nil)
+        XCTAssertFalse(ck.allKeys().contains("notifyLevel"), "nil notifyLevel must be ABSENT, not null")
+        XCTAssertNil(CloudKitTransport.cloudRecord(from: ck)?.notifyLevel)
+    }
+
+    func testLegacyCKRecordWithoutNotifyLevelDecodesToNil() {
+        // Records written by pre-Plan-6 desktop versions carry no notifyLevel field.
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.data.rawValue, ownerName: CKCurrentUserDefaultName)
+        let ck = CKRecord(recordType: "WatchtowerRecord", recordID: CKRecord.ID(recordName: "target-1", zoneID: zoneID))
+        ck.encryptedValues["payload"] = Data("{}".utf8)
+        ck["kind"] = "target"
+        ck["modifiedAt"] = stamp
+        let decoded = CloudKitTransport.cloudRecord(from: ck)
+        XCTAssertNotNil(decoded)
+        XCTAssertNil(decoded?.notifyLevel)
+    }
+
     func testUnknownZoneNameMapsToNil() {
         let zoneID = CKRecordZone.ID(zoneName: "SomeOtherZone", ownerName: CKCurrentUserDefaultName)
         let ck = CKRecord(recordType: "WatchtowerRecord", recordID: CKRecord.ID(recordName: "x", zoneID: zoneID))

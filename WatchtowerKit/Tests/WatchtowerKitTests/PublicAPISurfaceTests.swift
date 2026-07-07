@@ -33,6 +33,9 @@ final class PublicAPISurfaceTests: XCTestCase {
         let batch = try await transport.changes(in: .data, since: nil)
         XCTAssertEqual(batch.changed.count, 1)
         XCTAssertEqual(batch.changed[0].recordName, record.recordName)
+        // Plan 6: CloudRecord.notifyLevel is public — the Task 4 hydrator
+        // hook reads it off applied batches.
+        XCTAssertNil(batch.changed[0].notifyLevel)
         XCTAssertEqual(batch.newToken.value, 1)
 
         try await transport.delete(recordNames: ["target-1"], in: .data)
@@ -52,6 +55,17 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertEqual(record.recordName, "target-42")
         XCTAssertEqual(record.kind, .target)
         XCTAssertEqual(record.id, "42")
+        // Plan 6: notifyLevel is public (the Task 4 notification coordinator
+        // reads it) and defaults to nil for the pre-Plan-6 initializer shape.
+        XCTAssertNil(record.notifyLevel)
+        let tagged = SliceRecord(
+            kind: .inboxItem,
+            id: "7",
+            modifiedAt: Date(),
+            payload: Data("{}".utf8),
+            notifyLevel: "urgent"
+        )
+        XCTAssertEqual(tagged.notifyLevel, "urgent")
     }
 
     // MARK: - RelayCoder

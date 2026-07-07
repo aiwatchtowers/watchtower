@@ -239,4 +239,91 @@ final class SlicePublisherTests: XCTestCase {
             "out-of-window event must be excluded by the datetime() filter"
         )
     }
+
+    // MARK: - notifyLevel tagging (Plan 6 Decision 3)
+
+    /// Today's local date string, matching Go's briefings.date
+    /// (`time.Now().Format("2006-01-02")` — local time zone).
+    private func todayString() -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt.string(from: Date())
+    }
+
+    private func publishedRecord(named name: String) async throws -> CloudRecord? {
+        try await transport.changes(in: .data, since: nil).changed.first { $0.recordName == name }
+    }
+
+    func testHighPendingInboxItemPublishesUrgentOthersNil() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertInboxItem(db, messageTS: "1700000000.000101", status: "pending", priority: "high")
+            try TestDatabase.insertInboxItem(db, messageTS: "1700000000.000102", status: "resolved", priority: "high")
+            try TestDatabase.insertInboxItem(db, messageTS: "1700000000.000103", status: "pending", priority: "medium")
+            try TestDatabase.insertTarget(db, text: "never tagged")
+        }
+
+        _ = try await publisher.publishOnce()
+
+        let urgent = try await publishedRecord(named: "inbox_item-1")
+        XCTAssertEqual(urgent?.notifyLevel, "urgent")
+        let resolved = try await publishedRecord(named: "inbox_item-2")
+        XCTAssertNil(resolved?.notifyLevel)
+        XCTAssertNotNil(resolved, "resolved item still syncs, just untagged")
+        let medium = try await publishedRecord(named: "inbox_item-3")
+        XCTAssertNil(medium?.notifyLevel)
+        let target = try await publishedRecord(named: "target-1")
+        XCTAssertNil(target?.notifyLevel)
+    }
+
+    func testBriefingFirstPublishTagsAndContentRepublishDoesNot() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertBriefing(db, date: self.todayString())
+        }
+
+        // First publish: the record is new to the sidecar → tagged.
+        _ = try await publisher.publishOnce()
+        let first = try await publishedRecord(named: "briefing-1")
+        XCTAssertEqual(first?.notifyLevel, "briefing")
+
+        // Content change → hash-changed republish of the SAME record → nil.
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE briefings SET role = 'manager' WHERE id = 1")
+        }
+        let token = try await transport.changes(in: .data, since: nil).newToken
+        let second = try await publisher.publishOnce()
+        XCTAssertEqual(second.pushed, 1)
+        let repushed = try await transport.changes(in: .data, since: token).changed
+        XCTAssertEqual(repushed.map(\.recordName), ["briefing-1"])
+        XCTAssertNil(repushed[0].notifyLevel, "republish of a known briefing must not re-carry the tag")
+    }
+
+    /// An old briefing hitting the sidecar for the first time (initial full
+    /// sync / backfill) is new-to-sidecar but NOT today's — never tagged.
+    func testOldBriefingFirstPublishIsNotTagged() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertBriefing(db, date: "2000-01-01")
+        }
+        _ = try await publisher.publishOnce()
+        let record = try await publishedRecord(named: "briefing-1")
+        XCTAssertNotNil(record)
+        XCTAssertNil(record?.notifyLevel)
+    }
+
+    /// Account reset wipes the sidecar hash state; on the next cycle today's
+    /// briefing IS new to the fresh zone, so it re-carries "briefing" —
+    /// intended: the new zone's replica has never alerted for it.
+    func testAccountResetRetagsTodaysBriefingOnRepush() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertBriefing(db, date: self.todayString())
+        }
+        _ = try await publisher.publishOnce()
+
+        try state.wipeSyncState()
+        let token = try await transport.changes(in: .data, since: nil).newToken
+        let repush = try await publisher.publishOnce()
+        XCTAssertEqual(repush.pushed, 1)
+        let records = try await transport.changes(in: .data, since: token).changed
+        XCTAssertEqual(records.map(\.notifyLevel), ["briefing"])
+    }
 }

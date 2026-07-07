@@ -14,13 +14,26 @@ public struct CloudRecord: Equatable {
     public let kind: String
     public let modifiedAt: Date
     public let payload: Data
+    /// Carries `SliceRecord.notifyLevel` across the wire (Plan 6 Decision 3).
+    /// Rides as a plain CKRecord field next to `kind`/`modifiedAt`; nil is an
+    /// ABSENT field, never a null — pre-Plan-6 records decode to nil and nil
+    /// encodes to nothing. Always nil for relay-zone records.
+    public let notifyLevel: String?
 
-    public init(recordName: String, zone: CloudZoneID, kind: String, modifiedAt: Date, payload: Data) {
+    public init(
+        recordName: String,
+        zone: CloudZoneID,
+        kind: String,
+        modifiedAt: Date,
+        payload: Data,
+        notifyLevel: String? = nil
+    ) {
         self.recordName = recordName
         self.zone = zone
         self.kind = kind
         self.modifiedAt = modifiedAt
         self.payload = payload
+        self.notifyLevel = notifyLevel
     }
 }
 

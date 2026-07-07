@@ -58,8 +58,15 @@ enum SliceDiff {
             }
 
             let hash = hashHex(payload)
-            if knownHashes[recordName] != hash {
-                upserts.append(SliceRecord(kind: kind, id: id, modifiedAt: now, payload: payload))
+            let known = knownHashes[recordName]
+            if known != hash {
+                upserts.append(SliceRecord(
+                    kind: kind,
+                    id: id,
+                    modifiedAt: now,
+                    payload: payload,
+                    notifyLevel: notifyLevel(kind: kind, row: row, isFirstPublish: known == nil, now: now)
+                ))
             }
         }
 
@@ -68,6 +75,46 @@ enum SliceDiff {
             .sorted()
 
         return Result(upserts: upserts, deletions: deletions, skipped: skipped)
+    }
+
+    /// Plan 6 Decision 3 — the desktop decides what deserves a phone alert;
+    /// the phone never re-derives importance from row contents:
+    /// - "urgent": an inbox item that is priority high AND status pending.
+    ///   State-derived, so every (re)publish while the item stays high+pending
+    ///   carries it — the phone dedups alerts by recordName+modifiedAt
+    ///   watermark (Plan 6 Task 4).
+    /// - "briefing": today's briefing row when the record is NEW to the
+    ///   sidecar hash state (`isFirstPublish` — no previous hash for its
+    ///   recordName), i.e. its first-ever publish into the current sync
+    ///   generation. A content republish of the same briefing (hash changed,
+    ///   record known) stays nil, as do backfilled older briefings. After an
+    ///   account reset wipes the sidecar, today's briefing IS new to the
+    ///   fresh zone and re-carries the tag — intended: that zone's replica
+    ///   has never alerted for it.
+    /// Everything else is nil, which the Kit omits from the wire entirely
+    /// (the `isError` discipline). Calendar-conflict level is out of v1
+    /// (needs the day-plan conflict engine; ledgered).
+    private static func notifyLevel(kind: SliceKind, row: Row, isFirstPublish: Bool, now: Date) -> String? {
+        switch kind {
+        case .inboxItem:
+            let priority: String = row["priority"] ?? ""
+            let status: String = row["status"] ?? ""
+            return priority == "high" && status == "pending" ? "urgent" : nil
+        case .briefing:
+            let date: String = row["date"] ?? ""
+            return isFirstPublish && date == localDateString(now) ? "briefing" : nil
+        default:
+            return nil
+        }
+    }
+
+    /// The local-date string for `date`, matching how the Go pipeline stamps
+    /// briefings.date (`time.Now().Format("2006-01-02")` — local time zone).
+    private static func localDateString(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt.string(from: date)
     }
 
     /// SHA-256 hex digest of `data`. Exposed `internal` so tests can reproduce hashes.
