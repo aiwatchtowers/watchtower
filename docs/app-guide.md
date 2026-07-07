@@ -232,6 +232,16 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 
 The Watchtower iOS app mirrors your data from this Mac (see the Mobile setting above) and normally relays chat questions back here for the desktop AI to answer.
 
+### Sync transport
+
+The phone picks its data source automatically at launch — there is nothing to configure. The app probes its own code signature for the iCloud entitlement: signed builds (TestFlight / device) connect to your private iCloud (CloudKit) and hydrate their local replica from the data this Mac publishes; unsigned builds (simulator, CI) fall back to built-in demo data. The iOS Settings tab shows which path won in the "Sync" row: **iCloud** or **Demo**. Real sync requires the phone and the Mac to be signed in to the same Apple ID; all data stays in your private CloudKit zone — nothing goes through third-party servers.
+
+### Notifications (phone)
+
+The desktop decides what deserves an alert; the phone never re-derives importance. When this Mac publishes data it tags two kinds of rows: **urgent** (a pending high-priority inbox item) and **briefing** (the first publish of today's briefing). When a tagged row newly arrives on the phone — typically woken by a silent iCloud push — the phone raises a local notification: "Urgent inbox item" with the message snippet, or "Your briefing is ready". A re-publish of the same row never re-alerts.
+
+Notification permission is asked contextually — the first time a genuinely new alertable row arrives, never on cold launch. Declining is remembered; the iOS Settings "Notifications" row shows the state (Not requested / Allowed / Denied). The first hydration after install is storm-proof: historical urgent items synced during setup never fire a burst of notifications — only rows that arrive after that first sync can alert.
+
 ### Offline agent (BYOK)
 
 When your Mac is unreachable, the phone can answer chat turns itself using your own Anthropic API key:
