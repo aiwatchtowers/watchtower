@@ -377,6 +377,32 @@ final class ChatWiringTests: XCTestCase {
         XCTAssertEqual(vm.draft, "", "a successful direct send clears the draft")
     }
 
+    /// A throwing backend (the missingKey shape: key removed after opt-in)
+    /// must surface the send-error banner and KEEP the draft — the spec's
+    /// "sendTurn throws → existing error banner, draft kept" contract.
+    func testBackendThrowSurfacesErrorBannerAndKeepsDraft() async throws {
+        final class ThrowingBackend: MobileAgentBackend, @unchecked Sendable {
+            func sendTurn(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String) {
+                throw DirectAPIAgentError.missingKey
+            }
+        }
+        let fx = try makeFixture()
+        let (sessionID, _) = try await fx.assembler.send(text: "opening turn", sessionID: nil)
+        try fx.store.setDirectMode(sessionID: sessionID, enabled: true)
+
+        let relay = RecordingBackend()
+        let vm = makeThreadVM(fx, sessionID: sessionID, hasKey: false, direct: ThrowingBackend(), relay: relay)
+
+        vm.draft = "doomed question"
+        await vm.send()
+
+        XCTAssertNotNil(vm.sendErrorMessage, "a backend throw must surface the error banner")
+        XCTAssertEqual(vm.draft, "doomed question", "a failed send must keep the draft")
+        XCTAssertTrue(relay.calls.isEmpty, "a direct-flagged session must not fall back silently")
+        let messages = try fx.store.chatMessages(inSession: sessionID)
+        XCTAssertEqual(messages.count, 2, "the failed turn must not persist rows beyond the opener")
+    }
+
     /// The inverse: no opt-in → relay backend only, direct untouched.
     func testRelaySessionRoutesSendThroughRelayBackendOnly() async throws {
         let fx = try makeFixture()

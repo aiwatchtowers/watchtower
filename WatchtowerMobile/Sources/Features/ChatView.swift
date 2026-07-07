@@ -130,8 +130,13 @@ final class ChatThreadViewModel {
         if let sessionID {
             // Restore the persisted opt-in; a failed read falls back to the
             // relay route — the safe default (never a silent switch TO direct).
-            directMode = ((try? store.chatSessions()) ?? [])
-                .first { $0.id == sessionID }?.directMode ?? false
+            do {
+                directMode = try store.chatSessions()
+                    .first { $0.id == sessionID }?.directMode ?? false
+            } catch {
+                Self.logger.error("direct_mode restore failed, defaulting to relay: \(error.localizedDescription, privacy: .public)")
+                directMode = false
+            }
             observe()
         }
     }
