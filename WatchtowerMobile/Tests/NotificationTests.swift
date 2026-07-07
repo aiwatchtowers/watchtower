@@ -122,7 +122,7 @@ final class NotificationTests: XCTestCase {
     func testInitialHydrateWithTaggedHistorySetsWatermarkWithoutAlerting() async throws {
         // Injected "now" (500) is after the batch's newest modifiedAt (300):
         // arming uses max(newest, now), so the watermark lands at the
-        // injected clock, not the batch max — see NotificationCoordinatorTests
+        // injected clock, not the batch max — see the split-history test
         // below for why (unverifiable "one hydrate = whole history" split).
         let ctx = try makeContext(now: 500)
         XCTAssertNil(try ctx.store.lastAlertedWatermark())
@@ -144,7 +144,10 @@ final class NotificationTests: XCTestCase {
     /// are still older than the injected "now" the watermark armed at. Only
     /// a row stamped AFTER "now" is genuinely new and alerts.
     func testHistorySplitAcrossHydrateCyclesStaysSilentUntilGenuinelyNewRow() async throws {
-        let ctx = try makeContext(permission: .authorized, now: 500)
+        // Default notAsked permission on purpose: the askCount pins below are
+        // then REAL — historical batches never trigger the ask, and the ask
+        // fires exactly once at the first genuinely-new row.
+        let ctx = try makeContext(now: 500)
         XCTAssertNil(try ctx.store.lastAlertedWatermark())
 
         // Batch 1: oldest slice of history — arms the watermark at now (500),
@@ -168,9 +171,11 @@ final class NotificationTests: XCTestCase {
         XCTAssertEqual(ctx.center.askCount, 0)
         XCTAssertEqual(try ctx.store.lastAlertedWatermark()?.timeIntervalSince1970, 500)
 
-        // A genuinely new row (published after the armed watermark) alerts.
+        // A genuinely new row (published after the armed watermark) alerts —
+        // and THIS is the moment the one-time permission ask fires.
         await ctx.coordinator.recordsApplied([applied(id: "3", level: "urgent", at: 600)])
         XCTAssertEqual(ctx.center.added.count, 1)
+        XCTAssertEqual(ctx.center.askCount, 1, "the ask fires exactly at the first genuinely-new row")
         XCTAssertEqual(try ctx.store.lastAlertedWatermark()?.timeIntervalSince1970, 600)
     }
 
