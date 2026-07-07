@@ -456,7 +456,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private static func simulatorEntitlementsSection() -> Data? {
         for index in 0..<_dyld_image_count() {
             guard let header = _dyld_get_image_header(index),
-                  header.pointee.filetype == UInt32(MH_EXECUTE) else { continue }
+                  header.pointee.filetype == UInt32(MH_EXECUTE),
+                  // 64-bit magic before the mach_header_64 rebind — iOS 17
+                  // sims are 64-bit-only, this makes the safety self-evident.
+                  header.pointee.magic == MH_MAGIC_64 else { continue }
             var size: UInt = 0
             let bytes = header.withMemoryRebound(to: mach_header_64.self, capacity: 1) {
                 getsectiondata($0, "__TEXT", "__entitlements", &size)

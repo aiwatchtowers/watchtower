@@ -156,6 +156,13 @@ public final class AppEnvironment {
     ) throws {
         store = try ReplicaStore(path: replicaPath)
 
+        // Kind/transport disagreement is only expressible from test code —
+        // a real CloudKitTransport under `.inMemoryDemo` would DEBUG-seed
+        // demo rows into the live pending store.
+        assert(
+            !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
+            "a CloudKitTransport must not run under the demo kind"
+        )
         self.transport = transport
         self.transportKind = transportKind
         // Swap step 3: on the live path both relay-cycle consumers nudge the
