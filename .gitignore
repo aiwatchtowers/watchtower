@@ -30,6 +30,8 @@ TASK-*.md
 .omc/
 
 # Environment and secrets
+# Local signing config (DEVELOPMENT_TEAM etc.) — see Signing.xcconfig.template
+WatchtowerMobile/Signing.xcconfig
 .env*
 *.pem
 *.key

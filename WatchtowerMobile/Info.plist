@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the generated Info.plist (GENERATE_INFOPLIST_FILE=YES + INFOPLIST_FILE):
+	     keys here win, everything else stays generated. Kept as a file because array
+	     keys like UIBackgroundModes have no INFOPLIST_KEY_ build-setting equivalent. -->
+	<!-- Silent CloudKit pushes (content-available) may wake the app in the background to run the hydrator. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+</dict>
+</plist>

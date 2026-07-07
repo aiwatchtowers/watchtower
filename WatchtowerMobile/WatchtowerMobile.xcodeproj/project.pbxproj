@@ -61,6 +61,7 @@
 		B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaObserver.swift; sourceTree = "<group>"; };
 		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
 		B720CF5A08E47A7D2EFD7CA2 /* APIKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeyStore.swift; sourceTree = "<group>"; };
+		CE2FB594649A1BFF585627DD /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWiringTests.swift; sourceTree = "<group>"; };
 		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -122,12 +123,22 @@
 			path = Components;
 			sourceTree = "<group>";
 		};
+		4A4E31203F3F3896B4ABF4B5 /* WatchtowerMobile */ = {
+			isa = PBXGroup;
+			children = (
+				CE2FB594649A1BFF585627DD /* Base.xcconfig */,
+			);
+			name = WatchtowerMobile;
+			path = .;
+			sourceTree = "<group>";
+		};
 		4BBAEC9D313266F0A1986AE4 = {
 			isa = PBXGroup;
 			children = (
 				B20270D5970103A55888D3C5 /* Packages */,
 				07F497CE33EEF4C1704BA787 /* Sources */,
 				1C5ACBF8CC271AA4653F3151 /* Tests */,
+				4A4E31203F3F3896B4ABF4B5 /* WatchtowerMobile */,
 				802B65C47F0038840E7CBA70 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -334,9 +345,6 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -369,6 +377,7 @@
 		};
 		308DDF52E71653EC48B6FA86 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -388,6 +397,7 @@
 		};
 		4EF2760F7B56A6AB4616BFF7 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -407,11 +417,13 @@
 		};
 		7801978A3183BC2FAFE1DE8F /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_ENTITLEMENTS = WatchtowerMobile.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -461,9 +473,6 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
@@ -489,12 +498,14 @@
 		};
 		BA06701CDEF8F3D4AF6E9C65 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_ENTITLEMENTS = WatchtowerMobile.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
