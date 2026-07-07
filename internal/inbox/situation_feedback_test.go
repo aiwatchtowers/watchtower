@@ -105,6 +105,18 @@ func TestSituationFeedback_MalformedRuleSkippedValidApplied(t *testing.T) {
 	assert.Error(t, err, "invalid rule_type must be skipped")
 }
 
+func TestSituationFeedback_WeightClampedToUnitRange(t *testing.T) {
+	d, p, gen := newFeedbackPipeline(t)
+	sitID := seedSituationWithSignal(t, d, "U4", "C4")
+	gen.response = `{"rules": [{"rule_type": "source_boost", "scope_key": "sender:U4", "weight": 999, "reason": "way too confident"}]}`
+
+	require.NoError(t, p.SubmitSituationFeedback(context.Background(), sitID, 1, "always show me anything from U4"))
+
+	r, err := d.GetLearnedRule("source_boost", "sender:U4")
+	require.NoError(t, err)
+	assert.Equal(t, 1.0, r.Weight, "weight must be clamped to the [-1,1] range the prompt asks for")
+}
+
 func TestSituationFeedback_UnknownSituationErrors(t *testing.T) {
 	d, p, gen := newFeedbackPipeline(t)
 	_ = d

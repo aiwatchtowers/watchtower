@@ -394,6 +394,21 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedSituation?.title, "B")
     }
 
+    func testMarkConvertedOnSelectedSelectsNextSituation() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "B", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let firstID = vm.situations[0].id
+        vm.select(firstID)
+
+        vm.markConverted(situationID: firstID, targetID: 42, trackID: nil)
+
+        XCTAssertEqual(vm.selectedSituation?.title, "B")
+    }
+
     func testDismissOnLastSelectedSelectsPrevious() throws {
         try dbManager.dbPool.write { db in
             _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)

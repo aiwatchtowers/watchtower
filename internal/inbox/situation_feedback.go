@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"watchtower/internal/db"
@@ -109,10 +110,13 @@ func (p *Pipeline) SubmitSituationFeedback(ctx context.Context, situationID int,
 			p.logger.Printf("inbox: skipping malformed learned rule %+v from situation %d", lr, situationID)
 			continue
 		}
+		// The prompt asks for weight in [-1.0, 1.0], but that's only a request —
+		// clamp so a malformed response can never persist a dominating rule.
+		w := math.Max(-1, math.Min(1, lr.Weight))
 		if err := p.db.UpsertLearnedRule(db.InboxLearnedRule{
 			RuleType:      lr.RuleType,
 			ScopeKey:      lr.ScopeKey,
-			Weight:        lr.Weight,
+			Weight:        w,
 			Source:        "user_rule",
 			EvidenceCount: 1,
 		}); err != nil {
