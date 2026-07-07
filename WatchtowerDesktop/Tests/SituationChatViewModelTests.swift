@@ -85,6 +85,27 @@ final class SituationChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages.first?.text, SituationChatViewModel.draftRequestText)
     }
 
+    /// A resumed turn drops the system prompt (the CLI uses --resume), so the
+    /// per-turn prompt must itself carry the situation context block — otherwise
+    /// a post-restart expired session has no idea what is being discussed
+    /// (mirrors TargetChatViewModelTests.testResumedTurnCarriesTaskContextAndActionContract).
+    func testResumedTurnCarriesSituationContext() async throws {
+        let situation = try makeSituation()
+        let signals = try arrangeResumedSession(for: situation)
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let vm = SituationChatViewModel(situation: situation, memberSignals: signals, dbManager: dbManager, aiService: mock)
+
+        vm.inputText = "again"
+        vm.send()
+        try await waitUntil { !vm.isStreaming }
+
+        let prompt = try XCTUnwrap(mock.prompts.first)
+        XCTAssertTrue(prompt.contains("=== SITUATION ==="))
+        XCTAssertTrue(prompt.contains("Cloudflare follow-up"))
+        XCTAssertTrue(prompt.contains("please respond"), "resumed turn must carry member signals too")
+        XCTAssertTrue(prompt.hasSuffix("again"), "user text must follow the carried context")
+    }
+
     func testStreamErrorSurfacesInline() async throws {
         let situation = try makeSituation()
         struct Boom: Error {}
@@ -169,6 +190,23 @@ final class SituationChatViewModelTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// Seeds a conversation that already has a persisted session id (so the VM
+    /// loads it on init and its very first send() is a resumed turn) plus one
+    /// member signal; returns the signals. Sync helper: keeps GRDB's sync
+    /// `write`/`read` overloads unambiguous inside async test bodies.
+    private func arrangeResumedSession(for situation: Situation) throws -> [InboxItem] {
+        let itemID = try dbManager.dbPool.write { db -> Int64 in
+            let conv = try ChatConversationQueries.create(
+                db, title: "Situation: seed", contextType: "situation", contextID: String(situation.id))
+            try ChatConversationQueries.updateSessionID(db, id: conv.id, sessionID: "s1")
+            return try TestDatabase.insertInboxItem(
+                db, channelID: "C1", messageTS: "1700000100.000000", snippet: "please respond")
+        }
+        return try dbManager.dbPool.read { db in
+            try InboxItem.fetchAll(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [itemID])
+        }
+    }
 
     private func waitUntil(_ cond: @escaping () -> Bool) async throws {
         for _ in 0..<200 where !cond() {
