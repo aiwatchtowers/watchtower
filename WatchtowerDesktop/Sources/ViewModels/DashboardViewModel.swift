@@ -267,7 +267,7 @@ final class DashboardViewModel {
             _ = try await runner.run(args: [
                 "inbox", "feedback", String(situation.id),
                 "--rating", rating >= 0 ? "up" : "down",
-                "--comment", trimmed,
+                "--comment", trimmed
             ])
         } catch {
             errorMessage = "Failed to submit feedback: \(error.localizedDescription)"

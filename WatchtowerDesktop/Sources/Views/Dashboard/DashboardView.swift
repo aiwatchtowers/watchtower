@@ -34,6 +34,13 @@ struct DashboardView: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 4)
             }
+            if let msg = conversionError {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+            }
             content
         }
         .sheet(isPresented: $showCreateTarget) {

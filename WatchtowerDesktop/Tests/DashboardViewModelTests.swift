@@ -159,7 +159,7 @@ final class DashboardViewModelTests: XCTestCase {
         await vm.submitFeedback(vm.situations[0], rating: 1, comment: "always show me Jane")
 
         XCTAssertEqual(runner.invocations, [[
-            "inbox", "feedback", String(id), "--rating", "up", "--comment", "always show me Jane",
+            "inbox", "feedback", String(id), "--rating", "up", "--comment", "always show me Jane"
         ]])
         XCTAssertNil(vm.errorMessage)
     }
