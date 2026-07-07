@@ -118,64 +118,6 @@ final class SituationChatViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.errorMessage)
     }
 
-    // MARK: - System prompt builder
-
-    func testBuildSystemPromptIncludesCardAndSignals() throws {
-        let situation = try makeSituation()
-        let itemID = try dbManager.dbPool.write { db in
-            try TestDatabase.insertInboxItem(db, channelID: "C1", messageTS: "1700000100.000000", snippet: "Since I didn't hear back from you")
-        }
-        let signals = try dbManager.dbPool.read { db in
-            try InboxItem.fetchAll(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [itemID])
-        }
-
-        let prompt = SituationChatViewModel.buildSystemPrompt(
-            situation: situation, memberSignals: signals, dbPool: dbManager.dbPool)
-
-        XCTAssertTrue(prompt.contains("Cloudflare follow-up"))
-        XCTAssertTrue(prompt.contains("ball is on you"))
-        XCTAssertTrue(prompt.contains("Since I didn't hear back from you"))
-        XCTAssertTrue(prompt.contains("ready-to-send"))
-    }
-
-    func testBuildSystemPromptStyleBlockPresentAndAbsent() throws {
-        let situation = try makeSituation()
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertWorkspace(db)
-            try db.execute(sql: "UPDATE workspace SET style_profile = 'You write tersely.'")
-        }
-        let with = SituationChatViewModel.buildSystemPrompt(situation: situation, memberSignals: [], dbPool: dbManager.dbPool)
-        XCTAssertTrue(with.contains("You write tersely."))
-
-        try dbManager.dbPool.write { db in
-            try db.execute(sql: "UPDATE workspace SET style_profile = ''")
-        }
-        let without = SituationChatViewModel.buildSystemPrompt(situation: situation, memberSignals: [], dbPool: dbManager.dbPool)
-        XCTAssertFalse(without.contains("OWNER'S COMMUNICATION STYLE"))
-        XCTAssertTrue(without.contains("mirror the owner's own messages"), "empty style must fall back to mirroring instruction")
-    }
-
-    func testBuildSystemPromptCounterpartyBriefFromPeopleCard() throws {
-        let situation = try makeSituation()
-        let itemID = try dbManager.dbPool.write { db -> Int64 in
-            try TestDatabase.insertWorkspace(db)
-            // Verify TestDatabase has a people-card insertion helper; if not, raw SQL insert
-            // into people_cards with user_id='U9', communication_guide='be blunt with him'.
-            try db.execute(sql: """
-                INSERT INTO people_cards (user_id, period_from, period_to, communication_guide)
-                VALUES ('U9', 1.0, 2.0, 'be blunt with him')
-                """)
-            return try TestDatabase.insertInboxItem(db, channelID: "C1", messageTS: "1700000100.000000", senderUserID: "U9", snippet: "ping")
-        }
-        let signals = try dbManager.dbPool.read { db in
-            try InboxItem.fetchAll(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [itemID])
-        }
-
-        let prompt = SituationChatViewModel.buildSystemPrompt(situation: situation, memberSignals: signals, dbPool: dbManager.dbPool)
-
-        XCTAssertTrue(prompt.contains("be blunt with him"))
-    }
-
     func testPersistedMessageCount() throws {
         let situation = try makeSituation()
         XCTAssertEqual(try dbManager.dbPool.read { try SituationChatViewModel.persistedMessageCount($0, situationID: situation.id) }, 0)

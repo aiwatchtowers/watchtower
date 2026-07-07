@@ -30,7 +30,7 @@ struct SituationDiscussSection: View {
 
     private var header: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.2)) { toggle() }
+            withAnimation(.easeInOut(duration: 0.2)) { toggleDiscuss() }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "bubble.left.and.text.bubble.right")
@@ -59,7 +59,7 @@ struct SituationDiscussSection: View {
         .buttonStyle(.plain)
     }
 
-    private func toggle() {
+    private func toggleDiscuss() {
         if isExpanded {
             chatVM?.cancelStream()
             isExpanded = false
