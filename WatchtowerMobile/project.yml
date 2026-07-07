@@ -30,6 +30,9 @@ packages:
 # override xcconfig values, so keeping the signing keys out of settings is
 # what lets the gitignored Signing.xcconfig flip them without touching the
 # committed project.
+# GUARD: the unsigned-by-default invariant is encoded PER TARGET. Any new
+# target added here MUST get the same `configFiles` block, or it silently
+# falls back to Xcode's normal (signed) defaults.
 settings:
   base:
     # Project-level Swift language version (brief asked 5.10) — targets inherit.
