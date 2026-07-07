@@ -1,8 +1,9 @@
 import Foundation
 
 /// Snooze duration options for a card action row. Shared by the legacy Inbox
-/// feed (`InboxCardView`) and the Dashboard situation feed (`SituationCardView`)
-/// so both pick from the same three options with identical date math.
+/// feed (`InboxCardView`) and the Dashboard situation review pane
+/// (`SituationReviewPane`) so both pick from the same three options with
+/// identical date math.
 enum SnoozeOption {
     case oneHour
     case tillTomorrow
@@ -11,9 +12,9 @@ enum SnoozeOption {
 
 /// Computes the ISO8601 "snooze until" timestamp for a `SnoozeOption`.
 ///
-/// Lifted out of `InboxFeedView.snoozeItem` so the Dashboard's situation feed
-/// doesn't duplicate the calendar math — both call sites just need a string to
-/// pass into their respective `snooze(..., until:)` query.
+/// Lifted out of `InboxFeedView.snoozeItem` so `DashboardView`'s situation
+/// feed doesn't duplicate the calendar math — both call sites just need a
+/// string to pass into their respective `snooze(..., until:)` query.
 enum SnoozeDates {
     static func until(_ option: SnoozeOption, from now: Date = Date(), calendar: Calendar = .current) -> String {
         let target: Date

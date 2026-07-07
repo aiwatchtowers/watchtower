@@ -2,16 +2,14 @@ import SwiftUI
 
 // MARK: - DashboardView
 
-/// The secretary Dashboard feed — a single rank-ordered list of `Situation`s
-/// (clustered signals + target/track updates), replacing the old two-tier Inbox
-/// feed. Row expansion, member-signal loading, and all mutating actions are
-/// delegated to the `DashboardViewModel` passed in by the owning tab container
-/// (`InboxFeedView`), mirroring how `InboxViewModel` is owned/passed there.
+/// The secretary Dashboard feed — a master-detail split over a single rank-ordered
+/// list of `Situation`s (clustered signals + target/track updates), replacing the
+/// old two-tier Inbox feed. Selection, member-signal loading, and all mutating
+/// actions are delegated to the `DashboardViewModel` passed in by the owning tab
+/// container (`InboxFeedView`), mirroring how `InboxViewModel` is owned/passed there.
 struct DashboardView: View {
     let vm: DashboardViewModel
     @Environment(AppState.self) private var appState
-    @State private var expandedSituationID: Situation.ID?
-    @State private var memberSignalsCache: [Int: [InboxItem]] = [:]
 
     // Create-target flow (DASH-03): fromSituation prefill → CreateTargetSheet →
     // onCreated marks the situation converted with the new target id.
@@ -56,27 +54,92 @@ struct DashboardView: View {
             if vm.situations.isEmpty {
                 emptyState
             } else {
-                ScrollView {
-                    if let msg = conversionError {
-                        Text(msg)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 12)
-                    }
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(vm.situations) { situation in
-                            situationRow(situation)
-                        }
-
-                        Button("Load more") { vm.loadMore() }
-                            .buttonStyle(.borderless)
-                            .font(.caption)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                    }
-                    .padding(.vertical, 4)
+                HSplitView {
+                    situationList
+                        .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
+                    reviewPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+        }
+    }
+
+    // MARK: - Left: situation list
+
+    private var situationList: some View {
+        List(selection: Binding(
+            get: { vm.selectedSituationID },
+            set: { vm.select($0) }
+        )) {
+            ForEach(vm.situations) { situation in
+                SituationRow(situation: situation)
+                    .tag(situation.id)
+                    .contextMenu { contextMenu(for: situation) }
+            }
+
+            Button("Load more") { vm.loadMore() }
+                .buttonStyle(.borderless)
+                .font(.caption)
+        }
+        .listStyle(.sidebar)
+    }
+
+    @ViewBuilder
+    private func contextMenu(for situation: Situation) -> some View {
+        Button {
+            vm.done(situation)
+        } label: {
+            Label("Done", systemImage: "checkmark.circle")
+        }
+        Menu {
+            Button("1 hour") { vm.snooze(situation, until: SnoozeDates.until(.oneHour)) }
+            Button("Till tomorrow") { vm.snooze(situation, until: SnoozeDates.until(.tillTomorrow)) }
+            Button("Till Monday") { vm.snooze(situation, until: SnoozeDates.until(.tillMonday)) }
+        } label: {
+            Label("Snooze", systemImage: "moon.zzz")
+        }
+        Divider()
+        Button(role: .destructive) {
+            vm.dismiss(situation)
+        } label: {
+            Label("Dismiss", systemImage: "archivebox")
+        }
+    }
+
+    // MARK: - Right: review pane
+
+    @ViewBuilder
+    private var reviewPane: some View {
+        if let situation = vm.selectedSituation {
+            SituationReviewPane(
+                situation: situation,
+                memberSignals: vm.memberSignals(for: situation.id),
+                memberSignalsLoaded: vm.memberSignalsLoaded(situation.id),
+                senderName: { vm.senderName(for: $0) },
+                channelName: { vm.channelName(for: $0) },
+                slackURL: { vm.slackURL(for: $0) },
+                onDone: { vm.done(situation) },
+                onDismiss: { vm.dismiss(situation) },
+                onSnooze: { option in vm.snooze(situation, until: SnoozeDates.until(option)) },
+                onFeedback: { rating, comment in
+                    Task { await vm.submitFeedback(situation, rating: rating, comment: comment) }
+                },
+                isCreatingTarget: isBuildingPrefill,
+                onCreateTarget: { openCreateTarget(for: situation) },
+                onCreateTrack: { openCreateTrack(for: situation) },
+                onOpenTarget: { appState.navigateToTarget($0) },
+                onOpenTrack: { appState.navigateToTrack($0) }
+            )
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.secondary)
+                Text("Select a situation")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -113,49 +176,6 @@ struct DashboardView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func situationRow(_ situation: Situation) -> some View {
-        let isExpanded = expandedSituationID == situation.id
-
-        return SituationCardView(
-            situation: situation,
-            isExpanded: isExpanded,
-            memberSignals: memberSignalsCache[situation.id] ?? [],
-            memberSignalsLoaded: memberSignalsCache[situation.id] != nil,
-            senderName: { vm.senderName(for: $0) },
-            channelName: { vm.channelName(for: $0) },
-            slackURL: { vm.slackURL(for: $0) },
-            onToggle: { toggleExpansion(situation) },
-            onDone: { vm.done(situation) },
-            onDismiss: { vm.dismiss(situation) },
-            onSnooze: { option in vm.snooze(situation, until: SnoozeDates.until(option)) },
-            onFeedback: { rating in Task { await vm.submitFeedback(situation, rating: rating) } },
-            isCreatingTarget: isBuildingPrefill,
-            onCreateTarget: { openCreateTarget(for: situation) },
-            onCreateTrack: { openCreateTrack(for: situation) }
-        )
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            isExpanded ? Color.accentColor.opacity(0.12) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 6)
-        )
-        .padding(.horizontal, 4)
-    }
-
-    private func toggleExpansion(_ situation: Situation) {
-        if expandedSituationID == situation.id {
-            expandedSituationID = nil
-            return
-        }
-        // Lazy-load member signals on first expand; cache so collapsing and
-        // re-expanding doesn't re-hit the DB (same idiom as InboxFeedView's
-        // conversationCache for the legacy feed).
-        if memberSignalsCache[situation.id] == nil {
-            memberSignalsCache[situation.id] = vm.loadMemberSignals(situation.id)
-        }
-        expandedSituationID = situation.id
     }
 
     // MARK: - Create target / Create track (DASH-03)
