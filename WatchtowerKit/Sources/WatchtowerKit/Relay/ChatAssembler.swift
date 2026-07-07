@@ -21,6 +21,16 @@ public enum ChatSendError: Error, Equatable {
     case emptyText
 }
 
+extension ChatSendError: LocalizedError {
+    /// Every error a chat backend can surface renders readable copy
+    /// (Plan 5 Task 5 obligation).
+    public var errorDescription: String? {
+        switch self {
+        case .emptyText: "Message text is empty"
+        }
+    }
+}
+
 /// The phone's chat endpoint: sends user turns into the relay zone (or, on
 /// `SendRoute.localOnly`, persists them for the on-device agent to answer)
 /// and assembles the answerer's streamed chunks into `chat_messages` rows

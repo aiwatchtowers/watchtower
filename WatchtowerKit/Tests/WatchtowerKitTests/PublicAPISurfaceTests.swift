@@ -335,6 +335,54 @@ final class PublicAPISurfaceTests: XCTestCase {
         }
     }
 
+    // MARK: - MobileAgentBackend + both backends (Plan 5 BYOK agent)
+
+    /// The app injects its own scripted client in tests — the seam must be
+    /// conformable from outside the Kit.
+    private struct SurfaceClient: AnthropicStreaming {
+        func streamMessage(request: AnthropicRequest) -> AsyncThrowingStream<AnthropicEvent, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+    }
+
+    func testMobileAgentBackendSurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let assembler = ChatAssembler(transport: transport, store: store)
+
+        // RelayAgentBackend through the protocol existential — the exact shape
+        // ChatThreadViewModel holds (Task 7).
+        let relay: any MobileAgentBackend = RelayAgentBackend(assembler: assembler)
+        let (sessionID, messageID) = try await relay.sendTurn(text: "surface relay turn", sessionID: nil)
+        XCTAssertFalse(sessionID.isEmpty)
+        XCTAssertFalse(messageID.isEmpty)
+
+        // DirectAPIAgent constructible from public API alone, including the
+        // injectable client factory and clock; missingKey is public and
+        // catchable by case.
+        let outbox = ActionOutbox(transport: transport, store: store)
+        let toolbox = ReplicaToolbox(store: store, outbox: outbox)
+        let direct: any MobileAgentBackend = DirectAPIAgent(
+            assembler: assembler,
+            store: store,
+            toolbox: toolbox,
+            apiKey: { nil },
+            model: { .sonnet5 },
+            clientFactory: { _ in SurfaceClient() }
+        )
+        do {
+            _ = try await direct.sendTurn(text: "no key configured", sessionID: nil)
+            XCTFail("expected DirectAPIAgentError.missingKey")
+        } catch DirectAPIAgentError.missingKey {}
+
+        // The static system prompt is public (Settings may preview it) and
+        // errors render readable copy via LocalizedError.
+        XCTAssertFalse(MobileSystemPrompt.build().isEmpty)
+        XCTAssertNotNil(DirectAPIAgentError.missingKey.errorDescription)
+        XCTAssertNotNil(AnthropicClientError.invalidKey.errorDescription)
+        XCTAssertNotNil(ChatSendError.emptyText.errorDescription)
+    }
+
     // MARK: - ReplicaToolbox (Plan 5 BYOK agent tools)
 
     func testReplicaToolboxSurface() async throws {

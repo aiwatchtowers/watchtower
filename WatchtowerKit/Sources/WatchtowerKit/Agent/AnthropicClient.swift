@@ -20,6 +20,34 @@ public enum AnthropicClientError: Error, Equatable {
     case cancelled
 }
 
+extension AnthropicClientError: LocalizedError {
+    /// UI-facing copy (Plan 5 Task 5): DirectAPIAgent renders this into the
+    /// error done-chunk. `.http` shows the SERVER body — Foundation's generic
+    /// "operation couldn't be completed" would hide the actionable detail.
+    /// No case carries the API key, so the copy cannot leak it.
+    public var errorDescription: String? {
+        switch self {
+        case .invalidKey:
+            "API key rejected — check Settings"
+        case .rateLimited, .overloaded:
+            "Anthropic API is busy — try again"
+        case let .http(status, body):
+            body.isEmpty ? "Anthropic API error (HTTP \(status))" : "Anthropic API error (HTTP \(status)): \(body)"
+        case .cancelled:
+            "The request was cancelled"
+        }
+    }
+}
+
+/// The streaming seam `DirectAPIAgent` consumes: production wires
+/// `AnthropicClient` (the default clientFactory); tests inject a scripted
+/// fake so the whole answer loop runs without a network.
+public protocol AnthropicStreaming: Sendable {
+    func streamMessage(request: AnthropicRequest) -> AsyncThrowingStream<AnthropicEvent, Error>
+}
+
+extension AnthropicClient: AnthropicStreaming {}
+
 /// Anthropic Messages API over URLSession SSE (`POST /v1/messages`,
 /// `stream: true`). No retries here — the agent loop decides. Thinking
 /// blocks (sonnet 5 adaptive default) are skipped silently: we don't
