@@ -224,6 +224,8 @@ enum TestDatabase {
         current_user_id   TEXT NOT NULL DEFAULT '',
         inbox_last_processed_ts REAL NOT NULL DEFAULT 0,
         secretary_profile TEXT NOT NULL DEFAULT '',
+        style_profile TEXT NOT NULL DEFAULT '',
+        style_profile_updated_at TEXT NOT NULL DEFAULT '',
         compose_last_run_ts REAL NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS users (

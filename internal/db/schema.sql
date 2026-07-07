@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     current_user_id   TEXT NOT NULL DEFAULT '',  -- Slack user_id of the token owner (from auth.test)
     inbox_last_processed_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last inbox pipeline run
     secretary_profile TEXT NOT NULL DEFAULT '',  -- User-written secretary brief text
+    style_profile TEXT NOT NULL DEFAULT '',  -- AI-distilled, user-editable communication style (see 00013)
+    style_profile_updated_at TEXT NOT NULL DEFAULT '',
     compose_last_run_ts REAL NOT NULL DEFAULT 0  -- Unix timestamp of last situation composer run
 );
 

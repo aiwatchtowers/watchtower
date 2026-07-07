@@ -1265,7 +1265,7 @@ synced_at TEXT, -- ISO8601 timestamp of last sync
 search_last_date TEXT NOT NULL DEFAULT '', -- YYYY-MM-DD of last search sync
 current_user_id TEXT NOT NULL DEFAULT '', -- Slack user_id of the token owner (from auth.test)
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0)
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '')
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
@@ -2152,4 +2152,6 @@ END
 6	inbox_last_processed_ts	REAL	notnull=1	dflt=0	pk=0
 7	secretary_profile	TEXT	notnull=1	dflt=''	pk=0
 8	compose_last_run_ts	REAL	notnull=1	dflt=0	pk=0
+9	style_profile	TEXT	notnull=1	dflt=''	pk=0
+10	style_profile_updated_at	TEXT	notnull=1	dflt=''	pk=0
 

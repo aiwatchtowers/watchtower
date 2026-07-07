@@ -147,3 +147,31 @@ func (db *DB) SetSecretaryProfile(text string) error {
 	}
 	return nil
 }
+
+// GetStyleProfile returns the stored communication style profile text.
+func (db *DB) GetStyleProfile() (string, error) {
+	var s string
+	err := db.QueryRow(`SELECT style_profile FROM workspace LIMIT 1`).Scan(&s)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting style_profile: %w", err)
+	}
+	return s, nil
+}
+
+// SetStyleProfile stores the communication style profile and stamps its
+// generation/edit time.
+func (db *DB) SetStyleProfile(text string) error {
+	res, err := db.Exec(`UPDATE workspace SET style_profile = ?,
+		style_profile_updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = (SELECT id FROM workspace LIMIT 1)`, text)
+	if err != nil {
+		return fmt.Errorf("setting style_profile: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting style_profile: no workspace row exists")
+	}
+	return nil
+}
