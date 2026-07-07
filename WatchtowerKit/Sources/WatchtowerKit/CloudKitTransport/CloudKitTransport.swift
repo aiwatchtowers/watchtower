@@ -495,7 +495,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         // nil REMOVES the field (isError discipline: absent, never null) —
         // an untagged save is byte-identical to a pre-Plan-6 one, and a
         // system-fields-seeded re-save cannot carry a stale tag.
-        ck["notifyLevel"] = record.notifyLevel
+        // Owner ruling (Task 3 review): encryptedValues, not a plain field —
+        // "user has an urgent item right now" is content-adjacent under ADP,
+        // no server query needs it, and the phone decrypts everything anyway.
+        ck.encryptedValues["notifyLevel"] = record.notifyLevel
         return ck
     }
 
@@ -516,7 +519,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             kind: (ck["kind"] as? String) ?? "",
             modifiedAt: (ck["modifiedAt"] as? Date) ?? Date(timeIntervalSince1970: 0),
             payload: payload,
-            notifyLevel: ck["notifyLevel"] as? String
+            notifyLevel: ck.encryptedValues["notifyLevel"] as? String
         )
     }
 }

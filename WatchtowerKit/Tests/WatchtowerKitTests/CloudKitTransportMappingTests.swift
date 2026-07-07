@@ -92,7 +92,12 @@ final class CloudKitTransportMappingTests: XCTestCase {
             notifyLevel: "briefing"
         )
         let ck = CloudKitTransport.ckRecord(from: original, in: zoneID, systemFields: nil)
-        XCTAssertEqual(ck["notifyLevel"] as? String, "briefing")
+        // Owner ruling (Task 3 review): rides encryptedValues like the
+        // payload — content-adjacent under ADP, never a plain queryable field.
+        XCTAssertEqual(ck.encryptedValues["notifyLevel"] as? String, "briefing")
+        // allKeys() lists encrypted keys too; the plain accessor is the
+        // discriminator — it must see nothing.
+        XCTAssertNil(ck["notifyLevel"], "notifyLevel must never be a plain field")
         XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck), original)
     }
 
