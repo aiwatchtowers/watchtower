@@ -9,7 +9,9 @@
 /* Begin PBXBuildFile section */
 		0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */; };
 		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
+		203887C3A8BA29CDB67E6437 /* AgentSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32B5333500926289814ECEB0 /* AgentSettingsTests.swift */; };
 		305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916C33BA22DB5ABF55F50EBC /* InboxView.swift */; };
+		3213674D1C4C25C4869DD86D /* APIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B720CF5A08E47A7D2EFD7CA2 /* APIKeyStore.swift */; };
 		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
 		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
@@ -47,6 +49,7 @@
 		1D5566BA2797C739FDA9FDC4 /* Badge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Badge.swift; sourceTree = "<group>"; };
 		211E805C97CFC4405C7263AB /* QuickActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickActions.swift; sourceTree = "<group>"; };
 		3240E546D853A416356E32D1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		32B5333500926289814ECEB0 /* AgentSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSettingsTests.swift; sourceTree = "<group>"; };
 		3D6F6F3D895505750B9F5892 /* DemoSeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSeed.swift; sourceTree = "<group>"; };
 		53EEE394524E80319F081C9E /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		5DF609973C6F27C56B9BD9A9 /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
@@ -57,6 +60,7 @@
 		ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaWiringTests.swift; sourceTree = "<group>"; };
 		B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaObserver.swift; sourceTree = "<group>"; };
 		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
+		B720CF5A08E47A7D2EFD7CA2 /* APIKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeyStore.swift; sourceTree = "<group>"; };
 		D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWiringTests.swift; sourceTree = "<group>"; };
 		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -101,6 +105,7 @@
 			isa = PBXGroup;
 			children = (
 				80F2DDF7DA595335A8946DA2 /* ActionsWiringTests.swift */,
+				32B5333500926289814ECEB0 /* AgentSettingsTests.swift */,
 				649E02AF149E7AB38609A747 /* BadgeTests.swift */,
 				D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */,
 				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
@@ -147,6 +152,7 @@
 		B49576F65C5F65C311E0CAD8 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				B720CF5A08E47A7D2EFD7CA2 /* APIKeyStore.swift */,
 				0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */,
 				3D6F6F3D895505750B9F5892 /* DemoSeed.swift */,
 				B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */,
@@ -254,6 +260,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3213674D1C4C25C4869DD86D /* APIKeyStore.swift in Sources */,
 				0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */,
 				C68C3B81124062F591CDCEDF /* Badge.swift in Sources */,
 				EB0C2BFE128E47FC5A80B2A0 /* ChatView.swift in Sources */,
@@ -276,6 +283,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A7C17359424ABE62A6071D90 /* ActionsWiringTests.swift in Sources */,
+				203887C3A8BA29CDB67E6437 /* AgentSettingsTests.swift in Sources */,
 				582932A8E80F14FFC007035E /* BadgeTests.swift in Sources */,
 				CD65311F247770AEA6BC4E1B /* ChatWiringTests.swift in Sources */,
 				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,

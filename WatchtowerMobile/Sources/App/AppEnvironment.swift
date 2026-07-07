@@ -47,6 +47,32 @@ public final class AppEnvironment {
     /// `pollOnce` and the chat view models can read `isDesktopReachable`.
     let feed: RelayFeed
 
+    /// The BYOK answer loop (Plan 5 Task 6): answers chat turns on-device
+    /// against `api.anthropic.com` with the user's own key. Owned HERE for
+    /// the app's lifetime — its in-flight answer tasks hold the agent weakly,
+    /// so a view-local owner deallocated by navigation would strand a
+    /// placeholder row incomplete forever (see the `[weak self]` note at
+    /// `DirectAPIAgent.scheduleAnswer`; the project's
+    /// async-ops-survive-navigation rule).
+    public let directAgent: DirectAPIAgent
+
+    /// Today's default turn-sender: the Mac answers over the relay. The chat
+    /// view model picks between this and `directAgent` per session opt-in
+    /// (Plan 5 Decision 7) — never a silent switch.
+    public let relayBackend: RelayAgentBackend
+
+    /// Model choice for the direct agent (Plan 5 Decision 6), persisted in
+    /// UserDefaults — a model NAME is not a secret; the KEY is Keychain-only.
+    public var agentModel: AgentModel {
+        didSet { UserDefaults.standard.set(agentModel.rawValue, forKey: Self.agentModelKey) }
+    }
+
+    /// Whether an Anthropic API key is stored — drives the Settings section
+    /// and the Chat opt-in button. Mutate the key ONLY through
+    /// `saveAPIKey`/`removeAPIKey` so this flag can never drift from the
+    /// Keychain truth.
+    public private(set) var hasAPIKey: Bool
+
     /// Daily silent-pending sweep loop; lives as long as the environment.
     private var sweepTask: Task<Void, Never>?
 
@@ -60,6 +86,23 @@ public final class AppEnvironment {
 
     // nonisolated: logged from @Sendable hook/sweep closures off the actor.
     private nonisolated static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppEnvironment")
+
+    /// UserDefaults slot for `agentModel`. nonisolated: read from the
+    /// @Sendable `liveAgentModel` provider off the actor.
+    private nonisolated static let agentModelKey = "agent.model"
+
+    /// The @Sendable providers handed to `DirectAPIAgent`. STATIC on purpose:
+    /// they physically cannot capture @MainActor self, so every call reads
+    /// the Keychain / UserDefaults LIVE — saving a key or switching models in
+    /// Settings takes effect on the very next turn without rebuilding the
+    /// agent (Task 6 no-capture rule, pinned by `AgentSettingsTests`).
+    /// Internal (not private) so the wiring tests can call the exact closures
+    /// the agent holds.
+    nonisolated static let liveAPIKey: @Sendable () -> String? = { APIKeyStore().read() }
+    nonisolated static let liveAgentModel: @Sendable () -> AgentModel = {
+        UserDefaults.standard.string(forKey: agentModelKey)
+            .flatMap(AgentModel.init(rawValue:)) ?? .sonnet5
+    }
 
     public convenience init() throws {
         // TRANSPORT SWAP POINT (see the four-step doc comment above).
@@ -82,6 +125,16 @@ public final class AppEnvironment {
         self.outbox = outbox
         let chat = ChatAssembler(transport: transport, store: store)
         self.chat = chat
+        directAgent = DirectAPIAgent(
+            assembler: chat,
+            store: store,
+            toolbox: ReplicaToolbox(store: store, outbox: outbox),
+            apiKey: Self.liveAPIKey,
+            model: Self.liveAgentModel
+        )
+        relayBackend = RelayAgentBackend(assembler: chat)
+        agentModel = Self.liveAgentModel()
+        hasAPIKey = APIKeyStore().read() != nil
         feed = RelayFeed(
             transport: transport,
             store: store,
@@ -124,6 +177,19 @@ public final class AppEnvironment {
         await hydrator.start()
         await feed.start()
         scheduleSilentPendingSweep()
+    }
+
+    /// Stores the Anthropic API key in the Keychain and refreshes
+    /// `hasAPIKey`. The app's ONLY key-writing path (with `removeAPIKey`).
+    public func saveAPIKey(_ key: String) throws {
+        try APIKeyStore().save(key)
+        hasAPIKey = true
+    }
+
+    /// Deletes the stored key and refreshes `hasAPIKey`.
+    public func removeAPIKey() throws {
+        try APIKeyStore().remove()
+        hasAPIKey = false
     }
 
     /// Runs one hydration cycle on demand (also used by pull-to-refresh later).

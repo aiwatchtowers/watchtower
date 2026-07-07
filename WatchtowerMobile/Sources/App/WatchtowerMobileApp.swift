@@ -60,20 +60,44 @@ struct BootFailureView: View {
 /// item — Settings stays reachable there (and iPad shows all six). Tracks
 /// is the least-touched read-only tab, so it pays the More cost, not Chat.
 struct RootTabView: View {
+    enum Tab: String {
+        case today, chat, inbox, tasks, tracks, settings
+    }
+
+    @State private var selection: Tab = .today
+
+    init() {
+        #if DEBUG
+        // Boot-check hook (DEBUG only): `simctl launch … -boot-tab settings`
+        // opens on that tab — the launch argument lands in the UserDefaults
+        // argument domain — so screenshot verification can reach non-first
+        // tabs; simctl cannot script a tab tap.
+        if let raw = UserDefaults.standard.string(forKey: "boot-tab"), let tab = Tab(rawValue: raw) {
+            _selection = State(initialValue: tab)
+        }
+        #endif
+    }
+
     var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             TodayView()
                 .tabItem { Label("Today", systemImage: "sun.max") }
+                .tag(Tab.today)
             ChatView()
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                .tag(Tab.chat)
             InboxView()
                 .tabItem { Label("Inbox", systemImage: "tray") }
+                .tag(Tab.inbox)
             TasksView()
                 .tabItem { Label("Tasks", systemImage: "checklist") }
+                .tag(Tab.tasks)
             TracksView()
                 .tabItem { Label("Tracks", systemImage: "list.bullet.rectangle") }
+                .tag(Tab.tracks)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(Tab.settings)
         }
     }
 }
