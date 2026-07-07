@@ -334,4 +334,21 @@ final class PublicAPISurfaceTests: XCTestCase {
             XCTAssertEqual(ChatSendError.emptyText, ChatSendError.emptyText) // Equatable is public API
         }
     }
+
+    // MARK: - ReplicaToolbox (Plan 5 BYOK agent tools)
+
+    func testReplicaToolboxSurface() async throws {
+        // Constructible from public API alone (default `now` clock), tool
+        // definitions readable as APITool, execute callable without throwing.
+        let store = try ReplicaStore.inMemory()
+        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store)
+        let toolbox = ReplicaToolbox(store: store, outbox: outbox)
+
+        XCTAssertEqual(toolbox.tools.count, 12)
+        let tool: APITool? = toolbox.tools.first
+        XCTAssertEqual(tool?.name, "list_targets")
+
+        let result = await toolbox.execute(name: "list_targets", inputJSON: Data())
+        XCTAssertEqual(result, "[]")
+    }
 }

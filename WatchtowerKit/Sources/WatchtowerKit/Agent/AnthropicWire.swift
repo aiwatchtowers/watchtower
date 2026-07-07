@@ -66,6 +66,33 @@ public enum WireJSON: Codable, Equatable, Sendable {
     }
 }
 
+/// Literal conveniences so tool `input_schema` definitions read as plain JSON
+/// (see `ReplicaToolbox`). Purely additive sugar over the existing cases —
+/// `encode(to:)`/`init(from:)` are untouched, so the wire bytes pinned by
+/// `testRequestBodyMatchesFrozenFixture` cannot change.
+extension WireJSON: ExpressibleByDictionaryLiteral, ExpressibleByArrayLiteral,
+    ExpressibleByStringLiteral, ExpressibleByIntegerLiteral, ExpressibleByBooleanLiteral {
+    public init(dictionaryLiteral elements: (String, WireJSON)...) {
+        self = .object(Dictionary(uniqueKeysWithValues: elements))
+    }
+
+    public init(arrayLiteral elements: WireJSON...) {
+        self = .array(elements)
+    }
+
+    public init(stringLiteral value: String) {
+        self = .string(value)
+    }
+
+    public init(integerLiteral value: Int) {
+        self = .int(value)
+    }
+
+    public init(booleanLiteral value: Bool) {
+        self = .bool(value)
+    }
+}
+
 /// One content block inside a message. The three request-side shapes:
 /// `{"type":"text",...}` / `{"type":"tool_use",...}` / `{"type":"tool_result",...}`.
 public enum APIContentBlock: Codable, Equatable, Sendable {
