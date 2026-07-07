@@ -59,7 +59,8 @@ final class NotificationTests: XCTestCase {
 
     private func makeContext(
         permission: NotificationPermission? = nil,
-        grant: Bool = true
+        grant: Bool = true,
+        now: TimeInterval? = nil
     ) throws -> Context {
         let store = try ReplicaStore.inMemory()
         let center = FakeNotificationCenter()
@@ -68,7 +69,15 @@ final class NotificationTests: XCTestCase {
         if let permission {
             defaults.set(permission.rawValue, forKey: NotificationCoordinator.permissionDefaultsKey)
         }
-        let coordinator = NotificationCoordinator(store: store, center: center, defaults: defaults)
+        let coordinator: NotificationCoordinator
+        if let now {
+            // Frozen injected clock — house near-midnight discipline, never
+            // wall-clock `Date()` in a test that pins exact watermark values.
+            let frozen = Date(timeIntervalSince1970: now)
+            coordinator = NotificationCoordinator(store: store, center: center, defaults: defaults, now: { frozen })
+        } else {
+            coordinator = NotificationCoordinator(store: store, center: center, defaults: defaults)
+        }
         return Context(coordinator: coordinator, center: center, store: store, defaults: defaults)
     }
 
@@ -111,7 +120,11 @@ final class NotificationTests: XCTestCase {
     /// historical records → ZERO alerts, ZERO permission prompts, watermark
     /// armed at the batch's newest modifiedAt.
     func testInitialHydrateWithTaggedHistorySetsWatermarkWithoutAlerting() async throws {
-        let ctx = try makeContext()
+        // Injected "now" (500) is after the batch's newest modifiedAt (300):
+        // arming uses max(newest, now), so the watermark lands at the
+        // injected clock, not the batch max — see NotificationCoordinatorTests
+        // below for why (unverifiable "one hydrate = whole history" split).
+        let ctx = try makeContext(now: 500)
         XCTAssertNil(try ctx.store.lastAlertedWatermark())
 
         await ctx.coordinator.recordsApplied([
@@ -123,7 +136,42 @@ final class NotificationTests: XCTestCase {
         XCTAssertTrue(ctx.center.added.isEmpty, "initial hydrate is history, not news — it must NEVER alert")
         XCTAssertEqual(ctx.center.askCount, 0, "a suppressed batch must not trigger the permission ask")
         XCTAssertEqual(ctx.coordinator.permission, .notAsked)
-        XCTAssertEqual(try ctx.store.lastAlertedWatermark()?.timeIntervalSince1970, 300)
+        XCTAssertEqual(try ctx.store.lastAlertedWatermark()?.timeIntervalSince1970, 500)
+    }
+
+    /// THE fix pin: history split across TWO hydrate cycles must not storm,
+    /// even though batch 2's max modifiedAt is newer than batch 1's — both
+    /// are still older than the injected "now" the watermark armed at. Only
+    /// a row stamped AFTER "now" is genuinely new and alerts.
+    func testHistorySplitAcrossHydrateCyclesStaysSilentUntilGenuinelyNewRow() async throws {
+        let ctx = try makeContext(permission: .authorized, now: 500)
+        XCTAssertNil(try ctx.store.lastAlertedWatermark())
+
+        // Batch 1: oldest slice of history — arms the watermark at now (500),
+        // not at its own max (300), silently.
+        await ctx.coordinator.recordsApplied([
+            applied(id: "1", level: "urgent", at: 100),
+            applied(.target, id: "9", level: nil, at: 300)
+        ])
+        XCTAssertTrue(ctx.center.added.isEmpty)
+        XCTAssertEqual(try ctx.store.lastAlertedWatermark()?.timeIntervalSince1970, 500)
+
+        // Batch 2: CKSyncEngine's automatic sync delivers the REST of history
+        // in a later cycle. Its max modifiedAt (400) is newer than batch 1's
+        // max (300) but still older than the armed watermark (500) — must
+        // stay silent, or the storm rule is violated.
+        await ctx.coordinator.recordsApplied([
+            applied(id: "2", level: "urgent", at: 350),
+            applied(.briefing, id: "2026-07-06", level: "briefing", at: 400)
+        ])
+        XCTAssertTrue(ctx.center.added.isEmpty, "history split across hydrate cycles must never storm")
+        XCTAssertEqual(ctx.center.askCount, 0)
+        XCTAssertEqual(try ctx.store.lastAlertedWatermark()?.timeIntervalSince1970, 500)
+
+        // A genuinely new row (published after the armed watermark) alerts.
+        await ctx.coordinator.recordsApplied([applied(id: "3", level: "urgent", at: 600)])
+        XCTAssertEqual(ctx.center.added.count, 1)
+        XCTAssertEqual(try ctx.store.lastAlertedWatermark()?.timeIntervalSince1970, 600)
     }
 
     // MARK: - Fresh rows after the watermark

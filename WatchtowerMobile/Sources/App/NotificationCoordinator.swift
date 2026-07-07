@@ -64,6 +64,10 @@ final class NotificationCoordinator {
     private let store: ReplicaStore
     private let center: any NotificationCentering
     private let defaults: UserDefaults
+    /// Injected wall clock (real: `Date.init`; tests: a frozen closure) — see
+    /// the nil-watermark branch of `dedup` for why arming needs "now" and not
+    /// just the batch's newest `modifiedAt`.
+    private let now: @Sendable () -> Date
     /// The in-flight permission ask, if any — overlapping batches await it
     /// instead of double-prompting. nil result = transient request failure
     /// (not recorded; a later alertable row may ask again).
@@ -81,11 +85,13 @@ final class NotificationCoordinator {
     init(
         store: ReplicaStore,
         center: any NotificationCentering = SystemNotificationCenter(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.store = store
         self.center = center
         self.defaults = defaults
+        self.now = now
         permission = defaults.string(forKey: Self.permissionDefaultsKey)
             .flatMap(NotificationPermission.init(rawValue:)) ?? .notAsked
     }
@@ -120,7 +126,20 @@ final class NotificationCoordinator {
             // Never alerted before → this is the initial hydrate. Swallow the
             // whole batch and arm the watermark; only rows the desktop
             // publishes after this moment can alert. (See the type doc.)
-            try store.setLastAlertedWatermark(newest)
+            //
+            // Arm at max(newest, now), not just `newest`: the "one batch =
+            // the whole history" assumption rests on CKSyncEngine's automatic
+            // sync losing its race with this manual pull, which is not
+            // guaranteed on first launch. If history instead splits across
+            // hydrate cycles, a later batch of HISTORY — still stamped before
+            // the phone's first hydrate, i.e. at/below `now()` — must land
+            // at/below the watermark regardless of how CloudKit chose to
+            // batch it. Folding in `now()` guarantees that. The residual:
+            // desktop-ahead clock skew can swallow a genuinely-new alert
+            // inside the skew window right after install — a missed alert,
+            // never a storm, the conservative direction this type already
+            // chooses everywhere else.
+            try store.setLastAlertedWatermark(max(newest, now()))
             return []
         }
         let fresh = records.filter { $0.modifiedAt > watermark && $0.isAlertable }
