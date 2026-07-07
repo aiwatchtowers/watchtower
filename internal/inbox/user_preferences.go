@@ -61,7 +61,7 @@ func buildUserPreferencesBlock(database *db.DB, items []db.InboxItem) (string, e
 	if len(boosts) > 0 {
 		b.WriteString("Boosts: " + strings.Join(boosts, "; ") + "\n")
 	}
-	b.WriteString("Apply these when choosing priority and selecting pinned items.\n")
+	b.WriteString("Apply these when choosing priority.\n")
 	return b.String(), nil
 }
 

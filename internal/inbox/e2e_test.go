@@ -36,8 +36,8 @@ func TestE2E_JiraMentionFlow(t *testing.T) {
 	seedJiraComment(t, d, issueKey, senderID, "hey [~alice] please review", time.Now().Add(-30*time.Minute))
 
 	cfg := testConfig()
-	// mockGenerator returns an empty pinned_ids response so AI prioritize is a no-op.
-	gen := &mockGenerator{response: `{"pinned_ids":[]}`}
+	// mockGenerator returns an empty JSON object so triage/cards are no-ops.
+	gen := &mockGenerator{response: `{}`}
 	p := New(d, cfg, gen, log.Default())
 	p.SetCurrentUser(userID, "alice@x.com")
 
@@ -88,7 +88,7 @@ func TestE2E_AmbientAutoArchive(t *testing.T) {
 		time.Now().Add(-5*time.Minute))
 
 	cfg := testConfig()
-	gen := &mockGenerator{response: `{"pinned_ids":[]}`}
+	gen := &mockGenerator{response: `{"verdicts":[]}`}
 	p := New(d, cfg, gen, log.Default())
 	p.SetCurrentUser("U1", "u1@test.com")
 
@@ -120,4 +120,45 @@ func TestE2E_AmbientAutoArchive(t *testing.T) {
 		Scan(&archiveReason)
 	require.NoError(t, err)
 	assert.Equal(t, "seen_expired", archiveReason, "ambient item older than 7 days should be archived as seen_expired")
+}
+
+// TestInbox03_StreamSignalSurfaced closes the INBOX-03 gap: a plain channel
+// message with no @mention/DM/thread-reply trigger can still surface as an
+// actionable inbox item when the secretary's stream triage says it needs a
+// response.
+//
+// Flow:
+//  1. Seed a channel message that addresses no one directly (no trigger fires).
+//  2. Run the pipeline with a triage verdict of tier=action for that message.
+//  3. Assert a pending inbox item with trigger_type=stream now exists.
+func TestInbox03_StreamSignalSurfaced(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	insertChannel(t, d, "C1", "public")
+	// Must be within the first-run lookback window (see testConfig's
+	// InitialLookbackDays): Run floors a fresh/zero watermark to
+	// now-lookbackDays before triage ever sees the message.
+	ts := recentTS(60)
+	insertMessage(t, d, "C1", ts, "U2", "prod is on fire, need a direction owner")
+
+	cfg := testConfig()
+	gen := &seqGenerator{responses: []string{
+		fmt.Sprintf(`{"verdicts":[{"key":"msg:C1:%s","tier":"action","priority":"high","reason":"prod incident, no owner yet"}]}`, ts),
+		`{"why_matters":"Production incident needs an owner","thread_digest":"Prod fire reported, unowned.","draft_reply":"I can take this."}`,
+	}}
+	p := New(d, cfg, gen, log.Default())
+	p.SetCurrentUser("U1", "u1@test.com")
+
+	created, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, created, "the stream candidate should surface as a new inbox item")
+
+	it, err := d.GetInboxItemByMessage("C1", ts)
+	require.NoError(t, err)
+	require.NotNil(t, it, "a triage-surfaced stream item must exist even without any trigger")
+	assert.Equal(t, "stream", it.TriggerType)
+	assert.Equal(t, "pending", it.Status)
+	assert.Equal(t, "actionable", it.ItemClass)
+	assert.Equal(t, "high", it.Priority)
 }

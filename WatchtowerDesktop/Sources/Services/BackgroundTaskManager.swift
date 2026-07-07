@@ -194,19 +194,27 @@ final class BackgroundTaskManager {
         }
 
         pipelineTask = Task {
+            // Isolate phase failures: whatever happens below (a failed phase,
+            // cooperative cancellation, or the happy path), always clear
+            // pipelineTask and make sure no task is left stuck in `.pending`
+            // ("Waiting..." forever in the sidebar) — both previously required
+            // an app restart to recover from once digests failed.
+            defer {
+                resolvePendingAsSkipped()
+                pipelineTask = nil
+            }
+
             // Inbox runs independently — fire and forget, never blocks other pipelines.
             Task { @MainActor in
                 await self.runTask(.inbox)
             }
 
-            // Phase 1: channel digests (tracks + people depend on digest data)
+            // Phase 1: channel digests (tracks + people prefer digest data, but
+            // a digests failure must not block the rest of the chain).
             await runTask(.digests)
             guard !Task.isCancelled else { return }
 
-            // Only proceed if digests succeeded.
-            guard tasks[.digests]?.status == .done else { return }
-
-            // Phase 2: tracks + people in parallel (both depend only on channel digests)
+            // Phase 2: tracks + people in parallel, regardless of Phase 1 outcome.
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { @MainActor in
                     await self.runTask(.tracks)
@@ -217,14 +225,23 @@ final class BackgroundTaskManager {
             }
             guard !Task.isCancelled else { return }
 
-            // Phase 3: start daemon after all pipelines complete
+            // Phase 3: start daemon regardless of upstream pipeline failures.
             if let path = Constants.findCLIPath() {
                 await Self.runCLIFireAndForget(path: path, arguments: ["sync", "--daemon", "--detach"])
             }
 
             // Mark pipelines as completed for restart detection
             UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
-            pipelineTask = nil
+        }
+    }
+
+    /// Move any task still stuck in `.pending` to a terminal error state.
+    /// Guards against the chain exiting (cancellation, or a phase never
+    /// reached) while a task never got a chance to run.
+    /// Internal (not private) so it's directly unit-testable.
+    func resolvePendingAsSkipped() {
+        for kind in TaskKind.allCases where tasks[kind]?.status == .pending {
+            tasks[kind]?.status = .error("Skipped")
         }
     }
 

@@ -87,6 +87,12 @@ final class ChatViewModel {
     private let dbManager: DatabaseManager
     private var streamTask: Task<Void, Never>?
     private var observationTask: Task<Void, Never>?
+    /// Guards against persisting the streaming assistant reply twice: `cancelStream()`
+    /// persists the partial text synchronously, but the stream Task's own completion
+    /// tail still runs afterward (it keeps draining/finishing the underlying stream
+    /// even once cancelled) and would otherwise persist the same reply again. Reset
+    /// at the start of every new stream.
+    private var responsePersistedOnCancel = false
 
     /// Callback to notify history that title/session changed
     var onConversationUpdated: ((Int64, String?, String?) -> Void)?
@@ -106,8 +112,13 @@ final class ChatViewModel {
         aiService = Self.createService(for: provider)
     }
 
+    // `WatchtowerAIService` talks to a single CLI binary that serves both
+    // providers via `watchtower ai query --provider <claude|codex>` (see
+    // `send()`/`sendWelcomeMessage()` below), so the same service instance
+    // works regardless of which provider is selected — no per-provider
+    // service type is needed here.
     static func createService(for provider: AIProvider) -> any AIServiceProtocol {
-        _ = provider // provider selection handled by WatchtowerAIService via config
+        _ = provider
         return WatchtowerAIService()
     }
 
@@ -140,6 +151,7 @@ final class ChatViewModel {
 
         messages.append(ChatMessage(id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true))
         isStreaming = true
+        responsePersistedOnCancel = false
 
         autoGenerateTitle(text: text)
 
@@ -147,6 +159,7 @@ final class ChatViewModel {
         let dbPath = dbManager.dbPool.path
         let dbPool = dbManager.dbPool
         let model = selectedModel.rawValue
+        let provider = selectedProvider.rawValue
         let capturedConvID = conversationID
         let capturedDBManager = dbManager
         let capturedAIService = aiService
@@ -162,7 +175,8 @@ final class ChatViewModel {
                     systemPrompt: systemPrompt,
                     sessionID: currentSessionID,
                     dbPath: dbPath,
-                    model: model
+                    model: model,
+                    provider: provider
                 )
                 var sawTurnComplete = false
                 for try await event in stream {
@@ -195,8 +209,10 @@ final class ChatViewModel {
                 }
             }
 
-            // Always persist the response, even if self is gone
-            if !fullText.isEmpty, let convID = capturedConvID {
+            // Always persist the response, even if self is gone — unless
+            // cancelStream() already persisted this same partial reply (see
+            // `responsePersistedOnCancel`); skipping avoids a duplicate row.
+            if !fullText.isEmpty, let convID = capturedConvID, self?.responsePersistedOnCancel != true {
                 Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText)
             }
             if let sid = newSessionID, let convID = capturedConvID {
@@ -254,6 +270,10 @@ final class ChatViewModel {
             let partialText = messages[idx].text
             if !partialText.isEmpty, let convID = conversationID {
                 persistMessage(conversationID: convID, role: "assistant", text: partialText)
+                // Tell the still-running stream Task's completion tail not to
+                // persist this reply again — cancellation is cooperative, so
+                // that tail keeps executing after this synchronous save.
+                responsePersistedOnCancel = true
             }
             messages[idx].isStreaming = false
         }
@@ -537,10 +557,12 @@ final class ChatViewModel {
 
         messages.append(ChatMessage(id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true))
         isStreaming = true
+        responsePersistedOnCancel = false
 
         let dbPath = dbManager.dbPool.path
         let dbPool = dbManager.dbPool
         let model = selectedModel.rawValue
+        let provider = selectedProvider.rawValue
         let capturedConvID = conversationID
         let capturedDBManager = dbManager
         let capturedAIService = aiService
@@ -556,7 +578,8 @@ final class ChatViewModel {
                     systemPrompt: systemPrompt,
                     sessionID: nil,
                     dbPath: dbPath,
-                    model: model
+                    model: model,
+                    provider: provider
                 )
                 var sawTurnComplete = false
                 for try await event in stream {
@@ -589,7 +612,7 @@ final class ChatViewModel {
                 }
             }
 
-            if !fullText.isEmpty, let convID = capturedConvID {
+            if !fullText.isEmpty, let convID = capturedConvID, self?.responsePersistedOnCancel != true {
                 Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText)
             }
             if let sid = newSessionID, let convID = capturedConvID {

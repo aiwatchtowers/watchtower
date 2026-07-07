@@ -12,25 +12,27 @@ const inboxSelectCols = `id, channel_id, message_ts, thread_ts, sender_user_id,
 	trigger_type, snippet, context, raw_text, permalink, status, priority,
 	ai_reason, resolved_reason, snooze_until, COALESCE(waiting_user_ids,''), target_id,
 	COALESCE(read_at,''), created_at, updated_at,
-	COALESCE(item_class,'actionable'), COALESCE(pinned,0), COALESCE(archived_at,''), COALESCE(archive_reason,'')`
+	COALESCE(item_class,'actionable'), COALESCE(archived_at,''), COALESCE(archive_reason,''),
+	COALESCE(why_matters,''), COALESCE(thread_digest,''), COALESCE(draft_reply,''), COALESCE(card_status,'none'), COALESCE(card_generated_at,'')`
 
-// inboxItemColumns is an alias for inboxSelectCols used by feed/pinned queries.
+// inboxItemColumns is an alias for inboxSelectCols used by feed queries.
 const inboxItemColumns = inboxSelectCols
 
 // scanInboxItem scans an InboxItem from a row with the standard SELECT column list.
 func scanInboxItem(row interface{ Scan(...any) error }) (*InboxItem, error) {
 	var it InboxItem
-	var pinned int
+	var cardGeneratedAt string
 	if err := row.Scan(
 		&it.ID, &it.ChannelID, &it.MessageTS, &it.ThreadTS, &it.SenderUserID,
 		&it.TriggerType, &it.Snippet, &it.Context, &it.RawText, &it.Permalink, &it.Status, &it.Priority,
 		&it.AIReason, &it.ResolvedReason, &it.SnoozeUntil, &it.WaitingUserIDs, &it.TargetID,
 		&it.ReadAt, &it.CreatedAt, &it.UpdatedAt,
-		&it.ItemClass, &pinned, &it.ArchivedAt, &it.ArchiveReason,
+		&it.ItemClass, &it.ArchivedAt, &it.ArchiveReason,
+		&it.WhyMatters, &it.ThreadDigest, &it.DraftReply, &it.CardStatus, &cardGeneratedAt,
 	); err != nil {
 		return nil, err
 	}
-	it.Pinned = pinned != 0
+	it.CardGeneratedAt = cardGeneratedAt
 	return &it, nil
 }
 
@@ -321,7 +323,10 @@ func (db *DB) BulkUpdateInboxPriorities(updates map[int]struct {
 	return nil
 }
 
-// DeduplicateThreadInboxItems merges duplicate pending inbox items for the same thread.
+// DeduplicateThreadInboxItems merges duplicate pending inbox items for the same
+// thread and trigger type. A mention and a DM landing in the same thread are
+// distinct signals, not duplicates of each other, so trigger_type is part of
+// the dedup key alongside channel_id/thread_ts.
 // Keeps the most recently updated item and resolves the rest.
 func (db *DB) DeduplicateThreadInboxItems() (int, error) {
 	// Find threads (and non-threaded channel groups) with multiple pending items.
@@ -330,12 +335,13 @@ func (db *DB) DeduplicateThreadInboxItems() (int, error) {
 		AND id NOT IN (
 			SELECT MAX(id) FROM inbox_items
 			WHERE status = 'pending'
-			GROUP BY channel_id, thread_ts
+			GROUP BY channel_id, thread_ts, trigger_type
 		)
 		AND EXISTS (
 			SELECT 1 FROM inbox_items i2
 			WHERE i2.channel_id = inbox_items.channel_id
 			AND i2.thread_ts = inbox_items.thread_ts
+			AND i2.trigger_type = inbox_items.trigger_type
 			AND i2.status = 'pending'
 			AND i2.id != inbox_items.id
 		)`)
@@ -548,6 +554,97 @@ func (db *DB) FindReactionRequests(currentUserID string, sinceTS float64) ([]Inb
 	return candidates, rows.Err()
 }
 
+// ListStreamCandidatesSince returns non-trigger messages newer than sinceTS
+// for the full-stream triage scan, oldest first, capped at limit. Excludes
+// deleted/subtyped messages, empty/self authors, DM channels (DMs are
+// trigger-detected separately), messages already in inbox_items, and
+// messages whose thread already has a pending inbox item.
+func (db *DB) ListStreamCandidatesSince(currentUserID string, sinceTS float64, limit int) ([]InboxCandidate, error) {
+	rows, err := db.Query(`
+		SELECT m.channel_id, m.ts, COALESCE(m.thread_ts,''), m.user_id, m.text, COALESCE(m.permalink,''), m.ts_unix
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		WHERE m.ts_unix > ?
+		  AND m.is_deleted = 0
+		  AND COALESCE(m.subtype,'') = ''
+		  AND m.user_id != ''
+		  AND m.user_id != ?
+		  AND c.type != 'dm'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM inbox_items i
+		      WHERE i.channel_id = m.channel_id AND i.message_ts = m.ts)
+		  AND NOT EXISTS (
+		      SELECT 1 FROM inbox_items i2
+		      WHERE i2.channel_id = m.channel_id
+		        AND i2.thread_ts != ''
+		        AND (i2.thread_ts = COALESCE(m.thread_ts,'') OR i2.thread_ts = m.ts)
+		        AND i2.status = 'pending')
+		ORDER BY m.ts_unix ASC
+		LIMIT ?`, sinceTS, currentUserID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing stream candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var candidates []InboxCandidate
+	for rows.Next() {
+		var c InboxCandidate
+		if err := rows.Scan(&c.ChannelID, &c.MessageTS, &c.ThreadTS, &c.SenderUserID, &c.Text, &c.Permalink, &c.TSUnix); err != nil {
+			return nil, fmt.Errorf("scanning stream candidate: %w", err)
+		}
+		c.TriggerType = "stream"
+		candidates = append(candidates, c)
+	}
+	return candidates, rows.Err()
+}
+
+// SetInboxCard stores a generated secretary card on an item.
+func (db *DB) SetInboxCard(id int, whyMatters, threadDigest, draftReply string) error {
+	_, err := db.Exec(`UPDATE inbox_items
+		SET why_matters = ?, thread_digest = ?, draft_reply = ?,
+		    card_status = 'ready',
+		    card_generated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+		    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ?`, whyMatters, threadDigest, draftReply, id)
+	if err != nil {
+		return fmt.Errorf("setting inbox card for item %d: %w", id, err)
+	}
+	return nil
+}
+
+// MarkInboxCardFailed flags a card generation failure; the item stays
+// eligible for retry on the next cycle.
+func (db *DB) MarkInboxCardFailed(id int) error {
+	_, err := db.Exec(`UPDATE inbox_items
+		SET card_status = 'failed',
+		    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("marking inbox card failed for item %d: %w", id, err)
+	}
+	return nil
+}
+
+// ListItemsNeedingCards returns pending items without a ready card: all
+// actionable ones plus at most awarenessLimit newest ambient ones.
+func (db *DB) ListItemsNeedingCards(awarenessLimit int) ([]InboxItem, error) {
+	rows, err := db.Query(`
+		SELECT `+inboxSelectCols+` FROM inbox_items
+		WHERE status = 'pending' AND archived_at IS NULL
+		  AND card_status IN ('none','failed')
+		  AND (item_class = 'actionable'
+		       OR id IN (SELECT id FROM inbox_items
+		                 WHERE status='pending' AND archived_at IS NULL
+		                   AND card_status IN ('none','failed') AND item_class='ambient'
+		                 ORDER BY created_at DESC LIMIT ?))
+		ORDER BY item_class, created_at DESC`, awarenessLimit)
+	if err != nil {
+		return nil, fmt.Errorf("listing items needing cards: %w", err)
+	}
+	defer rows.Close()
+	return scanInboxItems(rows)
+}
+
 // CheckUserReplied checks whether the current user has acted on a message:
 // replied in the thread/channel OR reacted with any emoji.
 // For threaded messages, checks if user posted in the thread after message_ts.
@@ -655,30 +752,6 @@ func (db *DB) SetInboxItemClass(id int64, class string) error {
 	return err
 }
 
-// SetInboxPinned pins the given item IDs (pinned=1) and unpins all others in a single transaction.
-func (db *DB) SetInboxPinned(ids []int64) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	if _, err := tx.Exec(`UPDATE inbox_items SET pinned=0 WHERE pinned=1`); err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if _, err := tx.Exec(`UPDATE inbox_items SET pinned=1 WHERE id=?`, id); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// ClearPinnedAll unpins all inbox items.
-func (db *DB) ClearPinnedAll() error {
-	_, err := db.Exec(`UPDATE inbox_items SET pinned=0 WHERE pinned=1`)
-	return err
-}
-
 // ArchiveExpiredAmbient archives ambient items older than threshold, marking reason='seen_expired'.
 func (db *DB) ArchiveExpiredAmbient(threshold time.Duration) (int, error) {
 	cutoff := time.Now().Add(-threshold).UTC().Format(time.RFC3339)
@@ -719,25 +792,11 @@ func (db *DB) ListActionableOpen() ([]InboxItem, error) {
 	return scanInboxItems(rows)
 }
 
-// ListInboxFeed returns non-pinned, non-archived, live items newest first.
+// ListInboxFeed returns non-archived, live items newest first.
 func (db *DB) ListInboxFeed(limit, offset int) ([]InboxItem, error) {
 	rows, err := db.Query(`SELECT `+inboxItemColumns+` FROM inbox_items
-		WHERE pinned=0 AND archived_at IS NULL AND status NOT IN ('resolved','dismissed','snoozed')
+		WHERE archived_at IS NULL AND status NOT IN ('resolved','dismissed','snoozed')
 		ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanInboxItems(rows)
-}
-
-// ListInboxPinned returns pinned pending items ordered by priority then newest first.
-func (db *DB) ListInboxPinned() ([]InboxItem, error) {
-	rows, err := db.Query(`SELECT ` + inboxItemColumns + ` FROM inbox_items
-		WHERE pinned=1 AND status='pending' AND archived_at IS NULL
-		ORDER BY
-			CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
-			created_at DESC`)
 	if err != nil {
 		return nil, err
 	}

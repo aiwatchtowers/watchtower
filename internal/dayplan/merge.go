@@ -67,6 +67,12 @@ func aiToTimeblock(ai AIItem, date string, events []db.CalendarEvent,
 	}
 
 	for _, ev := range events {
+		if ev.IsAllDay {
+			// All-day events (holidays, OOO) span the whole day and are
+			// background context, not a busy slot — they must not block
+			// every AI-generated timeblock.
+			continue
+		}
 		evStart := parseEventTime(ev.StartTime)
 		evEnd := parseEventTime(ev.EndTime)
 		if evStart.IsZero() || evEnd.IsZero() {

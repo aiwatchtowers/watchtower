@@ -84,3 +84,25 @@ func TestUpsertWorkspaceSyncedAtUpdated(t *testing.T) {
 	assert.NotEqual(t, "2020-01-01T00:00:00Z", second.SyncedAt)
 	assert.NotEmpty(t, second.SyncedAt)
 }
+
+func TestSecretaryProfileRoundTrip(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	ws := Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"}
+	if err := db.UpsertWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetSecretaryProfile()
+	if err != nil || got != "" {
+		t.Fatalf("empty profile: got %q, err %v", got, err)
+	}
+	if err := db.SetSecretaryProfile("I own direction X; anything from the CEO is action"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = db.GetSecretaryProfile()
+	if got != "I own direction X; anything from the CEO is action" {
+		t.Fatalf("round trip failed: %q", got)
+	}
+}

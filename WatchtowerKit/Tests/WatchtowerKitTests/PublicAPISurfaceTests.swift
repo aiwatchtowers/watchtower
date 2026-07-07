@@ -127,8 +127,11 @@ final class PublicAPISurfaceTests: XCTestCase {
     func testInboxItemPublicFields() {
         let keyPath1: KeyPath<InboxItem, String> = \.snippet
         let keyPath2: KeyPath<InboxItem, String> = \.status
-        let keyPath3: KeyPath<InboxItem, Bool> = \.pinned
-        _ = keyPath1; _ = keyPath2; _ = keyPath3
+        // `pinned` was dropped by main's inbox-secretary migration (v68);
+        // the secretary card fields are the feed UI's new surface.
+        let keyPath3: KeyPath<InboxItem, String> = \.whyMatters
+        let keyPath4: KeyPath<InboxItem, Bool> = \.hasCard
+        _ = keyPath1; _ = keyPath2; _ = keyPath3; _ = keyPath4
     }
 
     // MARK: - Track model fields (track list)

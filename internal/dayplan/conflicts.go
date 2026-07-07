@@ -39,6 +39,12 @@ func (p *Pipeline) DetectConflicts(ctx context.Context, userID, date string) err
 			continue
 		}
 		for _, ev := range events {
+			if ev.IsAllDay {
+				// All-day events (holidays, OOO) span the whole day and are
+				// background context, not a busy slot — they must not flag
+				// every timeblock as conflicting.
+				continue
+			}
 			evStart := parseEventTime(ev.StartTime)
 			evEnd := parseEventTime(ev.EndTime)
 			if evStart.IsZero() || evEnd.IsZero() {

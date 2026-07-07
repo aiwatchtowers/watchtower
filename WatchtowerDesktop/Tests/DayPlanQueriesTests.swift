@@ -37,7 +37,7 @@ final class DayPlanQueriesTests: XCTestCase {
         // Seed task with id=42
         try db.write { db in
             try db.execute(sql: """
-                INSERT INTO tasks (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
                 VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
                 """)
         }
@@ -54,7 +54,7 @@ final class DayPlanQueriesTests: XCTestCase {
         }
 
         let taskStatus: String = try db.read { db in
-            try String.fetchOne(db, sql: "SELECT status FROM tasks WHERE id=42") ?? ""
+            try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id=42") ?? ""
         }
         XCTAssertEqual(taskStatus, "done")
     }
@@ -65,7 +65,7 @@ final class DayPlanQueriesTests: XCTestCase {
         let db = try TestDatabase.create()
         try db.write { db in
             try db.execute(sql: """
-                INSERT INTO tasks (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
                 VALUES (10, 'Task', '', 'done', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
                 """)
         }
@@ -83,7 +83,7 @@ final class DayPlanQueriesTests: XCTestCase {
         }
 
         let taskStatus: String = try db.read { db in
-            try String.fetchOne(db, sql: "SELECT status FROM tasks WHERE id=10") ?? ""
+            try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id=10") ?? ""
         }
         XCTAssertEqual(taskStatus, "todo")
 

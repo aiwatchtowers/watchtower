@@ -18,24 +18,6 @@ func TestInbox_SetItemClass(t *testing.T) {
 	}
 }
 
-func TestInbox_SetPinned(t *testing.T) {
-	database := openTestDB(t)
-	id := seedInboxItem(t, database, "U1", "C1", "mention")
-	_ = database.SetInboxPinned([]int64{id})
-	var p int
-	_ = database.QueryRow(`SELECT pinned FROM inbox_items WHERE id=?`, id).Scan(&p)
-	if p != 1 {
-		t.Errorf("not pinned: %d", p)
-	}
-
-	// ClearPinned resets pinned
-	_ = database.ClearPinnedAll()
-	_ = database.QueryRow(`SELECT pinned FROM inbox_items WHERE id=?`, id).Scan(&p)
-	if p != 0 {
-		t.Error("still pinned")
-	}
-}
-
 func TestInbox_ArchiveExpired(t *testing.T) {
 	database := openTestDB(t)
 
@@ -89,16 +71,5 @@ func TestInbox_FeedQuery_ExcludesArchivedAndTerminated(t *testing.T) {
 	}
 	if len(got) != 1 || int64(got[0].ID) != alive {
 		t.Errorf("expected only alive item, got %+v", got)
-	}
-}
-
-func TestInbox_PinnedList(t *testing.T) {
-	database := openTestDB(t)
-	a := seedInboxItem(t, database, "U1", "C1", "mention")
-	_ = seedInboxItem(t, database, "U2", "C2", "mention")
-	_ = database.SetInboxPinned([]int64{a})
-	got, _ := database.ListInboxPinned()
-	if len(got) != 1 || int64(got[0].ID) != a {
-		t.Errorf("bad pinned list: %+v", got)
 	}
 }

@@ -112,8 +112,11 @@ final class DatabaseManager: Sendable {
             // Briefings
             try db.execute(sql: "DELETE FROM briefings")
 
-            // Tasks & Inbox
-            try db.execute(sql: "DELETE FROM tasks")
+            // Targets: only AI-sourced ones — user-created (manual/jira/slack/promoted_subitem) are preserved
+            try db.execute(sql: """
+                DELETE FROM targets
+                WHERE source_type IN ('extract','track','digest','briefing','chat','inbox')
+                """)
             try db.execute(sql: "DELETE FROM inbox_items")
             try db.execute(sql: "UPDATE workspace SET inbox_last_processed_ts = 0")
 
