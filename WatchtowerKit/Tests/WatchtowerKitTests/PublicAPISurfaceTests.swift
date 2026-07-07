@@ -313,6 +313,13 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertEqual(messages.last?.isComplete, true)
         XCTAssertEqual(messages.last?.isError, false)
 
+        // Plan 5 Task 7 surface: the per-session direct-mode opt-in flag the
+        // thread VM routes on, and its only write path.
+        XCTAssertFalse(session.directMode)
+        try store.setDirectMode(sessionID: sessionID, enabled: true)
+        XCTAssertEqual(try store.chatSessions().first?.directMode, true)
+        try store.setDirectMode(sessionID: sessionID, enabled: false)
+
         // The from-db overloads the app's ValueObservation tracking closures
         // must use (same reentrancy rule as fetchAll(_:kind:from:)).
         let counts = try await store.reader.read { db in
@@ -321,5 +328,82 @@ final class PublicAPISurfaceTests: XCTestCase {
         }
         XCTAssertEqual(counts.sessions, 1)
         XCTAssertEqual(counts.messages, 2)
+
+        // Plan 5 surface: the route parameter with both SendRoute cases, and
+        // the empty-text guard's public error (the VM catches it by case).
+        let relayRoute: SendRoute = .relay
+        _ = try await assembler.send(text: "explicit relay route", sessionID: sessionID, route: relayRoute)
+        _ = try await assembler.send(text: "offline turn", sessionID: sessionID, route: .localOnly)
+        do {
+            _ = try await assembler.send(text: "   ", sessionID: sessionID, route: .localOnly)
+            XCTFail("expected ChatSendError.emptyText")
+        } catch ChatSendError.emptyText {
+            XCTAssertEqual(ChatSendError.emptyText, ChatSendError.emptyText) // Equatable is public API
+        }
+    }
+
+    // MARK: - MobileAgentBackend + both backends (Plan 5 BYOK agent)
+
+    /// The app injects its own scripted client in tests — the seam must be
+    /// conformable from outside the Kit.
+    private struct SurfaceClient: AnthropicStreaming {
+        func streamMessage(request: AnthropicRequest) -> AsyncThrowingStream<AnthropicEvent, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+    }
+
+    func testMobileAgentBackendSurface() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport: any CloudSyncTransport = InMemoryCloudTransport()
+        let assembler = ChatAssembler(transport: transport, store: store)
+
+        // RelayAgentBackend through the protocol existential — the exact shape
+        // ChatThreadViewModel holds (Task 7).
+        let relay: any MobileAgentBackend = RelayAgentBackend(assembler: assembler)
+        let (sessionID, messageID) = try await relay.sendTurn(text: "surface relay turn", sessionID: nil)
+        XCTAssertFalse(sessionID.isEmpty)
+        XCTAssertFalse(messageID.isEmpty)
+
+        // DirectAPIAgent constructible from public API alone, including the
+        // injectable client factory and clock; missingKey is public and
+        // catchable by case.
+        let outbox = ActionOutbox(transport: transport, store: store)
+        let toolbox = ReplicaToolbox(store: store, outbox: outbox)
+        let direct: any MobileAgentBackend = DirectAPIAgent(
+            assembler: assembler,
+            store: store,
+            toolbox: toolbox,
+            apiKey: { nil },
+            model: { .sonnet5 },
+            clientFactory: { _ in SurfaceClient() }
+        )
+        do {
+            _ = try await direct.sendTurn(text: "no key configured", sessionID: nil)
+            XCTFail("expected DirectAPIAgentError.missingKey")
+        } catch DirectAPIAgentError.missingKey {}
+
+        // The static system prompt is public (Settings may preview it) and
+        // errors render readable copy via LocalizedError.
+        XCTAssertFalse(MobileSystemPrompt.build().isEmpty)
+        XCTAssertNotNil(DirectAPIAgentError.missingKey.errorDescription)
+        XCTAssertNotNil(AnthropicClientError.invalidKey.errorDescription)
+        XCTAssertNotNil(ChatSendError.emptyText.errorDescription)
+    }
+
+    // MARK: - ReplicaToolbox (Plan 5 BYOK agent tools)
+
+    func testReplicaToolboxSurface() async throws {
+        // Constructible from public API alone (default `now` clock), tool
+        // definitions readable as APITool, execute callable without throwing.
+        let store = try ReplicaStore.inMemory()
+        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store)
+        let toolbox = ReplicaToolbox(store: store, outbox: outbox)
+
+        XCTAssertEqual(toolbox.tools.count, 12)
+        let tool: APITool? = toolbox.tools.first
+        XCTAssertEqual(tool?.name, "list_targets")
+
+        let result = await toolbox.execute(name: "list_targets", inputJSON: Data())
+        XCTAssertEqual(result, "[]")
     }
 }

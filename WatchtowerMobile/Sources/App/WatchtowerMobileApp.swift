@@ -51,6 +51,21 @@ struct BootFailureView: View {
     }
 }
 
+/// Programmatic jump to the Settings tab — the chat banner's "Set up offline
+/// agent…" destination (Plan 5 Task 7). An environment closure rather than
+/// AppEnvironment state because tab selection is view state owned by
+/// RootTabView; the no-op default keeps previews and tests rendering.
+private struct OpenSettingsTabKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var openSettingsTab: () -> Void {
+        get { self[OpenSettingsTabKey.self] }
+        set { self[OpenSettingsTabKey.self] = newValue }
+    }
+}
+
 /// The six tabs over the replica.
 ///
 /// Tab placement (Task 7 decision): Chat sits SECOND, right after Today —
@@ -60,20 +75,47 @@ struct BootFailureView: View {
 /// item — Settings stays reachable there (and iPad shows all six). Tracks
 /// is the least-touched read-only tab, so it pays the More cost, not Chat.
 struct RootTabView: View {
+    enum Tab: String {
+        case today, chat, inbox, tasks, tracks, settings
+    }
+
+    @State private var selection: Tab = .today
+
+    init() {
+        #if DEBUG
+        // Boot-check hook (DEBUG only): `simctl launch … -boot-tab settings`
+        // opens on that tab — the launch argument lands in the UserDefaults
+        // argument domain — so screenshot verification can reach non-first
+        // tabs; simctl cannot script a tab tap.
+        if let raw = UserDefaults.standard.string(forKey: "boot-tab"), let tab = Tab(rawValue: raw) {
+            _selection = State(initialValue: tab)
+        }
+        #endif
+    }
+
     var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             TodayView()
                 .tabItem { Label("Today", systemImage: "sun.max") }
+                .tag(Tab.today)
             ChatView()
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                .tag(Tab.chat)
             InboxView()
                 .tabItem { Label("Inbox", systemImage: "tray") }
+                .tag(Tab.inbox)
             TasksView()
                 .tabItem { Label("Tasks", systemImage: "checklist") }
+                .tag(Tab.tasks)
             TracksView()
                 .tabItem { Label("Tracks", systemImage: "list.bullet.rectangle") }
+                .tag(Tab.tracks)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(Tab.settings)
         }
+        // Settings folds under "More" on iPhone (six tabs) — this jump keeps
+        // "Set up offline agent…" a one-tap path regardless.
+        .environment(\.openSettingsTab) { selection = .settings }
     }
 }

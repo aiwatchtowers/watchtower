@@ -228,6 +228,20 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 **Logs:** Live daemon logs with filtering.
 **Data:** Storage info, regenerate AI data, delete everything.
 
+## Mobile App
+
+The Watchtower iOS app mirrors your data from this Mac (see the Mobile setting above) and normally relays chat questions back here for the desktop AI to answer.
+
+### Offline agent (BYOK)
+
+When your Mac is unreachable, the phone can answer chat turns itself using your own Anthropic API key:
+
+- **Setting the key:** iOS Settings → "Offline agent" — paste your `sk-ant-…` API key (stored in the device Keychain, never synced) and pick a model (Sonnet recommended, Opus most capable, Haiku fastest).
+- **When the offer appears:** if a chat turn gets no answer for ~45 seconds and the Mac's heartbeat is stale, the chat shows a "Mac unreachable" banner. With a key saved, the banner offers **"Answer directly"**; without one, it offers "Set up offline agent…" which opens Settings. New chats started while the Mac is unreachable ask once before the first send.
+- **Per-conversation opt-in:** answering directly is confirmed per conversation and never switched silently. While active, the thread shows a **"Direct API"** chip in the toolbar with a "Back to Mac relay" action.
+- **What it can see:** the phone's mirrored copy only — briefings, inbox items, tasks/targets, tracks, digest summaries, calendar events, and people cards. It has **no raw Slack messages**; quote-level or deep-history questions still need the desktop.
+- **Write actions:** tasks created or items snoozed by the offline agent are queued and applied when your Mac next processes the mobile queue — they show as pending on the phone until then.
+
 ## Background Processes
 
 Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Slack data. After each sync, AI pipelines run automatically:
