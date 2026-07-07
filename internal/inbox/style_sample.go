@@ -51,7 +51,7 @@ func (p *Pipeline) GenerateStyleProfile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("style sample: workspace: %w", err)
 	}
-	if ws.CurrentUserID == "" {
+	if ws == nil || ws.CurrentUserID == "" {
 		return fmt.Errorf("style sample: no current user id — run a sync first")
 	}
 

@@ -74,6 +74,18 @@ func TestStyleSample_AIErrorLeavesProfileUntouched(t *testing.T) {
 	assert.Equal(t, "existing profile", got)
 }
 
+func TestStyleSample_NoWorkspaceErrorsCleanly(t *testing.T) {
+	d := newTestDB(t) // deliberately no seedWorkspaceAndUser: fresh DB, empty workspace table
+
+	gen := &countingGen{}
+	p := New(d, testConfig(), gen, log.Default())
+
+	err := p.GenerateStyleProfile(context.Background())
+	require.Error(t, err, "workspace-less DB must yield a clean error, not a panic")
+	assert.Contains(t, err.Error(), "no current user id")
+	assert.Equal(t, 0, gen.calls)
+}
+
 func TestStyleSample_CapsPerChannelAndTotal(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "U1")
@@ -86,4 +98,25 @@ func TestStyleSample_CapsPerChannelAndTotal(t *testing.T) {
 	require.NoError(t, err)
 	capped := capStyleSample(msgs, 15, 150)
 	assert.Len(t, capped, 15, "per-channel cap of 15 must hold")
+}
+
+func TestStyleSample_TotalCapAcrossChannels(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+	// 12 channels x 15 qualifying messages = 180 after the per-channel cap,
+	// so only the 150 total cap can trim the sample.
+	for c := 0; c < 12; c++ {
+		chID := fmt.Sprintf("C%02d", c)
+		insertChannel(t, d, chID, "public")
+		for i := 0; i < 15; i++ {
+			insertMessage(t, d, chID, fmt.Sprintf("%d.%d", 1000+c*100+i, c), "U1",
+				fmt.Sprintf("channel %d message %d long enough", c, i))
+		}
+	}
+
+	msgs, err := d.ListStyleSampleMessages("U1", 1000)
+	require.NoError(t, err)
+	require.Len(t, msgs, 180)
+	capped := capStyleSample(msgs, 15, 150)
+	assert.Len(t, capped, 150, "total cap of 150 must hold across channels")
 }
