@@ -23,7 +23,7 @@ func TestInboxCommandRegistered(t *testing.T) {
 }
 
 func TestInboxSubcommandsRegistered(t *testing.T) {
-	subs := map[string]bool{"show": false, "resolve": false, "dismiss": false, "snooze": false, "generate": false, "task": false, "feedback": false}
+	subs := map[string]bool{"show": false, "resolve": false, "dismiss": false, "snooze": false, "generate": false, "task": false, "feedback": false, "style-sample": false}
 	for _, cmd := range inboxCmd.Commands() {
 		if _, ok := subs[cmd.Name()]; ok {
 			subs[cmd.Name()] = true

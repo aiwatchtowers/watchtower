@@ -86,9 +86,16 @@ var inboxFeedbackCmd = &cobra.Command{
 	RunE:  runInboxFeedback,
 }
 
+var inboxStyleSampleCmd = &cobra.Command{
+	Use:   "style-sample",
+	Short: "Distill a communication style profile from your own Slack messages",
+	Args:  cobra.NoArgs,
+	RunE:  runInboxStyleSample,
+}
+
 func init() {
 	rootCmd.AddCommand(inboxCmd)
-	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxFeedbackCmd)
+	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxFeedbackCmd, inboxStyleSampleCmd)
 
 	inboxCmd.Flags().StringVar(&inboxFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	inboxCmd.Flags().StringVar(&inboxFlagType, "type", "", "filter by trigger type (mention, dm)")
@@ -577,6 +584,37 @@ func runInboxFeedback(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Recorded feedback on situation %d.\n", situationID)
+	return nil
+}
+
+func runInboxStyleSample(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	applyProviderOverride(cfg)
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
+	gen, closeGen := cliPooledGenerator(cfg, logger)
+	defer closeGen()
+
+	pipe := inbox.New(database, cfg, gen, logger)
+	if err := pipe.GenerateStyleProfile(cmd.Context()); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Style profile regenerated.")
 	return nil
 }
 
