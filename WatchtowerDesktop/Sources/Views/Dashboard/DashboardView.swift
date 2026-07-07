@@ -130,7 +130,7 @@ struct DashboardView: View {
             onDone: { vm.done(situation) },
             onDismiss: { vm.dismiss(situation) },
             onSnooze: { option in vm.snooze(situation, until: SnoozeDates.until(option)) },
-            onFeedback: { rating in vm.submitFeedback(situation, rating: rating) },
+            onFeedback: { rating in Task { await vm.submitFeedback(situation, rating: rating) } },
             isCreatingTarget: isBuildingPrefill,
             onCreateTarget: { openCreateTarget(for: situation) },
             onCreateTrack: { openCreateTrack(for: situation) }

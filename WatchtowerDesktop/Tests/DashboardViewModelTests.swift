@@ -116,8 +116,8 @@ final class DashboardViewModelTests: XCTestCase {
 
     // MARK: - feedback
 
-    func testSubmitFeedbackNegativeOneCreatesLearnedRuleAndReloads() throws {
-        try dbManager.dbPool.write { db in
+    func testSubmitFeedbackNegativeOneCreatesLearnedRuleAndReloads() async throws {
+        try await dbManager.dbPool.write { db in
             let situationID = try TestDatabase.insertSituation(db, status: "open")
             let item = try TestDatabase.insertInboxItem(db, channelID: "C-alpha")
             try TestDatabase.linkSituationSignal(db, situationID: situationID, inboxItemID: item)
@@ -126,13 +126,53 @@ final class DashboardViewModelTests: XCTestCase {
         vm.load()
         let situation = try XCTUnwrap(vm.situations.first)
 
-        vm.submitFeedback(situation, rating: -1)
+        await vm.submitFeedback(situation, rating: -1)
 
-        let ruleCount = try dbManager.dbPool.read { db in
+        let ruleCount = try await dbManager.dbPool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = 'channel:C-alpha'") ?? 0
         }
         XCTAssertEqual(ruleCount, 1)
         XCTAssertNil(vm.errorMessage)
+    }
+
+    // MARK: - submitFeedback comment routing
+
+    func testSubmitFeedbackWithoutCommentDoesNotInvokeCLI() async throws {
+        let runner = FakeCLIRunner(stdout: Data())
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db) }
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.load()
+
+        await vm.submitFeedback(vm.situations[0], rating: -1, comment: "   ")
+
+        XCTAssertTrue(runner.invocations.isEmpty, "rating-only feedback must stay on the direct-write fast path")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testSubmitFeedbackWithCommentInvokesCLIWithExpectedArgs() async throws {
+        let runner = FakeCLIRunner(stdout: Data())
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db) }
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.load()
+        let id = vm.situations[0].id
+
+        await vm.submitFeedback(vm.situations[0], rating: 1, comment: "always show me Jane")
+
+        XCTAssertEqual(runner.invocations, [[
+            "inbox", "feedback", String(id), "--rating", "up", "--comment", "always show me Jane",
+        ]])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testSubmitFeedbackWithCommentSurfacesCLIFailure() async throws {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db) }
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.load()
+
+        await vm.submitFeedback(vm.situations[0], rating: -1, comment: "noise")
+
+        XCTAssertNotNil(vm.errorMessage)
     }
 
     // MARK: - markConverted (DASH-03: conversion keeps the link)

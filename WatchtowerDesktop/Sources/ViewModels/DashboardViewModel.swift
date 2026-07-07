@@ -240,15 +240,35 @@ final class DashboardViewModel {
         }
     }
 
-    /// Records thumbs-up/down feedback for a situation (rating -1 derives a learned
-    /// mute rule for its member signals' channels; +1 is a no-op — see
-    /// `SituationQueries.recordFeedback`), then reloads.
-    func submitFeedback(_ situation: Situation, rating: Int) {
-        do {
-            try dbManager.dbPool.write { db in
-                try SituationQueries.recordFeedback(db, situationID: situation.id, rating: rating)
+    /// Records thumbs-up/down feedback for a situation. Comment-less feedback
+    /// stays on the direct-write fast path (rating -1 derives channel mute
+    /// rules; +1 is a no-op — see `SituationQueries.recordFeedback`). A
+    /// non-empty comment routes through `watchtower inbox feedback`, whose
+    /// learning interpreter turns it into targeted user rules (same pattern
+    /// as `CatchUpViewModel.submitFeedback`).
+    func submitFeedback(_ situation: Situation, rating: Int, comment: String = "") async {
+        let trimmed = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            do {
+                try await dbManager.dbPool.write { db in
+                    try SituationQueries.recordFeedback(db, situationID: situation.id, rating: rating)
+                }
+                load()
+            } catch {
+                errorMessage = "Failed to submit feedback: \(error.localizedDescription)"
             }
-            load()
+            return
+        }
+        guard let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else {
+            errorMessage = "watchtower CLI not found in PATH"
+            return
+        }
+        do {
+            _ = try await runner.run(args: [
+                "inbox", "feedback", String(situation.id),
+                "--rating", rating >= 0 ? "up" : "down",
+                "--comment", trimmed,
+            ])
         } catch {
             errorMessage = "Failed to submit feedback: \(error.localizedDescription)"
         }
