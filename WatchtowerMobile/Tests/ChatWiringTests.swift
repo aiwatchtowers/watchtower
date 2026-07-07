@@ -42,11 +42,53 @@ final class ChatWiringTests: XCTestCase {
         return dir.appendingPathComponent("replica.sqlite").path
     }
 
+    /// Recording turn-sender: pins WHICH backend the VM routed a send
+    /// through. Built over an assembler it delegates to the real `.localOnly`
+    /// send (rows land in the store, sessions get minted); standalone it
+    /// returns canned ids without touching anything.
+    private final class RecordingBackend: MobileAgentBackend, @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [(text: String, sessionID: String?)] = []
+        private let assembler: ChatAssembler?
+
+        init(assembler: ChatAssembler? = nil) {
+            self.assembler = assembler
+        }
+
+        var calls: [(text: String, sessionID: String?)] {
+            lock.withLock { recorded }
+        }
+
+        func sendTurn(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String) {
+            lock.withLock { recorded.append((text, sessionID)) }
+            if let assembler {
+                return try await assembler.send(text: text, sessionID: sessionID, route: .localOnly)
+            }
+            return (sessionID ?? "minted-session", "minted-message")
+        }
+    }
+
     /// A started thread VM with a fixed reachability answer (banner math has
-    /// its own dedicated test below).
-    private func makeThreadVM(_ fx: Fixture, sessionID: String? = nil, reachable: Bool = true) -> ChatThreadViewModel {
+    /// its own dedicated test below). Default backends mirror production
+    /// shape: a REAL relay over the fixture's assembler, an inert direct
+    /// backend (keyless VMs must never touch it).
+    private func makeThreadVM(
+        _ fx: Fixture,
+        sessionID: String? = nil,
+        reachable: Bool = true,
+        hasKey: Bool = false,
+        direct: (any MobileAgentBackend)? = nil,
+        relay: (any MobileAgentBackend)? = nil
+    ) -> ChatThreadViewModel {
         let vm = ChatThreadViewModel()
-        vm.start(store: fx.store, assembler: fx.assembler, isReachable: { _ in reachable }, sessionID: sessionID)
+        vm.start(
+            store: fx.store,
+            direct: direct ?? RecordingBackend(),
+            relay: relay ?? RelayAgentBackend(assembler: fx.assembler),
+            hasKey: { hasKey },
+            isReachable: { _ in reachable },
+            sessionID: sessionID
+        )
         return vm
     }
 
@@ -308,6 +350,188 @@ final class ChatWiringTests: XCTestCase {
         XCTAssertFalse(
             vm.showsWaitingBanner(for: try XCTUnwrap(vm.messages.last), now: sendInstant.addingTimeInterval(600))
         )
+    }
+
+    // MARK: - Direct-API opt-in (Plan 5 Task 7)
+
+    /// A direct-flagged session routes send() through the DIRECT backend and
+    /// leaves the relay untouched — and the persisted flag survives VM
+    /// re-creation (navigate away and back) because start() restores it.
+    func testDirectModeSessionRoutesSendThroughDirectBackendOnly() async throws {
+        let fx = try makeFixture()
+        let (sessionID, _) = try await fx.assembler.send(text: "opening turn", sessionID: nil)
+        try fx.store.setDirectMode(sessionID: sessionID, enabled: true)
+
+        let direct = RecordingBackend()
+        let relay = RecordingBackend()
+        let vm = makeThreadVM(fx, sessionID: sessionID, hasKey: true, direct: direct, relay: relay)
+        XCTAssertTrue(vm.directMode, "start() must restore the persisted opt-in")
+
+        vm.draft = "route me directly"
+        await vm.send()
+
+        XCTAssertEqual(direct.calls.count, 1)
+        XCTAssertEqual(direct.calls.first?.text, "route me directly")
+        XCTAssertEqual(direct.calls.first?.sessionID, sessionID)
+        XCTAssertTrue(relay.calls.isEmpty, "a direct session must never touch the relay backend")
+        XCTAssertEqual(vm.draft, "", "a successful direct send clears the draft")
+    }
+
+    /// The inverse: no opt-in → relay backend only, direct untouched.
+    func testRelaySessionRoutesSendThroughRelayBackendOnly() async throws {
+        let fx = try makeFixture()
+        let (sessionID, _) = try await fx.assembler.send(text: "opening turn", sessionID: nil)
+
+        let direct = RecordingBackend()
+        let relay = RecordingBackend()
+        let vm = makeThreadVM(fx, sessionID: sessionID, hasKey: true, direct: direct, relay: relay)
+        XCTAssertFalse(vm.directMode)
+
+        vm.draft = "stay on the relay"
+        await vm.send()
+
+        XCTAssertEqual(relay.calls.count, 1)
+        XCTAssertEqual(relay.calls.first?.text, "stay on the relay")
+        XCTAssertTrue(direct.calls.isEmpty, "no opt-in → the direct backend must stay untouched")
+    }
+
+    /// The banner affordance matrix — a pure state function (Decision 7).
+    func testDirectOptInStateMatrix() {
+        XCTAssertEqual(DirectOptInState(hasKey: false, directMode: false), .needsKey)
+        XCTAssertEqual(DirectOptInState(hasKey: true, directMode: false), .offerDirect)
+        XCTAssertEqual(DirectOptInState(hasKey: true, directMode: true), .directActive)
+        // Key removed AFTER opt-in: still directActive — the toolbar chip's
+        // "Back to Mac relay" must stay reachable, and a direct send without
+        // a key fails into the send-error banner with the draft kept.
+        XCTAssertEqual(DirectOptInState(hasKey: false, directMode: true), .directActive)
+    }
+
+    /// Dialog acceptance from the banner flips the flag AT THE STORE and does
+    /// NOT auto-resend: the draft stays in the compose field (the send-throw
+    /// contract keeps it there) and the user re-taps send themselves.
+    func testBannerConfirmFlipsFlagWithoutAutoResend() async throws {
+        let fx = try makeFixture()
+        let direct = RecordingBackend()
+        let relay = RecordingBackend(assembler: fx.assembler)
+        // No key at first send → no pre-send offer; the session mints on the relay.
+        let vm = makeThreadVM(fx, reachable: false, hasKey: false, direct: direct, relay: relay)
+        vm.draft = "sent over the relay"
+        await vm.send()
+        let sessionID = try XCTUnwrap(vm.sessionID)
+        XCTAssertEqual(try fx.store.chatSessions().first?.directMode, false)
+
+        // Banner "Answer directly" → dialog → confirm.
+        vm.draft = "typed before confirming"
+        vm.offerDirect(.banner)
+        XCTAssertEqual(vm.directOfferContext, .banner)
+        await vm.confirmDirectOffer(.banner)
+
+        XCTAssertNil(vm.directOfferContext)
+        XCTAssertTrue(vm.directMode)
+        XCTAssertEqual(
+            try fx.store.chatSessions().first { $0.id == sessionID }?.directMode, true,
+            "acceptance must persist the flag on THAT session"
+        )
+        XCTAssertEqual(vm.draft, "typed before confirming", "confirm must NOT auto-resend — the user re-taps")
+        XCTAssertEqual(relay.calls.count, 1)
+        XCTAssertTrue(direct.calls.isEmpty)
+
+        // The user re-taps send → the DIRECT backend now carries the turn.
+        await vm.send()
+        XCTAssertEqual(direct.calls.count, 1)
+        XCTAssertEqual(direct.calls.first?.text, "typed before confirming")
+        XCTAssertEqual(relay.calls.count, 1)
+
+        // Toolbar "Back to Mac relay" writes through to the store too.
+        vm.setDirectMode(false)
+        XCTAssertFalse(vm.directMode)
+        XCTAssertEqual(try fx.store.chatSessions().first { $0.id == sessionID }?.directMode, false)
+    }
+
+    /// New chat + key + unreachable Mac: the send tap is held behind the same
+    /// dialog; confirming routes the FIRST send through the direct backend
+    /// and flags the session it minted.
+    func testNewSessionOfferConfirmRoutesFirstSendDirectAndFlagsMintedSession() async throws {
+        let fx = try makeFixture()
+        let direct = RecordingBackend(assembler: fx.assembler)
+        let relay = RecordingBackend()
+        let vm = makeThreadVM(fx, reachable: false, hasKey: true, direct: direct, relay: relay)
+
+        vm.draft = "offline question"
+        await vm.send()
+
+        // Held back: nothing may ship before the user chooses.
+        XCTAssertEqual(vm.directOfferContext, .firstSend)
+        XCTAssertTrue(direct.calls.isEmpty)
+        XCTAssertTrue(relay.calls.isEmpty)
+        XCTAssertEqual(vm.draft, "offline question", "the held-back draft stays in the compose field")
+
+        await vm.confirmDirectOffer(.firstSend)
+
+        let call = try XCTUnwrap(direct.calls.first)
+        XCTAssertEqual(call.text, "offline question")
+        XCTAssertNil(call.sessionID, "the dialog decides the FIRST send — before any session exists")
+        XCTAssertTrue(relay.calls.isEmpty)
+        let sessionID = try XCTUnwrap(vm.sessionID)
+        XCTAssertEqual(
+            try fx.store.chatSessions().first { $0.id == sessionID }?.directMode, true,
+            "the minted session must be flagged the moment its id exists"
+        )
+        XCTAssertTrue(vm.directMode)
+        XCTAssertEqual(vm.draft, "")
+    }
+
+    /// Declining the new-chat offer sends via the relay as today, and the
+    /// resolved session stops re-asking.
+    func testNewSessionOfferDeclineRoutesRelayAndDoesNotReask() async throws {
+        let fx = try makeFixture()
+        let direct = RecordingBackend()
+        let relay = RecordingBackend(assembler: fx.assembler)
+        let vm = makeThreadVM(fx, reachable: false, hasKey: true, direct: direct, relay: relay)
+
+        vm.draft = "keep it on the Mac"
+        await vm.send()
+        XCTAssertEqual(vm.directOfferContext, .firstSend)
+
+        await vm.declineDirectOffer(.firstSend)
+
+        XCTAssertEqual(relay.calls.count, 1)
+        XCTAssertEqual(relay.calls.first?.text, "keep it on the Mac")
+        XCTAssertTrue(direct.calls.isEmpty)
+        XCTAssertFalse(vm.directMode)
+        let sessionID = try XCTUnwrap(vm.sessionID)
+        XCTAssertEqual(try fx.store.chatSessions().first { $0.id == sessionID }?.directMode, false)
+
+        // Follow-up sends go relay WITHOUT re-asking (the session exists now).
+        vm.draft = "follow-up"
+        await vm.send()
+        XCTAssertNil(vm.directOfferContext)
+        XCTAssertEqual(relay.calls.count, 2)
+        XCTAssertTrue(direct.calls.isEmpty)
+    }
+
+    /// The pre-first-send ask fires ONLY for key + unreachable on a new chat:
+    /// a reachable Mac and a keyless phone both send via the relay
+    /// immediately, exactly as before this task.
+    func testFirstSendOfferRequiresKeyAndUnreachable() async throws {
+        // Reachable + key → no dialog, straight to the relay.
+        let reachableFx = try makeFixture()
+        let reachableRelay = RecordingBackend(assembler: reachableFx.assembler)
+        let reachableVM = makeThreadVM(reachableFx, reachable: true, hasKey: true, relay: reachableRelay)
+        reachableVM.draft = "mac is right here"
+        await reachableVM.send()
+        XCTAssertNil(reachableVM.directOfferContext)
+        XCTAssertEqual(reachableRelay.calls.count, 1)
+
+        // Unreachable + NO key → no dialog either (the banner routes to
+        // Settings instead); relay as today.
+        let keylessFx = try makeFixture()
+        let keylessRelay = RecordingBackend(assembler: keylessFx.assembler)
+        let keylessVM = makeThreadVM(keylessFx, reachable: false, hasKey: false, relay: keylessRelay)
+        keylessVM.draft = "no key on this phone"
+        await keylessVM.send()
+        XCTAssertNil(keylessVM.directOfferContext)
+        XCTAssertEqual(keylessRelay.calls.count, 1)
     }
 
     // MARK: - AppEnvironment wiring (feed → assembler)

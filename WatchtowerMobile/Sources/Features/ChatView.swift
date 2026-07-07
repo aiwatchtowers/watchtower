@@ -51,8 +51,16 @@ final class ChatSessionsViewModel {
 /// text grows in place as chunks land), the composer draft + send path, and
 /// the per-message waiting math behind the inline unreachable banner.
 ///
-/// Writer discipline: the ONLY write path here is `assembler.send` — the
-/// assembler owns the chat tables; this VM never touches them directly.
+/// Send routing (Plan 5 Decision 7): every send goes through ONE of two
+/// `MobileAgentBackend`s — the relay (the Mac answers) by default, the
+/// on-device direct agent when THIS session's `direct_mode` flag is set. The
+/// flag flips only on an explicit user choice via the confirm dialog /
+/// toolbar toggle — never a silent switch.
+///
+/// Writer discipline: turns are written by the backends (both end in
+/// `assembler.send` — the assembler owns the chat tables); the VM's only
+/// direct store write is the `direct_mode` routing flag, a local UI
+/// preference column no pipeline reads.
 @MainActor
 @Observable
 final class ChatThreadViewModel {
@@ -60,15 +68,38 @@ final class ChatThreadViewModel {
     private(set) var sessionID: String?
     private(set) var messages: [ChatMessage] = []
     var draft = ""
-    /// Set when `assembler.send` itself throws (transport failure). The
-    /// draft is NOT cleared on that path — send() persisted nothing, so the
-    /// typed text must survive for a retry (ChatAssembler.send's contract).
+    /// Set when the backend's send itself throws (transport failure, missing
+    /// API key). The draft is NOT cleared on that path — send() persisted
+    /// nothing, so the typed text must survive for a retry
+    /// (ChatAssembler.send's contract, shared by both backends).
     private(set) var sendErrorMessage: String?
+    /// This session's persisted opt-in (`chat_sessions.direct_mode`),
+    /// mirrored locally: read once at `start`, written through
+    /// `setDirectMode`. This VM is the flag's only writer, so a live
+    /// observation would be redundant.
+    private(set) var directMode = false
+    /// Non-nil presents the opt-in confirmation dialog. The two contexts
+    /// differ on confirm/decline behavior — see `confirmDirectOffer`.
+    private(set) var directOfferContext: DirectOfferContext?
+
+    /// Which affordance asked for the opt-in dialog.
+    enum DirectOfferContext: Equatable {
+        /// The unreachable banner's "Answer directly" on an existing thread.
+        case banner
+        /// The held-back FIRST send of a new chat (key present + Mac
+        /// unreachable): the dialog decides which backend that send uses.
+        case firstSend
+    }
 
     private var cancellable: AnyDatabaseCancellable?
     private var store: ReplicaStore?
-    private var assembler: ChatAssembler?
+    private var directBackend: (any MobileAgentBackend)?
+    private var relayBackend: (any MobileAgentBackend)?
+    private var hasKey: (() -> Bool)?
     private var isReachable: ((Date) -> Bool)?
+    /// Set when the new-chat offer was explicitly declined, so retries after
+    /// a failed relay send don't nag — "ask once BEFORE the first send".
+    private var firstSendOfferDeclined = false
     // nonisolated: logged from the @Sendable observation onError closure.
     private nonisolated static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatThreadViewModel")
 
@@ -83,34 +114,123 @@ final class ChatThreadViewModel {
 
     func start(
         store: ReplicaStore,
-        assembler: ChatAssembler,
+        direct: any MobileAgentBackend,
+        relay: any MobileAgentBackend,
+        hasKey: @escaping () -> Bool,
         isReachable: @escaping (Date) -> Bool,
         sessionID: String?
     ) {
         guard self.store == nil else { return }
         self.store = store
-        self.assembler = assembler
+        directBackend = direct
+        relayBackend = relay
+        self.hasKey = hasKey
         self.isReachable = isReachable
         self.sessionID = sessionID
-        if sessionID != nil { observe() }
+        if let sessionID {
+            // Restore the persisted opt-in; a failed read falls back to the
+            // relay route — the safe default (never a silent switch TO direct).
+            directMode = ((try? store.chatSessions()) ?? [])
+                .first { $0.id == sessionID }?.directMode ?? false
+            observe()
+        }
     }
 
-    func send() async {
+    /// The composer's send tap. `now` is injectable so the offer-precondition
+    /// tests run on frozen clocks (project near-midnight discipline).
+    func send(now: Date = Date()) async {
+        guard canSend else { return }
+        // A NEW chat while a key exists and the Mac is unreachable asks ONCE
+        // before the first send (Decision 7): the dialog decides which
+        // backend that send uses. Declining routes the relay, as today.
+        if sessionID == nil, !directMode, !firstSendOfferDeclined,
+           hasKey?() == true, isDesktopUnreachable(now: now) {
+            directOfferContext = .firstSend
+            return
+        }
+        await performSend(direct: directMode)
+    }
+
+    /// The banner's "Answer directly" tap — presents the confirm dialog.
+    func offerDirect(_ context: DirectOfferContext) {
+        directOfferContext = context
+    }
+
+    /// Dialog confirm. Context is a PARAMETER captured by the dialog button
+    /// at render time, not re-read from state: the dialog's dismissal handler
+    /// nils `directOfferContext` in a race with the button's async action.
+    ///
+    /// `.banner`: flips the flag only — NO automatic re-send. The typed text
+    /// is still in the compose field (the send-throw contract keeps it
+    /// there), and the user re-taps send themselves; auto-resending would
+    /// ship text they never re-confirmed against the new backend.
+    /// `.firstSend`: performs the held-back first send through the direct
+    /// backend; the session it mints is flagged inside `performSend`.
+    func confirmDirectOffer(_ context: DirectOfferContext) async {
+        directOfferContext = nil
+        setDirectMode(true)
+        if context == .firstSend {
+            await performSend(direct: true)
+        }
+    }
+
+    /// Dialog decline. `.firstSend` sends via the relay as today (and stops
+    /// re-asking for this chat); `.banner` changes nothing.
+    func declineDirectOffer(_ context: DirectOfferContext) async {
+        directOfferContext = nil
+        guard context == .firstSend else { return }
+        firstSendOfferDeclined = true
+        await performSend(direct: false)
+    }
+
+    /// Plain dialog dismissal (swipe / Cancel): no choice made — nothing
+    /// sends, the draft stays, and the next send tap may ask again.
+    func dismissDirectOffer() {
+        directOfferContext = nil
+    }
+
+    /// The user's explicit route switch (confirm dialog / the toolbar chip's
+    /// "Back to Mac relay"). Local mirror first — routing must flip
+    /// immediately — then the persisted flag, so re-entering the thread
+    /// restores the choice.
+    func setDirectMode(_ enabled: Bool) {
+        directMode = enabled
+        persistDirectMode(enabled)
+    }
+
+    /// Banner affordance for this thread — see `DirectOptInState`.
+    var optInState: DirectOptInState {
+        DirectOptInState(hasKey: hasKey?() ?? false, directMode: directMode)
+    }
+
+    private func performSend(direct: Bool) async {
         let text = trimmedDraft
-        guard !text.isEmpty, let assembler else { return }
+        guard !text.isEmpty, let backend = direct ? directBackend : relayBackend else { return }
         do {
-            let ids = try await assembler.send(text: text, sessionID: sessionID)
+            let ids = try await backend.sendTurn(text: text, sessionID: sessionID)
             // Clear ONLY on success — a throw above persisted nothing and the
             // draft must keep the typed text (see `sendErrorMessage`).
             draft = ""
             sendErrorMessage = nil
             if sessionID == nil {
                 sessionID = ids.sessionID
+                // A direct-confirmed first send flags the session the moment
+                // its id exists (Decision 7).
+                if directMode { persistDirectMode(true) }
                 observe()
             }
         } catch {
             Self.logger.error("chat send failed: \(error.localizedDescription, privacy: .public)")
             sendErrorMessage = "Send failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func persistDirectMode(_ enabled: Bool) {
+        guard let store, let sessionID else { return }
+        do {
+            try store.setDirectMode(sessionID: sessionID, enabled: enabled)
+        } catch {
+            Self.logger.error("direct-mode flag write failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -164,6 +284,36 @@ final class ChatThreadViewModel {
     }
 }
 
+// MARK: - Direct opt-in state
+
+/// The unreachable banner's opt-in affordance, keyed off (hasKey,
+/// directMode). A pure state function so the matrix is unit-tested without
+/// views (the TimelineView only decides WHEN the banner shows; this decides
+/// WHAT it offers).
+enum DirectOptInState: Equatable {
+    /// No stored API key: the button routes to Settings ("Set up offline
+    /// agent…").
+    case needsKey
+    /// Key present, session on the relay: the button offers the confirm
+    /// dialog ("Answer directly").
+    case offerDirect
+    /// Session opted in: the banner is suppressed — "answers need your
+    /// desktop online" would be a lie while the phone answers itself — and
+    /// the toolbar chip carries the state. A key removed AFTER opt-in still
+    /// reads directActive: the chip's "Back to Mac relay" must stay
+    /// reachable, and a direct send without a key fails into the send-error
+    /// banner (missingKey) with the draft kept.
+    case directActive
+
+    init(hasKey: Bool, directMode: Bool) {
+        if directMode {
+            self = .directActive
+        } else {
+            self = hasKey ? .offerDirect : .needsKey
+        }
+    }
+}
+
 // MARK: - Bubble styling
 
 /// Bubble styling decision, keyed EXCLUSIVELY off role + the `isError` flag.
@@ -184,6 +334,7 @@ enum ChatBubbleStyle: Equatable {
 
 struct ChatView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.openSettingsTab) private var openSettingsTab
     @State private var model = ChatSessionsViewModel()
     @State private var showNewChat = false
 
@@ -196,9 +347,15 @@ struct ChatView: View {
                 TimelineView(.periodic(from: .now, by: 30)) { context in
                     List {
                         if model.isDesktopUnreachable(now: context.date) {
-                            MacUnreachableBanner()
-                                .listRowInsets(EdgeInsets())
-                                .listRowBackground(Color.clear)
+                            // No session context here, so no "Answer
+                            // directly": the per-conversation opt-in lives in
+                            // each thread. Keyless phones get the Settings
+                            // shortcut.
+                            MacUnreachableBanner(
+                                affordance: env.hasAPIKey ? .informational : .setupKey(openSettingsTab)
+                            )
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
                         }
                         // Deliberately NO animation on reorder: per-chunk
                         // updated_at bumps resort the list during streaming,
@@ -249,6 +406,7 @@ struct ChatView: View {
 
 struct ChatThreadView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.openSettingsTab) private var openSettingsTab
     @State private var model = ChatThreadViewModel()
     /// nil = new chat; the VM adopts the minted session on the first send.
     let sessionID: String?
@@ -259,8 +417,12 @@ struct ChatThreadView: View {
             // banner both cross over WITHOUT a db write (see ChatView).
             TimelineView(.periodic(from: .now, by: 5)) { context in
                 VStack(spacing: 0) {
-                    if model.isDesktopUnreachable(now: context.date) {
-                        MacUnreachableBanner()
+                    // Suppressed while direct mode is ON: the phone answers
+                    // this thread itself, so "answers need your desktop
+                    // online" would mislead — the toolbar chip carries the
+                    // state instead.
+                    if model.isDesktopUnreachable(now: context.date), model.optInState != .directActive {
+                        MacUnreachableBanner(affordance: bannerAffordance)
                             .padding([.horizontal, .top], 12)
                     }
                     ScrollViewReader { proxy in
@@ -269,8 +431,9 @@ struct ChatThreadView: View {
                                 ForEach(model.messages) { message in
                                     ChatBubbleView(message: message)
                                         .id(message.id)
-                                    if model.showsWaitingBanner(for: message, now: context.date) {
-                                        MacUnreachableBanner()
+                                    if model.showsWaitingBanner(for: message, now: context.date),
+                                       model.optInState != .directActive {
+                                        MacUnreachableBanner(affordance: bannerAffordance)
                                     }
                                 }
                             }
@@ -296,20 +459,73 @@ struct ChatThreadView: View {
         }
         .navigationTitle("Chat")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // Direct mode is never ambient (Decision 7): while ON the thread
+            // wears the chip in its bar, and the way back to the relay lives
+            // in the same control.
+            if model.directMode {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Back to Mac relay") { model.setDirectMode(false) }
+                    } label: {
+                        Label("Direct API", systemImage: "bolt.fill")
+                            .font(.caption.weight(.semibold))
+                    }
+                }
+            }
+        }
+        .confirmationDialog(
+            "Answer directly from this phone?",
+            isPresented: Binding(
+                get: { model.directOfferContext != nil },
+                set: { if !$0 { model.dismissDirectOffer() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            // Context is captured HERE, at render time: the dismissal
+            // binding nils it in a race with the buttons' async actions.
+            if let context = model.directOfferContext {
+                Button("Answer directly") {
+                    Task { await model.confirmDirectOffer(context) }
+                }
+                if context == .firstSend {
+                    Button("Send via Mac relay") {
+                        Task { await model.declineDirectOffer(context) }
+                    }
+                }
+                Button("Cancel", role: .cancel) { model.dismissDirectOffer() }
+            }
+        } message: {
+            Text("Uses your Anthropic API key. The phone's copy has summaries only — no raw Slack messages.")
+        }
         .onAppear {
             model.start(
                 store: env.store,
-                assembler: env.chat,
+                direct: env.directAgent,
+                relay: env.relayBackend,
+                hasKey: { env.hasAPIKey },
                 isReachable: env.feed.isDesktopReachable,
                 sessionID: sessionID
             )
         }
     }
 
+    /// What the unreachable banner offers (never rendered in
+    /// `.directActive` — the banner itself is suppressed then).
+    private var bannerAffordance: MacUnreachableBanner.Affordance {
+        switch model.optInState {
+        case .needsKey: .setupKey(openSettingsTab)
+        case .offerDirect: .answerDirectly { model.offerDirect(.banner) }
+        case .directActive: .informational
+        }
+    }
+
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField(
-                "Ask your desktop…",
+                // Honest placeholder: in direct mode the desktop is out of
+                // the loop for this thread.
+                model.directMode ? "Ask this phone…" : "Ask your desktop…",
                 text: Binding(get: { model.draft }, set: { model.draft = $0 }),
                 axis: .vertical
             )
@@ -399,10 +615,25 @@ private struct TypingIndicator: View {
 
 /// Liveness banner (spec §2): shown at tab level when the desktop heartbeat
 /// is stale or was never seen, and inline under a reply that has waited past
-/// `ChatAssembler.unreachableAfter`. The "Answer directly" stub is Plan 5's
-/// on-device fallback — visible but disabled so the affordance is
-/// discoverable before it works.
+/// `ChatAssembler.unreachableAfter`.
+///
+/// Plan 5 Task 7: the Plan-4 disabled "coming soon" stub became the live
+/// opt-in entry — no key routes to Settings, a saved key offers the confirm
+/// dialog. The sessions LIST shows the informational variant when a key
+/// exists: the opt-in is per conversation, so the live button belongs to the
+/// thread (and to the new-chat composer via the pre-first-send ask).
 struct MacUnreachableBanner: View {
+    enum Affordance {
+        /// Label only — no button (sessions list with a key saved).
+        case informational
+        /// No key: "Set up offline agent…" jumps to the Settings tab.
+        case setupKey(() -> Void)
+        /// Key + relay session: "Answer directly" opens the confirm dialog.
+        case answerDirectly(() -> Void)
+    }
+
+    var affordance: Affordance = .informational
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(
@@ -411,10 +642,18 @@ struct MacUnreachableBanner: View {
             )
             .font(.caption)
             .foregroundStyle(.orange)
-            Button("Answer directly (coming soon)") {}
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.bordered)
-                .disabled(true)
+            switch affordance {
+            case .informational:
+                EmptyView()
+            case .setupKey(let open):
+                Button("Set up offline agent…", action: open)
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+            case .answerDirectly(let offer):
+                Button("Answer directly", action: offer)
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)

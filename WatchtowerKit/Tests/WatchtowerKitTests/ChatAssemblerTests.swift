@@ -478,6 +478,65 @@ final class ChatAssemblerTests: XCTestCase {
         await fulfillment(of: [observed], timeout: 5)
     }
 
+    // MARK: - direct_mode (Plan 5 Task 7: per-session direct-API opt-in)
+
+    func testDirectModeRoundTrip() async throws {
+        let f = try makeFixtures()
+        let (sessionID, _) = try await f.assembler.send(text: "route me", sessionID: nil)
+
+        // Fresh sessions are relay-routed until the user explicitly opts in.
+        XCTAssertEqual(try f.store.chatSessions().first?.directMode, false)
+
+        try f.store.setDirectMode(sessionID: sessionID, enabled: true)
+        XCTAssertEqual(try f.store.chatSessions().first?.directMode, true)
+
+        // "Back to Mac relay" — the toolbar toggle's write.
+        try f.store.setDirectMode(sessionID: sessionID, enabled: false)
+        XCTAssertEqual(try f.store.chatSessions().first?.directMode, false)
+    }
+
+    func testDirectModeColumnBackfillsPreexistingSessionsAsRelay() throws {
+        // A replica created BEFORE the direct_mode column existed: build the
+        // old chat_sessions schema on disk, seed a session, then reopen
+        // through ReplicaStore — the ADD COLUMN migration must land and the
+        // existing row must read relay (0): an upgrade may never silently
+        // opt a session in (Decision 7 — never a silent switch).
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kit-directmode-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("replica.sqlite").path
+
+        let legacy = try DatabaseQueue(path: path)
+        try legacy.write { db in
+            try db.execute(sql: """
+                CREATE TABLE chat_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                INSERT INTO chat_sessions VALUES ('S-legacy', 'old thread', 1, 1);
+                """)
+        }
+        try legacy.close()
+
+        let store = try ReplicaStore(path: path)
+        let session = try XCTUnwrap(store.chatSessions().first)
+        XCTAssertEqual(session.id, "S-legacy")
+        XCTAssertFalse(session.directMode, "pre-migration rows must default to the relay route")
+        try store.setDirectMode(sessionID: "S-legacy", enabled: true)
+        XCTAssertEqual(try store.chatSessions().first?.directMode, true)
+    }
+
+    func testSetDirectModeUnknownSessionIsNoOp() throws {
+        let f = try makeFixtures()
+
+        XCTAssertNoThrow(try f.store.setDirectMode(sessionID: "no-such-session", enabled: true))
+
+        XCTAssertTrue(try f.store.chatSessions().isEmpty, "the flag write must never mint a session row")
+    }
+
     // MARK: - End-to-end through RelayFeed (redelivery replay)
 
     func testFeedRedeliveryKeepsThreadTextByteIdentical() async throws {

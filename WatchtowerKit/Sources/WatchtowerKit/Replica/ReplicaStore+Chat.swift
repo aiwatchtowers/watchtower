@@ -42,6 +42,21 @@ extension ReplicaStore {
         return rows.map(ChatMessage.init(row:))
     }
 
+    /// Flips one session's per-conversation direct-API opt-in (Plan 5
+    /// Decision 7). Written ONLY on an explicit user choice — the confirm
+    /// dialog's "Answer directly" or the toolbar's "Back to Mac relay" —
+    /// never programmatically: the backend switch must never be silent.
+    /// An unknown sessionID is a no-op (UPDATE matches zero rows); the flag
+    /// write must never mint a session.
+    public func setDirectMode(sessionID: String, enabled: Bool) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE chat_sessions SET direct_mode = ? WHERE session_id = ?",
+                arguments: [enabled, sessionID]
+            )
+        }
+    }
+
     /// ChatAssembler.send's local persistence (internal: the app sends
     /// through the assembler). One transaction: session upsert (the FIRST
     /// turn sets the title, later turns only bump updated_at), the user turn
@@ -158,12 +173,18 @@ public struct ChatSession: Equatable, Identifiable {
     public let createdAt: Date
     /// Bumped by every turn and applied chunk — the sessions list sorts on it.
     public let updatedAt: Date
+    /// Per-conversation direct-API opt-in (Plan 5 Decision 7): true routes
+    /// this thread's sends through the on-device agent instead of the Mac
+    /// relay. Defaults to false — relay — and flips ONLY via
+    /// `setDirectMode(sessionID:enabled:)` on an explicit user choice.
+    public let directMode: Bool
 
     init(row: Row) {
         id = row["session_id"]
         title = row["title"]
         createdAt = Date(timeIntervalSince1970: row["created_at"])
         updatedAt = Date(timeIntervalSince1970: row["updated_at"])
+        directMode = row["direct_mode"]
     }
 }
 

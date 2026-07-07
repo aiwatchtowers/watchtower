@@ -51,6 +51,21 @@ struct BootFailureView: View {
     }
 }
 
+/// Programmatic jump to the Settings tab — the chat banner's "Set up offline
+/// agent…" destination (Plan 5 Task 7). An environment closure rather than
+/// AppEnvironment state because tab selection is view state owned by
+/// RootTabView; the no-op default keeps previews and tests rendering.
+private struct OpenSettingsTabKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var openSettingsTab: () -> Void {
+        get { self[OpenSettingsTabKey.self] }
+        set { self[OpenSettingsTabKey.self] = newValue }
+    }
+}
+
 /// The six tabs over the replica.
 ///
 /// Tab placement (Task 7 decision): Chat sits SECOND, right after Today —
@@ -99,5 +114,8 @@ struct RootTabView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(Tab.settings)
         }
+        // Settings folds under "More" on iPhone (six tabs) — this jump keeps
+        // "Set up offline agent…" a one-tap path regardless.
+        .environment(\.openSettingsTab) { selection = .settings }
     }
 }

@@ -313,6 +313,13 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertEqual(messages.last?.isComplete, true)
         XCTAssertEqual(messages.last?.isError, false)
 
+        // Plan 5 Task 7 surface: the per-session direct-mode opt-in flag the
+        // thread VM routes on, and its only write path.
+        XCTAssertFalse(session.directMode)
+        try store.setDirectMode(sessionID: sessionID, enabled: true)
+        XCTAssertEqual(try store.chatSessions().first?.directMode, true)
+        try store.setDirectMode(sessionID: sessionID, enabled: false)
+
         // The from-db overloads the app's ValueObservation tracking closures
         // must use (same reentrancy rule as fetchAll(_:kind:from:)).
         let counts = try await store.reader.read { db in

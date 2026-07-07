@@ -110,7 +110,8 @@ public final class ReplicaStore: Sendable {
                     session_id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    direct_mode INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     message_id TEXT PRIMARY KEY,
@@ -124,6 +125,15 @@ public final class ReplicaStore: Sendable {
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
                 """)
+            // Migration for replicas created before Plan 5 Task 7:
+            // CREATE TABLE IF NOT EXISTS leaves an existing chat_sessions
+            // untouched, so the direct-mode column is added in place.
+            // Existing rows read the DEFAULT 0 — every pre-existing session
+            // stays on the relay until its owner explicitly opts in
+            // (Decision 7: never a silent switch).
+            if try !db.columns(in: "chat_sessions").contains(where: { $0.name == "direct_mode" }) {
+                try db.execute(sql: "ALTER TABLE chat_sessions ADD COLUMN direct_mode INTEGER NOT NULL DEFAULT 0")
+            }
         }
     }
 
