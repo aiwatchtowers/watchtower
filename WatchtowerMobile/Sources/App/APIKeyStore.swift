@@ -68,6 +68,14 @@ struct APIKeyStore: Sendable {
         attributes[kSecValueData as String] = Data(key.utf8)
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let status = SecItemAdd(attributes as CFDictionary, nil)
+        #if DEBUG
+        // Symmetry with read/remove: a host could plausibly allow delete of
+        // a nonexistent item yet reject add without entitlements.
+        if status == errSecMissingEntitlement {
+            MemoryFallback.shared.value = key
+            return
+        }
+        #endif
         guard status == errSecSuccess else {
             throw APIKeyStoreError(status: status)
         }
