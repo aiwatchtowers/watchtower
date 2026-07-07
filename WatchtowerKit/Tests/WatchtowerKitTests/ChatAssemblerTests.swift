@@ -9,7 +9,10 @@ import XCTest
 /// including stale higher-seq leftovers from a redelivered shorter answer.
 /// Ingest is idempotent per chunk (RelayFeed replays whole batches after a
 /// mid-batch throw), gaps are buffered in memory until they fill, and
-/// `send` is transport-first: a transport throw persists nothing locally.
+/// `send` on the `.relay` route is transport-first: a transport throw
+/// persists nothing locally. `.localOnly` (Plan 5, the BYOK offline turn)
+/// never touches the transport, and trimmed-empty text throws before any
+/// side effect on either route.
 final class ChatAssemblerTests: XCTestCase {
 
     private let base = Date(timeIntervalSince1970: 1_700_000_000)
@@ -157,6 +160,94 @@ final class ChatAssemblerTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM chat_messages") ?? 0
         }
         XCTAssertEqual(orphans, 0)
+    }
+
+    // MARK: - send: route selection (Plan 5 — the BYOK local turn)
+
+    /// Counts saves so route tests can assert the transport was never touched.
+    private actor SpyTransport: CloudSyncTransport {
+        private(set) var saveCount = 0
+        func save(_ records: [CloudRecord]) async throws { saveCount += 1 }
+        func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+            CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
+        }
+    }
+
+    func testLocalOnlySendSkipsTransport() async throws {
+        let transport = SpyTransport()
+        let store = try ReplicaStore.inMemory()
+        let assembler = ChatAssembler(transport: transport, store: store)
+
+        let (sessionID, messageID) = try await assembler.send(
+            text: "answer this one offline",
+            sessionID: nil,
+            route: .localOnly
+        )
+
+        let saves = await transport.saveCount
+        XCTAssertEqual(saves, 0)
+        // The same three rows a relay send creates: session, completed user
+        // turn, assistant placeholder for the synthesized chunks to fill.
+        let session = try XCTUnwrap(store.chatSessions().first)
+        XCTAssertEqual(session.id, sessionID)
+        XCTAssertEqual(session.title, "answer this one offline")
+        let messages = try store.chatMessages(inSession: sessionID)
+        XCTAssertEqual(messages.map(\.role), [.user, .assistant])
+        XCTAssertEqual(messages[0].text, "answer this one offline")
+        XCTAssertTrue(messages[0].isComplete)
+        XCTAssertEqual(messages[1].id, messageID)
+        XCTAssertEqual(messages[1].text, "")
+        XCTAssertFalse(messages[1].isComplete)
+    }
+
+    func testLocalOnlySendSurvivesDeadTransport() async throws {
+        // The whole point of the route: an offline turn must succeed even
+        // when every transport call would throw (no network, no CloudKit).
+        let store = try ReplicaStore.inMemory()
+        let assembler = ChatAssembler(transport: ThrowingTransport(), store: store)
+
+        let (sessionID, _) = try await assembler.send(
+            text: "still works with the wire down",
+            sessionID: nil,
+            route: .localOnly
+        )
+
+        XCTAssertEqual(try store.chatMessages(inSession: sessionID).map(\.role), [.user, .assistant])
+    }
+
+    // MARK: - send: empty-text guard (both routes, before any side effect)
+
+    func testEmptyTextThrows() async throws {
+        try await assertTrimmedEmptyTextRejected(text: "")
+    }
+
+    func testWhitespaceOnlyTextThrows() async throws {
+        try await assertTrimmedEmptyTextRejected(text: " \n\t  ")
+    }
+
+    private func assertTrimmedEmptyTextRejected(text: String) async throws {
+        for route in [SendRoute.relay, .localOnly] {
+            let transport = SpyTransport()
+            let store = try ReplicaStore.inMemory()
+            let assembler = ChatAssembler(transport: transport, store: store)
+
+            do {
+                _ = try await assembler.send(text: text, sessionID: nil, route: route)
+                XCTFail("expected ChatSendError.emptyText on route \(route)")
+            } catch ChatSendError.emptyText {
+                // expected — thrown before any side effect
+            }
+
+            // Nothing persisted, transport never called.
+            let saves = await transport.saveCount
+            XCTAssertEqual(saves, 0, "route \(route) touched the transport")
+            XCTAssertTrue(try store.chatSessions().isEmpty)
+            let rows = try await store.reader.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM chat_messages") ?? 0
+            }
+            XCTAssertEqual(rows, 0, "route \(route) persisted message rows")
+        }
     }
 
     // MARK: - ingest: ordered assembly

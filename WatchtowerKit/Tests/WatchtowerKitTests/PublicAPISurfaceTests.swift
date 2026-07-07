@@ -321,5 +321,17 @@ final class PublicAPISurfaceTests: XCTestCase {
         }
         XCTAssertEqual(counts.sessions, 1)
         XCTAssertEqual(counts.messages, 2)
+
+        // Plan 5 surface: the route parameter with both SendRoute cases, and
+        // the empty-text guard's public error (the VM catches it by case).
+        let relayRoute: SendRoute = .relay
+        _ = try await assembler.send(text: "explicit relay route", sessionID: sessionID, route: relayRoute)
+        _ = try await assembler.send(text: "offline turn", sessionID: sessionID, route: .localOnly)
+        do {
+            _ = try await assembler.send(text: "   ", sessionID: sessionID, route: .localOnly)
+            XCTFail("expected ChatSendError.emptyText")
+        } catch ChatSendError.emptyText {
+            XCTAssertEqual(ChatSendError.emptyText, ChatSendError.emptyText) // Equatable is public API
+        }
     }
 }

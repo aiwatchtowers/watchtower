@@ -1,8 +1,29 @@
 import Foundation
 import os
 
-/// The phone's chat endpoint: sends user turns into the relay zone and
-/// assembles the desktop's streamed chunk records into `chat_messages` rows
+/// Where `ChatAssembler.send` ships the user turn after persisting it.
+public enum SendRoute: Sendable {
+    /// Save a `ChatMessagePayload` into the relay zone for the desktop to
+    /// answer (the default — today's path).
+    case relay
+    /// No transport write at all: the turn exists only in the local replica.
+    /// The Plan 5 direct BYOK agent answers it on-device by synthesizing
+    /// chunks into `ingest`, so an offline phone must be able to send.
+    case localOnly
+}
+
+/// Pre-flight failures of `ChatAssembler.send`, thrown before any side
+/// effect on either route.
+public enum ChatSendError: Error, Equatable {
+    /// The text was empty after trimming whitespace and newlines. The UI's
+    /// `canSend` disables the button for this input; the Kit guard is the
+    /// authoritative check (Plan 5 Design Decision 2).
+    case emptyText
+}
+
+/// The phone's chat endpoint: sends user turns into the relay zone (or, on
+/// `SendRoute.localOnly`, persists them for the on-device agent to answer)
+/// and assembles the answerer's streamed chunks into `chat_messages` rows
 /// (Plan 4 Task 5). Conforms to `ChatChunkAssembling`, so RelayFeed — the
 /// phone's single relay consumer — hands every decodable chunk here, in
 /// batch order, BEFORE the relay token is persisted.
@@ -60,22 +81,36 @@ public actor ChatAssembler: ChatChunkAssembling {
 
     /// Ships one user turn and prepares the thread for the streamed reply:
     /// session row on the first message (title = first words), the user
-    /// message (complete), a `ChatMessagePayload` into the relay zone, and
-    /// the assistant placeholder row the chunks will fill. Returns the ids
-    /// the UI tracks — `messageID` is the assistant reply's id (the desktop
-    /// streams chunks keyed by the wire message id; the user turn's local
-    /// row uses a disjoint "user-" prefix).
+    /// message (complete), a `ChatMessagePayload` into the relay zone
+    /// (`.relay` route only), and the assistant placeholder row the chunks
+    /// will fill. Returns the ids the UI tracks — `messageID` is the
+    /// assistant reply's id (the answerer streams chunks keyed by the wire
+    /// message id; the user turn's local row uses a disjoint "user-" prefix).
     ///
-    /// Ordering: transport save FIRST, local rows second (ActionOutbox's
-    /// reasoning). A transport throw persists nothing — no phantom thread
-    /// awaiting an answer that can never come — and the typed text is not
-    /// lost: send() threw, so the compose field must keep its draft (Task 7
-    /// clears it only on success). The reverse failure (record saved, local
-    /// write throws) means the desktop answers a thread this device never
-    /// wrote down; those chunks hit no local row and are dropped by `ingest`
-    /// — the user re-sends, at worst reading a duplicate answer's cost on
-    /// the desktop, never corrupted local state.
-    public func send(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String) {
+    /// Trimmed-empty text throws `ChatSendError.emptyText` before ANY side
+    /// effect, on both routes.
+    ///
+    /// `.relay` ordering: transport save FIRST, local rows second
+    /// (ActionOutbox's reasoning). A transport throw persists nothing — no
+    /// phantom thread awaiting an answer that can never come — and the typed
+    /// text is not lost: send() threw, so the compose field must keep its
+    /// draft (Task 7 clears it only on success). The reverse failure (record
+    /// saved, local write throws) means the desktop answers a thread this
+    /// device never wrote down; those chunks hit no local row and are
+    /// dropped by `ingest` — the user re-sends, at worst reading a duplicate
+    /// answer's cost on the desktop, never corrupted local state.
+    ///
+    /// `.localOnly` has no wire leg, so none of that ordering applies: the
+    /// single `insertChatTurn` call is the only failure point, and it
+    /// throws atomically (all three rows or none).
+    public func send(
+        text: String,
+        sessionID: String?,
+        route: SendRoute = .relay
+    ) async throws -> (sessionID: String, messageID: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ChatSendError.emptyText
+        }
         let createdAt = now()
         let session = sessionID ?? UUID().uuidString
         let payload = ChatMessagePayload(
@@ -84,7 +119,9 @@ public actor ChatAssembler: ChatChunkAssembling {
             text: text,
             createdAt: createdAt
         )
-        try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: createdAt)])
+        if route == .relay {
+            try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: createdAt)])
+        }
         try store.insertChatTurn(
             sessionID: session,
             title: Self.title(from: text),
