@@ -16,6 +16,7 @@
 		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
 		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
+		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
 		582932A8E80F14FFC007035E /* BadgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 649E02AF149E7AB38609A747 /* BadgeTests.swift */; };
 		6E7B3F11235C858E711FE47D /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
 		6F4653DC7997A2F36BD7543F /* CreateTargetSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */; };
@@ -54,6 +55,7 @@
 		3240E546D853A416356E32D1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		32B5333500926289814ECEB0 /* AgentSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSettingsTests.swift; sourceTree = "<group>"; };
 		3D6F6F3D895505750B9F5892 /* DemoSeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSeed.swift; sourceTree = "<group>"; };
+		4EF0E3D3509281E6EB30B918 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		53EEE394524E80319F081C9E /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		5DF609973C6F27C56B9BD9A9 /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
 		649E02AF149E7AB38609A747 /* BadgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BadgeTests.swift; sourceTree = "<group>"; };
@@ -99,6 +101,7 @@
 		07F497CE33EEF4C1704BA787 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				4EF0E3D3509281E6EB30B918 /* Assets.xcassets */,
 				B49576F65C5F65C311E0CAD8 /* App */,
 				2718DF123EBA6E28C9F67E4A /* Components */,
 				CAACBBFD9417C7BE0E2A7C31 /* Features */,
@@ -201,6 +204,7 @@
 			buildConfigurationList = F82D44D2B8EEB447D73215A3 /* Build configuration list for PBXNativeTarget "WatchtowerMobile" */;
 			buildPhases = (
 				7F524EA75B34C1BED76F0C7E /* Sources */,
+				DCCBB8A6A34D3BA6586D9B70 /* Resources */,
 				6CA16831CFAAB8D1129DBF29 /* Frameworks */,
 			);
 			buildRules = (
@@ -271,6 +275,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		DCCBB8A6A34D3BA6586D9B70 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		7F524EA75B34C1BED76F0C7E /* Sources */ = {
@@ -440,7 +455,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.10;
@@ -522,7 +537,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.10;
