@@ -27,6 +27,8 @@ var (
 	inboxFlagAll             bool
 	inboxFlagJSON            bool
 	inboxGenFlagProgressJSON bool
+	inboxFeedbackRating      string
+	inboxFeedbackComment     string
 )
 
 var inboxCmd = &cobra.Command{
@@ -77,15 +79,24 @@ var inboxTaskCmd = &cobra.Command{
 	RunE:  runInboxTask,
 }
 
+var inboxFeedbackCmd = &cobra.Command{
+	Use:   "feedback <situation-id>",
+	Short: "Record feedback on a dashboard situation (--rating up|down [--comment])",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runInboxFeedback,
+}
+
 func init() {
 	rootCmd.AddCommand(inboxCmd)
-	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd)
+	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxFeedbackCmd)
 
 	inboxCmd.Flags().StringVar(&inboxFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	inboxCmd.Flags().StringVar(&inboxFlagType, "type", "", "filter by trigger type (mention, dm)")
 	inboxCmd.Flags().BoolVar(&inboxFlagAll, "all", false, "include resolved and dismissed items")
 	inboxCmd.Flags().BoolVar(&inboxFlagJSON, "json", false, "output as JSON")
 	inboxGenerateCmd.Flags().BoolVar(&inboxGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
+	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackRating, "rating", "", "up or down")
+	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackComment, "comment", "", "free-text comment; derives learned rules via the AI interpreter")
 }
 
 func runInbox(cmd *cobra.Command, _ []string) error {
@@ -526,6 +537,46 @@ func runInboxTask(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Created target #%d from inbox item #%d\n", targetID, id)
+	return nil
+}
+
+func runInboxFeedback(cmd *cobra.Command, args []string) error {
+	situationID, err := strconv.Atoi(args[0])
+	if err != nil || situationID <= 0 {
+		return fmt.Errorf("invalid situation id %q", args[0])
+	}
+	rating, err := parseRating(inboxFeedbackRating)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	applyProviderOverride(cfg)
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
+	gen, closeGen := cliPooledGenerator(cfg, logger)
+	defer closeGen()
+
+	pipe := inbox.New(database, cfg, gen, logger)
+	if err := pipe.SubmitSituationFeedback(cmd.Context(), situationID, rating, inboxFeedbackComment); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Recorded feedback on situation %d.\n", situationID)
 	return nil
 }
 
