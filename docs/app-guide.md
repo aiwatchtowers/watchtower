@@ -242,6 +242,8 @@ When your Mac is unreachable, the phone can answer chat turns itself using your 
 - **What it can see:** the phone's mirrored copy only — briefings, inbox items, tasks/targets, tracks, digest summaries, calendar events, and people cards. It has **no raw Slack messages**; quote-level or deep-history questions still need the desktop.
 - **Write actions:** tasks created or items snoozed by the offline agent are queued and applied when your Mac next processes the mobile queue — they show as pending on the phone until then.
 
+## Background Processes
+
 Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Slack data. After each sync, AI pipelines run automatically:
 1. **Calendar sync** — fetches Google Calendar events for the configured days ahead (runs after Slack sync, before pipelines)
 2. **Inbox pipeline** — detects @mentions and DMs awaiting response, AI-prioritizes new items and auto-resolves responded ones (Phase 0.5, runs before digests)
