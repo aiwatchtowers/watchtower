@@ -239,6 +239,25 @@ final class DirectAPIAgentTests: XCTestCase {
         XCTAssertEqual(reply.lastSeq, 0)
     }
 
+    /// A `message_stop` with ZERO text deltas — the refusal shape. The model
+    /// DID respond (the stream finished cleanly), so the turn completes as a
+    /// normal COMPLETED turn carrying readable copy — never isError: error
+    /// styling would mislead the user toward Settings/retry when the model
+    /// simply declined (Plan 6 Task 6 / Plan 5 review rule: seq 0 + empty
+    /// buffer at completion → copy, completed, not error).
+    func testEmptyTurnCompletesWithReadableCopyNotError() async throws {
+        let f = try makeFixtures(scripts: [[.yield(.finished(stopReason: "end_turn"))]])
+
+        let (sessionID, messageID) = try await f.agent.sendTurn(text: "say nothing", sessionID: nil)
+        await f.agent.drainAnswers(inSession: sessionID)
+
+        let reply = try message(f.store, sessionID: sessionID, id: messageID)
+        XCTAssertEqual(reply.text, "The model returned no answer (possibly refused). Try rephrasing.")
+        XCTAssertTrue(reply.isComplete, "the placeholder must never stay incomplete")
+        XCTAssertFalse(reply.isError, "an empty answer is a refusal, not a transport error")
+        XCTAssertEqual(reply.lastSeq, 0)
+    }
+
     // MARK: - Tool loop
 
     func testToolLoopExecutesAndContinues() async throws {

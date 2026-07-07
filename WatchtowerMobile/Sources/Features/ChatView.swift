@@ -274,6 +274,22 @@ final class ChatThreadViewModel {
             && Duration.seconds(now.timeIntervalSince(message.createdAt)) > ChatAssembler.unreachableAfter
     }
 
+    /// What renders under a reply still waiting for its first chunk past
+    /// `unreachableAfter` (the `showsWaitingBanner` timing above), split by
+    /// route (Plan 6 Task 6): the relay warns the Mac is unreachable as
+    /// before; a direct-mode thread gets the neutral "Still thinking…" hint
+    /// instead — the phone answers itself, so Mac framing would mislead.
+    enum WaitingHint: Equatable {
+        case none
+        case macUnreachable
+        case stillThinking
+    }
+
+    func waitingHint(for message: ChatMessage, now: Date) -> WaitingHint {
+        guard showsWaitingBanner(for: message, now: now) else { return .none }
+        return directMode ? .stillThinking : .macUnreachable
+    }
+
     private func observe() {
         guard cancellable == nil, let store, let sessionID else { return }
         // From-db accessor on the closure's own db (pool-reentrancy rule).
@@ -369,13 +385,25 @@ struct ChatView: View {
                         // rows in place without movement animation.
                         ForEach(model.sessions) { session in
                             NavigationLink(value: session.id) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(session.title)
-                                        .font(.subheadline)
-                                        .lineLimit(1)
-                                    Text(session.updatedAt, style: .relative)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                HStack(spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(session.title)
+                                            .font(.subheadline)
+                                            .lineLimit(1)
+                                        Text(session.updatedAt, style: .relative)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    // Direct-flagged sessions wear the same
+                                    // bolt as the thread's toolbar chip
+                                    // (Plan 6 Task 6).
+                                    if session.directMode {
+                                        Spacer(minLength: 8)
+                                        Image(systemName: "bolt.fill")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .accessibilityLabel("Direct API")
+                                    }
                                 }
                             }
                         }
@@ -436,9 +464,16 @@ struct ChatThreadView: View {
                                 ForEach(model.messages) { message in
                                     ChatBubbleView(message: message)
                                         .id(message.id)
-                                    if model.showsWaitingBanner(for: message, now: context.date),
-                                       model.optInState != .directActive {
+                                    // Route-split wait state: relay threads
+                                    // warn about the Mac, direct threads get
+                                    // the neutral hint (see `waitingHint`).
+                                    switch model.waitingHint(for: message, now: context.date) {
+                                    case .none:
+                                        EmptyView()
+                                    case .macUnreachable:
                                         MacUnreachableBanner(affordance: bannerAffordance)
+                                    case .stillThinking:
+                                        StillThinkingHint()
                                     }
                                 }
                             }
@@ -613,6 +648,24 @@ private struct TypingIndicator: View {
         }
         .foregroundStyle(.secondary)
         .onAppear { pulsing = true }
+    }
+}
+
+// MARK: - Still-thinking hint
+
+/// The direct-mode wait hint (Plan 6 Task 6): a direct-flagged thread whose
+/// reply is still pending past `ChatAssembler.unreachableAfter` says the
+/// phone is still working — neutral copy, deliberately NOTHING about the
+/// Mac: the desktop is out of the loop for this thread, so the unreachable
+/// framing would mislead.
+private struct StillThinkingHint: View {
+    var body: some View {
+        Label("Still thinking…", systemImage: "ellipsis.bubble")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 

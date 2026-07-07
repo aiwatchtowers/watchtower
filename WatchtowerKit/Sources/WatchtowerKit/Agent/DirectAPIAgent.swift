@@ -288,10 +288,19 @@ public actor DirectAPIAgent: MobileAgentBackend {
 
     /// Flushes whatever text remains as the final `done: true` chunk — the
     /// assembly cut that completes the placeholder row.
+    ///
+    /// A turn that streamed NO text at all (seq 0 AND empty buffer — the
+    /// refusal shape) completes with readable copy instead of an empty
+    /// bubble. It is a normal COMPLETED turn, never isError: the model DID
+    /// respond, it just declined, and error styling would mislead the user
+    /// toward Settings/retry.
     private func completeTurn(_ cursor: ChunkCursor, sessionID: String, messageID: String) async throws {
+        let text = cursor.seq == 0 && cursor.buffer.isEmpty
+            ? "The model returned no answer (possibly refused). Try rephrasing."
+            : cursor.buffer
         try await assembler.ingest(ChatChunkPayload(
             sessionID: sessionID, messageID: messageID,
-            seq: cursor.seq, text: cursor.buffer, done: true
+            seq: cursor.seq, text: text, done: true
         ))
         logger.info("direct answer completed: \(messageID, privacy: .public) chunks \(cursor.seq + 1)")
     }

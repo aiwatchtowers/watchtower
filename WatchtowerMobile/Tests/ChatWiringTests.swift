@@ -352,6 +352,76 @@ final class ChatWiringTests: XCTestCase {
         )
     }
 
+    /// The per-message waiting-hint matrix (Plan 6 Task 6): past
+    /// `ChatAssembler.unreachableAfter` a RELAY thread shows the
+    /// Mac-unreachable banner exactly as before, a DIRECT thread shows the
+    /// neutral "Still thinking…" hint instead (the phone answers itself —
+    /// Mac framing would mislead), and below the threshold neither route
+    /// shows anything.
+    func testWaitingHintMatrixRelayVsDirect() async throws {
+        let sendInstant = Date(timeIntervalSince1970: 1_783_000_000)
+        let fx = try makeFixture(now: { sendInstant })
+        let vm = makeThreadVM(fx, hasKey: true)
+        vm.draft = "Take your time"
+        await vm.send()
+        try await poll { vm.messages.count == 2 }
+        let reply = try XCTUnwrap(vm.messages.last)
+
+        // Relay route: below the threshold nothing, past it the Mac banner.
+        XCTAssertEqual(vm.waitingHint(for: reply, now: sendInstant.addingTimeInterval(44)), .none)
+        XCTAssertEqual(vm.waitingHint(for: reply, now: sendInstant.addingTimeInterval(46)), .macUnreachable)
+
+        // Direct route: the same wait turns into the neutral hint — never
+        // the Mac-unreachable framing.
+        vm.setDirectMode(true)
+        XCTAssertEqual(vm.waitingHint(for: reply, now: sendInstant.addingTimeInterval(44)), .none)
+        XCTAssertEqual(vm.waitingHint(for: reply, now: sendInstant.addingTimeInterval(46)), .stillThinking)
+
+        // The user's own turn never hints, however long we wait.
+        XCTAssertEqual(
+            vm.waitingHint(for: try XCTUnwrap(vm.messages.first), now: sendInstant.addingTimeInterval(600)),
+            .none
+        )
+
+        // First chunk landed → the wait is over on both routes.
+        try await fx.assembler.ingest(
+            ChatChunkPayload(
+                sessionID: try XCTUnwrap(vm.sessionID), messageID: reply.id,
+                seq: 0, text: "Here", done: false
+            )
+        )
+        try await poll { vm.messages.last?.text == "Here" }
+        XCTAssertEqual(
+            vm.waitingHint(for: try XCTUnwrap(vm.messages.last), now: sendInstant.addingTimeInterval(600)),
+            .none
+        )
+    }
+
+    /// The sessions-list badge (Plan 6 Task 6) is driven by
+    /// `ChatSession.directMode`: the row data the `bolt.fill` glyph reads
+    /// must surface the flag through the sessions observation — and follow
+    /// it back down when the user returns to the relay.
+    func testSessionsListSurfacesDirectModeForBadge() async throws {
+        let fx = try makeFixture()
+        let (directID, _) = try await fx.assembler.send(text: "direct thread", sessionID: nil)
+        let (relayID, _) = try await fx.assembler.send(text: "relay thread", sessionID: nil)
+        try fx.store.setDirectMode(sessionID: directID, enabled: true)
+
+        let vm = ChatSessionsViewModel()
+        vm.start(store: fx.store, isReachable: { _ in true })
+        try await poll { vm.sessions.count == 2 }
+
+        XCTAssertEqual(vm.sessions.first { $0.id == directID }?.directMode, true)
+        XCTAssertEqual(
+            vm.sessions.first { $0.id == relayID }?.directMode, false,
+            "relay sessions must never wear the badge"
+        )
+
+        // "Back to Mac relay" clears the badge through the same observation.
+        try fx.store.setDirectMode(sessionID: directID, enabled: false)
+        try await poll { vm.sessions.first { $0.id == directID }?.directMode == false }
+    }
+
     // MARK: - Direct-API opt-in (Plan 5 Task 7)
 
     /// A direct-flagged session routes send() through the DIRECT backend and
