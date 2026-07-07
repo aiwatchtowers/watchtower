@@ -11,6 +11,8 @@ import AppKit
 // bottom action bar (👍/👎 + teaching comment, Snooze, Target, Track, Dismiss,
 // Done). All mutating actions are delegated to the owning DashboardView.
 struct SituationReviewPane: View {
+    @Environment(AppState.self) private var appState
+
     let situation: Situation
     let memberSignals: [InboxItem]
     let memberSignalsLoaded: Bool
@@ -39,6 +41,13 @@ struct SituationReviewPane: View {
                     sourcesSection
                     secretaryCardOrPlaceholder
                     memberSignalsSection
+                    if let dbManager = appState.databaseManager {
+                        SituationDiscussSection(
+                            situation: situation,
+                            memberSignals: memberSignals,
+                            dbManager: dbManager
+                        )
+                    }
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
