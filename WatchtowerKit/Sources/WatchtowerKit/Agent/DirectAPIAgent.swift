@@ -35,8 +35,11 @@ extension DirectAPIAgentError: LocalizedError {
 ///
 /// Answer tasks are SERIALIZED per session (RelayFeed's inFlight discipline,
 /// keyed by session): actors are reentrant, so a second `sendTurn` while an
-/// answer is streaming would otherwise open a second API stream whose history
-/// misses the first answer. Each turn's task awaits its predecessor.
+/// answer is streaming would otherwise open a concurrent second API stream
+/// for the same thread. Each turn's task awaits its predecessor. History is
+/// snapshotted inside `sendTurn` itself, BEFORE the answer task exists — a
+/// queued turn answers from the thread exactly as the user saw it when
+/// sending, and its rows can never leak into an earlier turn's request.
 ///
 /// Failure contract: EVERY failure path ends with a `done: true,
 /// isError: true` chunk carrying a readable, key-free message — the
@@ -98,20 +101,44 @@ public actor DirectAPIAgent: MobileAgentBackend {
             throw DirectAPIAgentError.missingKey
         }
         let ids = try await assembler.send(text: text, sessionID: sessionID, route: .localOnly)
-        scheduleAnswer(sessionID: ids.sessionID, messageID: ids.messageID, key: key)
+        // History is snapshotted HERE, not inside the answer task: a queued
+        // sendTurn N+1 lands its user row before answer N's task runs, and a
+        // history built there would leak it into answer N's request
+        // (consecutive user turns — a live-API 400 — and the model seeing
+        // question N+1 while answering question N). A failed read still
+        // schedules the turn: the Result surfaces in the answer's single
+        // failure path, so the placeholder completes as an error, never
+        // stranded incomplete.
+        let snapshot: Result<[APIMessage], Error>
+        do {
+            snapshot = .success(try history(inSession: ids.sessionID, excludingPlaceholder: ids.messageID))
+        } catch {
+            snapshot = .failure(error)
+        }
+        scheduleAnswer(sessionID: ids.sessionID, messageID: ids.messageID, key: key, snapshot: snapshot)
         return ids
     }
 
     // MARK: - Answer scheduling
 
-    private func scheduleAnswer(sessionID: String, messageID: String, key: String) {
+    private func scheduleAnswer(
+        sessionID: String,
+        messageID: String,
+        key: String,
+        snapshot: Result<[APIMessage], Error>
+    ) {
         let prior = chains[sessionID]
+        // [weak self]: an in-flight answer dies with the agent, leaving its
+        // placeholder row incomplete forever. The agent must therefore be
+        // owned for the app's lifetime (AppState/AppEnvironment — NEVER a
+        // view-local view model, which navigation deallocates mid-answer) —
+        // Task 7 wiring requirement, per the project's
+        // async-ops-survive-navigation pattern.
         let task = Task { [weak self] in
-            // Serialize per session: this turn's history must include the
-            // previous turn's completed answer, and two streams for one
-            // session must never interleave.
+            // Serialize per session: two streams for one session must never
+            // interleave, and answers must complete in send order.
             await prior?.value
-            await self?.answer(sessionID: sessionID, messageID: messageID, key: key)
+            await self?.answer(sessionID: sessionID, messageID: messageID, key: key, snapshot: snapshot)
         }
         chains[sessionID] = task
         Task { [weak self] in
@@ -164,11 +191,16 @@ public actor DirectAPIAgent: MobileAgentBackend {
         var block: APIContentBlock { .toolUse(id: id, name: name, input: input) }
     }
 
-    private func answer(sessionID: String, messageID: String, key: String) async {
+    private func answer(
+        sessionID: String,
+        messageID: String,
+        key: String,
+        snapshot: Result<[APIMessage], Error>
+    ) async {
         let client = clientFactory(key)
         var cursor = ChunkCursor(lastFlush: now())
         do {
-            var convo = try history(inSession: sessionID, excludingPlaceholder: messageID)
+            var convo = try snapshot.get()
             let system = MobileSystemPrompt.build()
             var iteration = 0
             while true {
@@ -276,18 +308,39 @@ public actor DirectAPIAgent: MobileAgentBackend {
         return results
     }
 
-    /// Decision 8: completed non-error turns of the session, oldest first,
-    /// capped at the last 20 messages. Incomplete rows (including the
+    /// Decision 8 history: completed non-error turns of the session, oldest
+    /// first, capped at the last 20 messages. Incomplete rows (including the
     /// just-created placeholder, excluded by id as belt) and error rows are
     /// skipped; so are empty completed rows — the API rejects empty text
     /// blocks.
+    ///
+    /// The capped list is then NORMALIZED for the Messages API alternation
+    /// rules (owner-approved deviation from plan Decision 8): the live API
+    /// 400s a first message with role `assistant` and any two consecutive
+    /// same-role messages, and both the cap cut and every skip above produce
+    /// exactly those shapes — one error turn orphans its user row, so every
+    /// later request would 400, minting MORE error turns. After
+    /// `suffix(historyCap)`:
+    /// 1. consecutive same-role entries coalesce into one message (texts
+    ///    joined with "\n\n"),
+    /// 2. a leading assistant entry is dropped.
     private func history(inSession sessionID: String, excludingPlaceholder placeholderID: String) throws -> [APIMessage] {
         let turns = try store.chatMessages(inSession: sessionID)
             .filter { $0.isComplete && !$0.isError && $0.id != placeholderID && !$0.text.isEmpty }
             .suffix(Self.historyCap)
-        return turns.map {
-            APIMessage(role: $0.role == .user ? .user : .assistant, content: [.text($0.text)])
+        var coalesced: [(role: APIMessage.Role, text: String)] = []
+        for turn in turns {
+            let role: APIMessage.Role = turn.role == .user ? .user : .assistant
+            if coalesced.last?.role == role {
+                coalesced[coalesced.count - 1].text += "\n\n" + turn.text
+            } else {
+                coalesced.append((role: role, text: turn.text))
+            }
         }
+        if coalesced.first?.role == .assistant {
+            coalesced.removeFirst()
+        }
+        return coalesced.map { APIMessage(role: $0.role, content: [.text($0.text)]) }
     }
 
     // MARK: - Failure path

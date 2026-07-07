@@ -13,7 +13,12 @@ import XCTest
 ///   placeholder with a `done: true, isError: true` chunk whose text is
 ///   readable and never contains the API key;
 /// - history per Decision 8: completed non-error turns, oldest first, capped
-///   at 20, incomplete/error rows skipped, own placeholder excluded;
+///   at 20, incomplete/error rows skipped, own placeholder excluded — then
+///   NORMALIZED for the Messages API alternation rules (owner-approved
+///   Decision 8 deviation): consecutive same-role entries coalesce, a
+///   leading assistant entry is dropped;
+/// - history is snapshotted at send: a queued turn's user row never leaks
+///   into an earlier turn's request;
 /// - answers for one session are serialized (no interleaved chunk streams).
 final class DirectAPIAgentTests: XCTestCase {
 
@@ -364,15 +369,16 @@ final class DirectAPIAgentTests: XCTestCase {
         XCTAssertEqual(reply.text, "Anthropic API error (HTTP 400): invalid_request_error: max_tokens too large")
     }
 
-    // MARK: - History (Decision 8)
+    // MARK: - History (Decision 8, normalized)
 
-    func testHistoryCapAndSkipsIncompleteAndErrorRows() async throws {
-        let f = try makeFixtures(scripts: [[
-            .yield(.textDelta("ok")),
-            .yield(.finished(stopReason: "end_turn"))
-        ]])
-
-        // 10 completed turn pairs (20 messages), distinct timestamps.
+    /// Seeds a session exercising every history edge at once: 10 completed
+    /// turn pairs (20 messages — the 20-cap then cuts mid-pair, at an
+    /// assistant row), one turn whose reply FAILED (error rows are skipped,
+    /// orphaning its user turn), and one still-streaming turn (incomplete
+    /// rows are skipped, orphaning its user turn too). The RAW eligible list
+    /// after the next `sendTurn` would start with an assistant message and
+    /// end with three consecutive user turns — both live-API 400 shapes.
+    private func seedHistoryEdgeCases(_ f: Fixtures) async throws -> String {
         var sessionID: String?
         for index in 1...10 {
             f.assemblerClock.advance(by: 60)
@@ -385,30 +391,70 @@ final class DirectAPIAgentTests: XCTestCase {
             ))
         }
         let session = try XCTUnwrap(sessionID)
-        // One turn whose reply FAILED (error rows are skipped; its user turn
-        // still counts)…
         f.assemblerClock.advance(by: 60)
         let (_, errorID) = try await f.assembler.send(text: "failed question", sessionID: session, route: .localOnly)
         try await f.assembler.ingest(ChatChunkPayload(
             sessionID: session, messageID: errorID, seq: 0, text: "boom", done: true, isError: true
         ))
-        // …and one still-streaming turn (incomplete rows are skipped).
         f.assemblerClock.advance(by: 60)
         _ = try await f.assembler.send(text: "pending question", sessionID: session, route: .localOnly)
-
         f.assemblerClock.advance(by: 60)
+        return session
+    }
+
+    func testHistoryCapAndSkipsIncompleteAndErrorRows() async throws {
+        let f = try makeFixtures(scripts: [[
+            .yield(.textDelta("ok")),
+            .yield(.finished(stopReason: "end_turn"))
+        ]])
+        let session = try await seedHistoryEdgeCases(f)
+
         _ = try await f.agent.sendTurn(text: "the new question", sessionID: session)
         await f.agent.drainAnswers(inSession: session)
 
         // Eligible: 20 pair messages + 2 orphaned user turns + the new user
-        // turn = 23 → capped to the LAST 20, oldest first.
+        // turn = 23 → capped to the LAST 20 (cutting at "answer 2"), then
+        // normalized for the API alternation rules: the three trailing
+        // consecutive user turns coalesce into ONE message and the leading
+        // assistant "answer 2" is dropped → 17 messages, user-first.
         let request = try XCTUnwrap(f.client.requests.first)
-        XCTAssertEqual(request.messages.count, 20)
-        XCTAssertEqual(request.messages.first, APIMessage(role: .assistant, content: [.text("answer 2")]))
-        XCTAssertEqual(request.messages.last, APIMessage(role: .user, content: [.text("the new question")]))
+        XCTAssertEqual(request.messages.count, 17)
+        XCTAssertEqual(request.messages.first, APIMessage(role: .user, content: [.text("question 3")]))
+        XCTAssertEqual(request.messages.last, APIMessage(
+            role: .user,
+            content: [.text("failed question\n\npending question\n\nthe new question")]
+        ))
         let blocks = request.messages.flatMap(\.content)
         XCTAssertFalse(blocks.contains(.text("boom")), "error reply must be skipped")
         XCTAssertFalse(blocks.contains(.text("")), "incomplete placeholders must be skipped")
+        XCTAssertFalse(blocks.contains(.text("answer 2")), "cap-cut leading assistant entry must be dropped")
+    }
+
+    func testHistoryNeverStartsWithAssistantAndAlternatesRoles() async throws {
+        let f = try makeFixtures(scripts: [[
+            .yield(.textDelta("ok")),
+            .yield(.finished(stopReason: "end_turn"))
+        ]])
+        let session = try await seedHistoryEdgeCases(f)
+
+        _ = try await f.agent.sendTurn(text: "the new question", sessionID: session)
+        await f.agent.drainAnswers(inSession: session)
+
+        // The raw eligible list starts at an assistant row (the cap cuts
+        // inside pair 2) AND carries adjacent user rows (the error-turn and
+        // incomplete-turn skips orphan their user turns next to the new
+        // question). The live API rejects both shapes with a 400 — the
+        // request that actually went out must be user-first and STRICTLY
+        // role-alternating.
+        let request = try XCTUnwrap(f.client.requests.first)
+        XCTAssertFalse(request.messages.isEmpty)
+        for (index, message) in request.messages.enumerated() {
+            XCTAssertEqual(
+                message.role,
+                index.isMultiple(of: 2) ? .user : .assistant,
+                "message \(index) breaks user-first strict role alternation"
+            )
+        }
     }
 
     // MARK: - Reentrancy
@@ -442,11 +488,44 @@ final class DirectAPIAgentTests: XCTestCase {
         XCTAssertTrue(second.isComplete)
         XCTAssertFalse(second.isError)
 
-        // Serialization proof: turn 2's API call started only after turn 1
-        // completed — its history already carries turn 1's finished answer.
+        // Turn 2's history was snapshotted at ITS send — answer 1 was still
+        // streaming (held at the gate), so it is absent by design and the
+        // two user turns coalesce per the API alternation normalization.
         let requests = f.client.requests
         XCTAssertEqual(requests.count, 2)
-        XCTAssertTrue(requests[1].messages.contains(APIMessage(role: .assistant, content: [.text("first answer")])))
+        XCTAssertEqual(requests[1].messages, [
+            APIMessage(role: .user, content: [.text("first question\n\nsecond question")])
+        ])
+    }
+
+    func testQueuedTurnDoesNotLeakIntoEarlierHistory() async throws {
+        let gate = Gate()
+        let f = try makeFixtures(scripts: [
+            [
+                .wait(gate),
+                .yield(.textDelta("first answer")),
+                .yield(.finished(stopReason: "end_turn"))
+            ],
+            [
+                .yield(.textDelta("second answer")),
+                .yield(.finished(stopReason: "end_turn"))
+            ]
+        ])
+
+        let (sessionID, _) = try await f.agent.sendTurn(text: "first question", sessionID: nil)
+        f.assemblerClock.advance(by: 60)
+        // Queued while answer 1 is still held open at the gate.
+        _ = try await f.agent.sendTurn(text: "second question", sessionID: sessionID)
+        gate.open()
+        await f.agent.drainAnswers(inSession: sessionID)
+
+        // History snapshots at send: answer 1's request is EXACTLY the
+        // thread as it stood when turn 1 was sent. Turn 2's user row must
+        // not leak in — that would put consecutive user turns on the wire
+        // (a live-API 400) and show the model question 2 while it answers
+        // question 1.
+        let request = try XCTUnwrap(f.client.requests.first)
+        XCTAssertEqual(request.messages, [APIMessage(role: .user, content: [.text("first question")])])
     }
 
     // MARK: - RelayAgentBackend
