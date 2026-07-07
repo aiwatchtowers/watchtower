@@ -14,6 +14,34 @@ final class DashboardViewModel {
     var isGenerating = false
     var errorMessage: String?
 
+    /// Master-detail selection (left list ↔ review pane). Lives here — the VM
+    /// is AppState-owned — so selection survives tab/sidebar navigation.
+    var selectedSituationID: Int?
+
+    /// Member signals per situation, loaded lazily on selection and cached so
+    /// re-selecting doesn't re-hit the DB (was view-local state in the old
+    /// in-feed expansion UI).
+    private var memberSignalsCache: [Int: [InboxItem]] = [:]
+
+    var selectedSituation: Situation? {
+        guard let id = selectedSituationID else { return nil }
+        return situations.first { $0.id == id }
+    }
+
+    func select(_ situationID: Int?) {
+        selectedSituationID = situationID
+        guard let id = situationID, memberSignalsCache[id] == nil else { return }
+        memberSignalsCache[id] = loadMemberSignals(id)
+    }
+
+    func memberSignals(for situationID: Int) -> [InboxItem] {
+        memberSignalsCache[situationID] ?? []
+    }
+
+    func memberSignalsLoaded(_ situationID: Int) -> Bool {
+        memberSignalsCache[situationID] != nil
+    }
+
     /// Page size for `fetchFeed`; overridable by tests to exercise pagination cheaply.
     var pageSize: Int = 50
     private var offset: Int = 0
@@ -119,12 +147,37 @@ final class DashboardViewModel {
             openCount = result.3
             offset = result.2.count
             errorMessage = nil
+            reconcileSelection()
         } catch {
             situations = []
             openCount = 0
+            selectedSituationID = nil
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    /// Keeps the selection valid across reloads: an id still in the feed is
+    /// kept; a vanished or absent selection falls back to the first situation.
+    private func reconcileSelection() {
+        if let id = selectedSituationID, situations.contains(where: { $0.id == id }) { return }
+        select(situations.first?.id)
+    }
+
+    /// Pre-computes which situation should be selected after `removed` leaves
+    /// the open feed: the next row in list order, the previous when the last
+    /// row was acted on, nil when the feed empties. Only applies when the
+    /// removed situation IS the selected one — acting on an unselected row
+    /// (context menu) leaves selection alone.
+    private func advanceSelection(from removed: Situation) {
+        guard selectedSituationID == removed.id else { return }
+        guard let idx = situations.firstIndex(where: { $0.id == removed.id }) else { return }
+        let remaining = situations.filter { $0.id != removed.id }
+        guard !remaining.isEmpty else {
+            selectedSituationID = nil
+            return
+        }
+        select(remaining[min(idx, remaining.count - 1)].id)
     }
 
     /// Appends the next page of the feed (infinite scroll).
@@ -141,6 +194,7 @@ final class DashboardViewModel {
     }
 
     func done(_ situation: Situation) {
+        advanceSelection(from: situation)
         do {
             try dbManager.dbPool.write { db in try SituationQueries.done(db, id: situation.id) }
             load()
@@ -150,6 +204,7 @@ final class DashboardViewModel {
     }
 
     func dismiss(_ situation: Situation) {
+        advanceSelection(from: situation)
         do {
             try dbManager.dbPool.write { db in try SituationQueries.dismiss(db, id: situation.id) }
             load()
@@ -159,6 +214,7 @@ final class DashboardViewModel {
     }
 
     func snooze(_ situation: Situation, until: String) {
+        advanceSelection(from: situation)
         do {
             try dbManager.dbPool.write { db in try SituationQueries.snooze(db, id: situation.id, until: until) }
             load()
@@ -171,6 +227,9 @@ final class DashboardViewModel {
     /// resulting id(s) so the link isn't lost (DASH-03), then reloads. Called
     /// once the create-target/create-track sheet has produced a real id.
     func markConverted(situationID: Int, targetID: Int?, trackID: Int?) {
+        if let situation = situations.first(where: { $0.id == situationID }) {
+            advanceSelection(from: situation)
+        }
         do {
             try dbManager.dbPool.write { db in
                 try SituationQueries.markConverted(db, id: situationID, targetID: targetID, trackID: trackID)

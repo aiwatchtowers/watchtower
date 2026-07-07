@@ -310,4 +310,105 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertTrue(runner.invocations.isEmpty, "generateNow must no-op while a run is already in flight")
         XCTAssertTrue(vm.isGenerating, "the guard must leave the in-flight flag untouched, not clear it")
     }
+
+    // MARK: - selection (master-detail)
+
+    func testLoadSelectsFirstSituationWhenNothingSelected() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "Top", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "Second", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertEqual(vm.selectedSituation?.title, "Top")
+    }
+
+    func testLoadKeepsSelectionWhenStillOpen() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "Top", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "Second", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let secondID = vm.situations[1].id
+        vm.select(secondID)
+
+        vm.load()
+
+        XCTAssertEqual(vm.selectedSituationID, secondID)
+    }
+
+    func testDoneOnSelectedSelectsNextSituation() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "B", rank: 5)
+            _ = try TestDatabase.insertSituation(db, title: "C", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        vm.select(vm.situations[0].id)
+
+        vm.done(vm.situations[0])
+
+        XCTAssertEqual(vm.selectedSituation?.title, "B")
+    }
+
+    func testDismissOnLastSelectedSelectsPrevious() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "B", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        vm.select(vm.situations[1].id)
+
+        vm.dismiss(vm.situations[1])
+
+        XCTAssertEqual(vm.selectedSituation?.title, "A")
+    }
+
+    func testDoneOnOnlySituationClearsSelection() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "Solo", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        vm.select(vm.situations[0].id)
+
+        vm.done(vm.situations[0])
+
+        XCTAssertNil(vm.selectedSituationID)
+        XCTAssertNil(vm.selectedSituation)
+    }
+
+    func testDoneOnUnselectedRowLeavesSelectionAlone() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "B", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        vm.select(vm.situations[0].id)
+
+        vm.done(vm.situations[1])
+
+        XCTAssertEqual(vm.selectedSituation?.title, "A")
+    }
+
+    func testSelectLazyLoadsMemberSignalsOnceAndCaches() throws {
+        let situationID = try dbManager.dbPool.write { db -> Int64 in
+            let sid = try TestDatabase.insertSituation(db)
+            let item = try TestDatabase.insertInboxItem(db, channelID: "C1", messageTS: "1700000100.000000", snippet: "hello")
+            try TestDatabase.linkSituationSignal(db, situationID: sid, inboxItemID: item)
+            return sid
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+
+        vm.select(Int(situationID))
+
+        XCTAssertTrue(vm.memberSignalsLoaded(Int(situationID)))
+        XCTAssertEqual(vm.memberSignals(for: Int(situationID)).map(\.snippet), ["hello"])
+    }
 }
