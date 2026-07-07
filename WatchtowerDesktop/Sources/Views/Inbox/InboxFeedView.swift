@@ -115,8 +115,8 @@ struct InboxFeedView: View {
 
     @ViewBuilder
     private var profileContent: some View {
-        if let dbPool = appState.databaseManager?.dbPool {
-            SecretaryProfileView(db: dbPool)
+        if let vm = appState.secretaryProfileViewModel {
+            SecretaryProfileView(vm: vm)
         } else {
             Text("Database unavailable")
                 .foregroundStyle(.secondary)

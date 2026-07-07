@@ -14,4 +14,18 @@ enum SecretaryProfileQueries {
     static func save(_ db: Database, text: String) throws {
         try db.execute(sql: "UPDATE workspace SET secretary_profile = ?", arguments: [text])
     }
+
+    /// Empty strings when no workspace row exists yet.
+    static func fetchStyle(_ db: Database) throws -> (text: String, updatedAt: String) {
+        let row = try Row.fetchOne(db, sql: "SELECT style_profile, style_profile_updated_at FROM workspace LIMIT 1")
+        return (row?["style_profile"] ?? "", row?["style_profile_updated_at"] ?? "")
+    }
+
+    /// UPDATE only — silent no-op without a workspace row (matches save(_:text:)).
+    static func saveStyle(_ db: Database, text: String) throws {
+        try db.execute(
+            sql: "UPDATE workspace SET style_profile = ?, style_profile_updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+            arguments: [text]
+        )
+    }
 }

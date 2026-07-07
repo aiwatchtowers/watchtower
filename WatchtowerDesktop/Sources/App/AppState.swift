@@ -46,6 +46,11 @@ final class AppState {
     /// view-local instance was torn down.
     private(set) var dashboardViewModel: DashboardViewModel?
 
+    /// Secretary Profile ViewModel — persists across tab switches so an
+    /// in-flight "Generate" style-sample run survives navigating away from
+    /// and back to the Profile tab.
+    private(set) var secretaryProfileViewModel: SecretaryProfileViewModel?
+
     /// Sidebar badge counts — created during initialize() before the splash hides,
     /// so badges are visible the moment the main UI appears.
     private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
@@ -210,6 +215,7 @@ final class AppState {
                 initDayPlan(dbPool: manager.dbPool)
                 initCatchUp(dbPool: manager.dbPool)
                 initDashboard(dbManager: manager)
+                initSecretaryProfile(dbManager: manager)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -339,6 +345,13 @@ final class AppState {
         let vm = DashboardViewModel(dbManager: dbManager)
         vm.startObserving()
         dashboardViewModel = vm
+    }
+
+    /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it
+    /// directly via `@testable import` to prove `secretaryProfileViewModel`
+    /// identity persists across accesses.
+    func initSecretaryProfile(dbManager: DatabaseManager) {
+        secretaryProfileViewModel = SecretaryProfileViewModel(dbManager: dbManager)
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {
