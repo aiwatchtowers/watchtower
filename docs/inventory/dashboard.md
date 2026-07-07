@@ -58,6 +58,20 @@
 
 **Locked since:** 2026-07-06
 
+## DASH-04 — Comment-less feedback never invokes the AI interpreter
+
+**Status:** Enforced
+
+**Observable:** 👍/👎 on a situation without a comment stays local: the Desktop writes rules directly (👎 → `source_mute` user_rule per member-signal channel; 👍 → no-op) and the `watchtower inbox feedback` CLI mirrors the same derivation — neither path makes an AI call. Only a non-empty comment runs the `inbox.situation_learn` learning interpreter, and every rule it derives lands as `source='user_rule'` (protected from implicit overwrite, INBOX-05).
+
+**Why locked:** A bare thumb is a one-bit signal; silently spending an AI call (and potentially minutes of CLI latency) on it would make the cheapest feedback gesture slow and expensive, and rules invented from a bare thumb would be guesses. The interpreter runs only when the user actually said something interpretable.
+
+**Test guards:**
+- `internal/inbox/situation_feedback_test.go::TestDash04_CommentlessFeedbackNeverInvokesInterpreter`
+- `WatchtowerDesktop/Tests/DashboardViewModelTests.swift::testSubmitFeedbackWithoutCommentDoesNotInvokeCLI`
+
+**Locked since:** 2026-07-07
+
 ## Changelog
 
 - 2026-07-06: file created with 3 contracts (DASH-01..03), all Enforced. Introduced by the secretary dashboard feature (spec `docs/superpowers/specs/2026-07-06-secretary-dashboard-design.md`), which composes inbox signals plus target/track updates into ranked `situations`, replacing the inbox's two-tier "Needs action"/"FYI" feed as the app's start screen. See `docs/inventory/inbox-pulse.md`'s 2026-07-06 changelog entry for how INBOX-01/07/09 relate to this new surface.
