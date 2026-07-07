@@ -8,7 +8,9 @@ import WatchtowerKit
 /// (`RowPayloadCoder`), so the hydrator + `ReplicaStore.fetchAll` decode path
 /// is exercised end-to-end.
 ///
-/// DEBUG-only: production builds connect a real transport and never seed.
+/// Runs ONLY on the `.inMemoryDemo` transport kind, and only in DEBUG — the
+/// `.cloudKit` kind starts empty and hydrates from the user's own zone
+/// (Plan 6 Decision 2; the gate lives in `AppEnvironment.bootstrap`).
 enum DemoSeed {
     static func load(into transport: any CloudSyncTransport) async throws {
         let now = Date()

@@ -44,7 +44,7 @@ struct SettingsView: View {
                 Section("App") {
                     LabeledContent("Version", value: appVersion)
                     LabeledContent("WatchtowerKit", value: WatchtowerKitInfo.version)
-                    LabeledContent("Connected transport", value: env.transportLabel)
+                    LabeledContent("Sync", value: Self.syncValue(for: env.transportKind))
                 }
                 Section {
                     if env.hasAPIKey {
@@ -112,6 +112,15 @@ struct SettingsView: View {
             keyError = nil
         } catch {
             keyError = "Could not remove the key from the Keychain. Try again."
+        }
+    }
+
+    /// Display value for the "Sync" row — which transport this install runs
+    /// on ("iCloud" for entitled builds, "Demo" for unsigned sim/CI builds).
+    static func syncValue(for kind: TransportKind) -> String {
+        switch kind {
+        case .cloudKit: "iCloud"
+        case .inMemoryDemo: "Demo"
         }
     }
 

@@ -102,6 +102,67 @@ final class ReplicaWiringTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(last.deleted, 0)
     }
 
+    // MARK: - Probe-driven transport swap (Plan 6 Task 2)
+
+    /// The unsigned test host (CODE_SIGNING_ALLOWED=NO — the CI reality) has
+    /// no iCloud entitlement, so `AppEnvironment()` must keep today's demo
+    /// behavior byte-for-byte: probe false → InMemory transport + DemoSeed,
+    /// label "demo". The count assertions above stay the deep pin; this test
+    /// pins the SELECTION.
+    func testUnsignedHostProbesFalseAndBootsDemo() async throws {
+        XCTAssertFalse(
+            CloudKitTransport.entitlementPresent(),
+            "unsigned sim/CI host must probe false — a true here means the demo path is dead"
+        )
+
+        let env = try AppEnvironment()
+        XCTAssertEqual(env.transportKind, .inMemoryDemo)
+        XCTAssertEqual(env.transportLabel, "demo")
+
+        try await poll { env.lastHydrate != nil }
+        let briefings = try await env.store.reader.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM slice_records WHERE kind = ?",
+                arguments: [SliceKind.briefing.rawValue]
+            ) ?? 0
+        }
+        XCTAssertEqual(briefings, 1, "demo path must still seed (today's behavior)")
+    }
+
+    /// Decision 2: a real-transport install starts EMPTY and hydrates from
+    /// the user's own zone — DemoSeed must NEVER run on the `.cloudKit` kind.
+    /// Forced via the designated init (an InMemory stand-in transport, so the
+    /// test never touches CloudKit) on an ISOLATED replica path — the shared
+    /// TEST_HOST path already holds the host app's demo rows.
+    func testForcedCloudKitKindSeedsNothingAndLabelsICloud() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mobile-cloudkit-kind-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+
+        let env = try AppEnvironment(
+            transport: InMemoryCloudTransport(),
+            replicaPath: dir.appendingPathComponent("replica.sqlite").path,
+            transportKind: .cloudKit
+        )
+        XCTAssertEqual(env.transportKind, .cloudKit)
+        XCTAssertEqual(env.transportLabel, "iCloud")
+
+        // Bootstrap still runs a first hydrate cycle — over an empty zone.
+        try await poll { env.lastHydrate != nil }
+        let rows = try await env.store.reader.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
+        }
+        XCTAssertEqual(rows, 0, "the cloudKit kind must start empty — DemoSeed leaked past its gate")
+    }
+
+    /// The Settings "Sync" row renders the kind through this mapping.
+    func testSettingsSyncRowRendersTransportKind() {
+        XCTAssertEqual(SettingsView.syncValue(for: .cloudKit), "iCloud")
+        XCTAssertEqual(SettingsView.syncValue(for: .inMemoryDemo), "Demo")
+    }
+
     // MARK: - Degraded boot (unopenable replica)
 
     /// A pool-open failure must surface as a THROW — the app catches it and

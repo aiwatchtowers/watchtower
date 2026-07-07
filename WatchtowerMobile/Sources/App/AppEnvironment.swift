@@ -3,6 +3,16 @@ import Observation
 import os
 import WatchtowerKit
 
+/// Which transport an `AppEnvironment` runs on. Probed in `init()`
+/// (Plan 6 Decision 1), injectable through the designated init for tests.
+/// Drives `transportLabel`, the Settings "Sync" row, and the DemoSeed gate —
+/// `.cloudKit` NEVER seeds (Decision 2: real installs start empty and
+/// hydrate from the user's own zone).
+public enum TransportKind: String, Sendable {
+    case cloudKit
+    case inMemoryDemo
+}
+
 /// Root object for the app: owns the on-device replica (`ReplicaStore`), the
 /// `ReplicaHydrator` that pulls DataZone changes into it, and the relay pair —
 /// `ActionOutbox` (quick actions out) + `RelayFeed` (echoes/heartbeat/chat in),
@@ -15,19 +25,22 @@ public final class AppEnvironment {
     /// The local mirror every tab reads through (`fetchAll` / ValueObservation).
     public let store: ReplicaStore
 
-    /// v1 wiring: an in-memory transport seeded with demo data (`DemoSeed`).
-    ///
-    /// TRANSPORT SWAP POINT — when the CloudKit entitlements land (packaging
-    /// plan), the swap is these four steps, all local to this file:
-    ///   1. `let transportStore = try TransportStore(path: …/cloudkit-transport.sqlite)`
-    ///   2. `let transport = CloudKitTransport(store: transportStore)`,
-    ///      plus `await transport.start()` in `bootstrap`
-    ///   3. pass `pull: { try await transport.pull() }` to the ReplicaHydrator
-    ///      AND to the RelayFeed (both hooks exist for exactly this)
-    ///   4. update `transportLabel`
-    /// Everything downstream already talks to the `CloudSyncTransport`
-    /// protocol, not the concrete type.
+    /// TRANSPORT SWAP POINT — live since Plan 6 Task 2. `init()` probes the
+    /// process's iCloud entitlement (`CloudKitTransport.entitlementPresent`)
+    /// and picks:
+    ///   - entitled (signed device/TestFlight builds): `TransportStore` at
+    ///     …/cloudkit-transport.sqlite + `CloudKitTransport`, `start()`ed in
+    ///     `bootstrap`, with its `pull` wired into the ReplicaHydrator AND
+    ///     the RelayFeed (see the designated init);
+    ///   - not entitled (unsigned sim/CI builds): `InMemoryCloudTransport`
+    ///     seeded with demo data — the pre-swap behavior, unchanged.
+    /// Everything downstream talks to the `CloudSyncTransport` protocol,
+    /// not the concrete type; `transportKind` records which branch won.
     private let transport: any CloudSyncTransport
+
+    /// Which branch of the swap this environment runs on — drives
+    /// `transportLabel`, the Settings "Sync" row, and the DemoSeed gate.
+    public let transportKind: TransportKind
     private let hydrator: ReplicaHydrator
 
     /// The phone's action producer: view models enqueue quick actions here;
@@ -77,7 +90,12 @@ public final class AppEnvironment {
     private var sweepTask: Task<Void, Never>?
 
     /// Human-readable name of the connected transport, shown in Settings.
-    public let transportLabel = "demo"
+    public var transportLabel: String {
+        switch transportKind {
+        case .cloudKit: "iCloud"
+        case .inMemoryDemo: "demo"
+        }
+    }
 
     /// Result of the most recent hydration cycle (records applied / deleted).
     public private(set) var lastHydrate: (applied: Int, deleted: Int)?
@@ -105,21 +123,48 @@ public final class AppEnvironment {
     }
 
     public convenience init() throws {
-        // TRANSPORT SWAP POINT (see the four-step doc comment above).
-        try self.init(transport: InMemoryCloudTransport(), replicaPath: Self.replicaPath())
+        // TRANSPORT SWAP POINT (see the doc comment on `transport` above):
+        // entitled builds go live over CloudKit, everything else stays demo.
+        if CloudKitTransport.entitlementPresent() {
+            let transportStore = try TransportStore(path: Self.supportPath("cloudkit-transport.sqlite"))
+            try self.init(
+                transport: CloudKitTransport(store: transportStore),
+                replicaPath: Self.supportPath("replica.sqlite"),
+                transportKind: .cloudKit
+            )
+        } else {
+            try self.init(
+                transport: InMemoryCloudTransport(),
+                replicaPath: Self.supportPath("replica.sqlite"),
+                transportKind: .inMemoryDemo
+            )
+        }
     }
 
     /// Designated init with an injectable transport + replica path — wiring
     /// tests build isolated environments; production uses `init()` above.
+    /// `transportKind` is injectable so tests can force either branch without
+    /// probing; it defaults to the demo kind every pre-swap test relied on.
     ///
     /// Throws when the replica pool cannot open (the app renders that as the
     /// degraded `BootFailureView` — see `WatchtowerMobileApp.Boot` — instead
     /// of the pre-Task-9 `fatalError`).
-    init(transport: any CloudSyncTransport, replicaPath: String) throws {
+    init(
+        transport: any CloudSyncTransport,
+        replicaPath: String,
+        transportKind: TransportKind = .inMemoryDemo
+    ) throws {
         store = try ReplicaStore(path: replicaPath)
 
         self.transport = transport
-        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        self.transportKind = transportKind
+        // Swap step 3: on the live path both relay-cycle consumers nudge the
+        // CKSyncEngine before reading. Derived from the concrete type, not
+        // the kind — a kind-forced test env with an InMemory stand-in has no
+        // engine to nudge and correctly gets nil.
+        let pull: (@Sendable () async throws -> Void)? = (transport as? CloudKitTransport)
+            .map { cloud in { try await cloud.pull() } }
+        let hydrator = ReplicaHydrator(transport: transport, store: store, pull: pull)
         self.hydrator = hydrator
         let outbox = ActionOutbox(transport: transport, store: store)
         self.outbox = outbox
@@ -140,6 +185,7 @@ public final class AppEnvironment {
             store: store,
             outbox: outbox,
             assembler: chat,
+            pull: pull,
             // The flicker-window mitigation: an `applied` echo clears the
             // optimistic overlay, and without a nudge the row would show its
             // STALE pre-action state until the hydrator's next 30 s poll.
@@ -158,21 +204,35 @@ public final class AppEnvironment {
         Task { await bootstrap(transport: transport) }
     }
 
-    /// Seeds demo data (DEBUG only), runs a first hydration cycle so the tabs
-    /// have content immediately, then starts the background loops (data-zone
-    /// hydration, relay feed, silent-pending sweep).
+    /// Per-kind setup (demo seed vs engine start), then a first hydration
+    /// cycle so the tabs have content immediately, then the background loops
+    /// (data-zone hydration, relay feed, silent-pending sweep).
     private func bootstrap(transport: any CloudSyncTransport) async {
-        #if DEBUG
-        do {
-            try await DemoSeed.load(into: transport)
-            // Canned chat exchange BEFORE feed.start(): the answer chunks sit
-            // in the relay zone when the feed's first poll runs, so the Chat
-            // tab shows a completed thread within the first cycle.
-            try await DemoSeed.loadChatExchange(via: chat, into: transport, store: store)
-        } catch {
-            Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
+        switch transportKind {
+        case .inMemoryDemo:
+            // Demo data on the demo kind ONLY (Decision 2), and only in
+            // DEBUG — a Release demo build simply renders empty tabs.
+            #if DEBUG
+            do {
+                try await DemoSeed.load(into: transport)
+                // Canned chat exchange BEFORE feed.start(): the answer chunks
+                // sit in the relay zone when the feed's first poll runs, so
+                // the Chat tab shows a completed thread within the first cycle.
+                try await DemoSeed.loadChatExchange(via: chat, into: transport, store: store)
+            } catch {
+                Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
+            }
+            #endif
+        case .cloudKit:
+            // Swap step 2, second half: bring the CKSyncEngine up before the
+            // first hydrate so the pull hooks have an engine to nudge. Never
+            // seeds — a real install starts empty and hydrates from the
+            // user's own zone. (A kind-forced test env carries an InMemory
+            // stand-in, so the cast is the same no-engine guard as `pull`.)
+            if let cloud = transport as? CloudKitTransport {
+                await cloud.start()
+            }
         }
-        #endif
         await refresh()
         await hydrator.start()
         await feed.start()
@@ -227,13 +287,15 @@ public final class AppEnvironment {
         }
     }
 
-    private static func replicaPath() -> String {
+    /// Application Support path for a store file — the replica and the
+    /// CloudKit transport buffer live side by side there.
+    private static func supportPath(_ fileName: String) -> String {
         let base = (try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )) ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("replica.sqlite").path
+        return base.appendingPathComponent(fileName).path
     }
 }

@@ -143,6 +143,19 @@ final class PublicAPISurfaceTests: XCTestCase {
         _ = keyPath1; _ = keyPath2; _ = keyPath3
     }
 
+    // MARK: - CloudKit entitlement probe (the AppEnvironment transport swap)
+
+    func testEntitlementProbeIsPublicAndFalseInUnsignedHost() {
+        // The SwiftPM test host is NOT signed with the Watchtower iCloud
+        // container — the exact reality of every CI/sim run. The probe must
+        // report that honestly (false), which is what keeps unsigned builds
+        // on the InMemory+DemoSeed path instead of crashing into CloudKit.
+        XCTAssertFalse(CloudKitTransport.entitlementPresent())
+        // The default containerID is the frozen WatchtowerCloud one; an
+        // explicit pass-through must behave identically.
+        XCTAssertFalse(CloudKitTransport.entitlementPresent(containerID: WatchtowerCloud.containerID))
+    }
+
     // MARK: - TransportStore public surface
 
     func testTransportStorePublicInit() throws {
