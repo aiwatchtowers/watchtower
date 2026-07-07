@@ -94,10 +94,19 @@ final class LiveAPISmokeTests: XCTestCase {
             model: { .haiku45 }
         )
 
-        let (sessionID, messageID) = try await agent.sendTurn(
-            text: "Use the list_targets tool and tell me how many targets exist. Answer with just the number.",
-            sessionID: nil
-        )
+        let sessionID: String
+        let messageID: String
+        do {
+            (sessionID, messageID) = try await agent.sendTurn(
+                text: "Use the list_targets tool and tell me how many targets exist. Answer with just the number.",
+                sessionID: nil
+            )
+        } catch {
+            // Redact even the throw path — the "no failure output embeds the
+            // key" claim must hold for errors outside the assert paths too.
+            XCTFail("live sendTurn threw: \(redacted(String(describing: error)))")
+            return
+        }
         await agent.drainAnswers(inSession: sessionID)
 
         let reply = try XCTUnwrap(try store.chatMessages(inSession: sessionID).first { $0.id == messageID })

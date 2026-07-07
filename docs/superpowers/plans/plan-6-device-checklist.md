@@ -140,7 +140,12 @@ chat can be switched back via "Back to Mac relay".
 
 Do: on the desktop, get a genuinely NEW high-priority pending inbox item
 published (wait for a real one, or set an existing pending item's priority to
-high — the next publish cycle tags it "urgent"). Phone can be backgrounded.
+high — the next publish cycle tags it "urgent"). **Keep the app FOREGROUNDED
+for this first pass**: the one-time permission dialog cannot present to a
+backgrounded app, and the storm-safe watermark advances regardless — a
+backgrounded first pass would silently skip this item's alert (the prompt
+would only surface on the next foreground). Background the phone only for
+re-runs AFTER "Allowed".
 
 Expect: at the FIRST genuinely-new alertable row since install, the phone
 asks for notification permission **once** — this contextual moment is the

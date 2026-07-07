@@ -86,3 +86,4 @@ scripted separately in `plan-6-device-checklist.md`.
     `NotificationCoordinator.swift` (263); `ChatView.swift` is now 720 lines
     and remains the standing split candidate (banner/backend-affordance
     sub-views) before the next chat feature lands.
+- **Decision 6 deviation (benign, final review)**: `AppDelegate.didReceiveRemoteNotification` calls `env.refresh()` (→ hydrateOnce → pull hook → `engine.fetchChanges()`) instead of the plan's literal `transport.handleRemoteNotification(userInfo)` — functionally the same nudge; CKSyncEngine consumes its own pushes once registered.
