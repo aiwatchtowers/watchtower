@@ -1,0 +1,179 @@
+import XCTest
+import GRDB
+@testable import WatchtowerDesktop
+
+@MainActor
+final class SituationChatViewModelTests: XCTestCase {
+    private var dbManager: DatabaseManager!
+    private var dbPath: String!
+
+    override func setUp() {
+        super.setUp()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+            try dbManager.dbPool.write { db in
+                try ChatConversationQueries.ensureTable(db)
+                try ChatMessageQueries.ensureTable(db)
+            }
+        } catch { XCTFail("setUp failed: \(error)") }
+    }
+
+    override func tearDown() {
+        TestDatabase.cleanup(path: dbPath)
+        super.tearDown()
+    }
+
+    private func makeSituation(title: String = "Cloudflare follow-up") throws -> Situation {
+        let id = try dbManager.dbPool.write { db in
+            try TestDatabase.insertSituation(
+                db, title: title, summary: "second follow-up",
+                whyMatters: "ball is on you", chronology: "day 1 ... day 13")
+        }
+        let situation = try dbManager.dbPool.read { db in
+            try Situation.fetchOne(db, sql: "SELECT * FROM situations WHERE id = ?", arguments: [id])
+        }
+        return try XCTUnwrap(situation)
+    }
+
+    /// Looks up the persisted `chat_conversations.id` for a situation's conversation.
+    private func conversationID(for situation: Situation) throws -> Int64 {
+        let conv = try dbManager.dbPool.read { db in
+            try ChatConversationQueries.fetchByContext(db, type: "situation", id: String(situation.id))
+        }
+        return try XCTUnwrap(conv).id
+    }
+
+    // MARK: - Conversation lifecycle
+
+    func testCreatesConversationWithSituationContext() throws {
+        let situation = try makeSituation()
+        _ = SituationChatViewModel(situation: situation, memberSignals: [], dbManager: dbManager, aiService: MockClaudeService())
+
+        let conv = try dbManager.dbPool.read { db in
+            try ChatConversationQueries.fetchByContext(db, type: "situation", id: String(situation.id))
+        }
+        let unwrapped = try XCTUnwrap(conv)
+        XCTAssertTrue(unwrapped.title.hasPrefix("Situation:"))
+    }
+
+    func testReopensExistingConversationWithHistory() throws {
+        let situation = try makeSituation()
+        let vm1 = SituationChatViewModel(situation: situation, memberSignals: [], dbManager: dbManager, aiService: MockClaudeService())
+        _ = vm1 // conversation created
+        let convID = try conversationID(for: situation)
+        try dbManager.dbPool.write { db in
+            _ = try ChatMessageQueries.insert(db, conversationID: convID, role: "user", text: "earlier question")
+        }
+
+        let vm2 = SituationChatViewModel(situation: situation, memberSignals: [], dbManager: dbManager, aiService: MockClaudeService())
+
+        XCTAssertEqual(vm2.messages.map(\.text), ["earlier question"])
+    }
+
+    // MARK: - Draft reply
+
+    func testDraftReplySendsCannedMessageAndStreams() async throws {
+        let situation = try makeSituation()
+        let mock = MockClaudeService(events: [.text("Черновик ответа"), .done])
+        let vm = SituationChatViewModel(situation: situation, memberSignals: [], dbManager: dbManager, aiService: mock)
+
+        vm.draftReply()
+        try await waitUntil { !vm.isStreaming }
+
+        XCTAssertEqual(mock.prompts.first, SituationChatViewModel.draftRequestText)
+        XCTAssertEqual(vm.messages.last?.text, "Черновик ответа")
+        XCTAssertEqual(vm.messages.first?.text, SituationChatViewModel.draftRequestText)
+    }
+
+    func testStreamErrorSurfacesInline() async throws {
+        let situation = try makeSituation()
+        struct Boom: Error {}
+        let vm = SituationChatViewModel(situation: situation, memberSignals: [], dbManager: dbManager, aiService: MockClaudeService(error: Boom()))
+
+        vm.inputText = "hello"
+        vm.send()
+        try await waitUntil { !vm.isStreaming }
+
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    // MARK: - System prompt builder
+
+    func testBuildSystemPromptIncludesCardAndSignals() throws {
+        let situation = try makeSituation()
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(db, channelID: "C1", messageTS: "1700000100.000000", snippet: "Since I didn't hear back from you")
+        }
+        let signals = try dbManager.dbPool.read { db in
+            try InboxItem.fetchAll(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [itemID])
+        }
+
+        let prompt = SituationChatViewModel.buildSystemPrompt(
+            situation: situation, memberSignals: signals, dbPool: dbManager.dbPool)
+
+        XCTAssertTrue(prompt.contains("Cloudflare follow-up"))
+        XCTAssertTrue(prompt.contains("ball is on you"))
+        XCTAssertTrue(prompt.contains("Since I didn't hear back from you"))
+        XCTAssertTrue(prompt.contains("ready-to-send"))
+    }
+
+    func testBuildSystemPromptStyleBlockPresentAndAbsent() throws {
+        let situation = try makeSituation()
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db)
+            try db.execute(sql: "UPDATE workspace SET style_profile = 'You write tersely.'")
+        }
+        let with = SituationChatViewModel.buildSystemPrompt(situation: situation, memberSignals: [], dbPool: dbManager.dbPool)
+        XCTAssertTrue(with.contains("You write tersely."))
+
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: "UPDATE workspace SET style_profile = ''")
+        }
+        let without = SituationChatViewModel.buildSystemPrompt(situation: situation, memberSignals: [], dbPool: dbManager.dbPool)
+        XCTAssertFalse(without.contains("OWNER'S COMMUNICATION STYLE"))
+        XCTAssertTrue(without.contains("mirror the owner's own messages"), "empty style must fall back to mirroring instruction")
+    }
+
+    func testBuildSystemPromptCounterpartyBriefFromPeopleCard() throws {
+        let situation = try makeSituation()
+        let itemID = try dbManager.dbPool.write { db -> Int64 in
+            try TestDatabase.insertWorkspace(db)
+            // Verify TestDatabase has a people-card insertion helper; if not, raw SQL insert
+            // into people_cards with user_id='U9', communication_guide='be blunt with him'.
+            try db.execute(sql: """
+                INSERT INTO people_cards (user_id, period_from, period_to, communication_guide)
+                VALUES ('U9', 1.0, 2.0, 'be blunt with him')
+                """)
+            return try TestDatabase.insertInboxItem(db, channelID: "C1", messageTS: "1700000100.000000", senderUserID: "U9", snippet: "ping")
+        }
+        let signals = try dbManager.dbPool.read { db in
+            try InboxItem.fetchAll(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [itemID])
+        }
+
+        let prompt = SituationChatViewModel.buildSystemPrompt(situation: situation, memberSignals: signals, dbPool: dbManager.dbPool)
+
+        XCTAssertTrue(prompt.contains("be blunt with him"))
+    }
+
+    func testPersistedMessageCount() throws {
+        let situation = try makeSituation()
+        XCTAssertEqual(try dbManager.dbPool.read { try SituationChatViewModel.persistedMessageCount($0, situationID: situation.id) }, 0)
+
+        let vm = SituationChatViewModel(situation: situation, memberSignals: [], dbManager: dbManager, aiService: MockClaudeService())
+        _ = vm
+        let convID = try conversationID(for: situation)
+        try dbManager.dbPool.write { db in
+            _ = try ChatMessageQueries.insert(db, conversationID: convID, role: "user", text: "hi")
+        }
+        XCTAssertEqual(try dbManager.dbPool.read { try SituationChatViewModel.persistedMessageCount($0, situationID: situation.id) }, 1)
+    }
+
+    // MARK: - Helpers
+
+    private func waitUntil(_ cond: @escaping () -> Bool) async throws {
+        for _ in 0..<200 where !cond() {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(cond(), "condition not met within 2s")
+    }
+}
