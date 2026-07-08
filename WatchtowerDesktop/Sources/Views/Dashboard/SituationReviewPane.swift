@@ -36,7 +36,9 @@ struct SituationReviewPane: View {
     // Discuss chat state lives on the pane (not the in-scroll section) because
     // its input bar must dock OUTSIDE the ScrollView — ChatInput's nested
     // NSScrollView collapses inside a SwiftUI ScrollView. Reset per situation
-    // by the pane's `.id(situation.id)` below.
+    // by the `.id(situation.id)` DashboardView applies at the pane's call
+    // site — an .id inside this body would only reset children, not this
+    // @State, leaking one situation's conversation into the next.
     @State private var discussExpanded = false
     @State private var discussVM: SituationChatViewModel?
 
@@ -70,8 +72,6 @@ struct SituationReviewPane: View {
             Divider()
             actionBar
         }
-        // Reset the comment field when switching to a different situation.
-        .id(situation.id)
     }
 
     // MARK: - Header

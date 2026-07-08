@@ -137,6 +137,13 @@ struct DashboardView: View {
                 onOpenTarget: { appState.navigateToTarget($0) },
                 onOpenTrack: { appState.navigateToTrack($0) }
             )
+            // Identity at the CALL SITE, so the pane's OWN @State (discuss
+            // chat VM/expansion, comment draft) resets when the selection
+            // changes — an .id inside the pane's body only resets its
+            // children, which let a previous situation's Discuss conversation
+            // leak into the next one. Same id on a poll-driven re-render of
+            // the same situation → state survives (required).
+            .id(situation.id)
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "square.grid.2x2")
