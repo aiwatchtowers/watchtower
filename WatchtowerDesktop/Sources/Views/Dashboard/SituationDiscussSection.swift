@@ -4,16 +4,21 @@ import AppKit
 // MARK: - SituationDiscussSection
 
 /// Collapsed-by-default "Discuss with secretary" chat at the bottom of the
-/// situation review pane. Inert while collapsed (one cheap message-count read);
-/// the chat VM — and any AI call — exists only after the user expands it and
-/// acts. Draft replies are copy-only: the app never posts to Slack.
+/// situation review pane's SCROLL content: header + message bubbles only.
+/// The input field is docked by the owning `SituationReviewPane` below the
+/// scroll (`SituationDiscussInputBar`) — `ChatInput` wraps a nested
+/// NSScrollView that collapses inside a SwiftUI ScrollView, so it must live
+/// outside it (same placement as TargetChatSection). Expansion state and the
+/// chat VM belong to the pane for the same reason; the section stays inert
+/// while collapsed (one cheap message-count read). Drafts are copy-only: the
+/// app never posts to Slack.
 struct SituationDiscussSection: View {
     let situation: Situation
     let memberSignals: [InboxItem]
     let dbManager: DatabaseManager
+    @Binding var isExpanded: Bool
+    @Binding var chatVM: SituationChatViewModel?
 
-    @State private var isExpanded = false
-    @State private var chatVM: SituationChatViewModel?
     @State private var persistedCount = 0
 
     var body: some View {
@@ -21,7 +26,7 @@ struct SituationDiscussSection: View {
             Divider().padding(.vertical, 2)
             header
             if isExpanded, let chatVM {
-                SituationDiscussChat(chatVM: chatVM)
+                SituationDiscussMessages(chatVM: chatVM)
                     .padding(.top, 6)
             }
         }
@@ -82,45 +87,15 @@ struct SituationDiscussSection: View {
     }
 }
 
-// MARK: - Chat body
+// MARK: - Message list (inside the pane's scroll)
 
-private struct SituationDiscussChat: View {
-    @Bindable var chatVM: SituationChatViewModel
+private struct SituationDiscussMessages: View {
+    let chatVM: SituationChatViewModel
 
     var body: some View {
-        VStack(spacing: 8) {
-            messageList
-            if let err = chatVM.errorMessage {
-                Label(err, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HStack(spacing: 8) {
-                Button {
-                    chatVM.draftReply()
-                } label: {
-                    Label("Draft reply", systemImage: "square.and.pencil")
-                }
-                .buttonStyle(.bordered)
-                .disabled(chatVM.isStreaming)
-                .help("Ask the secretary for a ready-to-send reply in your voice")
-                Spacer()
-            }
-            ChatInput(
-                text: $chatVM.inputText,
-                isStreaming: chatVM.isStreaming,
-                onSend: { chatVM.send() },
-                onStop: { chatVM.cancelStream() },
-                placeholder: "Discuss this situation with the secretary…"
-            )
-        }
-    }
-
-    private var messageList: some View {
         LazyVStack(alignment: .leading, spacing: 10) {
             if chatVM.messages.isEmpty {
-                Text("Ask anything about this situation, or hit Draft reply.")
+                Text("Tell me what to reply — I'll draft it in your voice. Or just ask about this situation.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -188,6 +163,34 @@ private struct SituationDiscussChat: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+}
+
+// MARK: - Docked input bar (outside the pane's scroll)
+
+/// The Discuss chat's input row, rendered by `SituationReviewPane` between
+/// the scroll content and the action bar while Discuss is expanded.
+struct SituationDiscussInputBar: View {
+    @Bindable var chatVM: SituationChatViewModel
+
+    var body: some View {
+        VStack(spacing: 4) {
+            if let err = chatVM.errorMessage {
+                Label(err, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+            }
+            ChatInput(
+                text: $chatVM.inputText,
+                isStreaming: chatVM.isStreaming,
+                onSend: { chatVM.send() },
+                onStop: { chatVM.cancelStream() },
+                placeholder: "Tell me what to reply, or ask about this situation…"
+            )
         }
     }
 }

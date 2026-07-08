@@ -70,19 +70,20 @@ final class SituationChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm2.messages.map(\.text), ["earlier question"])
     }
 
-    // MARK: - Draft reply
+    // MARK: - Sending (intent-driven draft flow: the user's text IS the intent)
 
-    func testDraftReplySendsCannedMessageAndStreams() async throws {
+    func testSendStreamsUserIntentVerbatim() async throws {
         let situation = try makeSituation()
         let mock = MockClaudeService(events: [.text("Черновик ответа"), .done])
         let vm = SituationChatViewModel(situation: situation, memberSignals: [], dbManager: dbManager, aiService: mock)
 
-        vm.draftReply()
+        vm.inputText = "скажи им, что откатим завтра"
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
-        XCTAssertEqual(mock.prompts.first, SituationChatViewModel.draftRequestText)
+        XCTAssertEqual(mock.prompts.first, "скажи им, что откатим завтра")
         XCTAssertEqual(vm.messages.last?.text, "Черновик ответа")
-        XCTAssertEqual(vm.messages.first?.text, SituationChatViewModel.draftRequestText)
+        XCTAssertEqual(vm.messages.first?.text, "скажи им, что откатим завтра")
     }
 
     /// A resumed turn drops the system prompt (the CLI uses --resume), so the

@@ -52,6 +52,8 @@ final class SituationChatPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("ball is on you"))
         XCTAssertTrue(prompt.contains("Since I didn't hear back from you"))
         XCTAssertTrue(prompt.contains("ready-to-send"))
+        XCTAssertTrue(prompt.contains("adding NO commitments"), "draft contract must forbid inventing content")
+        XCTAssertTrue(prompt.contains("never push an unsolicited draft"), "no intent → discuss, not draft")
     }
 
     func testBuildSystemPromptStyleBlockPresentAndAbsent() throws {

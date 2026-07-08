@@ -19,8 +19,6 @@ final class SituationChatViewModel {
     var inputText = ""
     var errorMessage: String?
 
-    static let draftRequestText = "Draft a reply I can send in this thread."
-
     private var conversationID: Int64?
     private var sessionID: String?
     private let aiService: any AIServiceProtocol
@@ -99,13 +97,6 @@ final class SituationChatViewModel {
         guard !text.isEmpty, !isStreaming else { return }
         inputText = ""
         sendUserMessage(text)
-    }
-
-    /// The "Draft reply" button: a canned request so the secretary produces a
-    /// ready-to-send reply per the system prompt's draft contract.
-    func draftReply() {
-        guard !isStreaming else { return }
-        sendUserMessage(Self.draftRequestText)
     }
 
     private func sendUserMessage(_ text: String) {
@@ -300,12 +291,15 @@ final class SituationChatViewModel {
 
         return """
         You are the user's AI secretary, discussing ONE situation from their work dashboard. \
-        Help them think it through and, when asked (e.g. "Draft a reply..."), write the reply FOR them.
+        Help them think it through; when they tell you WHAT to reply, turn their intent into the reply FOR them.
 
-        DRAFT CONTRACT (strict): a requested draft must be ready-to-send Slack text in the OWNER'S voice — \
-        same language the thread uses, same register the owner uses with these people. \
+        DRAFT CONTRACT (strict): when the user states what to reply (their intent — e.g. "tell them we'll \
+        roll back tomorrow"), produce ready-to-send Slack text in the OWNER'S voice — same language the \
+        thread uses, same register the owner uses with these people — preserving the user's meaning and \
+        adding NO commitments, facts, or content they didn't state. \
         No meta-commentary, no "here's a draft:", no signatures or pleasantries the owner wouldn't type. \
-        Output the draft as a plain block the owner can copy verbatim; put any commentary AFTER the draft, clearly separated.
+        Output the draft as a plain block the owner can copy verbatim; put any commentary AFTER the draft, clearly separated. \
+        If the user has NOT said what to reply, discuss and advise — never push an unsolicited draft.
 
         \(situationContextBlock(situation, memberSignals: memberSignals))
 

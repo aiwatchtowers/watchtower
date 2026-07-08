@@ -33,6 +33,13 @@ struct SituationReviewPane: View {
 
     @State private var comment: String = ""
 
+    // Discuss chat state lives on the pane (not the in-scroll section) because
+    // its input bar must dock OUTSIDE the ScrollView — ChatInput's nested
+    // NSScrollView collapses inside a SwiftUI ScrollView. Reset per situation
+    // by the pane's `.id(situation.id)` below.
+    @State private var discussExpanded = false
+    @State private var discussVM: SituationChatViewModel?
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -45,12 +52,19 @@ struct SituationReviewPane: View {
                         SituationDiscussSection(
                             situation: situation,
                             memberSignals: memberSignals,
-                            dbManager: dbManager
+                            dbManager: dbManager,
+                            isExpanded: $discussExpanded,
+                            chatVM: $discussVM
                         )
                     }
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if discussExpanded, let discussVM {
+                Divider()
+                SituationDiscussInputBar(chatVM: discussVM)
             }
 
             Divider()
