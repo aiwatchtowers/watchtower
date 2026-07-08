@@ -20,6 +20,9 @@ final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
     private var _sessionIDs: [String?] = []
     /// Every sessionID passed to `stream`, in call order.
     var sessionIDs: [String?] { lock.withLock { _sessionIDs } }
+    private var _providers: [String?] = []
+    /// Every provider passed to `stream`, in call order (main's inbox-secretary).
+    var providers: [String?] { lock.withLock { _providers } }
     /// Optional pause before each yielded event so time-based chunk batching is testable.
     private let eventDelay: Duration?
 
@@ -51,12 +54,14 @@ final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
         sessionID: String?,
         dbPath: String?,
         model: String?,
+        provider: String?,
         extraAllowedTools: [String]
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         lock.withLock {
             _prompts.append(prompt)
             _systemPrompts.append(systemPrompt)
             _sessionIDs.append(sessionID)
+            _providers.append(provider)
         }
         let eventsToUse: [StreamEvent]
         if !eventSequence.isEmpty {

@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     synced_at         TEXT,              -- ISO8601 timestamp of last sync
     search_last_date  TEXT NOT NULL DEFAULT '',  -- YYYY-MM-DD of last search sync
     current_user_id   TEXT NOT NULL DEFAULT '',  -- Slack user_id of the token owner (from auth.test)
-    inbox_last_processed_ts REAL NOT NULL DEFAULT 0  -- Unix timestamp of last inbox pipeline run
+    inbox_last_processed_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last inbox pipeline run
+    secretary_profile TEXT NOT NULL DEFAULT ''  -- User-written secretary brief text
 );
 
 -- Users
@@ -451,7 +452,8 @@ CREATE TABLE IF NOT EXISTS inbox_items (
         'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
         'calendar_invite','calendar_time_change','calendar_cancelled',
         'decision_made','briefing_ready',
-        'target_due'
+        'target_due',
+        'stream'
     )),
     snippet         TEXT NOT NULL DEFAULT '',
     context         TEXT NOT NULL DEFAULT '',
@@ -468,9 +470,13 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     item_class      TEXT NOT NULL DEFAULT 'actionable' CHECK(item_class IN ('actionable','ambient')),
-    pinned          INTEGER NOT NULL DEFAULT 0,
     archived_at     TEXT,
     archive_reason  TEXT DEFAULT '' CHECK(archive_reason IN ('','resolved','seen_expired','stale','dismissed')),
+    why_matters     TEXT NOT NULL DEFAULT '',
+    thread_digest   TEXT NOT NULL DEFAULT '',
+    draft_reply     TEXT NOT NULL DEFAULT '',
+    card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
+    card_generated_at TEXT,
     UNIQUE(channel_id, message_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);
@@ -479,7 +485,6 @@ CREATE INDEX IF NOT EXISTS idx_inbox_items_updated ON inbox_items(updated_at DES
 CREATE INDEX IF NOT EXISTS idx_inbox_items_sender ON inbox_items(sender_user_id);
 CREATE INDEX IF NOT EXISTS idx_inbox_items_snooze ON inbox_items(snooze_until);
 CREATE INDEX IF NOT EXISTS idx_inbox_items_class_status ON inbox_items(item_class, status);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_pinned ON inbox_items(pinned) WHERE pinned = 1;
 CREATE INDEX IF NOT EXISTS idx_inbox_items_archived ON inbox_items(archived_at);
 
 -- Inbox learned rules — adaptive signal weights from implicit/explicit feedback

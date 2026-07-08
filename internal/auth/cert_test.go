@@ -56,11 +56,17 @@ func TestGenerateAndSaveCert(t *testing.T) {
 	// Parse and verify cert properties
 	x509Cert, err := x509.ParseCertificate(block.Bytes)
 	require.NoError(t, err)
-	assert.Equal(t, "Watchtower Localhost CA", x509Cert.Subject.CommonName)
-	assert.True(t, x509Cert.IsCA)
+	assert.Equal(t, "Watchtower Localhost", x509Cert.Subject.CommonName)
+	// Must be a leaf, not a CA: a trusted CA with its key on disk could sign a
+	// cert for any domain (Superfish-class risk). Guard IsCA + no CertSign.
+	assert.False(t, x509Cert.IsCA)
+	assert.Zero(t, x509Cert.KeyUsage&x509.KeyUsageCertSign, "cert must not carry KeyUsageCertSign")
+	assert.Contains(t, x509Cert.ExtKeyUsage, x509.ExtKeyUsageServerAuth)
 	assert.Contains(t, x509Cert.DNSNames, "localhost")
 	assert.True(t, x509Cert.IPAddresses[0].Equal([]byte{127, 0, 0, 1}))
-	assert.True(t, time.Until(x509Cert.NotAfter) > 9*365*24*time.Hour)
+	// Leaf certs are capped at the 397-day industry limit, not 10 years.
+	assert.True(t, time.Until(x509Cert.NotAfter) > 300*24*time.Hour)
+	assert.True(t, time.Until(x509Cert.NotAfter) < 398*24*time.Hour)
 
 	// Verify key file was written
 	keyData, err := os.ReadFile(keyPath)
@@ -260,7 +266,9 @@ func TestEnsureCert_RealPaths(t *testing.T) {
 	// Verify it's a valid x509 cert
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	require.NoError(t, err)
-	assert.Equal(t, "Watchtower Localhost CA", leaf.Subject.CommonName)
+	// Real cert dir may hold a legacy cert ("Watchtower Localhost CA") or a
+	// freshly generated leaf ("Watchtower Localhost"); accept either.
+	assert.Contains(t, leaf.Subject.CommonName, "Watchtower Localhost")
 	assert.True(t, time.Until(leaf.NotAfter) > 30*24*time.Hour)
 
 	// Call again — should load the same cert (not regenerate)

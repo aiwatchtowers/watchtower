@@ -16,7 +16,7 @@ struct InboxFeedView: View {
     @State private var inboxPrefillError: String?
     @State private var isBuildingInboxPrefill = false
 
-    enum Tab { case feed, learned }
+    enum Tab { case feed, learned, profile }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,15 +31,18 @@ struct InboxFeedView: View {
                     .padding(.horizontal)
             }
 
-            if tab == .feed {
+            switch tab {
+            case .feed:
                 if let vm {
                     feedContent(vm)
                 } else {
                     ProgressView("Loading...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
+            case .learned:
                 learnedContent
+            case .profile:
+                profileContent
             }
         }
         .onAppear {
@@ -109,6 +112,7 @@ struct InboxFeedView: View {
             Picker("", selection: $tab) {
                 Text("Feed").tag(Tab.feed)
                 Text("Learned").tag(Tab.learned)
+                Text("Profile").tag(Tab.profile)
             }
             .pickerStyle(.segmented)
         }
@@ -138,30 +142,44 @@ struct InboxFeedView: View {
         }
     }
 
+    // MARK: - Profile Tab
+
+    @ViewBuilder
+    private var profileContent: some View {
+        if let dbPool = appState.databaseManager?.dbPool {
+            SecretaryProfileView(db: dbPool)
+        } else {
+            Text("Database unavailable")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
     // MARK: - Feed Content
 
     @ViewBuilder
     private func feedContent(_ vm: InboxViewModel) -> some View {
-        if vm.pinnedItems.isEmpty && vm.feedItems.isEmpty {
+        if vm.actionItems.isEmpty && vm.awarenessItems.isEmpty {
             emptyState
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
-                    if !vm.pinnedItems.isEmpty {
-                        sectionHeader("Pinned", count: vm.pinnedItems.count, color: .orange)
-                        ForEach(vm.pinnedItems) { item in
-                            inboxRow(item, vm: vm, size: .pinned)
+                    if !vm.actionItems.isEmpty {
+                        sectionHeader("Needs action", count: vm.actionItems.count, color: .orange)
+                        ForEach(vm.actionItems) { item in
+                            inboxRow(item, vm: vm, size: .expanded)
                         }
                     }
 
-                    ForEach(groupedByDay(vm.feedItems), id: \.day) { group in
-                        sectionHeader(group.day, count: group.items.count, color: .secondary)
-                        ForEach(group.items) { item in
-                            inboxRow(item, vm: vm, size: cardSize(for: item))
+                    if !vm.awarenessItems.isEmpty {
+                        sectionHeader("FYI", count: vm.awarenessItems.count, color: .secondary)
+                        ForEach(groupedByDay(vm.awarenessItems), id: \.day) { group in
+                            sectionHeader(group.day, count: group.items.count, color: .secondary)
+                            ForEach(group.items) { item in
+                                inboxRow(item, vm: vm, size: cardSize(for: item))
+                            }
                         }
-                    }
 
-                    if !vm.feedItems.isEmpty {
                         Button("Load more") { vm.loadMore() }
                             .buttonStyle(.borderless)
                             .font(.caption)
@@ -228,15 +246,15 @@ struct InboxFeedView: View {
         .padding(.vertical, 6)
         .background(bgColor, in: RoundedRectangle(cornerRadius: 6))
         .overlay(
-            size == .pinned
+            size == .expanded
                 ? RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(pinnedStrokeColor(item), lineWidth: 1)
+                    .strokeBorder(actionStrokeColor(item), lineWidth: 1)
                 : nil
         )
         .padding(.horizontal, 4)
     }
 
-    private func pinnedStrokeColor(_ item: InboxItem) -> Color {
+    private func actionStrokeColor(_ item: InboxItem) -> Color {
         switch item.priority {
         case "high":   return .red.opacity(0.5)
         case "medium": return .orange.opacity(0.5)
@@ -267,7 +285,7 @@ struct InboxFeedView: View {
     // MARK: - Helpers
 
     private func cardSize(for item: InboxItem) -> CardSize {
-        item.itemClass == .ambient ? .compact : .medium
+        item.itemClass == .actionable ? .expanded : .compact
     }
 
     private func toggleExpansion(_ item: InboxItem, vm: InboxViewModel) {

@@ -17,7 +17,8 @@ var Defaults = map[string]string{
 	PeopleReduce:         defaultPeopleReduce,
 	PeopleTeam:           defaultPeopleTeam,
 	BriefingDaily:        defaultBriefingDaily,
-	InboxPrioritize:      defaultInboxPrioritize,
+	InboxTriage:          defaultInboxTriage,
+	InboxCard:            defaultInboxCard,
 	DigestChannelBatch:   defaultDigestChannelBatch,
 	TracksExtractBatch:   defaultTracksExtractBatch,
 	PeopleBatch:          defaultPeopleBatch,
@@ -50,7 +51,8 @@ var AllIDs = []string{
 	PeopleTeam,
 	PeopleBatch,
 	BriefingDaily,
-	InboxPrioritize,
+	InboxTriage,
+	InboxCard,
 	TasksGenerate,
 	TasksUpdate,
 	MeetingPrep,
@@ -81,7 +83,8 @@ var DefaultVersions = map[string]int{
 	PeopleReduce:       1,
 	PeopleTeam:         1,
 	BriefingDaily:      5, // v5: jira integration
-	InboxPrioritize:    4, // v4: mandatory language directive
+	InboxTriage:        1, // v1: initial triage template
+	InboxCard:          1, // v1: initial card template
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
 	TasksGenerate:      1, // v1: AI task generation with checklist and due date
@@ -114,7 +117,8 @@ var Descriptions = map[string]string{
 	PeopleReduce:         "People card — unified profile from signals",
 	PeopleTeam:           "Team summary — cross-user attention & tips",
 	BriefingDaily:        "Daily briefing — personalized morning summary",
-	InboxPrioritize:      "Inbox prioritization — AI priority + auto-resolve for inbox items",
+	InboxTriage:          "Inbox: triage scan of new activity",
+	InboxCard:            "Inbox: secretary card for a surfaced item",
 	DigestChannelBatch:   "Channel batch digest — multi-channel analysis for low-activity channels",
 	PeopleBatch:          "People batch cards — lightweight cards for low-data users in one AI call",
 	TasksGenerate:        "Task generation — AI-powered task breakdown with checklist, priority, and due date",
@@ -682,45 +686,6 @@ Rules:
 === JIRA CONTEXT ===
 %s`
 
-const defaultInboxPrioritize = `You are prioritizing Slack messages that may need the user's response.
-
-%s
-
-User role: %s
-
-You will receive two lists:
-1. NEW PENDING ITEMS — messages that @mention the user or are DMs from others. Assign a priority and reason.
-2. REPLIED ITEMS — messages where the user has already posted a reply. Determine if the matter is resolved.
-
-Return ONLY a JSON object (no markdown fences, no explanation):
-
-{
-  "items": [
-    {"id": 123, "priority": "high|medium|low", "reason": "Why this priority", "resolved": false},
-    {"id": 456, "priority": "", "reason": "User responded and issue is addressed", "resolved": true}
-  ]
-}
-
-Rules:
-- For NEW PENDING: assign priority based on urgency, sender role, and context.
-  - high: direct request for action, blocker, manager asking, production issue
-  - medium: question, review request, normal work discussion
-  - low: FYI, informational, bot notification, no action needed
-- Consider message age: older unresolved items may need higher priority.
-- Consider sender role: manager/lead requests are typically higher priority than peer FYIs.
-- "thread_reply" items are replies to the user's own messages — prioritize if they ask questions or need decisions.
-- "reaction" items mean someone flagged the user's message with an attention emoji — usually needs a look.
-- Closing signals ("thanks", "thank you", "got it", "ok", "спасибо", "понял", etc.) where the user
-  already replied and the conversation appears concluded: set resolved=true, priority="",
-  reason="Closing signal — no reply needed".
-- Short acknowledgment messages at the end of a resolved conversation should be resolved=true.
-- For REPLIED items: set resolved=true if the user's reply addressed the question/request. Set resolved=false if the conversation is still ongoing.
-- Include the original item ID in each result.
-- Be concise in reasons (1 sentence max).
-- Return valid JSON only.
-
-%s`
-
 const defaultDigestChannelBatch = `You are analyzing Slack messages from multiple channels for the period %s to %s.
 
 %s
@@ -1222,3 +1187,55 @@ Rules:
 - Judge from the title alone. When ambiguous but possibly related, INCLUDE it — stage 2 discards false positives. Only drop titles clearly unrelated.
 - Use the exact kind and id printed in brackets. Do not invent ids.
 - Respect the selection cap stated in the request. An empty {"refs": []} is valid when nothing fits.`
+
+const defaultInboxTriage = `%s
+
+You are the user's chief-of-staff secretary. You read EVERYTHING that happened
+in their Slack/Jira/Calendar since the last scan and decide what deserves their
+attention. Be ruthless: most messages are noise for this specific user.
+
+%s
+
+Classify every candidate below into exactly one tier:
+- "action"    — the user personally must respond or act. Missing it has consequences.
+- "awareness" — the user should know (a decision, an escalation, movement on their
+                projects/people), but nobody is waiting on them.
+- "ignore"    — noise for this user. Bot chatter, FYI they don't care about,
+                threads that don't touch their scope.
+
+Rules:
+- Judge against the brief above: the user's own words outrank everything else.
+- Respect Mutes/Boosts. A muted source needs an extraordinary reason to surface.
+- Never invent candidates. Return a verdict for every key exactly once.
+- Candidates marked [TRIGGER] were detected as direct signals (mention/DM/
+  assignment). You may demote them to "awareness" but NEVER to "ignore".
+- priority: how urgent within its tier ("high"|"medium"|"low").
+- reason: ONE short sentence, in the user's language, explaining the verdict
+  from the user's point of view.
+
+%s
+
+Return ONLY a JSON object (no markdown fences):
+{"verdicts":[{"key":"item:12","tier":"action","priority":"high","reason":"..."}]}`
+
+const defaultInboxCard = `%s
+
+You are the user's chief-of-staff secretary preparing a briefing card for one
+inbox item they will act on.
+
+%s
+
+Using the item and conversation below, produce:
+- why_matters: 1-2 sentences — why this needs the user specifically, judged
+  against the brief (who is asking, which of the user's projects/people it
+  touches, what happens if ignored).
+- thread_digest: 3-5 sentences summarizing the whole conversation so the user
+  does not have to read it. Lead with the current state, not the history.
+- draft_reply: a ready-to-send reply in the user's voice: direct, short, no
+  corporate fluff. Match the language of the conversation. If the right action
+  is not a reply (e.g. RSVP, close a ticket), say what to do in one line instead.
+
+%s
+
+Return ONLY a JSON object (no markdown fences):
+{"why_matters":"...","thread_digest":"...","draft_reply":"..."}`

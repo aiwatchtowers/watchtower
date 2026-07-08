@@ -488,7 +488,7 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 }
 
 // phaseInbox runs the full inbox pipeline (decision_made/briefing_ready from
-// fresh digests, AI-prioritize, pinned selector). Runs after digest/tracks/
+// fresh digests, AI triage, secretary card generation). Runs after digest/tracks/
 // people so detectors see fresh data.
 func (d *Daemon) phaseInbox(ctx context.Context) {
 	if d.inboxPipe == nil {

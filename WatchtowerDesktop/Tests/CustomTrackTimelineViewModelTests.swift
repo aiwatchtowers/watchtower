@@ -174,6 +174,52 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
         XCTAssertFalse(timeline.isRefreshing)
     }
 
+    /// The scan runs via a CLI subprocess writing on its own SQLite connection,
+    /// so a same-process ValueObservation (as `start()` sets up) never sees
+    /// those rows. This test never calls `start()`, isolating the fix: the
+    /// timeline must refresh from `scanSinceLast` alone.
+    func testScanSinceLastRefreshesTimelineWithoutAnyObservationRunning() async throws {
+        let (manager, path, track, timeline) = try makeHarness()
+        defer { TestDatabase.cleanup(path: path) }
+        XCTAssertTrue(timeline.events.isEmpty)
+
+        // Simulate the CLI subprocess having already written a new row (on its
+        // own connection) by the time scanSinceLast's await returns.
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO track_events (track_id, summary, created_at)
+                VALUES (?, 'new update', '2026-07-01T00:00:00Z')
+                """, arguments: [track.id])
+        }
+
+        await timeline.scanSinceLast()
+
+        XCTAssertEqual(timeline.events.map(\.summary), ["new update"], "the timeline must reflect the CLI's write without an active observation")
+    }
+
+    /// Same as above but through the `scanHistory` path (used by the "Scan
+    /// history" backfill action), which has its own refetch call site.
+    func testScanHistoryRefreshesTimelineWithoutAnyObservationRunning() async throws {
+        let (manager, path, track, timeline) = try makeHarness()
+        defer { TestDatabase.cleanup(path: path) }
+        XCTAssertTrue(timeline.events.isEmpty)
+
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO track_events (track_id, summary, created_at)
+                VALUES (?, 'backfilled update', '2026-01-01T00:00:00Z')
+                """, arguments: [track.id])
+        }
+
+        await timeline.scanHistory(since: nil, label: "all history")
+
+        XCTAssertEqual(
+            timeline.events.map(\.summary),
+            ["backfilled update"],
+            "the timeline must reflect the CLI's write without an active observation"
+        )
+    }
+
     /// dismissAction records the event's action_status without touching any
     /// target.
     func testDismissActionSetsDismissed() throws {

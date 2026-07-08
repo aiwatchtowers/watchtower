@@ -3,9 +3,13 @@ package dayplan
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/prompts"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // promptCfg returns a config that exercises the language directive path.
@@ -62,4 +66,30 @@ func TestBuildPrompt_AlwaysHasLanguageDirective(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFormatCalendarSection_RendersLocalTimeConsistentWithValidation guards
+// against the day-plan prompt showing calendar events in UTC while NowLocal,
+// working hours, and the merge.go overlap check all use time.Local. For a
+// non-UTC user this mismatch makes the AI believe a meeting is at a
+// different hour than it validates against, so its timeblocks get silently
+// dropped as "overlapping" a slot the AI never saw as busy.
+func TestFormatCalendarSection_RendersLocalTimeConsistentWithValidation(t *testing.T) {
+	orig := time.Local
+	loc := time.FixedZone("UTC+3", 3*60*60)
+	time.Local = loc
+	defer func() { time.Local = orig }()
+
+	// Stored instant is 11:00 UTC, i.e. 14:00 in the user's UTC+3 local zone.
+	ev := db.CalendarEvent{
+		ID:        "e1",
+		Title:     "Standup",
+		StartTime: "2026-04-27T11:00:00Z",
+		EndTime:   "2026-04-27T11:30:00Z",
+	}
+
+	got := formatCalendarSection([]db.CalendarEvent{ev})
+
+	assert.Contains(t, got, "14:00", "should render in the same local zone used for now/validation")
+	assert.NotContains(t, got, "11:00", "must not leak the raw UTC wall-clock time")
 }

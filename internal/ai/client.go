@@ -100,7 +100,15 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		"-p", userMessage,
 		"--output-format", outputFormat,
 		"--model", c.model,
-		"--allowedTools", "mcp__sqlite__*,Bash(sqlite3*)",
+		// Read-only allowlist: only the SQLite MCP server's query/introspection
+		// tools. The write tools (mcp__sqlite__write_query / create_table /
+		// append_insight) and any Bash access are deliberately excluded — a
+		// prompt-injection payload in synced Slack/Jira content must not be able
+		// to mutate the DB or run shell commands (the sqlite3 CLI in particular
+		// exposes .shell/.system/.load → arbitrary code execution). The task-chat
+		// agent still changes targets ONLY via watchtower-action approval cards,
+		// never by writing to the DB directly.
+		"--allowedTools", "mcp__sqlite__read_query,mcp__sqlite__list_tables,mcp__sqlite__describe_table",
 		// Block file-editing plus Claude Code's native task tooling (TodoWrite/Task):
 		// the assistants here read the DB and answer, and the task-chat agent must
 		// create/change targets ONLY via watchtower-action approval cards — not via

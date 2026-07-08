@@ -1,11 +1,42 @@
 package db
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// insertChannel is a shared fixture helper for stream/detection tests.
+func insertChannel(t *testing.T, db *DB, id, chType string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES (?, ?, ?)`, id, id, chType)
+	require.NoError(t, err)
+}
+
+// insertMessage is a shared fixture helper for stream/detection tests.
+func insertMessage(t *testing.T, db *DB, channelID, ts, userID, text string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, ?, ?)`, channelID, ts, userID, text)
+	require.NoError(t, err)
+}
+
+// insertMessageWithThread is like insertMessage but sets thread_ts.
+func insertMessageWithThread(t *testing.T, db *DB, channelID, ts, threadTS, userID, text string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, thread_ts, user_id, text) VALUES (?, ?, ?, ?, ?)`,
+		channelID, ts, threadTS, userID, text)
+	require.NoError(t, err)
+}
+
+// mustCreateInboxItem is a shared fixture helper wrapping CreateInboxItem.
+func mustCreateInboxItem(t *testing.T, db *DB, it InboxItem) int64 {
+	t.Helper()
+	id, err := db.CreateInboxItem(it)
+	require.NoError(t, err)
+	return id
+}
 
 func TestCreateInboxItem(t *testing.T) {
 	db := openTestDB(t)
@@ -605,4 +636,191 @@ func TestCreateInboxItem_UniqueConstraint(t *testing.T) {
 	// Duplicate should fail
 	_, err = db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U1", TriggerType: "mention"})
 	assert.Error(t, err)
+}
+
+func TestInboxItemCardFieldsRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	id, err := db.CreateInboxItem(InboxItem{
+		ChannelID: "C1", MessageTS: "100.1", SenderUserID: "U2",
+		TriggerType: "stream", Snippet: "release blocked",
+	})
+	if err != nil {
+		t.Fatalf("create with trigger_type=stream: %v", err)
+	}
+	it, err := db.GetInboxItem(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.CardStatus != "none" {
+		t.Fatalf("card_status default = %q, want none", it.CardStatus)
+	}
+	if it.WhyMatters != "" || it.ThreadDigest != "" || it.DraftReply != "" {
+		t.Fatalf("card text fields should default empty")
+	}
+}
+
+func TestListStreamCandidatesSince(t *testing.T) {
+	d := openTestDB(t)
+	insertChannel(t, d, "C1", "public")
+	insertChannel(t, d, "D1", "dm")
+	insertMessage(t, d, "C1", "100.1", "U2", "release blocked on infra") // candidate
+	insertMessage(t, d, "C1", "100.2", "U1", "my own message")           // self → excluded
+	insertMessage(t, d, "D1", "100.3", "U2", "dm text")                  // dm → excluded
+	insertMessage(t, d, "C1", "99.0", "U2", "too old")                   // before watermark
+
+	got, err := d.ListStreamCandidatesSince("U1", 99.5, 100)
+	require.NoError(t, err)
+	if len(got) != 1 || got[0].MessageTS != "100.1" {
+		t.Fatalf("want exactly the C1/100.1 candidate, got %+v", got)
+	}
+	if got[0].TriggerType != "stream" {
+		t.Fatalf("trigger type = %q, want stream", got[0].TriggerType)
+	}
+}
+
+func TestListStreamCandidatesSince_SkipsAlreadyInboxed(t *testing.T) {
+	d := openTestDB(t)
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "100.1", "U2", "hello")
+	mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "100.1", SenderUserID: "U2", TriggerType: "mention"})
+
+	got, err := d.ListStreamCandidatesSince("U1", 0, 100)
+	require.NoError(t, err)
+	if len(got) != 0 {
+		t.Fatalf("already-inboxed message must not be a candidate, got %+v", got)
+	}
+}
+
+func TestListStreamCandidatesSince_SkipsThreadWithPendingItem(t *testing.T) {
+	d := openTestDB(t)
+	insertChannel(t, d, "C1", "public")
+	// Realistic ingestion shape (internal/sync/message_sync.go): the thread
+	// ROOT never has its own thread_ts set — only replies do.
+	insertMessage(t, d, "C1", "100.1", "U2", "root of thread")
+	insertMessageWithThread(t, d, "C1", "100.5", "100.1", "U2", "reply in thread")
+	// A pending inbox item already exists for a REPLY in this thread
+	// (e.g. from mention detection on the reply).
+	mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "100.5", ThreadTS: "100.1", SenderUserID: "U2", TriggerType: "mention"})
+
+	got, err := d.ListStreamCandidatesSince("U1", 0, 100)
+	require.NoError(t, err)
+	// Neither the root (100.1, matched via its own ts as the thread key) nor
+	// the reply (100.5, matched via thread_ts) may surface as candidates.
+	if len(got) != 0 {
+		t.Fatalf("messages in a thread with a pending item must not be stream candidates, got %+v", got)
+	}
+}
+
+func TestListStreamCandidatesSince_ExcludesDeletedAndSubtype(t *testing.T) {
+	d := openTestDB(t)
+	insertChannel(t, d, "C1", "public")
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, is_deleted) VALUES ('C1', '100.1', 'U2', 'deleted msg', 1)`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, subtype) VALUES ('C1', '100.2', 'U2', 'joined the channel', 'channel_join')`)
+	require.NoError(t, err)
+
+	got, err := d.ListStreamCandidatesSince("U1", 0, 100)
+	require.NoError(t, err)
+	if len(got) != 0 {
+		t.Fatalf("deleted/subtyped messages must not be stream candidates, got %+v", got)
+	}
+}
+
+func TestListStreamCandidatesSince_CapAndOrder(t *testing.T) {
+	d := openTestDB(t)
+	insertChannel(t, d, "C1", "public")
+	for i := 1; i <= 5; i++ {
+		insertMessage(t, d, "C1", fmt.Sprintf("10%d.0", i), "U2", "msg")
+	}
+	got, err := d.ListStreamCandidatesSince("U1", 0, 3)
+	require.NoError(t, err)
+	if len(got) != 3 || got[0].MessageTS != "101.0" || got[2].MessageTS != "103.0" {
+		t.Fatalf("want oldest-first capped at 3, got %+v", got)
+	}
+}
+
+func TestInboxCardLifecycle(t *testing.T) {
+	d := openTestDB(t)
+	actionID := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "mention"}) // actionable by default
+	ambient1 := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "stream"})
+	ambient2 := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "3.1", SenderUserID: "U2", TriggerType: "stream"})
+	for _, id := range []int64{ambient1, ambient2} {
+		if err := d.SetInboxItemClass(id, "ambient"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	need, err := d.ListItemsNeedingCards(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(need) != 2 { // 1 actionable + 1 capped ambient
+		t.Fatalf("want 2 items needing cards, got %d", len(need))
+	}
+
+	if err := d.SetInboxCard(int(actionID), "why", "digest", "draft"); err != nil {
+		t.Fatal(err)
+	}
+	it, _ := d.GetInboxItem(actionID)
+	if it.CardStatus != "ready" || it.WhyMatters != "why" || it.CardGeneratedAt == "" {
+		t.Fatalf("card not persisted: %+v", it)
+	}
+
+	if err := d.MarkInboxCardFailed(int(ambient1)); err != nil {
+		t.Fatal(err)
+	}
+	need, _ = d.ListItemsNeedingCards(5)
+	// actionID is ready now; ambient1 failed (retryable) + ambient2 none
+	if len(need) != 2 {
+		t.Fatalf("failed card must stay retryable, got %d items", len(need))
+	}
+}
+
+// Regression: dedup must not collapse unrelated items that happen to share a
+// channel_id + thread_ts but represent different trigger types (e.g. an
+// @mention and a DM both landing in the same thread). Each trigger type is a
+// distinct signal to the user and must not silently disappear as a "dupe" of
+// the other.
+func TestDeduplicateThreadInboxItems_PreservesDifferentTriggerTypes(t *testing.T) {
+	db := openTestDB(t)
+
+	mentionID, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", ThreadTS: "1.0", SenderUserID: "U1", TriggerType: "mention"})
+	require.NoError(t, err)
+	dmID, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.2", ThreadTS: "1.0", SenderUserID: "U1", TriggerType: "dm"})
+	require.NoError(t, err)
+
+	deduped, err := db.DeduplicateThreadInboxItems()
+	require.NoError(t, err)
+	assert.Equal(t, 0, deduped, "different trigger types in the same thread must not be merged")
+
+	mentionItem, err := db.GetInboxItemByID(int(mentionID))
+	require.NoError(t, err)
+	assert.Equal(t, "pending", mentionItem.Status)
+
+	dmItem, err := db.GetInboxItemByID(int(dmID))
+	require.NoError(t, err)
+	assert.Equal(t, "pending", dmItem.Status)
+}
+
+// Same trigger type in the same thread is still a genuine duplicate and must
+// keep collapsing to the most recent item.
+func TestDeduplicateThreadInboxItems_MergesSameTriggerType(t *testing.T) {
+	db := openTestDB(t)
+
+	firstID, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", ThreadTS: "1.0", SenderUserID: "U1", TriggerType: "mention"})
+	require.NoError(t, err)
+	secondID, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.2", ThreadTS: "1.0", SenderUserID: "U2", TriggerType: "mention"})
+	require.NoError(t, err)
+
+	deduped, err := db.DeduplicateThreadInboxItems()
+	require.NoError(t, err)
+	assert.Equal(t, 1, deduped)
+
+	kept, err := db.GetInboxItemByID(int(secondID))
+	require.NoError(t, err)
+	assert.Equal(t, "pending", kept.Status)
+
+	merged, err := db.GetInboxItemByID(int(firstID))
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", merged.Status)
 }

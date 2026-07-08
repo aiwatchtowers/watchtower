@@ -117,6 +117,31 @@ func TestGetTargets_DefaultExcludesDone(t *testing.T) {
 	assert.Len(t, all, 3)
 }
 
+// Regression: an explicit Status="done" (or "dismissed") filter must not be
+// ANDed with the default "exclude done/dismissed" clause — that combination
+// is mutually exclusive and always returns zero rows, making
+// `watchtower tasks --status done` permanently empty.
+func TestGetTargets_FilterByStatusDone_ReturnsDoneTargets(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.CreateTarget(makeTarget("Active", "todo", "medium"))
+	require.NoError(t, err)
+	_, err = db.CreateTarget(makeTarget("Done", "done", "medium"))
+	require.NoError(t, err)
+	_, err = db.CreateTarget(makeTarget("Dismissed", "dismissed", "medium"))
+	require.NoError(t, err)
+
+	done, err := db.GetTargets(TargetFilter{Status: "done"})
+	require.NoError(t, err)
+	require.Len(t, done, 1)
+	assert.Equal(t, "Done", done[0].Text)
+
+	dismissed, err := db.GetTargets(TargetFilter{Status: "dismissed"})
+	require.NoError(t, err)
+	require.Len(t, dismissed, 1)
+	assert.Equal(t, "Dismissed", dismissed[0].Text)
+}
+
 func TestGetTargets_FilterByLevel(t *testing.T) {
 	db := openTestDB(t)
 

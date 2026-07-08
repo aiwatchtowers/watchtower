@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/inbox"
+	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -387,6 +388,7 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	gen, cleanupPool := cliPooledGenerator(cfg, logger)
 	defer cleanupPool()
 	pipe := inbox.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	if inboxGenFlagProgressJSON {
 		type pj struct {

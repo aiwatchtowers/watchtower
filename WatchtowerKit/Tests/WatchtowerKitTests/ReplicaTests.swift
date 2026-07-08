@@ -40,7 +40,7 @@ final class ReplicaTests: XCTestCase {
             "status": "pending",
             "priority": "high",
             "item_class": "actionable",
-            "pinned": 1
+            "why_matters": "deploy is blocked on you"
         ])
     }
 
@@ -92,7 +92,7 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(items[0].id, 3)
         XCTAssertEqual(items[0].snippet, "can you check the deploy?")
         XCTAssertTrue(items[0].isDM)
-        XCTAssertTrue(items[0].pinned)
+        XCTAssertEqual(items[0].whyMatters, "deploy is blocked on you")
         XCTAssertEqual(items[0].itemClass, .actionable)
         XCTAssertEqual(store.corruptCount(), 0)
     }

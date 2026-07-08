@@ -175,6 +175,7 @@ private final class HungAIService: AIServiceProtocol {
         sessionID: String?,
         dbPath: String?,
         model: String?,
+        provider: String?,
         extraAllowedTools: [String]
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { _ in }

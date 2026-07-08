@@ -95,3 +95,25 @@ func (db *DB) SetSearchLastDate(date string) error {
 	}
 	return nil
 }
+
+// GetSecretaryProfile returns the user-written secretary brief text.
+func (db *DB) GetSecretaryProfile() (string, error) {
+	var s string
+	err := db.QueryRow(`SELECT secretary_profile FROM workspace LIMIT 1`).Scan(&s)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return s, err
+}
+
+// SetSecretaryProfile stores the user-written secretary brief text.
+func (db *DB) SetSecretaryProfile(text string) error {
+	res, err := db.Exec(`UPDATE workspace SET secretary_profile = ? WHERE id = (SELECT id FROM workspace LIMIT 1)`, text)
+	if err != nil {
+		return fmt.Errorf("setting secretary_profile: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting secretary_profile: no workspace row exists")
+	}
+	return nil
+}

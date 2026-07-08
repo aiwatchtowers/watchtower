@@ -206,11 +206,14 @@ func (p *Pipeline) userRole(userID string) string {
 	return ""
 }
 
-// shortTime extracts "HH:MM" from an ISO8601 string. Returns the raw input on failure.
+// shortTime extracts "HH:MM" from an ISO8601 string, converted to time.Local
+// so the prompt's calendar section stays consistent with NowLocal, working
+// hours, and the merge.go overlap validation — all of which use time.Local.
+// Returns the raw input on failure.
 func shortTime(iso string) string {
 	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05Z", "2006-01-02T15:04:05"} {
 		if t, err := time.Parse(layout, iso); err == nil {
-			return t.UTC().Format("15:04")
+			return t.Local().Format("15:04")
 		}
 	}
 	// Try bare HH:MM passthrough.

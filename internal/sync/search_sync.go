@@ -74,6 +74,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	seenUsers := make(map[string]bool)
 	totalMessages := 0
 	page := 1
+	completed := false
 
 	for {
 		select {
@@ -86,12 +87,23 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		if err != nil {
 			if isNonFatalError(err) {
 				o.logger.Printf("search sync: non-fatal error on page %d, stopping early: %v", page, err)
+				if page == 1 {
+					// The very first page failed, so nothing was fetched (e.g. the
+					// token lacks the search:read scope). Return the error so
+					// runSearchSync falls back to full sync instead of reporting a
+					// silent success with zero messages and advancing the watermark.
+					return fmt.Errorf("search sync (page %d): %w", page, err)
+				}
+				// A later page failed after partial progress: keep what we fetched
+				// but leave the watermark untouched (completed stays false) so the
+				// next run re-covers the unfetched pages instead of skipping them.
 				break
 			}
 			return fmt.Errorf("search sync (page %d): %w", page, err)
 		}
 
 		if len(result.Messages) == 0 {
+			completed = true
 			break
 		}
 
@@ -171,15 +183,23 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 			page, result.Pages, len(seenChannels), len(seenUsers), totalMessages)
 
 		if page >= result.Pages {
+			completed = true
 			break
 		}
 		page++
 	}
 
-	// Advance the watermark to today.
-	today := time.Now().Format("2006-01-02")
-	if err := o.db.SetSearchLastDate(today); err != nil {
-		return fmt.Errorf("saving search_last_date: %w", err)
+	// Advance the watermark to today only when every page was fetched. An early
+	// break (partial pagination) must leave search_last_date unchanged; otherwise
+	// the next incremental sync starts after the unfetched pages and their
+	// messages are lost forever.
+	if completed {
+		today := time.Now().Format("2006-01-02")
+		if err := o.db.SetSearchLastDate(today); err != nil {
+			return fmt.Errorf("saving search_last_date: %w", err)
+		}
+	} else {
+		o.logger.Printf("search sync: pagination incomplete, leaving search_last_date unchanged to avoid data loss")
 	}
 
 	// Populate discoveredChannelIDs so the full-sync fallback can skip inactive channels.

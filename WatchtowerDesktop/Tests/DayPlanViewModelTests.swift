@@ -103,7 +103,7 @@ final class DayPlanViewModelTests: XCTestCase {
     func testCascadeMarkDone() async throws {
         try await pool.write { db in
             try db.execute(sql: """
-                INSERT INTO tasks (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
                 VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
                 """)
         }
@@ -121,7 +121,7 @@ final class DayPlanViewModelTests: XCTestCase {
         await vm.markDone(vm.items.first!)
 
         let taskStatus: String = try await pool.read { db in
-            try String.fetchOne(db, sql: "SELECT status FROM tasks WHERE id=42") ?? ""
+            try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id=42") ?? ""
         }
         XCTAssertEqual(taskStatus, "done")
         XCTAssertEqual(vm.items.first?.status, .done)
@@ -133,7 +133,7 @@ final class DayPlanViewModelTests: XCTestCase {
     func testCascadeMarkPending() async throws {
         try await pool.write { db in
             try db.execute(sql: """
-                INSERT INTO tasks (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
                 VALUES (10, 'Task', '', 'done', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
                 """)
         }
@@ -150,7 +150,7 @@ final class DayPlanViewModelTests: XCTestCase {
         await vm.markPending(vm.items.first!)
 
         let taskStatus: String = try await pool.read { db in
-            try String.fetchOne(db, sql: "SELECT status FROM tasks WHERE id=10") ?? ""
+            try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id=10") ?? ""
         }
         XCTAssertEqual(taskStatus, "todo")
         XCTAssertEqual(vm.items.first?.status, .pending)
