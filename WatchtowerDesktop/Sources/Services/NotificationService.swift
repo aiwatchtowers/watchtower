@@ -134,4 +134,36 @@ final class NotificationService: Sendable {
         )
         UNUserNotificationCenter.current().add(request)
     }
+
+    func sendTargetExtractReadyNotification(count: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "Target draft ready"
+        content.body = count == 1
+            ? "1 target extracted — tap to review"
+            : "\(count) targets extracted — tap to review"
+        content.sound = .default
+        content.userInfo = ["type": "target_extract"]
+
+        let request = UNNotificationRequest(
+            identifier: "target-extract-\(Int(Date().timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    func sendTargetExtractFailedNotification(reason: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Target extraction failed"
+        content.body = String(reason.prefix(200))
+        content.sound = .default
+        content.userInfo = ["type": "target_extract"]
+
+        let request = UNNotificationRequest(
+            identifier: "target-extract-\(Int(Date().timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
 }
