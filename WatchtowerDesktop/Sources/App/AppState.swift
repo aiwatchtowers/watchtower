@@ -46,6 +46,10 @@ final class AppState {
     /// view-local instance was torn down.
     private(set) var dashboardViewModel: DashboardViewModel?
 
+    /// Feed ViewModel — persists across tab switches so filters and
+    /// selection survive navigating away from and back to the feed.
+    private(set) var feedViewModel: FeedViewModel?
+
     /// Secretary Profile ViewModel — persists across tab switches so an
     /// in-flight "Generate" style-sample run survives navigating away from
     /// and back to the Profile tab.
@@ -345,6 +349,7 @@ final class AppState {
         let vm = DashboardViewModel(dbManager: dbManager)
         vm.startObserving()
         dashboardViewModel = vm
+        feedViewModel = FeedViewModel(dbManager: dbManager)
     }
 
     /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it
