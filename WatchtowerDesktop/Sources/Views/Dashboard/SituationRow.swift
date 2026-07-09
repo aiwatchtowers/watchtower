@@ -22,7 +22,7 @@ struct SituationRow: View {
                     .lineLimit(2)
                 HStack(spacing: 4) {
                     kindBadge
-                    if situation.hasSuggestedResolution {
+                    if situation.hasSuggestedResolution && situation.status == .open {
                         resolvedBadge
                     }
                 }

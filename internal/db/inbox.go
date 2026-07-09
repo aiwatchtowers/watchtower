@@ -96,14 +96,29 @@ func (db *DB) FindPendingInboxByThread(channelID, threadTS string) (int, error) 
 
 // UpdateInboxItemSnippet updates the snippet, context, raw_text, sender,
 // message_ts and permalink of an existing inbox item (the detector's
-// thread-fold path). It also clears composed_at: a folded thread update must
-// re-enter the composer so the owning situation's story stays live (DASH-01
-// re-merge; see the 2026-07-09 resolution-suggestion spec).
+// thread-fold path). It conditionally clears composed_at so a folded thread
+// update re-enters the composer only when there's a sane place for it to
+// land: the item belongs to an open situation (the DASH-01 re-merge target
+// exists) or to no situation at all (never composed, so nothing to
+// resurrect). If the item belongs only to dismissed/snoozed/done/converted/
+// stale situations, composed_at stays set — a dismissal is an explicit user
+// signal, and a snoozed owner isn't in the composer's OPEN block, so clearing
+// composed_at there would mint a duplicate situation instead of re-merging.
 func (db *DB) UpdateInboxItemSnippet(id int, messageTS, senderUserID, snippet, context, rawText, permalink string) error {
 	_, err := db.Exec(`UPDATE inbox_items SET
 		message_ts = ?, sender_user_id = ?, snippet = ?, context = ?, raw_text = ?, permalink = ?,
 		ai_reason = '', read_at = NULL,
-		composed_at = NULL,
+		composed_at = CASE
+			WHEN EXISTS (
+				SELECT 1 FROM situation_signals ss
+				JOIN situations s ON s.id = ss.situation_id
+				WHERE ss.inbox_item_id = inbox_items.id AND s.status = 'open')
+			  OR NOT EXISTS (
+				SELECT 1 FROM situation_signals ss
+				WHERE ss.inbox_item_id = inbox_items.id)
+			THEN NULL
+			ELSE composed_at
+		END,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ?`,
 		messageTS, senderUserID, snippet, context, rawText, permalink, id)

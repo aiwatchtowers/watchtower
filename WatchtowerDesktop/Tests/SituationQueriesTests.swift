@@ -191,6 +191,25 @@ final class SituationQueriesTests: XCTestCase {
         XCTAssertFalse(s.hasSuggestedResolution)
     }
 
+    /// "Keep open" must not bump updated_at: doing so would make the row
+    /// resurface in feed ordering right after the user said "nothing new
+    /// here" (the dashboard wall tracks updated_at as its content-change
+    /// signal).
+    func test_clearSuggestedResolution_doesNotBumpUpdatedAt() throws {
+        let db = try TestDatabase.create()
+        let knownUpdatedAt = "2026-01-01T00:00:00Z"
+        let id = try db.write {
+            try TestDatabase.insertSituation($0, suggestedResolution: "answered in thread", updatedAt: knownUpdatedAt)
+        }
+
+        try db.write { try SituationQueries.clearSuggestedResolution($0, id: Int(id)) }
+
+        let updatedAt = try db.read {
+            try String.fetchOne($0, sql: "SELECT updated_at FROM situations WHERE id = ?", arguments: [id])
+        }
+        XCTAssertEqual(updatedAt, knownUpdatedAt, "clearing the suggestion must not touch updated_at")
+    }
+
     // MARK: - recordFeedback
 
     func testRecordFeedbackNegativeOneCreatesChannelMuteRuleForEachMemberScope() throws {

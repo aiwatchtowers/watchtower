@@ -82,10 +82,15 @@ enum SituationQueries {
     }
 
     /// User's "Keep open" on a suggested resolution (DASH-07): clears the
-    /// secretary's mark, nothing else — status untouched, no feedback call.
+    /// secretary's mark, nothing else — status untouched, no feedback call,
+    /// and `updated_at` is deliberately left alone. Bumping it here would
+    /// make the dashboard's feed-ordering (which tracks content changes)
+    /// resurface this row right after the user said "nothing new here"; the
+    /// Go-side clear on merge is fine to bump it since that path represents
+    /// a real content change.
     static func clearSuggestedResolution(_ db: Database, id: Int) throws {
         try db.execute(
-            sql: "UPDATE situations SET suggested_resolution = '', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?",
+            sql: "UPDATE situations SET suggested_resolution = '' WHERE id = ?",
             arguments: [id])
     }
 
