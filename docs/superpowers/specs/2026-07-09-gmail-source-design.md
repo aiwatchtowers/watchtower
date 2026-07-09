@@ -91,14 +91,18 @@ Jira- и Calendar-детекторы.
 
 ### 1. Пакет `internal/gmail/`
 
-По образцу `internal/calendar/`:
+По образцу `internal/calendar/` — **самодостаточный пакет** (в репо это установленный
+паттерн: у Jira и Calendar собственный OAuth-код, а не общий слой; повторяем его,
+чтобы не трогать работающую Calendar-интеграцию и её ldflags):
 
-- **`auth.go`** — OAuth. Переиспользует Google client_id/secret (ldflags), token
-  endpoint, `access_type=offline`, `prompt=consent`, и логику refresh. Отличия от
-  Calendar:
+- **`auth.go`** — OAuth по образцу `calendar/auth.go`: token endpoint, `access_type=offline`,
+  `prompt=consent`, loopback `Login`, `Prepare`/`Complete`. Отличия от Calendar:
   - scope: `https://www.googleapis.com/auth/gmail.modify`;
   - собственный `TokenStore` → `gmail_token.json` (независим от `google_token.json`);
-  - `Login` (loopback-сервер), `Prepare`/`Complete` (Desktop) — как в Calendar.
+  - собственный тип `GoogleOAuthConfig`. Google client_id/secret — те же, что у Calendar
+    (один Google Cloud проект); связываются на уровне `cmd` (`resolveGoogleOAuthConfig`
+    конвертируется в `gmail.GoogleOAuthConfig`), поэтому новые ldflags-переменные и
+    правки Makefile НЕ нужны, а пакет `gmail` не импортирует `calendar`.
 - **`client.go`** — Gmail REST-клиент (raw net/http, base
   `https://www.googleapis.com/gmail/v1`): `users.messages.list` (`q=in:inbox`,
   пагинация), `users.messages.get` (формат metadata+body). Авторетрай на 401 с
