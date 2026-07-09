@@ -7,6 +7,12 @@ struct TargetsListView: View {
     @State private var showCreateSheet = false
     @State private var searchText = ""
     @State private var pendingDeleteTarget: Target?
+    /// Catch-all for an extraction that finished after its originating
+    /// CreateTargetSheet was closed (e.g. the user came back via the
+    /// completion notification).
+    @State private var showExtractPreview = false
+    @State private var extractPreviewResult: TargetExtractResult?
+    @State private var extractErrorMessage: String?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -46,6 +52,7 @@ struct TargetsListView: View {
                 selectedItemID = id
                 appState.pendingTargetID = nil
             }
+            consumePendingExtraction()
         }
         .onChange(of: appState.isDBAvailable) { initViewModel() }
         .onChange(of: appState.pendingTargetID) { _, newID in
@@ -54,8 +61,34 @@ struct TargetsListView: View {
                 appState.pendingTargetID = nil
             }
         }
+        .onChange(of: appState.targetExtractCenter.isRunning) { _, _ in
+            consumePendingExtraction()
+        }
         .sheet(isPresented: $showCreateSheet) {
             CreateTargetSheet()
+        }
+        .sheet(isPresented: $showExtractPreview) {
+            if let result = extractPreviewResult {
+                ExtractPreviewSheet(
+                    proposed: result.extracted,
+                    omittedCount: result.omittedCount,
+                    notes: result.notes,
+                    onCreateSelected: { _ in
+                        viewModel?.load()
+                    }
+                )
+            }
+        }
+        .alert(
+            "Extraction failed",
+            isPresented: Binding(
+                get: { extractErrorMessage != nil },
+                set: { if !$0 { extractErrorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(extractErrorMessage ?? "")
         }
         .background {
             Button("") { showCreateSheet = true }
@@ -94,6 +127,22 @@ struct TargetsListView: View {
         let vm = TargetsViewModel(dbManager: db)
         viewModel = vm
         vm.startObserving()
+    }
+
+    /// Picks up a result/error left behind by a CreateTargetSheet that has
+    /// since been closed (e.g. the user tapped the completion notification).
+    /// A no-op while an extraction is still running or nothing is pending.
+    private func consumePendingExtraction() {
+        let center = appState.targetExtractCenter
+        guard !center.isRunning else { return }
+        if let result = center.pendingResult {
+            extractPreviewResult = result
+            showExtractPreview = true
+            center.clearPending()
+        } else if let error = center.pendingError {
+            extractErrorMessage = error
+            center.clearPending()
+        }
     }
 
     // MARK: - List Panel
