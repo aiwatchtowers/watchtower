@@ -114,6 +114,26 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertEqual(until, "2026-08-01T00:00:00Z")
     }
 
+    // MARK: - keepOpen (DASH-07: clear the secretary's suggested-resolution mark)
+
+    func test_keepOpen_clearsSuggestionAndReloads() throws {
+        let id = try dbManager.dbPool.write { db in
+            try TestDatabase.insertSituation(db, status: "open", suggestedResolution: "answered in thread")
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+        XCTAssertTrue(situation.hasSuggestedResolution)
+
+        vm.keepOpen(situation)
+
+        XCTAssertFalse(vm.situations[0].hasSuggestedResolution)
+        let suggestedResolution = try dbManager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT suggested_resolution FROM situations WHERE id = ?", arguments: [id])
+        }
+        XCTAssertEqual(suggestedResolution, "")
+    }
+
     // MARK: - feedback
 
     func testSubmitFeedbackNegativeOneCreatesLearnedRuleAndReloads() async throws {

@@ -213,6 +213,19 @@ final class DashboardViewModel {
         }
     }
 
+    /// "Keep open" on a suggested resolution (DASH-07): clears the secretary's
+    /// mark and nothing else.
+    func keepOpen(_ situation: Situation) {
+        do {
+            try dbManager.dbPool.write { db in
+                try SituationQueries.clearSuggestedResolution(db, id: situation.id)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to keep open: \(error.localizedDescription)"
+        }
+    }
+
     func snooze(_ situation: Situation, until: String) {
         advanceSelection(from: situation)
         do {

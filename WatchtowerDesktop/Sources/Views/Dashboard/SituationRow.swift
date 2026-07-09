@@ -20,7 +20,12 @@ struct SituationRow: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .lineLimit(2)
-                kindBadge
+                HStack(spacing: 4) {
+                    kindBadge
+                    if situation.hasSuggestedResolution {
+                        resolvedBadge
+                    }
+                }
             }
 
             Spacer(minLength: 4)
@@ -44,6 +49,16 @@ struct SituationRow: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
             .background(info.color.opacity(0.12), in: Capsule())
+    }
+
+    private var resolvedBadge: some View {
+        Label("Resolved?", systemImage: "checkmark.circle")
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(Color.green.opacity(0.15), in: Capsule())
+            .foregroundStyle(.green)
+            .labelStyle(.titleAndIcon)
     }
 
     private var kindBadgeInfo: (label: String, color: Color) {

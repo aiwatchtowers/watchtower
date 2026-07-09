@@ -22,6 +22,7 @@ struct SituationReviewPane: View {
     var slackURL: (InboxItem) -> URL? = { _ in nil }
     let onDone: () -> Void
     let onDismiss: () -> Void
+    let onKeepOpen: () -> Void
     let onSnooze: (SnoozeOption) -> Void
     let onFeedback: (Int, String) -> Void
     /// Disables the Target button while its async prefill is being built.
@@ -46,6 +47,9 @@ struct SituationReviewPane: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if situation.hasSuggestedResolution {
+                        suggestedResolutionBanner
+                    }
                     header
                     sourcesSection
                     secretaryCardOrPlaceholder
@@ -72,6 +76,27 @@ struct SituationReviewPane: View {
             Divider()
             actionBar
         }
+    }
+
+    // MARK: - Suggested resolution banner (DASH-07)
+
+    private var suggestedResolutionBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("The secretary believes this is resolved", systemImage: "checkmark.circle")
+                .font(.headline)
+                .foregroundStyle(.green)
+            Text(situation.suggestedResolution)
+                .font(.callout)
+            HStack(spacing: 8) {
+                Button("Done") { onDone() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                Button("Keep open") { onKeepOpen() }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Header

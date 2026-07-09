@@ -157,6 +157,7 @@ struct DashboardView: View {
                     slackURL: { vm.slackURL(for: $0) },
                     onDone: { vm.done(situation); feedVM.load() },
                     onDismiss: { vm.dismiss(situation); feedVM.load() },
+                    onKeepOpen: { vm.keepOpen(situation); feedVM.load() },
                     onSnooze: { option in
                         vm.snooze(situation, until: SnoozeDates.until(option))
                         feedVM.load()
