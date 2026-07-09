@@ -1,5 +1,16 @@
 import Foundation
 
+/// Abstraction over the two target-extraction completion notifications, so
+/// `TargetExtractCenter` can be unit-tested without touching the real
+/// `UNUserNotificationCenter` (which has no app-bundle context under
+/// `swift test` and crashes if invoked there).
+protocol TargetExtractNotifying {
+    func sendTargetExtractReadyNotification(count: Int)
+    func sendTargetExtractFailedNotification(reason: String)
+}
+
+extension NotificationService: TargetExtractNotifying {}
+
 /// App-wide, single-slot registry for the "Extract with AI" target-extraction
 /// call. The extraction subprocess call can take up to the CLI's extract
 /// timeout; routing it through this AppState-held center (instead of
@@ -24,9 +35,9 @@ final class TargetExtractCenter {
     /// `clearPending()` once a consumer has surfaced it.
     var pendingError: String?
 
-    private let notificationService: NotificationService
+    private let notificationService: TargetExtractNotifying
 
-    init(notificationService: NotificationService = .shared) {
+    init(notificationService: TargetExtractNotifying = NotificationService.shared) {
         self.notificationService = notificationService
     }
 
@@ -44,15 +55,17 @@ final class TargetExtractCenter {
             let result = try await TargetExtractService(runner: runner)
                 .extract(text: text, sourceRef: sourceRef)
             if result.extracted.isEmpty {
-                pendingError = "AI returned no extracted targets"
-                notificationService.sendTargetExtractFailedNotification(reason: pendingError!)
+                let message = "AI returned no extracted targets"
+                pendingError = message
+                notificationService.sendTargetExtractFailedNotification(reason: message)
             } else {
                 pendingResult = result
                 notificationService.sendTargetExtractReadyNotification(count: result.extracted.count)
             }
         } catch {
-            pendingError = "Extract failed: \(error.localizedDescription)"
-            notificationService.sendTargetExtractFailedNotification(reason: pendingError!)
+            let message = "Extract failed: \(error.localizedDescription)"
+            pendingError = message
+            notificationService.sendTargetExtractFailedNotification(reason: message)
         }
 
         isRunning = false
