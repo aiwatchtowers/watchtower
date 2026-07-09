@@ -103,8 +103,8 @@ Jira- и Calendar-детекторы.
 | `to_json` | TEXT | получатели To (JSON-массив) |
 | `cc_json` | TEXT | получатели CC (JSON-массив) |
 | `subject` | TEXT | тема |
-| `snippet` | TEXT | превью от Gmail |
-| `body_text` | TEXT | plain-text тело письма (для triage/ситуаций) |
+| `snippet` | TEXT | превью от Gmail (~200 символов тела, отдаёт сам API) |
+| `body_text` | TEXT | полное plain-text тело письма (для сильного AI-tier) |
 | `internal_date` | TEXT | время письма (ISO8601) |
 | `labels_json` | TEXT | ярлыки Gmail (INBOX, UNREAD, IMPORTANT, CATEGORY_*) |
 | `is_unread` | INTEGER | производное для быстрых фильтров |
@@ -144,7 +144,8 @@ Watermark: новое поле `gmail_last_internal_date` в таблице `wor
   - `ChannelID = thread_id` (тред как «канал» → группировка в inbox/ситуациях),
   - `MessageTS = message_id` (Gmail message ID уникален → надёжный дедуп),
   - `SenderUserID = from_email`,
-  - `Snippet = subject`,
+  - `Snippet = subject + " — " + gmail snippet` (тема в одиночку слишком слаба для
+    triage; см. раздел «AI-обработка»),
   - `Permalink = gmail permalink`;
 - локальный хелпер `gmailInboxExists` для дедупа по `(channel_id, message_ts, trigger_type)`.
 
@@ -172,10 +173,10 @@ Watermark: новое поле `gmail_last_internal_date` в таблице `wor
 ### 6. Конфиг
 
 `internal/config/config.go`: секция
-`GmailConfig{Enabled bool, InitialHistoryDays int, MaxMessagesPerSync int}` в `Config`.
-Дефолты в `internal/config/defaults.go` (`InitialHistoryDays=7`,
-`MaxMessagesPerSync=100`), регистрация `v.SetDefault(...)` в `Load`
-(образец — секции Calendar/Jira).
+`GmailConfig{Enabled bool, InitialHistoryDays int, MaxMessagesPerSync int, MaxBodyBytes int}`
+в `Config`. Дефолты в `internal/config/defaults.go` (`InitialHistoryDays=7`,
+`MaxMessagesPerSync=100`, `MaxBodyBytes=51200` — предохранитель усечения тела в сильном
+AI-tier), регистрация `v.SetDefault(...)` в `Load` (образец — секции Calendar/Jira).
 
 ### 7. Desktop (`WatchtowerDesktop/`)
 
@@ -188,6 +189,40 @@ Watermark: новое поле `gmail_last_internal_date` в таблице `wor
 - **`Sources/Views/Inbox/InboxCardView.swift`** — `case`'ы для `email_received` и
   `email_cc` в `triggerLabel` («Email»), `triggerSymbol` (`envelope`), `triggerColor`.
 - Опционально: фильтр по источнику Email через существующий `triggerTypeFilter`.
+
+## AI-обработка писем
+
+Письма НЕ обрабатываются отдельным email-специфичным AI-вызовом. Они вливаются в
+существующий AI-конвейер inbox через `inbox_items` и проходят те же стадии, что и
+Slack-сигналы. Что видит AI на каждой стадии:
+
+1. **Triage** (`inbox.triage`, дешёвый tier) — на каждый новый email-item. Присваивает
+   tier (action/awareness/ignore) и priority — это и есть фильтр важности. В промпт
+   уходит одна строка на кандидата вида
+   `[TRIGGER] key=item:<id> type=email_received from=<sender> channel=<thread> :: <Snippet>`
+   (см. `triage.go`, `runTriage`). Triage судит **только по `Snippet`**, поэтому для
+   писем `Snippet = subject + Gmail preview` (тема в одиночку неинформативна). Полное
+   тело на дешёвый tier НЕ подаётся. Trigger-item можно только понизить, не повысить
+   (INBOX-01).
+2. **Compose** (`inbox.compose`) — кластеризует триажированные письма в **ситуации** по
+   `thread_id` (переписка = одна ситуация), мёржит в открытую ситуацию при совпадении
+   истории (DASH-01).
+3. **Situation cards** (`inbox.situation_card`, **сильный** tier) — why-it-matters /
+   summary / chronology. Здесь в контекст ситуации подаётся **полное тело `body_text`**
+   писем (аналог member-signal сообщений у Slack). Единственный жёсткий предохранитель:
+   письма с телом больше разумного предела (порядка 50 КБ) усекаются, чтобы экстремальное
+   письмо не сломало context window; типичные деловые письма подаются целиком.
+4. **Discuss chat** — по запросу пользователя, черновик ответа в стиле владельца.
+
+Стоимость: triage идёт на весь входящий поток дёшево (плюс отсечка PROMOTIONS/SOCIAL до
+AI и cap `MaxTriageMessages`); дорогой сильный tier работает на уровне ситуации, а не
+на каждое письмо.
+
+Промпты `inbox.triage`/`inbox.compose`/`inbox.situation_card` — общие для всех
+источников; отдельные email-промпты не создаются. AI отличает письмо по `trigger_type`
+(`email_received`/`email_cc`) в строке кандидата. Если на этапе реализации выяснится,
+что общим промптам не хватает email-контекста, правка ограничится добавлением
+пояснения о email-типах в существующие шаблоны (а не новым промптом).
 
 ## Поток данных (пример)
 
