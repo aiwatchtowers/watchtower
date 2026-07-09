@@ -37,6 +37,8 @@ Your AI secretary for Slack, Jira, and Calendar — everything that's waiting on
 
 The bottom action bar offers: 👍 and 👎 buttons, a "Comment to teach the secretary…" text field (submitting feedback with a comment teaches learned rules; a bare thumb is processed locally without AI), **Snooze** (1 hour / Till tomorrow / Till Monday), **Target**, **Track**, **Dismiss**, and a prominent **Done** button (Enter key). After **Done** or **Dismiss** the situation stays right where it is in the wall as history — selection doesn't move — and the review pane switches to a read-only view showing the outcome (status badge, plus Open Target/Track links when converted) instead of the action bar.
 
+When a discussion resolves itself (someone else answered and the question was accepted), the secretary marks the situation with a green "Resolved?" badge and shows its reasoning in a banner with **Done** (confirm and close) and **Keep open** (clear the mark) — it never closes a situation on its own.
+
 **Empty state** — when the wall itself is empty, the Feed shows a "Generate your inbox" button (a "Generate" button also lives in the toolbar) that runs the inbox pipeline on demand.
 
 **Create target / Create track** — converts a situation into a Target or a Track. The situation is marked converted (and drops out of the open feed) but keeps a link back to the new target/track id, so its history stays reachable. Creating a target opens a prefilled Create Target sheet (title/context drawn from the situation); creating a track opens the track-management sheet and links the resulting track once created.
