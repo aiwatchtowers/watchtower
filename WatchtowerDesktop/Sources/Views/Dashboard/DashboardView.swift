@@ -182,11 +182,11 @@ struct DashboardView: View {
                 // Closed situation (done/dismissed/converted/stale/snoozed) —
                 // read-only history, no mutating actions (DASH-05).
                 SituationHistoryPane(situation: situation).id(entry.id)
-            case .meeting(let event, let prep):
+            case let .meeting(event, prep):
                 MeetingFeedPane(event: event, prep: prep).id(entry.id)
             case .briefing(let briefing):
                 BriefingDetailView(briefing: briefing).id(entry.id)
-            case .meetingRecap(let recap, let event):
+            case let .meetingRecap(recap, event):
                 RecapFeedPane(recap: recap, event: event).id(entry.id)
             case .dayPlan(let plan):
                 DayPlanFeedPane(plan: plan).id(entry.id)

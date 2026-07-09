@@ -53,7 +53,7 @@ final class FeedItemQueriesTests: XCTestCase {
         XCTAssertEqual(s.title, "release blocked")
         guard case .meeting(let event, _) = entries[0].content else { return XCTFail("expected meeting") }
         XCTAssertEqual(event.title, "Standup")
-        guard case .meetingRecap(let recap, let recapEvent) = entries[1].content else { return XCTFail("expected recap") }
+        guard case let .meetingRecap(recap, recapEvent) = entries[1].content else { return XCTFail("expected recap") }
         XCTAssertEqual(recap.parsed?.actionItems, ["ship it"])
         XCTAssertEqual(recapEvent?.id, "ev1")
     }
@@ -74,7 +74,9 @@ final class FeedItemQueriesTests: XCTestCase {
             try db.execute(sql: "UPDATE situations SET priority = 'low' WHERE id = 1")
             try insertSituationRow(db, id: 2, title: "hidden one")
             try TestDatabase.insertFeedItem(db, itemType: "situation", sourceID: "1", eventTs: "2026-07-09T09:00:00Z", importance: 30)
-            try TestDatabase.insertFeedItem(db, itemType: "situation", sourceID: "2", eventTs: "2026-07-09T10:00:00Z", importance: 90, hiddenAt: "2026-07-09T10:30:00Z")
+            try TestDatabase.insertFeedItem(
+                db, itemType: "situation", sourceID: "2", eventTs: "2026-07-09T10:00:00Z",
+                importance: 90, hiddenAt: "2026-07-09T10:30:00Z")
             try TestDatabase.insertFeedItem(db, itemType: "meeting", sourceID: "ev1", eventTs: "2026-07-09T12:10:00Z", importance: 70)
         }
         // Default: hidden excluded.
@@ -145,7 +147,8 @@ final class FeedItemQueriesTests: XCTestCase {
             try FeedItemQueries.markSeen(db, id: itemID)
         }
         let (hidden, seen) = try dbQueue.read { db -> (String?, String?) in
-            let row = try Row.fetchOne(db, sql: "SELECT hidden_at, seen_at FROM feed_items WHERE id = ?", arguments: [itemID])!
+            let row = try XCTUnwrap(
+                Row.fetchOne(db, sql: "SELECT hidden_at, seen_at FROM feed_items WHERE id = ?", arguments: [itemID]))
             return (row["hidden_at"], row["seen_at"])
         }
         XCTAssertNotNil(hidden)

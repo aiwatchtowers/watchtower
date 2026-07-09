@@ -1442,8 +1442,13 @@ enum TestDatabase {
 
     @discardableResult
     static func insertFeedItem(
-        _ db: Database, itemType: String, sourceID: String, eventTs: String,
-        importance: Int = 50, hiddenAt: String? = nil, seenAt: String? = nil
+        _ db: Database,
+        itemType: String,
+        sourceID: String,
+        eventTs: String,
+        importance: Int = 50,
+        hiddenAt: String? = nil,
+        seenAt: String? = nil
     ) throws -> Int64 {
         try db.execute(
             sql: """
@@ -1455,7 +1460,8 @@ enum TestDatabase {
     }
 
     static func insertMeetingRecap(
-        _ db: Database, eventID: String,
+        _ db: Database,
+        eventID: String,
         recapJSON: String = #"{"summary":"Recap","key_decisions":[],"action_items":["ship it"],"open_questions":[]}"#,
         createdAt: String = "2026-07-09T10:00:00Z"
     ) throws {
