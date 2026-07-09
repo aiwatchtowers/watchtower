@@ -110,6 +110,50 @@ func TestDash01_MergeIntoOpenSituation(t *testing.T) {
 	assert.Len(t, members, 2)
 }
 
+// Thread-follow: a signal already composed into a situation gets a thread
+// update (fold clears composed_at) → the next compose cycle re-feeds it and
+// the AI's merge back into the SAME situation is idempotent: no duplicate
+// situation_signals row, card invalidated, updated_at bumped.
+func TestDash01_ThreadFollowRefeedMergesIdempotently(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "1.1", "U2", "release blocked")
+	sig1 := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "release blocked"})
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "release X blocked", Kind: "external", Priority: "high", Rank: 0.5, AIReason: "old reason"})
+	require.NoError(t, err)
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(sig1)}))
+	require.NoError(t, d.MarkSignalsComposed([]int{int(sig1)}))
+
+	// Thread-fold: a newer message in the same thread updates the existing
+	// item and clears composed_at, re-entering the composer's queue.
+	require.NoError(t, d.UpdateInboxItemSnippet(int(sig1), "1.2", "U2", "release still blocked", "", "release still blocked", ""))
+
+	gen.responses = []string{`{"ops":[
+		{"op":"merge","situation_id":` + strconv.FormatInt(sitID, 10) + `,"signals":["sig:` + strconv.FormatInt(sig1, 10) + `"],"reason":"thread update"}
+	]}`}
+
+	created, merged, err := p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, created)
+	assert.Equal(t, 1, merged)
+
+	open, err := d.ListOpenSituations()
+	require.NoError(t, err)
+	require.Len(t, open, 1, "must not create a duplicate situation")
+	s := open[0]
+	assert.Equal(t, int(sitID), s.ID)
+	assert.Equal(t, "none", s.CardStatus, "card must be invalidated on re-merge")
+	assert.Equal(t, "thread update", s.AIReason)
+
+	var linkCount int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM situation_signals WHERE situation_id = ? AND inbox_item_id = ?`, sitID, sig1).Scan(&linkCount))
+	assert.Equal(t, 1, linkCount, "re-linking the same signal must be a no-op (INSERT OR IGNORE), not a duplicate")
+
+	it, err := d.GetInboxItem(sig1)
+	require.NoError(t, err)
+	assert.NotEmpty(t, it.ComposedAt, "re-fed signal must be marked composed again")
+}
+
 func TestDash02_AIFailureTouchesNothing(t *testing.T) {
 	d, p, gen := newComposePipeline(t)
 	insertChannel(t, d, "C1", "public")

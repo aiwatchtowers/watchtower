@@ -94,12 +94,16 @@ func (db *DB) FindPendingInboxByThread(channelID, threadTS string) (int, error) 
 	return id, nil
 }
 
-// UpdateInboxItemSnippet updates the snippet, context, raw_text, sender, message_ts and permalink
-// of an existing inbox item (used when a newer message arrives in the same thread).
+// UpdateInboxItemSnippet updates the snippet, context, raw_text, sender,
+// message_ts and permalink of an existing inbox item (the detector's
+// thread-fold path). It also clears composed_at: a folded thread update must
+// re-enter the composer so the owning situation's story stays live (DASH-01
+// re-merge; see the 2026-07-09 resolution-suggestion spec).
 func (db *DB) UpdateInboxItemSnippet(id int, messageTS, senderUserID, snippet, context, rawText, permalink string) error {
 	_, err := db.Exec(`UPDATE inbox_items SET
 		message_ts = ?, sender_user_id = ?, snippet = ?, context = ?, raw_text = ?, permalink = ?,
 		ai_reason = '', read_at = NULL,
+		composed_at = NULL,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ?`,
 		messageTS, senderUserID, snippet, context, rawText, permalink, id)

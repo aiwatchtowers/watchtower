@@ -59,6 +59,25 @@ func TestUpdateInboxItemSnippet(t *testing.T) {
 	assert.Equal(t, "https://link", got.Permalink)
 }
 
+func TestUpdateInboxItemSnippetClearsComposedAt(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+	id, err := db.CreateInboxItem(makeInboxItem("C1", "1.0"))
+	require.NoError(t, err)
+	require.NoError(t, db.MarkSignalsComposed([]int{int(id)}))
+
+	before, err := db.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	require.NotEmpty(t, before.ComposedAt, "precondition: item must already be composed")
+
+	require.NoError(t, db.UpdateInboxItemSnippet(int(id), "2.0", "U2", "thread reply", "ctx", "raw text", ""))
+
+	got, err := db.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Empty(t, got.ComposedAt, "fold must clear composed_at so the composer re-reads the thread")
+}
+
 func TestGetInboxItem_Int64(t *testing.T) {
 	db := openTestDB(t)
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
