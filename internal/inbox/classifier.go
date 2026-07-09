@@ -16,6 +16,8 @@ var defaultClasses = map[string]string{
 	"decision_made":         "ambient",
 	"briefing_ready":        "ambient",
 	"target_due":            "actionable",
+	"email_received":        "actionable",
+	"email_cc":              "ambient",
 }
 
 // DefaultItemClass returns 'actionable' or 'ambient' for a known trigger type, defaulting to 'ambient' for unknown.
