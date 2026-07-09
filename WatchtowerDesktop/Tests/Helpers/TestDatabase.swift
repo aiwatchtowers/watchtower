@@ -971,6 +971,33 @@ enum TestDatabase {
         UNIQUE(situation_id, inbox_item_id)
     );
     CREATE INDEX IF NOT EXISTS idx_situation_signals_item ON situation_signals(inbox_item_id);
+
+    CREATE TABLE IF NOT EXISTS meeting_prep_cache (
+        event_id      TEXT PRIMARY KEY,
+        result_json   TEXT NOT NULL DEFAULT '',
+        user_notes    TEXT NOT NULL DEFAULT '',
+        generated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS meeting_recaps (
+        event_id    TEXT PRIMARY KEY REFERENCES calendar_events(id) ON DELETE CASCADE,
+        source_text TEXT NOT NULL,
+        recap_json  TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS feed_items (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_type   TEXT NOT NULL CHECK (item_type IN ('situation','meeting','briefing','meeting_recap','day_plan')),
+        source_id   TEXT NOT NULL,
+        event_ts    TEXT NOT NULL,
+        importance  INTEGER NOT NULL DEFAULT 50,
+        hidden_at   TEXT,
+        seen_at     TEXT,
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        UNIQUE(item_type, source_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
     """
 
     // MARK: - Briefing Fixtures
@@ -1407,6 +1434,38 @@ enum TestDatabase {
                              trackID, convertedTargetID, convertedTrackID, lastSignalAt,
                              resolvedReason, createdAt, updatedAt])
         return db.lastInsertedRowID
+    }
+
+    // MARK: - Feed Item Fixtures
+
+    @discardableResult
+    static func insertFeedItem(
+        _ db: Database, itemType: String, sourceID: String, eventTs: String,
+        importance: Int = 50, hiddenAt: String? = nil, seenAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+            INSERT INTO feed_items (item_type, source_id, event_ts, importance, hidden_at, seen_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            arguments: [itemType, sourceID, eventTs, importance, hiddenAt, seenAt])
+        return db.lastInsertedRowID
+    }
+
+    static func insertMeetingRecap(
+        _ db: Database, eventID: String,
+        recapJSON: String = #"{"summary":"Recap","key_decisions":[],"action_items":["ship it"],"open_questions":[]}"#,
+        createdAt: String = "2026-07-09T10:00:00Z"
+    ) throws {
+        try db.execute(
+            sql: "INSERT INTO meeting_recaps (event_id, source_text, recap_json, created_at, updated_at) VALUES (?, '', ?, ?, ?)",
+            arguments: [eventID, recapJSON, createdAt, createdAt])
+    }
+
+    static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {
+        try db.execute(
+            sql: "INSERT INTO meeting_prep_cache (event_id, result_json) VALUES (?, ?)",
+            arguments: [eventID, resultJSON])
     }
 
     static func linkSituationSignal(
