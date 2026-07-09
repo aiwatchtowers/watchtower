@@ -20,7 +20,7 @@ type situationsExecer interface {
 const situationSelectCols = `id, title, kind, status, snooze_until, priority, rank,
 	ai_reason, summary, why_matters, chronology, card_status, COALESCE(card_generated_at,''),
 	target_id, track_id, converted_target_id, converted_track_id,
-	last_signal_at, resolved_reason, created_at, updated_at`
+	last_signal_at, resolved_reason, suggested_resolution, created_at, updated_at`
 
 // scanSituation scans a Situation from a row with situationSelectCols.
 func scanSituation(row interface{ Scan(...any) error }) (*DashboardSituation, error) {
@@ -29,7 +29,7 @@ func scanSituation(row interface{ Scan(...any) error }) (*DashboardSituation, er
 		&s.ID, &s.Title, &s.Kind, &s.Status, &s.SnoozeUntil, &s.Priority, &s.Rank,
 		&s.AIReason, &s.Summary, &s.WhyMatters, &s.Chronology, &s.CardStatus, &s.CardGeneratedAt,
 		&s.TargetID, &s.TrackID, &s.ConvertedTargetID, &s.ConvertedTrackID,
-		&s.LastSignalAt, &s.ResolvedReason, &s.CreatedAt, &s.UpdatedAt,
+		&s.LastSignalAt, &s.ResolvedReason, &s.SuggestedResolution, &s.CreatedAt, &s.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -449,6 +449,34 @@ func (db *DB) MarkSituationConverted(id int, targetID, trackID int) error {
 		convertedTarget, convertedTrack, id)
 	if err != nil {
 		return fmt.Errorf("marking situation %d converted: %w", id, err)
+	}
+	return nil
+}
+
+// SetSuggestedResolutionTx records the secretary's "looks resolved" mark
+// (DASH-07). It never touches status; updated_at bumps so the feed
+// resurfaces the situation with its new badge.
+func (db *DB) SetSuggestedResolutionTx(tx *sql.Tx, id int, reason string) error {
+	return setSuggestedResolutionOn(tx, id, reason)
+}
+
+// ClearSuggestedResolution clears the suggested_resolution field (non-Tx).
+func (db *DB) ClearSuggestedResolution(id int) error {
+	return setSuggestedResolutionOn(db, id, "")
+}
+
+// ClearSuggestedResolutionTx clears the suggested_resolution field (transactional).
+func (db *DB) ClearSuggestedResolutionTx(tx *sql.Tx, id int) error {
+	return setSuggestedResolutionOn(tx, id, "")
+}
+
+// setSuggestedResolutionOn updates suggested_resolution on a situation and
+// bumps updated_at to resurface the item in the feed.
+func setSuggestedResolutionOn(q situationsExecer, id int, reason string) error {
+	if _, err := q.Exec(`UPDATE situations SET suggested_resolution = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ?`, reason, id); err != nil {
+		return fmt.Errorf("setting suggested resolution on situation %d: %w", id, err)
 	}
 	return nil
 }

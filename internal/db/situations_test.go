@@ -328,3 +328,25 @@ func TestMarkSituationConverted(t *testing.T) {
 	require.Equal(t, int(targetID), *s.ConvertedTargetID)
 	require.Nil(t, s.ConvertedTrackID)
 }
+
+func TestSuggestedResolutionSetAndClear(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.CreateSituation(DashboardSituation{Title: "story", Kind: "external", Priority: "medium"})
+	require.NoError(t, err)
+
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.SetSuggestedResolutionTx(tx, int(id), "answered in thread"))
+	require.NoError(t, tx.Commit())
+
+	got, err := d.GetSituation(int(id))
+	require.NoError(t, err)
+	require.Equal(t, "answered in thread", got.SuggestedResolution)
+	require.Equal(t, "open", got.Status, "DASH-07: suggestion must never change status")
+
+	require.NoError(t, d.ClearSuggestedResolution(int(id)))
+
+	got, err = d.GetSituation(int(id))
+	require.NoError(t, err)
+	require.Equal(t, "", got.SuggestedResolution)
+}

@@ -1095,6 +1095,11 @@ CREATE TABLE IF NOT EXISTS situations (
     converted_track_id  INTEGER,
     last_signal_at  TEXT NOT NULL DEFAULT '',
     resolved_reason TEXT NOT NULL DEFAULT '',
+    -- The secretary's "looks resolved" mark (DASH-07): set by the composer's
+    -- suggest_resolve op when new material shows the story concluded without the
+    -- owner acting; cleared by a later merge without a re-suggest, or by the
+    -- user's "Keep open". Never closes the situation — status stays 'open'.
+    suggested_resolution TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );

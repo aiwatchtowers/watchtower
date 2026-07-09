@@ -1026,7 +1026,7 @@ last_signal_at TEXT NOT NULL DEFAULT '',
 resolved_reason TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-)
+, suggested_resolution TEXT NOT NULL DEFAULT '')
 
 table	sync_state
 CREATE TABLE sync_state (
@@ -1962,6 +1962,7 @@ END
 18	resolved_reason	TEXT	notnull=1	dflt=''	pk=0
 19	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 20	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+21	suggested_resolution	TEXT	notnull=1	dflt=''	pk=0
 
 ## sync_state
 0	channel_id	TEXT	notnull=0	dflt=NULL	pk=1
