@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -118,10 +119,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if watermark > 0 && msgUnix <= watermark {
 			continue
 		}
-		body := m.BodyText
-		if len(body) > maxBody {
-			body = body[:maxBody]
-		}
+		body := truncateUTF8(m.BodyText, maxBody)
 		toJSON, _ := json.Marshal(m.To)
 		ccJSON, _ := json.Marshal(m.Cc)
 		labelsJSON, _ := json.Marshal(m.Labels)
@@ -168,6 +166,21 @@ func (s *Syncer) recordAuthResult(err error) {
 	if dbErr := s.db.SetGmailAuthState(status, err.Error()); dbErr != nil {
 		s.logger.Printf("gmail: record auth state: %v", dbErr)
 	}
+}
+
+// truncateUTF8 cuts body to at most maxBytes bytes, backing off to the last
+// valid rune boundary instead of slicing mid-rune — a plain body[:maxBytes]
+// can split a multibyte UTF-8 sequence and leave an invalid trailing partial
+// rune in the stored body_text.
+func truncateUTF8(body string, maxBytes int) string {
+	if len(body) <= maxBytes {
+		return body
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(body[cut]) {
+		cut--
+	}
+	return body[:cut]
 }
 
 // isoToUnix converts an RFC3339 timestamp to unix seconds (0 on parse failure).

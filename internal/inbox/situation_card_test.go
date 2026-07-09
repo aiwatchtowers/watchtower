@@ -160,6 +160,37 @@ func TestRunSituationCards_SnippetResolvesMention(t *testing.T) {
 	assert.Contains(t, gen.prompts[0], "@Bob Brown escalated this")
 }
 
+func TestRunSituationCards_EmailSignalIncludesFullBody(t *testing.T) {
+	// Spec "AI-обработка писем" #3: situation cards (the strong tier) must see
+	// the full gmail body_text, not just the subject+preview Snippet triage
+	// judges on. message_ts on an email inbox item is the Gmail message id.
+	d, p, gen := newComposePipeline(t)
+	require.NoError(t, d.UpsertGmailMessage(db.GmailMessage{
+		ID: "gm1", ThreadID: "thr1", FromEmail: "a@x.com",
+		ToJSON: `["me@x.com"]`, CcJSON: `[]`, Subject: "Contract renewal",
+		Snippet: "preview only", BodyText: "The full contract terms are attached, please review by Friday.",
+		InternalDate: "2026-07-09T10:00:00Z",
+	}, "2026-07-09T10:00:01Z"))
+
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "contract renewal", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
+	require.NoError(t, err)
+	emailSig := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "thr1", MessageTS: "gm1", SenderUserID: "a@x.com", TriggerType: "email_received", Snippet: "Contract renewal — preview only"})
+	streamSig := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "prod down"})
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(emailSig), int(streamSig)}))
+
+	gen.responses = []string{`{"summary":"s","why_matters":"w","chronology":"c"}`}
+
+	n, err := p.runSituationCards(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	require.Len(t, gen.prompts, 1)
+	prompt := gen.prompts[0]
+	assert.Contains(t, prompt, "The full contract terms are attached, please review by Friday.", "email signal must carry the full gmail body_text")
+	// Non-email signal format is unchanged: no body= line for it.
+	assert.NotContains(t, prompt, "body=prod down")
+}
+
 func TestTargetTitle_ResolvesMention(t *testing.T) {
 	d := newTestDB(t)
 	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))

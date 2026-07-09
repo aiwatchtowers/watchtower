@@ -40,6 +40,29 @@ func TestGmailWatermark(t *testing.T) {
 	}
 }
 
+func TestGetGmailBodyByID(t *testing.T) {
+	database := openTestDB(t)
+	m := GmailMessage{
+		ID: "msg1", ThreadID: "thr1", FromEmail: "a@x.com", FromName: "A",
+		ToJSON: `["me@x.com"]`, CcJSON: `[]`, Subject: "Hi", Snippet: "preview",
+		BodyText: "full email body text", InternalDate: "2026-07-09T10:00:00Z",
+		LabelsJSON: `["INBOX"]`,
+	}
+	if err := database.UpsertGmailMessage(m, "2026-07-09T10:00:01Z"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	got, err := database.GetGmailBodyByID("msg1")
+	if err != nil || got != "full email body text" {
+		t.Fatalf("got %q err %v", got, err)
+	}
+
+	got, err = database.GetGmailBodyByID("does-not-exist")
+	if err != nil || got != "" {
+		t.Fatalf("missing row: got %q err %v, want (\"\", nil)", got, err)
+	}
+}
+
 func TestGmailAuthState(t *testing.T) {
 	database := openTestDB(t)
 	if err := database.SetGmailAuthState("revoked", "invalid_grant"); err != nil {

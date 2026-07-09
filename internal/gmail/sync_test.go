@@ -2,11 +2,13 @@ package gmail
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -194,6 +196,77 @@ func TestSyncCapProcessesOldestFirst(t *testing.T) {
 	}
 	if watermark != float64(oldUnix) {
 		t.Fatalf("watermark = %v, want %v (oldest processed, not newest)", watermark, oldUnix)
+	}
+}
+
+// TestTruncateUTF8DoesNotSplitRune verifies the body-truncation helper backs
+// off to the last valid rune boundary instead of slicing mid-rune when the
+// byte cap lands inside a multibyte UTF-8 sequence.
+func TestTruncateUTF8DoesNotSplitRune(t *testing.T) {
+	body := strings.Repeat("é", 6) // 12 bytes, 2 bytes/rune
+	got := truncateUTF8(body, 7)   // 7 lands mid-4th-rune (bytes 6-7)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateUTF8(%q, 7) = %q is not valid UTF-8", body, got)
+	}
+	if got != "ééé" {
+		t.Fatalf("truncateUTF8(%q, 7) = %q, want %q (back off to previous rune boundary)", body, got, "ééé")
+	}
+
+	// Under the cap: no truncation at all.
+	if got := truncateUTF8("short", 100); got != "short" {
+		t.Fatalf("truncateUTF8 under cap = %q, want unchanged %q", got, "short")
+	}
+}
+
+// TestSyncTruncatesBodyOnRuneBoundary is an end-to-end check that Sync's
+// stored body_text is always valid UTF-8 even when MaxBodyBytes lands in the
+// middle of a multibyte rune in the real fetched message body.
+func TestSyncTruncatesBodyOnRuneBoundary(t *testing.T) {
+	rawBody := strings.Repeat("é", 6) // 12 bytes
+	encoded := base64.URLEncoding.EncodeToString([]byte(rawBody))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"messages":[{"id":"mb"}]}`)
+	})
+	mux.HandleFunc("/users/me/messages/mb", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"id":"mb","threadId":"tb","labelIds":["INBOX"],"snippet":"s",
+          "internalDate":"1720519200000","payload":{"headers":[{"name":"Subject","value":"Multibyte"}],
+          "parts":[{"mimeType":"text/plain","body":{"data":%q}}]}}`, encoded)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"at"}`)
+	}))
+	defer tokenSrv.Close()
+	oldBase, oldTok := gmailAPIBase, googleTokenEndpoint
+	gmailAPIBase, googleTokenEndpoint = srv.URL, tokenSrv.URL
+	defer func() { gmailAPIBase, googleTokenEndpoint = oldBase, oldTok }()
+
+	database := db.OpenTestDB(t)
+	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.Gmail = config.GmailConfig{Enabled: true, InitialHistoryDays: 7, MaxMessagesPerSync: 100, MaxBodyBytes: 7}
+	c, err := NewClient(context.Background(), "refresh", GoogleOAuthConfig{ClientID: "cid"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	s := NewSyncer(c, database, cfg, nil)
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.GmailMessagesSyncedAfter("2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("stored rows: %+v", rows)
+	}
+	if !utf8.ValidString(rows[0].BodyText) {
+		t.Fatalf("stored body_text %q is not valid UTF-8", rows[0].BodyText)
 	}
 }
 

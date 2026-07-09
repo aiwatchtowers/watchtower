@@ -81,6 +81,23 @@ func (db *DB) GmailMessagesSyncedAfter(sinceISO string) ([]GmailMessage, error) 
 	return out, rows.Err()
 }
 
+// GetGmailBodyByID returns the body_text of the gmail_messages row with the
+// given id. A missing row is not an error: it returns ("", nil), since a
+// signal's underlying gmail message may have been synced by a different
+// pipeline path or since removed — callers should just fall back to the
+// snippet in that case.
+func (db *DB) GetGmailBodyByID(id string) (string, error) {
+	var body string
+	err := db.QueryRow(`SELECT body_text FROM gmail_messages WHERE id = ?`, id).Scan(&body)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting gmail body for %s: %w", id, err)
+	}
+	return body, nil
+}
+
 // GetGmailLastInternalDate returns the sync watermark (unix seconds, 0 if unset).
 func (db *DB) GetGmailLastInternalDate() (float64, error) {
 	var ts float64
