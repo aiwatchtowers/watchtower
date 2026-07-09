@@ -136,6 +136,7 @@ final class NotificationService: Sendable {
     }
 
     func sendTargetExtractReadyNotification(count: Int) {
+        guard !isTestEnvironment() else { return }
         let content = UNMutableNotificationContent()
         content.title = "Target draft ready"
         content.body = count == 1
@@ -153,6 +154,7 @@ final class NotificationService: Sendable {
     }
 
     func sendTargetExtractFailedNotification(reason: String) {
+        guard !isTestEnvironment() else { return }
         let content = UNMutableNotificationContent()
         content.title = "Target extraction failed"
         content.body = String(reason.prefix(200))
@@ -165,5 +167,11 @@ final class NotificationService: Sendable {
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    private func isTestEnvironment() -> Bool {
+        // Check if running under XCTest by looking for test bundle in executable path or bundle name
+        let execPath = Bundle.main.executablePath ?? ""
+        return execPath.contains("xctest") || NSStringFromClass(type(of: self)).contains("Test")
     }
 }
