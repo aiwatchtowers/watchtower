@@ -908,3 +908,18 @@ const (
 	DayPlanItemStatusDone    = "done"
 	DayPlanItemStatusSkipped = "skipped"
 )
+
+// FeedItem is one row of the dashboard feed index (table feed_items) — the
+// social-wall feed's chronology + per-item user state. Content is never
+// stored here; it is joined live from the source table named by ItemType.
+type FeedItem struct {
+	ID         int64
+	ItemType   string // situation | meeting | briefing | meeting_recap | day_plan
+	SourceID   string
+	EventTS    string
+	Importance int
+	HiddenAt   string // empty when not hidden
+	SeenAt     string // empty when unseen
+	CreatedAt  string
+	UpdatedAt  string
+}
