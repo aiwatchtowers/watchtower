@@ -9,6 +9,7 @@ import SwiftUI
 /// container (`InboxFeedView`), mirroring how `InboxViewModel` is owned/passed there.
 struct DashboardView: View {
     let vm: DashboardViewModel
+    let feedVM: FeedViewModel
     @Environment(AppState.self) private var appState
 
     // Create-target flow (DASH-03): fromSituation prefill → CreateTargetSheet →
@@ -54,15 +55,22 @@ struct DashboardView: View {
                 resolveCreatedTrack()
             }
         }
+        .onChange(of: feedVM.selectedFeedItemID) { _, _ in
+            if case .situation(let situation)? = feedVM.selectedEntry?.content {
+                vm.select(situation.id)
+            } else {
+                vm.select(nil)
+            }
+        }
     }
 
     private var content: some View {
         Group {
-            if vm.situations.isEmpty {
+            if feedVM.entries.isEmpty {
                 emptyState
             } else {
                 HSplitView {
-                    situationList
+                    feedList
                         .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
                     reviewPane
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,24 +79,41 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - Left: situation list
+    // MARK: - Left: feed list
 
-    private var situationList: some View {
-        List(selection: Binding(
-            get: { vm.selectedSituationID },
-            set: { vm.select($0) }
-        )) {
-            ForEach(vm.situations) { situation in
-                SituationRow(situation: situation)
-                    .tag(situation.id)
-                    .contextMenu { contextMenu(for: situation) }
+    private var feedList: some View {
+        VStack(spacing: 0) {
+            FeedFilterBar(vm: feedVM)
+            Divider()
+            List(selection: Binding(
+                get: { feedVM.selectedFeedItemID },
+                set: { feedVM.select($0) }
+            )) {
+                ForEach(feedVM.entries) { entry in
+                    FeedRow(entry: entry)
+                        .tag(entry.id)
+                        .contextMenu { feedContextMenu(for: entry) }
+                }
+
+                Button("Load more") { feedVM.loadMore() }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
             }
-
-            Button("Load more") { vm.loadMore() }
-                .buttonStyle(.borderless)
-                .font(.caption)
+            .listStyle(.sidebar)
         }
-        .listStyle(.sidebar)
+    }
+
+    @ViewBuilder
+    private func feedContextMenu(for entry: FeedEntry) -> some View {
+        if case .situation(let situation) = entry.content {
+            contextMenu(for: situation) // existing situation menu, unchanged
+            Divider()
+        }
+        if entry.item.hiddenAt == nil {
+            Button { feedVM.hide(entry) } label: { Label("Hide", systemImage: "eye.slash") }
+        } else {
+            Button { feedVM.unhide(entry) } label: { Label("Unhide", systemImage: "eye") }
+        }
     }
 
     @ViewBuilder
@@ -117,39 +142,50 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var reviewPane: some View {
-        if let situation = vm.selectedSituation {
-            SituationReviewPane(
-                situation: situation,
-                memberSignals: vm.memberSignals(for: situation.id),
-                memberSignalsLoaded: vm.memberSignalsLoaded(situation.id),
-                senderName: { vm.senderName(for: $0) },
-                channelName: { vm.channelName(for: $0) },
-                slackURL: { vm.slackURL(for: $0) },
-                onDone: { vm.done(situation) },
-                onDismiss: { vm.dismiss(situation) },
-                onSnooze: { option in vm.snooze(situation, until: SnoozeDates.until(option)) },
-                onFeedback: { rating, comment in
-                    Task { await vm.submitFeedback(situation, rating: rating, comment: comment) }
-                },
-                isCreatingTarget: isBuildingPrefill,
-                onCreateTarget: { openCreateTarget(for: situation) },
-                onCreateTrack: { openCreateTrack(for: situation) },
-                onOpenTarget: { appState.navigateToTarget($0) },
-                onOpenTrack: { appState.navigateToTrack($0) }
-            )
-            // Identity at the CALL SITE, so the pane's OWN @State (discuss
-            // chat VM/expansion, comment draft) resets when the selection
-            // changes — an .id inside the pane's body only resets its
-            // children, which let a previous situation's Discuss conversation
-            // leak into the next one. Same id on a poll-driven re-render of
-            // the same situation → state survives (required).
-            .id(situation.id)
+        if let entry = feedVM.selectedEntry {
+            switch entry.content {
+            case .situation(let situation):
+                SituationReviewPane(
+                    situation: situation,
+                    memberSignals: vm.memberSignals(for: situation.id),
+                    memberSignalsLoaded: vm.memberSignalsLoaded(situation.id),
+                    senderName: { vm.senderName(for: $0) },
+                    channelName: { vm.channelName(for: $0) },
+                    slackURL: { vm.slackURL(for: $0) },
+                    onDone: { vm.done(situation) },
+                    onDismiss: { vm.dismiss(situation) },
+                    onSnooze: { option in vm.snooze(situation, until: SnoozeDates.until(option)) },
+                    onFeedback: { rating, comment in
+                        Task { await vm.submitFeedback(situation, rating: rating, comment: comment) }
+                    },
+                    isCreatingTarget: isBuildingPrefill,
+                    onCreateTarget: { openCreateTarget(for: situation) },
+                    onCreateTrack: { openCreateTrack(for: situation) },
+                    onOpenTarget: { appState.navigateToTarget($0) },
+                    onOpenTrack: { appState.navigateToTrack($0) }
+                )
+                // Identity at the CALL SITE, so the pane's OWN @State (discuss
+                // chat VM/expansion, comment draft) resets when the selection
+                // changes — an .id inside the pane's body only resets its
+                // children, which let a previous situation's Discuss conversation
+                // leak into the next one. Same id on a poll-driven re-render of
+                // the same situation → state survives (required).
+                .id(situation.id)
+            case .meeting(let event, let prep):
+                MeetingFeedPane(event: event, prep: prep).id(entry.id)
+            case .briefing(let briefing):
+                BriefingDetailView(briefing: briefing).id(entry.id)
+            case .meetingRecap(let recap, let event):
+                RecapFeedPane(recap: recap, event: event).id(entry.id)
+            case .dayPlan(let plan):
+                DayPlanFeedPane(plan: plan).id(entry.id)
+            }
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "square.grid.2x2")
                     .font(.system(size: 36))
                     .foregroundStyle(.secondary)
-                Text("Select a situation")
+                Text("Select an item")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }

@@ -17,6 +17,7 @@ struct InboxFeedView: View {
     /// in-flight "Generate" run isn't orphaned on navigation) rather than
     /// created locally here.
     private var dashboardVM: DashboardViewModel? { appState.dashboardViewModel }
+    private var feedVM: FeedViewModel? { appState.feedViewModel }
 
     enum Tab { case feed, learned, profile }
 
@@ -28,8 +29,8 @@ struct InboxFeedView: View {
 
             switch tab {
             case .feed:
-                if let dashboardVM {
-                    DashboardView(vm: dashboardVM)
+                if let dashboardVM, let feedVM {
+                    DashboardView(vm: dashboardVM, feedVM: feedVM)
                 } else {
                     ProgressView("Loading...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -45,6 +46,7 @@ struct InboxFeedView: View {
             // reload on every tab-appear to pick up situations composed while
             // the dashboard tab was inactive.
             dashboardVM?.refresh()
+            feedVM?.refresh()
         }
     }
 
