@@ -11,7 +11,7 @@ final class FeedViewModelTests: XCTestCase {
 
     override func setUpWithError() throws {
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
-        defaults = UserDefaults(suiteName: "FeedViewModelTests")!
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "FeedViewModelTests"))
         defaults.removePersistentDomain(forName: "FeedViewModelTests")
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
