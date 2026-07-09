@@ -98,7 +98,7 @@ var DefaultVersions = map[string]int{
 	TrackCompose:       1, // v1: draft custom-track title+instruction from a free-text request
 	TrackRun:           1, // v1: custom-track timeline events from recent cross-source activity
 	TrackShortlist:     1, // v1: cheap title-only relevance filter for custom-track backfill
-	InboxCompose:       1, // v1: fold new material into dashboard situations
+	InboxCompose:       2, // v2: suggest_resolve op (DASH-07)
 	InboxSituationCard: 1, // v1: context packet for one dashboard situation
 }
 
@@ -1244,6 +1244,12 @@ Fold the new material below into the dashboard:
   "track_update" (activity on an active target/track — set target_id or
   track_id), "mixed".
 - "rerank": an open situation became more/less urgent.
+- "suggest_resolve": the new material shows an open situation concluded
+  WITHOUT the user needing to act — the question was answered and accepted,
+  the blocker lifted, the decision made elsewhere. Propose closing it;
+  reason: one sentence, what resolved it, in the user's language. The user
+  confirms — never suggest on weak or partial evidence, and never instead
+  of a needed merge (emit both).
 - Signals not worth the dashboard: simply do not reference them.
 - priority: high|medium|low. rank: 0.0-1.0 relative urgency for feed order.
 - reason: ONE sentence, user's point of view, in the user's language.
@@ -1254,7 +1260,8 @@ Return ONLY a JSON object (no markdown fences):
 {"ops":[
  {"op":"create","title":"...","kind":"external","priority":"high","rank":0.9,"reason":"...","signals":["sig:12","evt:3","tgt:7"],"target_id":null,"track_id":null},
  {"op":"merge","situation_id":4,"signals":["sig:15"],"rerank":0.7,"reason":"..."},
- {"op":"rerank","situation_id":2,"rank":0.3,"reason":"..."}
+ {"op":"rerank","situation_id":2,"rank":0.3,"reason":"..."},
+ {"op":"suggest_resolve","situation_id":9,"reason":"..."}
 ]}`
 
 const defaultInboxSituationCard = `%s

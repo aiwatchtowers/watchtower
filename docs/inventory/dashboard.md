@@ -98,7 +98,24 @@
 
 **Locked since:** 2026-07-09
 
+## DASH-07 — Resolution is suggested, never automatic
+
+**Status:** Enforced
+
+**Observable:** The composer's `suggest_resolve` op may only set `situations.suggested_resolution` (a reason string shown in the UI); it never changes `status`. Every transition to done/dismissed remains a user action (or the pre-existing signals-resolved auto-close driven by the user's own replies). A merge folding new material into a situation clears a stale suggestion unless the same pass re-suggests; a bare rerank leaves it intact. Hallucinated ids and empty reasons are skipped like any malformed op, and the whole apply stays inside the DASH-02 transaction.
+
+**Why locked:** "The secretary marks, the user closes" is the trust boundary for third-party closures: a false auto-close would silently bury a live issue, while a stale suggestion surviving fresh activity would misrepresent the secretary's current judgment.
+
+**Test guards:**
+- `internal/inbox/compose_test.go::TestDash07_SuggestResolveSetsMarkNeverStatus`
+- `internal/inbox/compose_test.go::TestDash07_MergeWithoutResuggestClearsStaleMark`
+- `internal/inbox/compose_test.go::TestDash07_RerankAloneKeepsMark`
+- `internal/inbox/compose_test.go::TestDash07_SuggestResolveSkipsHallucinatedAndEmptyReason`
+
+**Locked since:** 2026-07-09
+
 ## Changelog
 
 - 2026-07-06: file created with 3 contracts (DASH-01..03), all Enforced. Introduced by the secretary dashboard feature (spec `docs/superpowers/specs/2026-07-06-secretary-dashboard-design.md`), which composes inbox signals plus target/track updates into ranked `situations`, replacing the inbox's two-tier "Needs action"/"FYI" feed as the app's start screen. See `docs/inventory/inbox-pulse.md`'s 2026-07-06 changelog entry for how INBOX-01/07/09 relate to this new surface.
 - 2026-07-09: added DASH-05/06 (feed publisher contracts). Introduced by the feed dashboard feature (spec `docs/superpowers/specs/2026-07-09-feed-dashboard-design.md`), which turns the Dashboard into a chronological social-wall feed (`feed_items` index) mixing situations with meetings, briefings, recaps, and day plans.
+- 2026-07-09: added DASH-07 (suggested resolution). Introduced by the thread-follow + suggested-resolution feature (spec docs/superpowers/specs/2026-07-09-resolution-suggestion-design.md), together with the thread-fold composed_at reset that keeps situations live.

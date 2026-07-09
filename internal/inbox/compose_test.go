@@ -439,6 +439,111 @@ func TestCompose_FreshWatermarkUsesLookbackFloor(t *testing.T) {
 		"a fresh compose watermark must be floored to now-lookbackDays, not pull the entire backfilled history")
 }
 
+// DASH-07: suggest_resolve sets the mark and reason but NEVER changes status.
+func TestDash07_SuggestResolveSetsMarkNeverStatus(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+	insertChannel(t, d, "C1", "public")
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "release X blocked", Kind: "external", Priority: "high", Rank: 0.5, AIReason: "old reason"})
+	require.NoError(t, err)
+
+	insertMessage(t, d, "C1", "1.1", "U2", "thread answered")
+	sig1 := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "thread answered"})
+
+	gen.responses = []string{`{"ops":[
+		{"op":"merge","situation_id":` + strconv.FormatInt(sitID, 10) + `,"signals":["sig:` + strconv.FormatInt(sig1, 10) + `"]},
+		{"op":"suggest_resolve","situation_id":` + strconv.FormatInt(sitID, 10) + `,"reason":"answered in thread"}
+	]}`}
+
+	_, merged, err := p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, merged)
+
+	s, err := d.GetSituation(int(sitID))
+	require.NoError(t, err)
+	assert.Equal(t, "answered in thread", s.SuggestedResolution)
+	assert.Equal(t, "open", s.Status)
+}
+
+// DASH-07 freshness: a later merge WITHOUT a re-suggest clears a stale mark.
+func TestDash07_MergeWithoutResuggestClearsStaleMark(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+	insertChannel(t, d, "C1", "public")
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "release X blocked", Kind: "external", Priority: "high", Rank: 0.5, AIReason: "old reason"})
+	require.NoError(t, err)
+
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.SetSuggestedResolutionTx(tx, int(sitID), "thought it was done"))
+	require.NoError(t, tx.Commit())
+
+	insertMessage(t, d, "C1", "1.1", "U2", "actually still blocked")
+	sig1 := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "actually still blocked"})
+
+	gen.responses = []string{`{"ops":[
+		{"op":"merge","situation_id":` + strconv.FormatInt(sitID, 10) + `,"signals":["sig:` + strconv.FormatInt(sig1, 10) + `"]}
+	]}`}
+
+	_, merged, err := p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, merged)
+
+	s, err := d.GetSituation(int(sitID))
+	require.NoError(t, err)
+	assert.Equal(t, "", s.SuggestedResolution, "a merge with new material and no re-suggest must clear the stale mark")
+}
+
+// A rerank alone does NOT clear the mark (only merges represent new material).
+func TestDash07_RerankAloneKeepsMark(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+	insertChannel(t, d, "C1", "public")
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "release X blocked", Kind: "external", Priority: "high", Rank: 0.5, AIReason: "old reason"})
+	require.NoError(t, err)
+
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.SetSuggestedResolutionTx(tx, int(sitID), "thought it was done"))
+	require.NoError(t, tx.Commit())
+
+	// A fresh pending signal makes the cycle non-empty so the AI is invoked;
+	// the op below doesn't reference it, mirroring TestCompose_HallucinatedKeysSkipped.
+	insertMessage(t, d, "C1", "1.1", "U2", "unrelated noise")
+	mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "unrelated noise"})
+
+	gen.responses = []string{`{"ops":[
+		{"op":"rerank","situation_id":` + strconv.FormatInt(sitID, 10) + `,"rank":0.8,"reason":"escalated"}
+	]}`}
+
+	_, _, err = p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+
+	s, err := d.GetSituation(int(sitID))
+	require.NoError(t, err)
+	assert.Equal(t, "thought it was done", s.SuggestedResolution, "a bare rerank must not touch the suggestion mark")
+}
+
+// Hallucinated/malformed suggest ops are skipped like other bad ops.
+func TestDash07_SuggestResolveSkipsHallucinatedAndEmptyReason(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+	insertChannel(t, d, "C1", "public")
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "release X blocked", Kind: "external", Priority: "high", Rank: 0.5, AIReason: "old reason"})
+	require.NoError(t, err)
+
+	insertMessage(t, d, "C1", "1.1", "U2", "unrelated noise")
+	mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "unrelated noise"})
+
+	gen.responses = []string{`{"ops":[
+		{"op":"suggest_resolve","situation_id":9999,"reason":"phantom"},
+		{"op":"suggest_resolve","situation_id":` + strconv.FormatInt(sitID, 10) + `,"reason":""}
+	]}`}
+
+	_, _, err = p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+
+	s, err := d.GetSituation(int(sitID))
+	require.NoError(t, err)
+	assert.Equal(t, "", s.SuggestedResolution, "hallucinated id and empty reason must both be skipped")
+}
+
 func TestCompose_MutedSignalsExcludedButMarked(t *testing.T) {
 	d, p, gen := newComposePipeline(t)
 	insertChannel(t, d, "C1", "public")

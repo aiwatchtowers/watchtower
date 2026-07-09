@@ -16,9 +16,10 @@ import (
 
 // composeOp is one dashboard mutation the AI proposes for a compose cycle:
 // fold new material into an existing open situation (merge), start a new one
-// (create), or just re-score an existing one (rerank).
+// (create), just re-score an existing one (rerank), or mark one as likely
+// resolved for the user to confirm (suggest_resolve; DASH-07).
 type composeOp struct {
-	Op          string   `json:"op"` // create|merge|rerank
+	Op          string   `json:"op"` // create|merge|rerank|suggest_resolve
 	SituationID int      `json:"situation_id"`
 	Title       string   `json:"title"`
 	Kind        string   `json:"kind"`
@@ -201,6 +202,15 @@ func applyComposeAndAdvance(database *db.DB, ops []composeOp, validSigIDs map[in
 // (hallucinated) are dropped from membership without failing the op. Only a
 // genuine DB error aborts the loop.
 func applyComposeOps(database *db.DB, tx *sql.Tx, ops []composeOp, validSigIDs map[int]bool, openByID map[int]db.DashboardSituation) (created, merged int, err error) {
+	// DASH-07 freshness: which situations get a fresh suggestion this pass —
+	// a merge without one clears any stale mark below.
+	suggested := make(map[int]bool)
+	for _, op := range ops {
+		if op.Op == "suggest_resolve" {
+			suggested[op.SituationID] = true
+		}
+	}
+
 	for _, op := range ops {
 		switch op.Op {
 		case "create":
@@ -241,6 +251,11 @@ func applyComposeOps(database *db.DB, tx *sql.Tx, ops []composeOp, validSigIDs m
 					return created, merged, uerr
 				}
 			}
+			if sit.SuggestedResolution != "" && !suggested[sit.ID] {
+				if cerr := database.ClearSuggestedResolutionTx(tx, sit.ID); cerr != nil {
+					return created, merged, fmt.Errorf("clearing stale suggestion on situation %d: %w", sit.ID, cerr)
+				}
+			}
 			merged++
 
 		case "rerank":
@@ -250,6 +265,15 @@ func applyComposeOps(database *db.DB, tx *sql.Tx, ops []composeOp, validSigIDs m
 			}
 			if uerr := rerankSituation(database, tx, sit, op.Rank, op.Priority, op.Reason); uerr != nil {
 				return created, merged, uerr
+			}
+
+		case "suggest_resolve":
+			sit, ok := openByID[op.SituationID]
+			if !ok || op.Reason == "" {
+				continue // hallucinated id or empty reason — skip like other bad ops
+			}
+			if serr := database.SetSuggestedResolutionTx(tx, sit.ID, op.Reason); serr != nil {
+				return created, merged, fmt.Errorf("suggesting resolution on situation %d: %w", sit.ID, serr)
 			}
 		}
 	}
