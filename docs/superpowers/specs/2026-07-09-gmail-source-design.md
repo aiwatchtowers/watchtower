@@ -1,0 +1,241 @@
+# Gmail как источник данных — дизайн
+
+**Дата:** 2026-07-09
+**Ветка (предполагаемая):** feature/gmail-source
+**Статус:** дизайн одобрен, готов к планированию
+
+## Мотивация
+
+Watchtower агрегирует рабочие сигналы из нескольких источников (Slack, Jira, Google
+Calendar, внутренние события) в единый inbox и кластеризует их в «ситуации».
+Электронная почта — крупный источник рабочих сигналов, которого сейчас нет. Цель:
+подключить Gmail как ещё один источник по образцу существующих внешних источников,
+чтобы письма попадали в inbox/ситуации и обрабатывались тем же pipeline без его
+переработки.
+
+## Ключевые решения (подтверждены с владельцем)
+
+1. **Провайдер:** Gmail через Google API (переиспользуем OAuth-механику Calendar).
+2. **Что считается триггером:** всё во входящих (Gmail Inbox). Фильтрацию важности
+   выполняет существующий triage (AI), а не детектор.
+3. **Права:** scope `gmail.modify` (чтение + возможность write-back статусов). Scope
+   запрашиваем сразу, чтобы будущий write-back-слой не требовал переавторизации.
+4. **Модель подключения:** **отдельное** подключение Gmail (свой token store
+   `gmail_token.json`, своя кнопка Connect Gmail), независимое от Calendar. Существующие
+   Calendar-пользователи не затрагиваются; источники включаются независимо.
+
+## Границы и декомпозиция
+
+Работа делится на **два независимых плана**:
+
+- **План A — read-path (эта спека, реализуется первым):** OAuth Gmail, sync-слой,
+  таблица-источник, детектор, интеграция в inbox pipeline, CLI, Desktop Connect.
+  Письма попадают в inbox и ситуации. Discuss-chat может сочинить черновик ответа
+  (как для Slack), но отправка — вручную в Gmail. Read-path самодостаточен.
+- **План B — write-back (отдельный план, позже):** обратная синхронизация статуса
+  «прочитано/архив» из Watchtower в Gmail (`users.messages.modify`, снятие ярлыков
+  `UNREAD`/`INBOX`). Не входит в План A; scope `gmail.modify` уже покрывает его.
+
+Обоснование разбивки: read-path приносит ценность сам по себе; write-back добавляет
+двустороннюю синхронизацию статусов и связанные риски (конфликты, идемпотентность),
+которые лучше проектировать отдельно.
+
+## Архитектура
+
+Повторяет подтверждённый паттерн «внешнего источника» (образцы — Calendar и Jira):
+
+```
+OAuth Gmail (gmail_token.json)
+  → internal/gmail: Syncer.Sync() тянет письма из Gmail Inbox
+     → пишет в таблицу gmail_messages (SQLite)
+        → internal/inbox/gmail_detector.go: DetectGmail() читает gmail_messages
+           → создаёт inbox_items (trigger_type email_received / email_cc)
+              → существующий pipeline: triage → compose → situations (без изменений)
+```
+
+Детектор НЕ ходит в Gmail API — он читает уже засинканную таблицу, как это делают
+Jira- и Calendar-детекторы.
+
+## Компоненты
+
+### 1. Пакет `internal/gmail/`
+
+По образцу `internal/calendar/`:
+
+- **`auth.go`** — OAuth. Переиспользует Google client_id/secret (ldflags), token
+  endpoint, `access_type=offline`, `prompt=consent`, и логику refresh. Отличия от
+  Calendar:
+  - scope: `https://www.googleapis.com/auth/gmail.modify`;
+  - собственный `TokenStore` → `gmail_token.json` (независим от `google_token.json`);
+  - `Login` (loopback-сервер), `Prepare`/`Complete` (Desktop) — как в Calendar.
+- **`client.go`** — Gmail REST-клиент (raw net/http, base
+  `https://www.googleapis.com/gmail/v1`): `users.messages.list` (`q=in:inbox`,
+  пагинация), `users.messages.get` (формат metadata+body). Авторетрай на 401 с
+  рефрешем токена (как `calendar/client.go`). При `invalid_grant` → `ErrAuthRevoked`.
+- **`sync.go`** — `Syncer{client, db, cfg, logger}`, `NewSyncer`, `Sync(ctx) (int, error)`:
+  - **initial sync:** запрос `in:inbox newer_than:{InitialHistoryDays}d`;
+  - **incremental sync:** watermark по последнему обработанному `internalDate`.
+    В отличие от Calendar (скользящее окно + инвалидация по `synced_at`), почта
+    накапливается — нужен настоящий watermark, чтобы не тянуть весь Inbox каждый цикл.
+    Watermark хранится в таблице `workspace` (новое поле `gmail_last_internal_date`),
+    консистентно с существующими watermark'ами `inbox_last_processed_ts` и
+    `search_last_date`;
+  - **шумовой фильтр до AI:** письма с ярлыками `CATEGORY_PROMOTIONS` и
+    `CATEGORY_SOCIAL` пропускаются (аналог hard-mute), не доходят до triage;
+  - upsert каждого письма в `gmail_messages`;
+  - лимит `MaxMessagesPerSync` на цикл;
+  - запись телеметрии авторизации в `gmail_auth_state` (`ok`/`error`/`revoked`).
+- **`models.go`** — доменные типы письма.
+
+*(historyId-based incremental sync — возможное улучшение производительности, но для
+первой версии используем `messages.list` + watermark по `internalDate`.)*
+
+### 2. Схема БД (миграция `00016`)
+
+Новая таблица **`gmail_messages`** (образец — `calendar_events`):
+
+| колонка | тип | назначение |
+|---|---|---|
+| `id` | TEXT PK | Gmail message ID |
+| `thread_id` | TEXT | Gmail thread — кластеризация composer'ом и группировка треда |
+| `from_email` | TEXT | отправитель (email) |
+| `from_name` | TEXT | отправитель (отображаемое имя) |
+| `to_json` | TEXT | получатели To (JSON-массив) |
+| `cc_json` | TEXT | получатели CC (JSON-массив) |
+| `subject` | TEXT | тема |
+| `snippet` | TEXT | превью от Gmail |
+| `body_text` | TEXT | plain-text тело письма (для triage/ситуаций) |
+| `internal_date` | TEXT | время письма (ISO8601) |
+| `labels_json` | TEXT | ярлыки Gmail (INBOX, UNREAD, IMPORTANT, CATEGORY_*) |
+| `is_unread` | INTEGER | производное для быстрых фильтров |
+| `permalink` | TEXT | `https://mail.google.com/mail/u/0/#inbox/{id}` |
+| `synced_at` | TEXT | время последнего синка строки (дефолт now) |
+| `updated_at` | TEXT | служебное |
+
+Таблица `gmail_auth_state` (singleton `id=1`, образец `calendar_auth_state`) для
+телеметрии авторизации и детекта `revoked`. Добавляется в `TestAllTablesExist`.
+
+Watermark: новое поле `gmail_last_internal_date` в таблице `workspace` (той же
+миграцией; расширение существующей таблицы, а не enum — обычным `ALTER TABLE ADD COLUMN`).
+
+Миграция также **расширяет CHECK `inbox_items.trigger_type`** двумя значениями:
+`email_received` и `email_cc` — через «table-recreation dance» (образец
+`00002_target_due_inbox.sql`), т.к. SQLite не умеет `ALTER TABLE ... ADD CONSTRAINT`.
+
+Обязательные сопутствующие правки (по CLAUDE.md):
+- зеркалирование новой таблицы и расширенного CHECK в `internal/db/schema.sql`;
+- добавление `gmail_messages` и `gmail_auth_state` в `TestAllTablesExist`;
+- регенерация golden snapshot: `go test ./internal/db/ -run TestSchemaGolden -update`;
+- Go-модели в `internal/db/` + слой доступа (`internal/db/gmail.go`): upsert, чтение
+  для детектора, работа с watermark.
+
+### 3. Детектор `internal/inbox/gmail_detector.go`
+
+По образцу `calendar_detector.go`:
+
+- сигнатура: `func DetectGmail(ctx, database *db.DB, myEmail string, sinceTS time.Time) (int, error)`;
+- ранний выход при `myEmail == ""`;
+- читает `gmail_messages` с `synced_at > sinceTS`;
+- **полностью вычитывает rows в слайс до начала вставок** (guard против deadlock
+  in-memory SQLite при `MaxOpenConns(1)`);
+- определение `trigger_type`: `email_received`, если `myEmail` присутствует в To;
+  иначе (только CC) — `email_cc`;
+- создание `inbox_item`:
+  - `ChannelID = thread_id` (тред как «канал» → группировка в inbox/ситуациях),
+  - `MessageTS = message_id` (Gmail message ID уникален → надёжный дедуп),
+  - `SenderUserID = from_email`,
+  - `Snippet = subject`,
+  - `Permalink = gmail permalink`;
+- локальный хелпер `gmailInboxExists` для дедупа по `(channel_id, message_ts, trigger_type)`.
+
+### 4. Проводка в pipeline и daemon
+
+- **`internal/inbox/pipeline.go`**: расширить `detectAll` дополнительным счётчиком
+  `email` и вызовом `DetectGmail(...)`; обновить оба места вызова — `Run` и
+  `RunFastDetection` (позиционные счётчики).
+- **`internal/inbox/classifier.go`**: добавить в `defaultClasses`:
+  `email_received → actionable`, `email_cc → ambient`.
+- **`internal/daemon/daemon.go`**: поле `gmailSyncer *gmail.Syncer`, сеттер
+  `SetGmailSyncer`, метод `phaseGmailSync(ctx)` (no-op guard если nil), вызов в
+  `runCycle` рядом с `phaseCalendarSync`.
+- **`cmd/sync.go`**: проводка — при наличии `gmail_token.json` создать client и
+  `d.SetGmailSyncer(...)` (образец — блок Calendar).
+
+### 5. CLI `cmd/gmail.go`
+
+По образцу `cmd/calendar.go`:
+- `watchtower gmail login` — OAuth, сохранение `gmail_token.json`;
+- `watchtower gmail logout` — удаление токена (+ опц. очистка `gmail_messages`);
+- `watchtower gmail sync` — разовый синк;
+- `watchtower gmail status` — connected/not, путь токена, `cfg.Gmail.Enabled`.
+
+### 6. Конфиг
+
+`internal/config/config.go`: секция
+`GmailConfig{Enabled bool, InitialHistoryDays int, MaxMessagesPerSync int}` в `Config`.
+Дефолты в `internal/config/defaults.go` (`InitialHistoryDays=7`,
+`MaxMessagesPerSync=100`), регистрация `v.SetDefault(...)` в `Load`
+(образец — секции Calendar/Jira).
+
+### 7. Desktop (`WatchtowerDesktop/`)
+
+- **`Sources/Services/GmailAuthService.swift`** — по образцу `GoogleAuthService.swift`,
+  но на `gmail_token.json` и командах `gmail login/logout/status`. Собственный статус
+  `isConnected` (сканирует `*/gmail_token.json`).
+- **`Sources/Views/Settings/SettingsView.swift`** — секция `gmailSettingsSection`
+  (образец `calendarSettingsSection`): статус, кнопка Connect/Disconnect Gmail, тоггл
+  «Enable Gmail sync» (пишет `config.gmailEnabled`), обработка отмены/ошибок.
+- **`Sources/Views/Inbox/InboxCardView.swift`** — `case`'ы для `email_received` и
+  `email_cc` в `triggerLabel` («Email»), `triggerSymbol` (`envelope`), `triggerColor`.
+- Опционально: фильтр по источнику Email через существующий `triggerTypeFilter`.
+
+## Поток данных (пример)
+
+1. daemon `phaseGmailSync` → `Syncer.Sync` тянет новые письма из Inbox → upsert в
+   `gmail_messages`, watermark продвигается.
+2. daemon `phaseFastInbox`/`phaseInbox` → `DetectGmail` читает новые строки
+   `gmail_messages` → создаёт `inbox_items` (`email_received`/`email_cc`).
+3. Существующий pipeline: triage классифицирует (важное/шум), compose кластеризует
+   письма (по `thread_id`) в ситуации, situation cards генерируют сводку.
+4. Desktop Dashboard показывает ситуации; Email-item получает иконку конверта и метку.
+
+## Обработка ошибок
+
+- Детектор Gmail индивидуально non-fatal в `detectAll` (ошибка накапливается в
+  `errors.Join`); суммарная ошибка детекции морозит inbox-watermark (окно не теряется)
+  — существующее поведение.
+- `phaseGmailSync` логирует ошибку синка и не прерывает цикл daemon (как
+  `phaseCalendarSync`).
+- `invalid_grant` при рефреше → `ErrAuthRevoked`, запись `revoked` в `gmail_auth_state`,
+  синк пропускается до переавторизации.
+
+## Тестирование
+
+- **Go:** unit-тесты `DetectGmail` (создание item'ов, разделение received/cc, дедуп,
+  degenerate-вход — пустая таблица, письмо без CC и т.д.); тест синка с мок-HTTP
+  Gmail API (образец — тесты calendar с переопределяемыми endpoints); тест миграции
+  `00016` (up/down) и golden snapshot.
+- **Swift:** тест `GmailAuthService` (connect/cancel/status), проверка расширения
+  `TestDatabase.swift` под новую таблицу и trigger_type (schema.sql ↔ TestDatabase.swift
+  не должны разъезжаться).
+- Проверять реальный exit-код (не пайпить через tail).
+
+## Риски и зависимости
+
+- **Google verification:** `gmail.modify` — restricted scope. Для личного/командного
+  использования через test users работает сразу; для широкого продакшена требуется
+  Google security assessment. Это внешний процесс, вне кода. См.
+  `docs/legal/google-verification.md`.
+- **Приватность:** тело писем (`body_text`) хранится локально в SQLite — консистентно
+  с существующей моделью хранения Slack-сообщений локально. Подтверждено владельцем.
+- **Объём данных:** лимит `MaxMessagesPerSync` и watermark ограничивают нагрузку;
+  шумовой фильтр (PROMOTIONS/SOCIAL) снижает объём AI-обработки.
+
+## Что НЕ входит (явно отложено)
+
+- Write-back статусов (прочитано/архив) в Gmail — отдельный План B.
+- Отправка писем из Watchtower (`gmail.send`) — не планируется в этой итерации.
+- IMAP / Outlook / другие провайдеры — только Gmail.
+- historyId-based incremental sync — возможное улучшение позже.
+- Отдельная категоризация email в `targets.source_type` / `feedback.entity_type` —
+  не нужна (email-item это обычный `inbox`-источник).
