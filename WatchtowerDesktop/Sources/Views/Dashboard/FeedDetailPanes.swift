@@ -144,9 +144,11 @@ struct DayPlanFeedPane: View {
 // MARK: - SituationHistoryPane
 
 /// Read-only right pane for a closed situation (done/dismissed/converted/
-/// stale/snoozed) — DASH-05: after Done/Dismiss the entry stays in the wall
-/// as history instead of vanishing, so this replaces `SituationReviewPane`
-/// (no action bar, no mutations) once `situation.status != .open`.
+/// stale/snoozed). Per the feed design (spec
+/// `2026-07-09-feed-dashboard-design.md`), the wall keeps closed situations
+/// as read-only history instead of removing them, so this replaces
+/// `SituationReviewPane` (no action bar, no mutations) once
+/// `situation.status != .open`.
 struct SituationHistoryPane: View {
     let situation: Situation
     @Environment(AppState.self) private var appState
