@@ -340,14 +340,14 @@ func (p *Pipeline) buildOpenSituationsBlock(open []db.DashboardSituation) string
 	for _, s := range open {
 		members, _ := p.db.ListSituationSignals(s.ID)
 		b.WriteString(fmt.Sprintf("id=%d [%s] %s :: %s :: recent: %s\n",
-			s.ID, s.Kind, s.Title, s.AIReason, recentMemberSnippets(members)))
+			s.ID, s.Kind, s.Title, s.AIReason, recentMemberSnippets(p.db, members)))
 	}
 	return b.String()
 }
 
 // recentMemberSnippets renders up to the last recentSnippetsPerSituation
 // member signal snippets, oldest-of-the-recent-set first.
-func recentMemberSnippets(members []db.InboxItem) string {
+func recentMemberSnippets(database *db.DB, members []db.InboxItem) string {
 	if len(members) == 0 {
 		return "(no signals yet)"
 	}
@@ -357,7 +357,7 @@ func recentMemberSnippets(members []db.InboxItem) string {
 	}
 	parts := make([]string, 0, len(members)-start)
 	for _, it := range members[start:] {
-		parts = append(parts, cleanSnippet(it.Snippet))
+		parts = append(parts, enrichSnippet(it.Snippet, database))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -370,8 +370,12 @@ func buildNewMaterialBlock(database *db.DB, signals []db.InboxItem, events []db.
 	}
 	var b strings.Builder
 	for _, s := range signals {
+		// Resolve the sender to a display name; UserNameByID falls back to the
+		// raw ID on a miss (correct for non-Slack senders like Jira issue keys).
+		// Feeding raw IDs makes the composer copy them into titles and reasons.
+		sender, _ := database.UserNameByID(s.SenderUserID)
 		b.WriteString(fmt.Sprintf("sig:%d [%s] from=%s channel=%s :: %s\n",
-			s.ID, s.TriggerType, s.SenderUserID, s.ChannelID, cleanSnippet(s.Snippet)))
+			s.ID, s.TriggerType, sender, s.ChannelID, enrichSnippet(s.Snippet, database)))
 	}
 	for _, e := range events {
 		b.WriteString(fmt.Sprintf("evt:%d [track:%s] :: %s\n", e.ID, trackTitle(database, e.TrackID), e.Summary))
@@ -389,5 +393,5 @@ func trackTitle(database *db.DB, trackID int) string {
 	if err != nil || t == nil {
 		return fmt.Sprintf("#%d", trackID)
 	}
-	return cleanSnippet(t.Text)
+	return enrichSnippet(t.Text, database)
 }

@@ -100,15 +100,14 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		"-p", userMessage,
 		"--output-format", outputFormat,
 		"--model", c.model,
-		// Read-only allowlist: only the SQLite MCP server's query/introspection
-		// tools. The write tools (mcp__sqlite__write_query / create_table /
-		// append_insight) and any Bash access are deliberately excluded — a
-		// prompt-injection payload in synced Slack/Jira content must not be able
-		// to mutate the DB or run shell commands (the sqlite3 CLI in particular
-		// exposes .shell/.system/.load → arbitrary code execution). The task-chat
-		// agent still changes targets ONLY via watchtower-action approval cards,
-		// never by writing to the DB directly.
-		"--allowedTools", "mcp__sqlite__read_query,mcp__sqlite__list_tables,mcp__sqlite__describe_table",
+		// Read-only allowlist: only the watchtower MCP server, which is read-only
+		// by construction — its stdio connection runs query_only (see cmd/mcp.go
+		// runMCP → SetReadOnly), so even a buggy handler cannot mutate the DB.
+		// Bash and any other tools are deliberately excluded — a prompt-injection
+		// payload in synced Slack/Jira content must not be able to run shell
+		// commands. The task-chat agent still changes targets ONLY via
+		// watchtower-action approval cards, never by writing to the DB directly.
+		"--allowedTools", "mcp__watchtower",
 		// Block file-editing plus Claude Code's native task tooling (TodoWrite/Task):
 		// the assistants here read the DB and answer, and the task-chat agent must
 		// create/change targets ONLY via watchtower-action approval cards — not via
@@ -136,13 +135,16 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	return args
 }
 
-// buildMCPConfig generates a JSON string for the SQLite MCP server config.
+// buildMCPConfig generates a JSON string for the watchtower MCP server config.
+// The server is the watchtower binary itself (`watchtower mcp --db-path <db>`),
+// exposing curated read-only tools (people, targets, tracks, digests, jira, and
+// raw message search) over stdio — no third-party npx package, no network.
 func (c *Client) buildMCPConfig() string {
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
-			"sqlite": map[string]any{
-				"command": "npx",
-				"args":    []string{"-y", "@anthropic-ai/mcp-server-sqlite", c.dbPath},
+			"watchtower": map[string]any{
+				"command": watchtowerBinary(),
+				"args":    []string{"mcp", "--db-path", c.dbPath},
 			},
 		},
 	}
@@ -151,6 +153,17 @@ func (c *Client) buildMCPConfig() string {
 		return "{}"
 	}
 	return string(data)
+}
+
+// watchtowerBinary is the path used to relaunch this binary as an MCP server.
+// In the desktop flow the running process IS the watchtower CLI (`ai query`),
+// so os.Executable() is the correct self-path; fall back to a bare "watchtower"
+// on the caller's PATH if it cannot be determined.
+func watchtowerBinary() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	return "watchtower"
 }
 
 // Query sends a streaming request via the Claude Code CLI and returns channels

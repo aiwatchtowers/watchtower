@@ -310,6 +310,17 @@ final class SituationChatViewModel {
 
         \(counterpartyBlock(memberSignals: memberSignals, ownerID: ownerID, dbPool: dbPool))
         \(registerSampleBlock(memberSignals: memberSignals, ownerID: ownerID, dbPool: dbPool))
+        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+        You have read-only tools over the user's OWN local Watchtower database. \
+        Use them to look things up instead of asking the user:
+        - list_messages — search/list the user's Slack messages by person, channel, and/or keyword. \
+        This is how you find what someone said (e.g. the open questions a colleague handed over). \
+        Pass the person's name in `person` and optional keywords in `query`.
+        - get_person / list_people — people cards; get_target / list_tracks / list_digests / list_jira_issues — work context.
+        Never ask for a database path, never ask the user to authorize Slack, and never use claude.ai connectors \
+        (the Slack connector or any other) — the data is already local and these tools are already connected. \
+        If a lookup returns nothing, say so plainly rather than blaming access.
+
         === RESPONSE STYLE ===
         - Match the user's language in conversation.
         - Be concise; this is a working discussion, not a report.

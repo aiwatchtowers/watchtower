@@ -114,11 +114,6 @@ func enrichSnippet(text string, database *db.DB) string {
 	return strings.TrimSpace(s)
 }
 
-// cleanSnippet strips Slack markup from message text for display (without DB access).
-func cleanSnippet(text string) string {
-	return enrichSnippet(text, nil)
-}
-
 // DefaultLookbackDays is the default lookback for first-time inbox detection.
 const DefaultLookbackDays = 7
 
@@ -670,7 +665,7 @@ func (p *Pipeline) loadContext(channelID, messageTS, threadTS string) string {
 		if name == "" {
 			name = m.UserID
 		}
-		line := cleanSnippet(m.Text)
+		line := enrichSnippet(m.Text, p.db)
 		if line == "" {
 			continue
 		}

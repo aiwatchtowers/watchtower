@@ -106,7 +106,11 @@ func (p *Pipeline) buildSituationCardBlock(s db.DashboardSituation) string {
 		extra = len(members) - situationCardMemberCap
 	}
 	for _, it := range shown {
-		b.WriteString(fmt.Sprintf("from=%s channel=%s :: %s\n", it.SenderUserID, it.ChannelID, cleanSnippet(it.Snippet)))
+		// Resolve the sender to a display name; UserNameByID falls back to the
+		// raw ID on a miss, which is correct for non-Slack senders (Jira issue
+		// keys, "watchtower"). Feeding the raw ID leaks it into the chronology.
+		sender, _ := p.db.UserNameByID(it.SenderUserID)
+		b.WriteString(fmt.Sprintf("from=%s channel=%s :: %s\n", sender, it.ChannelID, enrichSnippet(it.Snippet, p.db)))
 	}
 	if extra > 0 {
 		b.WriteString(fmt.Sprintf("…and %d more\n", extra))
@@ -121,5 +125,5 @@ func targetTitle(database *db.DB, targetID int) string {
 	if err != nil || t == nil {
 		return fmt.Sprintf("#%d", targetID)
 	}
-	return cleanSnippet(t.Text)
+	return enrichSnippet(t.Text, database)
 }

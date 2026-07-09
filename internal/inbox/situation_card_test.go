@@ -115,6 +115,62 @@ func TestRunSituationCards_CapsToNewestMembers(t *testing.T) {
 	assert.Contains(t, prompt, "…and 2 more")
 }
 
+func TestRunSituationCards_ResolvesSenderNames(t *testing.T) {
+	// The signals block must feed the sender's display name, not the raw Slack
+	// user ID — otherwise the AI echoes IDs like "U010F2S53JM" straight into the
+	// chronology. A sender with no matching users row falls back to the raw ID
+	// (UserNameByID's contract), which is correct for non-Slack senders (Jira
+	// issue keys, "watchtower").
+	d, p, gen := newComposePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U2", Name: "alice", DisplayName: "Alice Anderson"}))
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "prod incident", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
+	require.NoError(t, err)
+	sig := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "prod down"})
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(sig)}))
+
+	gen.responses = []string{`{"summary":"s","why_matters":"w","chronology":"c"}`}
+
+	n, err := p.runSituationCards(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	require.Len(t, gen.prompts, 1)
+	prompt := gen.prompts[0]
+	assert.Contains(t, prompt, "from=Alice Anderson", "sender must render as display name")
+	assert.NotContains(t, prompt, "from=U2", "raw sender ID must not leak into the prompt")
+}
+
+func TestRunSituationCards_SnippetResolvesMention(t *testing.T) {
+	// Raw `<@U…>` mentions surviving in stored snippets must resolve to names
+	// in the card prompt instead of being dropped.
+	d, p, gen := newComposePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "prod incident", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
+	require.NoError(t, err)
+	sig := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "<@U3> escalated this"})
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(sig)}))
+
+	gen.responses = []string{`{"summary":"s","why_matters":"w","chronology":"c"}`}
+
+	n, err := p.runSituationCards(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	require.Len(t, gen.prompts, 1)
+	assert.Contains(t, gen.prompts[0], "@Bob Brown escalated this")
+}
+
+func TestTargetTitle_ResolvesMention(t *testing.T) {
+	d := newTestDB(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
+	res, err := d.Exec(`INSERT INTO targets (text, period_start, period_end) VALUES (?, '2026-07-01', '2026-07-31')`, "sync with <@U3> weekly")
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	assert.Equal(t, "sync with @Bob Brown weekly", targetTitle(d, int(id)))
+}
+
 func TestRunSituationCards_NilGeneratorSkips(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "U1")

@@ -207,6 +207,78 @@ func TestCompose_HallucinatedKeysSkipped(t *testing.T) {
 	_ = gen
 }
 
+func TestCompose_PromptResolvesSenderName(t *testing.T) {
+	// The new-material block must feed the sender's display name, not the raw
+	// Slack user ID — the composer copies IDs straight into situation titles
+	// and reasons otherwise.
+	d, p, gen := newComposePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U2", Name: "anton", DisplayName: "Anton Makarenko"}))
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "1.1", "U2", "prod down")
+	mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "prod down"})
+	gen.responses = []string{`{"ops":[]}`}
+
+	_, _, err := p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+
+	require.Len(t, gen.prompts, 1)
+	assert.Contains(t, gen.prompts[0], "from=Anton Makarenko")
+	assert.NotContains(t, gen.prompts[0], "from=U2")
+}
+
+func TestCompose_PromptResolvesMentionInSignalSnippet(t *testing.T) {
+	// Snippets stored before enrichment (or from paths that kept raw markup)
+	// may still carry `<@U…>` mentions — the prompt build must resolve them
+	// via the DB instead of dropping them.
+	d, p, gen := newComposePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "1.1", "U2", "see <@U3> for status")
+	mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "see <@U3> for status"})
+	gen.responses = []string{`{"ops":[]}`}
+
+	_, _, err := p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+
+	require.Len(t, gen.prompts, 1)
+	assert.Contains(t, gen.prompts[0], "see @Bob Brown for status")
+}
+
+func TestCompose_OpenSituationSnippetResolvesMention(t *testing.T) {
+	// The open-situations block renders member snippets — raw mentions there
+	// must resolve to names too.
+	d, p, gen := newComposePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "1.1", "U2", "<@U3> escalated this")
+	member := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "<@U3> escalated this"})
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "escalation", Kind: "external", Priority: "high", Rank: 0.5, AIReason: "reason"})
+	require.NoError(t, err)
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(member)}))
+	require.NoError(t, d.MarkSignalsComposed([]int{int(member)}))
+	// A fresh pending signal makes the cycle non-empty so the AI is invoked.
+	insertMessage(t, d, "C1", "2.1", "U2", "new signal")
+	mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "new signal"})
+	gen.responses = []string{`{"ops":[]}`}
+
+	_, _, err = p.runCompose(context.Background(), "U1")
+	require.NoError(t, err)
+
+	require.Len(t, gen.prompts, 1)
+	assert.Contains(t, gen.prompts[0], "@Bob Brown escalated this")
+}
+
+func TestTrackTitle_ResolvesMention(t *testing.T) {
+	d := newTestDB(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
+	res, err := d.Exec(`INSERT INTO tracks (text) VALUES (?)`, "review <@U3> proposal")
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	assert.Equal(t, "review @Bob Brown proposal", trackTitle(d, int(id)))
+}
+
 func TestCompose_AutoClosePreStep(t *testing.T) {
 	d, p, gen := newComposePipeline(t)
 	insertChannel(t, d, "C1", "public")

@@ -24,8 +24,11 @@ Add it to Claude Code with:
 	RunE: runMCP,
 }
 
+var mcpFlagDBPath string
+
 func init() {
 	rootCmd.AddCommand(mcpCmd)
+	mcpCmd.Flags().StringVar(&mcpFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
@@ -40,7 +43,11 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	database, err := db.Open(cfg.DBPath())
+	dbPath := cfg.DBPath()
+	if mcpFlagDBPath != "" {
+		dbPath = mcpFlagDBPath
+	}
+	database, err := db.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}

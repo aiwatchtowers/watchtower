@@ -73,6 +73,23 @@ final class SituationChatPromptTests: XCTestCase {
         XCTAssertTrue(without.contains("mirror the owner's own messages"), "empty style must fall back to mirroring instruction")
     }
 
+    func testBuildSystemPromptAdvertisesLocalTools() throws {
+        let situation = try makeSituation()
+
+        let prompt = SituationChatViewModel.buildSystemPrompt(
+            situation: situation, memberSignals: [], dbPool: dbManager.dbPool)
+
+        // The model must know it has a local message-search tool and must not
+        // reach for the user's claude.ai Slack connector or ask for a DB path
+        // (the bug this fixes: it flailed about "authorize Slack" / "give me the
+        // database path" instead of just querying the local DB).
+        XCTAssertTrue(prompt.contains("list_messages"), "must advertise the local message-search tool")
+        XCTAssertTrue(prompt.contains("Never ask for a database path"),
+                      "must forbid asking the user for a DB path")
+        XCTAssertTrue(prompt.contains("claude.ai connectors"),
+                      "must forbid reaching for external claude.ai connectors")
+    }
+
     func testBuildSystemPromptCounterpartyBriefFromPeopleCard() throws {
         let situation = try makeSituation()
         let itemID = try dbManager.dbPool.write { db -> Int64 in
