@@ -63,3 +63,30 @@ func TestBuildSecretaryBrief_EmptySourcesStillUsable(t *testing.T) {
 		t.Errorf("empty track list must omit the section")
 	}
 }
+
+// The tracks section names people, not Slack IDs: ball_on holds a raw user id
+// (db.Track.BallOn) and track text can carry <@U...> mentions — both must be
+// resolved before reaching the AI prompt, or the composer copies raw IDs into
+// situation titles (seen in the field: "U010T5CNTJT повторно уклонился").
+func TestBuildSecretaryBrief_TracksResolveUserIDs(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+	if _, err := d.Exec(`INSERT INTO users (id, name, display_name) VALUES ('U010TESTID', 'serhii', 'Serhii Lizunov')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.UpsertTrack(db.Track{
+		Text:     "KYC tiers: waiting on <@U010TESTID> to clarify",
+		Priority: "high",
+		BallOn:   "U010TESTID",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buildSecretaryBrief(d, "U1", time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC))
+	if !strings.Contains(got, "ball on: Serhii Lizunov") {
+		t.Errorf("brief should resolve ball_on to a display name\n---\n%s", got)
+	}
+	if strings.Contains(got, "U010TESTID") {
+		t.Errorf("brief must not leak raw user IDs\n---\n%s", got)
+	}
+}
