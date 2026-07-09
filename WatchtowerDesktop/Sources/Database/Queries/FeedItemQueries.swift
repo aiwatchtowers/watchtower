@@ -15,8 +15,30 @@ enum FeedItemQueries {
         var showHidden: Bool = false
     }
 
-    static func fetchFeed(_ db: Database, filter: Filter = Filter(), limit: Int, offset: Int) throws -> [FeedEntry] {
-        if filter.types.isEmpty { return [] }
+    /// A keyset cursor into the feed's `(event_ts DESC, id DESC)` ordering —
+    /// the (event_ts, id) of the last RAW `feed_items` row the previous page's
+    /// SQL query returned (not the last surviving `FeedEntry`, whose source
+    /// row may have been dropped — see `FeedPage.nextCursor`).
+    struct FeedCursor: Equatable {
+        let eventTs: String
+        let id: Int64
+    }
+
+    struct FeedPage {
+        let entries: [FeedEntry]
+        let nextCursor: FeedCursor?
+    }
+
+    /// Fetches one page of the feed using keyset pagination instead of
+    /// OFFSET. OFFSET/LIMIT breaks here because rows whose source content has
+    /// been deleted (e.g. a cancelled calendar event) are dropped AFTER the
+    /// SQL LIMIT — so `offset = entries.count` on the client undercounts the
+    /// raw rows actually consumed, and the next page re-fetches (and
+    /// duplicates) rows already seen. The keyset cursor tracks position by
+    /// the last RAW row's `(event_ts, id)`, independent of how many entries
+    /// survived the content join.
+    static func fetchFeed(_ db: Database, filter: Filter = Filter(), limit: Int, before cursor: FeedCursor? = nil) throws -> FeedPage {
+        if filter.types.isEmpty { return FeedPage(entries: [], nextCursor: nil) }
         var conditions: [String] = []
         var args: [DatabaseValueConvertible] = []
         if !filter.showHidden {
@@ -31,22 +53,28 @@ enum FeedItemQueries {
             conditions.append("item_type IN (\(placeholders))")
             args.append(contentsOf: filter.types.map(\.rawValue).sorted())
         }
+        if let cursor {
+            conditions.append("(event_ts < ? OR (event_ts = ? AND id < ?))")
+            args.append(cursor.eventTs)
+            args.append(cursor.eventTs)
+            args.append(cursor.id)
+        }
         var sql = "SELECT * FROM feed_items"
         if !conditions.isEmpty {
             sql += " WHERE " + conditions.joined(separator: " AND ")
         }
-        sql += " ORDER BY event_ts DESC, id DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY event_ts DESC, id DESC LIMIT ?"
         args.append(limit)
-        args.append(offset)
 
         let items = try FeedItem.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+        let nextCursor: FeedCursor? = items.count < limit ? nil : items.last.map { FeedCursor(eventTs: $0.eventTs, id: $0.id) }
         var entries: [FeedEntry] = []
         entries.reserveCapacity(items.count)
         for item in items {
             guard let content = try loadContent(db, item: item) else { continue }
             entries.append(FeedEntry(item: item, content: content))
         }
-        return entries
+        return FeedPage(entries: entries, nextCursor: nextCursor)
     }
 
     static func hide(_ db: Database, id: Int64) throws {

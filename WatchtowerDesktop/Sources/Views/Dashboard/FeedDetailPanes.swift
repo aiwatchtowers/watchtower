@@ -141,6 +141,82 @@ struct DayPlanFeedPane: View {
     }
 }
 
+// MARK: - SituationHistoryPane
+
+/// Read-only right pane for a closed situation (done/dismissed/converted/
+/// stale/snoozed) — DASH-05: after Done/Dismiss the entry stays in the wall
+/// as history instead of vanishing, so this replaces `SituationReviewPane`
+/// (no action bar, no mutations) once `situation.status != .open`.
+struct SituationHistoryPane: View {
+    let situation: Situation
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    statusCapsule
+                    Spacer()
+                    if let date = situation.lastSignalDate {
+                        Text(date, style: .relative)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                Text(situation.title)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .textSelection(.enabled)
+
+                if situation.convertedTargetID != nil || situation.convertedTrackID != nil {
+                    HStack(spacing: 8) {
+                        if let targetID = situation.convertedTargetID {
+                            Button("Open Target") { appState.navigateToTarget(targetID) }
+                        }
+                        if let trackID = situation.convertedTrackID {
+                            Button("Open Track") { appState.navigateToTrack(trackID) }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if !situation.whyMatters.isEmpty {
+                    feedPaneSection("Why it mattered", [situation.whyMatters])
+                }
+                if !situation.summary.isEmpty {
+                    feedPaneSection("Summary", [situation.summary])
+                }
+                if !situation.chronology.isEmpty {
+                    feedPaneSection("Chronology", [situation.chronology])
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+        }
+    }
+
+    private var statusCapsule: some View {
+        Text(statusLabel)
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.secondary.opacity(0.12), in: Capsule())
+    }
+
+    private var statusLabel: String {
+        switch situation.status {
+        case .open: return "Open"
+        case .done: return "Done"
+        case .dismissed: return "Dismissed"
+        case .converted: return "Converted"
+        case .stale: return "Stale"
+        case .snoozed: return "Snoozed"
+        }
+    }
+}
+
 // MARK: - Shared
 
 @ViewBuilder

@@ -349,7 +349,9 @@ final class AppState {
         let vm = DashboardViewModel(dbManager: dbManager)
         vm.startObserving()
         dashboardViewModel = vm
-        feedViewModel = FeedViewModel(dbManager: dbManager)
+        let feedVM = FeedViewModel(dbManager: dbManager)
+        feedVM.startObserving()
+        feedViewModel = feedVM
     }
 
     /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it

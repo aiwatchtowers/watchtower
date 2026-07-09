@@ -14,7 +14,15 @@ final class FeedViewModel {
 
     /// Page size for the feed query; overridable by tests.
     var pageSize: Int = 50
-    private var offset: Int = 0
+    private var nextCursor: FeedItemQueries.FeedCursor?
+
+    private var pollTask: Task<Void, Never>?
+
+    /// Interval for the safety-net poll. GRDB ValueObservation cannot see writes
+    /// from the Go daemon (separate process, separate SQLite update hooks), so
+    /// the wall needs a periodic reload to surface daemon-published feed items —
+    /// mirrors `DashboardViewModel.pollInterval`.
+    private let pollInterval: Duration = .seconds(30)
 
     var typeFilter: Set<FeedItem.ItemType> {
         didSet { persistFilters(); load() }
@@ -55,25 +63,29 @@ final class FeedViewModel {
     }
 
     func load() {
-        offset = 0
+        nextCursor = nil
         do {
-            entries = try dbManager.dbPool.read { db in
-                try FeedItemQueries.fetchFeed(db, filter: self.filter, limit: self.pageSize, offset: 0)
+            let page = try dbManager.dbPool.read { db in
+                try FeedItemQueries.fetchFeed(db, filter: self.filter, limit: self.pageSize)
             }
-            offset = entries.count
+            entries = page.entries
+            nextCursor = page.nextCursor
             errorMessage = nil
         } catch {
             errorMessage = "Failed to load feed: \(error.localizedDescription)"
         }
     }
 
+    /// No-ops once the previous page's SQL query returned fewer rows than
+    /// `pageSize` (exhausted) — `nextCursor` is nil in that case.
     func loadMore() {
+        guard let cursor = nextCursor else { return }
         do {
-            let more = try dbManager.dbPool.read { db in
-                try FeedItemQueries.fetchFeed(db, filter: self.filter, limit: self.pageSize, offset: self.offset)
+            let page = try dbManager.dbPool.read { db in
+                try FeedItemQueries.fetchFeed(db, filter: self.filter, limit: self.pageSize, before: cursor)
             }
-            entries.append(contentsOf: more)
-            offset += more.count
+            entries.append(contentsOf: page.entries)
+            nextCursor = page.nextCursor
         } catch {
             errorMessage = "Failed to load feed: \(error.localizedDescription)"
         }
@@ -81,13 +93,38 @@ final class FeedViewModel {
 
     func refresh() { load() }
 
+    /// Starts the safety-net poll that reloads the wall every 30s so it keeps
+    /// refreshing while visible (mirrors `DashboardViewModel.startObserving`'s
+    /// poll half — the feed spans several source tables rather than one, so
+    /// there's no single-table `ValueObservation` to mirror). Idempotent;
+    /// cancel-safe.
+    func startObserving() {
+        guard pollTask == nil else { return }
+        load()
+        let interval = pollInterval
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled else { break }
+                self?.load()
+            }
+        }
+    }
+
     /// Selects an entry and stamps `seen_at` (first-write-wins in the query).
+    /// Reloads only when the entry was previously unseen, so the unread accent
+    /// clears immediately — entry ids are stable across `load()`, so selection
+    /// and scroll position are unaffected.
     func select(_ id: Int64?) {
         selectedFeedItemID = id
         guard let id else { return }
+        let wasUnseen = entries.first { $0.id == id }?.item.seenAt == nil
         do {
             try dbManager.dbPool.write { db in
                 try FeedItemQueries.markSeen(db, id: id)
+            }
+            if wasUnseen {
+                load()
             }
         } catch {
             errorMessage = "Failed to mark seen: \(error.localizedDescription)"

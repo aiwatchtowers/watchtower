@@ -45,7 +45,7 @@ final class FeedItemQueriesTests: XCTestCase {
             try TestDatabase.insertFeedItem(db, itemType: "day_plan", sourceID: "3", eventTs: "2026-07-09T06:00:00Z")
         }
         let entries = try dbQueue.read { db in
-            try FeedItemQueries.fetchFeed(db, limit: 50, offset: 0)
+            try FeedItemQueries.fetchFeed(db, limit: 50).entries
         }
         XCTAssertEqual(entries.map(\.item.itemTypeRaw),
                        ["meeting", "meeting_recap", "situation", "briefing", "day_plan"])
@@ -63,7 +63,7 @@ final class FeedItemQueriesTests: XCTestCase {
             try TestDatabase.insertFeedItem(db, itemType: "situation", sourceID: "404", eventTs: "2026-07-09T09:00:00Z")
         }
         let entries = try dbQueue.read { db in
-            try FeedItemQueries.fetchFeed(db, limit: 50, offset: 0)
+            try FeedItemQueries.fetchFeed(db, limit: 50).entries
         }
         XCTAssertTrue(entries.isEmpty)
     }
@@ -78,27 +78,60 @@ final class FeedItemQueriesTests: XCTestCase {
             try TestDatabase.insertFeedItem(db, itemType: "meeting", sourceID: "ev1", eventTs: "2026-07-09T12:10:00Z", importance: 70)
         }
         // Default: hidden excluded.
-        var entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, limit: 50, offset: 0) }
+        var entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, limit: 50).entries }
         XCTAssertEqual(entries.count, 2)
         // showHidden reveals the hidden situation.
         var filter = FeedItemQueries.Filter()
         filter.showHidden = true
-        entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, filter: filter, limit: 50, offset: 0) }
+        entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, filter: filter, limit: 50).entries }
         XCTAssertEqual(entries.count, 3)
         // importantOnly keeps >= 70 only.
         filter = FeedItemQueries.Filter()
         filter.importantOnly = true
-        entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, filter: filter, limit: 50, offset: 0) }
+        entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, filter: filter, limit: 50).entries }
         XCTAssertEqual(entries.map(\.item.itemTypeRaw), ["meeting"])
         // Type filter.
         filter = FeedItemQueries.Filter()
         filter.types = [.situation]
-        entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, filter: filter, limit: 50, offset: 0) }
+        entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, filter: filter, limit: 50).entries }
         XCTAssertEqual(entries.map(\.item.sourceID), ["1"])
         // Empty type set → empty feed, not a SQL error.
         filter.types = []
-        entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, filter: filter, limit: 50, offset: 0) }
+        entries = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, filter: filter, limit: 50).entries }
         XCTAssertTrue(entries.isEmpty)
+    }
+
+    /// Calendar sync hard-deletes cancelled events, so a `meeting` (or any)
+    /// feed row can be orphaned — the old OFFSET/LIMIT scheme dropped orphans
+    /// AFTER the SQL page, so `offset = entries.count` undercounted and the
+    /// next page re-fetched (and duplicated) rows already seen. The keyset
+    /// cursor tracks the last RAW row regardless of whether it survived.
+    func test_fetchFeed_keysetPaginationSkipsDroppedRowsWithoutDuplicates() throws {
+        try dbQueue.write { db in
+            try insertSituationRow(db, id: 1, title: "oldest")
+            try insertSituationRow(db, id: 3, title: "newest")
+            try TestDatabase.insertFeedItem(db, itemType: "situation", sourceID: "1", eventTs: "2026-07-09T08:00:00Z")
+            // Orphan: no situation row with id 999 — dropped by the content join.
+            try TestDatabase.insertFeedItem(db, itemType: "situation", sourceID: "999", eventTs: "2026-07-09T09:00:00Z")
+            try TestDatabase.insertFeedItem(db, itemType: "situation", sourceID: "3", eventTs: "2026-07-09T10:00:00Z")
+        }
+        // Raw SQL page 1 (DESC): [newest(3), orphan(999)] — orphan drops, so
+        // only 1 entry survives even though the SQL LIMIT was 2.
+        let page1 = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, limit: 2) }
+        XCTAssertEqual(page1.entries.count, 1)
+        XCTAssertNotNil(page1.nextCursor, "SQL returned a full page (2 raw rows), so there may be more")
+
+        let page2 = try dbQueue.read { db in try FeedItemQueries.fetchFeed(db, limit: 2, before: page1.nextCursor) }
+        XCTAssertEqual(page2.entries.count, 1)
+        XCTAssertNil(page2.nextCursor, "SQL returned fewer rows than the limit — exhausted")
+
+        let allIDs = (page1.entries + page2.entries).map(\.id)
+        XCTAssertEqual(Set(allIDs).count, allIDs.count, "no duplicate feed-item ids across pages")
+        let survivingSituationIDs = (page1.entries + page2.entries).compactMap { entry -> Int? in
+            guard case .situation(let s) = entry.content else { return nil }
+            return s.id
+        }
+        XCTAssertEqual(Set(survivingSituationIDs), [1, 3], "every surviving entry appears exactly once")
     }
 
     func test_hide_and_markSeen_writeState() throws {

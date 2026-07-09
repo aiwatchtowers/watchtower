@@ -48,6 +48,7 @@ struct DashboardView: View {
             CreateTargetSheet(prefill: targetPrefill) { newID in
                 guard let situationID = pendingSituationID else { return }
                 vm.markConverted(situationID: situationID, targetID: newID, trackID: nil)
+                feedVM.load()
             }
         }
         .sheet(isPresented: $showCreateTrack) {
@@ -105,7 +106,7 @@ struct DashboardView: View {
 
     @ViewBuilder
     private func feedContextMenu(for entry: FeedEntry) -> some View {
-        if case .situation(let situation) = entry.content {
+        if case .situation(let situation) = entry.content, situation.status == .open {
             contextMenu(for: situation) // existing situation menu, unchanged
             Divider()
         }
@@ -120,19 +121,21 @@ struct DashboardView: View {
     private func contextMenu(for situation: Situation) -> some View {
         Button {
             vm.done(situation)
+            feedVM.load()
         } label: {
             Label("Done", systemImage: "checkmark.circle")
         }
         Menu {
-            Button("1 hour") { vm.snooze(situation, until: SnoozeDates.until(.oneHour)) }
-            Button("Till tomorrow") { vm.snooze(situation, until: SnoozeDates.until(.tillTomorrow)) }
-            Button("Till Monday") { vm.snooze(situation, until: SnoozeDates.until(.tillMonday)) }
+            Button("1 hour") { vm.snooze(situation, until: SnoozeDates.until(.oneHour)); feedVM.load() }
+            Button("Till tomorrow") { vm.snooze(situation, until: SnoozeDates.until(.tillTomorrow)); feedVM.load() }
+            Button("Till Monday") { vm.snooze(situation, until: SnoozeDates.until(.tillMonday)); feedVM.load() }
         } label: {
             Label("Snooze", systemImage: "moon.zzz")
         }
         Divider()
         Button(role: .destructive) {
             vm.dismiss(situation)
+            feedVM.load()
         } label: {
             Label("Dismiss", systemImage: "archivebox")
         }
@@ -144,7 +147,7 @@ struct DashboardView: View {
     private var reviewPane: some View {
         if let entry = feedVM.selectedEntry {
             switch entry.content {
-            case .situation(let situation):
+            case .situation(let situation) where situation.status == .open:
                 SituationReviewPane(
                     situation: situation,
                     memberSignals: vm.memberSignals(for: situation.id),
@@ -152,9 +155,12 @@ struct DashboardView: View {
                     senderName: { vm.senderName(for: $0) },
                     channelName: { vm.channelName(for: $0) },
                     slackURL: { vm.slackURL(for: $0) },
-                    onDone: { vm.done(situation) },
-                    onDismiss: { vm.dismiss(situation) },
-                    onSnooze: { option in vm.snooze(situation, until: SnoozeDates.until(option)) },
+                    onDone: { vm.done(situation); feedVM.load() },
+                    onDismiss: { vm.dismiss(situation); feedVM.load() },
+                    onSnooze: { option in
+                        vm.snooze(situation, until: SnoozeDates.until(option))
+                        feedVM.load()
+                    },
                     onFeedback: { rating, comment in
                         Task { await vm.submitFeedback(situation, rating: rating, comment: comment) }
                     },
@@ -171,6 +177,10 @@ struct DashboardView: View {
                 // leak into the next one. Same id on a poll-driven re-render of
                 // the same situation → state survives (required).
                 .id(situation.id)
+            case .situation(let situation):
+                // Closed situation (done/dismissed/converted/stale/snoozed) —
+                // read-only history, no mutating actions (DASH-05).
+                SituationHistoryPane(situation: situation).id(entry.id)
             case .meeting(let event, let prep):
                 MeetingFeedPane(event: event, prep: prep).id(entry.id)
             case .briefing(let briefing):
@@ -272,6 +282,7 @@ struct DashboardView: View {
                     return
                 }
                 vm.markConverted(situationID: situationID, targetID: nil, trackID: track.id)
+                feedVM.load()
             } catch {
                 conversionError = "Track created, but couldn't resolve its id: \(error.localizedDescription)"
             }

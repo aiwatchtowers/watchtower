@@ -91,6 +91,33 @@ final class FeedViewModelTests: XCTestCase {
         XCTAssertEqual(vm.entries.map(\.item.itemTypeRaw), ["situation"])
     }
 
+    /// Regression for the OFFSET/LIMIT pagination bug: an orphaned feed row
+    /// (source deleted, e.g. a cancelled calendar event) between two surviving
+    /// rows must not cause `loadMore()` to re-fetch and duplicate a row already
+    /// appended. `pageSize = 1` forces one raw row per fetch so the orphan lands
+    /// in its own page.
+    func test_loadMore_appendsWithoutDuplicates() throws {
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO situations (id, title, priority, status, updated_at)
+                VALUES (2, 'newest', 'high', 'open', '2026-07-09T10:00:00Z')
+                """)
+            try TestDatabase.insertFeedItem(db, itemType: "situation", sourceID: "2", eventTs: "2026-07-09T10:00:00Z", importance: 90)
+            // Orphan: no situation row with source id 999 — dropped by the content join,
+            // sitting (by event_ts) between the "newest" and "story" situations.
+            try TestDatabase.insertFeedItem(db, itemType: "situation", sourceID: "999", eventTs: "2026-07-09T08:30:00Z", importance: 90)
+        }
+        let vm = makeVM()
+        vm.pageSize = 1
+        vm.load()
+        // Loop well past exhaustion — loadMore() no-ops once the cursor is nil.
+        for _ in 0..<10 { vm.loadMore() }
+
+        let ids = vm.entries.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "no duplicate feed-item ids after repeated loadMore")
+        XCTAssertEqual(vm.entries.count, 3, "situation(2) + situation(1) + briefing(5) survive; orphan(999) dropped")
+    }
+
     func test_filtersPersistAcrossInstances() {
         let vm = makeVM()
         vm.load()

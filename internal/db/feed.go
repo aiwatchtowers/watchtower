@@ -90,6 +90,9 @@ func (db *DB) PublishSituationFeedItems() (int, error) {
 // start_time falls inside (nowTS, windowEndTS]. event_ts = start_time, so an
 // upcoming meeting sits at the top of the DESC feed and slides down naturally
 // once its time passes; a reschedule inside the window updates event_ts.
+// A reschedule OUT of the window (e.g. pushed past windowEndTS) falls out of
+// the SELECT entirely, so its feed_items row keeps its stale event_ts until
+// the meeting re-enters a future window — an accepted trade-off (DASH-05).
 func (db *DB) PublishMeetingFeedItems(nowTS, windowEndTS string) (int, error) {
 	return db.feedUpsert("meeting", `
 		INSERT INTO feed_items (item_type, source_id, event_ts, importance)
