@@ -27,6 +27,11 @@ final class AppState {
     /// indicator survives navigating away from a track's detail.
     let trackScanCenter = TrackScanCenter()
 
+    /// App-wide, single-slot registry for the "Extract with AI" target
+    /// extraction call, so its state survives the New Target sheet being
+    /// closed mid-extraction.
+    let targetExtractCenter = TargetExtractCenter()
+
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?
