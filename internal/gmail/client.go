@@ -137,20 +137,33 @@ func (c *Client) doGetRetry(ctx context.Context, path string, params url.Values,
 	return body, nil
 }
 
+// listPageSize is the page size requested when maxResults is unlimited
+// (Gmail caps a single messages.list page at 500).
+const listPageSize = 500
+
 // ListInboxMessageIDs returns message IDs matching the Gmail search query
 // (e.g. "in:inbox newer_than:7d" or "in:inbox after:1720519200"). Gmail
 // paginates list results (nextPageToken); this walks all pages, accumulating
 // IDs, until either the pages are exhausted or maxResults IDs have been
-// collected. Results come back newest-first per Gmail's default ordering.
+// collected. Pass maxResults <= 0 to collect every ID in the query window
+// (walk pages until nextPageToken is empty) — messages.list is quota-cheap
+// compared to messages.get, so callers that need the full window before
+// deciding what to process (see Sync) should not cap the list phase.
+// Results come back newest-first per Gmail's default ordering.
 func (c *Client) ListInboxMessageIDs(ctx context.Context, query string, maxResults int) ([]string, error) {
+	unlimited := maxResults <= 0
 	var ids []string
 	pageToken := ""
 	for {
-		remaining := maxResults - len(ids)
-		if remaining <= 0 {
-			break
+		pageSize := listPageSize
+		if !unlimited {
+			remaining := maxResults - len(ids)
+			if remaining <= 0 {
+				break
+			}
+			pageSize = remaining
 		}
-		params := url.Values{"q": {query}, "maxResults": {strconv.Itoa(remaining)}}
+		params := url.Values{"q": {query}, "maxResults": {strconv.Itoa(pageSize)}}
 		if pageToken != "" {
 			params.Set("pageToken", pageToken)
 		}
@@ -170,7 +183,7 @@ func (c *Client) ListInboxMessageIDs(ctx context.Context, query string, maxResul
 		for _, m := range resp.Messages {
 			ids = append(ids, m.ID)
 		}
-		if resp.NextPageToken == "" || len(ids) >= maxResults {
+		if resp.NextPageToken == "" || (!unlimited && len(ids) >= maxResults) {
 			break
 		}
 		pageToken = resp.NextPageToken

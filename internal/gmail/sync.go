@@ -34,13 +34,6 @@ func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.
 // noiseLabels are Gmail categories we skip before AI ever sees them.
 var noiseLabels = map[string]bool{"CATEGORY_PROMOTIONS": true, "CATEGORY_SOCIAL": true}
 
-// listFetchMultiplier inflates the list-fetch cap above MaxMessagesPerSync so
-// Sync can see the whole watermark window (via pagination) before deciding
-// what to process this cycle. Without this, capping the list call itself at
-// MaxMessagesPerSync would silently hand back only the newest IDs, hiding the
-// older ones that most need processing to advance the watermark safely.
-const listFetchMultiplier = 10
-
 // Sync pulls inbox messages newer than the watermark, stores them, and advances
 // the watermark. Returns the count of stored messages.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
@@ -70,7 +63,12 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		query = fmt.Sprintf("in:inbox newer_than:%dd", days) // initial backfill window
 	}
 
-	ids, err := s.client.ListInboxMessageIDs(ctx, query, maxMsgs*listFetchMultiplier)
+	// List the whole query window uncapped: messages.list pagination is cheap
+	// quota-wise, and any cap here risks Gmail's newest-first ordering hiding
+	// an older backlog tail behind the cap (data loss once the watermark
+	// advances past it). MaxMessagesPerSync is applied below, only to the
+	// processing phase (GetMessage/upsert), after sorting oldest-first.
+	ids, err := s.client.ListInboxMessageIDs(ctx, query, 0)
 	if err != nil {
 		s.recordAuthResult(err)
 		if errors.Is(err, ErrAuthRevoked) {

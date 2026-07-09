@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -196,6 +197,138 @@ func TestSyncCapProcessesOldestFirst(t *testing.T) {
 	}
 	if watermark != float64(oldUnix) {
 		t.Fatalf("watermark = %v, want %v (oldest processed, not newest)", watermark, oldUnix)
+	}
+}
+
+// TestSyncNoLossWhenBacklogExceedsCap is the regression test for the
+// residual data-loss bug: capping the *list* phase at
+// maxMsgs*listFetchMultiplier meant that once the real backlog since the
+// watermark exceeded that inflated cap, Gmail's newest-first list would
+// never even return the oldest ids — they'd be truncated away before the
+// oldest-first sort/processing-cap logic ever saw them, and the watermark
+// would advance past a tail that was never fetched. This proves the fix:
+// listing is uncapped (paginates to exhaustion) and only the processing
+// phase is capped, so no backlog size can cause permanent loss — the next
+// cycle's after:<watermark> query always recovers exactly the remainder.
+func TestSyncNoLossWhenBacklogExceedsCap(t *testing.T) {
+	const t1Unix = 1700000000 // oldest
+	const t2Unix = 1700003600
+	const t3Unix = 1700007200 // newest
+
+	var m3Fetched bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		if strings.Contains(q, "after:") {
+			// Second sync: watermark has advanced to T2, so the server-side
+			// window narrows to just the remainder (T3).
+			fmt.Fprint(w, `{"messages":[{"id":"m3"}]}`)
+			return
+		}
+		// First sync (initial backfill, no watermark yet): Gmail returns
+		// newest-first, paginated across 3 single-message pages, with no
+		// maxResults-driven truncation — proving the list phase collects
+		// the whole window regardless of MaxMessagesPerSync.
+		switch r.URL.Query().Get("pageToken") {
+		case "":
+			fmt.Fprint(w, `{"messages":[{"id":"m3"}],"nextPageToken":"tok2"}`)
+		case "tok2":
+			fmt.Fprint(w, `{"messages":[{"id":"m2"}],"nextPageToken":"tok3"}`)
+		case "tok3":
+			fmt.Fprint(w, `{"messages":[{"id":"m1"}]}`)
+		default:
+			t.Fatalf("unexpected pageToken %q", r.URL.Query().Get("pageToken"))
+		}
+	})
+	mux.HandleFunc("/users/me/messages/m1", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"id":"m1","threadId":"t1","labelIds":["INBOX"],"snippet":"m1",
+          "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"M1"}]}}`, t1Unix)
+	})
+	mux.HandleFunc("/users/me/messages/m2", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"id":"m2","threadId":"t2","labelIds":["INBOX"],"snippet":"m2",
+          "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"M2"}]}}`, t2Unix)
+	})
+	mux.HandleFunc("/users/me/messages/m3", func(w http.ResponseWriter, r *http.Request) {
+		m3Fetched = true
+		fmt.Fprintf(w, `{"id":"m3","threadId":"t3","labelIds":["INBOX"],"snippet":"m3",
+          "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"M3"}]}}`, t3Unix)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"at"}`)
+	}))
+	defer tokenSrv.Close()
+	oldBase, oldTok := gmailAPIBase, googleTokenEndpoint
+	gmailAPIBase, googleTokenEndpoint = srv.URL, tokenSrv.URL
+	defer func() { gmailAPIBase, googleTokenEndpoint = oldBase, oldTok }()
+
+	database := db.OpenTestDB(t)
+	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.Gmail = config.GmailConfig{Enabled: true, InitialHistoryDays: 7, MaxMessagesPerSync: 2, MaxBodyBytes: 51200}
+	c, err := NewClient(context.Background(), "refresh", GoogleOAuthConfig{ClientID: "cid"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	var logBuf strings.Builder
+	logger := log.New(&logBuf, "", 0)
+	s := NewSyncer(c, database, cfg, logger)
+
+	// First sync: backlog of 3 exceeds MaxMessagesPerSync=2. Oldest two
+	// (m1, m2) must be stored; m3 must NOT be fetched this cycle (it's the
+	// remainder deferred to next cycle, proving the cap only bites the
+	// processing phase — the list phase already saw all 3 via pagination).
+	n, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("first sync: want 2 stored (cap=2), got %d", n)
+	}
+	if m3Fetched {
+		t.Fatal("first sync: m3 (remainder beyond cap) was fetched — should be deferred to next cycle")
+	}
+	if !strings.Contains(logBuf.String(), "exceed cap") {
+		t.Fatalf("first sync: expected truncation log, got log output: %q", logBuf.String())
+	}
+	watermark, err := database.GetGmailLastInternalDate()
+	if err != nil {
+		t.Fatalf("watermark: %v", err)
+	}
+	if watermark != float64(t2Unix) {
+		t.Fatalf("first sync: watermark = %v, want %v (oldest-of-cap processed, T2)", watermark, t2Unix)
+	}
+
+	// Second sync: the narrowed after:<watermark> query recovers exactly the
+	// deferred remainder (m3) — no data loss regardless of the original
+	// backlog size.
+	n, err = s.Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("second sync: want 1 stored (the deferred remainder), got %d", n)
+	}
+	if !m3Fetched {
+		t.Fatal("second sync: m3 should have been fetched now")
+	}
+
+	rows, err := database.GmailMessagesSyncedAfter("2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("want all 3 messages eventually stored across both syncs, got %d: %+v", len(rows), rows)
+	}
+	finalWatermark, err := database.GetGmailLastInternalDate()
+	if err != nil {
+		t.Fatalf("final watermark: %v", err)
+	}
+	if finalWatermark != float64(t3Unix) {
+		t.Fatalf("final watermark = %v, want %v", finalWatermark, t3Unix)
 	}
 }
 
