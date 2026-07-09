@@ -72,6 +72,33 @@
 
 **Locked since:** 2026-07-07
 
+## DASH-05 — Feed publisher is additive and state-preserving
+
+**Status:** Enforced
+
+**Observable:** The feed publisher (`internal/feed`, `feed_items` index) never deletes feed rows and never resets user state (`hidden_at`, `seen_at`) when re-upserting an item. A situation that closes or converts drops out of the publisher's SELECT but its feed row stays — the wall keeps history; hiding is a user action recorded in `hidden_at`, not a deletion.
+
+**Why locked:** The feed is the app's start screen and doubles as the day's history. If a publish cycle could delete rows or clear hide/seen marks, a routine daemon cycle would silently rewrite what the user already read or hid — the same "stability beats freshness" promise DASH-02 makes for situation content, extended to feed state.
+
+**Test guards:**
+- `internal/feed/publish_test.go::TestDash05_RepublishPreservesUserStateAndHistory`
+
+**Locked since:** 2026-07-09
+
+## DASH-06 — Feed publish is AI-free and non-blocking
+
+**Status:** Enforced
+
+**Observable:** `feed.Publish` makes no AI calls (pure SQL upserts; `feed.Pipeline` holds no generator). One failing source (e.g. a missing/corrupt source table) is logged and reported while every other source still publishes, and a feed failure never fails the daemon cycle nor touches the inbox pipeline or its watermarks (INBOX-09) — the publisher runs entirely outside `inbox.Run`.
+
+**Why locked:** The feed indexes content other pipelines already paid AI calls to produce; re-spending model budget to move pointers would be waste, and a flaky feed phase must not be able to block triage/compose or freeze inbox watermarks.
+
+**Test guards:**
+- `internal/feed/publish_test.go::TestDash06_SourceFailureDoesNotBlockOthers`
+
+**Locked since:** 2026-07-09
+
 ## Changelog
 
 - 2026-07-06: file created with 3 contracts (DASH-01..03), all Enforced. Introduced by the secretary dashboard feature (spec `docs/superpowers/specs/2026-07-06-secretary-dashboard-design.md`), which composes inbox signals plus target/track updates into ranked `situations`, replacing the inbox's two-tier "Needs action"/"FYI" feed as the app's start screen. See `docs/inventory/inbox-pulse.md`'s 2026-07-06 changelog entry for how INBOX-01/07/09 relate to this new surface.
+- 2026-07-09: added DASH-05/06 (feed publisher contracts). Introduced by the feed dashboard feature (spec `docs/superpowers/specs/2026-07-09-feed-dashboard-design.md`), which turns the Dashboard into a chronological social-wall feed (`feed_items` index) mixing situations with meetings, briefings, recaps, and day plans.

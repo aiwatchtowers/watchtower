@@ -58,6 +58,12 @@ type InboxConfig struct {
 	MaxAwarenessCards   int  `mapstructure:"max_awareness_cards"`   // max ambient items given a secretary card per cycle (default: 3)
 }
 
+// FeedConfig holds settings for the dashboard feed publisher (internal/feed).
+type FeedConfig struct {
+	Enabled            bool `mapstructure:"enabled"`              // enable feed publishing (default: true)
+	MeetingLeadMinutes int  `mapstructure:"meeting_lead_minutes"` // minutes before start a meeting enters the feed (default: 30)
+}
+
 // DashboardConfig holds settings for the secretary dashboard's situation
 // composer (internal/inbox/compose.go).
 type DashboardConfig struct {
@@ -164,6 +170,7 @@ type Config struct {
 	Digest          DigestConfig                `mapstructure:"digest"`
 	Briefing        BriefingConfig              `mapstructure:"briefing"`
 	Inbox           InboxConfig                 `mapstructure:"inbox"`
+	Feed            FeedConfig                  `mapstructure:"feed"`
 	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
@@ -215,6 +222,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
 	v.SetDefault("inbox.max_triage_messages", DefaultInboxMaxTriageMessages)
 	v.SetDefault("inbox.max_awareness_cards", DefaultInboxMaxAwarenessCards)
+	v.SetDefault("feed.enabled", true)
+	v.SetDefault("feed.meeting_lead_minutes", DefaultFeedMeetingLeadMinutes)
 	v.SetDefault("dashboard.stale_after_days", DefaultDashboardStaleAfterDays)
 	v.SetDefault("dashboard.max_compose_signals", DefaultDashboardMaxComposeSignals)
 	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)

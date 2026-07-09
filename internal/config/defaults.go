@@ -25,6 +25,7 @@ const (
 	DefaultInboxLookbackDays      = 7
 	DefaultInboxMaxTriageMessages = 600
 	DefaultInboxMaxAwarenessCards = 3
+	DefaultFeedMeetingLeadMinutes = 30
 	DefaultTracksMinMsgs          = 3
 	DefaultBatchMaxChannels       = 20
 	DefaultBatchMaxMessages       = 1500
