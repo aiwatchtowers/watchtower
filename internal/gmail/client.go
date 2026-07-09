@@ -138,24 +138,42 @@ func (c *Client) doGetRetry(ctx context.Context, path string, params url.Values,
 }
 
 // ListInboxMessageIDs returns message IDs matching the Gmail search query
-// (e.g. "in:inbox newer_than:7d").
+// (e.g. "in:inbox newer_than:7d" or "in:inbox after:1720519200"). Gmail
+// paginates list results (nextPageToken); this walks all pages, accumulating
+// IDs, until either the pages are exhausted or maxResults IDs have been
+// collected. Results come back newest-first per Gmail's default ordering.
 func (c *Client) ListInboxMessageIDs(ctx context.Context, query string, maxResults int) ([]string, error) {
-	params := url.Values{"q": {query}, "maxResults": {strconv.Itoa(maxResults)}}
-	body, err := c.doGet(ctx, "/users/me/messages", params)
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Messages []struct {
-			ID string `json:"id"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("decoding list: %w", err)
-	}
-	ids := make([]string, 0, len(resp.Messages))
-	for _, m := range resp.Messages {
-		ids = append(ids, m.ID)
+	var ids []string
+	pageToken := ""
+	for {
+		remaining := maxResults - len(ids)
+		if remaining <= 0 {
+			break
+		}
+		params := url.Values{"q": {query}, "maxResults": {strconv.Itoa(remaining)}}
+		if pageToken != "" {
+			params.Set("pageToken", pageToken)
+		}
+		body, err := c.doGet(ctx, "/users/me/messages", params)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Messages []struct {
+				ID string `json:"id"`
+			} `json:"messages"`
+			NextPageToken string `json:"nextPageToken"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decoding list: %w", err)
+		}
+		for _, m := range resp.Messages {
+			ids = append(ids, m.ID)
+		}
+		if resp.NextPageToken == "" || len(ids) >= maxResults {
+			break
+		}
+		pageToken = resp.NextPageToken
 	}
 	return ids, nil
 }

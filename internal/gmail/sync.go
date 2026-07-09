@@ -33,6 +33,13 @@ func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.
 // noiseLabels are Gmail categories we skip before AI ever sees them.
 var noiseLabels = map[string]bool{"CATEGORY_PROMOTIONS": true, "CATEGORY_SOCIAL": true}
 
+// listFetchMultiplier inflates the list-fetch cap above MaxMessagesPerSync so
+// Sync can see the whole watermark window (via pagination) before deciding
+// what to process this cycle. Without this, capping the list call itself at
+// MaxMessagesPerSync would silently hand back only the newest IDs, hiding the
+// older ones that most need processing to advance the watermark safely.
+const listFetchMultiplier = 10
+
 // Sync pulls inbox messages newer than the watermark, stores them, and advances
 // the watermark. Returns the count of stored messages.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
@@ -53,9 +60,16 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading gmail watermark: %w", err)
 	}
-	query := fmt.Sprintf("in:inbox newer_than:%dd", days) // initial backfill window; watermark filters below
+	var query string
+	if watermark > 0 {
+		// Narrow the server-side window to strictly-new mail. Gmail's after:
+		// operator accepts unix seconds.
+		query = fmt.Sprintf("in:inbox after:%d", int64(watermark))
+	} else {
+		query = fmt.Sprintf("in:inbox newer_than:%dd", days) // initial backfill window
+	}
 
-	ids, err := s.client.ListInboxMessageIDs(ctx, query, maxMsgs)
+	ids, err := s.client.ListInboxMessageIDs(ctx, query, maxMsgs*listFetchMultiplier)
 	if err != nil {
 		s.recordAuthResult(err)
 		if errors.Is(err, ErrAuthRevoked) {
@@ -64,6 +78,18 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("listing gmail messages: %w", err)
 	}
 	s.recordAuthResult(nil)
+
+	// Gmail returns newest-first; reverse so we process oldest-first. This
+	// matters when we're capped below: the watermark then advances only to
+	// the oldest batch processed, so the next cycle's after:<watermark>
+	// query picks up whatever we didn't get to — nothing is skipped.
+	for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
+		ids[i], ids[j] = ids[j], ids[i]
+	}
+	if len(ids) > maxMsgs {
+		s.logger.Printf("gmail: %d messages exceed cap %d, processing oldest %d; remainder next cycle", len(ids), maxMsgs, maxMsgs)
+		ids = ids[:maxMsgs]
+	}
 
 	now := time.Now().UTC()
 	syncedAt := now.Format(time.RFC3339)
