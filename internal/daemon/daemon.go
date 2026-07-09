@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/feed"
+	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
@@ -61,6 +62,7 @@ type Daemon struct {
 	nextStepPipe     *targets.Pipeline
 	customTracksPipe *customtracks.Pipeline
 	calendarSyncer   *calendar.Syncer
+	gmailSyncer      *gmail.Syncer
 	jiraSyncer       *jira.Syncer
 	dayPlanPipeline  DayPlanRunner
 	lastJira         time.Time
@@ -130,6 +132,11 @@ func (d *Daemon) SetCustomTracksPipeline(p *customtracks.Pipeline) {
 // SetCalendarSyncer sets the calendar syncer for post-sync calendar fetch.
 func (d *Daemon) SetCalendarSyncer(s *calendar.Syncer) {
 	d.calendarSyncer = s
+}
+
+// SetGmailSyncer sets the Gmail syncer for post-sync mail fetch.
+func (d *Daemon) SetGmailSyncer(s *gmail.Syncer) {
+	d.gmailSyncer = s
 }
 
 // SetJiraSyncer sets the Jira syncer for periodic sync.
@@ -213,6 +220,7 @@ func (d *Daemon) wakeChannel() <-chan struct{} {
 func (d *Daemon) runSync(ctx context.Context) {
 	syncErr := d.phaseSlackSync(ctx)
 	d.phaseCalendarSync(ctx)
+	d.phaseGmailSync(ctx)
 	d.phaseJiraSync(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
@@ -320,6 +328,19 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 		d.logger.Printf("calendar sync error: %v", err)
 	} else if n > 0 {
 		d.logger.Printf("calendar: %d events synced", n)
+	}
+}
+
+// phaseGmailSync pulls Gmail inbox messages. Lightweight, runs every cycle.
+func (d *Daemon) phaseGmailSync(ctx context.Context) {
+	if d.gmailSyncer == nil {
+		return
+	}
+	n, err := d.gmailSyncer.Sync(ctx)
+	if err != nil {
+		d.logger.Printf("gmail sync error: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("gmail: %d messages synced", n)
 	}
 }
 

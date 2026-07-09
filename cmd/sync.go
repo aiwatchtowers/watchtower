@@ -26,6 +26,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/feed"
+	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
@@ -350,6 +351,30 @@ func runSync(cmd *cobra.Command, args []string) error {
 					}
 				} else {
 					d.SetCalendarSyncer(calendar.NewSyncer(calClient, database, cfg, logger))
+				}
+			}
+		}
+		// Wire gmail syncer if token exists.
+		gmailStore := gmail.NewTokenStore(cfg.WorkspaceDir())
+		if gmailStore.Exists() {
+			gc := resolveGoogleOAuthConfig() // calendar.GoogleOAuthConfig
+			gmailToken, err := gmailStore.Load()
+			if err != nil {
+				logger.Printf("gmail: failed to load token: %v", err)
+			} else {
+				gmClient, err := gmail.NewClient(ctx, gmailToken.RefreshToken,
+					gmail.GoogleOAuthConfig{ClientID: gc.ClientID, ClientSecret: gc.ClientSecret})
+				if err != nil {
+					logger.Printf("gmail: failed to create client: %v", err)
+					status := "error"
+					if errors.Is(err, gmail.ErrAuthRevoked) {
+						status = "revoked"
+					}
+					if dbErr := database.SetGmailAuthState(status, err.Error()); dbErr != nil {
+						logger.Printf("gmail: failed to record auth state: %v", dbErr)
+					}
+				} else {
+					d.SetGmailSyncer(gmail.NewSyncer(gmClient, database, cfg, logger))
 				}
 			}
 		}
