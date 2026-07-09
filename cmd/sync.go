@@ -355,29 +355,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 		}
 		// Wire gmail syncer if token exists.
-		gmailStore := gmail.NewTokenStore(cfg.WorkspaceDir())
-		if gmailStore.Exists() {
-			gc := resolveGoogleOAuthConfig() // calendar.GoogleOAuthConfig
-			gmailToken, err := gmailStore.Load()
-			if err != nil {
-				logger.Printf("gmail: failed to load token: %v", err)
-			} else {
-				gmClient, err := gmail.NewClient(ctx, gmailToken.RefreshToken,
-					gmail.GoogleOAuthConfig{ClientID: gc.ClientID, ClientSecret: gc.ClientSecret})
-				if err != nil {
-					logger.Printf("gmail: failed to create client: %v", err)
-					status := "error"
-					if errors.Is(err, gmail.ErrAuthRevoked) {
-						status = "revoked"
-					}
-					if dbErr := database.SetGmailAuthState(status, err.Error()); dbErr != nil {
-						logger.Printf("gmail: failed to record auth state: %v", dbErr)
-					}
-				} else {
-					d.SetGmailSyncer(gmail.NewSyncer(gmClient, database, cfg, logger))
-				}
-			}
-		}
+		wireGmailSyncer(ctx, d, cfg, database, logger)
 		return d.Run(ctx)
 	}
 
@@ -459,6 +437,35 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+}
+
+// wireGmailSyncer wires the Gmail syncer onto the daemon if a token exists,
+// recording auth-state errors (e.g. revoked grants) instead of failing sync startup.
+func wireGmailSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	gmailStore := gmail.NewTokenStore(cfg.WorkspaceDir())
+	if !gmailStore.Exists() {
+		return
+	}
+	gc := resolveGoogleOAuthConfig() // calendar.GoogleOAuthConfig
+	gmailToken, err := gmailStore.Load()
+	if err != nil {
+		logger.Printf("gmail: failed to load token: %v", err)
+		return
+	}
+	gmClient, err := gmail.NewClient(ctx, gmailToken.RefreshToken,
+		gmail.GoogleOAuthConfig{ClientID: gc.ClientID, ClientSecret: gc.ClientSecret})
+	if err != nil {
+		logger.Printf("gmail: failed to create client: %v", err)
+		status := "error"
+		if errors.Is(err, gmail.ErrAuthRevoked) {
+			status = "revoked"
+		}
+		if dbErr := database.SetGmailAuthState(status, err.Error()); dbErr != nil {
+			logger.Printf("gmail: failed to record auth state: %v", dbErr)
+		}
+		return
+	}
+	d.SetGmailSyncer(gmail.NewSyncer(gmClient, database, cfg, logger))
 }
 
 var progressLines atomic.Int32
