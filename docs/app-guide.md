@@ -26,7 +26,9 @@ Your AI secretary for Slack, Jira, and Calendar — everything that's waiting on
 
 **How it works:** After each sync, the pipeline detects new items across Slack (@mentions, DMs, thread replies, reactions), Jira (assignments, comments, status/priority changes), and Calendar (invites, time changes), then runs a triage pass over every new trigger item *plus* a scan of ordinary channel traffic — so a message that never mentioned you but reads as signal in context can still surface. Triage assigns a class (action/ambient) and priority; it may only **downgrade** a trigger item's class, never upgrade one. The composer then folds triaged signals, track events, and target updates into **situations** — merging into an existing open situation when one already covers the story, rather than creating a duplicate — and a situation-card stage writes each situation's summary, why-it-matters, and chronology.
 
-**Feed — master-detail screen:** The left panel shows a compact ranked list (priority + recency), with each row displaying a kind badge (`Signal` / `Target` / `Track` / `Mixed`), priority icon, and one-line summary. Selecting a row opens the review pane on the right. Top to bottom:
+**The Feed — a chronological wall:** The Inbox tab is a single scrolling wall mixing situation cards with upcoming meetings (published a configurable number of minutes before start, default 30), daily briefings, meeting recaps, and day plans, newest first — so everything waiting on you shows up in one place instead of a separate tab per pipeline. A filter bar above the list offers type chips (Situations / Meetings / Briefings / Recaps / Plans, toggle any combination), an "Important only" switch (hides items below a priority threshold), and a "Show hidden" switch. Right-click any row for Hide/Unhide — hiding never deletes the item, it just drops out of the default view until "Show hidden" is on. Selecting a row marks it seen (shown unbolded on future visits) and opens the matching detail pane on the right; past items stay in the feed as history rather than disappearing once handled.
+
+**Situation review pane:** Selecting a situation row opens the review pane on the right. Top to bottom:
 - **Header** — kind and priority badges, the situation title, and the relative time of the newest signal.
 - **Sources** — up to three navigation rows: "Target #N" (when the situation is linked to a target), "Track #N" (when linked to a track), and "Newest message in Slack" (a deep link to the most recent member signal).
 - **Secretary card** — a why-it-matters callout, then **Summary** and **Chronology**. While the card is being generated, the pane shows "Preparing context…"; if generation failed, it shows "Context unavailable — will retry" and the pipeline retries it next cycle.
@@ -233,12 +235,14 @@ Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Sl
 6. **People pipeline** — builds team member profiles from extracted situations (once per day)
 7. **Briefing pipeline** — generates a personalized daily briefing from all of the above (once per day, after the configured hour)
 8. **Maintenance** — unsnoozes tasks and inbox situations whose snooze period has passed, returning them to active status
+9. **Feed publisher** — end of each cycle; mirrors situations/meetings/briefings/recaps/day plans into the feed index (no AI)
 
 ## Key Concepts
 
 - **Running context** — AI maintains a "memory" per channel, carrying forward active topics, recent decisions, and open questions between digest runs
 - **People-pipeline situations** — Extracted interaction patterns (conflicts, collaborations, bottlenecks) used to build people cards. Not to be confused with dashboard situations below — same word, two different features.
-- **Dashboard situations** — Clusters of signals (Slack/Jira/Calendar) plus target/track updates, composed into a single narrative unit with its own context packet (summary, why it matters, chronology). This is what the Inbox tab's feed shows, ranked by priority and recency.
+- **Dashboard situations** — Clusters of signals (Slack/Jira/Calendar) plus target/track updates, composed into a single narrative unit with its own context packet (summary, why it matters, chronology). This is what the Inbox tab's feed shows situation cards for, ranked by priority and recency.
+- **Feed items** — index rows (`feed_items`) pointing at source records; hiding an item sets `hidden_at`, never deletes.
 - **Feedback loop** — Your thumbs up/down ratings and importance corrections improve AI quality over time through prompt tuning
 - **Starred items** — Star channels and people to prioritize them in analysis and filtering
 - **Muted channels** — Channels excluded from AI processing (digests, tracks, briefings). Use the Statistics tab to mute noisy or bot-heavy channels and reduce token costs
