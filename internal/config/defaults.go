@@ -41,6 +41,12 @@ const (
 	DefaultCalendarEnabled       = false
 	DefaultCalendarSyncDaysAhead = 7
 
+	// Gmail defaults
+	DefaultGmailEnabled            = false
+	DefaultGmailInitialHistoryDays = 7
+	DefaultGmailMaxMessagesPerSync = 100
+	DefaultGmailMaxBodyBytes       = 51200
+
 	// Jira defaults
 	DefaultJiraEnabled          = false
 	DefaultJiraSyncIntervalMins = 15
