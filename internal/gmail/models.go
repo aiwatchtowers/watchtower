@@ -1,3 +1,4 @@
+// Package gmail provides Gmail integration for Watchtower.
 package gmail
 
 // Message is a parsed Gmail message ready for storage.
