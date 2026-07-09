@@ -44,6 +44,7 @@ struct GeneralSettings: View {
     @State private var slackReconnectSuccess = false
     @State private var slackAuthProcess: Process?
     @State private var googleAuth = GoogleAuthService()
+    @State private var gmailAuth = GmailAuthService()
     @State private var jiraAuth = JiraAuthService()
 
     var body: some View {
@@ -55,6 +56,7 @@ struct GeneralSettings: View {
             dayPlanSection
             aiSection
             calendarSettingsSection
+            gmailSettingsSection
             jiraSettingsSection
 
             if let error = config.parseError {
@@ -423,6 +425,56 @@ struct GeneralSettings: View {
         .onChange(of: googleAuth.isConnected) { _, connected in
             if connected && !config.calendarEnabled {
                 config.calendarEnabled = true
+                saveConfig()
+            }
+        }
+    }
+
+    private var gmailSettingsSection: some View {
+        Section("Gmail") {
+            if gmailAuth.isConnected {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Connected")
+                    Spacer()
+                    Button("Disconnect") {
+                        gmailAuth.disconnect()
+                        config.gmailEnabled = false
+                        saveConfig()
+                    }
+                }
+
+                Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
+                    .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
+            } else {
+                HStack {
+                    Image(systemName: "envelope.badge")
+                        .foregroundStyle(.secondary)
+                    Text("Not connected")
+                    Spacer()
+
+                    if gmailAuth.isAuthenticating {
+                        ProgressView().controlSize(.small)
+                        Button("Cancel") { gmailAuth.cancelConnect() }
+                    } else {
+                        Button("Connect") {
+                            gmailAuth.connect()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+
+            if let err = gmailAuth.error {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .onChange(of: gmailAuth.isConnected) { _, connected in
+            if connected && !config.gmailEnabled {
+                config.gmailEnabled = true
                 saveConfig()
             }
         }

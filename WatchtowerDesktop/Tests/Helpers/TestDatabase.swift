@@ -494,7 +494,8 @@ enum TestDatabase {
             'calendar_invite','calendar_time_change','calendar_cancelled',
             'decision_made','briefing_ready',
             'target_due',
-            'stream'
+            'stream',
+            'email_received','email_cc'
         )),
         snippet         TEXT NOT NULL DEFAULT '',
         context         TEXT NOT NULL DEFAULT '',
@@ -587,6 +588,33 @@ enum TestDatabase {
         email          TEXT PRIMARY KEY,
         slack_user_id  TEXT NOT NULL DEFAULT '',
         resolved_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS gmail_messages (
+        id             TEXT PRIMARY KEY,
+        thread_id      TEXT NOT NULL DEFAULT '',
+        from_email     TEXT NOT NULL DEFAULT '',
+        from_name      TEXT NOT NULL DEFAULT '',
+        to_json        TEXT NOT NULL DEFAULT '[]',
+        cc_json        TEXT NOT NULL DEFAULT '[]',
+        subject        TEXT NOT NULL DEFAULT '',
+        snippet        TEXT NOT NULL DEFAULT '',
+        body_text      TEXT NOT NULL DEFAULT '',
+        internal_date  TEXT NOT NULL DEFAULT '',
+        labels_json    TEXT NOT NULL DEFAULT '[]',
+        is_unread      INTEGER NOT NULL DEFAULT 0,
+        permalink      TEXT NOT NULL DEFAULT '',
+        synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
+    CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
+
+    CREATE TABLE IF NOT EXISTS gmail_auth_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        status TEXT NOT NULL DEFAULT 'ok',
+        error TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
 
     CREATE TABLE IF NOT EXISTS feedback (

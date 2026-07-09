@@ -23,6 +23,7 @@ final class ConfigService {
     var codexPath: String?
     var calendarEnabled: Bool = false
     var calendarSyncDaysAhead: Int = 2
+    var gmailEnabled: Bool = false
     var jiraFeatures: [String: Bool] = [:]
     var dayPlanEnabled: Bool = true
     var dayPlanHour: Int = 8
@@ -96,6 +97,10 @@ final class ConfigService {
                 calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? 2
             }
 
+            if let gmail = yaml["gmail"] as? [String: Any] {
+                gmailEnabled = (gmail["enabled"] as? Bool) ?? false
+            }
+
             if let jira = yaml["jira"] as? [String: Any],
                let features = jira["features"] as? [String: Bool] {
                 jiraFeatures = features
@@ -164,6 +169,11 @@ final class ConfigService {
         calendarDict["enabled"] = calendarEnabled
         calendarDict["sync_days_ahead"] = calendarSyncDaysAhead
         yaml["calendar"] = calendarDict
+
+        // Gmail section
+        var gmailDict = (yaml["gmail"] as? [String: Any]) ?? [:]
+        gmailDict["enabled"] = gmailEnabled
+        yaml["gmail"] = gmailDict
 
         // Day Plan section
         var dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
