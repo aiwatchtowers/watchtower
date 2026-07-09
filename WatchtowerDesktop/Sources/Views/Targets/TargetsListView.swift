@@ -72,11 +72,10 @@ struct TargetsListView: View {
                 ExtractPreviewSheet(
                     proposed: result.extracted,
                     omittedCount: result.omittedCount,
-                    notes: result.notes,
-                    onCreateSelected: { _ in
-                        viewModel?.load()
-                    }
-                )
+                    notes: result.notes
+                ) { _ in
+                    viewModel?.load()
+                }
             }
         }
         .alert(
