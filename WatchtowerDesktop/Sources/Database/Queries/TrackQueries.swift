@@ -184,6 +184,15 @@ enum TrackQueries {
             """)
     }
 
+    /// Newest custom track by id — used to resolve the id of a just-created custom
+    /// track after `CustomTrackManagementSheet`'s `onCreated` yields a `TrackDraft`
+    /// with no id (dashboard create-track conversion, DASH-03).
+    static func fetchLatestCustom(_ db: Database) throws -> Track? {
+        try Track.fetchOne(db, sql: """
+            SELECT * FROM tracks WHERE origin = 'custom' ORDER BY id DESC LIMIT 1
+            """)
+    }
+
     /// Custom tracks (watches) linked to a given target, newest first.
     static func fetchByLinkedTarget(_ db: Database, targetID: Int) throws -> [Track] {
         try Track.fetchAll(db, sql: """

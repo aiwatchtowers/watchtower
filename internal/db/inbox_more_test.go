@@ -59,6 +59,73 @@ func TestUpdateInboxItemSnippet(t *testing.T) {
 	assert.Equal(t, "https://link", got.Permalink)
 }
 
+func TestUpdateInboxItemSnippetClearsComposedAt(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+	id, err := db.CreateInboxItem(makeInboxItem("C1", "1.0"))
+	require.NoError(t, err)
+	require.NoError(t, db.MarkSignalsComposed([]int{int(id)}))
+
+	before, err := db.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	require.NotEmpty(t, before.ComposedAt, "precondition: item must already be composed")
+
+	require.NoError(t, db.UpdateInboxItemSnippet(int(id), "2.0", "U2", "thread reply", "ctx", "raw text", ""))
+
+	got, err := db.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Empty(t, got.ComposedAt, "fold must clear composed_at so the composer re-reads the thread")
+}
+
+// A thread-follow fold on an item owned only by a dismissed situation must
+// NOT resurrect it: the dismissal was an explicit user signal, and there is
+// no open situation for the composer to re-merge into.
+func TestUpdateInboxItemSnippetKeepsComposedAtWhenOwnerDismissed(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+	id, err := db.CreateInboxItem(makeInboxItem("C1", "1.0"))
+	require.NoError(t, err)
+	require.NoError(t, db.MarkSignalsComposed([]int{int(id)}))
+
+	sitID, err := db.CreateSituation(DashboardSituation{Title: "old story", Kind: "external", Priority: "medium", Status: "dismissed"})
+	require.NoError(t, err)
+	require.NoError(t, db.AddSituationSignals(int(sitID), []int{int(id)}))
+
+	before, err := db.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	require.NotEmpty(t, before.ComposedAt, "precondition: item must already be composed")
+
+	require.NoError(t, db.UpdateInboxItemSnippet(int(id), "2.0", "U2", "thread reply", "ctx", "raw text", ""))
+
+	got, err := db.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.NotEmpty(t, got.ComposedAt, "fold must not resurrect an item owned only by a dismissed situation")
+}
+
+// A thread-follow fold on an item with no situation link at all must clear
+// composed_at: the composer previously passed on it, and new content deserves
+// a fresh look since there is nothing to resurrect.
+func TestUpdateInboxItemSnippetClearsComposedAtWhenUnowned(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+	id, err := db.CreateInboxItem(makeInboxItem("C1", "1.0"))
+	require.NoError(t, err)
+	require.NoError(t, db.MarkSignalsComposed([]int{int(id)}))
+
+	before, err := db.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	require.NotEmpty(t, before.ComposedAt, "precondition: item must already be composed")
+
+	require.NoError(t, db.UpdateInboxItemSnippet(int(id), "2.0", "U2", "thread reply", "ctx", "raw text", ""))
+
+	got, err := db.GetInboxItemByID(int(id))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Empty(t, got.ComposedAt, "fold must clear composed_at when the item has no situation owner")
+}
+
 func TestGetInboxItem_Int64(t *testing.T) {
 	db := openTestDB(t)
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))

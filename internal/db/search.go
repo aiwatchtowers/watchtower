@@ -87,6 +87,66 @@ func (db *DB) SearchMessages(query string, opts SearchOpts) ([]Message, error) {
 	return scanMessages(rows)
 }
 
+// ListRecentMessages returns messages filtered by channel, user, and time
+// range without a full-text query — the "everything from this person" lookup
+// that SearchMessages (which requires a MATCH term) cannot serve. Results are
+// newest-first and bounded by Limit. An unfiltered call (no channels, users, or
+// time bound) returns nothing rather than the whole table, so callers must
+// narrow with at least one filter.
+func (db *DB) ListRecentMessages(opts SearchOpts) ([]Message, error) {
+	var conditions []string
+	var args []any
+
+	if len(opts.ChannelIDs) > 0 {
+		placeholders := make([]string, len(opts.ChannelIDs))
+		for i, id := range opts.ChannelIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		conditions = append(conditions, "channel_id IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	if len(opts.UserIDs) > 0 {
+		placeholders := make([]string, len(opts.UserIDs))
+		for i, id := range opts.UserIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		conditions = append(conditions, "user_id IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	if opts.FromUnix > 0 {
+		conditions = append(conditions, "ts_unix >= ?")
+		args = append(args, opts.FromUnix)
+	}
+
+	if opts.ToUnix > 0 {
+		conditions = append(conditions, "ts_unix <= ?")
+		args = append(args, opts.ToUnix)
+	}
+
+	if len(conditions) == 0 {
+		return nil, nil
+	}
+
+	sqlQuery := `SELECT ` + msgSelectCols + ` FROM messages WHERE is_deleted = 0 AND ` +
+		strings.Join(conditions, " AND ") + ` ORDER BY ts_unix DESC LIMIT ?`
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	args = append(args, limit)
+
+	rows, err := db.Query(sqlQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing recent messages: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessages(rows)
+}
+
 // sanitizeFTS5Query sanitizes user input for safe use in FTS5 MATCH queries.
 // Each term is individually double-quoted (allowlist approach) to prevent any
 // FTS5 operator injection. Quotes within terms are stripped so they can't

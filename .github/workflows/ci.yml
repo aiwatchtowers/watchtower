@@ -4,11 +4,42 @@ on:
   push:
     branches: [main, feature/*]
   pull_request:
-    branches: [main]
+
+# One live run per branch and event: rapid successive pushes (or PR syncs)
+# cancel their stale predecessors. Cross-event dedupe (push vs pull_request
+# firing together on a PR branch) is handled by the `gate` job below —
+# skipping shows neutral in the PR, unlike a cancelled run's red X.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
+  # Skips the push-triggered run when the branch has an open PR — the
+  # pull_request-triggered run of the same commit does the work instead.
+  gate:
+    name: Dedupe gate
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_NAME}" != "main" ]; then
+            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${GITHUB_REF_NAME}" --state open --json number --jq length)
+            if [ "$open_prs" -gt 0 ]; then
+              echo "branch has an open PR — the pull_request run covers this commit"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
   go-lint:
     name: Go Lint
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +56,8 @@ jobs:
 
   go-test:
     name: Go Test
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,10 +66,16 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Test
-        # cmd takes ~8min under -race (login-shell/daemon process tests);
-        # the default 10m per-package timeout is too tight on shared runners.
-        run: go test ./... -race -count=1 -timeout 25m
+      - name: Test (race, library packages)
+        # Race-instrumented pure-Go sqlite is ~10x slower; internal/db is the
+        # long pole (~7min on shared runners), so keep the generous timeout.
+        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
+
+      - name: Test (cmd, no race)
+        # cmd is CLI glue over file-backed SQLite fixtures — under -race it
+        # alone took ~13min on shared runners while its concurrency all lives
+        # in internal/*, which stays race-covered above.
+        run: go test ./cmd/ -count=1 -timeout 10m
 
       - name: Build
         run: go build ./...
@@ -46,6 +85,8 @@ jobs:
 
   swift-lint:
     name: Swift Lint
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: macos-15
     defaults:
       run:
@@ -61,6 +102,8 @@ jobs:
 
   swift-test:
     name: Swift Test
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: macos-15
     defaults:
       run:
@@ -76,6 +119,8 @@ jobs:
 
   sentrux-quality:
     name: Sentrux Quality Gate
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

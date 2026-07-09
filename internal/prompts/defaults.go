@@ -18,7 +18,6 @@ var Defaults = map[string]string{
 	PeopleTeam:           defaultPeopleTeam,
 	BriefingDaily:        defaultBriefingDaily,
 	InboxTriage:          defaultInboxTriage,
-	InboxCard:            defaultInboxCard,
 	DigestChannelBatch:   defaultDigestChannelBatch,
 	TracksExtractBatch:   defaultTracksExtractBatch,
 	PeopleBatch:          defaultPeopleBatch,
@@ -33,6 +32,8 @@ var Defaults = map[string]string{
 	TrackCompose:         defaultTrackCompose,
 	TrackRun:             defaultTrackRun,
 	TrackShortlist:       defaultTrackShortlist,
+	InboxCompose:         defaultInboxCompose,
+	InboxSituationCard:   defaultInboxSituationCard,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -52,7 +53,6 @@ var AllIDs = []string{
 	PeopleBatch,
 	BriefingDaily,
 	InboxTriage,
-	InboxCard,
 	TasksGenerate,
 	TasksUpdate,
 	MeetingPrep,
@@ -64,6 +64,8 @@ var AllIDs = []string{
 	TrackCompose,
 	TrackRun,
 	TrackShortlist,
+	InboxCompose,
+	InboxSituationCard,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -84,7 +86,6 @@ var DefaultVersions = map[string]int{
 	PeopleTeam:         1,
 	BriefingDaily:      5, // v5: jira integration
 	InboxTriage:        1, // v1: initial triage template
-	InboxCard:          1, // v1: initial card template
 	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:        1, // v1: batch people cards for low-data users
 	TasksGenerate:      1, // v1: AI task generation with checklist and due date
@@ -97,6 +98,8 @@ var DefaultVersions = map[string]int{
 	TrackCompose:       1, // v1: draft custom-track title+instruction from a free-text request
 	TrackRun:           1, // v1: custom-track timeline events from recent cross-source activity
 	TrackShortlist:     1, // v1: cheap title-only relevance filter for custom-track backfill
+	InboxCompose:       2, // v2: suggest_resolve op (DASH-07)
+	InboxSituationCard: 1, // v1: context packet for one dashboard situation
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -118,7 +121,6 @@ var Descriptions = map[string]string{
 	PeopleTeam:           "Team summary — cross-user attention & tips",
 	BriefingDaily:        "Daily briefing — personalized morning summary",
 	InboxTriage:          "Inbox: triage scan of new activity",
-	InboxCard:            "Inbox: secretary card for a surfaced item",
 	DigestChannelBatch:   "Channel batch digest — multi-channel analysis for low-activity channels",
 	PeopleBatch:          "People batch cards — lightweight cards for low-data users in one AI call",
 	TasksGenerate:        "Task generation — AI-powered task breakdown with checklist, priority, and due date",
@@ -132,6 +134,8 @@ var Descriptions = map[string]string{
 	TrackRun:             "Custom track run — timeline events from recent cross-source activity",
 	TrackCompose:         "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
 	TrackShortlist:       "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
+	InboxCompose:         "Dashboard: fold new signals into situations",
+	InboxSituationCard:   "Dashboard: context packet for one situation",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1218,24 +1222,63 @@ Rules:
 Return ONLY a JSON object (no markdown fences):
 {"verdicts":[{"key":"item:12","tier":"action","priority":"high","reason":"..."}]}`
 
-const defaultInboxCard = `%s
+const defaultInboxCompose = `%s
 
-You are the user's chief-of-staff secretary preparing a briefing card for one
-inbox item they will act on.
+You are the user's chief-of-staff secretary maintaining their work dashboard.
+The dashboard shows SITUATIONS: clusters of related signals around one theme.
+Your job every cycle: fold new material into the dashboard so the user stays
+on top of everything — matched to their goals (their active targets and
+tracks, listed in the brief) AND anything important outside those goals.
+Nothing important may slip by; routine noise must not surface.
 
 %s
 
-Using the item and conversation below, produce:
-- why_matters: 1-2 sentences — why this needs the user specifically, judged
-  against the brief (who is asking, which of the user's projects/people it
-  touches, what happens if ignored).
-- thread_digest: 3-5 sentences summarizing the whole conversation so the user
-  does not have to read it. Lead with the current state, not the history.
-- draft_reply: a ready-to-send reply in the user's voice: direct, short, no
-  corporate fluff. Match the language of the conversation. If the right action
-  is not a reply (e.g. RSVP, close a ticket), say what to do in one line instead.
+=== OPEN SITUATIONS (current dashboard state) ===
+%s
+
+Fold the new material below into the dashboard:
+- "merge": a new signal/event continues an existing open situation → add it
+  there. NEVER create a duplicate situation for a theme already open.
+- "create": a genuinely new theme worth the user's attention. kind:
+  "external" (not tied to their work items), "target_update" /
+  "track_update" (activity on an active target/track — set target_id or
+  track_id), "mixed".
+- "rerank": an open situation became more/less urgent.
+- "suggest_resolve": the new material shows an open situation concluded
+  WITHOUT the user needing to act — the question was answered and accepted,
+  the blocker lifted, the decision made elsewhere. Propose closing it;
+  reason: one sentence, what resolved it, in the user's language. The user
+  confirms — never suggest on weak or partial evidence, and never instead
+  of a needed merge (emit both).
+- Signals not worth the dashboard: simply do not reference them.
+- priority: high|medium|low. rank: 0.0-1.0 relative urgency for feed order.
+- reason: ONE sentence, user's point of view, in the user's language.
 
 %s
 
 Return ONLY a JSON object (no markdown fences):
-{"why_matters":"...","thread_digest":"...","draft_reply":"..."}`
+{"ops":[
+ {"op":"create","title":"...","kind":"external","priority":"high","rank":0.9,"reason":"...","signals":["sig:12","evt:3","tgt:7"],"target_id":null,"track_id":null},
+ {"op":"merge","situation_id":4,"signals":["sig:15"],"rerank":0.7,"reason":"..."},
+ {"op":"rerank","situation_id":2,"rank":0.3,"reason":"..."},
+ {"op":"suggest_resolve","situation_id":9,"reason":"..."}
+]}`
+
+const defaultInboxSituationCard = `%s
+
+You are the user's chief-of-staff secretary preparing the context packet for
+one situation on their work dashboard.
+
+%s
+
+Using the situation and its member signals below, produce:
+- summary: 2-4 sentences — what is happening, CURRENT STATE FIRST.
+- why_matters: 1-2 sentences judged against the brief (which of the user's
+  goals it touches, or why it matters even outside them).
+- chronology: one line per member signal, oldest first, format
+  "<who> — <one-line essence>". No timestamps, no markdown.
+
+%s
+
+Return ONLY a JSON object (no markdown fences):
+{"summary":"...","why_matters":"...","chronology":"..."}`

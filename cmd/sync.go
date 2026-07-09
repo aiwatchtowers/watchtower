@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/feed"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
@@ -295,6 +296,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 				dayPlanPipe := dayplan.New(database, cfg, gen, logger)
 				dayPlanPipe.SetPromptStore(prompts.New(database, nil))
 				d.SetDayPlanPipeline(dayPlanPipe)
+			}
+			if cfg.Feed.Enabled {
+				d.SetFeedPipeline(feed.New(database, cfg, logger))
 			}
 		}
 		// Wire Jira syncer if configured and token exists.

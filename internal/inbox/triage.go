@@ -71,9 +71,13 @@ func (p *Pipeline) runTriage(ctx context.Context, currentUserID string, newItems
 	cands := make([]triageCandidate, 0, len(newItems)+len(streamCands))
 	for i := range newItems {
 		it := &newItems[i]
+		// Resolve the sender to a display name; UserNameByID falls back to the
+		// raw ID on a miss (correct for non-Slack senders like Jira issue keys).
+		// Feeding raw IDs makes the AI echo them into reasons and cards.
+		sender, _ := p.db.UserNameByID(it.SenderUserID)
 		cands = append(cands, triageCandidate{
 			key:  fmt.Sprintf("item:%d", it.ID),
-			line: fmt.Sprintf("[TRIGGER] key=item:%d type=%s from=%s channel=%s :: %s", it.ID, it.TriggerType, it.SenderUserID, it.ChannelID, it.Snippet),
+			line: fmt.Sprintf("[TRIGGER] key=item:%d type=%s from=%s channel=%s :: %s", it.ID, it.TriggerType, sender, it.ChannelID, it.Snippet),
 			item: it,
 		})
 	}
@@ -90,9 +94,10 @@ func (p *Pipeline) runTriage(ctx context.Context, currentUserID string, newItems
 			mutedTS = append(mutedTS, c.TSUnix)
 			continue
 		}
+		sender, _ := p.db.UserNameByID(c.SenderUserID)
 		cands = append(cands, triageCandidate{
 			key:    fmt.Sprintf("msg:%s:%s", c.ChannelID, c.MessageTS),
-			line:   fmt.Sprintf("key=msg:%s:%s from=%s channel=%s :: %s", c.ChannelID, c.MessageTS, c.SenderUserID, c.ChannelID, cleanSnippet(c.Text)),
+			line:   fmt.Sprintf("key=msg:%s:%s from=%s channel=%s :: %s", c.ChannelID, c.MessageTS, sender, c.ChannelID, enrichSnippet(c.Text, p.db)),
 			stream: c,
 		})
 	}
@@ -230,7 +235,7 @@ func (p *Pipeline) createStreamItem(c *triageCandidate, v triageVerdict, prio st
 		ThreadTS:     c.stream.ThreadTS,
 		SenderUserID: c.stream.SenderUserID,
 		TriggerType:  "stream",
-		Snippet:      cleanSnippet(c.stream.Text),
+		Snippet:      enrichSnippet(c.stream.Text, p.db),
 		RawText:      c.stream.Text,
 		Permalink:    c.stream.Permalink,
 		Priority:     prio,

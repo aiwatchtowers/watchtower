@@ -51,6 +51,10 @@ func testConfig() *config.Config {
 			MaxTriageMessages:   config.DefaultInboxMaxTriageMessages,
 			MaxAwarenessCards:   config.DefaultInboxMaxAwarenessCards,
 		},
+		Dashboard: config.DashboardConfig{
+			StaleAfterDays:    config.DefaultDashboardStaleAfterDays,
+			MaxComposeSignals: config.DefaultDashboardMaxComposeSignals,
+		},
 	}
 }
 
@@ -754,7 +758,7 @@ func TestInbox07_FeedUntouchedOnTriageError(t *testing.T) {
 	})
 
 	cfg := testConfig()
-	gen := &seqGenerator{responses: []string{"", ""}} // triage call, then a possible card call — both error
+	gen := &seqGenerator{responses: []string{"", ""}} // triage call, then a possible compose call — both error
 	p := New(d, cfg, gen, log.Default())
 	p.SetCurrentUser("U1", "u1@test.com")
 

@@ -26,7 +26,6 @@ const (
 	PeopleTeam           = "people.team"
 	BriefingDaily        = "briefing.daily"
 	InboxTriage          = "inbox.triage"
-	InboxCard            = "inbox.card"
 	DigestChannelBatch   = "digest.channel_batch"
 	TracksExtractBatch   = "tracks.extract_batch"
 	PeopleBatch          = "people.batch"
@@ -41,6 +40,8 @@ const (
 	TrackCompose         = "track.compose"
 	TrackRun             = "track.run"
 	TrackShortlist       = "track.shortlist"
+	InboxCompose         = "inbox.compose"
+	InboxSituationCard   = "inbox.situation_card"
 )
 
 // Store loads, caches, and persists prompt templates.

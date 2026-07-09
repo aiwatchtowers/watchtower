@@ -57,7 +57,11 @@ func writeTracksSection(b *strings.Builder, database *db.DB) {
 			if i >= maxBriefTracks {
 				break
 			}
-			fmt.Fprintf(b, "- [%s] %s (ball on: %s)\n", tr.Priority, tr.Text, tr.BallOn)
+			// BallOn holds a raw user id; track text can carry <@U...> mentions.
+			// Resolve both — the AI treats whatever appears here as the person's
+			// name and copies it into situation titles verbatim.
+			ballOn, _ := database.UserNameByID(tr.BallOn)
+			fmt.Fprintf(b, "- [%s] %s (ball on: %s)\n", tr.Priority, enrichSnippet(tr.Text, database), ballOn)
 		}
 		b.WriteString("\n")
 	}

@@ -92,6 +92,75 @@ func TestTriage_StreamCandidateBecomesItem(t *testing.T) {
 	}
 }
 
+func TestTriage_PromptResolvesStreamSenderName(t *testing.T) {
+	// The triage prompt must feed the sender's display name, not the raw Slack
+	// user ID — otherwise the AI echoes IDs into reasons and downstream cards.
+	d, p, gen := newTriagePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U2", Name: "anton", DisplayName: "Anton Makarenko"}))
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "100.1", "U2", "prod is on fire")
+	gen.responses = []string{`{"verdicts":[{"key":"msg:C1:100.1","tier":"ignore","priority":"low","reason":"noise"}]}`}
+
+	_, err := p.runTriage(context.Background(), "U1", nil, 0)
+	require.NoError(t, err)
+
+	require.Len(t, gen.prompts, 1)
+	assert.Contains(t, gen.prompts[0], "from=Anton Makarenko")
+	assert.NotContains(t, gen.prompts[0], "from=U2")
+}
+
+func TestTriage_PromptResolvesTriggerSenderName(t *testing.T) {
+	d, p, gen := newTriagePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U2", Name: "anton", DisplayName: "Anton Makarenko"}))
+	id := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "mention", Snippet: "need your review"})
+	gen.responses = []string{fmt.Sprintf(`{"verdicts":[{"key":"item:%d","tier":"action","priority":"high","reason":"review"}]}`, id)}
+	items, err := d.GetInboxItems(db.InboxFilter{Status: "pending"})
+	require.NoError(t, err)
+
+	_, err = p.runTriage(context.Background(), "U1", items, 0)
+	require.NoError(t, err)
+
+	require.Len(t, gen.prompts, 1)
+	assert.Contains(t, gen.prompts[0], "from=Anton Makarenko")
+	assert.NotContains(t, gen.prompts[0], "from=U2")
+}
+
+func TestTriage_PromptResolvesMentionInStreamText(t *testing.T) {
+	// Raw `<@U…>` mentions inside message text must resolve to names via the
+	// DB, not be silently dropped (cleanSnippet's no-DB behavior).
+	d, p, gen := newTriagePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "100.1", "U2", "ping <@U3> about the incident")
+	gen.responses = []string{`{"verdicts":[{"key":"msg:C1:100.1","tier":"ignore","priority":"low","reason":"noise"}]}`}
+
+	_, err := p.runTriage(context.Background(), "U1", nil, 0)
+	require.NoError(t, err)
+
+	require.Len(t, gen.prompts, 1)
+	assert.Contains(t, gen.prompts[0], "ping @Bob Brown about the incident")
+}
+
+func TestTriage_StreamItemStoresResolvedMention(t *testing.T) {
+	// The stored snippet must resolve raw mentions the same way the detector
+	// path does (enrichSnippet with DB), so Desktop bubbles and downstream
+	// compose/card prompts see names, not gaps.
+	d, p, gen := newTriagePipeline(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "100.1", "U2", "ping <@U3> about the incident")
+	gen.responses = []string{`{"verdicts":[{"key":"msg:C1:100.1","tier":"action","priority":"high","reason":"incident"}]}`}
+
+	out, err := p.runTriage(context.Background(), "U1", nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, out.Created)
+
+	it, err := d.GetInboxItemByMessage("C1", "100.1")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	assert.Contains(t, it.Snippet, "@Bob Brown")
+}
+
 func TestTriage_IgnoreVerdictCreatesNothing(t *testing.T) {
 	d, p, gen := newTriagePipeline(t)
 	insertChannel(t, d, "C1", "public")
