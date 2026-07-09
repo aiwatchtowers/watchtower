@@ -2,9 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/*]
   pull_request:
-    branches: [main]
+
+# One live run per branch: the push- and pull_request-triggered runs of the
+# same head land in the same group (the PR event carries head.ref, the push
+# event ref_name), so the newer cancels the older instead of running twice —
+# and rapid successive pushes cancel their stale predecessors.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   go-lint:
