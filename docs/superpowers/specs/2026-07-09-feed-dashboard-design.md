@@ -33,7 +33,7 @@ preserved and a filter bar on top.
 
 ## Data Model
 
-Migration `00013_feed_items.sql` (goose, per `add-migration` skill —
+Migration `00014_feed_items.sql` (goose, per `add-migration` skill —
 mirror into `schema.sql`, add to `TestAllTablesExist`, regenerate golden):
 
 ```sql
@@ -73,9 +73,13 @@ sits at the top of the DESC feed until its start time passes, then slides
 down naturally — no expiry logic. A situation merge bumps `updated_at`,
 so the feed item resurfaces like a bumped thread.
 
-**Bootstrap guard:** on first run after the migration, only rows created
-after the feature's introduction are published (cutoff recorded in
-`sync_state`), so years of old briefings/recaps don't flood the feed.
+**Bootstrap guard:** only briefings/recaps/day-plans created after the
+feature's introduction are published, so years of old rows don't flood
+the feed. The cutoff is a `feed_state` singleton table (same migration),
+seeded with `now` at migration time — the moment the migration runs is
+the cutoff. (`sync_state` is keyed by `channel_id` and unsuitable.)
+Open situations are exempt (all published); meetings are inherently
+time-windowed.
 
 **Publisher invariants:**
 - never touches source tables;
@@ -113,7 +117,8 @@ with a type icon, title, and time. Unseen items get an unread accent.
 - "Important only" toggle (`importance >= 70`);
 - "Show hidden" toggle (hidden excluded by default).
 
-Filter state is UI-local (`@AppStorage`), not in the DB.
+Filter state is a UI preference persisted via `UserDefaults` on the
+feed view model, not in the DB.
 
 **Right pane** switches on the selected item's type:
 - situation → existing `SituationReviewPane` (unchanged);
