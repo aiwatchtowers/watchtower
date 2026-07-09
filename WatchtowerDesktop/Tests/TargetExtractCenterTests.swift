@@ -97,6 +97,8 @@ final class TargetExtractCenterTests: XCTestCase {
     }
 
     func testClearPendingClearsBothResultAndError() {
+        // No fake notifier needed — this test never calls start(), so no
+        // notification call (real or fake) ever fires.
         let center = TargetExtractCenter()
         center.pendingResult = TargetExtractResult(extracted: [], omittedCount: 0, notes: "")
         center.pendingError = "some error"

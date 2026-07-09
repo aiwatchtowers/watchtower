@@ -130,8 +130,13 @@ struct TargetsListView: View {
 
     /// Picks up a result/error left behind by a CreateTargetSheet that has
     /// since been closed (e.g. the user tapped the completion notification).
-    /// A no-op while an extraction is still running or nothing is pending.
+    /// A no-op while an extraction is still running or nothing is pending —
+    /// and, while `showCreateSheet` is still true, a no-op regardless: that
+    /// sheet's own `awaitingOwnExtraction`-gated handler is the sole
+    /// consumer for its own extraction while it's still on screen, so this
+    /// catch-all only engages once the sheet the user is looking at is gone.
     private func consumePendingExtraction() {
+        guard !showCreateSheet else { return }
         let center = appState.targetExtractCenter
         guard !center.isRunning else { return }
         if let result = center.pendingResult {

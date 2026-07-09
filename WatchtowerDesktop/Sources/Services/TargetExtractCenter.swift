@@ -12,11 +12,14 @@ protocol TargetExtractNotifying {
 extension NotificationService: TargetExtractNotifying {}
 
 /// App-wide, single-slot registry for the "Extract with AI" target-extraction
-/// call. The extraction subprocess call can take up to the CLI's extract
-/// timeout; routing it through this AppState-held center (instead of
-/// view-local `@State` on `CreateTargetSheet`) means the result is never lost
-/// if the presenting sheet is closed before the call finishes — `start()`'s
-/// `Task` is rooted here, not in the view.
+/// call. `start()` is a plain `async` method with no internal `Task` of its
+/// own — it is awaited directly from the button action's `Task { }` in
+/// `CreateTargetSheet`. That caller-side `Task` is NOT tied to the sheet's
+/// lifecycle (only the `.task { }` SwiftUI modifier is auto-cancelled on
+/// view teardown; an imperatively-created `Task { }` inside a button action
+/// is not), so it keeps running and mutating this AppState-held center's
+/// state even after the presenting sheet is dismissed — that is what lets
+/// the result survive the sheet being closed mid-extraction.
 @MainActor
 @Observable
 final class TargetExtractCenter {
@@ -24,9 +27,11 @@ final class TargetExtractCenter {
     /// at a time app-wide; a second `start()` call while this is true is a
     /// no-op (single-slot guard).
     var isRunning = false
-    /// The text of the in-flight (or most recently started) extraction, so a
-    /// caller can tell whether a running extraction is its own or someone
-    /// else's.
+    /// The text of the in-flight (or most recently started) extraction.
+    /// Not read by any production consumer today — `CreateTargetSheet` uses
+    /// its own local ownership flag instead — but exercised by
+    /// `TargetExtractCenterTests` to assert the single-slot guard leaves it
+    /// untouched when a call is blocked.
     var draftText = ""
     /// Set on successful, non-empty extraction. Cleared by `clearPending()`
     /// once a consumer has presented it.
