@@ -92,9 +92,6 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if watermark > 0 && msgUnix <= watermark {
 			continue
 		}
-		if msgUnix > maxSeen {
-			maxSeen = msgUnix
-		}
 		body := m.BodyText
 		if len(body) > maxBody {
 			body = body[:maxBody]
@@ -111,6 +108,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if err := s.db.UpsertGmailMessage(row, syncedAt); err != nil {
 			s.logger.Printf("gmail: upsert %s: %v", m.ID, err)
 			continue
+		}
+		if msgUnix > maxSeen {
+			maxSeen = msgUnix
 		}
 		count++
 	}
