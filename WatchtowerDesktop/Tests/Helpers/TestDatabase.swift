@@ -959,6 +959,7 @@ enum TestDatabase {
         converted_track_id  INTEGER,
         last_signal_at  TEXT NOT NULL DEFAULT '',
         resolved_reason TEXT NOT NULL DEFAULT '',
+        suggested_resolution TEXT NOT NULL DEFAULT '',
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
@@ -1418,6 +1419,7 @@ enum TestDatabase {
         convertedTrackID: Int? = nil,
         lastSignalAt: String = "",
         resolvedReason: String = "",
+        suggestedResolution: String = "",
         createdAt: String? = nil,
         updatedAt: String? = nil
     ) throws -> Int64 {
@@ -1425,14 +1427,14 @@ enum TestDatabase {
             INSERT INTO situations (title, kind, status, snooze_until, priority, rank,
                 ai_reason, summary, why_matters, chronology, card_status, target_id,
                 track_id, converted_target_id, converted_track_id, last_signal_at,
-                resolved_reason, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                resolved_reason, suggested_resolution, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
                 COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
             """, arguments: [title, kind, status, snoozeUntil, priority, rank,
                              aiReason, summary, whyMatters, chronology, cardStatus, targetID,
                              trackID, convertedTargetID, convertedTrackID, lastSignalAt,
-                             resolvedReason, createdAt, updatedAt])
+                             resolvedReason, suggestedResolution, createdAt, updatedAt])
         return db.lastInsertedRowID
     }
 

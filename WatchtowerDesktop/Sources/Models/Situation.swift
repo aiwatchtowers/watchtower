@@ -23,6 +23,7 @@ struct Situation: FetchableRecord, Identifiable, Equatable {
     let convertedTrackID: Int?   // column: converted_track_id
     let lastSignalAt: String     // column: last_signal_at
     let snoozeUntil: String      // column: snooze_until
+    let suggestedResolution: String   // column: suggested_resolution
     let createdAt: Date?         // column: created_at (ISO8601)
     let updatedAt: Date?         // column: updated_at (ISO8601)
 
@@ -66,6 +67,9 @@ struct Situation: FetchableRecord, Identifiable, Equatable {
     /// True when a secretary card has been successfully generated for this situation.
     var hasCard: Bool { cardStatus == .ready }
 
+    /// True when the secretary has marked this situation as looking resolved (DASH-07).
+    var hasSuggestedResolution: Bool { !suggestedResolution.isEmpty }
+
     /// Parsed `last_signal_at` — the real time of the newest member signal (or
     /// work-update event) composed into this situation, for display in place of
     /// `created_at`/`updated_at`. Falls back to `updatedAt` when empty, which
@@ -93,6 +97,7 @@ struct Situation: FetchableRecord, Identifiable, Equatable {
         convertedTrackID = row["converted_track_id"] as Int?
         lastSignalAt = row["last_signal_at"] ?? ""
         snoozeUntil = row["snooze_until"] ?? ""
+        suggestedResolution = row["suggested_resolution"] ?? ""
         createdAt = Self.parseDate(row["created_at"])
         updatedAt = Self.parseDate(row["updated_at"])
     }

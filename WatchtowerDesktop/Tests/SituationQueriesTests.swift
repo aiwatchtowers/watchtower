@@ -163,6 +163,34 @@ final class SituationQueriesTests: XCTestCase {
         XCTAssertEqual(s.convertedTrackID, 17)
     }
 
+    // MARK: - suggested_resolution
+
+    func test_situation_readsSuggestedResolution() throws {
+        let db = try TestDatabase.create()
+        let id = try db.write {
+            try TestDatabase.insertSituation($0, suggestedResolution: "answered in thread")
+        }
+
+        let situation = try db.read { try SituationQueries.fetchByID($0, id: Int(id)) }
+        let s = try XCTUnwrap(situation)
+        XCTAssertEqual(s.suggestedResolution, "answered in thread")
+        XCTAssertTrue(s.hasSuggestedResolution)
+    }
+
+    func test_clearSuggestedResolution_clearsField() throws {
+        let db = try TestDatabase.create()
+        let id = try db.write {
+            try TestDatabase.insertSituation($0, suggestedResolution: "answered in thread")
+        }
+
+        try db.write { try SituationQueries.clearSuggestedResolution($0, id: Int(id)) }
+
+        let situation = try db.read { try SituationQueries.fetchByID($0, id: Int(id)) }
+        let s = try XCTUnwrap(situation)
+        XCTAssertEqual(s.suggestedResolution, "")
+        XCTAssertFalse(s.hasSuggestedResolution)
+    }
+
     // MARK: - recordFeedback
 
     func testRecordFeedbackNegativeOneCreatesChannelMuteRuleForEachMemberScope() throws {

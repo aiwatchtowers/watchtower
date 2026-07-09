@@ -81,6 +81,14 @@ enum SituationQueries {
         )
     }
 
+    /// User's "Keep open" on a suggested resolution (DASH-07): clears the
+    /// secretary's mark, nothing else — status untouched, no feedback call.
+    static func clearSuggestedResolution(_ db: Database, id: Int) throws {
+        try db.execute(
+            sql: "UPDATE situations SET suggested_resolution = '', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?",
+            arguments: [id])
+    }
+
     // MARK: - Feedback
 
     /// Records feedback for a situation.
