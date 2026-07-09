@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/*]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -33,10 +33,16 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Test
-        # cmd takes ~8min under -race (login-shell/daemon process tests);
-        # the default 10m per-package timeout is too tight on shared runners.
-        run: go test ./... -race -count=1 -timeout 25m
+      - name: Test (race, library packages)
+        # Race-instrumented pure-Go sqlite is ~10x slower; internal/db is the
+        # long pole (~7min on shared runners), so keep the generous timeout.
+        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
+
+      - name: Test (cmd, no race)
+        # cmd is CLI glue over file-backed SQLite fixtures — under -race it
+        # alone took ~13min on shared runners while its concurrency all lives
+        # in internal/*, which stays race-covered above.
+        run: go test ./cmd/ -count=1 -timeout 10m
 
       - name: Build
         run: go build ./...
