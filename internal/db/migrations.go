@@ -12,10 +12,14 @@ import (
 //
 //	1 — legacy PRAGMA user_version + manual switch in migrate() (pre-goose)
 //	2 — goose, with goose_db_version as source of truth
+//	3 — backfill: creates baseline tables and upgrades inbox_items columns
+//	    that were added to 00001_init.sql after the legacy migration engine
+//	    was frozen (targets, day_plans, inbox columns, etc.). One-time fix;
+//	    new tables must go into new goose migrations (00003+), NOT into 00001.
 //
 // The runtime compares this to config.DB.SchemaFormat at startup and runs
 // RunSchemaUpgrade once when behind.
-const CurrentSchemaFormat = 2
+const CurrentSchemaFormat = 3
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
