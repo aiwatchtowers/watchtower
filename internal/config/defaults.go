@@ -5,6 +5,8 @@ import "time"
 const (
 	DefaultActiveWorkspace    = ""
 	DefaultAIProvider         = "claude"
+	DefaultOllamaURL          = "http://localhost:11434"
+	DefaultOllamaModel        = "gemma4:31b"
 	DefaultAIModel            = "claude-sonnet-4-6"
 	DefaultAIContextBudget    = 150000
 	DefaultAIWorkers          = 5

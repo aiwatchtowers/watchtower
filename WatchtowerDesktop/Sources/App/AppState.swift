@@ -64,7 +64,12 @@ final class AppState {
     func ensureChatViewModels() {
         guard let db = databaseManager, chatViewModel == nil else { return }
         let configProvider = ConfigService().aiProvider
-        let provider: AIProvider = configProvider == "codex" ? .codex : .claude
+        let provider: AIProvider
+        switch configProvider {
+        case "codex": provider = .codex
+        case "ollama": provider = .ollama
+        default: provider = .claude
+        }
         let service = WatchtowerAIService()
         let cvm = ChatViewModel(aiService: service, dbManager: db, provider: provider)
         let hvm = ChatHistoryViewModel(dbManager: db)

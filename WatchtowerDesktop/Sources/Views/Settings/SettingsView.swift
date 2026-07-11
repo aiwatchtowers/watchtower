@@ -275,6 +275,7 @@ struct GeneralSettings: View {
             ) {
                 Text("Claude").tag("claude")
                 Text("Codex").tag("codex")
+                Text("Ollama").tag("ollama")
             }
 
             TextField(
@@ -283,7 +284,13 @@ struct GeneralSettings: View {
                     get: { config.aiModel ?? "" },
                     set: { config.aiModel = $0.isEmpty ? nil : $0 }
                 ),
-                prompt: Text(config.aiProvider == "codex" ? "gpt-5.4" : "claude-sonnet-4-6")
+                prompt: Text({
+                    switch config.aiProvider {
+                    case "codex": return "gpt-5.4"
+                    case "ollama": return "gemma4:31b"
+                    default: return "claude-sonnet-4-6"
+                    }
+                }())
             )
 
             TextField(
@@ -341,6 +348,18 @@ struct GeneralSettings: View {
                     }
                 }
                 .help("Override auto-detection. Run 'which codex' in terminal to find the path.")
+            }
+
+            if config.aiProvider == "ollama" {
+                TextField(
+                    "Ollama URL",
+                    text: Binding(
+                        get: { config.ollamaURL ?? "" },
+                        set: { config.ollamaURL = $0.isEmpty ? nil : $0 }
+                    ),
+                    prompt: Text("http://localhost:11434")
+                )
+                .help("Ollama server address. Leave empty for default (http://localhost:11434).")
             }
 
             HStack {

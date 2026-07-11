@@ -21,6 +21,7 @@ final class ConfigService {
     var aiProvider: String?
     var claudePath: String?
     var codexPath: String?
+    var ollamaURL: String?
     var calendarEnabled: Bool = false
     var calendarSyncDaysAhead: Int = 2
     var jiraFeatures: [String: Bool] = [:]
@@ -90,6 +91,7 @@ final class ConfigService {
 
             claudePath = yaml["claude_path"] as? String
             codexPath = yaml["codex_path"] as? String
+            ollamaURL = yaml["ollama_url"] as? String
 
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? false
@@ -174,6 +176,9 @@ final class ConfigService {
 
         // Codex path override
         if let val = codexPath, !val.isEmpty { yaml["codex_path"] = val } else { yaml.removeValue(forKey: "codex_path") }
+
+        // Ollama URL override
+        if let val = ollamaURL, !val.isEmpty { yaml["ollama_url"] = val } else { yaml.removeValue(forKey: "ollama_url") }
 
         let output = try Yams.dump(object: yaml, allowUnicode: true)
 

@@ -22,7 +22,7 @@ type AIConfig struct {
 	Model         string `mapstructure:"model"`
 	ContextBudget int    `mapstructure:"context_budget"`
 	Workers       int    `mapstructure:"workers"`  // max parallel LLM calls across all pipelines
-	Provider      string `mapstructure:"provider"` // "claude" (default) | "codex"
+	Provider      string `mapstructure:"provider"` // "claude" (default) | "codex" | "ollama"
 }
 
 type SyncConfig struct {
@@ -150,6 +150,7 @@ type Config struct {
 	DB              DBConfig                    `mapstructure:"db"`
 	ClaudePath      string                      `mapstructure:"claude_path"`
 	CodexPath       string                      `mapstructure:"codex_path"`
+	OllamaURL       string                      `mapstructure:"ollama_url"`
 }
 
 // DBConfig captures database-runtime state that the binary tracks across

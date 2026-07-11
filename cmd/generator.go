@@ -8,6 +8,7 @@ import (
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
+	"watchtower/internal/ollama"
 	"watchtower/internal/sessions"
 )
 
@@ -19,12 +20,20 @@ func validateModel(_ *config.Config) error {
 }
 
 // cliGenerator creates a bare Generator for one-off CLI commands.
-// Selects Claude or Codex based on cfg.AI.Provider.
+// Selects Claude, Codex, or Ollama based on cfg.AI.Provider.
 func cliGenerator(cfg *config.Config) digest.Generator {
-	if cfg.AI.Provider == "codex" {
+	switch cfg.AI.Provider {
+	case "codex":
 		return codex.NewCodexGenerator(codex.ModelDefault, cfg.CodexPath)
+	case "ollama":
+		model := cfg.AI.Model
+		if model == "" || model == config.DefaultAIModel {
+			model = config.DefaultOllamaModel
+		}
+		return ollama.NewGenerator(model, cfg.OllamaURL)
+	default:
+		return digest.NewClaudeGenerator(digest.ModelSonnet, cfg.ClaudePath)
 	}
-	return digest.NewClaudeGenerator(digest.ModelSonnet, cfg.ClaudePath)
 }
 
 // cliPooledGenerator creates a PooledGenerator backed by a concurrency pool.
@@ -47,16 +56,24 @@ func cliPooledGenerator(cfg *config.Config, logger *log.Logger) (digest.Generato
 }
 
 // newAIClient creates an ai.Provider for ask/chat commands.
-// Selects Claude or Codex based on cfg.AI.Provider.
+// Selects Claude, Codex, or Ollama based on cfg.AI.Provider.
 func newAIClient(cfg *config.Config, dbPath string) ai.Provider {
-	if cfg.AI.Provider == "codex" {
+	switch cfg.AI.Provider {
+	case "codex":
 		model := cfg.AI.Model
 		if model == "" || model == config.DefaultAIModel {
 			model = codex.ModelDefault
 		}
 		return codex.NewClient(model, dbPath, cfg.CodexPath)
+	case "ollama":
+		model := cfg.AI.Model
+		if model == "" || model == config.DefaultAIModel {
+			model = config.DefaultOllamaModel
+		}
+		return ollama.NewClient(model, cfg.OllamaURL)
+	default:
+		return ai.NewClient(cfg.AI.Model, dbPath, cfg.ClaudePath)
 	}
-	return ai.NewClient(cfg.AI.Model, dbPath, cfg.ClaudePath)
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.

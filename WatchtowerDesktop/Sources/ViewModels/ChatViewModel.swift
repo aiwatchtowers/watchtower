@@ -18,6 +18,7 @@ struct ChatMessage: Identifiable, Equatable {
 enum AIProvider: String, CaseIterable, Identifiable {
     case claude
     case codex
+    case ollama
 
     var id: String { rawValue }
 
@@ -25,6 +26,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .claude: "Claude"
         case .codex: "Codex"
+        case .ollama: "Ollama"
         }
     }
 }
@@ -38,6 +40,9 @@ enum ChatModel: String, CaseIterable, Identifiable {
     case gpt54 = "gpt-5.4"
     case gpt54mini = "gpt-5.4-mini"
     case gpt53codex = "gpt-5.3-codex"
+    // Ollama
+    case gemma4 = "gemma4:31b"
+    case gemma4_12b = "gemma4:12b"
 
     var id: String { rawValue }
 
@@ -45,6 +50,7 @@ enum ChatModel: String, CaseIterable, Identifiable {
         switch self {
         case .sonnet, .haiku, .opus: .claude
         case .gpt54, .gpt54mini, .gpt53codex: .codex
+        case .gemma4, .gemma4_12b: .ollama
         }
     }
 
@@ -56,6 +62,8 @@ enum ChatModel: String, CaseIterable, Identifiable {
         case .gpt54: "GPT-5.4"
         case .gpt54mini: "GPT-5.4 Mini"
         case .gpt53codex: "GPT-5.3 Codex"
+        case .gemma4: "Gemma 4 31B"
+        case .gemma4_12b: "Gemma 4 12B"
         }
     }
 
@@ -67,6 +75,7 @@ enum ChatModel: String, CaseIterable, Identifiable {
         switch provider {
         case .claude: .sonnet
         case .codex: .gpt54
+        case .ollama: .gemma4
         }
     }
 }
