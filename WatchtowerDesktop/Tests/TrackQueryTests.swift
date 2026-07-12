@@ -202,4 +202,28 @@ final class TrackQueryTests: XCTestCase {
         let uid = try db.read { try TrackQueries.fetchCurrentUserID($0) }
         XCTAssertEqual(uid, "U123")
     }
+
+    // MARK: - fetchLatestCustom (dashboard create-track conversion, DASH-03)
+
+    func testFetchLatestCustomReturnsNewestCustomTrack() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'")
+            try TestDatabase.insertTrack(db, text: "Auto track")
+            try db.execute(sql: "INSERT INTO tracks (text, origin) VALUES ('Older custom', 'custom')")
+            try db.execute(sql: "INSERT INTO tracks (text, origin) VALUES ('Newer custom', 'custom')")
+        }
+        let latest = try db.read { try TrackQueries.fetchLatestCustom($0) }
+        XCTAssertEqual(latest?.text, "Newer custom")
+    }
+
+    func testFetchLatestCustomReturnsNilWhenNoneCustom() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'")
+            try TestDatabase.insertTrack(db, text: "Auto track")
+        }
+        let latest = try db.read { try TrackQueries.fetchLatestCustom($0) }
+        XCTAssertNil(latest)
+    }
 }

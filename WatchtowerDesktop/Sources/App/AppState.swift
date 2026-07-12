@@ -7,7 +7,7 @@ import SwiftUI
 final class AppState {
     private static let logger = Logger(subsystem: Constants.bundleID, category: "AppState")
 
-    var selectedDestination: SidebarDestination = .chat
+    var selectedDestination: SidebarDestination = .inbox
     var databaseManager: DatabaseManager?
     var errorMessage: String?
     var isDBAvailable: Bool { databaseManager != nil }
@@ -30,6 +30,11 @@ final class AppState {
     /// indicator survives navigating away from a track's detail.
     let trackScanCenter = TrackScanCenter()
 
+    /// App-wide, single-slot registry for the "Extract with AI" target
+    /// extraction call, so its state survives the New Target sheet being
+    /// closed mid-extraction.
+    let targetExtractCenter = TargetExtractCenter()
+
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?
@@ -42,6 +47,21 @@ final class AppState {
 
     /// Catch-Up ViewModel — persists across tab switches.
     private(set) var catchUpViewModel: CatchUpViewModel?
+
+    /// Dashboard ViewModel — persists across tab switches so an in-flight
+    /// "Generate" run (and its `isGenerating` flag) survives navigating away
+    /// from and back to the Dashboard tab, instead of being orphaned when a
+    /// view-local instance was torn down.
+    private(set) var dashboardViewModel: DashboardViewModel?
+
+    /// Feed ViewModel — persists across tab switches so filters and
+    /// selection survive navigating away from and back to the feed.
+    private(set) var feedViewModel: FeedViewModel?
+
+    /// Secretary Profile ViewModel — persists across tab switches so an
+    /// in-flight "Generate" style-sample run survives navigating away from
+    /// and back to the Profile tab.
+    private(set) var secretaryProfileViewModel: SecretaryProfileViewModel?
 
     /// Sidebar badge counts — created during initialize() before the splash hides,
     /// so badges are visible the moment the main UI appears.
@@ -227,6 +247,8 @@ final class AppState {
                 initCalendar(dbPool: manager.dbPool)
                 initDayPlan(dbPool: manager.dbPool)
                 initCatchUp(dbPool: manager.dbPool)
+                initDashboard(dbManager: manager)
+                initSecretaryProfile(dbManager: manager)
                 startDigestWatcher(dbPool: manager.dbPool)
                 if UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey) {
                     startMobileHub()
@@ -411,6 +433,25 @@ final class AppState {
             // here, not in the service.
             UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey)
         }
+    }
+
+    /// Not marked `private` (unlike its siblings above) so XCTest can call it directly via
+    /// `@testable import` to prove `dashboardViewModel` identity persists across accesses,
+    /// without going through the real-filesystem/CLI-subprocess machinery in `initialize()`.
+    func initDashboard(dbManager: DatabaseManager) {
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.startObserving()
+        dashboardViewModel = vm
+        let feedVM = FeedViewModel(dbManager: dbManager)
+        feedVM.startObserving()
+        feedViewModel = feedVM
+    }
+
+    /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it
+    /// directly via `@testable import` to prove `secretaryProfileViewModel`
+    /// identity persists across accesses.
+    func initSecretaryProfile(dbManager: DatabaseManager) {
+        secretaryProfileViewModel = SecretaryProfileViewModel(dbManager: dbManager)
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

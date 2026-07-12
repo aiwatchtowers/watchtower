@@ -96,6 +96,36 @@ func (db *DB) SetSearchLastDate(date string) error {
 	return nil
 }
 
+// GetComposeLastRunTS returns the last processed timestamp for the situation composer.
+func (db *DB) GetComposeLastRunTS() (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT COALESCE(compose_last_run_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	if err != nil {
+		return 0, fmt.Errorf("getting compose last run ts: %w", err)
+	}
+	return ts, nil
+}
+
+// SetComposeLastRunTS updates the last processed timestamp for the situation composer.
+func (db *DB) SetComposeLastRunTS(ts float64) error {
+	return setComposeLastRunTSOn(db, ts)
+}
+
+// SetComposeLastRunTSTx is the transactional variant of SetComposeLastRunTS,
+// for callers (the compose apply loop) that need the watermark advance to
+// commit atomically with the rest of that pass's mutations (DASH-02).
+func (db *DB) SetComposeLastRunTSTx(tx *sql.Tx, ts float64) error {
+	return setComposeLastRunTSOn(tx, ts)
+}
+
+func setComposeLastRunTSOn(q situationsExecer, ts float64) error {
+	_, err := q.Exec(`UPDATE workspace SET compose_last_run_ts = ?`, ts)
+	if err != nil {
+		return fmt.Errorf("setting compose last run ts: %w", err)
+	}
+	return nil
+}
+
 // GetSecretaryProfile returns the user-written secretary brief text.
 func (db *DB) GetSecretaryProfile() (string, error) {
 	var s string
@@ -114,6 +144,34 @@ func (db *DB) SetSecretaryProfile(text string) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("setting secretary_profile: no workspace row exists")
+	}
+	return nil
+}
+
+// GetStyleProfile returns the stored communication style profile text.
+func (db *DB) GetStyleProfile() (string, error) {
+	var s string
+	err := db.QueryRow(`SELECT style_profile FROM workspace LIMIT 1`).Scan(&s)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting style_profile: %w", err)
+	}
+	return s, nil
+}
+
+// SetStyleProfile stores the communication style profile and stamps its
+// generation/edit time.
+func (db *DB) SetStyleProfile(text string) error {
+	res, err := db.Exec(`UPDATE workspace SET style_profile = ?,
+		style_profile_updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = (SELECT id FROM workspace LIMIT 1)`, text)
+	if err != nil {
+		return fmt.Errorf("setting style_profile: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting style_profile: no workspace row exists")
 	}
 	return nil
 }

@@ -34,14 +34,6 @@ struct InboxCardView: View {
 
     @State private var didCopyDraft = false
 
-    // MARK: - Snooze Options
-
-    enum SnoozeOption {
-        case oneHour
-        case tillTomorrow
-        case tillMonday
-    }
-
     // MARK: - Body
 
     var body: some View {

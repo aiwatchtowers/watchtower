@@ -31,8 +31,11 @@ func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinc
 	sinceISO := sinceTS.UTC().Format(time.RFC3339)
 
 	// --- jira_assigned: issues assigned to me updated since sinceTS ---
-	// Collect all candidates first, then close rows before running dedup queries.
-	// This avoids a deadlock on in-memory SQLite with MaxOpenConns(1).
+	// Collect all candidates first; the loop below fully drains rows (Next
+	// returns false), which auto-closes it before the dedup queries below run.
+	// This avoids a deadlock on in-memory SQLite with MaxOpenConns(1). The
+	// deferred Close is just a safety net for the scan/rows-error paths, which
+	// return immediately without issuing further queries.
 	type jiraCandidate struct {
 		key, summary, updatedAt string
 	}
@@ -47,19 +50,17 @@ func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinc
 	if err != nil {
 		return created, fmt.Errorf("jira detector: query jira_issues: %w", err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var c jiraCandidate
 		if err := rows.Scan(&c.key, &c.summary, &c.updatedAt); err != nil {
-			rows.Close() //nolint:errcheck
 			return created, fmt.Errorf("jira detector: scan jira_issues: %w", err)
 		}
 		assignedCandidates = append(assignedCandidates, c)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close() //nolint:errcheck
 		return created, fmt.Errorf("jira detector: rows error: %w", err)
 	}
-	rows.Close() //nolint:errcheck
 
 	for _, c := range assignedCandidates {
 		if jiraInboxExists(database, c.key, c.updatedAt, "jira_assigned") {
@@ -85,29 +86,9 @@ func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinc
 	// the Jira sync extension or by tests. We check for its existence at runtime and
 	// skip gracefully if it is absent.
 	if jiraCommentsTableExists(database) {
-		type commentCandidate struct {
-			issueKey, commentID, body, createdAt string
-		}
-		var commentCandidates []commentCandidate
 		// Look for comments that mention ~currentUserID in the body.
 		mentionPattern := "%[~" + currentUserID + "]%"
-		cRows, err := database.Query(`
-			SELECT issue_key, id, body, created_at
-			FROM jira_comments
-			WHERE body LIKE ?
-			  AND created_at > ?`,
-			mentionPattern, sinceISO)
-		if err == nil {
-			for cRows.Next() {
-				var c commentCandidate
-				if scanErr := cRows.Scan(&c.issueKey, &c.commentID, &c.body, &c.createdAt); scanErr != nil {
-					cRows.Close() //nolint:errcheck
-					break
-				}
-				commentCandidates = append(commentCandidates, c)
-			}
-			cRows.Close() //nolint:errcheck
-		}
+		commentCandidates := collectJiraCommentCandidates(database, mentionPattern, sinceISO)
 		for _, c := range commentCandidates {
 			if jiraInboxExists(database, c.issueKey, c.createdAt, "jira_comment_mention") {
 				continue
@@ -149,6 +130,39 @@ func jiraCommentsTableExists(d *db.DB) bool {
 	var n int
 	d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='jira_comments'`).Scan(&n) //nolint:errcheck
 	return n > 0
+}
+
+type commentCandidate struct {
+	issueKey, commentID, body, createdAt string
+}
+
+// collectJiraCommentCandidates queries jira_comments for the given mention
+// pattern and returns fully-scanned candidates, best-effort (query or scan
+// errors just yield fewer/no candidates rather than failing the detector).
+// The rows are closed via defer scoped to this helper, so they are released
+// before the caller issues any further queries — required to avoid a
+// deadlock on the MaxOpenConns(1) SQLite pool.
+func collectJiraCommentCandidates(database *db.DB, mentionPattern, sinceISO string) []commentCandidate {
+	cRows, err := database.Query(`
+		SELECT issue_key, id, body, created_at
+		FROM jira_comments
+		WHERE body LIKE ?
+		  AND created_at > ?`,
+		mentionPattern, sinceISO)
+	if err != nil {
+		return nil
+	}
+	defer cRows.Close()
+
+	var candidates []commentCandidate
+	for cRows.Next() {
+		var c commentCandidate
+		if scanErr := cRows.Scan(&c.issueKey, &c.commentID, &c.body, &c.createdAt); scanErr != nil {
+			break
+		}
+		candidates = append(candidates, c)
+	}
+	return candidates
 }
 
 // jiraInboxExists returns true if an inbox_item already exists for the given

@@ -25,6 +25,7 @@ const (
 	DefaultInboxLookbackDays      = 7
 	DefaultInboxMaxTriageMessages = 600
 	DefaultInboxMaxAwarenessCards = 3
+	DefaultFeedMeetingLeadMinutes = 30
 	DefaultTracksMinMsgs          = 3
 	DefaultBatchMaxChannels       = 20
 	DefaultBatchMaxMessages       = 1500
@@ -66,6 +67,10 @@ const (
 	DefaultTargetsResolverJiraEnabled         = true
 	DefaultTargetsResolverMCPTimeoutSeconds   = 10
 	DefaultTargetsResolverActiveSnapshotLimit = 100
+
+	// Dashboard (situation composer) defaults
+	DefaultDashboardStaleAfterDays    = 7
+	DefaultDashboardMaxComposeSignals = 200
 )
 
 // RoleDisplayNames maps role keys to human-readable display names.

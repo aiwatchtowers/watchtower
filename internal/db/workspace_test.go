@@ -106,3 +106,51 @@ func TestSecretaryProfileRoundTrip(t *testing.T) {
 		t.Fatalf("round trip failed: %q", got)
 	}
 }
+
+func TestStyleProfileRoundTrip(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	ws := Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"}
+	if err := db.UpsertWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := db.GetStyleProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "" {
+		t.Errorf("fresh style_profile = %q, want empty", s)
+	}
+
+	if err := db.SetStyleProfile("terse, RU with team"); err != nil {
+		t.Fatal(err)
+	}
+	s, err = db.GetStyleProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "terse, RU with team" {
+		t.Errorf("style_profile = %q", s)
+	}
+
+	var ts string
+	if err := db.QueryRow(`SELECT style_profile_updated_at FROM workspace LIMIT 1`).Scan(&ts); err != nil {
+		t.Fatal(err)
+	}
+	if ts == "" {
+		t.Error("style_profile_updated_at not stamped by SetStyleProfile")
+	}
+}
+
+func TestSetStyleProfileNoWorkspaceRowErrors(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	if err := db.SetStyleProfile("x"); err == nil {
+		t.Error("SetStyleProfile must error when no workspace row exists (mirrors SetSecretaryProfile)")
+	}
+}

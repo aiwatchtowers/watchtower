@@ -63,6 +63,7 @@ func DetectWatchtowerInternal(_ context.Context, database *db.DB, sinceTS time.T
 	if err != nil {
 		return 0, fmt.Errorf("watchtower detector query digests: %w", err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var digestID int64
 		var channelID, situations string
@@ -84,10 +85,8 @@ func DetectWatchtowerInternal(_ context.Context, database *db.DB, sinceTS time.T
 		}
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return 0, fmt.Errorf("watchtower detector iterate digests: %w", err)
 	}
-	rows.Close()
 
 	// Phase 2: collect new briefings.
 	var briefings []pendingBriefing
@@ -98,6 +97,7 @@ func DetectWatchtowerInternal(_ context.Context, database *db.DB, sinceTS time.T
 	if err != nil {
 		return 0, fmt.Errorf("watchtower detector query briefings: %w", err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var briefingID int64
 		var date string
@@ -110,10 +110,8 @@ func DetectWatchtowerInternal(_ context.Context, database *db.DB, sinceTS time.T
 		})
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return 0, fmt.Errorf("watchtower detector iterate briefings: %w", err)
 	}
-	rows.Close()
 
 	// Phase 3: dedup-check and create inbox items (rows fully closed above).
 	created := 0

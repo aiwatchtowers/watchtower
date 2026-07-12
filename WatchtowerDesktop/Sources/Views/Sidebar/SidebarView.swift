@@ -44,8 +44,8 @@ struct SidebarView: View {
     private var recommendationCount: Int { counts?.recommendationCount ?? 0 }
     private var activeTaskCount: Int { counts?.activeTaskCount ?? 0 }
     private var overdueTaskCount: Int { counts?.overdueTaskCount ?? 0 }
-    private var inboxPendingCount: Int { counts?.inboxPendingCount ?? 0 }
     private var inboxHighPriorityCount: Int { counts?.inboxHighPriorityCount ?? 0 }
+    private var situationsCount: Int { counts?.situationsCount ?? 0 }
     private var catchUpTotalCount: Int { counts?.catchUpTotalCount ?? 0 }
 
     var body: some View {
@@ -206,7 +206,7 @@ struct SidebarView: View {
         switch item {
         case .catchUp: catchUpTotalCount
         case .briefings: unreadBriefingCount
-        case .inbox: inboxPendingCount
+        case .inbox: situationsCount
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
         case .tracks: updatedTrackCount
         case .digests: unreadDigestCount
