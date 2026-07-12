@@ -221,7 +221,7 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 **Jira:** Connect/disconnect Jira Cloud via OAuth. Boards selection with toggle switches. Board Profiles — workflow visualization (stage chain), stale threshold sliders, Re-analyze button, health signals, iteration info. User Mapping — matched/unmatched table with manual mapping dropdown. Sync status (last sync time, manual sync button). Jira Features — toggle switches organized by category (Your Work, Team Visibility, Product & Strategy, Automation). Defaults are set by user role on first connection; any toggle can be changed at any time. Jira key patterns (PROJ-123) in Slack messages are automatically detected and linked to issues.
 **Profile:** Your role, team, manager, reports, peers, starred channels/people.
 **Notifications:** Decision alerts, daily summaries, quiet hours.
-**Mobile:** Enable/disable mobile sync — mirrors briefings, inbox, tasks, tracks, digests, calendar, and people cards to the Watchtower iOS app via private iCloud (CloudKit), and relays mobile actions and chat back to this Mac. Shows hub status (running / unavailable with reason / off); while unavailable, the hub re-probes iCloud every 10 minutes and starts automatically once it returns (e.g. after signing back in to iCloud). Requires an iCloud account and a signed build with iCloud entitlements.
+**Mobile:** Enable/disable mobile sync — mirrors briefings, situations, inbox signals, tasks, tracks, digests, calendar, and people cards to the Watchtower iOS app via private iCloud (CloudKit), and relays mobile actions and chat back to this Mac. Shows hub status (running / unavailable with reason / off); while unavailable, the hub re-probes iCloud every 10 minutes and starts automatically once it returns (e.g. after signing back in to iCloud). Requires an iCloud account and a signed build with iCloud entitlements.
 **Daemon:** Start/stop the background sync daemon, view status.
 **Training:** Prompt editor, feedback stats, tuning.
 **Logs:** Live daemon logs with filtering.
@@ -230,6 +230,10 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 ## Mobile App
 
 The Watchtower iOS app mirrors your data from this Mac (see the Mobile setting above) and normally relays chat questions back here for the desktop AI to answer.
+
+### Inbox (phone)
+
+The phone's Inbox tab is the same secretary dashboard as the desktop's: a ranked feed of **situations** (not raw signals), each opening into a review screen with the secretary card (why it matters / summary / chronology) and the member-signal bubbles behind it. Swipe a situation for **Done** / **Dismiss**, or swipe the other way to **Snooze**; when the secretary has marked a situation "looks resolved", the review screen offers **Done / Keep open** (DASH-07). Actions are queued through the mobile relay and applied by this Mac — rows show a "pending" chip until the desktop confirms. Only open situations sync; closing one on either device removes it from the phone.
 
 ### Sync transport
 

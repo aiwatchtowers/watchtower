@@ -70,7 +70,7 @@ final class RowPayloadCoderTests: XCTestCase {
     func testAllSliceKindRawValuesAreFrozen() {
         XCTAssertEqual(
             SliceKind.allCases.map(\.rawValue),
-            ["briefing", "inbox_item", "target", "track", "digest", "digest_topic", "calendar_event", "person_card"]
+            ["briefing", "inbox_item", "target", "track", "digest", "digest_topic", "calendar_event", "person_card", "situation"]
         )
     }
 

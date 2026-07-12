@@ -10,6 +10,10 @@ public enum ActionKind: String, Codable, CaseIterable {
     case inboxSnooze = "inbox_snooze"
     case taskCreate = "task_create"
     case trackRead = "track_read"
+    case situationDone = "situation_done"
+    case situationDismiss = "situation_dismiss"
+    case situationSnooze = "situation_snooze"
+    case situationKeepOpen = "situation_keep_open"
 }
 
 public enum ActionStatus: String, Codable {

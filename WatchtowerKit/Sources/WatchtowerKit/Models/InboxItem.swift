@@ -165,6 +165,12 @@ public struct InboxItem: FetchableRecord, Identifiable, Equatable {
         case "dm": return "envelope"
         case "thread_reply": return "arrowshape.turn.up.left"
         case "reaction": return "hand.thumbsup"
+        case "jira_assigned", "jira_comment_mention", "jira_comment_watching",
+             "jira_status_change", "jira_priority_change": return "checkmark.rectangle.stack"
+        case "calendar_invite", "calendar_time_change", "calendar_cancelled": return "calendar"
+        case "email_received", "email_cc": return "envelope.badge"
+        case "target_due": return "target"
+        case "decision_made", "briefing_ready": return "sparkles"
         default: return "tray"
         }
     }

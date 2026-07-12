@@ -139,23 +139,24 @@ enum PendingOverlay {
     /// status-shaped outcome, so its chip is never suppressed.
     static func outcomeStatus(of kind: ActionKind) -> String? {
         switch kind {
-        case .targetDone: return "done"
-        case .targetSnooze, .inboxSnooze: return "snoozed"
+        case .targetDone, .situationDone: return "done"
+        case .targetSnooze, .inboxSnooze, .situationSnooze: return "snoozed"
         case .inboxResolve: return "resolved"
-        case .inboxDismiss: return "dismissed"
-        case .taskCreate, .trackRead: return nil
+        case .inboxDismiss, .situationDismiss: return "dismissed"
+        case .taskCreate, .trackRead, .situationKeepOpen: return nil
         }
     }
 
     /// Short human label for an action kind (failed-action banner copy).
     static func label(of kind: ActionKind) -> String {
         switch kind {
-        case .targetDone: return "Mark done"
-        case .targetSnooze, .inboxSnooze: return "Snooze"
+        case .targetDone, .situationDone: return "Mark done"
+        case .targetSnooze, .inboxSnooze, .situationSnooze: return "Snooze"
         case .inboxResolve: return "Resolve"
-        case .inboxDismiss: return "Dismiss"
+        case .inboxDismiss, .situationDismiss: return "Dismiss"
         case .taskCreate: return "Create task"
         case .trackRead: return "Mark read"
+        case .situationKeepOpen: return "Keep open"
         }
     }
 
