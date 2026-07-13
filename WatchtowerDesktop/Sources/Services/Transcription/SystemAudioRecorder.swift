@@ -3,10 +3,12 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 
-/// Captures microphone + system audio into a single 16 kHz mono AAC file
-/// without any virtual audio device (no BlackHole): a CoreAudio process tap
-/// grabs the system output, and a private aggregate device combines it with
-/// the default input so ONE IOProc delivers both streams clock-aligned.
+/// Captures microphone + system audio into a single 16 kHz mono AAC file in a
+/// CAF container (crash-tolerant: CAF needs no header finalization, so a file
+/// cut off mid-recording stays decodable) without any virtual audio device
+/// (no BlackHole): a CoreAudio process tap grabs the system output, and a
+/// private aggregate device combines it with the default input so ONE IOProc
+/// delivers both streams clock-aligned.
 ///
 /// The class itself is not availability-gated so callers can hold/construct it
 /// unconditionally; `start` throws `.unsupportedOS` below macOS 14.4 (the tap
@@ -48,6 +50,11 @@ private final class TapRecorderImpl {
     private var deviceFormat: AVAudioFormat?
     private var fileURL: URL?
     private var framesWritten: Int64 = 0
+    /// First converter/allocation/write error, latched on `writeQueue`. Once
+    /// set, no further buffers are written and `stop()` throws `.writeFailed`
+    /// so a silently truncated recording never reports success. The partial
+    /// file up to the error stays on disk.
+    private var firstWriteError: Error?
 
     /// Serial queue owning file writes and converter state; the realtime IO
     /// block only copies + mixes samples and hops here for everything else.
@@ -80,7 +87,7 @@ private final class TapRecorderImpl {
             throw error
         }
 
-        // 4. Output file: 16 kHz mono AAC, fed with float32 PCM.
+        // 4. Output file: 16 kHz mono AAC in a CAF container, fed with float32 PCM.
         do {
             try openOutputFile(url: url)
         } catch {
@@ -120,14 +127,19 @@ private final class TapRecorderImpl {
         }
         teardownDevices()
         // Barrier on the write queue so in-flight buffers land before closing.
-        let (frames, url): (Int64, URL?) = writeQueue.sync {
-            let result = (framesWritten, fileURL)
-            audioFile = nil // deallocating AVAudioFile finalizes the container
+        let (frames, url, writeError): (Int64, URL?, Error?) = writeQueue.sync {
+            let result = (framesWritten, fileURL, firstWriteError)
+            audioFile = nil // deallocating AVAudioFile closes the file
             converter = nil
             return result
         }
         guard let audioURL = url else {
             throw AudioRecordingError.deviceSetupFailed("no file was open")
+        }
+        if let writeError {
+            // The truncated file stays on disk for whatever it still holds,
+            // but a cut-short recording must not be reported as a success.
+            throw AudioRecordingError.writeFailed(writeError.localizedDescription)
         }
         let duration = Int(Double(frames) / Self.outputSampleRate)
         return RecordingResult(audioURL: audioURL, durationSec: duration)
@@ -155,6 +167,11 @@ private final class TapRecorderImpl {
             guard let data = buffer.mData else { return 0 }
             let channels = Int(buffer.mNumberChannels)
             guard channels > 0 else { return 0 }
+            // Bound every read by THIS buffer's own mDataByteSize: an
+            // off-contract buffer shorter than buffer 0 reads as silence
+            // past its end instead of out of bounds.
+            let frameCapacity = Int(buffer.mDataByteSize) / (channels * MemoryLayout<Float>.size)
+            guard frame < frameCapacity else { return 0 }
             let samples = data.assumingMemoryBound(to: Float.self)
             var sum: Float = 0
             for ch in 0..<channels {
@@ -189,11 +206,17 @@ private final class TapRecorderImpl {
     }
 
     /// Runs on writeQueue (the IO block is scheduled there by CoreAudio).
+    /// The first converter/allocation/write error is latched into
+    /// `firstWriteError`; every buffer after it is dropped, and `stop()`
+    /// surfaces the error instead of reporting a truncated success.
     private func appendDownsampled(_ buffer: AVAudioPCMBuffer) {
-        guard let converter, let audioFile else { return }
+        guard firstWriteError == nil, let converter, let audioFile else { return }
         let ratio = Self.outputSampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up) + 16)
-        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else { return }
+        guard let outBuffer = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else {
+            firstWriteError = AudioRecordingError.deviceSetupFailed("allocating conversion buffer")
+            return
+        }
 
         var consumed = false
         var conversionError: NSError?
@@ -206,14 +229,18 @@ private final class TapRecorderImpl {
             outStatus.pointee = .haveData
             return buffer
         }
-        guard conversionError == nil, outBuffer.frameLength > 0 else { return }
+        if let conversionError {
+            firstWriteError = conversionError
+            return
+        }
+        guard outBuffer.frameLength > 0 else { return }
         do {
             try audioFile.write(from: outBuffer)
             framesWritten += Int64(outBuffer.frameLength)
         } catch {
             // Disk-full/IO error: stop accumulating silently corrupt data; the
-            // partial file up to here remains playable after stop().
-            self.audioFile = nil
+            // partial file up to here remains decodable (CAF) after stop().
+            firstWriteError = error
         }
     }
 
@@ -248,10 +275,12 @@ private final class TapRecorderImpl {
         return newAggregateID
     }
 
-    /// Opens the 16 kHz mono AAC output file plus the device-rate → 16 kHz
-    /// converter. Sets `audioFile`/`converter`/`deviceFormat` only after every
-    /// step succeeds, so on throw no partial state is left behind; the caller
-    /// owns device/tap teardown.
+    /// Opens the 16 kHz mono AAC output file (CAF container — `AVAudioFile`
+    /// infers it from the `.caf` URL extension; no header finalization, so an
+    /// app crash mid-recording leaves a decodable file) plus the device-rate →
+    /// 16 kHz converter. Sets `audioFile`/`converter`/`deviceFormat` only after
+    /// every step succeeds, so on throw no partial state is left behind; the
+    /// caller owns device/tap teardown.
     private func openOutputFile(url: URL) throws {
         let sampleRate = Self.nominalSampleRate(of: aggregateID)
         guard let monoDeviceFormat = AVAudioFormat(

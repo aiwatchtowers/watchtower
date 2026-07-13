@@ -22,7 +22,9 @@ extension NotificationService: MeetingTranscriptNotifying {}
 ///
 /// The audio file is preserved on disk through every downstream failure, and its
 /// path is mirrored to `UserDefaults` so a recording captured before a crash can
-/// be re-transcribed after relaunch (`restorePendingOnLaunch`).
+/// be re-transcribed after relaunch (`restorePendingOnLaunch`). Once transcription
+/// succeeds the transcript is also persisted next to the audio until the save
+/// lands, so retrying a failed save never re-transcribes.
 @MainActor
 @Observable
 final class MeetingRecorderCenter {
@@ -60,6 +62,7 @@ final class MeetingRecorderCenter {
     private let recorderFactory: () -> AudioRecording
     private let engineFactory: (TranscriptionConfig) async throws -> TranscriptionEngine
     private let decode: (URL) throws -> [Float]
+    private let runnerResolver: () -> CLIRunnerProtocol?
     private let notifier: MeetingTranscriptNotifying
     private let defaults: UserDefaults
 
@@ -70,16 +73,23 @@ final class MeetingRecorderCenter {
     /// `engineFactory`: `AudioFileDecoder.decodePCM16k` drives `AVAudioConverter`,
     /// which cannot run under `swift test` (headless CoreAudio), so tests feed
     /// samples directly instead of a real audio file.
+    ///
+    /// `runnerResolver` is consulted only at the save step — stopping capture,
+    /// finalizing the audio file, and transcribing must never depend on the
+    /// `watchtower` CLI being locatable; a nil resolution fails visibly with
+    /// the audio (and persisted transcript) kept for retry.
     init(
         recorderFactory: @escaping () -> AudioRecording = { SystemAudioRecorder() },
         engineFactory: @escaping (TranscriptionConfig) async throws -> TranscriptionEngine = MeetingRecorderCenter.defaultEngineFactory,
         decode: @escaping (URL) throws -> [Float] = AudioFileDecoder.decodePCM16k(url:),
+        runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
         notifier: MeetingTranscriptNotifying = NotificationService.shared,
         defaults: UserDefaults = .standard
     ) {
         self.recorderFactory = recorderFactory
         self.engineFactory = engineFactory
         self.decode = decode
+        self.runnerResolver = runnerResolver
         self.notifier = notifier
         self.defaults = defaults
     }
@@ -111,7 +121,7 @@ final class MeetingRecorderCenter {
         do {
             let directory = Self.recordingsDirectory()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent("rec_\(Self.timestampComponent()).m4a")
+            let url = directory.appendingPathComponent("rec_\(Self.timestampComponent()).caf")
             defaults.set(url.path, forKey: Self.pendingAudioPathKey)
             try await recorder.start(to: url)
             pendingAudioURL = url
@@ -127,8 +137,10 @@ final class MeetingRecorderCenter {
     }
 
     /// Stops the active recording and runs transcription → save. No-op unless a
-    /// recording is in flight. The finalized audio is always preserved on disk.
-    func stopAndProcess(runner: CLIRunnerProtocol, config: TranscriptionConfig) async {
+    /// recording is in flight. The finalized audio is always preserved on disk,
+    /// and stopping capture never depends on the `watchtower` CLI resolving —
+    /// the runner is looked up only at the save step.
+    func stopAndProcess(config: TranscriptionConfig) async {
         guard case .recording = phase, let recorder else { return }
         self.recorder = nil
 
@@ -143,14 +155,26 @@ final class MeetingRecorderCenter {
 
         pendingAudioURL = result.audioURL
         defaults.set(result.audioURL.path, forKey: Self.pendingAudioPathKey)
-        await transcribeAndSave(audioURL: result.audioURL, runner: runner, config: config)
+        await transcribeAndSave(audioURL: result.audioURL, config: config)
     }
 
-    /// Re-runs transcription from `pendingAudioURL` after a failure or relaunch.
-    /// No-op when busy or when there is no pending audio.
-    func retryTranscription(runner: CLIRunnerProtocol, config: TranscriptionConfig) async {
+    /// Re-runs the pipeline from `pendingAudioURL` after a failure or relaunch.
+    /// When a persisted transcript from an earlier run (whose save failed) sits
+    /// next to the audio, decode + transcription are skipped and save is
+    /// re-invoked directly from it (spec §7). No-op when busy or when there is
+    /// no pending audio.
+    func retryTranscription(config: TranscriptionConfig) async {
         guard !isBusy, let url = pendingAudioURL else { return }
-        await transcribeAndSave(audioURL: url, runner: runner, config: config)
+        if let persisted = Self.loadPersistedTranscript(audioURL: url) {
+            await saveTranscript(
+                text: persisted.text,
+                durationSec: persisted.durationSec,
+                langStats: persisted.langStats,
+                audioURL: url
+            )
+            return
+        }
+        await transcribeAndSave(audioURL: url, config: config)
     }
 
     /// Points the Center at an existing audio file (re-transcribe from the UI).
@@ -184,7 +208,7 @@ final class MeetingRecorderCenter {
 
     // MARK: Pipeline
 
-    private func transcribeAndSave(audioURL: URL, runner: CLIRunnerProtocol, config: TranscriptionConfig) async {
+    private func transcribeAndSave(audioURL: URL, config: TranscriptionConfig) async {
         phase = .transcribing(done: 0, total: 0)
 
         let samples: [Float]
@@ -216,16 +240,37 @@ final class MeetingRecorderCenter {
             return
         }
 
+        let durationSec = samples.count / TranscriptionConfig.sampleRate
+        // Persist the transcript next to the audio so a failed save is retried
+        // from the file instead of paying for a full re-transcription (spec §7).
+        Self.persistTranscript(output, durationSec: durationSec, audioURL: audioURL)
+        await saveTranscript(
+            text: output.text,
+            durationSec: durationSec,
+            langStats: output.langStats,
+            audioURL: audioURL
+        )
+    }
+
+    /// Save step: the only place the `watchtower` CLI is needed. Resolves the
+    /// runner here — never earlier — so a missing CLI still leaves the recording
+    /// stopped, the audio finalized, and the transcript persisted for retry.
+    private func saveTranscript(text: String, durationSec: Int, langStats: [String: Int], audioURL: URL) async {
         phase = .summarizing
+        guard let runner = runnerResolver() else {
+            fail("watchtower CLI not found — the recording and transcript are kept for retry")
+            return
+        }
         do {
             let result = try await TranscriptSaveService(runner: runner).save(
-                transcriptText: output.text,
+                transcriptText: text,
                 audioPath: audioURL.path,
-                durationSec: samples.count / TranscriptionConfig.sampleRate,
+                durationSec: durationSec,
                 eventID: currentEventID,
                 title: currentTitle,
-                langStatsJSON: Self.encodeLangStats(output.langStats)
+                langStatsJSON: Self.encodeLangStats(langStats)
             )
+            Self.removePersistedTranscript(audioURL: audioURL)
             clearPending()
             phase = .idle
             let title = currentTitle ?? "Recording"
@@ -276,6 +321,59 @@ final class MeetingRecorderCenter {
     private func clearPending() {
         pendingAudioURL = nil
         defaults.removeObject(forKey: Self.pendingAudioPathKey)
+    }
+
+    // MARK: Transcript persistence (retry save without re-transcribing)
+
+    /// Transcript + metadata persisted next to the audio file (same basename,
+    /// `.txt`/`.json`) right after transcription succeeds, removed on a
+    /// successful save. While a save failure stands, retry re-invokes save
+    /// straight from these files instead of re-transcribing.
+    private struct PersistedTranscript {
+        let text: String
+        let durationSec: Int
+        let langStats: [String: Int]
+    }
+
+    /// Sidecar `.json` payload accompanying the persisted transcript text.
+    private struct PersistedTranscriptMeta: Codable {
+        let durationSec: Int
+        let langStats: [String: Int]
+    }
+
+    private static func transcriptTextURL(for audioURL: URL) -> URL {
+        audioURL.deletingPathExtension().appendingPathExtension("txt")
+    }
+
+    private static func transcriptMetaURL(for audioURL: URL) -> URL {
+        audioURL.deletingPathExtension().appendingPathExtension("json")
+    }
+
+    /// Best-effort: a persistence failure only means a later save retry pays
+    /// for a full re-transcription, so it is deliberately not surfaced.
+    private static func persistTranscript(_ output: TranscriptionOutput, durationSec: Int, audioURL: URL) {
+        try? output.text.write(to: transcriptTextURL(for: audioURL), atomically: true, encoding: .utf8)
+        let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: output.langStats)
+        if let data = try? JSONEncoder().encode(meta) {
+            try? data.write(to: transcriptMetaURL(for: audioURL), options: .atomic)
+        }
+    }
+
+    /// Both files must load cleanly (non-empty text + decodable metadata);
+    /// anything less falls back to full re-transcription.
+    private static func loadPersistedTranscript(audioURL: URL) -> PersistedTranscript? {
+        guard let text = try? String(contentsOf: transcriptTextURL(for: audioURL), encoding: .utf8),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let data = try? Data(contentsOf: transcriptMetaURL(for: audioURL)),
+              let meta = try? JSONDecoder().decode(PersistedTranscriptMeta.self, from: data) else {
+            return nil
+        }
+        return PersistedTranscript(text: text, durationSec: meta.durationSec, langStats: meta.langStats)
+    }
+
+    private static func removePersistedTranscript(audioURL: URL) {
+        try? FileManager.default.removeItem(at: transcriptTextURL(for: audioURL))
+        try? FileManager.default.removeItem(at: transcriptMetaURL(for: audioURL))
     }
 
     private static func encodeLangStats(_ stats: [String: Int]) -> String {

@@ -112,9 +112,11 @@ struct CalendarEventsView: View {
     }
 
     private func stopRecording() {
-        guard let runner = ProcessCLIRunner.makeDefault() else { return }
+        // No CLI-runner guard here: stopping capture must never depend on the
+        // watchtower binary resolving — the Center fails visibly at the save
+        // step instead, with the audio kept.
         Task {
-            await appState.meetingRecorderCenter.stopAndProcess(runner: runner, config: .fromDefaults())
+            await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
         }
     }
 

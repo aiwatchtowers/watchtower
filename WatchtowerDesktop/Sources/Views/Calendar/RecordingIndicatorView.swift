@@ -84,14 +84,16 @@ struct RecordingIndicatorView: View {
 
     // MARK: - Actions
 
+    // No CLI-runner guards here: stopping capture must never depend on the
+    // watchtower binary resolving — the Center fails visibly at the save step
+    // instead, with the audio kept.
+
     private func stop(_ center: MeetingRecorderCenter) {
-        guard let runner = ProcessCLIRunner.makeDefault() else { return }
-        Task { await center.stopAndProcess(runner: runner, config: .fromDefaults()) }
+        Task { await center.stopAndProcess(config: .fromDefaults()) }
     }
 
     private func retry(_ center: MeetingRecorderCenter) {
-        guard let runner = ProcessCLIRunner.makeDefault() else { return }
-        Task { await center.retryTranscription(runner: runner, config: .fromDefaults()) }
+        Task { await center.retryTranscription(config: .fromDefaults()) }
     }
 
     // MARK: - Helpers

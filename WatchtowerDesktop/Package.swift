@@ -12,7 +12,9 @@ let package = Package(
         // swift-markdown removed: MarkdownText uses Foundation's AttributedString(markdown:)
         .package(url: "https://github.com/jpsim/Yams", from: "5.0.0"),
         .package(url: "https://github.com/nalexn/ViewInspector", from: "0.10.0"),
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
+        // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
+        // (including the misspelled `detectLangauge(audioArray:)`).
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.18.0")),
     ],
     targets: [
         .executableTarget(
