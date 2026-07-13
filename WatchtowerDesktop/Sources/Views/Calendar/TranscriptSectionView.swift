@@ -41,8 +41,13 @@ struct TranscriptSectionView: View {
         }
         .onAppear(perform: load)
         .onChange(of: appState.meetingRecorderCenter.phase) { _, phase in
-            // A just-finished transcription lands as a new row once idle.
-            if case .idle = phase { load() }
+            // A just-finished transcription lands as a new row once idle — and
+            // its save may have generated the event's recap, so the host must
+            // refetch too (record → recap appears without reopening the event).
+            if case .idle = phase {
+                load()
+                onChanged()
+            }
         }
     }
 
@@ -50,6 +55,17 @@ struct TranscriptSectionView: View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) {
                 langBadges(transcript)
+
+                // A transcript saved while the event already had a recap keeps
+                // its own recap in summary_json (the Go guard never overwrites
+                // the event's) — surface it so it isn't invisible.
+                if let summary = transcript.parsedSummary?.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 ScrollView {
                     Text(transcript.transcriptText)
