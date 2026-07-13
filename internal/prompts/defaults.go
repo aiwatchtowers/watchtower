@@ -91,7 +91,7 @@ var DefaultVersions = map[string]int{
 	TasksGenerate:      1, // v1: AI task generation with checklist and due date
 	TasksUpdate:        1, // v1: AI task update from user instruction
 	MeetingPrep:        3, // v3: Jira context for attendees (workload, shared issues)
-	MeetingRecap:       1, // v1: initial meeting recap template
+	MeetingRecap:       2, // v2: cover transcript-sourced recaps
 	DayPlanGenerate:    2, // v2: mandatory language directive at top
 	TargetsExtract:     1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:        1, // v1: single-target link proposal against active snapshot
@@ -1033,7 +1033,7 @@ Rules:
 - priority is optional. Use "" when unclear. Use "high" only for explicit blockers or urgency signals.
 - Return an empty topics array if the text has no actionable content.`
 
-const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted.
+const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted, or on an automatic single-track audio transcript (speakers are not labeled; the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions).
 
 === EVENT ===
 Title: %s
