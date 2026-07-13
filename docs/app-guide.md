@@ -93,6 +93,18 @@ Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] 
 - `watchtower calendar select [calendar-id]` — toggle calendar selection for sync
 - `watchtower meeting-prep [event-id|next]` — generate AI meeting prep (flags: `--json`)
 
+**Meeting Recording & Transcripts** — Record a meeting's audio directly from the calendar and get a local transcript plus an AI recap attached to the event. Requires macOS 14.4+.
+
+- **Recording:** click "Record" on an event row (or the toolbar "Record" button for an ad-hoc recording not tied to an event). Captures your microphone AND system audio (other participants) natively — no virtual audio devices; headphones keep working normally. First use asks for two one-time permissions: Microphone and System Audio Recording.
+- **Global indicator:** while recording, a floating pill (bottom-right, visible from any tab) shows elapsed time and a Stop button. Recording survives navigating between tabs. After Stop it shows transcription progress (window N of M), then "Summarizing…".
+- **Transcription is fully local** (WhisperKit, on-device; the model downloads once on first use, ~1.5 GB for large-v3). Mixed ru/uk/en meetings are handled by per-window language detection with a sticky fallback. Only the transcript text is sent to the AI provider for the recap.
+- **Results:** the transcript appears in a collapsible "Transcript" section on the event (next to the recap); the recap itself is generated through the standard Meeting Recap flow. Ad-hoc recordings are listed in a "Recordings" section on the Calendar tab and can be linked to an event afterwards ("Link to event…").
+- **Failure handling:** the audio file is never lost — failed transcription or recap offers Retry; if the app quits mid-recording, the next launch offers to transcribe the recovered file.
+- **Retention:** audio files are auto-deleted after `transcripts.audio_retention_days` (default 30); transcripts are kept forever.
+- **Chat integration:** the secretary chat can search transcripts via MCP tools `list_transcripts` / `get_transcript` ("what did we decide about X in Tuesday's meeting").
+- **Settings → General → Transcription:** whisper model picker, language set, retention days, advanced detection tuning (window size, confidence threshold, margin, force language).
+- **CLI:** `watchtower meeting-prep transcript save|recap|list|show` (the app calls `save` after transcribing; `recap <id>` retries a failed recap).
+
 ### Tasks
 Personal action items — what you need to do, follow up on, or react to. Unlike Tracks (which are informational narratives about ongoing initiatives), Tasks are concrete, personal to-do items with ownership and deadlines.
 
@@ -236,7 +248,7 @@ Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Sl
 5. **Rollup digests** — generates daily/weekly cross-channel rollups (track-aware)
 6. **People pipeline** — builds team member profiles from extracted situations (once per day)
 7. **Briefing pipeline** — generates a personalized daily briefing from all of the above (once per day, after the configured hour)
-8. **Maintenance** — unsnoozes tasks and inbox situations whose snooze period has passed, returning them to active status
+8. **Maintenance** — unsnoozes tasks and inbox situations whose snooze period has passed, returning them to active status; deletes meeting-recording audio files past the retention window (transcript text is kept)
 9. **Feed publisher** — end of each cycle; mirrors situations/meetings/briefings/recaps/day plans into the feed index (no AI)
 
 ## Key Concepts

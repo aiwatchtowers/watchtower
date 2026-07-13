@@ -24,6 +24,13 @@
 - Desktop feedback path: Swift `InboxFeedbackQueries.record(...)` mirrors the Go rule derivation logic so UI is immediately consistent. The `watchtower inbox feedback` CLI subcommand and DASH-04 enforce that comment-less 👍/👎 never invoke the AI interpreter — both paths derive rules directly, making bare thumbs fast and local.
 - See `docs/inventory/dashboard.md` for the DASH-01/02/03 behavioral contracts and `docs/inventory/inbox-pulse.md` for INBOX-01..09.
 
+### Meeting Transcriber (v74+)
+- Record a meeting from the Calendar tab (event-linked or ad-hoc): Swift captures mic + system audio natively (CoreAudio process tap + private aggregate device, macOS 14.4+, no BlackHole/ffmpeg — `SystemAudioRecorder`), transcribes on-device via WhisperKit with windowed ru/uk/en sticky language detection (`WindowedTranscriber`, params in `TranscriptionConfig`), orchestrated by `MeetingRecorderCenter` on AppState (survives navigation; the audio file survives every failure).
+- Go owns persistence + AI: `meeting_transcripts` table (migration 00016; `event_id` `ON DELETE SET NULL` — transcripts outlive events), CLI `watchtower meeting-prep transcript save|recap|list|show` (transcript passed via `--transcript-file`, never argv), recap via `Pipeline.GenerateTranscriptRecap` reusing the `meeting.recap` prompt — event-linked recaps land in `meeting_recaps` (existing UI renders them), ad-hoc in `meeting_transcripts.summary_json`. `save` exits 0 if the transcript persisted even when the recap failed (envelope `recap_ok`/`recap_error`; retry via `transcript recap <id>`).
+- Both AI generators pass user messages > 32 KB via stdin (`digest.StdinThreshold`) to stay clear of ARG_MAX — claude gets bare `-p` + stdin, codex gets `exec -`.
+- Daemon phase `phaseTranscriptAudioCleanup` deletes audio past `transcripts.audio_retention_days` (default 30) and NULLs `audio_path`; transcript text is permanent. MCP tools `list_transcripts`/`get_transcript` expose transcripts to the secretary chat.
+- Design/plan: `docs/superpowers/specs/2026-07-13-meeting-transcriber-design.md`, `docs/superpowers/plans/2026-07-13-meeting-transcriber.md`.
+
 ---
 
 ## Database & Migrations
