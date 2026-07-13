@@ -108,7 +108,7 @@ func TestBuildAuthURL(t *testing.T) {
 
 func TestBuildAuthURLHasGmailScope(t *testing.T) {
 	u := buildAuthURL(GoogleOAuthConfig{ClientID: "cid"}, "http://127.0.0.1:18521/callback", "st")
-	if !strings.Contains(u, url.QueryEscape("https://www.googleapis.com/auth/gmail.modify")) {
+	if !strings.Contains(u, url.QueryEscape("https://www.googleapis.com/auth/gmail.readonly")) {
 		t.Fatalf("gmail scope missing: %s", u)
 	}
 	if !strings.Contains(u, "access_type=offline") {

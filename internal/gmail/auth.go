@@ -22,7 +22,10 @@ const (
 	defaultRedirectPort = 18521 // separate range from Calendar (18501-18510) and Jira (18511-18520)
 	callbackPath        = "/callback"
 	loginTimeout        = 5 * time.Minute
-	gmailScope          = "https://www.googleapis.com/auth/gmail.modify"
+	// gmail.readonly (not .modify): the read-path (List/Get) is all this
+	// package does today. Plan 3 (write-back) will need to widen this and
+	// re-authorize existing users — see docs/legal/google-verification.md.
+	gmailScope = "https://www.googleapis.com/auth/gmail.readonly"
 )
 
 // Google OAuth endpoints — vars so tests can point at httptest.Server.
