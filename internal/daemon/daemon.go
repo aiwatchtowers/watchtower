@@ -229,6 +229,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseFastInbox(ctx)
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
+	d.phaseTranscriptAudioCleanup()
 
 	d.phaseCustomTrackScan(ctx) // before auto extraction so folds land
 
@@ -424,6 +425,37 @@ func (d *Daemon) phaseUnsnooze() {
 		d.logger.Printf("notify due targets error: %v", err)
 	} else if n > 0 {
 		d.logger.Printf("surfaced %d due target(s) to inbox", n)
+	}
+}
+
+// phaseTranscriptAudioCleanup deletes meeting-recording audio files past the
+// retention window and NULLs audio_path. Transcript text is never touched.
+// Missing files are fine (idempotent re-runs).
+func (d *Daemon) phaseTranscriptAudioCleanup() {
+	if d.db == nil {
+		return
+	}
+	days := d.config.Transcripts.AudioRetentionDays
+	if days <= 0 {
+		return // retention disabled
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	rows, err := d.db.ExpiredTranscriptAudio(cutoff)
+	if err != nil {
+		d.logger.Printf("transcript cleanup query error: %v", err)
+		return
+	}
+	for _, tr := range rows {
+		if err := os.Remove(tr.AudioPath.String); err != nil && !os.IsNotExist(err) {
+			d.logger.Printf("transcript cleanup: removing %s: %v", tr.AudioPath.String, err)
+			continue // keep audio_path so a later run retries
+		}
+		if err := d.db.ClearMeetingTranscriptAudio(tr.ID); err != nil {
+			d.logger.Printf("transcript cleanup: clearing row %d: %v", tr.ID, err)
+		}
+	}
+	if len(rows) > 0 {
+		d.logger.Printf("transcript cleanup: processed %d expired recording(s)", len(rows))
 	}
 }
 
