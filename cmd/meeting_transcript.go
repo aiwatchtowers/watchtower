@@ -1,0 +1,344 @@
+package cmd
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/digest"
+	"watchtower/internal/meeting"
+
+	"github.com/spf13/cobra"
+)
+
+var (
+	transcriptSaveFlagFile      string
+	transcriptSaveFlagAudio     string
+	transcriptSaveFlagEventID   string
+	transcriptSaveFlagTitle     string
+	transcriptSaveFlagLangStats string
+	transcriptSaveFlagDuration  int
+	transcriptListFlagEventID   string
+)
+
+// transcriptGeneratorFactory is the seam tests override to inject a mock
+// generator (same pattern as newDayPlanPipelineFactory).
+var transcriptGeneratorFactory = func(cfg *config.Config) digest.Generator {
+	return cliGenerator(cfg)
+}
+
+var meetingTranscriptCmd = &cobra.Command{
+	Use:   "transcript",
+	Short: "Manage meeting transcripts",
+	Long:  "Persist locally-transcribed meeting recordings, generate AI recaps for them, and inspect saved transcripts.",
+}
+
+var transcriptSaveCmd = &cobra.Command{
+	Use:   "save",
+	Short: "Save a transcript and generate its recap",
+	Long: "Reads the transcript text from --transcript-file, persists a meeting_transcripts row, then generates the AI recap. " +
+		"Exits 0 whenever the transcript row was saved — even if the recap failed (recap_ok=false, recap_error set in the JSON envelope); exits 1 only when nothing was persisted.",
+	RunE: runTranscriptSave,
+}
+
+var transcriptRecapCmd = &cobra.Command{
+	Use:   "recap <id>",
+	Short: "Regenerate the recap for a saved transcript",
+	Long:  "Retry path for a transcript whose recap failed at save time. Prints the same JSON envelope as save.",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTranscriptRecap,
+}
+
+var transcriptListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List saved transcripts as JSON",
+	RunE:  runTranscriptList,
+}
+
+var transcriptShowCmd = &cobra.Command{
+	Use:   "show <id>",
+	Short: "Show one transcript (including full text) as JSON",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTranscriptShow,
+}
+
+func init() {
+	meetingPrepCmd.AddCommand(meetingTranscriptCmd)
+	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd)
+
+	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagFile, "transcript-file", "", "path to the transcript text file (required)")
+	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagAudio, "audio", "", "path to the recorded audio file")
+	transcriptSaveCmd.Flags().IntVar(&transcriptSaveFlagDuration, "duration", 0, "recording duration in seconds")
+	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagEventID, "event-id", "", "calendar event id to link the transcript to")
+	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagTitle, "title", "", "transcript title (defaults to the event title or a timestamp)")
+	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagLangStats, "lang-stats", "", "per-language duration stats JSON")
+
+	transcriptListCmd.Flags().StringVar(&transcriptListFlagEventID, "event-id", "", "filter transcripts by calendar event id")
+}
+
+// transcriptEnv loads config and opens the workspace DB (runMeetingRecap boilerplate).
+func transcriptEnv() (*config.Config, *db.DB, error) {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return nil, nil, err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	return cfg, database, nil
+}
+
+func runTranscriptSave(cmd *cobra.Command, _ []string) error {
+	if transcriptSaveFlagFile == "" {
+		return fmt.Errorf("--transcript-file is required")
+	}
+	raw, err := os.ReadFile(transcriptSaveFlagFile)
+	if err != nil {
+		return fmt.Errorf("reading transcript file: %w", err)
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return fmt.Errorf("transcript file is empty")
+	}
+
+	cfg, database, err := transcriptEnv()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	title := transcriptSaveFlagTitle
+	if title == "" && transcriptSaveFlagEventID != "" {
+		if ev, err := database.GetCalendarEventByID(transcriptSaveFlagEventID); err == nil && ev != nil {
+			title = ev.Title
+		}
+	}
+	if title == "" {
+		title = "Recording " + time.Now().Local().Format("2006-01-02 15:04")
+	}
+
+	tr := db.MeetingTranscript{
+		Title:          title,
+		DurationSec:    transcriptSaveFlagDuration,
+		LangStats:      transcriptSaveFlagLangStats,
+		TranscriptText: text,
+	}
+	if transcriptSaveFlagEventID != "" {
+		tr.EventID = sql.NullString{String: transcriptSaveFlagEventID, Valid: true}
+	}
+	if transcriptSaveFlagAudio != "" {
+		tr.AudioPath = sql.NullString{String: transcriptSaveFlagAudio, Valid: true}
+	}
+	id, err := database.InsertMeetingTranscript(tr)
+	if err != nil {
+		return fmt.Errorf("persisting transcript: %w", err)
+	}
+
+	// The row is saved — from here on a recap failure must NOT flip the exit
+	// code; it is reported inside the envelope instead.
+	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id)
+	return printTranscriptEnvelope(cmd, database, id, recapErr)
+}
+
+func runTranscriptRecap(cmd *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid transcript id %q: %w", args[0], err)
+	}
+
+	cfg, database, err := transcriptEnv()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	if tr, err := database.GetMeetingTranscript(id); err != nil {
+		return err
+	} else if tr == nil {
+		return fmt.Errorf("transcript %d not found", id)
+	}
+
+	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id)
+	return printTranscriptEnvelope(cmd, database, id, recapErr)
+}
+
+// generateAndStoreTranscriptRecap runs the AI recap for a saved transcript and
+// stores it: event-linked transcripts write meeting_recaps (shared with the
+// paste-a-recap flow), ad-hoc ones write meeting_transcripts.summary_json.
+// Shared by save and the `recap <id>` retry command.
+func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *config.Config, id int64) error {
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		return err
+	}
+	if tr == nil {
+		return fmt.Errorf("transcript %d not found", id)
+	}
+
+	runID, _ := database.CreatePipelineRun("meeting_transcript", "cli", "auto")
+	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg), nil)
+
+	eventID := ""
+	if tr.EventID.Valid {
+		eventID = tr.EventID.String
+	}
+	res, usage, err := pipe.GenerateTranscriptRecap(ctx, eventID, tr.TranscriptText)
+	if err != nil {
+		_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+		return err
+	}
+
+	recapJSON, err := json.Marshal(res)
+	if err != nil {
+		_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+		return fmt.Errorf("marshalling recap: %w", err)
+	}
+	if eventID != "" {
+		err = database.UpsertMeetingRecap(eventID, tr.TranscriptText, string(recapJSON))
+	} else {
+		err = database.SetMeetingTranscriptSummary(id, string(recapJSON))
+	}
+
+	in, out, api := 0, 0, 0
+	if usage != nil {
+		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+	}
+	storeErrMsg := ""
+	if err != nil {
+		storeErrMsg = err.Error()
+	}
+	_ = database.CompletePipelineRun(runID, 1, in, out, 0, api, nil, nil, storeErrMsg)
+	return err
+}
+
+// printTranscriptEnvelope emits the frozen stdout contract consumed by the
+// Swift TranscriptSaveService: transcript_id / recap_ok / recap_error (plus
+// event_id and title for display).
+func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr error) error {
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		return err
+	}
+	if tr == nil {
+		return fmt.Errorf("transcript %d not found after save", id)
+	}
+
+	eventID := ""
+	if tr.EventID.Valid {
+		eventID = tr.EventID.String
+	}
+	recapErrMsg := ""
+	if recapErr != nil {
+		recapErrMsg = recapErr.Error()
+	}
+	envelope := map[string]any{
+		"transcript_id": tr.ID,
+		"event_id":      eventID,
+		"title":         tr.Title,
+		"recap_ok":      recapErr == nil,
+		"recap_error":   recapErrMsg,
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(envelope)
+}
+
+func runTranscriptList(cmd *cobra.Command, _ []string) error {
+	_, database, err := transcriptEnv()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	rows, err := database.ListMeetingTranscripts(db.MeetingTranscriptFilter{EventID: transcriptListFlagEventID})
+	if err != nil {
+		return err
+	}
+
+	out := make([]map[string]any, 0, len(rows))
+	for _, tr := range rows {
+		eventID := ""
+		if tr.EventID.Valid {
+			eventID = tr.EventID.String
+		}
+		snippet := []rune(tr.TranscriptText)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		out = append(out, map[string]any{
+			"id":           tr.ID,
+			"event_id":     eventID,
+			"title":        tr.Title,
+			"duration_sec": tr.DurationSec,
+			"created_at":   tr.CreatedAt,
+			"has_summary":  tr.SummaryJSON.Valid,
+			"snippet":      string(snippet),
+		})
+	}
+
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
+func runTranscriptShow(cmd *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid transcript id %q: %w", args[0], err)
+	}
+
+	_, database, err := transcriptEnv()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		return err
+	}
+	if tr == nil {
+		return fmt.Errorf("transcript %d not found", id)
+	}
+
+	eventID := ""
+	if tr.EventID.Valid {
+		eventID = tr.EventID.String
+	}
+	var audioPath, summaryJSON any
+	if tr.AudioPath.Valid {
+		audioPath = tr.AudioPath.String
+	}
+	if tr.SummaryJSON.Valid {
+		summaryJSON = tr.SummaryJSON.String
+	}
+	envelope := map[string]any{
+		"id":              tr.ID,
+		"event_id":        eventID,
+		"title":           tr.Title,
+		"audio_path":      audioPath,
+		"duration_sec":    tr.DurationSec,
+		"lang_stats":      tr.LangStats,
+		"transcript_text": tr.TranscriptText,
+		"summary_json":    summaryJSON,
+		"created_at":      tr.CreatedAt,
+		"updated_at":      tr.UpdatedAt,
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(envelope)
+}
