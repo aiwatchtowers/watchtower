@@ -183,6 +183,49 @@ final class WindowedTranscriberTests: XCTestCase {
         XCTAssertEqual(output.langStats, ["ru": 2])
     }
 
+    func testAllWindowsFailThrowsEngineError() async throws {
+        // Total engine failure: no text, no speech window → the last engine
+        // error surfaces instead of an empty "no speech" output.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.failure(MockEngine.MockError()), .failure(MockEngine.MockError())]
+
+        do {
+            _ = try await run(engine, config, windows: 2)
+            XCTFail("expected total engine failure to throw")
+        } catch is MockEngine.MockError {
+            // expected
+        }
+    }
+
+    func testSilenceMixedWithErrorsThrows() async throws {
+        // No window produced speech and one window failed → still a failure.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success(""), .failure(MockEngine.MockError()), .success("   ")]
+
+        do {
+            _ = try await run(engine, config, windows: 3)
+            XCTFail("expected throw when errors occurred and no speech was produced")
+        } catch is MockEngine.MockError {
+            // expected
+        }
+    }
+
+    func testAllSilenceWithoutErrorsReturnsEmptyOutput() async throws {
+        // Genuine all-silence (no engine errors) still returns empty output.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success(""), .success("  \n")]
+
+        let output = try await run(engine, config, windows: 2)
+
+        XCTAssertEqual(output, TranscriptionOutput(text: "", langStats: [:]))
+    }
+
     func testTranscribeErrorSkipsWindow() async throws {
         let engine = MockEngine()
         engine.detections = [
@@ -235,6 +278,42 @@ final class WindowedTranscriberTests: XCTestCase {
         XCTAssertEqual(recorder.calls.map(\.index), [1, 2, 3])
         XCTAssertEqual(recorder.calls.map(\.count), [3, 3, 3])
         XCTAssertEqual(output.text, "a\nb\nc")
+    }
+
+    func testExactWindowLengthIsSingleWindow() async throws {
+        // Recording length == window length: a tail start at `step` would lie
+        // entirely inside the first window's overlap and only duplicate its
+        // audio and lang stats — it must not be emitted.
+        var config = TranscriptionConfig() // 20 s window, 1 s overlap
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("only"), .success("dup")]
+        let recorder = ProgressRecorder()
+        let transcriber = WindowedTranscriber(engine: engine, config: config)
+        let audio = [Float](repeating: 0, count: 20 * TranscriptionConfig.sampleRate)
+
+        let output = try await transcriber.transcribe(samples: audio) { recorder.record($0, $1) }
+
+        XCTAssertEqual(engine.windowSizes, [320_000])
+        XCTAssertEqual(recorder.calls.map(\.index), [1])
+        XCTAssertEqual(recorder.calls.map(\.count), [1])
+        XCTAssertEqual(output.text, "only")
+        XCTAssertEqual(output.langStats, ["en": 1])
+    }
+
+    func testJustOverWindowLengthIsTwoWindows() async throws {
+        // 20.5 s: the second window extends past the first one's end → emitted.
+        var config = TranscriptionConfig() // 20 s window, 1 s overlap
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("a"), .success("b")]
+        let transcriber = WindowedTranscriber(engine: engine, config: config)
+        let audio = [Float](repeating: 0, count: Int(20.5 * Double(TranscriptionConfig.sampleRate)))
+
+        let output = try await transcriber.transcribe(samples: audio) { _, _ in }
+
+        XCTAssertEqual(engine.windowSizes, [320_000, 24_000])
+        XCTAssertEqual(output.text, "a\nb")
     }
 
     func testEmptySamplesReturnsEmptyOutput() async throws {

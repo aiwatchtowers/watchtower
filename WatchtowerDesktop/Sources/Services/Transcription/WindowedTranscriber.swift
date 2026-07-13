@@ -8,6 +8,9 @@ import Foundation
 /// otherwise it falls back to the previous *speech* window's language ("sticky"),
 /// or to `firstWindowDefault` when no speech window has been produced yet.
 /// Silent and failed windows never stick and are not counted in langStats.
+/// If no window produces speech and at least one failed with an engine error,
+/// the last engine error is thrown — total engine failure never masquerades
+/// as an all-silence recording.
 struct WindowedTranscriber {
     let engine: TranscriptionEngine
     let config: TranscriptionConfig
@@ -23,10 +26,14 @@ struct WindowedTranscriber {
         let windowSamples = max(1, Int(config.windowSec * sampleRate))
         let step = max(1, windowSamples - Int(config.overlapSec * sampleRate))
 
+        // A window reaching the end of the samples is the last one: a further
+        // tail start would lie entirely inside this window's overlap and only
+        // duplicate its audio (and lang stats).
         var starts: [Int] = []
         var start = 0
-        while start < samples.count {
+        while true {
             starts.append(start)
+            if start + windowSamples >= samples.count { break }
             start += step
         }
         let windowCount = starts.count
@@ -34,6 +41,7 @@ struct WindowedTranscriber {
         var texts: [String] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
+        var lastEngineError: Error?
 
         for (index, windowStart) in starts.enumerated() {
             let end = min(windowStart + windowSamples, samples.count)
@@ -51,6 +59,7 @@ struct WindowedTranscriber {
                 text = try await engine.transcribeWindow(window, language: language)
             } catch {
                 // A failed window is skipped: nothing counted, language does not stick.
+                lastEngineError = error
                 progress(index + 1, windowCount)
                 continue
             }
@@ -62,6 +71,13 @@ struct WindowedTranscriber {
                 langStats[language, default: 0] += 1
             }
             progress(index + 1, windowCount)
+        }
+
+        // Total engine failure must not masquerade as "no speech": if no window
+        // produced speech and at least one failed with an engine error, surface
+        // the error. Genuine all-silence (no errors) still returns empty output.
+        if texts.isEmpty, let lastEngineError {
+            throw lastEngineError
         }
 
         return TranscriptionOutput(text: texts.joined(separator: "\n"), langStats: langStats)
