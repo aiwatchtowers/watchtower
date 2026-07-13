@@ -76,6 +76,7 @@ func NewServer(database *db.DB) *Server {
 	registerPeople(s, database)
 	registerJira(s, database)
 	registerMessages(s, database)
+	registerTranscripts(s, database)
 
 	return &Server{s: s}
 }
