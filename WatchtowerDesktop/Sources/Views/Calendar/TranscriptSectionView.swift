@@ -127,8 +127,7 @@ struct TranscriptSectionView: View {
     }
 
     private func reTranscribe(_ transcript: MeetingTranscript) {
-        guard let audioPath = transcript.audioPath,
-              let runner = ProcessCLIRunner.makeDefault() else { return }
+        guard let audioPath = transcript.audioPath else { return }
         let center = appState.meetingRecorderCenter
         center.prepareRetry(
             audioURL: URL(fileURLWithPath: audioPath),
@@ -136,7 +135,7 @@ struct TranscriptSectionView: View {
             title: transcript.title
         )
         Task {
-            await center.retryTranscription(runner: runner, config: .fromDefaults())
+            await center.retryTranscription(config: .fromDefaults())
             load()
             onChanged()
         }
