@@ -55,9 +55,12 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// `UserDefaults` key mirroring the audio file awaiting transcription, so a
-    /// recording survives a crash/relaunch.
+    /// `UserDefaults` keys mirroring the audio file awaiting transcription plus
+    /// the event link/title it belongs to, so a recording — and its Target/event
+    /// association — survives a crash/relaunch and is recovered event-linked.
     static let pendingAudioPathKey = "recorder.pendingAudioPath"
+    static let pendingEventIDKey = "recorder.pendingEventID"
+    static let pendingTitleKey = "recorder.pendingTitle"
 
     private let recorderFactory: () -> AudioRecording
     private let engineFactory: (TranscriptionConfig) async throws -> TranscriptionEngine
@@ -122,7 +125,7 @@ final class MeetingRecorderCenter {
             let directory = Self.recordingsDirectory()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = directory.appendingPathComponent("rec_\(Self.timestampComponent()).caf")
-            defaults.set(url.path, forKey: Self.pendingAudioPathKey)
+            persistPendingDefaults(audioURL: url)
             try await recorder.start(to: url)
             pendingAudioURL = url
             phase = .recording(startedAt: Date())
@@ -154,7 +157,7 @@ final class MeetingRecorderCenter {
         }
 
         pendingAudioURL = result.audioURL
-        defaults.set(result.audioURL.path, forKey: Self.pendingAudioPathKey)
+        persistPendingDefaults(audioURL: result.audioURL)
         await transcribeAndSave(audioURL: result.audioURL, config: config)
     }
 
@@ -179,12 +182,18 @@ final class MeetingRecorderCenter {
 
     /// Points the Center at an existing audio file (re-transcribe from the UI).
     /// The caller then invokes `retryTranscription`. No-op when busy.
+    ///
+    /// An explicit "Re-transcribe" must produce fresh output, so any transcript
+    /// sidecars left next to the audio by an earlier run are deleted here —
+    /// otherwise `retryTranscription` would short-circuit to the stale persisted
+    /// text instead of re-running the engine.
     func prepareRetry(audioURL: URL, eventID: String?, title: String?) {
         guard !isBusy else { return }
+        Self.removePersistedTranscript(audioURL: audioURL)
         pendingAudioURL = audioURL
         currentEventID = eventID
         currentTitle = title
-        defaults.set(audioURL.path, forKey: Self.pendingAudioPathKey)
+        persistPendingDefaults(audioURL: audioURL)
     }
 
     /// Clears a `.failed` phase back to `.idle`, keeping `pendingAudioURL` so the
@@ -201,6 +210,10 @@ final class MeetingRecorderCenter {
         guard let path = defaults.string(forKey: Self.pendingAudioPathKey) else { return }
         if FileManager.default.fileExists(atPath: path) {
             pendingAudioURL = URL(fileURLWithPath: path)
+            // Restore the event link/title so a recovered recording saves
+            // event-linked, not as ad-hoc.
+            currentEventID = defaults.string(forKey: Self.pendingEventIDKey)
+            currentTitle = defaults.string(forKey: Self.pendingTitleKey)
         } else {
             clearPending()
         }
@@ -321,6 +334,26 @@ final class MeetingRecorderCenter {
     private func clearPending() {
         pendingAudioURL = nil
         defaults.removeObject(forKey: Self.pendingAudioPathKey)
+        defaults.removeObject(forKey: Self.pendingEventIDKey)
+        defaults.removeObject(forKey: Self.pendingTitleKey)
+    }
+
+    /// Mirrors the pending audio path plus the current event link/title to
+    /// `UserDefaults` so a crash before save recovers the recording fully — audio
+    /// AND its event association — on the next launch. A nil event/title clears
+    /// its key rather than leaving a stale value from a previous recording.
+    private func persistPendingDefaults(audioURL: URL) {
+        defaults.set(audioURL.path, forKey: Self.pendingAudioPathKey)
+        if let currentEventID {
+            defaults.set(currentEventID, forKey: Self.pendingEventIDKey)
+        } else {
+            defaults.removeObject(forKey: Self.pendingEventIDKey)
+        }
+        if let currentTitle {
+            defaults.set(currentTitle, forKey: Self.pendingTitleKey)
+        } else {
+            defaults.removeObject(forKey: Self.pendingTitleKey)
+        }
     }
 
     // MARK: Transcript persistence (retry save without re-transcribing)

@@ -183,10 +183,22 @@ private final class TapRecorderImpl {
         let firstBuffer = buffers[0]
         let firstChannels = max(1, Int(firstBuffer.mNumberChannels))
         let frameCount = Int(firstBuffer.mDataByteSize) / (firstChannels * MemoryLayout<Float>.size)
-        guard frameCount > 0, let format = deviceFormat,
-              let mixed = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)),
+        // An empty IO cycle is normal (no samples this callback) and must not
+        // latch an error; drop it. `deviceFormat` is set by openOutputFile()
+        // before start() arms the IOProc, so it is never nil while this block
+        // runs — treating a nil here as a hard error would be dead code, so it
+        // shares the silent early-out.
+        guard frameCount > 0, let format = deviceFormat else { return }
+        // A failed mixed-buffer allocation is a real, persistent failure (memory
+        // pressure): latch it like appendDownsampled does so a run that can no
+        // longer mix surfaces from stop() as .writeFailed instead of silently
+        // dropping every cycle and reporting a truncated recording as success.
+        guard let mixed = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)),
               let out = mixed.floatChannelData?[0]
-        else { return }
+        else {
+            firstWriteError = AudioRecordingError.deviceSetupFailed("allocating mix buffer")
+            return
+        }
         mixed.frameLength = AVAudioFrameCount(frameCount)
 
         for frame in 0..<frameCount {

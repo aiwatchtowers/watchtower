@@ -593,6 +593,133 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertNil(missingDefaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey))
     }
 
+    func testRestorePendingRecoversEventLink() async throws {
+        // A crash mid-recording mirrored the audio path AND its event link/title.
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+
+        let defaults = try isolatedDefaults()
+        defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
+        defaults.set("evt-42", forKey: MeetingRecorderCenter.pendingEventIDKey)
+        defaults.set("Weekly sync", forKey: MeetingRecorderCenter.pendingTitleKey)
+
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in ScriptedEngine(texts: ["recovered speech"]) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: defaults
+        )
+
+        center.restorePendingOnLaunch()
+        XCTAssertEqual(center.pendingAudioURL, audio)
+        XCTAssertEqual(center.currentEventID, "evt-42", "the event link must survive relaunch")
+        XCTAssertEqual(center.currentTitle, "Weekly sync", "the title must survive relaunch")
+
+        // The recovered transcript saves event-linked, not as ad-hoc.
+        await center.retryTranscription(config: singleWindowConfig())
+        XCTAssertEqual(center.phase, .idle)
+        let args = try XCTUnwrap(runner.invocations.first)
+        let eventIdx = try XCTUnwrap(args.firstIndex(of: "--event-id"))
+        XCTAssertEqual(args[eventIdx + 1], "evt-42")
+        let titleIdx = try XCTUnwrap(args.firstIndex(of: "--title"))
+        XCTAssertEqual(args[titleIdx + 1], "Weekly sync")
+    }
+
+    func testPrepareRetryDiscardsStaleSidecarsAndReTranscribes() async throws {
+        // An earlier run left a transcript sidecar next to the audio; an explicit
+        // "Re-transcribe" must discard it and produce FRESH output.
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let staleTxt = audio.deletingPathExtension().appendingPathExtension("txt")
+        let staleJSON = audio.deletingPathExtension().appendingPathExtension("json")
+        try "STALE cached text".write(to: staleTxt, atomically: true, encoding: .utf8)
+        try #"{"durationSec":5,"langStats":{}}"#.write(to: staleJSON, atomically: true, encoding: .utf8)
+
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        var engineLoads = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in
+                engineLoads += 1
+                return ScriptedEngine(texts: ["fresh transcription"])
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleTxt.path),
+                       "prepareRetry must delete the stale transcript sidecar")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleJSON.path),
+                       "prepareRetry must delete the stale metadata sidecar")
+
+        await center.retryTranscription(config: singleWindowConfig())
+
+        XCTAssertEqual(engineLoads, 1,
+                       "explicit re-transcribe must run the engine, not reuse the stale sidecar")
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
+
+    func testMalformedSidecarFallsBackToFullReTranscription() async throws {
+        // Empty text sidecar → cannot reuse → full re-transcription.
+        try await assertMalformedSidecarReTranscribes(txt: "   ",
+                                                      json: #"{"durationSec":5,"langStats":{}}"#)
+        // Valid text but undecodable metadata → cannot reuse → full re-transcription.
+        try await assertMalformedSidecarReTranscribes(txt: "valid cached text",
+                                                      json: "not json{")
+    }
+
+    /// Seeds a malformed transcript sidecar next to a recovered audio file and
+    /// asserts `retryTranscription` re-runs the engine (engine load happens)
+    /// rather than reusing the unreadable sidecar, without crashing.
+    private func assertMalformedSidecarReTranscribes(txt: String, json: String) async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        try txt.write(to: audio.deletingPathExtension().appendingPathExtension("txt"),
+                      atomically: true, encoding: .utf8)
+        try json.write(to: audio.deletingPathExtension().appendingPathExtension("json"),
+                       atomically: true, encoding: .utf8)
+
+        let defaults = try isolatedDefaults()
+        defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
+        var engineLoads = 0
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in
+                engineLoads += 1
+                return ScriptedEngine(texts: ["fresh"])
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: defaults
+        )
+
+        center.restorePendingOnLaunch()
+        XCTAssertEqual(center.pendingAudioURL, audio)
+
+        await center.retryTranscription(config: singleWindowConfig())
+
+        XCTAssertEqual(engineLoads, 1, "a malformed sidecar must trigger full re-transcription")
+        XCTAssertEqual(center.phase, .idle)
+    }
+
     // MARK: Progress
 
     /// Drains the main actor so the Center's stream-backed progress consumer
