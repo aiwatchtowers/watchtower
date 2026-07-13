@@ -97,7 +97,9 @@ Jira- и Calendar-детекторы.
 
 - **`auth.go`** — OAuth по образцу `calendar/auth.go`: token endpoint, `access_type=offline`,
   `prompt=consent`, loopback `Login`, `Prepare`/`Complete`. Отличия от Calendar:
-  - scope: `https://www.googleapis.com/auth/gmail.modify`;
+  - scope: `https://www.googleapis.com/auth/gmail.readonly` (изначально здесь был
+    `gmail.modify`; сужен 2026-07-09 перед верификацией — см. пересмотр в
+    «Открытых вопросах» ниже);
   - собственный `TokenStore` → `gmail_token.json` (независим от `google_token.json`);
   - собственный тип `GoogleOAuthConfig`. Google client_id/secret — те же, что у Calendar
     (один Google Cloud проект); связываются на уровне `cmd` (`resolveGoogleOAuthConfig`

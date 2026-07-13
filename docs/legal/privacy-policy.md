@@ -42,7 +42,7 @@ When a user separately connects Gmail, the App requests this scope:
   the user's inbox messages (subject, sender, body, labels, timestamps).
 
 The App requests **no write, delete, or sharing** permissions on Google data —
-Calendar or Gmail connections are independent, and neither sends, modifies,
+Calendar and Gmail connections are independent, and neither sends, modifies,
 labels, archives, or deletes anything in the user's Google account.
 
 ## How the data is used

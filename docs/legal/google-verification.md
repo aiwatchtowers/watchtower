@@ -40,7 +40,7 @@ verified in Google Search Console as an *authorized domain*.
 
 **Superseded 2026-07-10:** the site moved off the `gh-pages` branch of this repo
 onto a real marketing site — separate local repo
-**`/Users/user/PhpstormProjects/wt-lending`** (`github.com/aiwatchtowers/lending`,
+**`wt-lending`** (a local clone of `github.com/aiwatchtowers/lending`,
 `main` branch), deployed via Cloudflare Pages/Workers (see its `wrangler.jsonc`).
 The `gh-pages` branch here and `docs/legal/*.html` are **stale leftovers** — do
 not edit them expecting them to go live; `aiwatchtowers.com` is served entirely
