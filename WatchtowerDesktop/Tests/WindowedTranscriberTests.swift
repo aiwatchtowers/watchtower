@@ -66,8 +66,9 @@ final class WindowedTranscriberTests: XCTestCase {
                      windows: Int,
                      progress: ProgressRecorder = ProgressRecorder()) async throws -> TranscriptionOutput {
         let transcriber = WindowedTranscriber(engine: engine, config: config)
-        return try await transcriber.transcribe(samples: samples(windows: windows, config: config),
-                                                progress: { progress.record($0, $1) })
+        return try await transcriber.transcribe(samples: samples(windows: windows, config: config)) {
+            progress.record($0, $1)
+        }
     }
 
     // MARK: - Language selection
@@ -102,7 +103,7 @@ final class WindowedTranscriberTests: XCTestCase {
         let engine = MockEngine()
         engine.detections = [
             .probs(["ru": 0.9, "en": 0.05]),
-            .probs(["ru": 0.4, "en": 0.35]),
+            .probs(["ru": 0.4, "en": 0.35])
         ]
         engine.texts = [.success("раз"), .success("два")]
 
@@ -116,7 +117,7 @@ final class WindowedTranscriberTests: XCTestCase {
         let engine = MockEngine()
         engine.detections = [
             .probs(["ru": 0.9, "en": 0.05]),
-            .probs(["ru": 0.62, "uk": 0.55]), // margin 0.07 < 0.2
+            .probs(["ru": 0.62, "uk": 0.55]) // margin 0.07 < 0.2
         ]
         engine.texts = [.success("раз"), .success("два")]
 
@@ -141,7 +142,7 @@ final class WindowedTranscriberTests: XCTestCase {
         engine.detections = [
             .probs(["en": 0.9, "ru": 0.02]),
             .probs(["uk": 0.9, "ru": 0.02]),
-            .probs(["ru": 0.3, "en": 0.3]), // unsure → fallback
+            .probs(["ru": 0.3, "en": 0.3]) // unsure → fallback
         ]
         engine.texts = [.success("hello"), .success(""), .success("again")]
 
@@ -171,7 +172,7 @@ final class WindowedTranscriberTests: XCTestCase {
         let engine = MockEngine()
         engine.detections = [
             .probs(["ru": 0.9, "en": 0.05]),
-            .failure,
+            .failure
         ]
         engine.texts = [.success("раз"), .success("два")]
 
@@ -187,7 +188,7 @@ final class WindowedTranscriberTests: XCTestCase {
         engine.detections = [
             .probs(["en": 0.9, "ru": 0.02]),
             .probs(["uk": 0.9, "ru": 0.02]),
-            .probs(["ru": 0.3, "en": 0.3]), // unsure → fallback
+            .probs(["ru": 0.3, "en": 0.3]) // unsure → fallback
         ]
         engine.texts = [.success("hello"), .failure(MockEngine.MockError()), .success("again")]
 
@@ -206,7 +207,7 @@ final class WindowedTranscriberTests: XCTestCase {
         engine.detections = [
             .probs(["ru": 0.9, "en": 0.02]),
             .probs(["ru": 0.9, "en": 0.02]),
-            .probs(["ru": 0.9, "en": 0.02]),
+            .probs(["ru": 0.9, "en": 0.02])
         ]
         engine.texts = [.success("а"), .success("   \n"), .success("б")]
 
@@ -227,8 +228,7 @@ final class WindowedTranscriberTests: XCTestCase {
         let transcriber = WindowedTranscriber(engine: engine, config: config)
         let audio = [Float](repeating: 0, count: 50 * TranscriptionConfig.sampleRate)
 
-        let output = try await transcriber.transcribe(samples: audio,
-                                                      progress: { recorder.record($0, $1) })
+        let output = try await transcriber.transcribe(samples: audio) { recorder.record($0, $1) }
 
         XCTAssertEqual(engine.windowSizes, [320_000, 320_000, 192_000])
         XCTAssertEqual(recorder.calls.count, 3)
@@ -242,8 +242,7 @@ final class WindowedTranscriberTests: XCTestCase {
         let recorder = ProgressRecorder()
         let transcriber = WindowedTranscriber(engine: engine, config: tinyConfig())
 
-        let output = try await transcriber.transcribe(samples: [],
-                                                      progress: { recorder.record($0, $1) })
+        let output = try await transcriber.transcribe(samples: []) { recorder.record($0, $1) }
 
         XCTAssertEqual(output, TranscriptionOutput(text: "", langStats: [:]))
         XCTAssertEqual(engine.detectCallCount, 0)

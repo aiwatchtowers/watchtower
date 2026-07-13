@@ -91,7 +91,7 @@ final class MeetingRecorderCenter {
     /// engine per config.
     static func defaultEngineFactory(_ config: TranscriptionConfig) async throws -> TranscriptionEngine {
         let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3"
-        return try await WhisperKitEngine.load(modelName: model, downloadProgress: { _ in })
+        return try await WhisperKitEngine.load(modelName: model) { _ in }
     }
 
     // MARK: Recording

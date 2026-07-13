@@ -18,7 +18,7 @@ struct TranscriptionConfig: Equatable {
     var langThreshold: Float = 0.6
     var margin: Float = 0.2
     var firstWindowDefault: String = "ru"
-    var forcedLanguage: String? = nil   // non-nil disables detection entirely
+    var forcedLanguage: String?   // non-nil disables detection entirely
     static let sampleRate = 16_000
 }
 

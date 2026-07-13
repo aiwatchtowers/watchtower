@@ -25,9 +25,8 @@ struct MeetingNotesView: View {
             recapSection
             TranscriptSectionView(
                 eventID: eventID,
-                hasRecap: recap != nil,
-                onChanged: { loadNotes() }
-            )
+                hasRecap: recap != nil
+            ) { loadNotes() }
             questionsSection
             notesSection
         }

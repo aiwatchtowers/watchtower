@@ -73,71 +73,20 @@ private final class TapRecorderImpl {
         tapID = newTapID
 
         // 3. Private aggregate device: default input device (mic) + the tap.
-        //    Sub-devices come before taps in the IOProc's buffer list, so
-        //    buffer 0 is the mic and the remaining buffers are system audio.
-        let micUID: String
         do {
-            micUID = try Self.defaultInputDeviceUID()
+            aggregateID = try Self.createAggregateDevice(tapUUID: tapDescription.uuid)
         } catch {
             teardownTap()
             throw error
         }
-        let aggregateDescription: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "Watchtower Recorder",
-            kAudioAggregateDeviceUIDKey: "com.watchtower.recorder.\(UUID().uuidString)",
-            kAudioAggregateDeviceIsPrivateKey: true,
-            kAudioAggregateDeviceMainSubDeviceKey: micUID,
-            kAudioAggregateDeviceSubDeviceListKey: [
-                [kAudioSubDeviceUIDKey: micUID],
-            ],
-            kAudioAggregateDeviceTapListKey: [
-                [
-                    kAudioSubTapUIDKey: tapDescription.uuid.uuidString,
-                    kAudioSubTapDriftCompensationKey: true,
-                ],
-            ],
-        ]
-        var newAggregateID = AudioObjectID(kAudioObjectUnknown)
-        status = AudioHardwareCreateAggregateDevice(aggregateDescription as CFDictionary, &newAggregateID)
-        guard status == noErr, newAggregateID != kAudioObjectUnknown else {
-            teardownTap()
-            throw AudioRecordingError.deviceSetupFailed("creating aggregate device (OSStatus \(status))")
-        }
-        aggregateID = newAggregateID
 
         // 4. Output file: 16 kHz mono AAC, fed with float32 PCM.
-        let sampleRate = Self.nominalSampleRate(of: aggregateID)
-        guard let monoDeviceFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
-        ), let monoOutputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: Self.outputSampleRate, channels: 1, interleaved: false
-        ) else {
-            teardownDevices()
-            throw AudioRecordingError.deviceSetupFailed("building PCM formats (device rate \(sampleRate))")
-        }
         do {
-            audioFile = try AVAudioFile(
-                forWriting: url,
-                settings: [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: Self.outputSampleRate,
-                    AVNumberOfChannelsKey: 1,
-                    AVEncoderBitRateKey: 32_000,
-                ],
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
+            try openOutputFile(url: url)
         } catch {
             teardownDevices()
-            throw AudioRecordingError.deviceSetupFailed("opening \(url.lastPathComponent): \(error.localizedDescription)")
+            throw error
         }
-        guard let downConverter = AVAudioConverter(from: monoDeviceFormat, to: monoOutputFormat) else {
-            audioFile = nil
-            teardownDevices()
-            throw AudioRecordingError.deviceSetupFailed("creating 16 kHz converter")
-        }
-        converter = downConverter
-        deviceFormat = monoDeviceFormat
         fileURL = url
         framesWritten = 0
 
@@ -200,7 +149,7 @@ private final class TapRecorderImpl {
     /// soft clip instead of auto-leveling (which drove the signal INTO clipping).
     private func handleInput(_ inputData: UnsafePointer<AudioBufferList>) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
-        guard buffers.count > 0 else { return }
+        guard !buffers.isEmpty else { return }
 
         func channelAverage(_ buffer: AudioBuffer, frame: Int) -> Float {
             guard let data = buffer.mData else { return 0 }
@@ -266,6 +215,74 @@ private final class TapRecorderImpl {
             // partial file up to here remains playable after stop().
             self.audioFile = nil
         }
+    }
+
+    // MARK: Setup helpers
+
+    /// Creates the private aggregate device combining the default input device
+    /// (mic) with the process tap. Sub-devices come before taps in the IOProc's
+    /// buffer list, so buffer 0 is the mic and the remaining buffers are system
+    /// audio. Throws without side effects; the caller owns tap teardown.
+    private static func createAggregateDevice(tapUUID: UUID) throws -> AudioObjectID {
+        let micUID = try defaultInputDeviceUID()
+        let aggregateDescription: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "Watchtower Recorder",
+            kAudioAggregateDeviceUIDKey: "com.watchtower.recorder.\(UUID().uuidString)",
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceMainSubDeviceKey: micUID,
+            kAudioAggregateDeviceSubDeviceListKey: [
+                [kAudioSubDeviceUIDKey: micUID]
+            ],
+            kAudioAggregateDeviceTapListKey: [
+                [
+                    kAudioSubTapUIDKey: tapUUID.uuidString,
+                    kAudioSubTapDriftCompensationKey: true
+                ]
+            ]
+        ]
+        var newAggregateID = AudioObjectID(kAudioObjectUnknown)
+        let status = AudioHardwareCreateAggregateDevice(aggregateDescription as CFDictionary, &newAggregateID)
+        guard status == noErr, newAggregateID != kAudioObjectUnknown else {
+            throw AudioRecordingError.deviceSetupFailed("creating aggregate device (OSStatus \(status))")
+        }
+        return newAggregateID
+    }
+
+    /// Opens the 16 kHz mono AAC output file plus the device-rate → 16 kHz
+    /// converter. Sets `audioFile`/`converter`/`deviceFormat` only after every
+    /// step succeeds, so on throw no partial state is left behind; the caller
+    /// owns device/tap teardown.
+    private func openOutputFile(url: URL) throws {
+        let sampleRate = Self.nominalSampleRate(of: aggregateID)
+        guard let monoDeviceFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
+        ), let monoOutputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: Self.outputSampleRate, channels: 1, interleaved: false
+        ) else {
+            throw AudioRecordingError.deviceSetupFailed("building PCM formats (device rate \(sampleRate))")
+        }
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(
+                forWriting: url,
+                settings: [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: Self.outputSampleRate,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 32_000
+                ],
+                commonFormat: .pcmFormatFloat32,
+                interleaved: false
+            )
+        } catch {
+            throw AudioRecordingError.deviceSetupFailed("opening \(url.lastPathComponent): \(error.localizedDescription)")
+        }
+        guard let downConverter = AVAudioConverter(from: monoDeviceFormat, to: monoOutputFormat) else {
+            throw AudioRecordingError.deviceSetupFailed("creating 16 kHz converter")
+        }
+        audioFile = file
+        converter = downConverter
+        deviceFormat = monoDeviceFormat
     }
 
     // MARK: Device helpers

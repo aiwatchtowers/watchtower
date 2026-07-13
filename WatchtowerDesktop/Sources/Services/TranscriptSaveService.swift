@@ -30,8 +30,12 @@ struct TranscriptSaveService {
     /// [--event-id <id>] [--title <s>] --lang-stats <json>`,
     /// and decodes the stdout envelope. The temp file is removed in a defer,
     /// whether the run succeeds or throws.
-    func save(transcriptText: String, audioPath: String, durationSec: Int,
-              eventID: String?, title: String?, langStatsJSON: String) async throws -> TranscriptSaveResult {
+    func save(transcriptText: String,
+              audioPath: String,
+              durationSec: Int,
+              eventID: String?,
+              title: String?,
+              langStatsJSON: String) async throws -> TranscriptSaveResult {
         let tmpURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchtower-transcript-\(UUID().uuidString).txt")
         try transcriptText.write(to: tmpURL, atomically: true, encoding: .utf8)

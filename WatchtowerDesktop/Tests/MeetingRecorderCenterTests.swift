@@ -118,8 +118,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
     private let recapOKEnvelope = Data(#"{"transcript_id":7,"recap_ok":true,"recap_error":""}"#.utf8)
     private let recapFailedEnvelope = Data(#"{"transcript_id":7,"recap_ok":false,"recap_error":"AI generation: boom"}"#.utf8)
 
-    private func isolatedDefaults() -> UserDefaults {
-        UserDefaults(suiteName: "MeetingRecorderCenterTests-\(UUID().uuidString)")!
+    private func isolatedDefaults() throws -> UserDefaults {
+        try XCTUnwrap(UserDefaults(suiteName: "MeetingRecorderCenterTests-\(UUID().uuidString)"))
     }
 
     /// A dummy on-disk file standing in for a finished recording. Its bytes are
@@ -154,14 +154,14 @@ final class MeetingRecorderCenterTests: XCTestCase {
 
     // MARK: Guards
 
-    func testStartWhileBusyIsANoOp() async {
+    func testStartWhileBusyIsANoOp() async throws {
         let recorder = FakeRecorder()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in ScriptedEngine(texts: []) },
             decode: stubDecode(sampleCount: 1600),
             notifier: FakeNotifier(),
-            defaults: isolatedDefaults()
+            defaults: try isolatedDefaults()
         )
 
         await center.startRecording(eventID: "evt-1", title: "Weekly")
@@ -186,7 +186,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 12)
         let notifier = FakeNotifier()
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
-        let defaults = isolatedDefaults()
+        let defaults = try isolatedDefaults()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in ScriptedEngine(texts: ["hello world"]) },
@@ -227,7 +227,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             engineFactory: { _ in ScriptedEngine(texts: ["captured"]) },
             decode: stubDecode(sampleCount: 1600),
             notifier: FakeNotifier(),
-            defaults: isolatedDefaults()
+            defaults: try isolatedDefaults()
         )
 
         await center.startRecording(eventID: "evt-1", title: "Standup")
@@ -259,7 +259,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             engineFactory: { _ in ScriptedEngine(texts: ["some talk"]) },
             decode: stubDecode(sampleCount: 1600),
             notifier: notifier,
-            defaults: isolatedDefaults()
+            defaults: try isolatedDefaults()
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -276,7 +276,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
 
     // MARK: Failure paths
 
-    func testRecorderStartFailureGoesFailed() async {
+    func testRecorderStartFailureGoesFailed() async throws {
         let recorder = FakeRecorder()
         recorder.startError = AudioRecordingError.microphonePermissionDenied
         let notifier = FakeNotifier()
@@ -285,7 +285,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             engineFactory: { _ in ScriptedEngine(texts: []) },
             decode: stubDecode(sampleCount: 1600),
             notifier: notifier,
-            defaults: isolatedDefaults()
+            defaults: try isolatedDefaults()
         )
 
         await center.startRecording(eventID: "evt-1", title: "Weekly")
@@ -310,7 +310,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             engineFactory: { _ in ScriptedEngine(texts: []) }, // all-silence
             decode: stubDecode(sampleCount: 1600),
             notifier: notifier,
-            defaults: isolatedDefaults()
+            defaults: try isolatedDefaults()
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -333,7 +333,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 5)
         let notifier = FakeNotifier()
-        let defaults = isolatedDefaults()
+        let defaults = try isolatedDefaults()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in ScriptedEngine(texts: ["real speech"]) },
@@ -368,7 +368,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio) }
 
-        let defaults = isolatedDefaults()
+        let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
         let center = MeetingRecorderCenter(
             recorderFactory: { FakeRecorder() },
@@ -382,7 +382,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(center.pendingAudioURL, audio)
 
         // Missing file → the stale key is cleared.
-        let missingDefaults = isolatedDefaults()
+        let missingDefaults = try isolatedDefaults()
         missingDefaults.set("/tmp/does-not-exist-\(UUID().uuidString).m4a", forKey: MeetingRecorderCenter.pendingAudioPathKey)
         let center2 = MeetingRecorderCenter(
             recorderFactory: { FakeRecorder() },
@@ -415,7 +415,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             engineFactory: { _ in engine },
             decode: stubDecode(sampleCount: 4800), // 3 windows at 0.1 s / no overlap
             notifier: FakeNotifier(),
-            defaults: isolatedDefaults()
+            defaults: try isolatedDefaults()
         )
 
         center.prepareRetry(audioURL: audio, eventID: nil, title: "Ad hoc")
@@ -430,7 +430,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let expected: [MeetingRecorderCenter.Phase] = [
             .transcribing(done: 0, total: 0),
             .transcribing(done: 1, total: 3),
-            .transcribing(done: 2, total: 3),
+            .transcribing(done: 2, total: 3)
         ]
         for phase in expected {
             _ = await entered.next()

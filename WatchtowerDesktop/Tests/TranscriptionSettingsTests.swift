@@ -5,20 +5,20 @@ import Testing
 @Suite("TranscriptionConfig.fromDefaults")
 struct TranscriptionSettingsTests {
     /// Isolated UserDefaults suite so tests never touch `.standard`.
-    private func makeSuite() -> UserDefaults {
+    private func makeSuite() throws -> UserDefaults {
         let name = "transcription-tests-\(UUID().uuidString)"
-        return UserDefaults(suiteName: name)!
+        return try #require(UserDefaults(suiteName: name))
     }
 
     @Test("Empty suite yields struct defaults")
-    func emptyDefaults() {
-        let config = TranscriptionConfig.fromDefaults(makeSuite())
+    func emptyDefaults() throws {
+        let config = TranscriptionConfig.fromDefaults(try makeSuite())
         #expect(config == TranscriptionConfig())
     }
 
     @Test("Reads overrides from the suite")
-    func readsOverrides() {
-        let defaults = makeSuite()
+    func readsOverrides() throws {
+        let defaults = try makeSuite()
         defaults.set("ru,en", forKey: "transcription.langset")
         defaults.set(15.0, forKey: "transcription.windowSec")
         defaults.set(0.7, forKey: "transcription.langThreshold")
@@ -33,24 +33,24 @@ struct TranscriptionSettingsTests {
     }
 
     @Test("Non-empty force language disables detection")
-    func forcedLanguage() {
-        let defaults = makeSuite()
+    func forcedLanguage() throws {
+        let defaults = try makeSuite()
         defaults.set("uk", forKey: "transcription.forceLang")
         let config = TranscriptionConfig.fromDefaults(defaults)
         #expect(config.forcedLanguage == "uk")
     }
 
     @Test("Blank force language stays nil")
-    func blankForceLanguageIsNil() {
-        let defaults = makeSuite()
+    func blankForceLanguageIsNil() throws {
+        let defaults = try makeSuite()
         defaults.set("   ", forKey: "transcription.forceLang")
         let config = TranscriptionConfig.fromDefaults(defaults)
         #expect(config.forcedLanguage == nil)
     }
 
     @Test("Empty langset falls back to default")
-    func emptyLangsetFallsBack() {
-        let defaults = makeSuite()
+    func emptyLangsetFallsBack() throws {
+        let defaults = try makeSuite()
         defaults.set("  , ,", forKey: "transcription.langset")
         let config = TranscriptionConfig.fromDefaults(defaults)
         #expect(config.langset == ["ru", "uk", "en"])
