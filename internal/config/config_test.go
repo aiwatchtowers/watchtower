@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -360,4 +361,26 @@ workspaces:
 	ws, err := cfg.GetActiveWorkspace()
 	require.NoError(t, err)
 	assert.Equal(t, "xoxp-prod", ws.SlackToken)
+}
+
+// TestConfigRecordingsDir freezes the cross-language contract with the Swift
+// MeetingRecorderCenter.recordingsDirectory(): an explicit transcripts.recordings_dir
+// wins verbatim, otherwise the default resolves under the same
+// Library/Application Support/Watchtower/recordings location the Desktop recorder
+// writes into (so the daemon orphan cleanup scans the right directory).
+func TestConfigRecordingsDir(t *testing.T) {
+	t.Run("override used verbatim", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.Transcripts.RecordingsDir = "/custom/recordings/path"
+		assert.Equal(t, "/custom/recordings/path", cfg.RecordingsDir())
+	})
+
+	t.Run("default under Application Support", func(t *testing.T) {
+		cfg := &Config{}
+		got := cfg.RecordingsDir()
+		require.NotEmpty(t, got, "default recordings dir must resolve when a home directory exists")
+		suffix := filepath.Join("Library", "Application Support", "Watchtower", "recordings")
+		assert.True(t, strings.HasSuffix(got, suffix),
+			"default must match the Swift MeetingRecorderCenter path, got %q", got)
+	})
 }
