@@ -32,6 +32,11 @@ final class AppState {
     /// closed mid-extraction.
     let targetExtractCenter = TargetExtractCenter()
 
+    /// App-wide, single-slot registry for meeting recording + transcription, so
+    /// an in-flight recording and its transcription survive navigating away from
+    /// the calendar event that started it.
+    let meetingRecorderCenter = MeetingRecorderCenter()
+
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?

@@ -166,4 +166,36 @@ final class NotificationService: Sendable {
         )
         UNUserNotificationCenter.current().add(request)
     }
+
+    func sendTranscriptReadyNotification(title: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Transcript ready"
+        content.body = String(title.prefix(200))
+        content.sound = .default
+        content.userInfo = ["type": "meeting_transcript"]
+
+        let stableHash = fnv1aHash(title)
+        let request = UNNotificationRequest(
+            identifier: "meeting-transcript-\(stableHash)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    func sendTranscriptFailedNotification(reason: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Transcription failed"
+        content.body = String(reason.prefix(200))
+        content.sound = .default
+        content.userInfo = ["type": "meeting_transcript"]
+
+        let stableHash = fnv1aHash(reason)
+        let request = UNNotificationRequest(
+            identifier: "meeting-transcript-\(stableHash)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
 }
