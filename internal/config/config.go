@@ -151,6 +151,11 @@ type TargetsConfig struct {
 	Resolver TargetsResolverConfig `mapstructure:"resolver"`
 }
 
+// TranscriptsConfig holds settings for meeting transcript storage.
+type TranscriptsConfig struct {
+	AudioRetentionDays int `mapstructure:"audio_retention_days"` // delete recording audio after N days (default 30); transcript text is kept forever
+}
+
 // DayPlanConfig holds settings for the daily plan generation pipeline.
 type DayPlanConfig struct {
 	Enabled           bool   `yaml:"enabled" mapstructure:"enabled"`
@@ -178,6 +183,7 @@ type Config struct {
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
 	Targets         TargetsConfig               `mapstructure:"targets"`
+	Transcripts     TranscriptsConfig           `mapstructure:"transcripts"`
 	Catchup         CatchupConfig               `mapstructure:"catchup"`
 	DB              DBConfig                    `mapstructure:"db"`
 	ClaudePath      string                      `mapstructure:"claude_path"`
@@ -251,6 +257,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("targets.resolver.jira_enabled", DefaultTargetsResolverJiraEnabled)
 	v.SetDefault("targets.resolver.mcp_timeout_seconds", DefaultTargetsResolverMCPTimeoutSeconds)
 	v.SetDefault("targets.resolver.active_snapshot_limit", DefaultTargetsResolverActiveSnapshotLimit)
+	v.SetDefault("transcripts.audio_retention_days", DefaultTranscriptAudioRetentionDays)
 	// db.schema_format defaults to 1 (legacy PRAGMA-based) so that any
 	// existing install triggers the one-shot upgrade on first run of the
 	// goose-based binary. cmd/root.go bumps it to db.CurrentSchemaFormat
