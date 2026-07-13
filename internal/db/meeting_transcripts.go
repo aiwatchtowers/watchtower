@@ -155,6 +155,27 @@ func (db *DB) ExpiredTranscriptAudio(cutoff string) ([]MeetingTranscript, error)
 	return out, rows.Err()
 }
 
+// TranscriptAudioPaths returns every non-NULL meeting_transcripts.audio_path —
+// the recordings still referenced by a transcript row. The daemon orphan scan
+// uses this set to know which rec_* files it must not delete.
+func (db *DB) TranscriptAudioPaths() ([]string, error) {
+	rows, err := db.Query(`SELECT audio_path FROM meeting_transcripts WHERE audio_path IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("listing transcript audio paths: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("scanning transcript audio path: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ClearMeetingTranscriptAudio NULLs audio_path after the audio file has been
 // deleted, and bumps updated_at. The transcript text is untouched.
 func (db *DB) ClearMeetingTranscriptAudio(id int64) error {
