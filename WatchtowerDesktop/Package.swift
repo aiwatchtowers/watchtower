@@ -12,6 +12,7 @@ let package = Package(
         // swift-markdown removed: MarkdownText uses Foundation's AttributedString(markdown:)
         .package(url: "https://github.com/jpsim/Yams", from: "5.0.0"),
         .package(url: "https://github.com/nalexn/ViewInspector", from: "0.10.0"),
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
     ],
     targets: [
         .executableTarget(
@@ -19,6 +20,7 @@ let package = Package(
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Yams", package: "Yams"),
+                .product(name: "WhisperKit", package: "WhisperKit"),
             ],
             path: "Sources",
             resources: [
