@@ -110,7 +110,7 @@ final class ReplicaTests: XCTestCase {
             "chronology": "Alice asked; Bob picked up rollout notes.",
             "card_status": "ready", "suggested_resolution": "",
             "signal_ids": "[3,8]", "last_signal_at": "2026-07-12T10:00:00Z",
-            "created_at": "2026-07-12T09:00:00Z", "updated_at": "2026-07-12T10:00:00Z",
+            "created_at": "2026-07-12T09:00:00Z", "updated_at": "2026-07-12T10:00:00Z"
         ])
         try await transport.save([
             dataRecord(kind: .situation, id: "5", payload: try RowPayloadCoder.payload(from: row))

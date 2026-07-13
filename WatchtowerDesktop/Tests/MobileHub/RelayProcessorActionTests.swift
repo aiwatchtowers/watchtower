@@ -220,7 +220,9 @@ final class RelayProcessorActionTests: XCTestCase {
             let payload = try await statusPayload(recordName: name)
             XCTAssertEqual(payload?.status, .applied)
         }
-        let rows = try await dbPool.read { db in
+        // Explicit closure return type: CI's older toolchain fails to infer
+        // it through the multiline-string argument and lands on ().
+        let rows = try await dbPool.read { db -> [Row] in
             try Row.fetchAll(db, sql: """
                 SELECT status, resolved_reason, snooze_until, suggested_resolution
                 FROM situations ORDER BY id

@@ -3,9 +3,9 @@
   "quality_signal": 0.6917379406095188,
   "coupling_score": 0.006872852233676976,
   "cycle_count": 0,
-  "god_file_count": 63,
+  "god_file_count": 73,
   "hotspot_count": 30,
-  "complex_fn_count": 107,
+  "complex_fn_count": 108,
   "max_depth": 2,
   "total_import_edges": 618,
   "cross_module_edges": 585
