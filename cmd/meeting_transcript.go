@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/meeting"
+	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -150,7 +152,7 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 
 	// The row is saved — from here on a recap failure must NOT flip the exit
 	// code; it is reported inside the envelope instead.
-	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id)
+	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
 	return printTranscriptEnvelope(cmd, database, id, recapErr)
 }
 
@@ -172,15 +174,16 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("transcript %d not found", id)
 	}
 
-	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id)
+	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
 	return printTranscriptEnvelope(cmd, database, id, recapErr)
 }
 
 // generateAndStoreTranscriptRecap runs the AI recap for a saved transcript and
 // stores it: event-linked transcripts write meeting_recaps (shared with the
 // paste-a-recap flow), ad-hoc ones write meeting_transcripts.summary_json.
-// Shared by save and the `recap <id>` retry command.
-func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *config.Config, id int64) error {
+// Shared by save and the `recap <id>` retry command. Bookkeeping failures
+// (pipeline_runs) are logged to errOut and never affect the result.
+func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *config.Config, id int64, errOut io.Writer) error {
 	tr, err := database.GetMeetingTranscript(id)
 	if err != nil {
 		return err
@@ -189,8 +192,17 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 		return fmt.Errorf("transcript %d not found", id)
 	}
 
-	runID, _ := database.CreatePipelineRun("meeting_transcript", "cli", "auto")
+	runID, err := database.CreatePipelineRun("meeting_transcript", "cli", "auto")
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: recording meeting_transcript pipeline run: %v\n", err)
+	}
+	completeRun := func(items, in, out, api int, errMsg string) {
+		if err := database.CompletePipelineRun(runID, items, in, out, 0, api, nil, nil, errMsg); err != nil {
+			fmt.Fprintf(errOut, "warning: completing meeting_transcript pipeline run %d: %v\n", runID, err)
+		}
+	}
 	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg), nil)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	eventID := ""
 	if tr.EventID.Valid {
@@ -198,16 +210,29 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 	}
 	res, usage, err := pipe.GenerateTranscriptRecap(ctx, eventID, tr.TranscriptText)
 	if err != nil {
-		_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+		completeRun(0, 0, 0, 0, err.Error())
 		return err
 	}
 
 	recapJSON, err := json.Marshal(res)
 	if err != nil {
-		_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+		completeRun(0, 0, 0, 0, err.Error())
 		return fmt.Errorf("marshalling recap: %w", err)
 	}
+	// Collision guard, mirroring Swift MeetingTranscriptQueries.linkToEvent:
+	// an existing meeting_recaps row (e.g. a recap the user pasted earlier) is
+	// never overwritten — when the event already has one, the generated recap
+	// lands in meeting_transcripts.summary_json instead. Only a recap-less
+	// event gets the generated recap in meeting_recaps.
+	writeToRecaps := false
 	if eventID != "" {
+		existing, lookupErr := database.GetMeetingRecap(eventID)
+		writeToRecaps = lookupErr == nil && existing == nil
+		if lookupErr != nil {
+			fmt.Fprintf(errOut, "warning: checking existing recap for %s (falling back to summary_json): %v\n", eventID, lookupErr)
+		}
+	}
+	if writeToRecaps {
 		err = database.UpsertMeetingRecap(eventID, tr.TranscriptText, string(recapJSON))
 	} else {
 		err = database.SetMeetingTranscriptSummary(id, string(recapJSON))
@@ -221,37 +246,42 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 	if err != nil {
 		storeErrMsg = err.Error()
 	}
-	_ = database.CompletePipelineRun(runID, 1, in, out, 0, api, nil, nil, storeErrMsg)
+	completeRun(1, in, out, api, storeErrMsg)
 	return err
 }
 
 // printTranscriptEnvelope emits the frozen stdout contract consumed by the
 // Swift TranscriptSaveService: transcript_id / recap_ok / recap_error (plus
-// event_id and title for display).
+// event_id and title for display). A failed post-save refetch must NOT flip
+// the exit code — the row IS persisted (exit 1 only when nothing was
+// persisted) — so it degrades to a minimal envelope built from what is known,
+// logging the refetch problem to stderr.
 func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr error) error {
-	tr, err := database.GetMeetingTranscript(id)
-	if err != nil {
-		return err
-	}
-	if tr == nil {
-		return fmt.Errorf("transcript %d not found after save", id)
-	}
-
-	eventID := ""
-	if tr.EventID.Valid {
-		eventID = tr.EventID.String
-	}
 	recapErrMsg := ""
 	if recapErr != nil {
 		recapErrMsg = recapErr.Error()
 	}
 	envelope := map[string]any{
-		"transcript_id": tr.ID,
-		"event_id":      eventID,
-		"title":         tr.Title,
+		"transcript_id": id,
 		"recap_ok":      recapErr == nil,
 		"recap_error":   recapErrMsg,
 	}
+
+	tr, err := database.GetMeetingTranscript(id)
+	switch {
+	case err != nil:
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: re-loading transcript %d after save: %v\n", id, err)
+	case tr == nil:
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: transcript %d not found after save\n", id)
+	default:
+		eventID := ""
+		if tr.EventID.Valid {
+			eventID = tr.EventID.String
+		}
+		envelope["event_id"] = eventID
+		envelope["title"] = tr.Title
+	}
+
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
 	return enc.Encode(envelope)
