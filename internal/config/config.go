@@ -153,7 +153,8 @@ type TargetsConfig struct {
 
 // TranscriptsConfig holds settings for meeting transcript storage.
 type TranscriptsConfig struct {
-	AudioRetentionDays int `mapstructure:"audio_retention_days"` // delete recording audio after N days (default 30); transcript text is kept forever
+	AudioRetentionDays int    `mapstructure:"audio_retention_days"` // delete recording audio after N days (default 30); transcript text is kept forever
+	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the Desktop recorder writes rec_* files into; empty → the default computed by Config.RecordingsDir
 }
 
 // DayPlanConfig holds settings for the daily plan generation pipeline.
@@ -387,4 +388,20 @@ func (c *Config) WorkspaceDir() string {
 // DBPath returns the path to the SQLite database for the active workspace.
 func (c *Config) DBPath() string {
 	return filepath.Join(c.WorkspaceDir(), "watchtower.db")
+}
+
+// RecordingsDir returns the meeting-recording directory scanned by the daemon
+// orphan cleanup: transcripts.recordings_dir when set, otherwise the Swift
+// recorder's default location ($HOME/Library/Application Support/Watchtower/
+// recordings, cf. MeetingRecorderCenter.recordingsDirectory). Returns "" when
+// the home directory cannot be determined.
+func (c *Config) RecordingsDir() string {
+	if c.Transcripts.RecordingsDir != "" {
+		return c.Transcripts.RecordingsDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings")
 }

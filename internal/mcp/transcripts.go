@@ -79,7 +79,8 @@ func registerTranscripts(s *mcpsdk.Server, database *db.DB) {
 		}
 		rows := make([]transcriptRow, 0, len(transcripts))
 		for i := range transcripts {
-			rows = append(rows, renderTranscriptRow(database, &transcripts[i]))
+			tr := &transcripts[i]
+			rows = append(rows, renderTranscriptRow(database, tr, transcriptRecapFor(database, tr)))
 		}
 		return jsonListResult(rows)
 	})
@@ -98,7 +99,7 @@ func registerTranscripts(s *mcpsdk.Server, database *db.DB) {
 		}
 		recap := transcriptRecapFor(database, tr)
 		return jsonResult(transcriptDetail{
-			transcriptRow:  renderTranscriptRow(database, tr),
+			transcriptRow:  renderTranscriptRow(database, tr, recap),
 			TranscriptText: tr.TranscriptText,
 			KeyDecisions:   recap.KeyDecisions,
 			ActionItems:    recap.ActionItems,
@@ -120,14 +121,15 @@ func dateBound(date, field, timeSuffix string) (bound, errMsg string) {
 }
 
 // renderTranscriptRow builds the list shape: the linked calendar event's title
-// (when the event still exists) and the one-line recap summary.
-func renderTranscriptRow(database *db.DB, tr *db.MeetingTranscript) transcriptRow {
+// (when the event still exists) and the one-line summary from the caller's
+// already-computed recap (see transcriptRecapFor).
+func renderTranscriptRow(database *db.DB, tr *db.MeetingTranscript, recap transcriptRecap) transcriptRow {
 	row := transcriptRow{
 		ID:          tr.ID,
 		Title:       tr.Title,
 		DurationSec: tr.DurationSec,
 		CreatedAt:   tr.CreatedAt,
-		Summary:     transcriptRecapFor(database, tr).Summary,
+		Summary:     recap.Summary,
 	}
 	if tr.EventID.Valid {
 		row.EventID = tr.EventID.String

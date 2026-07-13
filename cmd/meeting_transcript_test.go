@@ -217,6 +217,61 @@ func TestTranscriptSaveEventLinkedWritesMeetingRecaps(t *testing.T) {
 	assert.False(t, tr.SummaryJSON.Valid, "event-linked transcript must NOT get summary_json")
 }
 
+func TestTranscriptSaveEventWithExistingRecapKeepsIt(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	const existingRecapJSON = `{"summary":"manual recap","key_decisions":[],"action_items":[],"open_questions":[]}`
+	const existingSourceText = "recap the user pasted earlier"
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{ID: "primary", Name: "Primary", IsPrimary: true, IsSelected: true}))
+	require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{
+		ID:         "evt-recap",
+		CalendarID: "primary",
+		Title:      "Planning",
+		StartTime:  "2026-07-13T11:00:00Z",
+		EndTime:    "2026-07-13T11:30:00Z",
+	}))
+	require.NoError(t, database.UpsertMeetingRecap("evt-recap", existingSourceText, existingRecapJSON))
+	database.Close()
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "transcript recorded after the pasted recap")
+	transcriptSaveFlagEventID = "evt-recap"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.RecapOK)
+	assert.Equal(t, "evt-recap", env.EventID)
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+
+	// The pre-existing recap must be untouched (collision guard, mirrors
+	// Swift MeetingTranscriptQueries.linkToEvent).
+	recap, err := database.GetMeetingRecap("evt-recap")
+	require.NoError(t, err)
+	require.NotNil(t, recap)
+	assert.Equal(t, existingRecapJSON, recap.RecapJSON, "existing recap_json must not be overwritten")
+	assert.Equal(t, existingSourceText, recap.SourceText, "existing source_text must not be overwritten")
+
+	// The generated recap lands in the transcript's own summary_json instead.
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.SummaryJSON.Valid, "generated recap must land in summary_json when the event already has a recap")
+	assert.Contains(t, tr.SummaryJSON.String, `"summary":"s"`)
+}
+
 func TestTranscriptSaveRecapFailureStillPersists(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()

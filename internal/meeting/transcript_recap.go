@@ -29,24 +29,7 @@ func (p *Pipeline) GenerateTranscriptRecap(ctx context.Context, eventID, transcr
 			attendees, description = ev.Attendees, ev.Description
 		}
 		// meeting_notes context — same extraction as GenerateRecap
-		if notes, err := p.db.GetMeetingNotesForEvent(eventID); err == nil {
-			var qs, ns []string
-			for _, n := range notes {
-				line := "- " + strings.TrimSpace(n.Text)
-				switch n.Type {
-				case "question":
-					qs = append(qs, line)
-				case "note":
-					ns = append(ns, line)
-				}
-			}
-			if len(qs) > 0 {
-				topicsBlock = strings.Join(qs, "\n")
-			}
-			if len(ns) > 0 {
-				notesBlock = strings.Join(ns, "\n")
-			}
-		}
+		topicsBlock, notesBlock = p.meetingNotesBlocks(eventID)
 	}
 
 	lang := ""
