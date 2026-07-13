@@ -1,7 +1,10 @@
 package codex
 
 import (
+	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,6 +63,36 @@ func TestCodexArgsLargeMessageViaStdin(t *testing.T) {
 		if a == big {
 			t.Error("args contains the large message; it must travel via stdin only")
 		}
+	}
+}
+
+// TestCodexGeneratorLargeMessageReachesStdin proves the whole stdin wiring
+// end-to-end: a fake codex binary (shell script) reads its stdin and echoes a
+// marker back in the JSONL item.completed/agent_message format; the real CLI
+// is never invoked because codexPath points at the script.
+func TestCodexGeneratorLargeMessageReachesStdin(t *testing.T) {
+	const marker = "STDIN-MARKER-codex-c0de"
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	scriptBody := `#!/bin/sh
+input=$(cat)
+case "$input" in
+*` + marker + `*) echo '{"type":"item.completed","item":{"type":"agent_message","text":"got:` + marker + `"}}' ;;
+*) echo '{"type":"item.completed","item":{"type":"agent_message","text":"marker-missing"}}' ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("writing fake codex binary: %v", err)
+	}
+
+	gen := NewCodexGenerator("test-model", script)
+	big := strings.Repeat("x", digest.StdinThreshold) + marker // > StdinThreshold → stdin path
+
+	got, _, _, err := gen.Generate(context.Background(), "sys", big, "")
+	if err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+	if got != "got:"+marker {
+		t.Errorf("result = %q, want %q — the user message did not reach the subprocess via stdin", got, "got:"+marker)
 	}
 }
 

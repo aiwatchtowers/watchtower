@@ -77,6 +77,53 @@ func TestGenerateTranscriptRecapWithEvent(t *testing.T) {
 	}
 }
 
+func TestGenerateTranscriptRecapInjectsMeetingNotes(t *testing.T) {
+	database := openTestDB(t)
+	seedTestEvent(t, database)
+	for _, note := range []struct{ typ, text string }{
+		{"question", "should we delay the launch?"},
+		{"note", "budget approved last week"},
+	} {
+		if _, err := database.Exec(`INSERT INTO meeting_notes (event_id, type, text, sort_order)
+			VALUES (?, ?, ?, 0)`, "evt1", note.typ, note.text); err != nil {
+			t.Fatalf("seeding meeting note: %v", err)
+		}
+	}
+
+	mock := &recordingMockGenerator{response: transcriptRecapMockResponse}
+	pipe := &Pipeline{db: database, generator: mock}
+
+	_, _, err := pipe.GenerateTranscriptRecap(context.Background(), "evt1", "we agreed to ship v2 on friday")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(mock.lastSystemPrompt, "should we delay the launch?") {
+		t.Errorf("system prompt should contain the seeded topic (question), got: %.800s", mock.lastSystemPrompt)
+	}
+	if !strings.Contains(mock.lastSystemPrompt, "budget approved last week") {
+		t.Errorf("system prompt should contain the seeded freeform note, got: %.800s", mock.lastSystemPrompt)
+	}
+}
+
+func TestGenerateTranscriptRecapEventMissingKeepsPlaceholder(t *testing.T) {
+	database := openTestDB(t) // no event seeded — eventID points at nothing
+
+	mock := &recordingMockGenerator{response: transcriptRecapMockResponse}
+	pipe := &Pipeline{db: database, generator: mock}
+
+	res, _, err := pipe.GenerateTranscriptRecap(context.Background(), "evt-missing", "we agreed to ship v2 on friday")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected a recap result for a missing event")
+	}
+	if !strings.Contains(mock.lastSystemPrompt, "(ad-hoc recording)") {
+		t.Errorf("system prompt should keep the %q placeholder when the event is missing, got: %.500s",
+			"(ad-hoc recording)", mock.lastSystemPrompt)
+	}
+}
+
 func TestGenerateTranscriptRecapEmptyTranscript(t *testing.T) {
 	mock := &recordingMockGenerator{response: transcriptRecapMockResponse}
 	pipe := &Pipeline{generator: mock}
