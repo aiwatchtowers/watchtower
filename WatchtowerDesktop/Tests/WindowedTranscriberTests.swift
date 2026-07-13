@@ -1,0 +1,253 @@
+import XCTest
+@testable import WatchtowerDesktop
+
+/// Scripted engine: canned per-window detection results + transcription texts.
+/// Records every forced language and window size passed in.
+private final class MockEngine: TranscriptionEngine, @unchecked Sendable {
+    enum Detection {
+        case probs([String: Float])
+        case failure
+    }
+
+    struct MockError: Error {}
+
+    var detections: [Detection] = []
+    var texts: [Result<String, Error>] = []
+
+    private(set) var detectCallCount = 0
+    private(set) var transcribedLanguages: [String] = []
+    private(set) var windowSizes: [Int] = []
+
+    func detectLanguage(_ samples: [Float]) async throws -> [String: Float] {
+        let idx = detectCallCount
+        detectCallCount += 1
+        guard idx < detections.count else { throw MockError() }
+        switch detections[idx] {
+        case .probs(let probs): return probs
+        case .failure: throw MockError()
+        }
+    }
+
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> String {
+        windowSizes.append(samples.count)
+        transcribedLanguages.append(language)
+        let idx = transcribedLanguages.count - 1
+        guard idx < texts.count else { return "" }
+        return try texts[idx].get()
+    }
+}
+
+/// Thread-safe recorder for the @Sendable progress callback.
+private final class ProgressRecorder: @unchecked Sendable {
+    private(set) var calls: [(index: Int, count: Int)] = []
+    func record(_ index: Int, _ count: Int) {
+        calls.append((index, count))
+    }
+}
+
+final class WindowedTranscriberTests: XCTestCase {
+
+    /// Small windows so test sample arrays stay tiny: 0.01 s = 160 samples, no overlap.
+    private func tinyConfig() -> TranscriptionConfig {
+        var config = TranscriptionConfig()
+        config.windowSec = 0.01
+        config.overlapSec = 0
+        return config
+    }
+
+    /// Samples spanning exactly `windows` full windows under `config` (requires overlapSec == 0).
+    private func samples(windows: Int, config: TranscriptionConfig) -> [Float] {
+        let windowSamples = Int(config.windowSec * Double(TranscriptionConfig.sampleRate))
+        return [Float](repeating: 0, count: windows * windowSamples)
+    }
+
+    private func run(_ engine: MockEngine,
+                     _ config: TranscriptionConfig,
+                     windows: Int,
+                     progress: ProgressRecorder = ProgressRecorder()) async throws -> TranscriptionOutput {
+        let transcriber = WindowedTranscriber(engine: engine, config: config)
+        return try await transcriber.transcribe(samples: samples(windows: windows, config: config),
+                                                progress: { progress.record($0, $1) })
+    }
+
+    // MARK: - Language selection
+
+    func testForcedLanguageSkipsDetection() async throws {
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("hello")]
+
+        let output = try await run(engine, config, windows: 1)
+
+        XCTAssertEqual(engine.detectCallCount, 0)
+        XCTAssertEqual(engine.transcribedLanguages, ["en"])
+        XCTAssertEqual(output.text, "hello")
+        XCTAssertEqual(output.langStats, ["en": 1])
+    }
+
+    func testConfidentDetectionUsed() async throws {
+        let engine = MockEngine()
+        engine.detections = [.probs(["ru": 0.9, "en": 0.05])]
+        engine.texts = [.success("привет")]
+
+        let output = try await run(engine, tinyConfig(), windows: 1)
+
+        XCTAssertEqual(engine.transcribedLanguages, ["ru"])
+        XCTAssertEqual(output.text, "привет")
+        XCTAssertEqual(output.langStats, ["ru": 1])
+    }
+
+    func testLowConfidenceFallsBackToPrevious() async throws {
+        let engine = MockEngine()
+        engine.detections = [
+            .probs(["ru": 0.9, "en": 0.05]),
+            .probs(["ru": 0.4, "en": 0.35]),
+        ]
+        engine.texts = [.success("раз"), .success("два")]
+
+        let output = try await run(engine, tinyConfig(), windows: 2)
+
+        XCTAssertEqual(engine.transcribedLanguages, ["ru", "ru"])
+        XCTAssertEqual(output.langStats, ["ru": 2])
+    }
+
+    func testLowMarginFallsBackToPrevious() async throws {
+        let engine = MockEngine()
+        engine.detections = [
+            .probs(["ru": 0.9, "en": 0.05]),
+            .probs(["ru": 0.62, "uk": 0.55]), // margin 0.07 < 0.2
+        ]
+        engine.texts = [.success("раз"), .success("два")]
+
+        let output = try await run(engine, tinyConfig(), windows: 2)
+
+        XCTAssertEqual(engine.transcribedLanguages, ["ru", "ru"])
+        XCTAssertEqual(output.langStats, ["ru": 2])
+    }
+
+    func testFirstWindowLowConfidenceUsesDefault() async throws {
+        let engine = MockEngine()
+        engine.detections = [.probs(["ru": 0.4, "en": 0.35])]
+        engine.texts = [.success("что-то")]
+
+        _ = try await run(engine, tinyConfig(), windows: 1)
+
+        XCTAssertEqual(engine.transcribedLanguages, ["ru"])
+    }
+
+    func testSilentWindowDoesNotStick() async throws {
+        let engine = MockEngine()
+        engine.detections = [
+            .probs(["en": 0.9, "ru": 0.02]),
+            .probs(["uk": 0.9, "ru": 0.02]),
+            .probs(["ru": 0.3, "en": 0.3]), // unsure → fallback
+        ]
+        engine.texts = [.success("hello"), .success(""), .success("again")]
+
+        let output = try await run(engine, tinyConfig(), windows: 3)
+
+        // w2 detected uk but produced no speech, so w3 falls back to en (not uk).
+        XCTAssertEqual(engine.transcribedLanguages, ["en", "uk", "en"])
+        XCTAssertEqual(output.text, "hello\nagain")
+        XCTAssertEqual(output.langStats, ["en": 2])
+    }
+
+    func testLangsetRestriction() async throws {
+        let engine = MockEngine()
+        // Best overall is "de", but restricted to langset {ru,uk,en} the best is
+        // ru@0.04 which is below threshold → first-window default "ru".
+        engine.detections = [.probs(["de": 0.95, "ru": 0.04, "en": 0.01])]
+        engine.texts = [.success("текст")]
+
+        _ = try await run(engine, tinyConfig(), windows: 1)
+
+        XCTAssertEqual(engine.transcribedLanguages, ["ru"])
+    }
+
+    // MARK: - Errors
+
+    func testDetectErrorFallsBack() async throws {
+        let engine = MockEngine()
+        engine.detections = [
+            .probs(["ru": 0.9, "en": 0.05]),
+            .failure,
+        ]
+        engine.texts = [.success("раз"), .success("два")]
+
+        let output = try await run(engine, tinyConfig(), windows: 2)
+
+        XCTAssertEqual(engine.transcribedLanguages, ["ru", "ru"])
+        XCTAssertEqual(output.text, "раз\nдва")
+        XCTAssertEqual(output.langStats, ["ru": 2])
+    }
+
+    func testTranscribeErrorSkipsWindow() async throws {
+        let engine = MockEngine()
+        engine.detections = [
+            .probs(["en": 0.9, "ru": 0.02]),
+            .probs(["uk": 0.9, "ru": 0.02]),
+            .probs(["ru": 0.3, "en": 0.3]), // unsure → fallback
+        ]
+        engine.texts = [.success("hello"), .failure(MockEngine.MockError()), .success("again")]
+
+        let output = try await run(engine, tinyConfig(), windows: 3)
+
+        // w2 errored: not counted, language does not stick → w3 falls back to en.
+        XCTAssertEqual(engine.transcribedLanguages, ["en", "uk", "en"])
+        XCTAssertEqual(output.text, "hello\nagain")
+        XCTAssertEqual(output.langStats, ["en": 2])
+    }
+
+    // MARK: - Stats / windowing
+
+    func testLangStatsCountsSpeechWindowsOnly() async throws {
+        let engine = MockEngine()
+        engine.detections = [
+            .probs(["ru": 0.9, "en": 0.02]),
+            .probs(["ru": 0.9, "en": 0.02]),
+            .probs(["ru": 0.9, "en": 0.02]),
+        ]
+        engine.texts = [.success("а"), .success("   \n"), .success("б")]
+
+        let output = try await run(engine, tinyConfig(), windows: 3)
+
+        XCTAssertEqual(output.langStats, ["ru": 2])
+        XCTAssertEqual(output.text, "а\nб")
+    }
+
+    func testWindowingMath() async throws {
+        // Defaults: 20 s window, 1 s overlap → step 19 s. 50 s of audio →
+        // window starts at 0 s, 19 s, 38 s (3 windows), last one truncated to 12 s.
+        var config = TranscriptionConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("a"), .success("b"), .success("c")]
+        let recorder = ProgressRecorder()
+        let transcriber = WindowedTranscriber(engine: engine, config: config)
+        let audio = [Float](repeating: 0, count: 50 * TranscriptionConfig.sampleRate)
+
+        let output = try await transcriber.transcribe(samples: audio,
+                                                      progress: { recorder.record($0, $1) })
+
+        XCTAssertEqual(engine.windowSizes, [320_000, 320_000, 192_000])
+        XCTAssertEqual(recorder.calls.count, 3)
+        XCTAssertEqual(recorder.calls.map(\.index), [1, 2, 3])
+        XCTAssertEqual(recorder.calls.map(\.count), [3, 3, 3])
+        XCTAssertEqual(output.text, "a\nb\nc")
+    }
+
+    func testEmptySamplesReturnsEmptyOutput() async throws {
+        let engine = MockEngine()
+        let recorder = ProgressRecorder()
+        let transcriber = WindowedTranscriber(engine: engine, config: tinyConfig())
+
+        let output = try await transcriber.transcribe(samples: [],
+                                                      progress: { recorder.record($0, $1) })
+
+        XCTAssertEqual(output, TranscriptionOutput(text: "", langStats: [:]))
+        XCTAssertEqual(engine.detectCallCount, 0)
+        XCTAssertTrue(engine.transcribedLanguages.isEmpty)
+        XCTAssertTrue(recorder.calls.isEmpty)
+    }
+}
