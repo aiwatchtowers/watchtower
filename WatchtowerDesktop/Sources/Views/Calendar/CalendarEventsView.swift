@@ -8,6 +8,8 @@ struct CalendarEventsView: View {
     @State private var expandedAllDayDates: Set<Date> = []
     @State private var expandedEventID: String?
     @State private var userNotes: String = ""
+    @State private var adHocTranscripts: [MeetingTranscript] = []
+    @State private var linkTarget: MeetingTranscript?
 
     var body: some View {
         Group {
@@ -50,8 +52,18 @@ struct CalendarEventsView: View {
                 if vm.dailyEvents.isEmpty {
                     emptyState
                 }
+
+                recordingsSection
             }
             .padding()
+        }
+        .onAppear(perform: loadAdHocTranscripts)
+        .onChange(of: appState.meetingRecorderCenter.phase) { _, phase in
+            if case .idle = phase { loadAdHocTranscripts() }
+        }
+        .sheet(item: $linkTarget) { transcript in
+            LinkTranscriptSheet(transcript: transcript, onLinked: loadAdHocTranscripts)
+                .environment(appState)
         }
     }
 
@@ -64,6 +76,45 @@ struct CalendarEventsView: View {
             Text("Calendar")
                 .font(.title2)
                 .fontWeight(.bold)
+            Spacer()
+            recordButton(eventID: nil, title: nil)
+        }
+    }
+
+    // MARK: - Record Button
+
+    /// Record/Stop control for a calendar event (or ad-hoc when `eventID` is nil).
+    /// Shows "Stop" only while THIS target is the one being recorded; disabled
+    /// when another run is in flight or system-audio capture is unsupported.
+    @ViewBuilder
+    private func recordButton(eventID: String?, title: String?) -> some View {
+        let center = appState.meetingRecorderCenter
+        let isRecordingThis: Bool = {
+            if case .recording = center.phase { return center.currentEventID == eventID }
+            return false
+        }()
+        Button {
+            if isRecordingThis {
+                stopRecording()
+            } else {
+                Task { await center.startRecording(eventID: eventID, title: title) }
+            }
+        } label: {
+            Label(isRecordingThis ? "Stop" : "Record",
+                  systemImage: isRecordingThis ? "stop.circle" : "record.circle")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(isRecordingThis ? .red : nil)
+        .disabled((center.isBusy && !isRecordingThis) || !SystemAudioRecorder.isSupported)
+        .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
+    }
+
+    private func stopRecording() {
+        guard let runner = ProcessCLIRunner.makeDefault() else { return }
+        Task {
+            await appState.meetingRecorderCenter.stopAndProcess(runner: runner, config: .fromDefaults())
         }
     }
 
@@ -192,6 +243,8 @@ struct CalendarEventsView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(selectedEventID == event.id ? Color.accentColor : .blue)
+
+                recordButton(eventID: event.id, title: event.title)
             }
 
             if expandedEventID == event.id {
@@ -274,6 +327,83 @@ struct CalendarEventsView: View {
         case "declined": return .red
         default: return .secondary
         }
+    }
+
+    // MARK: - Recordings (ad-hoc)
+
+    @ViewBuilder
+    private var recordingsSection: some View {
+        if !adHocTranscripts.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Recordings")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+
+                ForEach(adHocTranscripts) { transcript in
+                    adHocRow(transcript)
+                }
+            }
+        }
+    }
+
+    private func adHocRow(_ transcript: MeetingTranscript) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(transcript.title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                HStack(spacing: 8) {
+                    Text(formattedDate(transcript.createdAt))
+                    Text(formatDuration(transcript.durationSec))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                if let summary = transcript.parsedSummary?.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer()
+            Button {
+                linkTarget = transcript
+            } label: {
+                Label("Link to event…", systemImage: "link")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func loadAdHocTranscripts() {
+        guard let db = appState.databaseManager else { return }
+        do {
+            adHocTranscripts = try db.dbPool.read { conn in
+                try MeetingTranscriptQueries.fetchAdHoc(conn)
+            }
+        } catch {
+            // Silent: table may not exist yet on older DB schema versions.
+        }
+    }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        let minutes = seconds / 60
+        let secs = seconds % 60
+        return minutes > 0 ? "\(minutes)m \(secs)s" : "\(secs)s"
+    }
+
+    private func formattedDate(_ iso: String) -> String {
+        let parser = ISO8601DateFormatter()
+        guard let date = parser.date(from: iso) else { return iso }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 
     // MARK: - Empty

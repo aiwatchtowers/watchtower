@@ -109,6 +109,34 @@ struct ConfigServiceTests {
         #expect(svc.jiraFeatures["recommendations"] == false)
     }
 
+    @Test("Load applies default transcript audio retention when section missing")
+    func loadTranscriptRetentionDefault() {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        #expect(svc.transcriptAudioRetentionDays == 30)
+    }
+
+    @Test("Load parses transcripts section")
+    func loadTranscripts() {
+        let path = makeTempConfig("""
+        transcripts:
+          audio_retention_days: 7
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.transcriptAudioRetentionDays == 7)
+    }
+
+    @Test("Save round-trips transcript audio retention")
+    func saveTranscriptRetention() throws {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        svc.transcriptAudioRetentionDays = 14
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.transcriptAudioRetentionDays == 14)
+    }
+
     @Test("Save round-trips dirty values")
     func saveRoundTrip() throws {
         let path = makeTempConfig("active_workspace: old\n")

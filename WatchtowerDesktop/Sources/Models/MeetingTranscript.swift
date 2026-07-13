@@ -43,3 +43,6 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         id = inserted.rowID
     }
 }
+
+// Identifiable for SwiftUI list/sheet identity; persisted rows always carry an id.
+extension MeetingTranscript: Identifiable {}

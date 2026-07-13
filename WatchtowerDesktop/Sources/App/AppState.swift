@@ -182,6 +182,9 @@ final class AppState {
         guard !isInitializing else { return }
         isInitializing = true
         isLoading = true
+        // Surface a recording captured before a crash/relaunch so the global
+        // indicator can offer to (re-)transcribe it. No DB needed.
+        meetingRecorderCenter.restorePendingOnLaunch()
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,

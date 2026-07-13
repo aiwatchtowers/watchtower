@@ -27,3 +27,37 @@ struct TranscriptionOutput: Equatable {
     let text: String                 // newline-joined non-empty window texts
     let langStats: [String: Int]     // windows per language (speech windows only)
 }
+
+extension TranscriptionConfig {
+    /// Builds a config from the `transcription.*` UserDefaults keys backing the
+    /// Settings "Transcription" section. Any key that is absent keeps the struct
+    /// default, so an untouched install behaves exactly like `TranscriptionConfig()`.
+    /// The model name is NOT read here — it is a separate key consumed by the
+    /// engine factory. `defaults` is injectable so tests use an isolated suite.
+    static func fromDefaults(_ defaults: UserDefaults = .standard) -> TranscriptionConfig {
+        var config = TranscriptionConfig()
+
+        if let raw = defaults.string(forKey: "transcription.langset") {
+            let parsed = raw
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if !parsed.isEmpty { config.langset = parsed }
+        }
+        if defaults.object(forKey: "transcription.windowSec") != nil {
+            let value = defaults.double(forKey: "transcription.windowSec")
+            if value > 0 { config.windowSec = value }
+        }
+        if defaults.object(forKey: "transcription.langThreshold") != nil {
+            config.langThreshold = Float(defaults.double(forKey: "transcription.langThreshold"))
+        }
+        if defaults.object(forKey: "transcription.margin") != nil {
+            config.margin = Float(defaults.double(forKey: "transcription.margin"))
+        }
+        let force = (defaults.string(forKey: "transcription.forceLang") ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        config.forcedLanguage = force.isEmpty ? nil : force
+
+        return config
+    }
+}

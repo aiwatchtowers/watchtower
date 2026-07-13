@@ -23,6 +23,11 @@ struct MeetingNotesView: View {
                     .padding(.horizontal)
             }
             recapSection
+            TranscriptSectionView(
+                eventID: eventID,
+                hasRecap: recap != nil,
+                onChanged: { loadNotes() }
+            )
             questionsSection
             notesSection
         }

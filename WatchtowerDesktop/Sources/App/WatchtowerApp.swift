@@ -69,6 +69,9 @@ struct WatchtowerApp: App {
             NavigationRoot()
                 .environment(appState)
                 .frame(minWidth: 800, minHeight: 600)
+                .overlay(alignment: .bottomTrailing) {
+                    RecordingIndicatorView()
+                }
                 .background(OpaqueWindowBackground())
                 .onAppear {
                     // H5 fix: connect the live SwiftUI-managed appState to the notification delegate

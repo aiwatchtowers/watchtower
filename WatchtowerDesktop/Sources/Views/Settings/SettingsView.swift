@@ -46,6 +46,14 @@ struct GeneralSettings: View {
     @State private var googleAuth = GoogleAuthService()
     @State private var jiraAuth = JiraAuthService()
 
+    @AppStorage("transcription.model") private var transcriptionModel = "large-v3"
+    @AppStorage("transcription.langset") private var transcriptionLangset = "ru,uk,en"
+    @AppStorage("transcription.windowSec") private var transcriptionWindowSec = 20.0
+    @AppStorage("transcription.langThreshold") private var transcriptionLangThreshold = 0.6
+    @AppStorage("transcription.margin") private var transcriptionMargin = 0.2
+    @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
+    @State private var showAdvancedTranscription = false
+
     var body: some View {
         Form {
             workspaceSection
@@ -55,6 +63,7 @@ struct GeneralSettings: View {
             dayPlanSection
             aiSection
             calendarSettingsSection
+            transcriptionSection
             jiraSettingsSection
 
             if let error = config.parseError {
@@ -424,6 +433,55 @@ struct GeneralSettings: View {
             if connected && !config.calendarEnabled {
                 config.calendarEnabled = true
                 saveConfig()
+            }
+        }
+    }
+
+    private var transcriptionSection: some View {
+        Section("Transcription") {
+            Picker("Model", selection: $transcriptionModel) {
+                Text("Large v3 (best quality)").tag("large-v3")
+                Text("Distil Large v3 (faster)").tag("distil-large-v3")
+                Text("Medium (fastest)").tag("medium")
+            }
+            .help("WhisperKit model used for on-device transcription")
+
+            TextField(
+                "Languages",
+                text: $transcriptionLangset,
+                prompt: Text("ru,uk,en")
+            )
+            .help("Comma-separated language codes to detect per window")
+
+            Stepper(
+                "Delete audio after \(config.transcriptAudioRetentionDays) days",
+                value: $config.transcriptAudioRetentionDays,
+                in: 0...365
+            )
+            .help("Recording audio is deleted after this many days; transcript text is kept forever. 0 disables cleanup.")
+
+            DisclosureGroup("Advanced", isExpanded: $showAdvancedTranscription) {
+                LabeledContent("Window (seconds)") {
+                    TextField("", value: $transcriptionWindowSec, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Language threshold") {
+                    TextField("", value: $transcriptionLangThreshold, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Runner-up margin") {
+                    TextField("", value: $transcriptionMargin, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                TextField(
+                    "Force language",
+                    text: $transcriptionForceLang,
+                    prompt: Text("auto-detect")
+                )
+                .help("Set a language code (e.g. ru) to skip detection entirely")
             }
         }
     }
