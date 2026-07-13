@@ -111,7 +111,7 @@ final class MeetingRecorderCenter {
         do {
             let directory = Self.recordingsDirectory()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent("rec_\(Self.timestampComponent()).m4a")
+            let url = directory.appendingPathComponent("rec_\(Self.timestampComponent()).caf")
             defaults.set(url.path, forKey: Self.pendingAudioPathKey)
             try await recorder.start(to: url)
             pendingAudioURL = url

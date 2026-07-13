@@ -15,7 +15,7 @@ enum AudioFileDecoderError: Error, LocalizedError {
     }
 }
 
-/// Decodes any AVFoundation-readable audio file (m4a, wav, …) to the raw
+/// Decodes any AVFoundation-readable audio file (caf, m4a, wav, …) to the raw
 /// 16 kHz mono Float32 sample stream WhisperKit expects.
 enum AudioFileDecoder {
     /// Decode any AVFoundation-readable file to 16 kHz mono Float32 samples.

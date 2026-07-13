@@ -127,7 +127,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
     /// so "audio preserved" assertions are meaningful.
     private func makeDummyAudioFile() throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rec-\(UUID().uuidString).m4a")
+            .appendingPathComponent("rec-\(UUID().uuidString).caf")
         try Data([0x00, 0x01, 0x02]).write(to: url)
         return url
     }
@@ -383,7 +383,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
 
         // Missing file → the stale key is cleared.
         let missingDefaults = try isolatedDefaults()
-        missingDefaults.set("/tmp/does-not-exist-\(UUID().uuidString).m4a", forKey: MeetingRecorderCenter.pendingAudioPathKey)
+        missingDefaults.set("/tmp/does-not-exist-\(UUID().uuidString).caf", forKey: MeetingRecorderCenter.pendingAudioPathKey)
         let center2 = MeetingRecorderCenter(
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in ScriptedEngine(texts: []) },
