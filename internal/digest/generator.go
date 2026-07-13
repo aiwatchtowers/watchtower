@@ -69,21 +69,34 @@ func validateModelArgs(model string) []string {
 	}
 }
 
-// generateArgs builds the CLI args for a digest generation request.
+// StdinThreshold is the user-message size above which generators pass the
+// message via the subprocess's stdin instead of argv, to stay clear of
+// ARG_MAX (hour-long meeting transcripts run to hundreds of KB).
+const StdinThreshold = 32 * 1024
+
+// generateArgs builds the CLI args for a digest generation request; when
+// userMessage exceeds StdinThreshold it is returned as stdin content instead
+// ("-p" with no value makes claude read the prompt from stdin).
 // See validateModelArgs for why --setting-sources project,local is required.
-func generateArgs(model, systemPrompt, userMessage string) []string {
-	args := []string{
-		"-p", userMessage,
+func generateArgs(model, systemPrompt, userMessage string) ([]string, string) {
+	stdin := ""
+	args := []string{"-p"}
+	if len(userMessage) > StdinThreshold {
+		stdin = userMessage
+	} else {
+		args = append(args, userMessage)
+	}
+	args = append(args,
 		"--output-format", "json",
 		"--model", model,
 		"--no-session-persistence",
 		"--tools", "",
 		"--setting-sources", "project,local",
-	}
+	)
 	if systemPrompt != "" {
 		args = append(args, "--system-prompt", systemPrompt)
 	}
-	return args
+	return args, stdin
 }
 
 // ValidateModel sends a minimal request to verify the configured model is valid.
@@ -178,10 +191,13 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 		model = ModelForSource(s)
 	}
 
-	args := generateArgs(model, systemPrompt, userMessage)
+	args, stdin := generateArgs(model, systemPrompt, userMessage)
 
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)

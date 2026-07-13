@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"watchtower/internal/digest"
 )
 
 func TestNewCodexGenerator(t *testing.T) {
@@ -23,6 +25,52 @@ func TestNewCodexGenerator_EmptyPath(t *testing.T) {
 	}
 	if gen.codexPath != "" {
 		t.Errorf("codexPath = %q, want empty", gen.codexPath)
+	}
+}
+
+func TestCodexArgsSmallMessageInline(t *testing.T) {
+	args, stdin := buildArgs("gpt-5.4", "sys", "hello")
+	if stdin != "" {
+		t.Errorf("stdin = %q, want empty for small message", stdin)
+	}
+	if len(args) == 0 || args[len(args)-1] != "hello" {
+		t.Errorf("args = %v, want the message as the last positional arg", args)
+	}
+	foundSys := false
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-c" && strings.HasPrefix(args[i+1], "developer_instructions=") {
+			foundSys = true
+		}
+	}
+	if !foundSys {
+		t.Errorf("args = %v, want -c developer_instructions=...", args)
+	}
+}
+
+func TestCodexArgsLargeMessageViaStdin(t *testing.T) {
+	big := strings.Repeat("x", digest.StdinThreshold+1)
+	args, stdin := buildArgs("gpt-5.4", "sys", big)
+	if stdin != big {
+		t.Errorf("stdin length = %d, want the full message (%d bytes)", len(stdin), len(big))
+	}
+	if len(args) == 0 || args[len(args)-1] != "-" {
+		t.Errorf("last arg = %q, want \"-\" (codex exec - reads the prompt from stdin)", args[len(args)-1])
+	}
+	for _, a := range args {
+		if a == big {
+			t.Error("args contains the large message; it must travel via stdin only")
+		}
+	}
+}
+
+func TestCodexArgsThresholdBoundary(t *testing.T) {
+	exact := strings.Repeat("x", digest.StdinThreshold)
+	args, stdin := buildArgs("gpt-5.4", "sys", exact)
+	if stdin != "" {
+		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
+	}
+	if len(args) == 0 || args[len(args)-1] != exact {
+		t.Error("args must carry the exactly-threshold message as the last positional arg")
 	}
 }
 
