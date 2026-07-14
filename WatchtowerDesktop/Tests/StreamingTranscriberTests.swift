@@ -86,6 +86,34 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
     }
 
+    func testMatchesBatchWithOverlap() async throws {
+        // Same equivalence check as `testMatchesBatchOnSameSamples`, but with a
+        // non-zero overlap — production `TranscriptionConfig` defaults to
+        // `overlapSec: 1.0`, so `step < windowSamples` (the overlapping-window
+        // path) must be pinned too, not just the `overlapSec: 0` case.
+        //
+        // 0.1 s window / 0.05 s overlap @ 16 kHz → windowSamples 1600, step 800.
+        // 4500 samples yields starts [0, 800, 1600, 2400, 3200]: four full
+        // 1600-sample windows plus a truncated 1300-sample tail.
+        let samples = [Float](repeating: 0, count: 4500)
+        let cfg = forcedConfig(windowSec: 0.1, overlapSec: 0.05)
+
+        let batchEngine = MockEngine()
+        batchEngine.texts = [.success("a"), .success("b"), .success("c"), .success("d"), .success("e")]
+        let batchOut = try await WindowedTranscriber(engine: batchEngine, config: cfg)
+            .transcribe(samples: samples) { _, _ in }
+
+        let streamEngine = MockEngine()
+        streamEngine.texts = [.success("a"), .success("b"), .success("c"), .success("d"), .success("e")]
+        let streamOut = try await StreamingTranscriber(engine: streamEngine, config: cfg)
+            .run(samples: stream(of: samples, pieceSize: 333)) { _ in }
+
+        XCTAssertEqual(streamOut, batchOut)
+        XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
+        XCTAssertEqual(batchEngine.windowSizes, [1600, 1600, 1600, 1600, 1300],
+                       "sanity check: four overlapping full windows plus a truncated tail")
+    }
+
     func testExactWindowLengthIsSingleWindow() async throws {
         // Recording length == window length → one window, no duplicate tail (batch parity).
         let engine = MockEngine()

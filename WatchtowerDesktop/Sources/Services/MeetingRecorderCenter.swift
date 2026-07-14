@@ -57,6 +57,15 @@ final class MeetingRecorderCenter {
     /// the live pass never ran or produced no usable text (→ batch fallback).
     private var liveTask: Task<TranscriptionOutput?, Never>?
 
+    /// Bumped every time a new live pass starts (`startLivePass`) and again when
+    /// a stop-time error orphans the in-flight one. `onChunk` closes over the
+    /// value captured at its own start and only mutates `liveChunks` while that
+    /// value still matches — so a stale append from a cancelled/orphaned task
+    /// (still in flight because cancellation cannot interrupt an in-progress
+    /// `await engine.transcribeWindow`) can never land in a *new* recording's
+    /// `liveChunks` once one has started.
+    private var liveGeneration = 0
+
     /// A recording, transcription, or summarization is in flight. `.failed` is
     /// not busy — a failed run can be retried or dismissed.
     var isBusy: Bool {
@@ -160,6 +169,8 @@ final class MeetingRecorderCenter {
         liveChunks = []
         liveEngineState = .loading
         loadedEngine = nil
+        liveGeneration += 1
+        let generation = liveGeneration
         liveTask = Task { [weak self] () -> TranscriptionOutput? in
             guard let self else { return nil }
             let engine: TranscriptionEngine
@@ -177,6 +188,10 @@ final class MeetingRecorderCenter {
             do {
                 return try await transcriber.run(samples: recorder.liveSamples) { chunk in
                     Task { @MainActor in
+                        // Fences a stale append from an orphaned/cancelled prior
+                        // live pass (see `liveGeneration`'s doc) against the
+                        // NEW recording's `liveChunks`.
+                        guard self.liveGeneration == generation else { return }
                         self.liveChunks.append(LiveChunk(id: chunk.index, text: chunk.text, language: chunk.language))
                     }
                 }
@@ -198,8 +213,18 @@ final class MeetingRecorderCenter {
         do {
             result = try await recorder.stop() // also finishes liveSamples
         } catch {
+            // `recorder.stop()` finishes `liveSamples` before throwing, so the
+            // live task is still draining the buffered backlog through the
+            // (heavy) engine. Cancel it — `StreamingTranscriber.run` checks
+            // `Task.isCancelled` so it stops promptly rather than grinding
+            // through everything — and bump `liveGeneration` so any append
+            // already in flight (cancellation cannot interrupt an in-progress
+            // `await engine.transcribeWindow`) is fenced out of whatever
+            // recording starts next instead of contaminating it.
+            liveTask?.cancel()
             liveTask = nil
             loadedEngine = nil
+            liveGeneration += 1
             fail(error.localizedDescription)
             return
         }

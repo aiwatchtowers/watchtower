@@ -17,6 +17,13 @@ struct StreamChunk: Equatable, Sendable {
 /// truncated to the total length — matching the batch "exact-window-length is a
 /// single window" rule. Silent/failed windows never stick and are not counted;
 /// total engine failure throws rather than masquerading as all-silence.
+///
+/// Cooperatively cancellable: `Task.isCancelled` is checked at the top of the
+/// outer sample loop and before every window transcription, so a caller that
+/// cancels the driving `Task` (e.g. after a stop-time error) gets a prompt
+/// return instead of grinding through the rest of a buffered backlog. A
+/// cancelled run returns whatever partial output it already has rather than
+/// throwing — the caller on that path discards the result anyway.
 struct StreamingTranscriber {
     let engine: TranscriptionEngine
     let config: TranscriptionConfig
@@ -61,9 +68,11 @@ struct StreamingTranscriber {
         }
 
         for await piece in samples {
+            if Task.isCancelled { break }
             buffer.append(contentsOf: piece)
             // Emit every window we can now prove is not the last one.
             while consumedBase + buffer.count > absStart + windowSamples {
+                if Task.isCancelled { break }
                 let localStart = absStart - consumedBase
                 let window = Array(buffer[localStart..<localStart + windowSamples])
                 await process(window: window)
@@ -74,12 +83,14 @@ struct StreamingTranscriber {
                     consumedBase += drop
                 }
             }
+            if Task.isCancelled { break }
         }
 
         // Stream closed: the single remaining window (if any) is the last one,
-        // truncated to whatever samples are left.
+        // truncated to whatever samples are left. Skipped when cancelled, so a
+        // cancelled task never runs one more (possibly heavy) window either.
         let totalCount = consumedBase + buffer.count
-        if absStart < totalCount {
+        if !Task.isCancelled, absStart < totalCount {
             let localStart = absStart - consumedBase
             let window = Array(buffer[localStart..<buffer.count])
             await process(window: window)

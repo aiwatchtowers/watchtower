@@ -935,4 +935,80 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(decodeCalls, 1, "fallback decodes the file")
         XCTAssertEqual(runner.invocations.count, 1)
     }
+
+    func testStopErrorCancelsOrphanedLiveTaskAndFencesStaleAppends() async throws {
+        // Regression pin for the whole-branch review fix: `recorder.stop()`
+        // finishes `liveSamples` BEFORE throwing, so a stop-time error leaves
+        // the live pass's Task still in flight (parked mid-window on the
+        // engine call below). Once phase is `.failed` the Center is not busy,
+        // so a NEW recording can start immediately — its `liveChunks` must
+        // never receive an append from the OLD (cancelled, orphaned) task,
+        // even though cancellation cannot interrupt the engine call already
+        // in progress when `cancel()` was issued.
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        let gateEngine = GateEngine(texts: ["stale-chunk"])
+        let secondEngine = ScriptedEngine(texts: ["fresh-second-recording"])
+        var engineFactoryCalls = 0
+        var recorderFactoryCalls = 0
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: {
+                recorderFactoryCalls += 1
+                return recorderFactoryCalls == 1 ? recorder1 : recorder2
+            },
+            engineFactory: { _ in
+                engineFactoryCalls += 1
+                return engineFactoryCalls == 1 ? gateEngine : secondEngine
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+        let liveConfig = threeWindowConfig() // 0.1 s window, no overlap → 1600 samples/window
+
+        // Recording 1: feed exactly one full ("not the last") window's worth
+        // plus more, so the live task calls into the (blocking) gate engine.
+        await center.startRecording(eventID: nil, title: "First", config: liveConfig)
+        recorder1.emitLive([Float](repeating: 0, count: 3200))
+        var entered = gateEngine.enteredStream.makeAsyncIterator()
+        _ = await entered.next() // the stale window is now parked inside transcribeWindow
+
+        // Stop errors: liveTask must be cancelled and liveGeneration bumped
+        // right here, before the still-parked engine call ever resumes.
+        recorder1.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        await center.stopAndProcess(config: liveConfig)
+        guard case .failed = center.phase else {
+            return XCTFail("expected .failed after stop() error, got \(center.phase)")
+        }
+
+        // A new recording starts right away — allowed, since `.failed` is not
+        // busy — and resets `liveChunks` for the new generation.
+        await center.startRecording(eventID: nil, title: "Second", config: liveConfig)
+        guard case .recording = center.phase else {
+            return XCTFail("expected .recording for the new recording, got \(center.phase)")
+        }
+        XCTAssertTrue(center.liveChunks.isEmpty, "the new recording starts with a clean liveChunks slate")
+
+        // Now let the orphaned generation-1 engine call resume: its onChunk
+        // fires, but is fenced by the (already-bumped) generation check.
+        gateEngine.release()
+        for _ in 0..<12 { await Task.yield() }
+
+        XCTAssertTrue(center.liveChunks.isEmpty,
+                      "a stale append from the cancelled prior generation must not contaminate the new recording's liveChunks")
+        XCTAssertEqual(center.currentTitle, "Second")
+
+        // Hygiene: drive recording 2 to completion so no task is left dangling.
+        let audio2 = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio2)
+            removeSidecars(audio2)
+        }
+        recorder2.stopResult = RecordingResult(audioURL: audio2, durationSec: 1)
+        await center.stopAndProcess(config: liveConfig)
+        XCTAssertTrue(center.liveChunks.isEmpty,
+                      "generation-1's stale chunk must still be absent after recording 2 completes")
+    }
 }
