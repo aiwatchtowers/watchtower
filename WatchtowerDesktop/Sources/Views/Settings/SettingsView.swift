@@ -445,6 +445,9 @@ struct GeneralSettings: View {
                 Text("Medium (fastest)").tag("medium")
             }
             .help("WhisperKit model used for on-device transcription")
+            .onChange(of: transcriptionModel) { _, newValue in
+                appState.transcriptionModelProvisioner.ensureDownloaded(modelName: newValue)
+            }
 
             TextField(
                 "Languages",

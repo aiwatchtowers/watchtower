@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage("transcription.model") private var transcriptionModel = "large-v3"
     @State private var meetingPrepVM = MeetingPrepViewModel()
     @State private var selectedEventID: String?
     @State private var googleAuth = GoogleAuthService()
@@ -33,7 +34,10 @@ struct CalendarEventsView: View {
                     }
                 }
                 .animation(.easeInOut(duration: 0.25), value: selectedEventID)
-                .onAppear { calVM.loadEvents() }
+                .onAppear {
+                    calVM.loadEvents()
+                    appState.transcriptionModelProvisioner.ensureDownloaded(modelName: transcriptionModel)
+                }
             } else {
                 notConnectedView
             }
