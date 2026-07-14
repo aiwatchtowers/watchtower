@@ -367,6 +367,59 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(notifier.failedReasons.count, 1)
     }
 
+    func testRetryAfterStopErrorLoadsFreshEngineNotStale() async throws {
+        // The live pass loads its own engine at record-start into `loadedEngine`
+        // for reuse by the stop-time batch fallback. When `recorder.stop()`
+        // itself throws, that path never reaches the fallback/reuse code at
+        // all — so `loadedEngine` must be cleared right there. Otherwise a
+        // later same-session retry (no new `startRecording`) would silently
+        // reuse the stale engine from the failed attempt instead of loading
+        // its own.
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        let notifier = FakeNotifier()
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        var engineLoads = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                return ScriptedEngine(texts: ["hello"])
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: notifier,
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: nil, title: "Ad hoc")
+        // Drain the main actor so the live pass finishes loading its engine
+        // (into `loadedEngine`) before the recording is stopped.
+        for _ in 0..<12 { await Task.yield() }
+        XCTAssertEqual(engineLoads, 1, "the live pass loads the engine once at record-start")
+
+        // `prepareRetry` is not used here — this is the same-session retry
+        // path (`retryTranscription` with no intervening `startRecording`),
+        // pointed at the audio the failed stop left pending.
+        await center.stopAndProcess(config: singleWindowConfig())
+        guard case .failed = center.phase else {
+            return XCTFail("expected .failed after a stop() error, got \(center.phase)")
+        }
+
+        await center.retryTranscription(config: singleWindowConfig())
+
+        XCTAssertEqual(engineLoads, 2,
+                       "retry after a stop() error must load a fresh engine, never the stale one from the failed attempt")
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
+
     func testLatchedWriteErrorFromStopGoesFailedAndKeepsPending() async throws {
         // A recording truncated by a mid-flight write error surfaces from
         // stop() as .writeFailed and must not be processed as a clean success.

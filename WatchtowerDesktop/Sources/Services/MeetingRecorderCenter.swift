@@ -56,8 +56,6 @@ final class MeetingRecorderCenter {
     /// The running live transcription; its value is the final output, or nil when
     /// the live pass never ran or produced no usable text (→ batch fallback).
     private var liveTask: Task<TranscriptionOutput?, Never>?
-    /// The active recorder's live sample stream, consumed by `liveTask`.
-    private var liveRecorder: AudioRecording?
 
     /// A recording, transcription, or summarization is in flight. `.failed` is
     /// not busy — a failed run can be retried or dismissed.
@@ -161,7 +159,6 @@ final class MeetingRecorderCenter {
     private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig) {
         liveChunks = []
         liveEngineState = .loading
-        liveRecorder = recorder
         loadedEngine = nil
         liveTask = Task { [weak self] () -> TranscriptionOutput? in
             guard let self else { return nil }
@@ -201,7 +198,8 @@ final class MeetingRecorderCenter {
         do {
             result = try await recorder.stop() // also finishes liveSamples
         } catch {
-            liveTask?.cancel(); liveTask = nil; liveRecorder = nil
+            liveTask = nil
+            loadedEngine = nil
             fail(error.localizedDescription)
             return
         }
@@ -215,7 +213,6 @@ final class MeetingRecorderCenter {
             phase = .transcribing(done: 0, total: 0)
             let liveOutput = await liveTask.value
             self.liveTask = nil
-            liveRecorder = nil
             if let liveOutput,
                !liveOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let durationSec = result.durationSec
@@ -298,6 +295,13 @@ final class MeetingRecorderCenter {
     private func transcribeAndSave(audioURL: URL, config: TranscriptionConfig) async {
         phase = .transcribing(done: 0, total: 0)
 
+        // Capture and clear the reusable engine (if any) up front, before any
+        // early-return path below — so a stale, already-consumed-or-abandoned
+        // engine from a prior recording attempt is never left around for a
+        // later same-session retry to pick up.
+        let reusableEngine = loadedEngine
+        loadedEngine = nil
+
         let samples: [Float]
         do {
             samples = try decode(audioURL)
@@ -307,8 +311,8 @@ final class MeetingRecorderCenter {
         }
 
         let engine: TranscriptionEngine
-        if let loadedEngine {
-            engine = loadedEngine
+        if let reusableEngine {
+            engine = reusableEngine
         } else {
             do {
                 engine = try await engineFactory(config)
@@ -317,7 +321,6 @@ final class MeetingRecorderCenter {
                 return
             }
         }
-        loadedEngine = nil
 
         let output: TranscriptionOutput
         do {
