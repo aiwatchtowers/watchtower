@@ -10,30 +10,68 @@ struct RecordingIndicatorView: View {
 
     var body: some View {
         let center = appState.meetingRecorderCenter
-        Group {
-            switch center.phase {
-            case .idle:
-                if center.pendingAudioURL != nil {
-                    recoveredPill(center)
-                }
-            case let .recording(startedAt):
-                recordingView(center, startedAt: startedAt)
-            case let .transcribing(done, total):
-                capsule {
-                    ProgressView().controlSize(.small)
-                    Text(total > 0 ? "Transcribing \(done)/\(total)" : "Transcribing…")
-                        .font(.callout)
-                }
-            case .summarizing:
-                capsule {
-                    ProgressView().controlSize(.small)
-                    Text("Summarizing…").font(.callout)
-                }
-            case let .failed(message):
-                failedCapsule(center, message: message)
-            }
+        let provisioner = appState.transcriptionModelProvisioner
+        VStack(alignment: .trailing, spacing: 10) {
+            recorderContent(center)
+            provisionerContent(provisioner)
         }
         .padding(16)
+    }
+
+    @ViewBuilder
+    private func recorderContent(_ center: MeetingRecorderCenter) -> some View {
+        switch center.phase {
+        case .idle:
+            if center.pendingAudioURL != nil {
+                recoveredPill(center)
+            }
+        case let .recording(startedAt):
+            recordingView(center, startedAt: startedAt)
+        case let .transcribing(done, total):
+            capsule {
+                ProgressView().controlSize(.small)
+                Text(total > 0 ? "Transcribing \(done)/\(total)" : "Transcribing…")
+                    .font(.callout)
+            }
+        case .summarizing:
+            capsule {
+                ProgressView().controlSize(.small)
+                Text("Summarizing…").font(.callout)
+            }
+        case let .failed(message):
+            failedCapsule(center, message: message)
+        }
+    }
+
+    @ViewBuilder
+    private func provisionerContent(_ provisioner: TranscriptionModelProvisioner) -> some View {
+        switch provisioner.state {
+        case .idle:
+            EmptyView()
+        case let .downloading(progress):
+            capsule {
+                ProgressView(value: progress).controlSize(.small).frame(width: 80)
+                Text("Downloading model… \(Int(progress * 100))%").font(.callout)
+            }
+        case let .failed(message):
+            modelFailedCapsule(provisioner, message: message)
+        }
+    }
+
+    private func modelFailedCapsule(_ provisioner: TranscriptionModelProvisioner, message: String) -> some View {
+        capsule {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Model download failed").font(.callout.weight(.medium))
+                Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Button("Retry") { provisioner.retry() }
+                .controlSize(.small)
+            Button("Dismiss") { provisioner.dismiss() }
+                .controlSize(.small)
+        }
+        .frame(maxWidth: 380)
     }
 
     // MARK: - Phase content
