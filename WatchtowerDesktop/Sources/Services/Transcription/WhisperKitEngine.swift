@@ -16,19 +16,32 @@ final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         self.whisperKit = whisperKit
     }
 
+    /// Downloads `modelName`'s files to the local WhisperKit cache without
+    /// instantiating the model. `TranscriptionModelProvisioner` calls this to
+    /// prefetch ahead of a recording; `load` below reuses it so the two
+    /// callers never diverge on how a download is performed. `WhisperKit.download`
+    /// is incremental (already-complete files are skipped), so calling this
+    /// again from `load` after a prefetch already finished is a fast on-disk
+    /// check, not a re-download.
+    static func ensureModelFilesDownloaded(
+        modelName: String,
+        downloadProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> URL {
+        try await WhisperKit.download(variant: modelName) { progress in
+            downloadProgress(progress.fractionCompleted)
+        }
+    }
+
     /// modelName e.g. "large-v3"; downloadProgress reports 0…1 during first-run model download.
     ///
     /// Uses the explicit download-then-load path because `WhisperKit(WhisperKitConfig(model:))`
-    /// offers no download-progress hook in 0.18.0; `WhisperKit.download` is incremental
-    /// (already-complete files are skipped), so repeat loads are fast and offline-safe.
+    /// offers no download-progress hook in 0.18.0.
     static func load(
         modelName: String,
         downloadProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> WhisperKitEngine {
         downloadProgress(0)
-        let modelFolder = try await WhisperKit.download(variant: modelName) { progress in
-            downloadProgress(progress.fractionCompleted)
-        }
+        let modelFolder = try await ensureModelFilesDownloaded(modelName: modelName, downloadProgress: downloadProgress)
         downloadProgress(1)
 
         let config = WhisperKitConfig(
