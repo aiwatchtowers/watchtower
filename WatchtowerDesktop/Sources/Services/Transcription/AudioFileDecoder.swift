@@ -45,7 +45,10 @@ enum AudioFileDecoder {
         var reachedEnd = false
         var readError: Error?
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            if reachedEnd || readError != nil {
+            // EOF must be detected BEFORE reading: on compressed files (AAC in
+            // caf/m4a) read(into:) past the last packet throws a bridged
+            // nilError instead of returning an empty buffer like PCM does.
+            if reachedEnd || readError != nil || file.framePosition >= file.length {
                 outStatus.pointee = .endOfStream
                 return nil
             }
