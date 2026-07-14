@@ -44,6 +44,21 @@ final class MeetingRecorderCenter {
     /// Audio file awaiting (re-)transcription after a failure or relaunch.
     private(set) var pendingAudioURL: URL?
 
+    enum LiveEngineState: Equatable { case off, loading, running, unavailable }
+    struct LiveChunk: Equatable, Identifiable { let id: Int; let text: String; let language: String }
+
+    private(set) var liveEngineState: LiveEngineState = .off
+    private(set) var liveChunks: [LiveChunk] = []
+
+    /// Engine loaded at record-start for the live pass, reused for the stop-time
+    /// batch fallback so we never load twice on a single recording.
+    private var loadedEngine: TranscriptionEngine?
+    /// The running live transcription; its value is the final output, or nil when
+    /// the live pass never ran or produced no usable text (→ batch fallback).
+    private var liveTask: Task<TranscriptionOutput?, Never>?
+    /// The active recorder's live sample stream, consumed by `liveTask`.
+    private var liveRecorder: AudioRecording?
+
     /// A recording, transcription, or summarization is in flight. `.failed` is
     /// not busy — a failed run can be retried or dismissed.
     var isBusy: Bool {
@@ -112,7 +127,7 @@ final class MeetingRecorderCenter {
     /// Starts a recording for `eventID` (nil = ad-hoc). No-op when already busy
     /// (single-slot guard). The audio path is persisted to `UserDefaults` before
     /// capture starts so a crash still leaves a recoverable pointer.
-    func startRecording(eventID: String?, title: String?) async {
+    func startRecording(eventID: String?, title: String?, config: TranscriptionConfig = .fromDefaults()) async {
         guard !isBusy else { return }
 
         currentEventID = eventID
@@ -129,6 +144,7 @@ final class MeetingRecorderCenter {
             try await recorder.start(to: url)
             pendingAudioURL = url
             phase = .recording(startedAt: Date())
+            startLivePass(recorder: recorder, config: config)
         } catch {
             // Start failed before any audio was captured: nothing to keep.
             self.recorder = nil
@@ -136,6 +152,40 @@ final class MeetingRecorderCenter {
             currentTitle = nil
             clearPending()
             fail(error.localizedDescription)
+        }
+    }
+
+    /// Loads the engine and runs StreamingTranscriber over the recorder's live
+    /// samples. Never fails the recording: a load/stream failure only sets
+    /// `liveEngineState` and leaves the batch fallback to handle stop.
+    private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig) {
+        liveChunks = []
+        liveEngineState = .loading
+        liveRecorder = recorder
+        loadedEngine = nil
+        liveTask = Task { [weak self] () -> TranscriptionOutput? in
+            guard let self else { return nil }
+            let engine: TranscriptionEngine
+            do {
+                engine = try await self.engineFactory(config)
+            } catch {
+                await MainActor.run { self.liveEngineState = .unavailable }
+                return nil
+            }
+            await MainActor.run {
+                self.loadedEngine = engine
+                self.liveEngineState = .running
+            }
+            let transcriber = StreamingTranscriber(engine: engine, config: config)
+            do {
+                return try await transcriber.run(samples: recorder.liveSamples) { chunk in
+                    Task { @MainActor in
+                        self.liveChunks.append(LiveChunk(id: chunk.index, text: chunk.text, language: chunk.language))
+                    }
+                }
+            } catch {
+                return nil // total engine failure → batch fallback from file
+            }
         }
     }
 
@@ -149,15 +199,39 @@ final class MeetingRecorderCenter {
 
         let result: RecordingResult
         do {
-            result = try await recorder.stop()
+            result = try await recorder.stop() // also finishes liveSamples
         } catch {
-            // The partial file (if any) and the pending pointer are kept.
+            liveTask?.cancel(); liveTask = nil; liveRecorder = nil
             fail(error.localizedDescription)
             return
         }
 
         pendingAudioURL = result.audioURL
         persistPendingDefaults(audioURL: result.audioURL)
+
+        // Live path: the stream is now finished, so awaiting the task finalizes
+        // the tail. A usable result is saved directly — no re-decode.
+        if let liveTask {
+            phase = .transcribing(done: 0, total: 0)
+            let liveOutput = await liveTask.value
+            self.liveTask = nil
+            liveRecorder = nil
+            if let liveOutput,
+               !liveOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let durationSec = result.durationSec
+                Self.persistTranscript(liveOutput, durationSec: durationSec, audioURL: result.audioURL)
+                await saveTranscript(
+                    text: liveOutput.text,
+                    durationSec: durationSec,
+                    langStats: liveOutput.langStats,
+                    audioURL: result.audioURL
+                )
+                loadedEngine = nil
+                return
+            }
+        }
+
+        // Fallback: today's decode + batch path (reuses the loaded engine if any).
         await transcribeAndSave(audioURL: result.audioURL, config: config)
     }
 
@@ -233,12 +307,17 @@ final class MeetingRecorderCenter {
         }
 
         let engine: TranscriptionEngine
-        do {
-            engine = try await engineFactory(config)
-        } catch {
-            fail(error.localizedDescription)
-            return
+        if let loadedEngine {
+            engine = loadedEngine
+        } else {
+            do {
+                engine = try await engineFactory(config)
+            } catch {
+                fail(error.localizedDescription)
+                return
+            }
         }
+        loadedEngine = nil
 
         let output: TranscriptionOutput
         do {

@@ -785,4 +785,101 @@ final class MeetingRecorderCenterTests: XCTestCase {
         await runTask.value
         XCTAssertEqual(center.phase, .idle)
     }
+
+    // MARK: Live pass
+
+    func testLivePathSavesWithoutRedecoding() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        var decodeCalls = 0
+        var engineLoads = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in engineLoads += 1; return ScriptedEngine(texts: ["live one", "live two"]) },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: nil, title: "Live meeting")
+        // Feed 3.5 windows of samples while "recording", then stop (finishes the stream).
+        recorder.emitLive([Float](repeating: 0, count: 5600))
+        await center.stopAndProcess(config: threeWindowConfig())
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(decodeCalls, 0, "the live result is saved directly — the file must not be re-decoded")
+        XCTAssertEqual(engineLoads, 1, "the engine loads once at start and is reused")
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertNil(center.pendingAudioURL)
+    }
+
+    func testLiveChunksAccumulateAndSurviveViewLifetime() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in ScriptedEngine(texts: ["alpha", "beta"]) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: nil, title: "Live", config: threeWindowConfig())
+        recorder.emitLive([Float](repeating: 0, count: 3200)) // 2 full windows worth
+        // Let the live task drain the emitted samples.
+        for _ in 0..<12 { await Task.yield() }
+
+        XCTAssertFalse(center.liveChunks.isEmpty, "live chunks must accumulate during recording")
+        XCTAssertEqual(center.liveChunks.first?.text, "alpha")
+
+        await center.stopAndProcess(config: threeWindowConfig())
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    func testLiveEngineUnavailableFallsBackToBatch() async throws {
+        struct EngineLoadError: Error {}
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        var engineCalls = 0
+        var decodeCalls = 0
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineCalls += 1
+                if engineCalls == 1 { throw EngineLoadError() } // live load fails
+                return ScriptedEngine(texts: ["batch recovered"])  // stop-time fallback succeeds
+            },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: nil, title: "Live")
+        // Live engine failed to load → recording continues, no error surfaced.
+        guard case .recording = center.phase else { return XCTFail("recording must continue after live-load failure") }
+        // The engine loads on a background task; drain the main actor so the
+        // .unavailable transition lands before we assert on it.
+        for _ in 0..<12 { await Task.yield() }
+        XCTAssertEqual(center.liveEngineState, .unavailable)
+
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(decodeCalls, 1, "fallback decodes the file")
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
 }
