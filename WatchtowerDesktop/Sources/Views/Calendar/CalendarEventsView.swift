@@ -97,7 +97,7 @@ struct CalendarEventsView: View {
             if isRecordingThis {
                 stopRecording()
             } else {
-                Task { await center.startRecording(eventID: eventID, title: title) }
+                Task { await center.startRecording(eventID: eventID, title: title, config: .fromDefaults()) }
             }
         } label: {
             Label(isRecordingThis ? "Stop" : "Record",
