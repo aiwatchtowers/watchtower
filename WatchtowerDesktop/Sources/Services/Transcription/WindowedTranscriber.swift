@@ -51,7 +51,7 @@ struct WindowedTranscriber {
             if let forced = config.forcedLanguage {
                 language = forced
             } else {
-                language = await chooseLanguage(for: window, previous: prevLang)
+                language = await resolveWindowLanguage(for: window, previous: prevLang, config: config, engine: engine)
             }
 
             let text: String
@@ -81,23 +81,5 @@ struct WindowedTranscriber {
         }
 
         return TranscriptionOutput(text: texts.joined(separator: "\n"), langStats: langStats)
-    }
-
-    /// Detection with sticky fallback. A detection error is treated as low
-    /// confidence (fallback), never fatal.
-    private func chooseLanguage(for window: [Float], previous: String?) async -> String {
-        let fallback = previous ?? config.firstWindowDefault
-        guard let probs = try? await engine.detectLanguage(window) else {
-            return fallback
-        }
-        let restricted = probs
-            .filter { config.langset.contains($0.key) }
-            .sorted { $0.value > $1.value }
-        guard let best = restricted.first else { return fallback }
-        let runnerUp = restricted.dropFirst().first?.value ?? 0
-        if best.value >= config.langThreshold && (best.value - runnerUp) >= config.margin {
-            return best.key
-        }
-        return fallback
     }
 }
