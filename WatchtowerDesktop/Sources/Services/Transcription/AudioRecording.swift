@@ -17,6 +17,10 @@ protocol AudioRecording: AnyObject {
     /// Throws `.writeFailed` when writing broke mid-recording — the truncated
     /// file is kept on disk, but it must not be reported as a clean success.
     func stop() async throws -> RecordingResult
+    /// Live 16 kHz mono Float32 samples delivered as they are captured, for
+    /// in-progress transcription. Finishes when `stop()` is called. Consuming it
+    /// is optional — a recording works identically whether or not anyone reads it.
+    var liveSamples: AsyncStream<[Float]> { get }
 }
 
 enum AudioRecordingError: LocalizedError {

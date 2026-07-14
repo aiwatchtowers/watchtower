@@ -20,11 +20,20 @@ final class SystemAudioRecorder: AudioRecording {
     }
 
     private var impl: AnyObject?
+    private var liveContinuation: AsyncStream<[Float]>.Continuation?
+    let liveSamples: AsyncStream<[Float]>
+
+    init() {
+        var continuation: AsyncStream<[Float]>.Continuation!
+        liveSamples = AsyncStream { continuation = $0 }
+        liveContinuation = continuation
+    }
 
     func start(to url: URL) async throws {
         guard #available(macOS 14.4, *) else { throw AudioRecordingError.unsupportedOS }
         guard impl == nil else { throw AudioRecordingError.deviceSetupFailed("recording already in progress") }
-        let recorder = TapRecorderImpl()
+        let recorder = TapRecorderImpl(liveContinuation: liveContinuation)
+        liveContinuation = nil
         try await recorder.start(to: url)
         impl = recorder
     }
@@ -55,12 +64,19 @@ private final class TapRecorderImpl {
     /// so a silently truncated recording never reports success. The partial
     /// file up to the error stays on disk.
     private var firstWriteError: Error?
+    /// Live sample sink, handed off from the facade at construction; finished
+    /// on `stop()`/`deinit` so a downstream `for await` loop ends.
+    private let liveContinuation: AsyncStream<[Float]>.Continuation?
 
     /// Serial queue owning file writes and converter state; the realtime IO
     /// block only copies + mixes samples and hops here for everything else.
     private let writeQueue = DispatchQueue(label: "com.watchtower.recorder.write")
 
     private static let outputSampleRate: Double = 16_000
+
+    init(liveContinuation: AsyncStream<[Float]>.Continuation?) {
+        self.liveContinuation = liveContinuation
+    }
 
     func start(to url: URL) async throws {
         // 1. Microphone permission (first call shows the TCC prompt).
@@ -133,6 +149,7 @@ private final class TapRecorderImpl {
             converter = nil
             return result
         }
+        liveContinuation?.finish()
         guard let audioURL = url else {
             throw AudioRecordingError.deviceSetupFailed("no file was open")
         }
@@ -151,6 +168,7 @@ private final class TapRecorderImpl {
             AudioDeviceDestroyIOProcID(aggregateID, procID)
         }
         teardownDevices()
+        liveContinuation?.finish()
     }
 
     // MARK: Capture path
@@ -249,6 +267,10 @@ private final class TapRecorderImpl {
         do {
             try audioFile.write(from: outBuffer)
             framesWritten += Int64(outBuffer.frameLength)
+            if let live = liveContinuation, let data = outBuffer.floatChannelData?[0] {
+                let n = Int(outBuffer.frameLength)
+                live.yield(Array(UnsafeBufferPointer(start: data, count: n)))
+            }
         } catch {
             // Disk-full/IO error: stop accumulating silently corrupt data; the
             // partial file up to here remains decodable (CAF) after stop().

@@ -17,6 +17,20 @@ private final class FakeRecorder: AudioRecording, @unchecked Sendable {
     private(set) var stopCalls = 0
     private(set) var lastStartURL: URL?
 
+    // Live-sample plumbing: a test can push samples then finish, or leave it to
+    // finish on stop() (the default: empty stream → live pass yields nothing).
+    private var liveContinuation: AsyncStream<[Float]>.Continuation!
+    let liveSamples: AsyncStream<[Float]>
+
+    init() {
+        var c: AsyncStream<[Float]>.Continuation!
+        liveSamples = AsyncStream { c = $0 }
+        liveContinuation = c
+    }
+
+    /// Emit one live piece (test drives the live path with this).
+    func emitLive(_ samples: [Float]) { liveContinuation.yield(samples) }
+
     func start(to url: URL) async throws {
         startCalls += 1
         lastStartURL = url
@@ -25,6 +39,7 @@ private final class FakeRecorder: AudioRecording, @unchecked Sendable {
 
     func stop() async throws -> RecordingResult {
         stopCalls += 1
+        liveContinuation.finish()
         if let stopError { throw stopError }
         guard let stopResult else {
             throw AudioRecordingError.deviceSetupFailed("FakeRecorder has no stopResult")
