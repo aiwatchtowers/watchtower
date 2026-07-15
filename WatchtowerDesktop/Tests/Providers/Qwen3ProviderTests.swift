@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerDesktop
 
 final class Qwen3ProviderTests: XCTestCase {
-    func testMetadata() {
+    func testMetadata() throws {
         let p = Qwen3Provider()
         XCTAssertEqual(type(of: p).id, "qwen3")
         XCTAssertFalse(p.supportsLive)
@@ -13,7 +13,7 @@ final class Qwen3ProviderTests: XCTestCase {
         }
         let langs = p.supportedLanguages(model: "Qwen3-ASR-0.6B")
         XCTAssertNotNil(langs)
-        XCTAssertTrue(langs!.isSuperset(of: ["ru", "uk", "en"]))
+        XCTAssertTrue(try XCTUnwrap(langs).isSuperset(of: ["ru", "uk", "en"]))
     }
 
     func testRegistered() {

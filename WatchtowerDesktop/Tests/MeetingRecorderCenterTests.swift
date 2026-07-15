@@ -58,9 +58,11 @@ private final class ScriptedEngine: WhisperWindowEngine, @unchecked Sendable {
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String {
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
         defer { index += 1 }
-        return index < texts.count ? texts[index] : ""
+        let text = index < texts.count ? texts[index] : ""
+        return [TranscribedSegment(text: text, startSec: 0,
+                                   endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
     }
 }
 
@@ -85,7 +87,7 @@ private final class GateEngine: WhisperWindowEngine, @unchecked Sendable {
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String {
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
         enteredContinuation.yield(())
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
@@ -99,7 +101,9 @@ private final class GateEngine: WhisperWindowEngine, @unchecked Sendable {
             }
         }
         defer { index += 1 }
-        return index < texts.count ? texts[index] : ""
+        let text = index < texts.count ? texts[index] : ""
+        return [TranscribedSegment(text: text, startSec: 0,
+                                   endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
     }
 
     /// Lets the currently-blocked (or next) `transcribeWindow` return.
@@ -131,8 +135,11 @@ private final class TestTranscriber: Transcriber, @unchecked Sendable {
         self.supportsLive = supportsLive
     }
 
-    func transcribe(_ samples: [Float], config: TranscriptionConfig,
-                    progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput {
+    func transcribe(
+        _ samples: [Float],
+        config: TranscriptionConfig,
+        progress: @escaping @Sendable (Int, Int) -> Void
+    ) async throws -> TranscriptionOutput {
         try await WindowedTranscriber(engine: engine, config: config).transcribe(samples: samples, progress: progress)
     }
 
@@ -149,6 +156,39 @@ private struct TestLiveSession: TranscriptionLiveSession {
     func run(samples: AsyncStream<[Float]>,
              onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
         try await StreamingTranscriber(engine: engine, config: config).run(samples: samples, onChunk: onChunk)
+    }
+}
+
+/// Scriptable `SpeakerDiarizing`: canned segments or a thrown error, plus a
+/// call counter so tests can assert the diarizer was (not) consulted.
+private final class FakeDiarizer: SpeakerDiarizing, @unchecked Sendable {
+    var segments: [SpeakerSegment] = []
+    var error: Error?
+    private(set) var calls = 0
+
+    struct FakeError: Error {}
+
+    func diarize(_ samples: [Float]) async throws -> [SpeakerSegment] {
+        calls += 1
+        if let error { throw error }
+        return segments
+    }
+}
+
+/// Reads the file passed via --transcript-file DURING the CLI invocation (the
+/// save service deletes it right after), capturing the exact saved text.
+private final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let stdoutData: Data
+    private(set) var savedTranscripts: [String] = []
+
+    init(stdout: Data) { self.stdoutData = stdout }
+
+    func run(args: [String]) async throws -> Data {
+        if let idx = args.firstIndex(of: "--transcript-file"), idx + 1 < args.count,
+           let text = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
+            savedTranscripts.append(text)
+        }
+        return stdoutData
     }
 }
 
@@ -188,16 +228,22 @@ final class MeetingRecorderCenterTests: XCTestCase {
         { _ in [Float](repeating: 0, count: sampleCount) }
     }
 
-    /// Removes the transcript sidecars (`<basename>.txt`/`.json`) the Center
-    /// persists next to `audio` after transcription succeeds.
+    /// Removes the recording's sidecars: the persisted transcript
+    /// (`<basename>.txt`/`.json`) and the mic-activity timeline (`.activity`).
     private func removeSidecars(_ audio: URL) {
-        try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension("txt"))
-        try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension("json"))
+        for ext in ["txt", "json", "activity"] {
+            try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension(ext))
+        }
     }
 
+    /// Diarization is off in the shared configs: a test whose output has
+    /// segments would otherwise hit the REAL FluidAudioDiarizer.load()
+    /// (network + CoreML) through the default factory. The diarization tests
+    /// opt back in via runDiarizationFlow with a FakeDiarizer.
     private func singleWindowConfig() -> TranscriptionConfig {
         var config = TranscriptionConfig()
         config.forcedLanguage = "en"
+        config.diarization = false
         return config
     }
 
@@ -207,6 +253,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
         config.forcedLanguage = "en"
         config.windowSec = 0.1
         config.overlapSec = 0
+        config.boundarySnapSec = 0 // exact 3-window layout is asserted
+        config.diarization = false // see singleWindowConfig
         return config
     }
 
@@ -217,8 +265,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
     /// whisperkit + turbo — the exact defaults `defaultEngineFactory` falls
     /// back to. Pins the migration contract in isolation from the recorder
     /// pipeline itself.
-    func testDefaultEngineFactoryUsesProviderAndModelDefaults() {
-        let d = UserDefaults(suiteName: "test.transcription.defaults.\(UUID().uuidString)")!
+    func testDefaultEngineFactoryUsesProviderAndModelDefaults() throws {
+        let d = try XCTUnwrap(UserDefaults(suiteName: "test.transcription.defaults.\(UUID().uuidString)"))
         let providerID = d.string(forKey: "transcription.provider") ?? "whisperkit"
         let model = d.string(forKey: "transcription.model") ?? "large-v3-v20240930"
         XCTAssertEqual(providerID, "whisperkit")
@@ -1097,5 +1145,190 @@ final class MeetingRecorderCenterTests: XCTestCase {
         await center.stopAndProcess(config: liveConfig)
         XCTAssertTrue(center.liveChunks.isEmpty,
                       "generation-1's stale chunk must still be absent after recording 2 completes")
+    }
+
+    // MARK: - Diarization post-pass
+
+    /// Batch-path harness: recording → (empty live) → decode stub → scripted
+    /// engine → fake diarizer → capturing runner. Returns the saved text.
+    private func runDiarizationFlow(
+        audio: URL,
+        diarizer: FakeDiarizer,
+        defaults: UserDefaults,
+        rolesEnabled: Bool = true
+    ) async throws -> (savedText: String?, center: MeetingRecorderCenter, notifier: FakeNotifier) {
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let notifier = FakeNotifier()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет", "ответ"])) },
+            diarizerFactory: { diarizer },
+            decode: stubDecode(sampleCount: 4800), // 3 windows of 0.1 s
+            runnerResolver: { runner },
+            notifier: notifier,
+            defaults: defaults
+        )
+        var config = threeWindowConfig()
+        config.diarization = rolesEnabled
+        await center.startRecording(eventID: nil, title: "Roles")
+        await center.stopAndProcess(config: config)
+        return (runner.savedTranscripts.first, center, notifier)
+    }
+
+    func testDiarizationRendersRolesIntoSavedText() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
+        ]
+
+        let (saved, center, notifier) = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
+        )
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(saved, "[Speaker 1] привет\n[Speaker 2] ответ")
+        XCTAssertEqual(notifier.readyTitles, ["Roles"], "successful roles must not flag the notification")
+        XCTAssertEqual(diarizer.calls, 1)
+    }
+
+    func testActivitySidecarLabelsOwnerCluster() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio) // covers the .activity sidecar too
+        }
+        // Bin 0 (0.0–0.1 s) mic-dominated → cluster A is the owner.
+        try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
+        ]
+
+        let (saved, _, _) = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
+        )
+
+        XCTAssertEqual(saved, "[Я] привет\n[Speaker 1] ответ")
+    }
+
+    func testDiarizerFailureSavesPlainTranscript() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.error = FakeDiarizer.FakeError()
+
+        let (saved, center, notifier) = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
+        )
+
+        XCTAssertEqual(center.phase, .idle, "a diarization failure must never fail the pipeline")
+        XCTAssertEqual(saved, "привет\nответ")
+        XCTAssertEqual(notifier.readyTitles, ["Roles — saved without speaker labels"],
+                       "the notification must flag the missing labels")
+    }
+
+    func testLivePathRendersRolesFromDecodedFile() async throws {
+        // The live path reaches renderRoles with samples: nil — the roles
+        // decode is the ONLY decode (live STT never re-decodes the file).
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.3)]
+        var decodeCalls = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["live text"])) },
+            diarizerFactory: { diarizer },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 4800) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        var config = threeWindowConfig()
+        config.diarization = true
+        await center.startRecording(eventID: nil, title: "Live roles", config: config)
+        recorder.emitLive([Float](repeating: 0, count: 4800)) // live pass produces the text
+        await center.stopAndProcess(config: config)
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(decodeCalls, 1, "the roles post-pass decodes the file exactly once")
+        XCTAssertEqual(runner.savedTranscripts.first, "[Speaker 1] live text")
+    }
+
+    func testRetryAfterSaveFailureKeepsRolesFlagInNotification() async throws {
+        // Diarization failed (text persisted WITHOUT labels), then the save
+        // failed. The retry short-circuits to the persisted text — and the
+        // notification must still flag the missing labels.
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let diarizer = FakeDiarizer()
+        diarizer.error = FakeDiarizer.FakeError()
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope, error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let notifier = FakeNotifier()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет"])) },
+            diarizerFactory: { diarizer },
+            decode: stubDecode(sampleCount: 4800),
+            runnerResolver: { runner },
+            notifier: notifier,
+            defaults: try isolatedDefaults()
+        )
+        var config = threeWindowConfig()
+        config.diarization = true
+
+        await center.startRecording(eventID: nil, title: "Retry roles")
+        await center.stopAndProcess(config: config)
+        guard case .failed = center.phase else { return XCTFail("expected failed save") }
+
+        runner.shouldThrow = nil
+        await center.retryTranscription(config: config)
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(notifier.readyTitles, ["Retry roles — saved without speaker labels"],
+                       "the persisted label-less text must keep its roles flag on retry")
+    }
+
+    func testDiarizationDisabledSkipsDiarizer() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.3)]
+
+        let (saved, _, _) = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(), rolesEnabled: false
+        )
+
+        XCTAssertEqual(diarizer.calls, 0, "the toggle must gate the diarizer entirely")
+        XCTAssertEqual(saved, "привет\nответ")
     }
 }

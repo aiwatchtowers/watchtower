@@ -53,6 +53,7 @@ struct GeneralSettings: View {
     @AppStorage("transcription.langThreshold") private var transcriptionLangThreshold = 0.6
     @AppStorage("transcription.margin") private var transcriptionMargin = 0.2
     @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
+    @AppStorage("transcription.diarization") private var transcriptionDiarization = true
     @State private var showAdvancedTranscription = false
 
     var body: some View {
@@ -481,6 +482,9 @@ struct GeneralSettings: View {
                 prompt: Text("ru,uk,en")
             )
             .help("Comma-separated language codes to detect per window")
+
+            Toggle("Speaker roles", isOn: $transcriptionDiarization)
+                .help("Label transcript lines with who was speaking ([Я] / [Speaker N]) using on-device diarization")
 
             Stepper(
                 "Delete audio after \(config.transcriptAudioRetentionDays) days",

@@ -27,8 +27,8 @@ final class TranscriptionProviderRegistryTests: XCTestCase {
     /// (i.e. everything shipped before the pluggable-provider work) must
     /// resolve to whisperkit, so `transcription.model` keeps meaning exactly
     /// what it always did.
-    func testMigrationDefaultsToWhisperKitWhenProviderKeyAbsent() {
-        let d = UserDefaults(suiteName: "test.migration.\(UUID().uuidString)")!
+    func testMigrationDefaultsToWhisperKitWhenProviderKeyAbsent() throws {
+        let d = try XCTUnwrap(UserDefaults(suiteName: "test.migration.\(UUID().uuidString)"))
         let providerID = d.string(forKey: "transcription.provider") ?? "whisperkit"
         XCTAssertEqual(providerID, "whisperkit")
         XCTAssertEqual(type(of: TranscriptionProviderRegistry.resolve(providerID: providerID)).id, "whisperkit")

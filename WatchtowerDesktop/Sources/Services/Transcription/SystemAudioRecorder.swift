@@ -67,6 +67,11 @@ private final class TapRecorderImpl {
     /// Live sample sink, handed off from the facade at construction; finished
     /// on `stop()`/`deinit` so a downstream `for await` loop ends.
     private let liveContinuation: AsyncStream<[Float]>.Continuation?
+    /// Best-effort mic/system RMS sidecar (rec_X.activity) for the diarization
+    /// post-pass. Losing it only loses the «Я» speaker label, so every failure
+    /// here is ignored and never latched into `firstWriteError`.
+    private var activityAccumulator: MicActivityAccumulator?
+    private var activityHandle: FileHandle?
 
     /// Serial queue owning file writes and converter state; the realtime IO
     /// block only copies + mixes samples and hops here for everything else.
@@ -113,6 +118,18 @@ private final class TapRecorderImpl {
         fileURL = url
         framesWritten = 0
 
+        // Best-effort activity sidecar; a failure to create it never fails
+        // start. The accumulator exists only while the handle does — RMS math
+        // with no consumer is wasted work, and the empty file would linger.
+        let activityURL = MicActivity.url(for: url)
+        FileManager.default.createFile(atPath: activityURL.path, contents: nil)
+        activityHandle = try? FileHandle(forWritingTo: activityURL)
+        if activityHandle != nil {
+            activityAccumulator = MicActivityAccumulator(sampleRate: Self.nominalSampleRate(of: aggregateID))
+        } else {
+            try? FileManager.default.removeItem(at: activityURL)
+        }
+
         // 5. IO proc: mix to mono on the realtime thread, write on writeQueue.
         var newProcID: AudioDeviceIOProcID?
         status = AudioDeviceCreateIOProcIDWithBlock(&newProcID, aggregateID, writeQueue) { [weak self] _, inInputData, _, _, _ in
@@ -120,6 +137,7 @@ private final class TapRecorderImpl {
         }
         guard status == noErr, let procID = newProcID else {
             audioFile = nil
+            discardActivitySidecar()
             teardownDevices()
             throw AudioRecordingError.deviceSetupFailed("creating IO proc (OSStatus \(status))")
         }
@@ -129,6 +147,7 @@ private final class TapRecorderImpl {
             AudioDeviceDestroyIOProcID(aggregateID, procID)
             ioProcID = nil
             audioFile = nil
+            discardActivitySidecar()
             teardownDevices()
             throw AudioRecordingError.deviceSetupFailed("starting device (OSStatus \(status))")
         }
@@ -147,6 +166,7 @@ private final class TapRecorderImpl {
             let result = (framesWritten, fileURL, firstWriteError)
             audioFile = nil // deallocating AVAudioFile closes the file
             converter = nil
+            closeActivitySidecar()
             return result
         }
         liveContinuation?.finish()
@@ -229,7 +249,23 @@ private final class TapRecorderImpl {
                 }
                 system = acc / Float(buffers.count - 1)
             }
+            // Gated on firstWriteError so the sidecar timeline never advances
+            // past where the audio file stopped.
+            if firstWriteError == nil {
+                activityAccumulator?.add(mic: mic, sys: system)
+            }
             out[frame] = tanhf(system + 0.9 * mic)
+        }
+        if let lines = activityAccumulator?.flushLines(), !lines.isEmpty, let handle = activityHandle {
+            do {
+                try handle.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8))
+            } catch {
+                // A dropped batch would silently SHIFT every later bin earlier,
+                // and even a clean prefix can mislabel «Я» (a cluster may clear
+                // the share threshold on partial evidence). All-or-nothing:
+                // discard the sidecar entirely.
+                discardActivitySidecar()
+            }
         }
 
         appendDownsampled(mixed)
@@ -275,6 +311,23 @@ private final class TapRecorderImpl {
             // Disk-full/IO error: stop accumulating silently corrupt data; the
             // partial file up to here remains decodable (CAF) after stop().
             firstWriteError = error
+        }
+    }
+
+    /// Stops the activity sidecar: closes the handle and drops the accumulator.
+    private func closeActivitySidecar() {
+        try? activityHandle?.close()
+        activityHandle = nil
+        activityAccumulator = nil
+    }
+
+    /// Discards the activity sidecar (start()-failure unwind, or a mid-write
+    /// failure where a partial timeline could mislabel «Я»): closes the handle
+    /// and removes the file so no partial evidence survives.
+    private func discardActivitySidecar() {
+        closeActivitySidecar()
+        if let fileURL {
+            try? FileManager.default.removeItem(at: MicActivity.url(for: fileURL))
         }
     }
 

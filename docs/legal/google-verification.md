@@ -21,57 +21,27 @@ assessment.
 Verification requires a homepage and a privacy-policy URL on a domain you own,
 verified in Google Search Console as an *authorized domain*.
 
-Host: **GitHub Pages on `aiwatchtowers/watchtower`**, served on the custom apex
-domain **`aiwatchtowers.com`** (CNAME set via the Pages API; DNS A/AAAA records at
-GoDaddy point the apex at GitHub Pages):
+Host (since 2026-07): **Cloudflare Pages**, deployed from the separate private
+repo **`aiwatchtowers/lending`** (`public/` dir, `wrangler.jsonc`) — a full
+marketing landing, not the minimal legal pages:
 - Homepage: `https://aiwatchtowers.com/`
-- Privacy:  `https://aiwatchtowers.com/privacy-policy.html`
+- Privacy:  `https://aiwatchtowers.com/privacy/`
 - Authorized domain for the consent screen: `aiwatchtowers.com`
 - Verify the domain in Search Console via a **Domain property** (DNS TXT) — covers
   all subdomains.
 
-> **Do NOT enable Pages on the `docs/` folder.** Pages publishes the *entire*
-> folder, which would expose all internal docs (plans, review-lessons, inventory)
-> publicly. Use a dedicated **orphan `gh-pages` branch** with only the two pages.
-
-> **Repo must be Pages-eligible.** GitHub Pages on a *private* repo needs a paid
-> plan (Pro/Team/Enterprise). If `aiwatchtowers/watchtower` is private and not on a
-> paid plan, either make a small **separate public repo** just for the site, or
-> use any static host. The Google forms only need a public HTTPS URL.
-
-### Publish via orphan `gh-pages` branch
-
-The ready-to-serve files are `docs/legal/index.html` and
-`docs/legal/privacy-policy.html`. From a clean working tree:
-
-```sh
-# stash the two HTML files somewhere outside the tree first, e.g.:
-cp docs/legal/index.html docs/legal/privacy-policy.html /tmp/wt-site/
-
-git checkout --orphan gh-pages
-git rm -rf .                      # empty the branch
-cp /tmp/wt-site/index.html /tmp/wt-site/privacy-policy.html .
-git add index.html privacy-policy.html
-git commit -m "chore(site): GitHub Pages legal pages for OAuth verification"
-git push -u origin gh-pages       # push account: vadimtrunov (see project memory)
-git checkout feature/task-ai-agent
-```
-
-Then: repo **Settings → Pages → Build from branch → `gh-pages` / root**.
-
-Resulting URLs:
-- Homepage: `https://aiwatchtowers.github.io/watchtower/`
-- Privacy:  `https://aiwatchtowers.github.io/watchtower/privacy-policy.html`
-
-### Verify the domain in Search Console
-
-In [Google Search Console](https://search.google.com/search-console) add a
-**URL-prefix** property for `https://aiwatchtowers.github.io/watchtower/` and
-verify via the HTML-file method: download Google's
-`google<hash>.html`, drop it next to the pages on the `gh-pages` branch, push,
-then click Verify.
-
-- **Authorized domain** in the consent screen: `github.io`.
+> **History / gotchas:**
+> - The original minimal pages (`docs/legal/index.html`,
+>   `docs/legal/privacy-policy.html`) were served via GitHub Pages from an orphan
+>   `gh-pages` branch of `aiwatchtowers/watchtower`. They are **superseded** by
+>   the `lending` site; keep them only as reference copy.
+> - That legacy GitHub Pages site must stay **disabled** (`gh api -X DELETE
+>   repos/aiwatchtowers/watchtower/pages`) — its `gh-pages` branch contains a
+>   `CNAME` for `aiwatchtowers.com`, so a legacy Pages rebuild re-claims the
+>   apex domain and fights Cloudflare for it.
+> - The old privacy URL `https://aiwatchtowers.com/privacy-policy.html` is a
+>   **404** on the new site. Anything still pointing at it (consent screen,
+>   docs, email templates) must use `https://aiwatchtowers.com/privacy/`.
 
 ---
 
@@ -87,7 +57,7 @@ Google Cloud Console → **APIs & Services → OAuth consent screen** (project
   unless needed)
 - **App domain:**
   - Application home page: `https://aiwatchtowers.com/`
-  - Privacy policy link: `https://aiwatchtowers.com/privacy-policy.html`
+  - Privacy policy link: `https://aiwatchtowers.com/privacy/`
   - Terms of service: optional
 - **Authorized domains:** `aiwatchtowers.com`
 - **Developer contact:** tv88dn@gmail.com
@@ -165,8 +135,9 @@ Paste the video URL into the verification form.
 
 ## Checklist
 
-- [ ] Pages site live: homepage + privacy-policy reachable over HTTPS
-- [ ] `github.io` (or custom domain) verified in Search Console
+- [ ] Site live: `https://aiwatchtowers.com/` + `https://aiwatchtowers.com/privacy/` reachable over HTTPS
+- [ ] `aiwatchtowers.com` verified in Search Console (Domain property)
+- [ ] Legacy GitHub Pages on `aiwatchtowers/watchtower` disabled (no CNAME conflict)
 - [ ] Consent screen filled (name, emails, home page, privacy URL, authorized domain)
 - [ ] Exactly the two read-only calendar scopes present
 - [ ] Scope justifications pasted

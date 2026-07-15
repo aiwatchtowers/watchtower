@@ -53,8 +53,11 @@ final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
     private let asrManager: AsrManager
     init(asrManager: AsrManager) { self.asrManager = asrManager }
 
-    func transcribe(_ samples: [Float], config: TranscriptionConfig,
-                    progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput {
+    func transcribe(
+        _ samples: [Float],
+        config: TranscriptionConfig,
+        progress: @escaping @Sendable (Int, Int) -> Void
+    ) async throws -> TranscriptionOutput {
         progress(0, 1)
         let decoderLayers = await asrManager.decoderLayerCount
         var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)

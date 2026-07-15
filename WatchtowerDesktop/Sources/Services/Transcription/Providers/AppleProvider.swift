@@ -69,7 +69,7 @@ enum AppleLocaleCatalog {
         "fi": "fi-FI", "fr": "fr-FR", "he": "he-IL", "it": "it-IT", "ja": "ja-JP",
         "ko": "ko-KR", "ms": "ms-MY", "nb": "nb-NO", "nl": "nl-NL", "pt": "pt-BR",
         "ru": "ru-RU", "sv": "sv-SE", "th": "th-TH", "tr": "tr-TR", "vi": "vi-VN",
-        "yue": "yue-CN", "zh": "zh-CN",
+        "yue": "yue-CN", "zh": "zh-CN"
     ]
     static let defaultLocale = Locale(identifier: "en-US")
 
@@ -93,8 +93,11 @@ enum AppleLocaleCatalog {
 /// `transcribe` is awaited once from a single detached task, never shared concurrently
 /// (same single-use invariant as `WhisperKitEngine`).
 final class AppleTranscriber: Transcriber, @unchecked Sendable {
-    func transcribe(_ samples: [Float], config: TranscriptionConfig,
-                    progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput {
+    func transcribe(
+        _ samples: [Float],
+        config: TranscriptionConfig,
+        progress: @escaping @Sendable (Int, Int) -> Void
+    ) async throws -> TranscriptionOutput {
         guard #available(macOS 26, *) else {
             throw NSError(domain: "AppleProvider", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "Requires macOS 26"])
@@ -149,14 +152,15 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
                           userInfo: [NSLocalizedDescriptionKey: "Could not construct 16 kHz PCM format"])
         }
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format,
-                                             frameCapacity: AVAudioFrameCount(samples.count)),
+                                            frameCapacity: AVAudioFrameCount(samples.count)),
               let channel = buffer.floatChannelData?[0] else {
             throw NSError(domain: "AppleProvider", code: 4,
                           userInfo: [NSLocalizedDescriptionKey: "Could not allocate PCM buffer"])
         }
         buffer.frameLength = buffer.frameCapacity
         samples.withUnsafeBufferPointer { source in
-            channel.update(from: source.baseAddress!, count: samples.count)
+            guard let base = source.baseAddress else { return } // empty input → nothing to copy
+            channel.update(from: base, count: samples.count)
         }
         return buffer
     }
@@ -168,7 +172,7 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
     /// own format error rather than us silently dropping audio.
     @available(macOS 26, *)
     private static func converted(_ buffer: AVAudioPCMBuffer,
-                                   forModules modules: [any SpeechModule]) async -> AVAudioPCMBuffer {
+                                  forModules modules: [any SpeechModule]) async -> AVAudioPCMBuffer {
         guard let targetFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
                 compatibleWith: modules, considering: buffer.format)
         else { return buffer }

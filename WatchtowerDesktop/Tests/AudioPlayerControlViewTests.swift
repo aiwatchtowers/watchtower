@@ -21,7 +21,7 @@ private struct BoomError: Error, LocalizedError {
 @MainActor
 final class AudioPlayerControlViewTests: XCTestCase {
     func testTapStartsPlaybackOnIdleRow() throws {
-        let center = AudioPlaybackCenter(playerFactory: { _ in FakePlayback() })
+        let center = AudioPlaybackCenter { _ in FakePlayback() }
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
@@ -36,7 +36,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
     }
 
     func testSecondTapPausesTheSameRow() throws {
-        let center = AudioPlaybackCenter(playerFactory: { _ in FakePlayback() })
+        let center = AudioPlaybackCenter { _ in FakePlayback() }
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
@@ -52,7 +52,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
     }
 
     func testShowsErrorMessageWhenPlaybackFails() throws {
-        let center = AudioPlaybackCenter(playerFactory: { _ in throw BoomError() })
+        let center = AudioPlaybackCenter { _ in throw BoomError() }
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
@@ -66,7 +66,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
     }
 
     func testNoErrorMessageShownBeforeAnyPlayAttempt() throws {
-        let center = AudioPlaybackCenter(playerFactory: { _ in FakePlayback() })
+        let center = AudioPlaybackCenter { _ in FakePlayback() }
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),

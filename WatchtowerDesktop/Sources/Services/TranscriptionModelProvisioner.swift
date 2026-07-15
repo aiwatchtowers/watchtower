@@ -38,14 +38,19 @@ final class TranscriptionModelProvisioner {
     private(set) var currentTask: Task<Void, Never>?
 
     private let downloadFn: (String, String, @escaping @Sendable (Double) -> Void) async throws -> Void
+    /// Extra best-effort warmups run after a successful model download (e.g.
+    /// diarizer models). No progress, failures swallowed by the closure itself.
+    private let prefetchExtras: @Sendable () async -> Void
 
     init(
         downloadFn: @escaping (String, String, @escaping @Sendable (Double) -> Void) async throws -> Void = { providerID, model, progress in
             let provider = TranscriptionProviderRegistry.resolve(providerID: providerID)
             try await provider.prefetch(model: model, progress: progress)
-        }
+        },
+        prefetchExtras: @escaping @Sendable () async -> Void = {}
     ) {
         self.downloadFn = downloadFn
+        self.prefetchExtras = prefetchExtras
     }
 
     /// Starts (or joins) the download of `model`'s files for `providerID`.
@@ -89,6 +94,10 @@ final class TranscriptionModelProvisioner {
                 self.lastSucceededProviderID = providerID
                 self.lastSucceededModel = model
                 self.state = .idle
+                // Fire-and-forget: extras (diarizer models) must never wedge or
+                // fail THIS state machine — a hung/failed warmup just means the
+                // post-pass pays for the download at Stop instead.
+                Task.detached { [prefetchExtras = self.prefetchExtras] in await prefetchExtras() }
             case .failure(let error):
                 self.state = .failed(error.localizedDescription)
             }

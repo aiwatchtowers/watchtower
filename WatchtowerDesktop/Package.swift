@@ -16,7 +16,8 @@ let package = Package(
         // (including the misspelled `detectLangauge(audioArray:)`).
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.18.0")),
         // Pinned to 0.15.x: ParakeetProvider uses AsrManager/AsrModels API verified
-        // against the v0.15.5 tag (Sources/FluidAudio/ASR/Parakeet/SlidingWindow/TDT).
+        // against the v0.15.5 tag, and FluidAudioDiarizer uses the diarizer API
+        // surface (DiarizerModels.downloadIfNeeded, performCompleteDiarization).
         .package(url: "https://github.com/FluidInference/FluidAudio.git", .upToNextMinor(from: "0.15.5")),
         // Pinned to the exact 0.0.7 tag: the only speech-swift releases that keep the
         // macOS(.v14) platform floor (0.0.1-0.0.7) — 0.0.8+ requires macOS 15 (MLXState),

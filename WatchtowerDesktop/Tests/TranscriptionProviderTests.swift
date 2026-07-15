@@ -37,8 +37,11 @@ private struct FakeProvider: TranscriptionProvider {
 }
 
 private struct FakeTranscriber: Transcriber {
-    func transcribe(_ samples: [Float], config: TranscriptionConfig,
-                    progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput {
+    func transcribe(
+        _ samples: [Float],
+        config: TranscriptionConfig,
+        progress: @escaping @Sendable (Int, Int) -> Void
+    ) async throws -> TranscriptionOutput {
         TranscriptionOutput(text: "hello", langStats: [:])
     }
     func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? { nil }

@@ -11,7 +11,7 @@ struct WhisperKitProvider: TranscriptionProvider {
             .init(id: "large-v3-v20240930", label: "Large v3 Turbo (recommended)"),
             .init(id: "large-v3", label: "Large v3 (best quality)"),
             .init(id: "distil-large-v3", label: "Distil Large v3 (English only)"),
-            .init(id: "medium", label: "Medium (fastest)"),
+            .init(id: "medium", label: "Medium (fastest)")
         ]
     }
     var supportsLive: Bool { true }
@@ -35,8 +35,11 @@ final class WhisperTranscriber: Transcriber, @unchecked Sendable {
     private let engine: WhisperKitEngine
     init(engine: WhisperKitEngine) { self.engine = engine }
 
-    func transcribe(_ samples: [Float], config: TranscriptionConfig,
-                    progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput {
+    func transcribe(
+        _ samples: [Float],
+        config: TranscriptionConfig,
+        progress: @escaping @Sendable (Int, Int) -> Void
+    ) async throws -> TranscriptionOutput {
         let transcriber = WindowedTranscriber(engine: engine, config: config)
         return try await transcriber.transcribe(samples: samples, progress: progress)
     }

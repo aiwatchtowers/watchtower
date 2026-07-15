@@ -38,32 +38,47 @@ struct StreamingTranscriber {
         var absStart = 0
 
         var texts: [String] = []
+        var segments: [TranscriptSegment] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
         var lastEngineError: Error?
         var chunkIndex = 0
 
-        func process(window: [Float]) async {
+        func process(window: [Float], windowStart: Int) async {
             let language: String
             if let forced = config.forcedLanguage {
                 language = forced
             } else {
                 language = await resolveWindowLanguage(for: window, previous: prevLang, config: config, engine: engine)
             }
-            let text: String
+            let rawSegments: [TranscribedSegment]
             do {
-                text = try await engine.transcribeWindow(window, language: language)
+                rawSegments = try await engine.transcribeWindow(window, language: language)
             } catch {
                 lastEngineError = error
                 return // skip: not counted, language does not stick
             }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            texts.append(trimmed)
+            guard let lifted = liftWindowSegments(rawSegments, windowStart: windowStart, language: language) else {
+                return // silent window: not counted, language does not stick
+            }
+            texts.append(lifted.windowText)
+            segments.append(contentsOf: lifted.segments)
             prevLang = language
             langStats[language, default: 0] += 1
             chunkIndex += 1
-            onChunk(StreamChunk(index: chunkIndex, text: trimmed, language: language))
+            onChunk(StreamChunk(index: chunkIndex, text: lifted.windowText, language: language))
+        }
+
+        // Transcribes the window and drops consumed samples from the buffer.
+        func emit(_ range: Range<Int>) async {
+            let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
+            await process(window: window, windowStart: range.lowerBound)
+            absStart = planner.nextStart(after: range)
+            let drop = absStart - consumedBase
+            if drop > 0 {
+                buffer.removeFirst(min(drop, buffer.count))
+                consumedBase += drop
+            }
         }
 
         for await piece in samples {
@@ -78,14 +93,7 @@ struct StreamingTranscriber {
                 sample: { buffer[$0 - consumedBase] }
             ) {
                 if Task.isCancelled { break }
-                let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
-                await process(window: window)
-                absStart = planner.nextStart(after: range)
-                let drop = absStart - consumedBase
-                if drop > 0 {
-                    buffer.removeFirst(min(drop, buffer.count))
-                    consumedBase += drop
-                }
+                await emit(range)
             }
             if Task.isCancelled { break }
         }
@@ -102,20 +110,14 @@ struct StreamingTranscriber {
                   isFinal: true,
                   sample: { buffer[$0 - consumedBase] }
               ) {
-            let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
-            await process(window: window)
-            if planner.isLastWindow(start: range.lowerBound, total: consumedBase + buffer.count) { break }
-            absStart = planner.nextStart(after: range)
-            let drop = absStart - consumedBase
-            if drop > 0 {
-                buffer.removeFirst(min(drop, buffer.count))
-                consumedBase += drop
-            }
+            let isLast = planner.isLastWindow(start: range.lowerBound, total: consumedBase + buffer.count)
+            await emit(range)
+            if isLast { break }
         }
 
         if texts.isEmpty, let lastEngineError {
             throw lastEngineError
         }
-        return TranscriptionOutput(text: texts.joined(separator: "\n"), langStats: langStats)
+        return TranscriptionOutput(text: texts.joined(separator: "\n"), langStats: langStats, segments: segments)
     }
 }

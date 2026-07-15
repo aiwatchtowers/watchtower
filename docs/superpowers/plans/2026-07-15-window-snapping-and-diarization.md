@@ -8,7 +8,7 @@
 
 **Tech Stack:** Swift 5.10 / macOS 14+, WhisperKit 0.18.x, FluidAudio (новая SPM-зависимость, Apache 2.0), XCTest.
 
-> **СТАТУС (2026-07-15, решение владельца):** задачи 1–2 выполнены (коммиты `57185be`, `7998b0d`). Задачи 3–7 **отложены** до лендинга рефактора `2026-07-15-pluggable-transcription-engines-design.md` (тот же протокол/Center/зависимость) и подлежат **перепланированию** против нового `TranscriptionProvider`-шва: сегменты с таймстемпами закладываются в новый контракт сразу, диаризация становится engine-agnostic пост-проходом над provider-выходом. Части плана про sidecar (`Task 4`), `RoleAssigner` (`Task 6`) и FluidAudio-адаптер (`Task 5`, §3.4) переносятся почти как есть; Task 3 и Task 7 переписываются под новый шов.
+> **СТАТУС (2026-07-15, обновлено):** ВСЕ задачи 1–8 выполнены. 1–2 — в feature/meeting-transcriber (`57185be`, `7998b0d`); 3–7 + доки — в ветке **feature/transcriber-diarization** (`e043a40`…`c717fca`), пилилась параллельно с pluggable-providers рефактором по решению владельца — при merge диаризационную оркестрацию адаптировать к `TranscriptionProvider`-шву (сегменты уже в `TranscriptionOutput.segments`).
 
 ## Global Constraints
 

@@ -3,7 +3,7 @@ import FluidAudio
 @testable import WatchtowerDesktop
 
 final class ParakeetProviderTests: XCTestCase {
-    func testMetadata() {
+    func testMetadata() throws {
         let p = ParakeetProvider()
         XCTAssertEqual(type(of: p).id, "parakeet")
         XCTAssertFalse(p.supportsLive)
@@ -14,7 +14,7 @@ final class ParakeetProviderTests: XCTestCase {
         }
         let langs = p.supportedLanguages(model: "parakeet-tdt-0.6b-v3")
         XCTAssertNotNil(langs)
-        XCTAssertTrue(langs!.isSuperset(of: ["ru", "uk", "en"]))
+        XCTAssertTrue(try XCTUnwrap(langs).isSuperset(of: ["ru", "uk", "en"]))
     }
 
     func testRegistered() {

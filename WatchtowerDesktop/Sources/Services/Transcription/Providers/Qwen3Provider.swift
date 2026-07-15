@@ -25,7 +25,7 @@ struct Qwen3Provider: TranscriptionProvider {
     /// fallback), so this mirrors `ParakeetProvider`'s Apple Silicon gate rather
     /// than returning unconditional `.available`.
     func availability() -> ProviderAvailability {
-        Qwen3Provider.isAppleSilicon ? .available : .unavailable(reason: "Requires Apple Silicon")
+        Self.isAppleSilicon ? .available : .unavailable(reason: "Requires Apple Silicon")
     }
 
     /// The 30 languages + Cantonese Qwen3-ASR-0.6B was benchmark-validated on
@@ -87,8 +87,11 @@ final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
     private let model: Qwen3ASRModel
     init(model: Qwen3ASRModel) { self.model = model }
 
-    func transcribe(_ samples: [Float], config: TranscriptionConfig,
-                    progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput {
+    func transcribe(
+        _ samples: [Float],
+        config: TranscriptionConfig,
+        progress: @escaping @Sendable (Int, Int) -> Void
+    ) async throws -> TranscriptionOutput {
         progress(0, 1)
         // `transcribe` is a synchronous (blocking) MLX decode call — no async
         // overload is exposed, so we call it directly from this async context.

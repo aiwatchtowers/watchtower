@@ -1,11 +1,19 @@
 import Foundation
 
+/// One timestamped segment of a transcribed window (seconds relative to the
+/// window start). An empty array from the engine = no speech in the window.
+struct TranscribedSegment: Equatable, Sendable {
+    let text: String
+    let startSec: Double
+    let endSec: Double
+}
+
 /// Abstraction over the on-device STT engine so tests never load WhisperKit/CoreML.
 protocol WhisperWindowEngine: Sendable {
     /// Language probabilities for one audio window (16 kHz mono Float32 samples).
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float]
-    /// Transcribe one window with the language forced. Returns raw text ("" = no speech).
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String
+    /// Transcribe one window with the language forced.
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment]
 }
 
 /// Windowed-transcription parameters. Defaults are ported verbatim from snoop:
@@ -22,13 +30,25 @@ struct TranscriptionConfig: Equatable {
     var margin: Float = 0.2
     var firstWindowDefault: String = "ru"
     var forcedLanguage: String?   // non-nil disables detection entirely
+    /// Speaker roles: diarization post-pass renders [Я]/[Speaker N] labels.
+    var diarization: Bool = true
     static let sampleRate = 16_000
+}
+
+/// One timestamped segment of the full recording (absolute seconds), carrying
+/// the language of its parent window. Feeds the diarization post-pass.
+struct TranscriptSegment: Equatable, Sendable {
+    let text: String
+    let startSec: Double
+    let endSec: Double
+    let language: String
 }
 
 /// Result of transcribing a full recording.
 struct TranscriptionOutput: Equatable {
     let text: String                 // newline-joined non-empty window texts
     let langStats: [String: Int]     // windows per language (speech windows only)
+    var segments: [TranscriptSegment] = [] // absolute-timestamped, for diarization
 }
 
 extension TranscriptionConfig {
@@ -61,12 +81,41 @@ extension TranscriptionConfig {
         if defaults.object(forKey: "transcription.margin") != nil {
             config.margin = Float(defaults.double(forKey: "transcription.margin"))
         }
+        if defaults.object(forKey: "transcription.diarization") != nil {
+            config.diarization = defaults.bool(forKey: "transcription.diarization")
+        }
         let force = (defaults.string(forKey: "transcription.forceLang") ?? "")
             .trimmingCharacters(in: .whitespaces)
         config.forcedLanguage = force.isEmpty ? nil : force
 
         return config
     }
+}
+
+/// Trims engine segments, drops empty ones, and lifts the survivors to
+/// absolute timestamps. nil = the window produced no speech. Shared by
+/// WindowedTranscriber (batch) and StreamingTranscriber (live) so their
+/// text/segment shapes cannot drift.
+func liftWindowSegments(
+    _ raw: [TranscribedSegment],
+    windowStart: Int,
+    language: String
+) -> (windowText: String, segments: [TranscriptSegment])? {
+    let windowStartSec = Double(windowStart) / Double(TranscriptionConfig.sampleRate)
+    let cleaned = raw
+        .map {
+            TranscribedSegment(text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                               startSec: $0.startSec, endSec: $0.endSec)
+        }
+        .filter { !$0.text.isEmpty }
+    guard !cleaned.isEmpty else { return nil }
+    let lifted = cleaned.map {
+        TranscriptSegment(text: $0.text,
+                          startSec: windowStartSec + $0.startSec,
+                          endSec: windowStartSec + $0.endSec,
+                          language: language)
+    }
+    return (cleaned.map(\.text).joined(separator: " "), lifted)
 }
 
 /// Detection with sticky fallback, shared by WindowedTranscriber (batch) and

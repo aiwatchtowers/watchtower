@@ -67,21 +67,28 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         return probs
     }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String {
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
         let options = DecodingOptions(
             task: .transcribe,
             language: language,
             detectLanguage: false,
             skipSpecialTokens: true,
-            withoutTimestamps: true
+            withoutTimestamps: false
         )
         let results: [TranscriptionResult] = try await whisperKit.transcribe(
             audioArray: samples,
             decodeOptions: options
         )
-        return results
-            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        // result.text is derived from result.segments in WhisperKit, so
+        // mapping segments (not text) cannot drop speech.
+        return results.flatMap { result in
+            result.segments.map {
+                TranscribedSegment(
+                    text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                    startSec: Double($0.start),
+                    endSec: Double($0.end)
+                )
+            }
+        }
     }
 }

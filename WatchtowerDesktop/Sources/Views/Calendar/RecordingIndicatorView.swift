@@ -42,6 +42,11 @@ struct RecordingIndicatorView: View {
                 Text(total > 0 ? "Transcribing \(done)/\(total)" : "Transcribing…")
                     .font(.callout)
             }
+        case .diarizing:
+            capsule {
+                ProgressView().controlSize(.small)
+                Text("Identifying speakers…").font(.callout)
+            }
         case .summarizing:
             capsule {
                 ProgressView().controlSize(.small)
@@ -104,7 +109,8 @@ struct RecordingIndicatorView: View {
             if activeProviderSupportsLive {
                 liveEngineIndicator(center.liveEngineState)
                 Button { expanded = true } label: { Image(systemName: "chevron.up") }
-                    .buttonStyle(.plain).controlSize(.small)
+                    .buttonStyle(.plain)
+                    .controlSize(.small)
                     .help("Show live transcript")
             }
             Button {
@@ -169,9 +175,11 @@ struct RecordingIndicatorView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(center.liveChunks) { chunk in
                                 HStack(alignment: .top, spacing: 6) {
-                                    Text(chunk.language).font(.caption2.weight(.semibold))
+                                    Text(chunk.language)
+                                        .font(.caption2.weight(.semibold))
                                         .foregroundStyle(.secondary)
-                                        .padding(.horizontal, 4).padding(.vertical, 1)
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
                                         .background(.quaternary, in: Capsule())
                                     Text(chunk.text).font(.callout).textSelection(.enabled)
                                 }

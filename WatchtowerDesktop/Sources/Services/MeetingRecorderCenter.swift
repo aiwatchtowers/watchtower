@@ -32,6 +32,7 @@ final class MeetingRecorderCenter {
         case idle
         case recording(startedAt: Date)
         case transcribing(done: Int, total: Int)
+        case diarizing
         case summarizing
         case failed(String)
     }
@@ -43,6 +44,9 @@ final class MeetingRecorderCenter {
     private(set) var currentTitle: String?
     /// Audio file awaiting (re-)transcription after a failure or relaunch.
     private(set) var pendingAudioURL: URL?
+    /// Why the last diarization post-pass failed (nil = roles rendered or
+    /// disabled). Only informs the completion notification — never blocks.
+    private(set) var lastRolesError: String?
 
     enum LiveEngineState: Equatable { case off, loading, running, unavailable }
     struct LiveChunk: Equatable, Identifiable { let id: Int; let text: String; let language: String }
@@ -72,7 +76,7 @@ final class MeetingRecorderCenter {
         switch phase {
         case .idle, .failed:
             return false
-        case .recording, .transcribing, .summarizing:
+        case .recording, .transcribing, .diarizing, .summarizing:
             return true
         }
     }
@@ -86,6 +90,7 @@ final class MeetingRecorderCenter {
 
     private let recorderFactory: () -> AudioRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
+    private let diarizerFactory: () async throws -> SpeakerDiarizing
     private let decode: (URL) throws -> [Float]
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let notifier: MeetingTranscriptNotifying
@@ -106,6 +111,7 @@ final class MeetingRecorderCenter {
     init(
         recorderFactory: @escaping () -> AudioRecording = { SystemAudioRecorder() },
         engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber = MeetingRecorderCenter.defaultEngineFactory,
+        diarizerFactory: @escaping () async throws -> SpeakerDiarizing = { try await FluidAudioDiarizer.load() },
         decode: @escaping (URL) throws -> [Float] = AudioFileDecoder.decodePCM16k(url:),
         runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
         notifier: MeetingTranscriptNotifying = NotificationService.shared,
@@ -113,6 +119,7 @@ final class MeetingRecorderCenter {
     ) {
         self.recorderFactory = recorderFactory
         self.engineFactory = engineFactory
+        self.diarizerFactory = diarizerFactory
         self.decode = decode
         self.runnerResolver = runnerResolver
         self.notifier = notifier
@@ -132,6 +139,50 @@ final class MeetingRecorderCenter {
         let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
         let provider = TranscriptionProviderRegistry.resolve(providerID: providerID)
         return try await provider.makeTranscriber(model: model) { _ in }
+    }
+
+    /// Diarization post-pass: renders role-tagged text from the finished
+    /// transcription. Every failure returns the plain text — roles are a
+    /// progressive enhancement and must never fail the pipeline (spec §3.6) —
+    /// but is logged and latched into `lastRolesError` so the completion
+    /// notification can flag the missing labels (the recap-failure precedent).
+    /// `samples` avoids a re-decode when the batch path already has them.
+    private func renderRoles(
+        output: TranscriptionOutput,
+        audioURL: URL,
+        samples: [Float]?,
+        config: TranscriptionConfig
+    ) async -> String {
+        guard config.diarization, !output.segments.isEmpty else { return output.text }
+        phase = .diarizing
+        do {
+            let pcm: [Float]
+            if let samples {
+                pcm = samples
+            } else {
+                // The live path has no decoded samples; a long recording takes
+                // seconds to decode, so keep it off the main actor.
+                let decode = self.decode
+                pcm = try await Task.detached { try decode(audioURL) }.value
+            }
+            let diarizer = try await diarizerFactory()
+            let speakers = try await diarizer.diarize(pcm)
+            // The sidecar parse is a full-file read (~36k lines per hour) —
+            // off-main like the decode above.
+            let activity = await Task.detached { MicActivity.load(for: audioURL) }.value
+            if let rendered = RoleAssigner.render(segments: output.segments, speakers: speakers, activity: activity) {
+                return rendered
+            }
+            // Roles undeterminable (diarizer found no speakers) — flag it like
+            // the error path so the notification stays honest.
+            print("[MeetingRecorder] diarization found no speakers, saving without labels")
+            lastRolesError = "no speakers detected"
+            return output.text
+        } catch {
+            print("[MeetingRecorder] diarization failed, saving without speaker labels: \(error.localizedDescription)")
+            lastRolesError = error.localizedDescription
+            return output.text
+        }
     }
 
     // MARK: Recording
@@ -218,6 +269,7 @@ final class MeetingRecorderCenter {
     func stopAndProcess(config: TranscriptionConfig) async {
         guard case .recording = phase, let recorder else { return }
         self.recorder = nil
+        lastRolesError = nil // per-run state, reset at the run boundary
 
         let result: RecordingResult
         do {
@@ -251,9 +303,12 @@ final class MeetingRecorderCenter {
             if let liveOutput,
                !liveOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let durationSec = result.durationSec
-                Self.persistTranscript(liveOutput, durationSec: durationSec, audioURL: result.audioURL)
+                let text = await renderRoles(output: liveOutput, audioURL: result.audioURL,
+                                             samples: nil, config: config)
+                Self.persistTranscript(text: text, durationSec: durationSec,
+                                       langStats: liveOutput.langStats, audioURL: result.audioURL)
                 await saveTranscript(
-                    text: liveOutput.text,
+                    text: text,
                     durationSec: durationSec,
                     langStats: liveOutput.langStats,
                     audioURL: result.audioURL
@@ -274,6 +329,9 @@ final class MeetingRecorderCenter {
     /// no pending audio.
     func retryTranscription(config: TranscriptionConfig) async {
         guard !isBusy, let url = pendingAudioURL else { return }
+        // The persisted short-circuit re-saves THIS run's already-rendered
+        // text, so a latched roles failure still describes it — reset only
+        // below, before the paths that re-run renderRoles.
         if let persisted = Self.loadPersistedTranscript(audioURL: url) {
             await saveTranscript(
                 text: persisted.text,
@@ -283,6 +341,7 @@ final class MeetingRecorderCenter {
             )
             return
         }
+        lastRolesError = nil // per-run state, reset at the run boundary
         await transcribeAndSave(audioURL: url, config: config)
     }
 
@@ -371,11 +430,13 @@ final class MeetingRecorderCenter {
         }
 
         let durationSec = samples.count / TranscriptionConfig.sampleRate
-        // Persist the transcript next to the audio so a failed save is retried
-        // from the file instead of paying for a full re-transcription (spec §7).
-        Self.persistTranscript(output, durationSec: durationSec, audioURL: audioURL)
+        let text = await renderRoles(output: output, audioURL: audioURL, samples: samples, config: config)
+        // Persist the (role-tagged) transcript next to the audio so a failed
+        // save is retried from the file instead of paying for a full
+        // re-transcription — or a re-diarization (spec §7).
+        Self.persistTranscript(text: text, durationSec: durationSec, langStats: output.langStats, audioURL: audioURL)
         await saveTranscript(
-            text: output.text,
+            text: text,
             durationSec: durationSec,
             langStats: output.langStats,
             audioURL: audioURL
@@ -404,11 +465,15 @@ final class MeetingRecorderCenter {
             clearPending()
             phase = .idle
             let title = currentTitle ?? "Recording"
-            // Recap failure is non-fatal — the transcript row is saved; flag the
-            // retry in the notification rather than reporting a failure.
-            notifier.sendTranscriptReadyNotification(
-                title: result.recapOK ? title : "\(title) — transcript saved, recap needs retry"
-            )
+            // Recap/roles failures are non-fatal — the transcript row is saved;
+            // flag them in the notification rather than reporting a failure.
+            if !result.recapOK {
+                notifier.sendTranscriptReadyNotification(title: "\(title) — transcript saved, recap needs retry")
+            } else if lastRolesError != nil {
+                notifier.sendTranscriptReadyNotification(title: "\(title) — saved without speaker labels")
+            } else {
+                notifier.sendTranscriptReadyNotification(title: title)
+            }
             currentEventID = nil
             currentTitle = nil
         } catch {
@@ -501,9 +566,9 @@ final class MeetingRecorderCenter {
 
     /// Best-effort: a persistence failure only means a later save retry pays
     /// for a full re-transcription, so it is deliberately not surfaced.
-    private static func persistTranscript(_ output: TranscriptionOutput, durationSec: Int, audioURL: URL) {
-        try? output.text.write(to: transcriptTextURL(for: audioURL), atomically: true, encoding: .utf8)
-        let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: output.langStats)
+    private static func persistTranscript(text: String, durationSec: Int, langStats: [String: Int], audioURL: URL) {
+        try? text.write(to: transcriptTextURL(for: audioURL), atomically: true, encoding: .utf8)
+        let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: langStats)
         if let data = try? JSONEncoder().encode(meta) {
             try? data.write(to: transcriptMetaURL(for: audioURL), options: .atomic)
         }

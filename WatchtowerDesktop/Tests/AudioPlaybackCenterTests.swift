@@ -38,7 +38,7 @@ private struct FakePlaybackError: Error, LocalizedError {
 final class AudioPlaybackCenterTests: XCTestCase {
     func test_playSetsActiveAndStartsPlaying() {
         let fake = FakePlayback(duration: 20)
-        let center = AudioPlaybackCenter(playerFactory: { _ in fake })
+        let center = AudioPlaybackCenter { _ in fake }
 
         center.play(url: URL(fileURLWithPath: "/tmp/rec1.caf"), transcriptID: 1)
 
@@ -52,10 +52,10 @@ final class AudioPlaybackCenterTests: XCTestCase {
         let first = FakePlayback()
         let second = FakePlayback()
         var call = 0
-        let center = AudioPlaybackCenter(playerFactory: { _ in
+        let center = AudioPlaybackCenter { _ in
             call += 1
             return call == 1 ? first : second
-        })
+        }
 
         center.play(url: URL(fileURLWithPath: "/tmp/a.caf"), transcriptID: 1)
         center.play(url: URL(fileURLWithPath: "/tmp/b.caf"), transcriptID: 2)
@@ -68,11 +68,11 @@ final class AudioPlaybackCenterTests: XCTestCase {
     func test_playFailureSurfacesErrorWithoutRestoringPrevious() {
         let good = FakePlayback()
         var alreadyPlayed = false
-        let center = AudioPlaybackCenter(playerFactory: { _ in
+        let center = AudioPlaybackCenter { _ in
             if alreadyPlayed { throw FakePlaybackError() }
             alreadyPlayed = true
             return good
-        })
+        }
 
         center.play(url: URL(fileURLWithPath: "/tmp/a.caf"), transcriptID: 1)
         center.play(url: URL(fileURLWithPath: "/tmp/bad.caf"), transcriptID: 2)
@@ -85,7 +85,7 @@ final class AudioPlaybackCenterTests: XCTestCase {
 
     func test_pauseStopsPlayingWithoutClearingActive() {
         let fake = FakePlayback()
-        let center = AudioPlaybackCenter(playerFactory: { _ in fake })
+        let center = AudioPlaybackCenter { _ in fake }
         center.play(url: URL(fileURLWithPath: "/tmp/a.caf"), transcriptID: 1)
 
         center.pause()
@@ -98,10 +98,10 @@ final class AudioPlaybackCenterTests: XCTestCase {
     func test_resumeAfterPauseReusesSamePlayerNotFactory() {
         var factoryCalls = 0
         let fake = FakePlayback()
-        let center = AudioPlaybackCenter(playerFactory: { _ in
+        let center = AudioPlaybackCenter { _ in
             factoryCalls += 1
             return fake
-        })
+        }
         center.play(url: URL(fileURLWithPath: "/tmp/a.caf"), transcriptID: 1)
         center.pause()
 
@@ -114,7 +114,7 @@ final class AudioPlaybackCenterTests: XCTestCase {
 
     func test_resumeAfterNaturalFinishRestartsFromZero() {
         let fake = FakePlayback(duration: 10)
-        let center = AudioPlaybackCenter(playerFactory: { _ in fake })
+        let center = AudioPlaybackCenter { _ in fake }
         center.play(url: URL(fileURLWithPath: "/tmp/a.caf"), transcriptID: 1)
         fake.currentTime = 10
         fake.pause() // simulates AVAudioPlayer's own isPlaying flipping false at natural end
@@ -129,7 +129,7 @@ final class AudioPlaybackCenterTests: XCTestCase {
 
     func test_seekClampsToDurationRange() {
         let fake = FakePlayback(duration: 10)
-        let center = AudioPlaybackCenter(playerFactory: { _ in fake })
+        let center = AudioPlaybackCenter { _ in fake }
         center.play(url: URL(fileURLWithPath: "/tmp/a.caf"), transcriptID: 1)
 
         center.seek(to: 999)
@@ -141,7 +141,7 @@ final class AudioPlaybackCenterTests: XCTestCase {
 
     // Degenerate: no active player yet — every control must no-op, not crash.
     func test_operationsWithNoActivePlayerAreNoops() {
-        let center = AudioPlaybackCenter(playerFactory: { _ in FakePlayback() })
+        let center = AudioPlaybackCenter { _ in FakePlayback() }
 
         center.pause()
         center.resume()
@@ -155,7 +155,7 @@ final class AudioPlaybackCenterTests: XCTestCase {
 
     func test_refreshProgressReadsCurrentTimeFromPlayer() {
         let fake = FakePlayback(duration: 10)
-        let center = AudioPlaybackCenter(playerFactory: { _ in fake })
+        let center = AudioPlaybackCenter { _ in fake }
         center.play(url: URL(fileURLWithPath: "/tmp/a.caf"), transcriptID: 1)
         fake.currentTime = 4.5
 
@@ -166,7 +166,7 @@ final class AudioPlaybackCenterTests: XCTestCase {
 
     func test_refreshProgressDetectsNaturalFinish() {
         let fake = FakePlayback(duration: 10)
-        let center = AudioPlaybackCenter(playerFactory: { _ in fake })
+        let center = AudioPlaybackCenter { _ in fake }
         center.play(url: URL(fileURLWithPath: "/tmp/a.caf"), transcriptID: 1)
         fake.currentTime = 10
         fake.pause() // simulates the player's own isPlaying flipping false, not a user pause
