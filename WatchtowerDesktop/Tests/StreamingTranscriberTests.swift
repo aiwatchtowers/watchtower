@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerDesktop
 
 /// Records forced languages + window sizes; returns canned texts in call order.
-private final class MockEngine: TranscriptionEngine, @unchecked Sendable {
+private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
     var texts: [Result<String, Error>] = []
     var detections: [[String: Float]] = []
     struct MockError: Error {}

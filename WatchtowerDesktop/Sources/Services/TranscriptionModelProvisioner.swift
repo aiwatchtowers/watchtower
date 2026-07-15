@@ -20,42 +20,50 @@ final class TranscriptionModelProvisioner {
     }
 
     private(set) var state: State = .idle
+    /// The provider the current/last `ensureDownloaded` call targets. A stale
+    /// call's progress/outcome is checked against this (alongside
+    /// `currentModelName`) and dropped once a different (provider, model)
+    /// pair has been requested.
+    private(set) var currentProviderID: String?
     /// The model the current/last `ensureDownloaded` call targets. A stale
     /// call's progress/outcome is checked against this and dropped once a
     /// different model has been requested.
     private(set) var currentModelName: String?
-    /// The model whose files are already confirmed on disk from a prior
-    /// successful prefetch — re-requesting it is a no-op, so reopening the
-    /// Calendar tab doesn't re-hit the network every time.
+    /// The (provider, model) pair whose files are already confirmed on disk
+    /// from a prior successful prefetch — re-requesting it is a no-op, so
+    /// reopening the Calendar tab doesn't re-hit the network every time.
+    private var lastSucceededProviderID: String?
     private var lastSucceededModel: String?
 
     private(set) var currentTask: Task<Void, Never>?
 
-    private let downloadFn: (String, @escaping @Sendable (Double) -> Void) async throws -> Void
+    private let downloadFn: (String, String, @escaping @Sendable (Double) -> Void) async throws -> Void
 
     init(
-        downloadFn: @escaping (String, @escaping @Sendable (Double) -> Void) async throws -> Void = { modelName, progress in
-            _ = try await WhisperKitEngine.ensureModelFilesDownloaded(modelName: modelName, downloadProgress: progress)
+        downloadFn: @escaping (String, String, @escaping @Sendable (Double) -> Void) async throws -> Void = { providerID, model, progress in
+            let provider = TranscriptionProviderRegistry.resolve(providerID: providerID)
+            try await provider.prefetch(model: model, progress: progress)
         }
     ) {
         self.downloadFn = downloadFn
     }
 
-    /// Starts (or joins) the download of `modelName`'s files. No-op if that
-    /// exact model is already downloading or already succeeded. Supersedes
-    /// any in-flight download of a different model — best-effort only: the
-    /// superseded download may keep running in the background, but its
-    /// progress/outcome is dropped once superseded.
-    func ensureDownloaded(modelName: String) {
-        if case .downloading = state, currentModelName == modelName {
+    /// Starts (or joins) the download of `model`'s files for `providerID`.
+    /// No-op if that exact (provider, model) pair is already downloading or
+    /// already succeeded. Supersedes any in-flight download of a different
+    /// pair — best-effort only: the superseded download may keep running in
+    /// the background, but its progress/outcome is dropped once superseded.
+    func ensureDownloaded(providerID: String, model: String) {
+        if case .downloading = state, currentProviderID == providerID, currentModelName == model {
             return
         }
-        if case .idle = state, lastSucceededModel == modelName {
+        if case .idle = state, lastSucceededProviderID == providerID, lastSucceededModel == model {
             return
         }
 
         currentTask?.cancel()
-        currentModelName = modelName
+        currentProviderID = providerID
+        currentModelName = model
         state = .downloading(progress: 0)
 
         currentTask = Task { [weak self, downloadFn] in
@@ -63,7 +71,7 @@ final class TranscriptionModelProvisioner {
             let (stream, continuation) = AsyncStream<Double>.makeStream()
             let work = Task.detached {
                 do {
-                    try await downloadFn(modelName) { progress in continuation.yield(progress) }
+                    try await downloadFn(providerID, model) { progress in continuation.yield(progress) }
                     continuation.finish()
                     return Result<Void, Error>.success(())
                 } catch {
@@ -72,13 +80,14 @@ final class TranscriptionModelProvisioner {
                 }
             }
             for await progress in stream {
-                guard self.currentModelName == modelName else { continue }
+                guard self.currentProviderID == providerID, self.currentModelName == model else { continue }
                 self.state = .downloading(progress: progress)
             }
-            guard self.currentModelName == modelName else { return }
+            guard self.currentProviderID == providerID, self.currentModelName == model else { return }
             switch await work.value {
             case .success:
-                self.lastSucceededModel = modelName
+                self.lastSucceededProviderID = providerID
+                self.lastSucceededModel = model
                 self.state = .idle
             case .failure(let error):
                 self.state = .failed(error.localizedDescription)
@@ -86,11 +95,11 @@ final class TranscriptionModelProvisioner {
         }
     }
 
-    /// Re-attempts the download for the model that just failed. No-op unless
-    /// `state` is `.failed`.
+    /// Re-attempts the download for the (provider, model) pair that just
+    /// failed. No-op unless `state` is `.failed`.
     func retry() {
-        guard case .failed = state, let modelName = currentModelName else { return }
-        ensureDownloaded(modelName: modelName)
+        guard case .failed = state, let providerID = currentProviderID, let model = currentModelName else { return }
+        ensureDownloaded(providerID: providerID, model: model)
     }
 
     /// Clears a `.failed` state without retrying — the next natural trigger

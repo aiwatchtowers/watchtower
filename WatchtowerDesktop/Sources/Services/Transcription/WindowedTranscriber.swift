@@ -13,7 +13,7 @@ import Foundation
 /// the last engine error is thrown — total engine failure never masquerades
 /// as an all-silence recording.
 struct WindowedTranscriber {
-    let engine: TranscriptionEngine
+    let engine: WhisperWindowEngine
     let config: TranscriptionConfig
 
     /// progress: (windowIndex, windowCount) after each window completes (1-based).

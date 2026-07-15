@@ -1,7 +1,7 @@
 import Foundation
 import WhisperKit
 
-/// Loads/holds one WhisperKit model instance and adapts it to `TranscriptionEngine`.
+/// Loads/holds one WhisperKit model instance and adapts it to `WhisperWindowEngine`.
 ///
 /// This adapter exists to contain WhisperKit API churn: everything version-specific
 /// (config shape, the misspelled `detectLangauge(audioArray:)`, log-prob semantics)
@@ -9,7 +9,7 @@ import WhisperKit
 ///
 /// `@unchecked Sendable`: WhisperKit itself is not Sendable, but `WindowedTranscriber`
 /// awaits every engine call sequentially, so the instance is never used concurrently.
-final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
+final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
     private let whisperKit: WhisperKit
 
     private init(whisperKit: WhisperKit) {

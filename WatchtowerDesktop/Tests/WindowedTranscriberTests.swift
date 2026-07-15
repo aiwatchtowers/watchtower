@@ -3,7 +3,7 @@ import XCTest
 
 /// Scripted engine: canned per-window detection results + transcription texts.
 /// Records every forced language and window size passed in.
-private final class MockEngine: TranscriptionEngine, @unchecked Sendable {
+private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
     enum Detection {
         case probs([String: Float])
         case failure

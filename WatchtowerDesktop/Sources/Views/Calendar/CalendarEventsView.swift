@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     @State private var meetingPrepVM = MeetingPrepViewModel()
     @State private var selectedEventID: String?
@@ -36,7 +37,7 @@ struct CalendarEventsView: View {
                 .animation(.easeInOut(duration: 0.25), value: selectedEventID)
                 .onAppear {
                     calVM.loadEvents()
-                    appState.transcriptionModelProvisioner.ensureDownloaded(modelName: transcriptionModel)
+                    appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: transcriptionModel)
                 }
             } else {
                 notConnectedView

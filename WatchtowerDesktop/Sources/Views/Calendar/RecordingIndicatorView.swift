@@ -7,6 +7,15 @@ import SwiftUI
 struct RecordingIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var expanded = false
+    @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
+
+    /// Whether the currently-selected engine can produce a live transcript at
+    /// all. When it cannot, the live-chunks panel/chevron affordance never
+    /// makes sense (there is nothing to expand into) — the recording shows
+    /// only the plain capsule, and the transcript appears after Stop.
+    private var activeProviderSupportsLive: Bool {
+        TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider).supportsLive
+    }
 
     var body: some View {
         let center = appState.meetingRecorderCenter
@@ -78,7 +87,7 @@ struct RecordingIndicatorView: View {
 
     @ViewBuilder
     private func recordingView(_ center: MeetingRecorderCenter, startedAt: Date) -> some View {
-        if expanded {
+        if activeProviderSupportsLive && expanded {
             expandedPanel(center, startedAt: startedAt)
         } else {
             recordingCapsule(center, startedAt: startedAt)
@@ -92,10 +101,12 @@ struct RecordingIndicatorView: View {
                 Text(Self.elapsed(from: startedAt, to: context.date))
                     .font(.callout.monospacedDigit())
             }
-            liveEngineIndicator(center.liveEngineState)
-            Button { expanded = true } label: { Image(systemName: "chevron.up") }
-                .buttonStyle(.plain).controlSize(.small)
-                .help("Show live transcript")
+            if activeProviderSupportsLive {
+                liveEngineIndicator(center.liveEngineState)
+                Button { expanded = true } label: { Image(systemName: "chevron.up") }
+                    .buttonStyle(.plain).controlSize(.small)
+                    .help("Show live transcript")
+            }
             Button {
                 stop(center)
             } label: {

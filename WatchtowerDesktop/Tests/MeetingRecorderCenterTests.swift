@@ -50,7 +50,7 @@ private final class FakeRecorder: AudioRecording, @unchecked Sendable {
 
 /// Returns canned window texts in order; `""` past the end (silence). Used with a
 /// forced-language config so `detectLanguage` is never consulted.
-private final class ScriptedEngine: TranscriptionEngine, @unchecked Sendable {
+private final class ScriptedEngine: WhisperWindowEngine, @unchecked Sendable {
     let texts: [String]
     private var index = 0
 
@@ -68,7 +68,7 @@ private final class ScriptedEngine: TranscriptionEngine, @unchecked Sendable {
 /// entry via `enteredStream`. This lock-steps the windowed loop with the test so
 /// progress delivery into `phase` can be asserted deterministically (no race
 /// between the off-main transcription and the main-actor progress consumer).
-private final class GateEngine: TranscriptionEngine, @unchecked Sendable {
+private final class GateEngine: WhisperWindowEngine, @unchecked Sendable {
     let texts: [String]
     let enteredStream: AsyncStream<Void>
 
@@ -113,6 +113,42 @@ private final class GateEngine: TranscriptionEngine, @unchecked Sendable {
             releaseQueued = true
             lock.unlock()
         }
+    }
+}
+
+/// Adapts a `WhisperWindowEngine` test double (`ScriptedEngine`/`GateEngine`) to
+/// the pluggable `Transcriber` contract, mirroring production's
+/// `WhisperTranscriber`/`WhisperLiveSession` shape (`Providers/WhisperKitProvider.swift`)
+/// so the existing engine fakes keep driving the real `WindowedTranscriber`/
+/// `StreamingTranscriber` algorithms unchanged after `MeetingRecorderCenter`'s
+/// `engineFactory` moved from `WhisperWindowEngine` to `Transcriber`.
+private final class TestTranscriber: Transcriber, @unchecked Sendable {
+    let engine: WhisperWindowEngine
+    let supportsLive: Bool
+
+    init(_ engine: WhisperWindowEngine, supportsLive: Bool = true) {
+        self.engine = engine
+        self.supportsLive = supportsLive
+    }
+
+    func transcribe(_ samples: [Float], config: TranscriptionConfig,
+                    progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput {
+        try await WindowedTranscriber(engine: engine, config: config).transcribe(samples: samples, progress: progress)
+    }
+
+    func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? {
+        guard supportsLive else { return nil }
+        return TestLiveSession(engine: engine, config: config)
+    }
+}
+
+private struct TestLiveSession: TranscriptionLiveSession {
+    let engine: WhisperWindowEngine
+    let config: TranscriptionConfig
+
+    func run(samples: AsyncStream<[Float]>,
+             onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
+        try await StreamingTranscriber(engine: engine, config: config).run(samples: samples, onChunk: onChunk)
     }
 }
 
@@ -174,13 +210,29 @@ final class MeetingRecorderCenterTests: XCTestCase {
         return config
     }
 
+    // MARK: Provider/model migration default
+
+    /// With no `transcription.provider`/`transcription.model` keys set (an
+    /// install predating the pluggable-provider work), resolution must land on
+    /// whisperkit + turbo — the exact defaults `defaultEngineFactory` falls
+    /// back to. Pins the migration contract in isolation from the recorder
+    /// pipeline itself.
+    func testDefaultEngineFactoryUsesProviderAndModelDefaults() {
+        let d = UserDefaults(suiteName: "test.transcription.defaults.\(UUID().uuidString)")!
+        let providerID = d.string(forKey: "transcription.provider") ?? "whisperkit"
+        let model = d.string(forKey: "transcription.model") ?? "large-v3-v20240930"
+        XCTAssertEqual(providerID, "whisperkit")
+        XCTAssertEqual(model, "large-v3-v20240930")
+        XCTAssertEqual(type(of: TranscriptionProviderRegistry.resolve(providerID: providerID)).id, "whisperkit")
+    }
+
     // MARK: Guards
 
     func testStartWhileBusyIsANoOp() async throws {
         let recorder = FakeRecorder()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: []) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
@@ -215,7 +267,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let defaults = try isolatedDefaults()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: ["hello world"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello world"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
@@ -257,7 +309,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 5)
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: ["captured"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["captured"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
             notifier: FakeNotifier(),
@@ -293,7 +345,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: ["some talk"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["some talk"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { FakeCLIRunner(stdout: self.recapFailedEnvelope) },
             notifier: notifier,
@@ -320,7 +372,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: []) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: notifier,
@@ -344,7 +396,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let defaults = try isolatedDefaults()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: ["hello"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
@@ -390,7 +442,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineLoads += 1
-                return ScriptedEngine(texts: ["hello"])
+                return TestTranscriber(ScriptedEngine(texts: ["hello"]))
             },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
@@ -429,7 +481,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: ["hello"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
@@ -490,7 +542,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: ["hello"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: { _ in throw AudioFileDecoderError.unsupportedFormat },
             runnerResolver: { runner },
             notifier: notifier,
@@ -521,7 +573,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: ["real speech"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["real speech"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: notifier,
@@ -552,7 +604,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: []) }, // all-silence
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) }, // all-silence
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
@@ -591,7 +643,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineLoads += 1
-                return ScriptedEngine(texts: ["real speech"])
+                return TestTranscriber(ScriptedEngine(texts: ["real speech"]))
             },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { activeRunner },
@@ -635,7 +687,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
         let center = MeetingRecorderCenter(
             recorderFactory: { FakeRecorder() },
-            engineFactory: { _ in ScriptedEngine(texts: []) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
@@ -650,7 +702,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         missingDefaults.set("/tmp/does-not-exist-\(UUID().uuidString).caf", forKey: MeetingRecorderCenter.pendingAudioPathKey)
         let center2 = MeetingRecorderCenter(
             recorderFactory: { FakeRecorder() },
-            engineFactory: { _ in ScriptedEngine(texts: []) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
@@ -677,7 +729,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
             recorderFactory: { FakeRecorder() },
-            engineFactory: { _ in ScriptedEngine(texts: ["recovered speech"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["recovered speech"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: FakeNotifier(),
@@ -718,7 +770,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in
                 engineLoads += 1
-                return ScriptedEngine(texts: ["fresh transcription"])
+                return TestTranscriber(ScriptedEngine(texts: ["fresh transcription"]))
             },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
@@ -771,7 +823,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in
                 engineLoads += 1
-                return ScriptedEngine(texts: ["fresh"])
+                return TestTranscriber(ScriptedEngine(texts: ["fresh"]))
             },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
@@ -807,7 +859,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let engine = GateEngine(texts: ["a", "b", "c"])
         let center = MeetingRecorderCenter(
             recorderFactory: { FakeRecorder() },
-            engineFactory: { _ in engine },
+            engineFactory: { _ in TestTranscriber(engine) },
             decode: stubDecode(sampleCount: 4800), // 3 windows at 0.1 s / no overlap
             runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
             notifier: FakeNotifier(),
@@ -852,7 +904,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         var engineLoads = 0
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in engineLoads += 1; return ScriptedEngine(texts: ["live one", "live two"]) },
+            engineFactory: { _ in engineLoads += 1; return TestTranscriber(ScriptedEngine(texts: ["live one", "live two"])) },
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
             runnerResolver: { runner },
             notifier: FakeNotifier(),
@@ -879,7 +931,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: ["alpha", "beta"]) },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["alpha", "beta"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
             notifier: FakeNotifier(),
@@ -913,7 +965,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             engineFactory: { _ in
                 engineCalls += 1
                 if engineCalls == 1 { throw EngineLoadError() } // live load fails
-                return ScriptedEngine(texts: ["batch recovered"])  // stop-time fallback succeeds
+                return TestTranscriber(ScriptedEngine(texts: ["batch recovered"]))  // stop-time fallback succeeds
             },
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
             runnerResolver: { runner },
@@ -933,6 +985,41 @@ final class MeetingRecorderCenterTests: XCTestCase {
 
         XCTAssertEqual(center.phase, .idle)
         XCTAssertEqual(decodeCalls, 1, "fallback decodes the file")
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
+
+    func testNonLiveProviderSkipsLiveAndTranscribesViaBatchOnStop() async throws {
+        // A batch-only provider (supportsLive == false → makeLiveSession returns nil)
+        // must skip the live pass entirely — a DISTINCT branch from live-engine-load
+        // failure — yet still produce a transcript via the batch path on stop.
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        var decodeCalls = 0
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                // Engine loads fine; it just offers no live session.
+                TestTranscriber(ScriptedEngine(texts: ["batch only"]), supportsLive: false)
+            },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: nil, title: "NonLive")
+        guard case .recording = center.phase else { return XCTFail("recording must continue for a batch-only provider") }
+        for _ in 0..<12 { await Task.yield() }
+        XCTAssertEqual(center.liveEngineState, .unavailable, "a batch-only provider exposes no live session")
+
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(decodeCalls, 1, "batch-only provider transcribes via the batch path on stop")
         XCTAssertEqual(runner.invocations.count, 1)
     }
 
@@ -959,7 +1046,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             },
             engineFactory: { _ in
                 engineFactoryCalls += 1
-                return engineFactoryCalls == 1 ? gateEngine : secondEngine
+                return engineFactoryCalls == 1 ? TestTranscriber(gateEngine) : TestTranscriber(secondEngine)
             },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
