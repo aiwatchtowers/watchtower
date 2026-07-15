@@ -203,8 +203,19 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return runSyncStop(cfg)
 	}
 
-	if err := cfg.Validate(); err != nil {
+	// Slack is optional: without a token the daemon still runs (Calendar,
+	// Gmail, Jira keep syncing) and only the Slack phase is skipped.
+	if err := cfg.ValidateWorkspace(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+	ws, err := cfg.GetActiveWorkspace()
+	if err != nil {
+		return err
+	}
+	if ws.SlackToken != "" {
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
 	}
 
 	// --detach re-execs the process in the background.
@@ -231,19 +242,17 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
 
-	ws, err := cfg.GetActiveWorkspace()
-	if err != nil {
-		return err
-	}
-
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
-	slackClient := watchtowerslack.NewClient(ws.SlackToken)
-	orch := sync.NewOrchestrator(database, slackClient, cfg)
+	var orch *sync.Orchestrator
+	if ws.SlackToken != "" {
+		slackClient := watchtowerslack.NewClient(ws.SlackToken)
+		orch = sync.NewOrchestrator(database, slackClient, cfg)
+	}
 
 	// Always write logs to watchtower.log; also to stderr when verbose or detached.
 	syncLog := syncLogFilePath(cfg)
@@ -262,7 +271,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 		logWriter = io.MultiWriter(logFile, os.Stderr)
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
-	orch.SetLogger(logger)
+	if orch != nil {
+		orch.SetLogger(logger)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -357,6 +368,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 		// Wire gmail syncer if token exists.
 		wireGmailSyncer(ctx, d, cfg, database, logger)
 		return d.Run(ctx)
+	}
+
+	// One-shot sync is a Slack sync — nothing to do without a token.
+	if orch == nil {
+		return fmt.Errorf("slack is not connected for workspace %q; run 'watchtower auth login' first", cfg.ActiveWorkspace)
 	}
 
 	// Override initial_history_days if --days specified

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -103,12 +104,12 @@ func TestBuildAuthURL(t *testing.T) {
 	assert.Equal(t, "state-abc", q.Get("state"))
 	assert.Equal(t, "offline", q.Get("access_type"))
 	assert.Equal(t, "consent", q.Get("prompt"))
-	assert.Equal(t, gmailScope, q.Get("scope"))
+	assert.Equal(t, ScopeGmailReadonly, q.Get("scope"))
 }
 
 func TestBuildAuthURLHasGmailScope(t *testing.T) {
 	u := buildAuthURL(GoogleOAuthConfig{ClientID: "cid"}, "http://127.0.0.1:18521/callback", "st")
-	if !strings.Contains(u, url.QueryEscape("https://www.googleapis.com/auth/gmail.modify")) {
+	if !strings.Contains(u, url.QueryEscape("https://www.googleapis.com/auth/gmail.readonly")) {
 		t.Fatalf("gmail scope missing: %s", u)
 	}
 	if !strings.Contains(u, "access_type=offline") {
@@ -169,6 +170,39 @@ func TestExchangeCode_Success(t *testing.T) {
 	assert.Equal(t, "rt", tok.RefreshToken)
 }
 
+func TestExchangeCode_ScopeNotGranted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// User left the gmail checkbox unticked on the consent screen.
+		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","token_type":"Bearer","scope":"openid"}`))
+	}))
+	defer srv.Close()
+
+	prev := googleTokenEndpoint
+	googleTokenEndpoint = srv.URL
+	defer func() { googleTokenEndpoint = prev }()
+
+	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{}, "x", "http://localhost/cb")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not grant gmail access")
+}
+
+func TestExchangeCode_ScopeGranted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","token_type":"Bearer","scope":"` + ScopeGmailReadonly + `"}`))
+	}))
+	defer srv.Close()
+
+	prev := googleTokenEndpoint
+	googleTokenEndpoint = srv.URL
+	defer func() { googleTokenEndpoint = prev }()
+
+	tok, err := exchangeCode(context.Background(), GoogleOAuthConfig{}, "x", "http://localhost/cb")
+	require.NoError(t, err)
+	assert.Equal(t, "at", tok.AccessToken)
+}
+
 func TestExchangeCode_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
@@ -197,6 +231,38 @@ func TestExchangeCode_BadJSON(t *testing.T) {
 	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{}, "x", "http://localhost/cb")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decoding token response")
+}
+
+func TestRevoke_Success(t *testing.T) {
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		gotToken = r.PostForm.Get("token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	prev := googleRevokeEndpoint
+	googleRevokeEndpoint = srv.URL
+	defer func() { googleRevokeEndpoint = prev }()
+
+	require.NoError(t, Revoke(context.Background(), "rt-123"))
+	assert.Equal(t, "rt-123", gotToken)
+}
+
+func TestRevoke_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"invalid_token"}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	prev := googleRevokeEndpoint
+	googleRevokeEndpoint = srv.URL
+	defer func() { googleRevokeEndpoint = prev }()
+
+	err := Revoke(context.Background(), "rt-123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revoke failed")
 }
 
 func TestComplete_RejectsEmptyCode(t *testing.T) {
@@ -289,6 +355,65 @@ func TestLogin_SkipBrowserOpen_Success(t *testing.T) {
 		assert.Equal(t, "rt", tok.RefreshToken)
 	case err := <-errCh:
 		t.Fatalf("Login returned error: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Login to complete")
+	}
+}
+
+func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","token_type":"Bearer"}`))
+	}))
+	defer tokenSrv.Close()
+
+	prev := googleTokenEndpoint
+	googleTokenEndpoint = tokenSrv.URL
+	defer func() { googleTokenEndpoint = prev }()
+
+	errCh := make(chan error, 1)
+	out := &syncBuffer{}
+	go func() {
+		_, err := Login(context.Background(), GoogleOAuthConfig{ClientID: "cid"}, out,
+			LoginOptions{SkipBrowserOpen: true, AppReturn: true})
+		errCh <- err
+	}()
+
+	var authorizeURL string
+	require.Eventually(t, func() bool {
+		s := out.String()
+		idx := strings.Index(s, "http")
+		if idx == -1 {
+			return false
+		}
+		end := strings.IndexAny(s[idx:], "\n ")
+		if end == -1 {
+			end = len(s) - idx
+		}
+		authorizeURL = s[idx : idx+end]
+		return authorizeURL != ""
+	}, 2*time.Second, 10*time.Millisecond)
+
+	u, err := url.Parse(authorizeURL)
+	require.NoError(t, err)
+	cbURL, err := url.Parse(u.Query().Get("redirect_uri"))
+	require.NoError(t, err)
+	q := cbURL.Query()
+	q.Set("code", "auth-code")
+	q.Set("state", u.Query().Get("state"))
+	cbURL.RawQuery = q.Encode()
+
+	resp, err := http.Get(cbURL.String())
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	// The success page must send the browser back to the app.
+	assert.Contains(t, string(body), "watchtower-auth://connected")
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for Login to complete")
 	}

@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
+	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/gmail"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var gmailCmd = &cobra.Command{
@@ -41,6 +44,7 @@ var gmailStatusCmd = &cobra.Command{
 
 func init() {
 	gmailLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
+	gmailLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 
 	gmailCmd.AddCommand(gmailLoginCmd)
 	gmailCmd.AddCommand(gmailLogoutCmd)
@@ -70,9 +74,10 @@ func runGmailLogin(cmd *cobra.Command, _ []string) error {
 	}
 
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
 	out := cmd.OutOrStdout()
 
-	token, err := gmail.Login(cmd.Context(), gmailOAuthConfig(), out, gmail.LoginOptions{SkipBrowserOpen: noOpen})
+	token, err := gmail.Login(cmd.Context(), gmailOAuthConfig(), out, gmail.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
 	if err != nil {
 		return fmt.Errorf("gmail login: %w", err)
 	}
@@ -88,11 +93,33 @@ func runGmailLogin(cmd *cobra.Command, _ []string) error {
 		database.Close()
 	}
 
+	persistGmailAccountEmail(cmd.Context(), token.RefreshToken)
+
 	fmt.Fprintf(out, "\nGmail connected!\n")
 	fmt.Fprintf(out, "Token saved to: %s\n", store.Path())
 	fmt.Fprintf(out, "Run 'watchtower gmail sync' to fetch messages.\n")
 
 	return nil
+}
+
+// persistGmailAccountEmail resolves the connected account's email via the
+// Gmail profile API and writes gmail.account_email to config. It is the inbox
+// detectors' identity fallback when no Slack identity exists. Best-effort:
+// on failure the detectors simply keep using the Slack-derived email.
+func persistGmailAccountEmail(ctx context.Context, refreshToken string) {
+	client, err := gmail.NewClient(ctx, refreshToken, gmailOAuthConfig())
+	if err != nil {
+		return
+	}
+	profile, err := client.GetProfile(ctx)
+	if err != nil || profile.EmailAddress == "" {
+		return
+	}
+	v := viper.New()
+	v.SetConfigFile(flagConfig)
+	_ = v.ReadInConfig()
+	v.Set("gmail.account_email", profile.EmailAddress)
+	_ = writeConfigAtomic(v, flagConfig)
 }
 
 func runGmailLogout(cmd *cobra.Command, _ []string) error {
@@ -108,6 +135,23 @@ func runGmailLogout(cmd *cobra.Command, _ []string) error {
 	}
 
 	store := gmail.NewTokenStore(cfg.WorkspaceDir())
+
+	// Revoke the grant at Google — otherwise the account keeps it and the
+	// next consent screen says "already has some access" instead of listing
+	// permissions. Skip when the Calendar token shares this grant (combined
+	// `google login`): revocation kills the whole grant, not one scope.
+	if token, loadErr := store.Load(); loadErr == nil && token.RefreshToken != "" {
+		sharedWithCalendar := false
+		if calToken, cErr := calendar.NewTokenStore(cfg.WorkspaceDir()).Load(); cErr == nil {
+			sharedWithCalendar = calToken.RefreshToken == token.RefreshToken
+		}
+		if sharedWithCalendar {
+			fmt.Fprintln(cmd.OutOrStdout(), "Note: Google Calendar shares this Google grant — not revoking it at Google. Disconnect Calendar to revoke fully.")
+		} else if revokeErr := gmail.Revoke(cmd.Context(), token.RefreshToken); revokeErr != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "Warning: could not revoke the grant at Google: %v\n", revokeErr)
+		}
+	}
+
 	if err := store.Delete(); err != nil {
 		return fmt.Errorf("deleting token: %w", err)
 	}

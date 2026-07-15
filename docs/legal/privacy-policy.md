@@ -23,14 +23,14 @@ Contact: **tv88dn@gmail.com**
 
 ## What Google user data the App accesses
 
-When a user connects Google Calendar, the App requests these scopes:
+When a user connects Google Calendar, the App requests this scope:
 
-- `https://www.googleapis.com/auth/calendar.events.readonly` — **read-only**
-  access to calendar events (titles, times, descriptions, attendees, locations).
-- `https://www.googleapis.com/auth/calendar.calendarlist.readonly` — **read-only**
-  access to the list of the user's calendars (names, colors, primary flag).
+- `https://www.googleapis.com/auth/calendar.readonly` — **read-only** access to
+  the user's calendars: the calendar list (names, colors, primary flag) and
+  calendar events (titles, times, descriptions, attendees, locations).
 
-The App requests **no write, delete, or sharing** permissions on Google data.
+The App requests **no write, delete, or sharing** permissions on Google
+Calendar data.
 
 ## How the data is used
 

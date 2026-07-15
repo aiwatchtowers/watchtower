@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,13 +23,15 @@ const (
 	defaultRedirectPort = 18521 // separate range from Calendar (18501-18510) and Jira (18511-18520)
 	callbackPath        = "/callback"
 	loginTimeout        = 5 * time.Minute
-	gmailScope          = "https://www.googleapis.com/auth/gmail.modify"
+	// ScopeGmailReadonly is exported for the combined `google login` flow in cmd.
+	ScopeGmailReadonly = "https://www.googleapis.com/auth/gmail.readonly"
 )
 
 // Google OAuth endpoints — vars so tests can point at httptest.Server.
 var (
-	googleAuthEndpoint  = "https://accounts.google.com/o/oauth2/v2/auth"
-	googleTokenEndpoint = "https://oauth2.googleapis.com/token"
+	googleAuthEndpoint   = "https://accounts.google.com/o/oauth2/v2/auth"
+	googleTokenEndpoint  = "https://oauth2.googleapis.com/token"
+	googleRevokeEndpoint = "https://oauth2.googleapis.com/revoke"
 )
 
 // GoogleOAuthConfig holds credentials for the Gmail API. Client ID/secret are
@@ -45,6 +48,7 @@ type OAuthToken struct {
 	TokenType    string `json:"token_type"`
 	RefreshToken string `json:"refresh_token"`
 	Expiry       string `json:"expiry,omitempty"`
+	Scope        string `json:"scope,omitempty"`
 }
 
 // TokenStore persists and loads OAuth2 refresh/access tokens.
@@ -107,6 +111,10 @@ func (s *TokenStore) Exists() bool {
 // LoginOptions configures the Login flow behaviour.
 type LoginOptions struct {
 	SkipBrowserOpen bool
+	// AppReturn makes the success page redirect the browser to the
+	// watchtower-auth:// scheme, so macOS brings the desktop app back to the
+	// foreground after the consent flow. Off for plain CLI logins.
+	AppReturn bool
 }
 
 // PrepareResult holds the data needed by the desktop app to start the OAuth flow.
@@ -143,7 +151,7 @@ func buildAuthURL(cfg GoogleOAuthConfig, redirectURI, state string) string {
 		"client_id":     {cfg.ClientID},
 		"redirect_uri":  {redirectURI},
 		"response_type": {"code"},
-		"scope":         {gmailScope},
+		"scope":         {ScopeGmailReadonly},
 		"state":         {state},
 		"access_type":   {"offline"},
 		"prompt":        {"consent"},
@@ -183,7 +191,26 @@ func exchangeCode(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI 
 	if err := json.Unmarshal(body, &token); err != nil {
 		return nil, fmt.Errorf("decoding token response: %w", err)
 	}
+	if err := validateGrantedScopes(token.Scope); err != nil {
+		return nil, err
+	}
 	return &token, nil
+}
+
+// validateGrantedScopes rejects tokens missing the gmail scope — a safety
+// net in case Google's consent flow ever lets the user approve the request
+// while withholding the permission (as its multi-scope checkbox screen
+// does), which would otherwise surface only as 403s during sync.
+func validateGrantedScopes(granted string) error {
+	if granted == "" {
+		// The scope field is optional in the token response; absent means
+		// unknown, not denied.
+		return nil
+	}
+	if !slices.Contains(strings.Fields(granted), ScopeGmailReadonly) {
+		return fmt.Errorf("google did not grant gmail access (missing scope: %s) — run login again and approve gmail access on the consent screen", ScopeGmailReadonly)
+	}
+	return nil
 }
 
 // Complete exchanges an authorization code for tokens.
@@ -192,6 +219,32 @@ func Complete(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI stri
 		return nil, fmt.Errorf("no authorization code provided")
 	}
 	return exchangeCode(ctx, cfg, code, redirectURI)
+}
+
+// Revoke tells Google to revoke the grant behind the given token (refresh or
+// access). Without this, logout only deletes the local file and the account
+// keeps the grant — the next consent screen then says "already has some
+// access" instead of listing the requested permissions.
+func Revoke(ctx context.Context, token string) error {
+	data := url.Values{"token": {token}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, googleRevokeEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	hc := &http.Client{Timeout: 30 * time.Second}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("revoke request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("revoke failed (%d): %s", resp.StatusCode, body)
+	}
+	return nil
 }
 
 // callbackResult is sent from the HTTP callback handler to the Login goroutine.
@@ -241,6 +294,18 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 
 	resultCh := make(chan callbackResult, 1)
 
+	// With app-return the page first sits for 3s (so the confirmation is
+	// readable and the redirect doesn't race page load, which spawns a blank
+	// tab in some browsers), then navigates to the app scheme; the tab tries
+	// to close itself only after that. Without app-return it just self-closes.
+	returnBlock, closeMS := "", "2000"
+	if opt.AppReturn {
+		returnBlock = appReturnBlock
+		closeMS = "4500"
+	}
+	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
+		Replace(callbackSuccessPage)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -255,7 +320,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 			state: q.Get("state"),
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, callbackSuccessPage)
+		fmt.Fprint(w, successPage)
 	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -318,11 +383,23 @@ func listenLocal() (net.Listener, error) {
 
 const callbackSuccessPage = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Watchtower — Gmail Connected</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
+<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
 .card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;max-width:440px;text-align:center}
-h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}</style></head>
-<body><div class="card"><h1>Gmail Connected</h1><p>Gmail has been linked to Watchtower. You can close this tab.</p></div>
-<script>setTimeout(function(){try{window.close()}catch(e){}},2000);</script></body></html>`
+.logo{width:52px;height:52px;border-radius:13px;background:linear-gradient(135deg,#5b8cff,#3f5be0);color:#fff;font-weight:700;font-size:24px;line-height:52px;margin:0 auto 18px}
+h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}
+.btn{display:inline-block;margin-top:22px;padding:13px 32px;background:linear-gradient(135deg,#5b8cff,#3f5be0);color:#fff;text-decoration:none;font-weight:600;font-size:15px;border-radius:10px;box-shadow:0 4px 14px rgba(63,91,224,.35)}
+.btn:hover{filter:brightness(1.12)}
+.hint{margin-top:12px;color:#666;font-size:12px}</style></head>
+<body><div class="card"><div class="logo">W</div><h1>Gmail Connected</h1><p>Gmail has been linked to Watchtower.</p><!--RETURN--></div>
+<script>setTimeout(function(){try{window.close()}catch(e){}},{{CLOSE_MS}});</script></body></html>`
+
+// appReturnBlock is injected into the success page when LoginOptions.AppReturn
+// is set. The button is the reliable path back to the app — browsers block
+// scripted navigation to custom schemes without a user gesture, so the
+// delayed auto-redirect below is best-effort only.
+const appReturnBlock = `<a class="btn" href="watchtower-auth://connected">Open Watchtower</a>
+<p class="hint">You can close this tab afterwards.</p>
+<script>setTimeout(function(){location.href="watchtower-auth://connected";},3000);</script>`
 
 const callbackErrorPage = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Watchtower — Error</title>

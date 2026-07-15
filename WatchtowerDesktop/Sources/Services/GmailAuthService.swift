@@ -16,6 +16,7 @@ final class GmailAuthService {
     // MARK: - Connect
 
     func connect() {
+        guard !isAuthenticating else { return }
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"
             return
@@ -27,7 +28,9 @@ final class GmailAuthService {
         // Store the process so cancelConnect() can terminate it
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
-        process.arguments = ["gmail", "login"]
+        // --app-return: the success page redirects to watchtower-auth:// so
+        // macOS brings the app back to the foreground after the browser step.
+        process.arguments = ["gmail", "login", "--app-return"]
         process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
@@ -40,6 +43,8 @@ final class GmailAuthService {
                 if result.exitCode == 0 {
                     self.isConnected = true
                     self.error = nil
+                    // Re-wire the daemon so the first sync + AI cycle runs now.
+                    Task { await DaemonManager.restart() }
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil
@@ -77,6 +82,8 @@ final class GmailAuthService {
                 if result.exitCode == 0 {
                     self.isConnected = false
                     self.error = nil
+                    // Restart so the daemon drops the disconnected syncer.
+                    Task { await DaemonManager.restart() }
                 } else {
                     self.error = result.stderr.isEmpty
                         ? "Disconnect failed (exit \(result.exitCode))"
@@ -89,21 +96,20 @@ final class GmailAuthService {
     // MARK: - Status
 
     func checkStatus() {
-        // Check if token file exists in any workspace dir
-        let basePath = Constants.databasePath
         let fm = FileManager.default
+        // Only the ACTIVE workspace's token counts — logout deletes the token
+        // there, and a stale token in an old workspace must not read as connected.
+        if let dir = Constants.activeWorkspaceDir() {
+            isConnected = fm.fileExists(atPath: "\(dir)/gmail_token.json")
+            return
+        }
+        // No active workspace configured — fall back to scanning all workspaces.
+        let basePath = Constants.databasePath
         guard let contents = try? fm.contentsOfDirectory(atPath: basePath) else {
             isConnected = false
             return
         }
-        for dir in contents {
-            let tokenPath = "\(basePath)/\(dir)/gmail_token.json"
-            if fm.fileExists(atPath: tokenPath) {
-                isConnected = true
-                return
-            }
-        }
-        isConnected = false
+        isConnected = contents.contains { fm.fileExists(atPath: "\(basePath)/\($0)/gmail_token.json") }
     }
 
     // MARK: - CLI Helper

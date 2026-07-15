@@ -72,6 +72,8 @@ type Daemon struct {
 }
 
 // New creates a Daemon that runs incremental syncs via the given orchestrator.
+// orchestrator may be nil when Slack is not connected; the Slack sync phase is
+// then skipped while the other source syncers and pipelines still run.
 func New(orchestrator *sync.Orchestrator, cfg *config.Config) *Daemon {
 	return &Daemon{
 		orchestrator: orchestrator,
@@ -305,7 +307,12 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 
 // phaseSlackSync runs the orchestrator and persists last_sync.json. The
 // returned error is non-nil for non-fatal sync issues; pipelines still run.
+// A nil orchestrator means Slack is not connected — the phase is skipped and
+// the other sources still sync.
 func (d *Daemon) phaseSlackSync(ctx context.Context) error {
+	if d.orchestrator == nil {
+		return nil
+	}
 	syncErr := d.orchestrator.Run(ctx, sync.SyncOptions{})
 	if syncErr != nil {
 		d.logger.Printf("sync error: %v", syncErr)
@@ -622,18 +629,29 @@ func (d *Daemon) phaseBriefing(ctx context.Context) {
 }
 
 // applyInboxCurrentUser populates the inbox pipeline with the current user's
-// id+email so it can filter mentions/DMs. No-op when DB is unavailable.
+// id+email so it can filter mentions/DMs. The email falls back to the Gmail
+// account email from config when there is no Slack identity (no users row) —
+// otherwise the Gmail/Calendar detectors can't match To/Cc/attendees.
+// No-op when DB is unavailable.
 func (d *Daemon) applyInboxCurrentUser() {
 	if d.db == nil || d.inboxPipe == nil {
 		return
 	}
 	uid, err := d.db.GetCurrentUserID()
-	if err != nil || uid == "" {
-		return
+	if err != nil {
+		uid = ""
 	}
 	email := ""
-	if u, uerr := d.db.GetUserByID(uid); uerr == nil && u != nil {
-		email = u.Email
+	if uid != "" {
+		if u, uerr := d.db.GetUserByID(uid); uerr == nil && u != nil {
+			email = u.Email
+		}
+	}
+	if email == "" && d.config != nil {
+		email = d.config.Gmail.AccountEmail
+	}
+	if uid == "" && email == "" {
+		return
 	}
 	d.inboxPipe.SetCurrentUser(uid, email)
 }

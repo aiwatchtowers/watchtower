@@ -7,8 +7,15 @@ tokens stop expiring every 7 days.
 - **OAuth Client ID:** `334226468569-5kopsqbc27esmmjbsc0loe2fanoffk78.apps.googleusercontent.com`
 - **Project number:** `334226468569`
 - **Scopes (sensitive, not restricted):**
-  - `https://www.googleapis.com/auth/calendar.events.readonly`
-  - `https://www.googleapis.com/auth/calendar.calendarlist.readonly`
+  - `https://www.googleapis.com/auth/calendar.readonly`
+
+> Historical note: the app originally requested `calendar.events.readonly` +
+> `calendar.calendarlist.readonly`. It now requests the single broader
+> read-only scope instead — Google shows its granular-consent checkbox screen
+> only for multi-scope requests, and users who left the (default-off)
+> checkboxes unticked ended up "connected" without working access. One scope =
+> plain Continue screen. Still sensitive, not restricted, so the verification
+> class is unchanged.
 
 Because these are **sensitive** (not *restricted*), verification needs the OAuth
 consent screen + a demo video, but **not** a paid third-party security
@@ -96,36 +103,36 @@ Google Cloud Console → **APIs & Services → OAuth consent screen** (project
 
 ## Step 2 — Confirm scopes
 
-On the **Scopes** step, ensure exactly these two are present (add via "Add or
+On the **Scopes** step, ensure exactly this one is present (add via "Add or
 remove scopes" if missing):
 
-- `.../auth/calendar.events.readonly`
-- `.../auth/calendar.calendarlist.readonly`
+- `.../auth/calendar.readonly`
 
-Do **not** add broader scopes — narrower scope = faster review.
+Do **not** add further scopes — fewer scopes = faster review, and a single
+scope keeps the consent screen checkbox-free.
 
 ---
 
 ## Step 3 — Scope justifications (paste into the verification form)
 
-**`calendar.events.readonly`**
-> Watchtower reads the signed-in user's own calendar events (title, time,
-> description, attendees) to generate local meeting preparation and daily
-> briefings — e.g. talking points and open items before each meeting. Access is
-> strictly read-only; the app never creates, edits, deletes, or shares events.
-> Event data is stored only in a local database on the user's own machine and is
-> used solely to produce the user-requested briefing/meeting-prep output.
+**`calendar.readonly`**
+> Watchtower reads the signed-in user's own calendars — the calendar list
+> (names, primary flag, color) and calendar events (title, time, description,
+> attendees) — to generate local meeting preparation and daily briefings, e.g.
+> talking points and open items before each meeting. Access is strictly
+> read-only; the app never creates, edits, deletes, or shares events or
+> calendars. Calendar data is stored only in a local database on the user's own
+> machine and is used solely to produce the user-requested
+> briefing/meeting-prep output.
 
-**`calendar.calendarlist.readonly`**
-> Watchtower reads the list of the user's calendars (names, primary flag, color)
-> so the user can choose which calendars to include in their briefings. It is
-> read-only and used only to present the calendar picker and label events
-> correctly.
-
-**Why these scopes / why not narrower:** the app's core feature is summarizing
+**Why this scope / why not narrower:** the app's core feature is summarizing
 the user's upcoming meetings; it needs to read event details and know which
-calendars exist. No write access is requested because the app never modifies
-Google data.
+calendars exist. The narrower pair (`calendar.events.readonly` +
+`calendar.calendarlist.readonly`) covers the same data but forces Google's
+granular-consent checkbox screen (multi-scope requests only), which let users
+"connect" while leaving the default-off checkboxes unticked and end up with a
+broken integration. No write access is requested because the app never
+modifies Google data.
 
 ---
 

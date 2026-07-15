@@ -145,6 +145,25 @@ const listPageSize = 500
 // (e.g. "in:inbox newer_than:7d" or "in:inbox after:1720519200"). Gmail
 // paginates list results (nextPageToken); this walks all pages, accumulating
 // IDs, until either the pages are exhausted or maxResults IDs have been
+// Profile is the Gmail account identity (users/me/profile).
+type Profile struct {
+	EmailAddress string `json:"emailAddress"`
+}
+
+// GetProfile fetches the authenticated account's Gmail profile — used to learn
+// the account email so inbox detectors can match To/Cc without Slack identity.
+func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
+	body, err := c.doGet(ctx, "/users/me/profile", nil)
+	if err != nil {
+		return nil, err
+	}
+	var p Profile
+	if err := json.Unmarshal(body, &p); err != nil {
+		return nil, fmt.Errorf("parsing gmail profile: %w", err)
+	}
+	return &p, nil
+}
+
 // collected. Pass maxResults <= 0 to collect every ID in the query window
 // (walk pages until nextPageToken is empty) — messages.list is quota-cheap
 // compared to messages.get, so callers that need the full window before

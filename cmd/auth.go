@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -44,6 +45,16 @@ var authCompleteCmd = &cobra.Command{
 	RunE:  runAuthComplete,
 }
 
+var authLogoutCmd = &cobra.Command{
+	Use:   "logout",
+	Short: "Disconnect Slack and purge Slack data",
+	Long: `Removes the Slack token from config and deletes all Slack data from the
+database: synced messages, users, channels, and the AI products built on them
+(digests, tracks, people cards, briefings, Slack inbox items and situations).
+Data from other sources (Gmail, Calendar, Jira) and targets are preserved.`,
+	RunE: runAuthLogout,
+}
+
 var authTrustCertCmd = &cobra.Command{
 	Use:   "trust-cert",
 	Short: "Trust the localhost HTTPS certificate (one-time macOS setup)",
@@ -62,6 +73,7 @@ var authCheckCertCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(authCmd)
 	authCmd.AddCommand(authLoginCmd)
+	authCmd.AddCommand(authLogoutCmd)
 	authCmd.AddCommand(authPrepareCmd)
 	authCmd.AddCommand(authCompleteCmd)
 	authCmd.AddCommand(authTrustCertCmd)
@@ -168,6 +180,48 @@ func runAuthComplete(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(info)
+}
+
+func runAuthLogout(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	// Blank the token in config — the same key path saveAuthResult writes on login.
+	v := viper.New()
+	v.SetConfigFile(flagConfig)
+	if err := v.ReadInConfig(); err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	tokenKey := "workspaces." + cfg.ActiveWorkspace + ".slack_token"
+	if v.GetString(tokenKey) != "" {
+		v.Set(tokenKey, "")
+		if err := writeConfigAtomic(v, flagConfig); err != nil {
+			return err
+		}
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	if err := database.ClearSlackData(); err != nil {
+		return fmt.Errorf("purging slack data: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "Slack disconnected: token removed, Slack data purged.")
+	fmt.Fprintln(out, "Restart the sync daemon if it is running so it stops syncing Slack.")
+	return nil
 }
 
 // resolveOAuthConfig reads OAuth credentials from env or build-time defaults.
