@@ -141,10 +141,6 @@ func (c *Client) doGetRetry(ctx context.Context, path string, params url.Values,
 // (Gmail caps a single messages.list page at 500).
 const listPageSize = 500
 
-// ListInboxMessageIDs returns message IDs matching the Gmail search query
-// (e.g. "in:inbox newer_than:7d" or "in:inbox after:1720519200"). Gmail
-// paginates list results (nextPageToken); this walks all pages, accumulating
-// IDs, until either the pages are exhausted or maxResults IDs have been
 // Profile is the Gmail account identity (users/me/profile).
 type Profile struct {
 	EmailAddress string `json:"emailAddress"`
@@ -164,6 +160,10 @@ func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 	return &p, nil
 }
 
+// ListInboxMessageIDs returns message IDs matching the Gmail search query
+// (e.g. "in:inbox newer_than:7d" or "in:inbox after:1720519200"). Gmail
+// paginates list results (nextPageToken); this walks all pages, accumulating
+// IDs, until either the pages are exhausted or maxResults IDs have been
 // collected. Pass maxResults <= 0 to collect every ID in the query window
 // (walk pages until nextPageToken is empty) — messages.list is quota-cheap
 // compared to messages.get, so callers that need the full window before
