@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,7 +76,7 @@ func seedMemoryEntityFixture(t *testing.T, vaultPath string, database *db.DB) st
 	}
 	_, err = vault.WriteNodes([]memory.Node{n}, memory.CommitMsg{Op: "seed", Summary: "test fixture", Cause: "seed"})
 	require.NoError(t, err)
-	_, err = memory.Reconcile(vault, database)
+	_, err = memory.Reconcile(vault, database, t.Logf)
 	require.NoError(t, err)
 	return n.ID
 }
@@ -145,6 +146,42 @@ func TestCLI_MemoryStatus(t *testing.T) {
 	assert.Contains(t, out, "1700000000")
 	assert.Contains(t, out, "Extraction debt: 1")
 	assert.Contains(t, out, "Last run: none")
+}
+
+// TestCLI_MemoryStatus_ExcludesTombstones verifies tombstones are excluded
+// from the per-type/tier counts (matching map.md and memory_map) and reported
+// on their own line.
+func TestCLI_MemoryStatus_ExcludesTombstones(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	liveID := seedMemoryEntityFixture(t, vaultPath, database)
+
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	stone := memory.Node{
+		ID:         memory.NewID("entity"),
+		Type:       "entity",
+		Tier:       "long",
+		Status:     "tombstone",
+		RedirectTo: liveID,
+		Body:       "Merged into [[" + liveID + "]].\n",
+	}
+	_, err = vault.WriteNodes([]memory.Node{stone}, memory.CommitMsg{Op: "merge", Summary: "tombstone fixture", Cause: "merge"})
+	require.NoError(t, err)
+	_, err = memory.Reconcile(vault, database, t.Logf)
+	require.NoError(t, err)
+	database.Close()
+
+	var buf bytes.Buffer
+	memoryStatusCmd.SetOut(&buf)
+	require.NoError(t, memoryStatusCmd.RunE(memoryStatusCmd, nil))
+
+	out := buf.String()
+	assert.Contains(t, out, "Nodes: 1", "tombstone must not count as a node")
+	assert.Contains(t, out, "entity/long: 1", "only the live entity is bucketed")
+	assert.Contains(t, out, "Tombstones: 1")
 }
 
 // TestCLI_MemoryReindex verifies reindex rebuilds the index from the vault:
@@ -248,8 +285,8 @@ func TestCLI_MemoryConsolidateOnce_RunsPipeline(t *testing.T) {
 
 	oldFactory := newMemoryPipelineFactory
 	t.Cleanup(func() { newMemoryPipelineFactory = oldFactory })
-	newMemoryPipelineFactory = func(d *db.DB, v *memory.Vault, cfg *config.Config) *memory.Pipeline {
-		return memory.NewPipeline(d, v, nil, cfg.Memory, nil)
+	newMemoryPipelineFactory = func(d *db.DB, v *memory.Vault, cfg *config.Config, logf func(string, ...any)) *memory.Pipeline {
+		return memory.NewPipeline(d, v, nil, cfg.Memory, logf)
 	}
 
 	var buf bytes.Buffer
@@ -313,4 +350,56 @@ func TestCLI_MemorySeedDryRun(t *testing.T) {
 	nodesAfter, err := database.ListMemoryNodes()
 	require.NoError(t, err)
 	assert.Len(t, nodesAfter, len(nodesBefore), "dry-run must not write index rows")
+}
+
+// TestCLI_MemoryOpen_NoVault verifies the read path never creates a vault:
+// open on a workspace without one prints a clean message and leaves no
+// directory behind (G8 — reads must not git-init as a side effect).
+func TestCLI_MemoryOpen_NoVault(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	var buf bytes.Buffer
+	memoryOpenCmd.SetOut(&buf)
+	require.NoError(t, memoryOpenCmd.RunE(memoryOpenCmd, []string{"U001"}))
+
+	assert.Contains(t, buf.String(), "not initialized")
+	_, err := os.Stat(vaultPath)
+	assert.True(t, os.IsNotExist(err), "memory open must not create the vault")
+}
+
+// TestCLI_MemoryReindex_NoVault: same contract for reindex.
+func TestCLI_MemoryReindex_NoVault(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	var buf bytes.Buffer
+	memoryReindexCmd.SetOut(&buf)
+	require.NoError(t, memoryReindexCmd.RunE(memoryReindexCmd, nil))
+
+	assert.Contains(t, buf.String(), "not initialized")
+	_, err := os.Stat(vaultPath)
+	assert.True(t, os.IsNotExist(err), "memory reindex must not create the vault")
+}
+
+// TestCLI_MemoryFactoryPassesLogf verifies the default pipeline factory wires
+// the caller's logf into the pipeline (daemon: logger.Printf, CLI: stderr) —
+// a production pipeline must never be constructed silent.
+func TestCLI_MemoryFactoryPassesLogf(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, true)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+
+	var logged bytes.Buffer
+	pipe := newMemoryPipelineFactory(database, vault, cfg, func(format string, args ...any) {
+		fmt.Fprintf(&logged, format+"\n", args...)
+	})
+	_, err = pipe.Run(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, logged.String(), "memory: run done",
+		"the factory must pass logf through to the pipeline")
 }

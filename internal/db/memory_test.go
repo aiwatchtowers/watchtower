@@ -3,8 +3,11 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pressly/goose/v3"
 )
 
 // memTestNode returns a valid node row for tests, overridable via mutate.
@@ -436,5 +439,60 @@ func TestMemoryWatermarkFreshWorkspace(t *testing.T) {
 	}
 	if ts != 0 {
 		t.Errorf("watermark = %v, want 0", ts)
+	}
+}
+
+// TestMessageExistsIgnoresDeleted: the MEM-01 write-time provenance check
+// counts only live messages — a tombstoned (is_deleted = 1) message would
+// 404 for the owner just like a hallucinated ref.
+func TestMessageExistsIgnoresDeleted(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.UpsertMessage(Message{ChannelID: "C001", TS: "1700000000.000001", UserID: "U001", Text: "hello"}); err != nil {
+		t.Fatalf("UpsertMessage: %v", err)
+	}
+	ok, err := db.MessageExists("C001", "1700000000.000001")
+	if err != nil || !ok {
+		t.Fatalf("MessageExists(live) = %v, %v; want true, nil", ok, err)
+	}
+
+	if _, err := db.Exec(`UPDATE messages SET is_deleted = 1 WHERE channel_id = 'C001'`); err != nil {
+		t.Fatalf("mark deleted: %v", err)
+	}
+	ok, err = db.MessageExists("C001", "1700000000.000001")
+	if err != nil {
+		t.Fatalf("MessageExists(deleted): %v", err)
+	}
+	if ok {
+		t.Error("MessageExists must be false for a deleted message")
+	}
+}
+
+// TestMemoryMigrationDownUpCycle: 00017's Down drops its ALTER-added columns
+// (workspace.memory_last_extracted_ts, pipeline_runs cache token columns), so
+// a down; up cycle is clean — Up's ADD COLUMN would otherwise fail on the
+// leftovers.
+func TestMemoryMigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	// The re-added columns are usable (exactly once — a duplicate would have
+	// failed the Up above).
+	if _, err := d.Exec(`UPDATE workspace SET memory_last_extracted_ts = 0`); err != nil {
+		t.Errorf("memory_last_extracted_ts missing after cycle: %v", err)
+	}
+	if _, err := d.Exec(`UPDATE pipeline_runs SET cache_read_tokens = 0, cache_creation_tokens = 0`); err != nil {
+		t.Errorf("cache token columns missing after cycle: %v", err)
 	}
 }

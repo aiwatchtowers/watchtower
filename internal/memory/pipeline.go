@@ -113,6 +113,16 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		return stats, nil
 	}
 
+	// Cross-process exclusion: the daemon phase and CLI consolidate/seed/
+	// reindex all write the same vault + watermark, so only one may run at a
+	// time. Contention returns ErrLocked before anything is written or
+	// recorded (the CLI prints it, the daemon logs and skips the cycle).
+	unlock, err := p.vault.Lock()
+	if err != nil {
+		return stats, err
+	}
+	defer unlock()
+
 	runID, err := p.db.CreatePipelineRun("memory", p.Source, "auto")
 	if err != nil {
 		p.logf("memory: create pipeline run: %v", err) // accounting only — the run proceeds unrecorded
@@ -129,7 +139,7 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, fmt.Errorf("memory: owner edits: %w", err))
 	}
-	stats.Reconciled, err = Reconcile(p.vault, p.db)
+	stats.Reconciled, err = Reconcile(p.vault, p.db, p.logf)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
@@ -163,8 +173,8 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed)",
-		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed)
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined)",
+		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined)
 	return stats, nil
 }
 
@@ -520,27 +530,6 @@ var linkLabelReplacer = strings.NewReplacer("[[", "", "]]", "", "|", "/", "\n", 
 
 func linkLabel(title string) string {
 	return linkLabelReplacer.Replace(title)
-}
-
-// appendToLinks adds a line as the first entry of the "## Links" section, or
-// appends it to the end of the body when the section is absent (same shape as
-// merge.go's appendMergedFrom, generalized to any line).
-func appendToLinks(body, line string) string {
-	loc := linksHeadingRe.FindStringIndex(body)
-	if loc == nil {
-		if body != "" && !strings.HasSuffix(body, "\n") {
-			body += "\n"
-		}
-		return body + line
-	}
-	insertAt := loc[1]
-	if insertAt < len(body) {
-		insertAt++ // step over the heading's newline
-	} else {
-		body += "\n"
-		insertAt = len(body)
-	}
-	return body[:insertAt] + line + body[insertAt:]
 }
 
 var (

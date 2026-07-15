@@ -181,3 +181,32 @@ func TestDaemon_MemoryPhaseLeavesInboxWatermark(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1700000123.456, ts, "memory phase must not touch inbox_last_processed_ts")
 }
+
+// TestDaemon_MemoryPhaseSkipsWhenLocked: when another process (e.g. a CLI
+// `memory consolidate --once`) holds the memory lock, the phase logs and
+// skips the cycle — no pipeline_runs row, no panic, cycle continues.
+func TestDaemon_MemoryPhaseSkipsWhenLocked(t *testing.T) {
+	orch, cfg, wsDir := testDaemonWithTempHome(t)
+	cfg.Memory = enabledMemoryConfig()
+
+	database, err := db.Open(wsDir + "/watchtower.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	vault, err := memory.OpenVault(filepath.Join(t.TempDir(), "memory"))
+	require.NoError(t, err)
+	unlock, err := vault.Lock()
+	require.NoError(t, err)
+	defer unlock()
+
+	d := New(orch, cfg)
+	d.SetLogger(log.New(os.Stderr, "[memory-locked-test] ", 0))
+	d.SetDB(database)
+	d.SetMemoryPipeline(memory.NewPipeline(database, vault, &mockGenerator{}, cfg.Memory, t.Logf))
+
+	d.phaseMemory(context.Background())
+
+	var runs int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM pipeline_runs`).Scan(&runs))
+	assert.Zero(t, runs, "a locked-out memory phase must not record a pipeline run")
+}

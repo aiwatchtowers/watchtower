@@ -45,7 +45,9 @@ DROP TABLE IF EXISTS memory_fts;
 DROP TABLE IF EXISTS memory_node_stats;
 DROP TABLE IF EXISTS memory_aliases;
 DROP TABLE IF EXISTS memory_nodes;
--- The ALTER-added columns (workspace.memory_last_extracted_ts,
--- pipeline_runs.cache_read_tokens, pipeline_runs.cache_creation_tokens) are
--- intentionally kept: SQLite's DROP COLUMN would require rewriting rows and
--- the zero defaults are harmless for older code.
+-- Drop the ALTER-added columns too (precedent: 00013's Down), so a
+-- down; up cycle is clean — Up's ADD COLUMN would otherwise fail on the
+-- leftover columns.
+ALTER TABLE pipeline_runs DROP COLUMN cache_creation_tokens;
+ALTER TABLE pipeline_runs DROP COLUMN cache_read_tokens;
+ALTER TABLE workspace DROP COLUMN memory_last_extracted_ts;

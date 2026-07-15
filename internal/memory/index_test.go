@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,7 +83,7 @@ func TestReconcileIndexesNewNodes(t *testing.T) {
 	b := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5IX2", "episode", "Rollout incident")
 	writeNodes(t, v, a, b)
 
-	stats, err := Reconcile(v, d)
+	stats, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, Stats{Added: 2}, stats)
 
@@ -103,7 +104,7 @@ func TestReconcileIndexesNewNodes(t *testing.T) {
 	assert.Equal(t, b.ID, hits[0].ID)
 
 	// A second pass over an unchanged vault touches nothing.
-	stats, err = Reconcile(v, d)
+	stats, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, Stats{}, stats)
 }
@@ -113,7 +114,7 @@ func TestReconcileUpdatesEditedFile(t *testing.T) {
 	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5IX3", "entity", "Old Title")
 	n.Aliases = []string{"old-alias"}
 	writeNodes(t, v, n)
-	_, err := Reconcile(v, d)
+	_, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
 	// Owner-style edit: new title, new alias, new body term.
@@ -124,7 +125,7 @@ func TestReconcileUpdatesEditedFile(t *testing.T) {
 	path := filepath.Join(v.path, "entities", n.ID+".md")
 	require.NoError(t, os.WriteFile(path, edited.Render(), 0o644))
 
-	stats, err := Reconcile(v, d)
+	stats, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, Stats{Updated: 1}, stats)
 
@@ -155,12 +156,12 @@ func TestReconcileDeletesRemovedFile(t *testing.T) {
 	gone := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5IX5", "episode", "Ephemeral")
 	gone.Aliases = []string{"situation:42"}
 	writeNodes(t, v, keep, gone)
-	_, err := Reconcile(v, d)
+	_, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
 	require.NoError(t, os.Remove(filepath.Join(v.path, "episodes", gone.ID+".md")))
 
-	stats, err := Reconcile(v, d)
+	stats, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, Stats{Deleted: 1}, stats)
 
@@ -188,7 +189,7 @@ func TestReconcileSkipsNonNodeFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(v.path, "entities", "ent_noext"), []byte("no extension"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(v.path, "episodes", "ent_01ARZ3NDEKTSV4RRFFQ69G5IX7.md"), []byte("misplaced"), 0o644))
 
-	stats, err := Reconcile(v, d)
+	stats, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, Stats{Added: 1}, stats)
 
@@ -196,6 +197,67 @@ func TestReconcileSkipsNonNodeFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, nodes, 1)
 	assert.Equal(t, n.ID, nodes[0].ID)
+}
+
+// A malformed node file (unknown frontmatter key — classic Obsidian-side
+// damage) is quarantined: the run continues, other files are indexed, and the
+// file's previously indexed row survives because the file is still on disk
+// (the delete loop must not treat a quarantined file as removed).
+func TestReconcileQuarantinesMalformedFile(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	broken := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5QF1", "entity", "Broken Later")
+	writeNodes(t, v, broken)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	// Owner damages the file (unknown frontmatter key) and adds a fresh valid
+	// node in the same window.
+	brokenPath := filepath.Join(v.path, "entities", broken.ID+".md")
+	damaged := strings.Replace(string(broken.Render()), "id: "+broken.ID+"\n",
+		"id: "+broken.ID+"\nmood: sparkling\n", 1)
+	require.NoError(t, os.WriteFile(brokenPath, []byte(damaged), 0o644))
+	fresh := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5QF2", "episode", "Fresh One")
+	writeNodes(t, v, fresh)
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err, "a per-file parse failure must not fail the run")
+	assert.Equal(t, 1, stats.Added, "the healthy file is still indexed")
+	assert.Equal(t, 0, stats.Deleted)
+	assert.Equal(t, 1, stats.Quarantined)
+	assert.Equal(t, []string{"entities/" + broken.ID + ".md"}, stats.QuarantinedPaths)
+
+	// The quarantined file's OLD index row is preserved, not deleted.
+	row, err := d.GetMemoryNode(broken.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Broken Later", row.Title)
+	assert.Equal(t, sha256Hex(broken.Render()), row.ContentHash, "row still reflects the last good parse")
+
+	_, err = d.GetMemoryNode(fresh.ID)
+	assert.NoError(t, err)
+}
+
+// A duplicate alias across two files quarantines the second file (its index
+// upsert fails on the alias primary key); the first stays intact.
+func TestReconcileQuarantinesDuplicateAlias(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	first := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5QA1", "entity", "First Owner")
+	first.Aliases = []string{"shared-alias"}
+	second := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5QA2", "entity", "Second Claimant")
+	second.Aliases = []string{"SHARED-ALIAS"} // COLLATE NOCASE — collides
+	writeNodes(t, v, first, second)
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err, "a per-file upsert failure must not fail the run")
+	assert.Equal(t, 1, stats.Added)
+	assert.Equal(t, 1, stats.Quarantined)
+	assert.Equal(t, []string{"entities/" + second.ID + ".md"}, stats.QuarantinedPaths)
+
+	// First file fully indexed, alias resolves to it.
+	nodeID, err := d.LookupMemoryAlias("shared-alias")
+	require.NoError(t, err)
+	assert.Equal(t, first.ID, nodeID)
+	_, err = d.GetMemoryNode(second.ID)
+	assert.ErrorIs(t, err, sql.ErrNoRows, "quarantined file gets no partial row")
 }
 
 // TestMemory02_ReindexEquivalence guards MEM-02: dropping all memory_* tables
@@ -210,7 +272,7 @@ func TestMemory02_ReindexEquivalence(t *testing.T) {
 	a.Aliases = []string{"alpha", "C0AAAAAAA"}
 	b := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5IXB", "episode", "Beta")
 	writeNodes(t, v, a, b)
-	_, err := Reconcile(v, d)
+	_, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
 	// Pass 2: edit A (title + aliases), add C.
@@ -219,20 +281,21 @@ func TestMemory02_ReindexEquivalence(t *testing.T) {
 	a.Body = "# Alpha Prime\n\nRewritten body.\n"
 	c := vaultTestNode("sum_01ARZ3NDEKTSV4RRFFQ69G5IXC", "rollup", "Q3 rollup")
 	writeNodes(t, v, a, c)
-	_, err = Reconcile(v, d)
+	_, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
 	// Pass 3: delete B, edit C.
 	require.NoError(t, os.Remove(filepath.Join(v.path, "episodes", b.ID+".md")))
 	c.Body = "# Q3 rollup\n\nCollapsed episodes live here.\n"
 	writeNodes(t, v, c)
-	_, err = Reconcile(v, d)
+	_, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
 	incremental := dumpIndex(t, d)
 	require.Len(t, incremental.Nodes, 2, "sanity: A and C survive")
 
-	require.NoError(t, Rebuild(v, d))
+	_, err = Rebuild(v, d, t.Logf)
+	require.NoError(t, err)
 	rebuilt := dumpIndex(t, d)
 
 	assert.Equal(t, incremental, rebuilt)

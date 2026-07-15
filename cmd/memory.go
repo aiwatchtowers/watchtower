@@ -63,14 +63,24 @@ var memorySeedCmd = &cobra.Command{
 
 // newMemoryPipelineFactory is the seam tests override to inject a fake
 // pipeline (same pattern as newDayPlanPipelineFactory). The default wires
-// the standard CLI generator, the prompt store, and the digest language for
-// the extractor's directive; NewPipeline labels the run source "cli" (the
-// daemon re-labels via SetMemoryPipeline).
-var newMemoryPipelineFactory = func(database *db.DB, vault *memory.Vault, cfg *config.Config) *memory.Pipeline {
-	p := memory.NewPipeline(database, vault, cliGenerator(cfg), cfg.Memory, nil)
+// the standard CLI generator, the prompt store, the digest language for
+// the extractor's directive, and the caller's logf (the daemon passes its
+// logger, the CLI a stderr printf — never nil, or per-window failures and
+// quarantine warnings would be dropped silently); NewPipeline labels the run
+// source "cli" (the daemon re-labels via SetMemoryPipeline).
+var newMemoryPipelineFactory = func(database *db.DB, vault *memory.Vault, cfg *config.Config, logf func(string, ...any)) *memory.Pipeline {
+	p := memory.NewPipeline(database, vault, cliGenerator(cfg), cfg.Memory, logf)
 	p.Language = cfg.Digest.Language
 	p.SetPromptStore(prompts.New(database, nil))
 	return p
+}
+
+// memoryStderrLogf returns a pipeline logf that writes one line per call to
+// the command's stderr.
+func memoryStderrLogf(cmd *cobra.Command) func(string, ...any) {
+	return func(format string, args ...any) {
+		fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", args...)
+	}
 }
 
 func init() {
@@ -122,13 +132,20 @@ func runMemoryStatus(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 	out := cmd.OutOrStdout()
 
-	// Node counts by type/tier.
+	// Node counts by type/tier. Tombstones are redirects, not knowledge —
+	// excluded from the buckets (matching map.md and memory_map) and reported
+	// on their own line.
 	rows, err := database.ListMemoryNodes()
 	if err != nil {
 		return fmt.Errorf("listing memory nodes: %w", err)
 	}
 	counts := make(map[string]int)
+	tombstones := 0
 	for _, row := range rows {
+		if row.Status == "tombstone" {
+			tombstones++
+			continue
+		}
 		counts[row.Type+"/"+row.Tier]++
 	}
 	keys := make([]string, 0, len(counts))
@@ -136,10 +153,11 @@ func runMemoryStatus(cmd *cobra.Command, _ []string) error {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	fmt.Fprintf(out, "Nodes: %d\n", len(rows))
+	fmt.Fprintf(out, "Nodes: %d\n", len(rows)-tombstones)
 	for _, k := range keys {
 		fmt.Fprintf(out, "  %s: %d\n", k, counts[k])
 	}
+	fmt.Fprintf(out, "Tombstones: %d\n", tombstones)
 
 	// Extraction watermark.
 	wm, err := database.MemoryWatermark()
@@ -195,19 +213,36 @@ func runMemoryReindex(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer database.Close()
+	out := cmd.OutOrStdout()
 
-	vault, err := memory.OpenVault(memoryVaultPath(cfg))
+	vault, err := memory.OpenExistingVault(memoryVaultPath(cfg))
+	if errors.Is(err, memory.ErrVaultNotInitialized) {
+		fmt.Fprintln(out, "Memory vault not initialized; nothing to reindex.")
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if err := memory.Rebuild(vault, database); err != nil {
+	// Reindex rewrites the whole index from the vault files, so it must not
+	// interleave with a consolidation run writing them.
+	unlock, err := vault.Lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	stats, err := memory.Rebuild(vault, database, memoryStderrLogf(cmd))
+	if err != nil {
 		return err
 	}
 	rows, err := database.ListMemoryNodes()
 	if err != nil {
 		return fmt.Errorf("listing memory nodes: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Reindexed %d nodes from the vault.\n", len(rows))
+	fmt.Fprintf(out, "Reindexed %d nodes from the vault.\n", len(rows))
+	if stats.Quarantined > 0 {
+		fmt.Fprintf(out, "%d file(s) quarantined (parse/index failure — see warnings above).\n", stats.Quarantined)
+	}
 	return nil
 }
 
@@ -219,7 +254,11 @@ func runMemoryOpen(cmd *cobra.Command, args []string) error {
 	defer database.Close()
 	out := cmd.OutOrStdout()
 
-	vault, err := memory.OpenVault(memoryVaultPath(cfg))
+	vault, err := memory.OpenExistingVault(memoryVaultPath(cfg))
+	if errors.Is(err, memory.ErrVaultNotInitialized) {
+		fmt.Fprintln(out, "Memory vault not initialized (memory may be disabled, or consolidation has not run yet).")
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -285,7 +324,7 @@ func runMemoryConsolidate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	pipe := newMemoryPipelineFactory(database, vault, cfg)
+	pipe := newMemoryPipelineFactory(database, vault, cfg, memoryStderrLogf(cmd))
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -302,6 +341,9 @@ func runMemoryConsolidate(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Consolidation done: %d entities seeded, situations %d created / %d updated / %d finalized, %d episodes from %d windows (%d failed, %d messages, %d refs rejected).\n",
 		stats.Seeded, stats.Ingested.Created, stats.Ingested.Updated, stats.Ingested.Finalized,
 		stats.Episodes, stats.Windows, stats.WindowsFailed, stats.Messages, stats.RefsRejected)
+	if q := stats.Reconciled.Quarantined; q > 0 {
+		fmt.Fprintf(out, "Warning: %d vault file(s) quarantined during reconcile (parse/index failure — see warnings above).\n", q)
+	}
 	return nil
 }
 
@@ -319,6 +361,13 @@ func runMemorySeed(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
+		// Seeding writes vault commits + index rows: exclude concurrent
+		// consolidation/reindex runs.
+		unlock, err := vault.Lock()
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		n, err := memory.SeedEntities(vault, database, memory.SeedConfig{
 			MinMessages: cfg.Memory.SeedMinMessages, WindowDays: memorySeedWindowDays,
 		})

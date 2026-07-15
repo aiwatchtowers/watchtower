@@ -213,12 +213,14 @@ func (db *DB) BumpMemoryAccess(id string) error {
 	return nil
 }
 
-// MessageExists reports whether a message row exists for (channelID, ts) —
-// the MEM-01 write-time check that no unvalidated provenance ref ever
-// reaches the memory vault.
+// MessageExists reports whether a live (non-deleted) message row exists for
+// (channelID, ts) — the MEM-01 write-time check that no unvalidated
+// provenance ref ever reaches the memory vault. Tombstoned messages
+// (is_deleted = 1) do not count: a ref to a deleted message would 404 for the
+// owner just like a hallucinated one.
 func (db *DB) MessageExists(channelID, ts string) (bool, error) {
 	var one int
-	err := db.QueryRow(`SELECT 1 FROM messages WHERE channel_id = ? AND ts = ?`, channelID, ts).Scan(&one)
+	err := db.QueryRow(`SELECT 1 FROM messages WHERE channel_id = ? AND ts = ? AND is_deleted = 0`, channelID, ts).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

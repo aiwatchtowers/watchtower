@@ -661,3 +661,43 @@ func TestMemory04_LaterWindowNeverPassesEarlierFailedWindow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, wm, "later window of the same channel must not advance past the earlier failed one")
 }
+
+// The cross-process memory lock: with the lock held by another holder (a
+// concurrent daemon phase or CLI command), Run refuses cleanly — ErrLocked,
+// no pipeline_runs row, no AI call — and proceeds once the lock is free.
+func TestPipelineRefusesWhenLocked(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+	gen := &fakeGen{reply: func(string) (string, error) { return "[]", nil }}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	unlock, err := v.Lock()
+	require.NoError(t, err)
+
+	_, err = p.Run(context.Background())
+	assert.ErrorIs(t, err, ErrLocked)
+
+	var runs int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'memory'`).Scan(&runs))
+	assert.Zero(t, runs, "a locked-out run must not record a pipeline_runs row")
+	assert.Empty(t, gen.calls, "a locked-out run must not call the AI")
+
+	unlock()
+	_, err = p.Run(context.Background())
+	require.NoError(t, err, "run proceeds once the lock is released")
+}
+
+// A quarantined vault file surfaces in RunStats and does not fail the run.
+func TestPipelineSurfacesQuarantinedFiles(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(v.path, "entities", "ent_01ARZ3NDEKTSV4RRFFQ69G5QP1.md"),
+		[]byte("not a node at all"), 0o644))
+
+	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err, "a malformed vault file must not fail the phase")
+	assert.Equal(t, 1, stats.Reconciled.Quarantined)
+	assert.Equal(t, []string{"entities/ent_01ARZ3NDEKTSV4RRFFQ69G5QP1.md"}, stats.Reconciled.QuarantinedPaths)
+}

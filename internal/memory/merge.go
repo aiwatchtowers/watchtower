@@ -97,11 +97,23 @@ func readMergeSide(v *Vault, id, role string) (Node, error) {
 	return n, nil
 }
 
-// appendMergedFrom adds the merged-from link as the first entry of the
-// "## Links" section, or appends it to the end of the body when the section
-// is absent.
+// appendMergedFrom adds the merged-from link to the winner's "## Links"
+// section.
 func appendMergedFrom(body, loserID string) string {
-	line := "- merged from [[" + loserID + "]]\n"
+	return appendToLinks(body, "- merged from [["+loserID+"]]\n")
+}
+
+// appendToLinks adds a line as the first entry of the "## Links" section, or
+// appends it to the end of the body when the section is absent. line must be
+// newline-terminated. A line already present in the body verbatim is not
+// added again — a re-extracted window (MEM-04 re-processing) or a repeated
+// merge must not duplicate Links entries.
+func appendToLinks(body, line string) string {
+	for _, existing := range strings.Split(body, "\n") {
+		if existing == strings.TrimSuffix(line, "\n") {
+			return body
+		}
+	}
 	loc := linksHeadingRe.FindStringIndex(body)
 	if loc == nil {
 		if body != "" && !strings.HasSuffix(body, "\n") {

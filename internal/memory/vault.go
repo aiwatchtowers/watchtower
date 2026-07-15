@@ -8,11 +8,22 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
+
+// ErrVaultNotInitialized is returned by OpenExistingVault when no vault
+// repository exists at the path. Read-only surfaces (memory open/reindex,
+// seed --dry-run) use it to report "memory vault not initialized" instead of
+// creating a vault as a side effect of a read.
+var ErrVaultNotInitialized = errors.New("memory vault not initialized")
+
+// ErrLocked is returned by Vault.Lock when another process — the daemon's
+// memory phase or a CLI memory command — currently holds the memory lock.
+var ErrLocked = errors.New("another memory run is in progress")
 
 // Vault is the on-disk memory store: a git repository of markdown nodes. It
 // is the source of truth; the SQLite index is derived from it. All machine
@@ -62,8 +73,14 @@ const initialMapContent = "# Memory Map\n\nEmpty vault — nothing consolidated 
 // vaultSubdirs are the node directories, one per ID prefix.
 var vaultSubdirs = []string{"entities", "episodes", "rollups", "beliefs"}
 
-// subdirFor maps a node ID prefix to its vault subdirectory.
+// subdirFor maps a node ID prefix to its vault subdirectory. IDs become file
+// names, so anything that could escape the vault directory is rejected here —
+// this is the single validation point for every path built from an ID
+// (ReadNode, WriteNodes, redirect_to chasing, reconcile).
 func subdirFor(id string) (string, error) {
+	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return "", fmt.Errorf("memory: node id %q contains path characters", id)
+	}
 	switch {
 	case strings.HasPrefix(id, "ent_"):
 		return "entities", nil
@@ -79,35 +96,67 @@ func subdirFor(id string) (string, error) {
 }
 
 // OpenVault opens the vault at path, initializing it on first run: creates
-// the directory, runs git init, writes an initial map.md, and makes the
-// initial commit. Node subdirectories are created eagerly on every open (git
-// tracks only files, so empty directories are worktree-local — no .gitkeep
-// placeholders; recreating them here keeps the layout present even if the
-// owner deletes an empty one).
+// the directory, runs git init, writes an initial map.md and .gitignore, and
+// makes the initial commit. Node subdirectories are created eagerly on every
+// open (git tracks only files, so empty directories are worktree-local — no
+// .gitkeep placeholders; recreating them here keeps the layout present even
+// if the owner deletes an empty one).
 func OpenVault(vaultPath string) (*Vault, error) {
+	v, err := OpenExistingVault(vaultPath)
+	if err == nil {
+		return v, nil
+	}
+	if !errors.Is(err, ErrVaultNotInitialized) {
+		return nil, err
+	}
+	repo, err := initVault(vaultPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureSubdirs(vaultPath); err != nil {
+		return nil, err
+	}
+	return &Vault{path: vaultPath, repo: repo}, nil
+}
+
+// OpenExistingVault opens an already-initialized vault, returning
+// ErrVaultNotInitialized when none exists at the path. Read-only entrypoints
+// use it so a read can never git-init a vault as a side effect — creating one
+// stays the business of the writing paths (consolidate, seed). Recreating the
+// node subdirectories is a worktree convenience, not a git write.
+func OpenExistingVault(vaultPath string) (*Vault, error) {
 	repo, err := git.PlainOpen(vaultPath)
 	switch {
 	case err == nil:
 		// Existing vault.
 	case errors.Is(err, git.ErrRepositoryNotExists):
-		repo, err = initVault(vaultPath)
-		if err != nil {
-			return nil, err
-		}
+		return nil, fmt.Errorf("%w (no vault at %s)", ErrVaultNotInitialized, vaultPath)
 	default:
 		return nil, fmt.Errorf("memory: open vault %s: %w", vaultPath, err)
 	}
-
-	for _, sub := range vaultSubdirs {
-		if err := os.MkdirAll(filepath.Join(vaultPath, sub), 0o755); err != nil {
-			return nil, fmt.Errorf("memory: create vault dir %s: %w", sub, err)
-		}
+	if err := ensureSubdirs(vaultPath); err != nil {
+		return nil, err
 	}
 	return &Vault{path: vaultPath, repo: repo}, nil
 }
 
+// ensureSubdirs (re)creates the four node directories.
+func ensureSubdirs(vaultPath string) error {
+	for _, sub := range vaultSubdirs {
+		if err := os.MkdirAll(filepath.Join(vaultPath, sub), 0o755); err != nil {
+			return fmt.Errorf("memory: create vault dir %s: %w", sub, err)
+		}
+	}
+	return nil
+}
+
+// vaultGitignore keeps editor/OS churn (Obsidian workspace state, Finder
+// metadata, temp files) invisible to git status, so it can never be swept
+// into a memory(owner-edit) commit.
+const vaultGitignore = ".obsidian/\n.DS_Store\n*.tmp\n"
+
 // initVault creates the directory, git-inits it, and commits the initial
-// map.md.
+// map.md and .gitignore.
 func initVault(vaultPath string) (*git.Repository, error) {
 	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
 		return nil, fmt.Errorf("memory: create vault dir: %w", err)
@@ -116,21 +165,47 @@ func initVault(vaultPath string) (*git.Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: git init vault: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(vaultPath, mapFileName), []byte(initialMapContent), 0o644); err != nil {
-		return nil, fmt.Errorf("memory: write initial map.md: %w", err)
-	}
 	wt, err := repo.Worktree()
 	if err != nil {
 		return nil, fmt.Errorf("memory: vault worktree: %w", err)
 	}
-	if _, err := wt.Add(mapFileName); err != nil {
-		return nil, fmt.Errorf("memory: stage initial map.md: %w", err)
+	for name, content := range map[string]string{
+		mapFileName:  initialMapContent,
+		".gitignore": vaultGitignore,
+	} {
+		if err := os.WriteFile(filepath.Join(vaultPath, name), []byte(content), 0o644); err != nil {
+			return nil, fmt.Errorf("memory: write initial %s: %w", name, err)
+		}
+		if _, err := wt.Add(name); err != nil {
+			return nil, fmt.Errorf("memory: stage initial %s: %w", name, err)
+		}
 	}
 	msg := CommitMsg{Op: "init", Summary: "initialize vault", Cause: "init"}
 	if _, err := wt.Commit(msg.render(), &git.CommitOptions{Author: signature()}); err != nil {
 		return nil, fmt.Errorf("memory: initial vault commit: %w", err)
 	}
 	return repo, nil
+}
+
+// Lock takes the cross-process memory lock: a memory.lock file in the vault's
+// parent directory (the workspace dir), flock LOCK_EX|LOCK_NB — the same shape
+// as the digest pipeline's lock. Every entrypoint that writes the vault or its
+// index (Pipeline.Run, CLI seed/reindex) must hold it, so a daemon phase and a
+// CLI command can never interleave vault commits and watermark writes. Returns
+// the unlock func, or ErrLocked when another run holds the lock.
+func (v *Vault) Lock() (func(), error) {
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(v.path), "memory.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("memory: open lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, ErrLocked
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
 }
 
 func signature() *object.Signature {
@@ -215,20 +290,6 @@ func (v *Vault) WriteFile(rel string, content []byte, msg CommitMsg) (bool, erro
 		return false, fmt.Errorf("memory: commit %s: %w", rel, err)
 	}
 	return true, nil
-}
-
-// DirtyWorktree reports whether the working tree differs from HEAD (owner
-// edits pending).
-func (v *Vault) DirtyWorktree() (bool, error) {
-	wt, err := v.repo.Worktree()
-	if err != nil {
-		return false, fmt.Errorf("memory: vault worktree: %w", err)
-	}
-	status, err := wt.Status()
-	if err != nil {
-		return false, fmt.Errorf("memory: vault status: %w", err)
-	}
-	return !status.IsClean(), nil
 }
 
 // CommitOwnerEdits commits ALL current working-tree changes as a

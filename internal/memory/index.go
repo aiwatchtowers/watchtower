@@ -18,6 +18,12 @@ type Stats struct {
 	Added   int
 	Updated int
 	Deleted int
+	// Quarantined counts node files skipped because they could not be parsed
+	// or indexed (Obsidian CRLF/BOM damage, unknown frontmatter key, filename
+	// mismatch, duplicate alias). The file stays on disk and its existing
+	// index row (if any) is preserved — quarantine never deletes anything.
+	Quarantined      int
+	QuarantinedPaths []string
 }
 
 // Reconcile diffs the vault working tree against the SQLite index: node files
@@ -26,8 +32,24 @@ type Stats struct {
 // FTS); index rows whose file no longer exists are deleted. Non-node files —
 // anything in the four subdirectories not named <matching-prefix-id>.md — are
 // skipped, as is map.md at the vault root.
-func Reconcile(v *Vault, database *db.DB) (Stats, error) {
+//
+// A per-file failure (parse error, id/filename mismatch, index upsert error
+// such as a duplicate alias) quarantines that file: it is skipped and counted
+// (Stats.Quarantined + path list), a warning is logged with the exact path,
+// and — because the file still exists on disk — its previously indexed row is
+// NOT deleted by the removal loop. One malformed owner edit must never brick
+// the whole consolidation phase. Reconcile itself errors only on IO/DB-wide
+// failures (listing the index, reading a directory or file, deleting a row).
+func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	var stats Stats
+	quarantine := func(rel string, reason error) {
+		logf("memory: reconcile: quarantined %s: %v (file kept, existing index row preserved)", rel, reason)
+		stats.Quarantined++
+		stats.QuarantinedPaths = append(stats.QuarantinedPaths, rel)
+	}
 
 	existing, err := database.ListMemoryNodes()
 	if err != nil {
@@ -75,10 +97,12 @@ func Reconcile(v *Vault, database *db.DB) (Stats, error) {
 
 			n, err := ParseNode(raw)
 			if err != nil {
-				return stats, fmt.Errorf("memory: reconcile %s: %w", rel, err)
+				quarantine(rel, err)
+				continue
 			}
 			if n.ID != id {
-				return stats, fmt.Errorf("memory: reconcile %s: frontmatter id %q does not match filename", rel, n.ID)
+				quarantine(rel, fmt.Errorf("frontmatter id %q does not match filename", n.ID))
+				continue
 			}
 
 			row := db.MemoryNodeRow{
@@ -93,7 +117,8 @@ func Reconcile(v *Vault, database *db.DB) (Stats, error) {
 				IndexedAt:   now,
 			}
 			if err := database.UpsertMemoryNode(row, n.Body, n.Aliases); err != nil {
-				return stats, fmt.Errorf("memory: reconcile: %w", err)
+				quarantine(rel, err)
+				continue
 			}
 			if wasIndexed {
 				stats.Updated++
@@ -121,12 +146,13 @@ func Reconcile(v *Vault, database *db.DB) (Stats, error) {
 // memory_node_stats is cleared too and NOT restored — access stats are
 // runtime state, not derivable from files; losing them on reindex is accepted
 // v1 behavior.
-func Rebuild(v *Vault, database *db.DB) error {
+func Rebuild(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, error) {
 	if err := database.DropMemoryIndex(); err != nil {
-		return fmt.Errorf("memory: rebuild: %w", err)
+		return Stats{}, fmt.Errorf("memory: rebuild: %w", err)
 	}
-	if _, err := Reconcile(v, database); err != nil {
-		return fmt.Errorf("memory: rebuild: %w", err)
+	stats, err := Reconcile(v, database, logf)
+	if err != nil {
+		return stats, fmt.Errorf("memory: rebuild: %w", err)
 	}
-	return nil
+	return stats, nil
 }

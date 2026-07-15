@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -550,6 +551,12 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 		return
 	}
 	stats, err := d.memoryPipe.Run(ctx)
+	if errors.Is(err, memory.ErrLocked) {
+		// A CLI consolidate/seed/reindex holds the memory lock — skip this
+		// cycle, the next one picks up where the other run left off.
+		d.logger.Printf("memory: skipping cycle — %v", err)
+		return
+	}
 	if err != nil {
 		d.logger.Printf("memory error: %v", err)
 		return

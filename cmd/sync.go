@@ -295,7 +295,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				if vErr != nil {
 					logger.Printf("memory: failed to open vault, phase disabled: %v", vErr)
 				} else {
-					d.SetMemoryPipeline(newMemoryPipelineFactory(database, vault, cfg))
+					d.SetMemoryPipeline(newMemoryPipelineFactory(database, vault, cfg, logger.Printf))
 				}
 			}
 			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))

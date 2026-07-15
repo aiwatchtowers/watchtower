@@ -193,6 +193,15 @@ memory:
 
 Vault path is not configurable in v1 (always `WorkspaceDir()/memory`). Model routing via the standard tier mechanism, not per-feature config.
 
+## Implementation deltas (v1)
+
+Where the shipped code deliberately departs from this spec:
+
+- **No `max_runtime` guard.** The per-run runtime bound was not implemented; a run is bounded by `max_chunk_messages`/`max_window_messages` and stops early only on context cancellation (daemon shutdown).
+- **Situation-coverage window skip deferred.** Step 4's "skip channels already fully covered by a situation episode for that window" is not implemented — extraction runs regardless; dedupe against situation coverage is Phase 3 (duplicates accepted, see the inventory's known limitations).
+- **Cache columns are `NOT NULL DEFAULT 0`,** not nullable-backfilled-NULL as written above; `digest.Usage` exposes no cache split yet, so `cache_read_tokens` holds a residual estimate and `cache_creation_tokens` stays 0.
+- **Per-window message cap added post-review (m6):** `memory.max_window_messages` (default 200) splits an oversized channel batch into sequential windows so one busy channel cannot form a context-blowing poison window.
+
 ## Behavioral Contracts (proposed → docs/inventory/memory.md)
 
 - **MEM-01 (validated provenance):** no message reference is ever written to the vault unless it resolves against the local `messages` table at write time. Refs that fail are dropped and counted, never "fixed up".

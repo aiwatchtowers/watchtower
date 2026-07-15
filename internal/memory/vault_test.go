@@ -74,22 +74,24 @@ func TestOpenVaultInitializesRepo(t *testing.T) {
 	// Repo and layout exist on disk.
 	assert.DirExists(t, filepath.Join(dir, ".git"))
 	assert.FileExists(t, filepath.Join(dir, "map.md"))
+	assert.FileExists(t, filepath.Join(dir, ".gitignore"))
 	for _, sub := range []string{"entities", "episodes", "rollups", "beliefs"} {
 		assert.DirExists(t, filepath.Join(dir, sub))
 	}
 
-	// Exactly one initial commit, containing map.md, by the daemon author.
+	// Exactly one initial commit, containing map.md and .gitignore, by the
+	// daemon author.
 	repo := openTestRepo(t, dir)
 	assert.Equal(t, 1, commitCount(t, repo))
 	commit := headCommit(t, repo)
-	assert.Equal(t, []string{"map.md"}, commitFiles(t, commit))
+	assert.ElementsMatch(t, []string{"map.md", ".gitignore"}, commitFiles(t, commit))
 	assert.Equal(t, "watchtower", commit.Author.Name)
 	assert.Equal(t, "daemon@local", commit.Author.Email)
 	assert.True(t, strings.HasPrefix(commit.Message, "memory(init): "), "message %q", commit.Message)
 
-	dirty, err := v.DirtyWorktree()
+	made, err := v.CommitOwnerEdits()
 	require.NoError(t, err)
-	assert.False(t, dirty)
+	assert.False(t, made, "fresh vault has a clean worktree")
 }
 
 func TestOpenVaultReopensExistingRepo(t *testing.T) {
@@ -139,9 +141,9 @@ func TestVaultWriteNodesSingleCommit(t *testing.T) {
 		[]string{"entities/ent_01ARZ3NDEKTSV4RRFFQ69G5FA1.md", "episodes/ep_01ARZ3NDEKTSV4RRFFQ69G5FA2.md"},
 		commitFiles(t, commit))
 
-	dirty, err := v.DirtyWorktree()
+	made, err := v.CommitOwnerEdits()
 	require.NoError(t, err)
-	assert.False(t, dirty, "machine write leaves a clean worktree")
+	assert.False(t, made, "machine write leaves a clean worktree")
 }
 
 func TestVaultReadNodeRoundTrip(t *testing.T) {
@@ -174,19 +176,86 @@ func TestVaultReadNodeErrors(t *testing.T) {
 	assert.Error(t, err, "node file does not exist")
 }
 
-func TestVaultDirtyWorktree(t *testing.T) {
+// The vault .gitignore shields Obsidian/OS churn from owner-edit detection:
+// ignored files never make the tree dirty and are never committed.
+func TestVaultGitignoreShieldsEditorChurn(t *testing.T) {
 	dir := t.TempDir()
 	v, err := OpenVault(dir)
 	require.NoError(t, err)
 
-	dirty, err := v.DirtyWorktree()
-	require.NoError(t, err)
-	assert.False(t, dirty)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".DS_Store"), []byte("finder junk"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".obsidian"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".obsidian", "workspace.json"), []byte("{}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "entities", "scratch.tmp"), []byte("tmp"), 0o644))
 
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "map.md"), []byte("# Edited by owner\n"), 0o644))
-	dirty, err = v.DirtyWorktree()
+	made, err := v.CommitOwnerEdits()
 	require.NoError(t, err)
-	assert.True(t, dirty)
+	assert.False(t, made, "ignored files must not trigger an owner-edit commit")
+
+	repo := openTestRepo(t, dir)
+	assert.Equal(t, 1, commitCount(t, repo), "still only the init commit")
+
+	// A real owner edit next to the churn is still picked up — and the
+	// resulting commit contains only the edit, never the ignored files.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "map.md"), []byte("# Edited by owner\n"), 0o644))
+	made, err = v.CommitOwnerEdits()
+	require.NoError(t, err)
+	assert.True(t, made)
+	assert.Equal(t, []string{"map.md"}, commitFiles(t, headCommit(t, repo)))
+}
+
+// OpenExistingVault never creates a vault: absent path → typed error, no
+// directory or repo left behind.
+func TestOpenExistingVaultRefusesToInit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+
+	_, err := OpenExistingVault(dir)
+	assert.ErrorIs(t, err, ErrVaultNotInitialized)
+	_, statErr := os.Stat(dir)
+	assert.True(t, os.IsNotExist(statErr), "read path must not create the vault directory")
+
+	// After a real init, it opens fine.
+	_, err = OpenVault(dir)
+	require.NoError(t, err)
+	v, err := OpenExistingVault(dir)
+	require.NoError(t, err)
+	assert.NotNil(t, v)
+}
+
+// Node IDs are used to build file paths: separators or dot-dot segments are
+// rejected before any file IO (redirect_to chasing included).
+func TestNodeIDPathTraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+	v, err := OpenVault(dir)
+	require.NoError(t, err)
+
+	for _, id := range []string{"ent_../../x", "ent_a/b", `ent_a\b`, "ep_.."} {
+		_, err := nodeRelPath(id)
+		assert.Error(t, err, "id %q must be rejected", id)
+		_, err = v.ReadNode(id)
+		assert.Error(t, err, "ReadNode(%q) must be rejected", id)
+	}
+}
+
+// The memory lock is exclusive across handles: a second Lock fails with
+// ErrLocked until the first is released.
+func TestVaultLockExcludesSecondHolder(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	v, err := OpenVault(dir)
+	require.NoError(t, err)
+
+	unlock, err := v.Lock()
+	require.NoError(t, err)
+
+	v2, err := OpenExistingVault(dir)
+	require.NoError(t, err)
+	_, err = v2.Lock()
+	assert.ErrorIs(t, err, ErrLocked)
+
+	unlock()
+	unlock2, err := v2.Lock()
+	require.NoError(t, err)
+	unlock2()
 }
 
 // WriteNodes stages only the node paths it wrote: owner dirt (modified or
@@ -208,10 +277,12 @@ func TestVaultWriteNodesStagingIsolation(t *testing.T) {
 	commit := headCommit(t, repo)
 	assert.Equal(t, []string{"entities/ent_01ARZ3NDEKTSV4RRFFQ69G5FD1.md"}, commitFiles(t, commit))
 
-	// Owner dirt is still uncommitted in the worktree.
-	dirty, err := v.DirtyWorktree()
+	// Owner dirt is still uncommitted in the worktree: committing owner edits
+	// now picks up exactly the two dirty files.
+	made, err := v.CommitOwnerEdits()
 	require.NoError(t, err)
-	assert.True(t, dirty)
+	assert.True(t, made)
+	assert.ElementsMatch(t, []string{"map.md", "notes.md"}, commitFiles(t, headCommit(t, repo)))
 }
 
 // MEM-03: manual vault edits are committed as a separate memory(owner-edit)
@@ -254,9 +325,11 @@ func TestMemory03_OwnerEditsSeparateCommit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, edited, contents)
 
-	dirty, err := v.DirtyWorktree()
+	// Tree is clean after the owner-edit commit: a second pass commits nothing.
+	made, err = v.CommitOwnerEdits()
 	require.NoError(t, err)
-	assert.False(t, dirty)
+	assert.False(t, made)
+	assert.Equal(t, ownerCommit.Hash, headCommit(t, repo).Hash)
 
 	// A machine write of a different node lands in its own commit whose tree
 	// diff contains only the machine path.

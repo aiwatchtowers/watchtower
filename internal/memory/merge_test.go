@@ -33,7 +33,7 @@ func mergeFixture(t *testing.T, v *Vault, d *db.DB) (winner, loser Node) {
 		Body:    "# Loser\n\nDuplicate page.\n",
 	}
 	writeNodes(t, v, winner, loser)
-	_, err := Reconcile(v, d)
+	_, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 	return winner, loser
 }
@@ -68,9 +68,9 @@ func TestMergeHappyPath(t *testing.T) {
 	assert.ElementsMatch(t,
 		[]string{"entities/" + loser.ID + ".md", "entities/" + winner.ID + ".md"},
 		commitFiles(t, commit))
-	dirty, err := v.DirtyWorktree()
+	made, err := v.CommitOwnerEdits()
 	require.NoError(t, err)
-	assert.False(t, dirty)
+	assert.False(t, made, "merge leaves a clean worktree")
 
 	// Index updated in the same call: aliases moved, tombstone row recorded.
 	row, err := d.GetMemoryNode(loser.ID)
@@ -95,7 +95,7 @@ func TestMergeAppendsWhenNoLinksSection(t *testing.T) {
 	winner := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5MG3", "entity", "Plain Winner")
 	loser := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5MG4", "entity", "Plain Loser")
 	writeNodes(t, v, winner, loser)
-	_, err := Reconcile(v, d)
+	_, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
 	require.NoError(t, Merge(v, d, loser.ID, winner.ID))
@@ -133,7 +133,7 @@ func TestMergeErrors(t *testing.T) {
 	winner, loser := mergeFixture(t, v, d)
 	stone := tombstoneNode("ent_01ARZ3NDEKTSV4RRFFQ69G5MG7", winner.ID)
 	writeNodes(t, v, stone)
-	_, err := Reconcile(v, d)
+	_, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
 	repo := openTestRepo(t, v.path)
@@ -166,4 +166,24 @@ func TestMergeErrors(t *testing.T) {
 	nodeID, err := d.LookupMemoryAlias("old-alias")
 	require.NoError(t, err)
 	assert.Equal(t, loser.ID, nodeID)
+}
+
+// appendToLinks inserts new lines at the top of ## Links but never duplicates
+// a line already present — a re-processed window or repeated merge must not
+// stack identical Links entries.
+func TestAppendToLinksDeduplicates(t *testing.T) {
+	body := "# Page\n\n## Links\n- [[ep_X|First]]\n"
+	line := "- [[ep_Y|Second]]\n"
+
+	once := appendToLinks(body, line)
+	assert.Contains(t, once, "## Links\n- [[ep_Y|Second]]\n- [[ep_X|First]]\n",
+		"new line becomes the first Links entry")
+
+	twice := appendToLinks(once, line)
+	assert.Equal(t, once, twice, "an existing line must not be added again")
+	assert.Equal(t, 1, strings.Count(twice, "- [[ep_Y|Second]]"))
+
+	// Bodies without a Links section: appended once, still deduplicated.
+	plain := appendToLinks("# Bare\n", line)
+	assert.Equal(t, plain, appendToLinks(plain, line))
 }

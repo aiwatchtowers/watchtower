@@ -81,7 +81,7 @@ func seedMemoryFixture(t *testing.T, database *db.DB) (*memory.Vault, string) {
 	}); err != nil {
 		t.Fatalf("writing test nodes: %v", err)
 	}
-	if _, err := memory.Reconcile(v, database); err != nil {
+	if _, err := memory.Reconcile(v, database, t.Logf); err != nil {
 		t.Fatalf("indexing test vault: %v", err)
 	}
 	return v, vaultPath
