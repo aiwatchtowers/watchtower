@@ -16,7 +16,9 @@ let package = Package(
         // (including the misspelled `detectLangauge(audioArray:)`).
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.18.0")),
         // Speaker diarization (pyannote/VBx on CoreML) for transcript roles.
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.0"),
+        // Pinned to 0.15.x: FluidAudioDiarizer uses this API surface
+        // (DiarizerModels.downloadIfNeeded, performCompleteDiarization).
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", .upToNextMinor(from: "0.15.0")),
     ],
     targets: [
         .executableTarget(

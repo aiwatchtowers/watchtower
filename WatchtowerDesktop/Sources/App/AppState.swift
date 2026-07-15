@@ -40,11 +40,9 @@ final class AppState {
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
     /// role-less transcript.
-    private static let prefetchDiarizerModels: @Sendable () async -> Void = {
-        let defaults = UserDefaults.standard
-        let rolesOn = defaults.object(forKey: "transcription.diarization") == nil
-            || defaults.bool(forKey: "transcription.diarization")
-        if rolesOn { try? await FluidAudioDiarizer.prefetchModels() }
+    @Sendable private static func prefetchDiarizerModels() async {
+        guard TranscriptionConfig.fromDefaults().diarization else { return }
+        try? await FluidAudioDiarizer.prefetchModels()
     }
 
     /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,

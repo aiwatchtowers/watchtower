@@ -30,6 +30,8 @@ struct TranscriptionConfig: Equatable {
     var margin: Float = 0.2
     var firstWindowDefault: String = "ru"
     var forcedLanguage: String?   // non-nil disables detection entirely
+    /// Speaker roles: diarization post-pass renders [Я]/[Speaker N] labels.
+    var diarization: Bool = true
     static let sampleRate = 16_000
 }
 
@@ -78,6 +80,9 @@ extension TranscriptionConfig {
         }
         if defaults.object(forKey: "transcription.margin") != nil {
             config.margin = Float(defaults.double(forKey: "transcription.margin"))
+        }
+        if defaults.object(forKey: "transcription.diarization") != nil {
+            config.diarization = defaults.bool(forKey: "transcription.diarization")
         }
         let force = (defaults.string(forKey: "transcription.forceLang") ?? "")
             .trimmingCharacters(in: .whitespaces)

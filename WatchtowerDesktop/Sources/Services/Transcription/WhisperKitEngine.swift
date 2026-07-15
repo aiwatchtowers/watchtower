@@ -79,6 +79,8 @@ final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             audioArray: samples,
             decodeOptions: options
         )
+        // result.text is derived from result.segments in WhisperKit, so
+        // mapping segments (not text) cannot drop speech.
         return results.flatMap { result in
             result.segments.map {
                 TranscribedSegment(

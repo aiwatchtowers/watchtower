@@ -3,13 +3,13 @@ import Foundation
 /// Pure mapping of a diarized speaker timeline onto timestamped transcript
 /// segments, plus rendering of the final role-tagged text. No I/O.
 enum RoleAssigner {
-    static let selfLabel = "Я"
+    private static let selfLabel = "Я"
     /// Mic RMS must exceed system RMS by this factor for a bin to read as
     /// "the owner is speaking" (the mic channel leaks meeting audio quietly).
-    static let micDominanceFactor: Float = 2.0
+    private static let micDominanceFactor: Float = 2.0
     /// Minimum share of a cluster's speech bins with mic dominance for the
     /// cluster to be labelled as the owner.
-    static let selfShareThreshold = 0.6
+    private static let selfShareThreshold = 0.6
 
     /// nil when roles cannot be derived (no segments / no speakers) — the
     /// caller then keeps the plain transcript text.
@@ -44,7 +44,7 @@ enum RoleAssigner {
         }
 
         // 2. Labels: the mic-dominated cluster is «Я», the rest are numbered.
-        let selfCluster = detectSelfCluster(speakers: speakers, activity: activity)
+        let selfCluster = detectSelfCluster(speakers: speakers, activity: activity, order: clusterOrder)
         var labels: [String: String] = [:]
         var counter = 0
         for id in clusterOrder {
@@ -62,6 +62,8 @@ enum RoleAssigner {
         var currentTexts: [String] = []
         func flush() {
             guard let cluster = currentCluster, !currentTexts.isEmpty else { return }
+            // ?? is unreachable (every assigned cluster is seeded into labels
+            // via clusterOrder) — it only spares a force unwrap.
             lines.append("[\(labels[cluster] ?? cluster)] " + currentTexts.joined(separator: " "))
         }
         for (segment, cluster) in assigned {
@@ -79,13 +81,11 @@ enum RoleAssigner {
     /// The cluster whose speech time is dominated by the mic channel — the
     /// machine's owner. nil without an activity sidecar or when no cluster
     /// clears the threshold (then every speaker stays a numbered stranger).
-    /// Ties break toward the earliest-appearing cluster for determinism.
-    private static func detectSelfCluster(speakers: [SpeakerSegment], activity: MicActivity?) -> String? {
+    /// Ties break toward the earliest cluster in `order` for determinism.
+    private static func detectSelfCluster(speakers: [SpeakerSegment], activity: MicActivity?, order: [String]) -> String? {
         guard let activity else { return nil }
         var stats: [String: (dominated: Int, total: Int)] = [:]
-        var order: [String] = []
-        for s in speakers.sorted(by: { $0.startSec < $1.startSec }) {
-            if !order.contains(s.speakerID) { order.append(s.speakerID) }
+        for s in speakers {
             var t = s.startSec
             while t < s.endSec {
                 if let bin = activity.bin(at: t) {

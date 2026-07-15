@@ -44,6 +44,9 @@ final class MeetingRecorderCenter {
     private(set) var currentTitle: String?
     /// Audio file awaiting (re-)transcription after a failure or relaunch.
     private(set) var pendingAudioURL: URL?
+    /// Why the last diarization post-pass failed (nil = roles rendered or
+    /// disabled). Only informs the completion notification — never blocks.
+    private(set) var lastRolesError: String?
 
     enum LiveEngineState: Equatable { case off, loading, running, unavailable }
     struct LiveChunk: Equatable, Identifiable { let id: Int; let text: String; let language: String }
@@ -133,27 +136,39 @@ final class MeetingRecorderCenter {
         return try await WhisperKitEngine.load(modelName: model) { _ in }
     }
 
-    /// Roles are on unless the Settings toggle explicitly turned them off.
-    private var diarizationEnabled: Bool {
-        defaults.object(forKey: "transcription.diarization") == nil
-            || defaults.bool(forKey: "transcription.diarization")
-    }
-
     /// Diarization post-pass: renders role-tagged text from the finished
     /// transcription. Every failure returns the plain text — roles are a
-    /// progressive enhancement and must never fail the pipeline (spec §3.6).
+    /// progressive enhancement and must never fail the pipeline (spec §3.6) —
+    /// but is logged and latched into `lastRolesError` so the completion
+    /// notification can flag the missing labels (the recap-failure precedent).
     /// `samples` avoids a re-decode when the batch path already has them.
-    private func renderRoles(output: TranscriptionOutput, audioURL: URL, samples: [Float]?) async -> String {
-        guard diarizationEnabled, !output.segments.isEmpty else { return output.text }
+    private func renderRoles(
+        output: TranscriptionOutput,
+        audioURL: URL,
+        samples: [Float]?,
+        config: TranscriptionConfig
+    ) async -> String {
+        lastRolesError = nil
+        guard config.diarization, !output.segments.isEmpty else { return output.text }
         phase = .diarizing
         do {
-            let pcm = try samples ?? decode(audioURL)
+            let pcm: [Float]
+            if let samples {
+                pcm = samples
+            } else {
+                // The live path has no decoded samples; a long recording takes
+                // seconds to decode, so keep it off the main actor.
+                let decode = self.decode
+                pcm = try await Task.detached { try decode(audioURL) }.value
+            }
             let diarizer = try await diarizerFactory()
             let speakers = try await diarizer.diarize(pcm)
             let activity = MicActivity.load(for: audioURL)
             return RoleAssigner.render(segments: output.segments, speakers: speakers, activity: activity)
                 ?? output.text
         } catch {
+            print("[MeetingRecorder] diarization failed, saving without speaker labels: \(error.localizedDescription)")
+            lastRolesError = error.localizedDescription
             return output.text
         }
     }
@@ -270,7 +285,8 @@ final class MeetingRecorderCenter {
             if let liveOutput,
                !liveOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let durationSec = result.durationSec
-                let text = await renderRoles(output: liveOutput, audioURL: result.audioURL, samples: nil)
+                let text = await renderRoles(output: liveOutput, audioURL: result.audioURL,
+                                             samples: nil, config: config)
                 Self.persistTranscript(text: text, durationSec: durationSec,
                                        langStats: liveOutput.langStats, audioURL: result.audioURL)
                 await saveTranscript(
@@ -392,7 +408,7 @@ final class MeetingRecorderCenter {
         }
 
         let durationSec = samples.count / TranscriptionConfig.sampleRate
-        let text = await renderRoles(output: output, audioURL: audioURL, samples: samples)
+        let text = await renderRoles(output: output, audioURL: audioURL, samples: samples, config: config)
         // Persist the (role-tagged) transcript next to the audio so a failed
         // save is retried from the file instead of paying for a full
         // re-transcription — or a re-diarization (spec §7).
@@ -427,11 +443,15 @@ final class MeetingRecorderCenter {
             clearPending()
             phase = .idle
             let title = currentTitle ?? "Recording"
-            // Recap failure is non-fatal — the transcript row is saved; flag the
-            // retry in the notification rather than reporting a failure.
-            notifier.sendTranscriptReadyNotification(
-                title: result.recapOK ? title : "\(title) — transcript saved, recap needs retry"
-            )
+            // Recap/roles failures are non-fatal — the transcript row is saved;
+            // flag them in the notification rather than reporting a failure.
+            if !result.recapOK {
+                notifier.sendTranscriptReadyNotification(title: "\(title) — transcript saved, recap needs retry")
+            } else if lastRolesError != nil {
+                notifier.sendTranscriptReadyNotification(title: "\(title) — saved without speaker labels")
+            } else {
+                notifier.sendTranscriptReadyNotification(title: title)
+            }
             currentEventID = nil
             currentTitle = nil
         } catch {

@@ -63,13 +63,12 @@ final class TranscriptionModelProvisioner {
         currentModelName = modelName
         state = .downloading(progress: 0)
 
-        currentTask = Task { [weak self, downloadFn, prefetchExtras] in
+        currentTask = Task { [weak self, downloadFn] in
             guard let self else { return }
             let (stream, continuation) = AsyncStream<Double>.makeStream()
             let work = Task.detached {
                 do {
                     try await downloadFn(modelName) { progress in continuation.yield(progress) }
-                    await prefetchExtras()
                     continuation.finish()
                     return Result<Void, Error>.success(())
                 } catch {
@@ -86,6 +85,10 @@ final class TranscriptionModelProvisioner {
             case .success:
                 self.lastSucceededModel = modelName
                 self.state = .idle
+                // Fire-and-forget: extras (diarizer models) must never wedge or
+                // fail THIS state machine — a hung/failed warmup just means the
+                // post-pass pays for the download at Stop instead.
+                Task.detached { [prefetchExtras = self.prefetchExtras] in await prefetchExtras() }
             case .failure(let error):
                 self.state = .failed(error.localizedDescription)
             }

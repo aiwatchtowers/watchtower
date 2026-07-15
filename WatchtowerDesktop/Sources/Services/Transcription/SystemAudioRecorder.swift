@@ -131,6 +131,7 @@ private final class TapRecorderImpl {
         }
         guard status == noErr, let procID = newProcID else {
             audioFile = nil
+            discardActivitySidecar()
             teardownDevices()
             throw AudioRecordingError.deviceSetupFailed("creating IO proc (OSStatus \(status))")
         }
@@ -140,6 +141,7 @@ private final class TapRecorderImpl {
             AudioDeviceDestroyIOProcID(aggregateID, procID)
             ioProcID = nil
             audioFile = nil
+            discardActivitySidecar()
             teardownDevices()
             throw AudioRecordingError.deviceSetupFailed("starting device (OSStatus \(status))")
         }
@@ -243,11 +245,24 @@ private final class TapRecorderImpl {
                 }
                 system = acc / Float(buffers.count - 1)
             }
-            activityAccumulator?.add(mic: mic, sys: system)
+            // Gated on firstWriteError so the sidecar timeline never advances
+            // past where the audio file stopped.
+            if firstWriteError == nil {
+                activityAccumulator?.add(mic: mic, sys: system)
+            }
             out[frame] = tanhf(system + 0.9 * mic)
         }
-        if let lines = activityAccumulator?.flushLines(), !lines.isEmpty {
-            activityHandle.map { try? $0.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8)) }
+        if let lines = activityAccumulator?.flushLines(), !lines.isEmpty, let handle = activityHandle {
+            do {
+                try handle.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8))
+            } catch {
+                // A dropped batch would silently SHIFT every later bin earlier
+                // and misattribute «Я» — stop the sidecar instead: a truncated
+                // timeline degrades to unlabeled bins, never to wrong ones.
+                try? handle.close()
+                activityHandle = nil
+                activityAccumulator = nil
+            }
         }
 
         appendDownsampled(mixed)
@@ -293,6 +308,18 @@ private final class TapRecorderImpl {
             // Disk-full/IO error: stop accumulating silently corrupt data; the
             // partial file up to here remains decodable (CAF) after stop().
             firstWriteError = error
+        }
+    }
+
+    /// Unwinds the activity sidecar on a start() failure after it was created:
+    /// closes the handle and removes the empty file so it does not linger
+    /// until the Go orphan sweep.
+    private func discardActivitySidecar() {
+        try? activityHandle?.close()
+        activityHandle = nil
+        activityAccumulator = nil
+        if let fileURL {
+            try? FileManager.default.removeItem(at: MicActivity.url(for: fileURL))
         }
     }
 
