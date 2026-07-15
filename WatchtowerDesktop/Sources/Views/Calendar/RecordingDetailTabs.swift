@@ -142,6 +142,9 @@ struct RecordingNotesTab: View {
 
             TextEditor(text: $draft)
                 .font(.callout)
+                // Editing is locked during generation so the finished AI output
+                // can never clobber text typed mid-run (adoption guard below).
+                .disabled(isGenerating)
                 .scrollContentBackground(.hidden)
                 .padding(6)
                 .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
