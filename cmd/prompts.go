@@ -227,7 +227,6 @@ func runTune(cmd *cobra.Command, args []string) error {
 		return raw, err
 	})
 
-	_ = store.Seed()
 	tuner := prompts.NewTuner(store, database, tuneGen)
 
 	out := cmd.OutOrStdout()
@@ -346,7 +345,10 @@ func openPromptStore() (*config.Config, *prompts.Store, func(), error) {
 	}
 
 	store := prompts.New(database, nil)
-	_ = store.Seed()
+	if err := store.Seed(); err != nil {
+		database.Close()
+		return nil, nil, nil, fmt.Errorf("seeding prompt templates: %w", err)
+	}
 
 	return cfg, store, func() { database.Close() }, nil
 }

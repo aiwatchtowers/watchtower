@@ -426,8 +426,9 @@ func OpenBrowser(rawURL string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		// -n: open in a new window (not existing Safari/Chrome tab)
-		cmd = exec.Command("open", "-n", rawURL)
+		// Plain `open` (no -n): -n launched a NEW INSTANCE of the browser per
+		// call — repeated logins piled up browser instances/windows.
+		cmd = exec.Command("open", rawURL)
 	case "linux":
 		cmd = exec.Command("xdg-open", rawURL)
 	default:

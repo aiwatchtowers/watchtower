@@ -12,6 +12,8 @@ import SwiftUI
 struct InboxFeedView: View {
     @Environment(AppState.self) private var appState
     @State private var tab: Tab = .feed
+    private let google = GoogleConnectFlow.shared
+    @State private var showConnectOptions = false
 
     /// The dashboard VM is owned by `AppState` (survives tab switches so an
     /// in-flight "Generate" run isn't orphaned on navigation) rather than
@@ -30,7 +32,13 @@ struct InboxFeedView: View {
             switch tab {
             case .feed:
                 if let dashboardVM, let feedVM {
-                    DashboardView(vm: dashboardVM, feedVM: feedVM)
+                    VStack(spacing: 0) {
+                        if !google.fullyConnected || google.isRunning {
+                            connectSourcesBanner
+                            Divider()
+                        }
+                        DashboardView(vm: dashboardVM, feedVM: feedVM)
+                    }
                 } else {
                     ProgressView("Loading...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -47,7 +55,79 @@ struct InboxFeedView: View {
             // the dashboard tab was inactive.
             dashboardVM?.refresh()
             feedVM?.refresh()
+            google.refresh()
         }
+    }
+
+    // MARK: - Connect Sources Banner
+
+    /// Names of the disconnected Google sources, for the banner text.
+    private var missingSources: [String] {
+        var missing: [String] = []
+        if !google.calendar.isConnected { missing.append("Google Calendar") }
+        if !google.gmail.isConnected { missing.append("Gmail") }
+        return missing
+    }
+
+    private var connectSourcesBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(google.isRunning
+                ? "Connecting Google... approve access in the browser."
+                : "\(missingSources.joined(separator: " and ")) not connected — "
+                    + "meeting and email signals are missing from this feed.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            if google.isRunning {
+                ProgressView().controlSize(.small)
+                Button("Cancel") { google.cancel() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Connect") { showConnectOptions = true }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .popover(isPresented: $showConnectOptions) {
+                        connectOptionsPopover
+                    }
+            }
+
+            if let err = google.error {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.orange.opacity(0.08))
+    }
+
+    private var connectOptionsPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Connect Google")
+                .font(.headline)
+
+            GoogleConnectOptionsView(flow: google)
+
+            Text("Google will show a single approval screen listing exactly the selected access.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button("Connect") {
+                showConnectOptions = false
+                google.connect()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!google.hasSelection)
+        }
+        .padding(16)
+        .frame(width: 320)
     }
 
     // MARK: - Toolbar (Tracks-style: title + count badge + tab picker)

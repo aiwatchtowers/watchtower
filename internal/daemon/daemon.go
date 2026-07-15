@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/feed"
+	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
@@ -61,6 +62,7 @@ type Daemon struct {
 	nextStepPipe     *targets.Pipeline
 	customTracksPipe *customtracks.Pipeline
 	calendarSyncer   *calendar.Syncer
+	gmailSyncer      *gmail.Syncer
 	jiraSyncer       *jira.Syncer
 	dayPlanPipeline  DayPlanRunner
 	lastJira         time.Time
@@ -70,6 +72,8 @@ type Daemon struct {
 }
 
 // New creates a Daemon that runs incremental syncs via the given orchestrator.
+// orchestrator may be nil when Slack is not connected; the Slack sync phase is
+// then skipped while the other source syncers and pipelines still run.
 func New(orchestrator *sync.Orchestrator, cfg *config.Config) *Daemon {
 	return &Daemon{
 		orchestrator: orchestrator,
@@ -130,6 +134,11 @@ func (d *Daemon) SetCustomTracksPipeline(p *customtracks.Pipeline) {
 // SetCalendarSyncer sets the calendar syncer for post-sync calendar fetch.
 func (d *Daemon) SetCalendarSyncer(s *calendar.Syncer) {
 	d.calendarSyncer = s
+}
+
+// SetGmailSyncer sets the Gmail syncer for post-sync mail fetch.
+func (d *Daemon) SetGmailSyncer(s *gmail.Syncer) {
+	d.gmailSyncer = s
 }
 
 // SetJiraSyncer sets the Jira syncer for periodic sync.
@@ -213,6 +222,7 @@ func (d *Daemon) wakeChannel() <-chan struct{} {
 func (d *Daemon) runSync(ctx context.Context) {
 	syncErr := d.phaseSlackSync(ctx)
 	d.phaseCalendarSync(ctx)
+	d.phaseGmailSync(ctx)
 	d.phaseJiraSync(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
@@ -297,7 +307,12 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 
 // phaseSlackSync runs the orchestrator and persists last_sync.json. The
 // returned error is non-nil for non-fatal sync issues; pipelines still run.
+// A nil orchestrator means Slack is not connected — the phase is skipped and
+// the other sources still sync.
 func (d *Daemon) phaseSlackSync(ctx context.Context) error {
+	if d.orchestrator == nil {
+		return nil
+	}
 	syncErr := d.orchestrator.Run(ctx, sync.SyncOptions{})
 	if syncErr != nil {
 		d.logger.Printf("sync error: %v", syncErr)
@@ -320,6 +335,19 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 		d.logger.Printf("calendar sync error: %v", err)
 	} else if n > 0 {
 		d.logger.Printf("calendar: %d events synced", n)
+	}
+}
+
+// phaseGmailSync pulls Gmail inbox messages. Lightweight, runs every cycle.
+func (d *Daemon) phaseGmailSync(ctx context.Context) {
+	if d.gmailSyncer == nil {
+		return
+	}
+	n, err := d.gmailSyncer.Sync(ctx)
+	if err != nil {
+		d.logger.Printf("gmail sync error: %v", err)
+	} else if n > 0 {
+		d.logger.Printf("gmail: %d messages synced", n)
 	}
 }
 
@@ -601,18 +629,29 @@ func (d *Daemon) phaseBriefing(ctx context.Context) {
 }
 
 // applyInboxCurrentUser populates the inbox pipeline with the current user's
-// id+email so it can filter mentions/DMs. No-op when DB is unavailable.
+// id+email so it can filter mentions/DMs. The email falls back to the Gmail
+// account email from config when there is no Slack identity (no users row) —
+// otherwise the Gmail/Calendar detectors can't match To/Cc/attendees.
+// No-op when DB is unavailable.
 func (d *Daemon) applyInboxCurrentUser() {
 	if d.db == nil || d.inboxPipe == nil {
 		return
 	}
 	uid, err := d.db.GetCurrentUserID()
-	if err != nil || uid == "" {
-		return
+	if err != nil {
+		uid = ""
 	}
 	email := ""
-	if u, uerr := d.db.GetUserByID(uid); uerr == nil && u != nil {
-		email = u.Email
+	if uid != "" {
+		if u, uerr := d.db.GetUserByID(uid); uerr == nil && u != nil {
+			email = u.Email
+		}
+	}
+	if email == "" && d.config != nil {
+		email = d.config.Gmail.AccountEmail
+	}
+	if uid == "" && email == "" {
+		return
 	}
 	d.inboxPipe.SetCurrentUser(uid, email)
 }

@@ -1,70 +1,71 @@
-# Task AI Agent — агентский чат на таск
+# Task AI Agent — agentic chat for a task
 
-**Дата:** 2026-06-26
-**Статус:** Design (approved in brainstorm)
-**Ветка:** TBD (от `main`)
+**Date:** 2026-06-26
+**Status:** Design (approved in brainstorm)
+**Branch:** TBD (off `main`)
 
-## Проблема
+## Problem
 
-У таска (`targets`) есть поле `intent` — свободный текст, что пользователь хочет
-получить. Сегодня это мёртвый текст. Нужна кнопка, по которой AI стартует беседу
-от интента, читает локальную Slack-базу и помогает довести таск до результата,
-**предлагая действия и спрашивая разрешение** — как tool-calls у LLM.
+A task (`targets`) has an `intent` field — free text describing what the user
+wants to achieve. Today it's dead text. We need a button that starts an AI
+conversation from the intent, reads the local Slack database, and helps drive
+the task to a result, **proposing actions and asking for permission** — like
+LLM tool-calls.
 
-## Решения (из брейншторма)
+## Decisions (from the brainstorm)
 
-1. **Поверхность действий AI:** читать Slack-базу + драфтить ответы; **изменять сам
-   таск**. Никаких внешних отправок (Slack/Jira/Calendar). Все записи — только в
-   локальную SQLite watchtower. → нет внешних побочных эффектов и TCC-рисков.
-2. **Модель подтверждения:** AI **предлагает** структурированное действие → Desktop
-   рисует карточку Approve/Reject → запись в БД делает **Swift** (детерминированно),
-   не AI. Модели write-доступ к БД не даём.
-3. **Беседа:** одна постоянная беседа на таск (привязка к `target_id`), интент —
-   seed/контекст, история копится между сессиями.
-4. **Механизм передачи действия:** fenced-блок ```` ```watchtower-action ```` в тексте
-   ответа, парсинг на стороне Swift. **Go-стрим не трогаем.**
-5. **Action types v1:** все 5 — `updateStatus`, `updateNotes` (append),
+1. **AI action surface:** read the Slack database + draft replies; **modify the
+   task itself**. No external sends (Slack/Jira/Calendar). All writes go only to
+   the local SQLite watchtower DB. → no external side effects and no TCC risk.
+2. **Confirmation model:** AI **proposes** a structured action → Desktop renders
+   an Approve/Reject card → the DB write is done by **Swift** (deterministically),
+   not the AI. The model is not given write access to the DB.
+3. **Conversation:** one persistent conversation per task (tied to `target_id`),
+   the intent is the seed/context, history accumulates across sessions.
+4. **Action transfer mechanism:** a fenced ```` ```watchtower-action ```` block in
+   the response text, parsed on the Swift side. **The Go stream is untouched.**
+5. **Action types v1:** all 5 — `updateStatus`, `updateNotes` (append),
    `updateProgress`, `addSubItem`, `createChildTarget`.
 
-## Архитектура
+## Architecture
 
-Вся логика — в Desktop (Swift) + новый prompt-фрагмент. Go (`internal/ai`, CLI,
-`internal/db`) **не меняется**. MCP остаётся read-only (`read_query`).
+All the logic lives in Desktop (Swift) + a new prompt fragment. Go (`internal/ai`,
+CLI, `internal/db`) **is not changed**. MCP stays read-only (`read_query`).
 
-Прецедент в кодовой базе: `TrackChatView` / `TrackChatViewModel` — чат, привязанный
-к треку через `ChatConversationQueries.fetchByContext(type:id:)` /
-`create(contextType:contextID:)`. Новый чат — копия этого паттерна с контекстом
-`type:"target"`.
+Precedent in the codebase: `TrackChatView` / `TrackChatViewModel` — a chat tied
+to a track via `ChatConversationQueries.fetchByContext(type:id:)` /
+`create(contextType:contextID:)`. The new chat is a copy of this pattern with
+context `type:"target"`.
 
-### Компоненты
+### Components
 
-- **`TaskChatView` + `TaskChatViewModel`** — по образцу `TrackChatView`. Контекст
-  беседы `type:"target", id:String(target.id)`. System-prompt строится из таска:
-  `text`, `intent`, `status`, `notes`, `sub_items`. Стримит через
-  `WatchtowerAIService` (существующий `ai query`), MCP read-only.
-- **`ProposedAction`** — Swift-тип (struct + enum `kind`), декодируется из JSON
-  блока. Поля по типам:
+- **`TaskChatView` + `TaskChatViewModel`** — modeled on `TrackChatView`.
+  Conversation context `type:"target", id:String(target.id)`. System prompt is
+  built from the task: `text`, `intent`, `status`, `notes`, `sub_items`.
+  Streams via `WatchtowerAIService` (existing `ai query`), MCP read-only.
+- **`ProposedAction`** — a Swift type (struct + `kind` enum), decoded from a JSON
+  block. Fields per type:
   - `updateStatus` → `status` (todo/in_progress/blocked/done/dismissed/snoozed)
-  - `updateNotes` → `note` (append к существующим notes)
+  - `updateNotes` → `note` (appended to existing notes)
   - `updateProgress` → `progress` (0–100)
-  - `addSubItem` → `text` (+ опц. `done` bool)
-  - `createChildTarget` → `text`, `intent`, опц. `priority`
-  - у всех — обязательный `reason` (зачем, для текста карточки)
-- **`TaskActionParser`** — выделяет все ```` ```watchtower-action ```` блоки из
-  накопленного текста turn'а, прячет их из видимого текста, возвращает
-  `[ProposedAction]` + очищенный текст.
-- **`TaskActionCard` (View)** — человекочитаемое описание действия + `reason` +
-  кнопки Approve / Reject. Pending/applied/rejected состояния.
-- **`TaskActionExecutor`** — по Approve вызывает существующие `TaskQueries`
-  (`updateStatus`, `updateSubItems`, `create` для child, апдейт notes/progress).
-  По завершении формирует follow-up сообщение и отправляет его в беседу как
-  очередной user-turn, чтобы AI продолжил.
+  - `addSubItem` → `text` (+ optional `done` bool)
+  - `createChildTarget` → `text`, `intent`, optional `priority`
+  - all of them — a required `reason` (why, for the card text)
+- **`TaskActionParser`** — extracts all ```` ```watchtower-action ```` blocks from
+  the accumulated turn text, hides them from the visible text, and returns
+  `[ProposedAction]` + the cleaned-up text.
+- **`TaskActionCard` (View)** — human-readable description of the action + `reason`
+  + Approve / Reject buttons. Pending/applied/rejected states.
+- **`TaskActionExecutor`** — on Approve, calls the existing `TaskQueries`
+  (`updateStatus`, `updateSubItems`, `create` for a child, notes/progress update).
+  On completion, builds a follow-up message and sends it into the conversation as
+  the next user turn so the AI can continue.
 
-### Поток данных
+### Data flow
 
 ```
-intent + контекст таска ──seed──▶ system-prompt
-user msg ─▶ ai query (read_query, read-only) ─stream─▶ текст + ```watchtower-action```
+intent + task context ──seed──▶ system prompt
+user msg ─▶ ai query (read_query, read-only) ─stream─▶ text + ```watchtower-action```
                                                   │
                           TaskActionParser ───────┘──▶ [ProposedAction]
                                                           │
@@ -72,49 +73,54 @@ user msg ─▶ ai query (read_query, read-only) ─stream─▶ текст + ``
                                        Approve │                    │ Reject
                           TaskQueries.write(targets)          follow-up "user rejected: <reason>"
                                        │                             │
-                          follow-up "action executed: <summary>" ───┴──▶ next turn (AI продолжает)
+                          follow-up "action executed: <summary>" ───┴──▶ next turn (AI continues)
 ```
 
-Инвариант: **AI только предлагает, запись всегда делает Swift.** Модели не выдаём
-write-MCP-тулов; `--allowed-tools` остаётся read-only.
+Invariant: **the AI only proposes, the write is always done by Swift.** The
+model is not given write-MCP tools; `--allowed-tools` stays read-only.
 
-## Контракт действия (prompt)
+## Action contract (prompt)
 
-Новый фрагмент в system-prompt беседы инструктирует модель:
+A new fragment in the conversation's system prompt instructs the model:
 
-> Чтобы изменить таск — НЕ пиши в БД и НЕ вызывай инструменты записи. Выведи блок
-> ```` ```watchtower-action ```` с ОДНИМ JSON-объектом `{ "type": "...",
-> ...поля, "reason": "..." }`. Одно действие на блок (можно несколько блоков).
-> После блока остановись и жди подтверждения — НЕ считай действие применённым.
+> To modify the task — do NOT write to the DB and do NOT call write tools.
+> Output a block ```` ```watchtower-action ```` with a SINGLE JSON object
+> `{ "type": "...", ...fields, "reason": "..." }`. One action per block
+> (multiple blocks are allowed). After the block, stop and wait for
+> confirmation — do NOT treat the action as applied.
 
-Перечень `type` и обязательных полей фиксирован и валидируется Swift-декодером.
+The list of `type` values and their required fields is fixed and validated by
+the Swift decoder.
 
-## Обработка ошибок / краевые случаи
+## Error handling / edge cases
 
-- Невалидный/неизвестный `type` или битый JSON → видимая **карточка-ошибка**
-  (не тихий no-op), AI получает follow-up «action invalid: …».
-- Reject → follow-up «user rejected, reason: …»; AI переспрашивает/корректирует.
-- Беседа выживает между запусками: resume по `session_id` из `chat_conversations`
-  (как в `TrackChatViewModel`).
-- Approve применяет ровно одно действие; UI сериализует подтверждения — гонок нет.
-- Пустой intent → seed строится из `text`; беседа работает без секции intent.
+- Invalid/unknown `type` or malformed JSON → a visible **error card**
+  (not a silent no-op), the AI gets a follow-up "action invalid: …".
+- Reject → follow-up "user rejected, reason: …"; the AI re-asks/adjusts.
+- The conversation survives across runs: resumed by `session_id` from
+  `chat_conversations` (as in `TrackChatViewModel`).
+- Approve applies exactly one action; the UI serializes confirmations — no races.
+- Empty intent → the seed is built from `text`; the conversation works without
+  an intent section.
 
-## Тестирование
+## Testing
 
-- **Go:** не меняется → существующие тесты остаются зелёными (явный non-goal: не
-  трогать `internal/ai`/CLI/`internal/db`).
+- **Go:** unchanged → existing tests stay green (explicit non-goal: do not touch
+  `internal/ai`/CLI/`internal/db`).
 - **Swift:**
-  - `TaskActionParser`: один блок, несколько блоков, блок посреди текста, битый
-    JSON, отсутствие блока (чистый текст) — корректное вырезание и видимый текст.
-  - `ProposedAction` декодер: каждый из 5 типов; неизвестный type → ошибка.
-  - `TaskActionExecutor`: каждый type мапится на правильный `TaskQueries`-вызов;
-    follow-up формируется и при Approve, и при Reject (degenerate clean-exit ветки
-    тестируем явно — см. рабочий принцип «test degenerate clean-exit branches»).
-  - `TaskChatViewModel`: загрузка/создание беседы по `target_id`, seed-промпт
-    содержит intent.
+  - `TaskActionParser`: single block, multiple blocks, a block in the middle of
+    text, malformed JSON, no block (plain text) — correct extraction and visible
+    text.
+  - `ProposedAction` decoder: each of the 5 types; unknown type → error.
+  - `TaskActionExecutor`: each type maps to the correct `TaskQueries` call;
+    follow-up is built both on Approve and on Reject (degenerate clean-exit
+    branches are tested explicitly — see the working principle "test degenerate
+    clean-exit branches").
+  - `TaskChatViewModel`: loading/creating a conversation by `target_id`, seed
+    prompt contains the intent.
 
-## Не делаем (YAGNI)
+## Not doing (YAGNI)
 
-Внешний Slack-send, Jira/Calendar-действия, batch-подтверждение в конце,
-настоящий MCP write + `canUseTool`, отдельный модель-тир (берём текущую модель
-чата), редактирование произвольных полей таска вне 5 action types.
+External Slack sends, Jira/Calendar actions, batch confirmation at the end, real
+MCP write + `canUseTool`, a separate model tier (we use the current chat model),
+editing arbitrary task fields outside the 5 action types.

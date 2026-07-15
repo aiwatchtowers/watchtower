@@ -1,15 +1,15 @@
-# Функциональные нестыковки и противоречия — аудит 2026-07-05
+# Functional Inconsistencies and Contradictions — Audit 2026-07-05
 
-Данный отчёт покрывает измерение «функциональные нестыковки и противоречия»: расхождения поведения между дублирующими путями (Go CLI/daemon vs Swift Desktop), нарушения зафиксированных контрактов из `docs/inventory/`, а также конфигурационные ключи, которые заявлены/документированы, но не потребляются кодом. Метод: несколько поисковых агентов (finders) независимо собирали кандидатов, после чего каждый кандидат прошёл отдельную состязательную верификацию с трассировкой обоих путей по коду; ниже приведены только подтверждённые находки (опровергнутые удалены). Итог: 0 critical, 0 high, 7 medium, 5 low.
+This report covers the "functional inconsistencies and contradictions" dimension: behavioral divergence between duplicate paths (Go CLI/daemon vs Swift Desktop), violations of contracts locked in `docs/inventory/`, and configuration keys that are declared/documented but never consumed by the code. Method: several search agents (finders) independently gathered candidates, after which each candidate went through separate adversarial verification tracing both paths through the code; only confirmed findings are listed below (refuted ones were removed). Total: 0 critical, 0 high, 7 medium, 5 low.
 
 ## Medium
 
-### Desktop-смена статуса target не пересчитывает progress (ни собственный, ни родительский), в отличие от Go `UpdateTargetStatus`
+### Desktop target status change does not recompute progress (neither its own nor the parent's), unlike Go `UpdateTargetStatus`
 
-- **Где:** `WatchtowerDesktop/Sources/Database/Queries/TargetQueries.swift:217`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `WatchtowerDesktop/Sources/Database/Queries/TargetQueries.swift:217`
+- **Verification status:** ✅ confirmed
 
-Go-функция `UpdateTargetStatus` делает три вещи: пишет статус, пересчитывает собственный `progress` листового target через `statusToProgress` (`done → 1.0` и т.д.) и поднимается вверх по цепочке родителей через `RecomputeParentProgress` (усреднение детей). Swift-версия `TargetQueries.updateStatus` повторяет только запись статуса и каскад INBOX-02 (`target_due` в inbox), но никогда не трогает колонку `progress` ни у самого target, ни у его предков; никакой другой Swift-код прогресс не пересчитывает (в Desktop нет ни запроса `AVG(progress)`, ни аналога `statusToProgress`). Поскольку `RecomputeParentProgress` вызывается только из Go-путей, пользователь, управляющий целями из Desktop (основной UI — переключатель статуса в `TargetDetailView`, контекстное меню в `TargetsListView`), получает вечно устаревшее кольцо прогресса: отметив листовой target как `done`, он оставляет `progress` на старом значении (например, 0%), а прогресс-бар родителя никогда не отражает завершённых через Desktop детей. Та же дыра — у Desktop-snooze (`TargetQueries.snooze`) против CLI-snooze, который идёт через `UpdateTarget` с пересчётом.
+The Go function `UpdateTargetStatus` does three things: writes the status, recomputes the leaf target's own `progress` via `statusToProgress` (`done → 1.0`, etc.), and walks up the parent chain via `RecomputeParentProgress` (averaging children). The Swift version `TargetQueries.updateStatus` only replicates the status write and the INBOX-02 cascade (`target_due` in inbox), but never touches the `progress` column of either the target itself or its ancestors; no other Swift code recomputes progress (Desktop has neither an `AVG(progress)` query nor an equivalent of `statusToProgress`). Since `RecomputeParentProgress` is only invoked from Go paths, a user managing targets from Desktop (the primary UI — the status toggle in `TargetDetailView`, the context menu in `TargetsListView`) gets a permanently stale progress ring: marking a leaf target as `done` leaves `progress` at its old value (e.g. 0%), and the parent's progress bar never reflects children completed through Desktop. The same gap exists for Desktop-snooze (`TargetQueries.snooze`) versus CLI-snooze, which goes through `UpdateTarget` with recomputation.
 
 ```go
 // internal/db/targets.go:274-305
@@ -23,19 +23,19 @@ if parentID.Valid {
 }
 ```
 
-- **Рекомендация:** В `TargetQueries.updateStatus` (и `snooze`) после записи статуса выполнить тот же пересчёт: обновить `progress` листового target по маппингу статуса и подняться по `parent_id`, усредняя `progress` детей — либо вынести логику в общий SQL и вызывать её из обоих путей. Стоит добавить guard-тест в `TargetQueriesStatusCascadeTests`, фиксирующий пересчёт кольца.
+- **Recommendation:** In `TargetQueries.updateStatus` (and `snooze`), after writing the status, perform the same recomputation: update the leaf target's `progress` via the status mapping and walk up `parent_id`, averaging children's `progress` — or move the logic into shared SQL and call it from both paths. It's worth adding a guard test in `TargetQueriesStatusCascadeTests` that pins down the ring recomputation.
 
-### Go-каскад «прочитан трек» помечает связанные digests прочитанными, но оставляет их decisions непрочитанными; Swift-каскад чистит оба
+### Go's "track read" cascade marks related digests as read but leaves their decisions unread; Swift's cascade clears both
 
-- **Где:** `internal/db/tracks.go:287`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/tracks.go:287`
+- **Verification status:** ✅ confirmed
 
-Swift `TrackQueries.markRead` каскадит каждый связанный digest ОБОИМИ вызовами `markDigestRead` и `markAllDecisionsRead`, поэтому счётчик ленты Decisions (total − COUNT(decision_reads)) обнуляется. Go `MarkTrackRead` каскадит связанные digests сырым `UPDATE digests SET read_at = ...`, который в обход `MarkDigestRead` пропускает каскад `markDigestDecisionsRead`. Результат: прочтение трека любым Go-путём — CLI `watchtower tracks read <id>`, либо `watchtower catchup ack` / зачистка leftover-noise, когда ref темы указывает на трек с `related_digest_ids` — помечает digests прочитанными (пользователь их больше не откроет), но их decisions навсегда остаются в непрочитанном счётчике Decisions. То же действие в Desktop их чистит. Это ровно тот режим отказа «половина с decisions — та, которую легко забыть», который CATCHUP-01 (`docs/inventory/catchup.md`) фиксирует для digest-refs, просачивающийся через трек-каскад только на Go-стороне.
+Swift `TrackQueries.markRead` cascades to each related digest with BOTH `markDigestRead` and `markAllDecisionsRead` calls, so the Decisions feed counter (total − COUNT(decision_reads)) is zeroed out. Go `MarkTrackRead` cascades to related digests with a raw `UPDATE digests SET read_at = ...`, which bypasses `MarkDigestRead` and skips the `markDigestDecisionsRead` cascade. Result: reading a track through any Go path — CLI `watchtower tracks read <id>`, or `watchtower catchup ack` / leftover-noise cleanup, when a theme ref points at a track with `related_digest_ids` — marks digests as read (the user won't open them again), but their decisions remain permanently stuck in the unread Decisions counter. The same action in Desktop clears them. This is exactly the "half with decisions — the half that's easy to forget" failure mode that CATCHUP-01 (`docs/inventory/catchup.md`) pins down for digest refs, leaking through the track cascade only on the Go side.
 
 ```go
 // internal/db/tracks.go:280-289
 q := "UPDATE digests SET read_at = strftime(...) WHERE id IN (...) AND read_at IS NULL"
-db.Exec(q, args...) // никакого insert в decision_reads
+db.Exec(q, args...) // no insert into decision_reads
 ```
 ```swift
 // TrackQueries.swift:112-115
@@ -43,17 +43,17 @@ try DigestQueries.markDigestRead(db, id: digestID)
 try DigestQueries.markAllDecisionsRead(db, digestID: digestID)
 ```
 
-- **Рекомендация:** В `MarkTrackRead` заменить сырой `UPDATE digests` на вызов `MarkDigestRead` для каждого связанного digest (или добавить рядом каскад `markDigestDecisionsRead`), чтобы decisions гасились вместе с digest. Расширить `TestMarkTrackRead_CascadeDigests`, чтобы он проверял появление строк `decision_reads`, а не только `read_at`.
+- **Recommendation:** In `MarkTrackRead`, replace the raw `UPDATE digests` with a call to `MarkDigestRead` for each related digest (or add a `markDigestDecisionsRead` cascade alongside it), so decisions are cleared together with the digest. Extend `TestMarkTrackRead_CascadeDigests` to check for the appearance of `decision_reads` rows, not just `read_at`.
 
-### CLI-счётчики и список inbox включают архивные элементы; Desktop их исключает — поверхности расходятся после авто-архивации устаревших
+### CLI inbox counters and list include archived items; Desktop excludes them — surfaces diverge after auto-archiving of stale items
 
-- **Где:** `internal/db/inbox.go:277`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/inbox.go:277`
+- **Verification status:** ✅ confirmed
 
-Пайплайн архивирует actionable-элементы, висящие в `pending` дольше 14 дней, выставляя `archived_at` при сохранении `status='pending'` (`archive_reason='stale'`), и ambient-элементы после 7 дней. Swift `fetchCounts` и запросы ленты фильтруют `archived_at IS NULL`, что совпадает с Go feed/pinned-запросами. Но Go `GetInboxCounts` (заголовок `watchtower inbox`) считает каждую строку `status='pending'` без фильтра `archived_at`, и `GetInboxItems` (CLI-список) тоже никогда его не фильтрует. После двух недель обычной работы CLI показывает счётчики pending/unread и перечисляет элементы, которых бейдж и лента Desktop (и сами Go feed/pinned-запросы) уже не показывают — оператор видит два разных inbox в зависимости от поверхности. `GetInboxItemsForBriefing` разделяет тот же пропуск, дополнительно подмешивая архивные stale-элементы в промпт ежедневного брифинга.
+The pipeline archives actionable items that have sat in `pending` for more than 14 days, setting `archived_at` while keeping `status='pending'` (`archive_reason='stale'`), and ambient items after 7 days. Swift `fetchCounts` and the feed queries filter on `archived_at IS NULL`, which matches the Go feed/pinned queries. But Go `GetInboxCounts` (the `watchtower inbox` header) counts every `status='pending'` row without an `archived_at` filter, and `GetInboxItems` (the CLI list) never filters it either. After two weeks of normal operation, the CLI shows pending/unread counters and lists items that the Desktop badge and feed (and the Go feed/pinned queries themselves) no longer show — the operator sees two different inboxes depending on the surface. `GetInboxItemsForBriefing` shares the same omission, additionally mixing archived stale items into the daily briefing prompt.
 
 ```sql
--- Go GetInboxCounts (inbox.go:277-281): нет предиката archived_at
+-- Go GetInboxCounts (inbox.go:277-281): no archived_at predicate
 SELECT COALESCE(SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),0),
        COALESCE(SUM(CASE WHEN status='pending' AND read_at IS NULL THEN 1 ELSE 0 END),0)
 FROM inbox_items;
@@ -61,65 +61,65 @@ FROM inbox_items;
 SELECT COUNT(*) FROM inbox_items WHERE status='pending' AND archived_at IS NULL;
 ```
 
-- **Рекомендация:** Добавить `AND archived_at IS NULL` в `GetInboxCounts`, `GetInboxItems` и `GetInboxItemsForBriefing`, приведя CLI и briefing-промпт к тем же критериям, что уже используют Desktop и Go feed/pinned-запросы.
+- **Recommendation:** Add `AND archived_at IS NULL` to `GetInboxCounts`, `GetInboxItems`, and `GetInboxItemsForBriefing`, bringing the CLI and the briefing prompt to the same criteria already used by the Desktop and the Go feed/pinned queries.
 
-### Ключ `digest.model` пишется онбордингом/настройками Desktop и принимается `config set`, но не читается никаким Go-кодом — выбор модели дайджеста молча игнорируется
+### The `digest.model` key is written by Desktop onboarding/settings and accepted by `config set`, but never read by any Go code — the digest model choice is silently ignored
 
-- **Где:** `cmd/config.go:190`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/config.go:190`
+- **Verification status:** ✅ confirmed
 
-Desktop-онбординг пишет `digest.model` (маппинг пресета Haiku/Sonnet/Opus, выбранного пользователем), `SettingsView` даёт его редактировать, `ConfigService` его round-trip'ит, а `cmd/config.go` перечисляет его в `knownConfigKeys`, так что `watchtower config set digest.model ...` проходит без предупреждения. Но Go-структура `DigestConfig` не имеет поля `Model`, и ничто ключ не разбирает и не читает: `cliGenerator` жёстко подставляет `digest.ModelSonnet` как фолбэк, а `ModelForSource` маршрутизирует по источникам между захардкоженными константами Haiku/Sonnet. Пользователь, выбравший «Opus — best insights» (или «Haiku — low cost») в онбординге, всё равно получает Sonnet/Haiku-маршрутизацию; его выбор цены/качества нигде не влияет. Асимметрия наглядна: `ai.model` действительно читается (`config.go:22 → newAIClient`), а `digest.model` — нет.
+Desktop onboarding writes `digest.model` (mapping the Haiku/Sonnet/Opus preset the user picked), `SettingsView` lets it be edited, `ConfigService` round-trips it, and `cmd/config.go` lists it in `knownConfigKeys`, so `watchtower config set digest.model ...` passes without a warning. But the Go `DigestConfig` struct has no `Model` field, and nothing parses or reads the key: `cliGenerator` hardcodes `digest.ModelSonnet` as the fallback, and `ModelForSource` routes by source between hardcoded Haiku/Sonnet constants. A user who picked "Opus — best insights" (or "Haiku — low cost") during onboarding still gets Sonnet/Haiku routing; their price/quality choice has no effect anywhere. The asymmetry is stark: `ai.model` is actually read (`config.go:22 → newAIClient`), while `digest.model` is not.
 
 ```go
-// cmd/config.go: "digest.model": true в knownConfigKeys
+// cmd/config.go: "digest.model": true in knownConfigKeys
 // internal/config/config.go:36-44: DigestConfig{Enabled, MinMessages, Language, Workers,
-//   TracksInterval, BatchMaxChannels, BatchMaxMessages} — поля Model нет
+//   TracksInterval, BatchMaxChannels, BatchMaxMessages} — no Model field
 // cmd/generator.go:27:
 return digest.NewClaudeGenerator(digest.ModelSonnet, cfg.ClaudePath)
 ```
 
-- **Рекомендация:** Либо добавить поле `Model` в `DigestConfig` и прокинуть его в `cliGenerator`/`ModelForSource` (с поддержкой Opus), либо, если по замыслу модель дайджеста управляется маршрутизатором, убрать ключ из онбординга/Settings/`knownConfigKeys`, чтобы UI не обещал несуществующую настройку.
+- **Recommendation:** Either add a `Model` field to `DigestConfig` and thread it through `cliGenerator`/`ModelForSource` (with Opus support), or, if the digest model is meant to be governed by the router by design, remove the key from onboarding/Settings/`knownConfigKeys` so the UI doesn't promise a setting that doesn't exist.
 
-### `FindTracksByFingerprint` не исключает dismissed-треки — новая активность молча вливается в dismissed (невидимый) трек, вопреки TRACKS-07
+### `FindTracksByFingerprint` does not exclude dismissed tracks — new activity silently merges into a dismissed (invisible) track, contrary to TRACKS-07
 
-- **Где:** `internal/db/tracks.go:419`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/tracks.go:419`
+- **Verification status:** ✅ confirmed
 
-TRACKS-07 (`docs/inventory/tracks.md`) гласит: dismissed-трек «больше не участвует ни в каких cross-channel/dedup-проверках — после dismiss AI может заново открыть ту же ситуацию как свежий трек». Text-similarity dedup это соблюдает (`findSimilarTrack` итерирует `allActiveTracksRef` из `GetAllActiveTracks`, где фильтр `dismissed_at = ''`), но fingerprint-путь — нет: у `FindTracksByFingerprint` нет фильтра `dismissed_at`, поэтому в `storeTrackItems` новая тема, разделяющая fingerprint-сущность (Jira-ключ, CVE, MR id, user id) с dismissed-треком, маршрутизируется в `UpdateTrackFromExtraction` по dismissed-строке. `UpdateTrackFromExtraction` никогда не сбрасывает `dismissed_at`, так что свежий контент пишется в трек, исключённый из всех дефолтных списков и вкладки Desktop. Сценарий: пользователь дисмиссит трек «CEX-1234 incident»; тикет вспыхивает через неделю; пайплайн сворачивает весь новый контент в dismissed-строку, и пользователь его не видит — новый трек не создаётся. Та же дыра у existing_id-пути: `GetTrackAssignee` проверяет только ownership, не dismissal.
+TRACKS-07 (`docs/inventory/tracks.md`) states: a dismissed track "no longer participates in any cross-channel/dedup checks — after dismissal, the AI may re-open the same situation as a fresh track." Text-similarity dedup honors this (`findSimilarTrack` iterates `allActiveTracksRef` from `GetAllActiveTracks`, which filters on `dismissed_at = ''`), but the fingerprint path does not: `FindTracksByFingerprint` has no `dismissed_at` filter, so in `storeTrackItems` a new theme sharing a fingerprint entity (Jira key, CVE, MR id, user id) with a dismissed track gets routed into `UpdateTrackFromExtraction` against the dismissed row. `UpdateTrackFromExtraction` never resets `dismissed_at`, so fresh content gets written into a track excluded from every default list and the Desktop tab. Scenario: a user dismisses the "CEX-1234 incident" track; the ticket flares up again a week later; the pipeline folds all the new content into the dismissed row, and the user never sees it — no new track is created. The same gap exists on the existing_id path: `GetTrackAssignee` only checks ownership, not dismissal.
 
 ```go
-// internal/db/tracks.go:419 — нет фильтра dismissed_at
+// internal/db/tracks.go:419 — no dismissed_at filter
 query := `SELECT ` + trackSelectCols + ` FROM tracks
     WHERE (fingerprint LIKE ? OR ...) AND assignee_user_id = ?`
 // GetAllActiveTracks (tracks.go:173): ... FROM tracks WHERE dismissed_at = ''
 ```
 
-- **Рекомендация:** Добавить `AND dismissed_at = ''` в `FindTracksByFingerprint` (и в `GetTrackAssignee`), чтобы fingerprint-dedup, как и text-dedup, обходил dismissed-треки. Добавить guard-тест `TestTracks07_DismissedDoesNotBlockRediscovery`, который `docs/inventory/tracks.md` уже называет отсутствующим.
+- **Recommendation:** Add `AND dismissed_at = ''` to `FindTracksByFingerprint` (and to `GetTrackAssignee`), so fingerprint dedup, like text dedup, bypasses dismissed tracks. Add a guard test `TestTracks07_DismissedDoesNotBlockRediscovery`, which `docs/inventory/tracks.md` already flags as missing.
 
-### Ручные Desktop-правки трека (priority/ownership/sub-items) пропускают snapshot `track_states`, который TRACKS-06 маркирует Enforced для ручных правок
+### Manual Desktop edits to a track (priority/ownership/sub-items) skip the `track_states` snapshot that TRACKS-06 marks Enforced for manual edits
 
-- **Где:** `WatchtowerDesktop/Sources/Database/Queries/TrackQueries.swift:127`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `WatchtowerDesktop/Sources/Database/Queries/TrackQueries.swift:127`
+- **Verification status:** ✅ confirmed
 
-TRACKS-06 (`docs/inventory/tracks.md`, Status: Enforced) требует: «Каждое изменение нарративного поля — ... priority, ownership, ... sub_items ... — пишет snapshot прежнего состояния в `track_states` ... И AI-извлечение, и ручные правки (`UpdateTrackPriority`, `UpdateTrackOwnership`, `UpdateTrackSubItems` ...) делают snapshot перед мутацией». Go-сторона это делает (`snapshotTrackState`). Но Desktop выполняет те же ручные правки прямой записью в общий SQLite — `TrackQueries.updatePriority`, `updateOwnership`, `updateSubItems` — обычными `UPDATE tracks` без insert в `track_states` (единственный Swift-доступ к `track_states` — read-only `TrackStateQueries`). Изменение priority/ownership, сделанное во вкладке Tracks в Desktop, не оставляет строки истории, поэтому секция History не может ответить «трек всегда так говорил?» для Desktop-правок; то же действие даёт историю через CLI, но не через Desktop.
+TRACKS-06 (`docs/inventory/tracks.md`, Status: Enforced) requires: "Every change to a narrative field — ... priority, ownership, ... sub_items ... — writes a snapshot of the prior state to `track_states` ... Both AI extraction and manual edits (`UpdateTrackPriority`, `UpdateTrackOwnership`, `UpdateTrackSubItems` ...) snapshot before the mutation." The Go side does this (`snapshotTrackState`). But Desktop performs the same manual edits with a direct write to the shared SQLite database — `TrackQueries.updatePriority`, `updateOwnership`, `updateSubItems` — via plain `UPDATE tracks` statements without an insert into `track_states` (the only Swift access to `track_states` is the read-only `TrackStateQueries`). A priority/ownership change made in the Desktop Tracks tab leaves no history row, so the History section can't answer "did the track always say this?" for Desktop edits; the same action does produce history via the CLI, but not via Desktop.
 
 ```swift
-// TrackQueries.swift:127 — без записи в track_states
+// TrackQueries.swift:127 — no write to track_states
 try db.execute(sql: "UPDATE tracks SET priority = ? WHERE id = ?", ...)
 ```
 ```go
-// internal/db/tracks.go — BEHAVIOR TRACKS-06: snapshot перед ручной правкой
+// internal/db/tracks.go — BEHAVIOR TRACKS-06: snapshot before manual edit
 _ = db.snapshotTrackState(cur, proposed, "manual")
 ```
 
-- **Рекомендация:** Продублировать snapshot в Swift: перед каждым `UPDATE tracks` в `updatePriority`/`updateOwnership`/`updateSubItems` вставлять строку `track_states` с прежним состоянием и `source='manual'`, зеркалируя `snapshotTrackState`. Обернуть чтение+snapshot+update в одну транзакцию `dbPool.write`.
+- **Recommendation:** Replicate the snapshot in Swift: before each `UPDATE tracks` in `updatePriority`/`updateOwnership`/`updateSubItems`, insert a `track_states` row with the prior state and `source='manual'`, mirroring `snapshotTrackState`. Wrap the read+snapshot+update in a single `dbPool.write` transaction.
 
-### Daemon подключает inbox/briefing/day-plan/custom-track пайплайны только внутри `if cfg.Digest.Enabled` — отключение дайджестов молча выключает четыре независимо конфигурируемых фичи
+### The daemon only wires up the inbox/briefing/day-plan/custom-track pipelines inside `if cfg.Digest.Enabled` — disabling digests silently disables four independently configurable features
 
-- **Где:** `cmd/sync.go:274`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/sync.go:274`
+- **Verification status:** ✅ confirmed
 
-В режиме daemon (и в one-shot `runPostSyncPipelines`) все AI-пайплайны конструируются внутри блока `if cfg.Digest.Enabled { ... }`: `SetInboxPipeline` вызывается только при digest.enabled И inbox.enabled, аналогично briefings, day plans, next-step и custom-track scans. Конфиг документирует их как независимые тумблеры (inbox.enabled по умолчанию true, briefing.enabled true, day_plan.enabled true). Пользователь, поставивший `digest.enabled: false` (например, чтобы срезать AI-стоимость, оставив алгоритмическое DM/mention-детектирование inbox), молча теряет inbox-детекцию, ежедневные брифинги, day plans и custom-track scan без предупреждения. Самое материальное — inbox: `daemon.go` пропускает `RunFastDetection`, когда `d.inboxPipe == nil`, а `inboxPipe` ставится только внутри digest-блока, так что чисто SQL-детекция DM/mention (Phase 0.7) умирает, хотя ей вообще не нужен AI-генератор. Desktop-тумблер «digest enabled» тем самым работает как недокументированный мастер-килл-свитч для четырёх других вкладок.
+In daemon mode (and in the one-shot `runPostSyncPipelines`), all AI pipelines are constructed inside a single `if cfg.Digest.Enabled { ... }` block: `SetInboxPipeline` is only called when digest.enabled AND inbox.enabled are both true, and likewise for briefings, day plans, next-step, and custom-track scans. The config documents these as independent toggles (inbox.enabled defaults to true, briefing.enabled true, day_plan.enabled true). A user who sets `digest.enabled: false` (for example, to cut AI cost while keeping the algorithmic DM/mention detection for inbox) silently loses inbox detection, daily briefings, day plans, and custom-track scan without any warning. The most material case is inbox: `daemon.go` skips `RunFastDetection` when `d.inboxPipe == nil`, and `inboxPipe` is only set inside the digest block, so the purely SQL-based DM/mention detection (Phase 0.7) dies even though it doesn't need an AI generator at all. The Desktop "digest enabled" toggle thereby functions as an undocumented master kill switch for four other tabs.
 
 ```go
 // cmd/sync.go:274
@@ -133,16 +133,16 @@ if cfg.Digest.Enabled {
 }
 ```
 
-- **Рекомендация:** Вынести конструирование independently-конфигурируемых пайплайнов из-под `if cfg.Digest.Enabled` (AI-генератор при этом создавать лениво/один раз при первом потребителе). Как минимум — вынести SQL-based inbox fast-detection наружу, так как ей AI не нужен, и добавить warning-лог, когда включённая фича не запускается из-за выключенных дайджестов.
+- **Recommendation:** Move the construction of independently-configurable pipelines out from under `if cfg.Digest.Enabled` (creating the AI generator lazily/once, on first consumer use). At a minimum, move the SQL-based inbox fast detection out, since it doesn't need AI, and add a warning log when an enabled feature fails to start because digests are disabled.
 
 ## Low
 
-### Upsert learned-rule `never_show` расходится: Go сбрасывает `evidence_count` в 1, Swift инкрементирует
+### The `never_show` learned-rule upsert diverges: Go resets `evidence_count` to 1, Swift increments it
 
-- **Где:** `WatchtowerDesktop/Sources/Database/Queries/InboxFeedbackQueries.swift:69`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `WatchtowerDesktop/Sources/Database/Queries/InboxFeedbackQueries.swift:69`
+- **Verification status:** ✅ confirmed
 
-Оба пути «never show» (escape-hatch из INBOX-04) upsert'ят `source_mute` user_rule, но при конфликте Go `UpsertLearnedRule` ставит `evidence_count = excluded.evidence_count`, а `SubmitFeedback` всегда передаёт `EvidenceCount:1` — то есть каждый Go-side never_show сбрасывает счётчик в 1 — тогда как Swift `upsertRule` ставит `evidence_count = evidence_count + 1`, накапливая. `evidence_count` виден пользователю в Learned-табе (INBOX-05: «learned from N dismissals»), так что одна и та же последовательность действий даёт разную отображаемую модель пользователя в зависимости от поверхности, а один CLI-side never_show стирает счётчик, накопленный Desktop. Go ON CONFLICT также перезаписывает `pipeline`, тогда как Swift его сохраняет — тот же дрейф. Замечание: сегодня ни один потребитель не читает `evidence_count` для этих user_rule-mute (Learned-view показывает только scopeKey/weight/source, AI-промпт использует scope/weight/source), поэтому вред пока латентен.
+Both "never show" paths (the escape hatch from INBOX-04) upsert a `source_mute` user_rule, but on conflict Go's `UpsertLearnedRule` sets `evidence_count = excluded.evidence_count`, and `SubmitFeedback` always passes `EvidenceCount:1` — meaning every Go-side never_show resets the counter to 1 — whereas Swift's `upsertRule` sets `evidence_count = evidence_count + 1`, accumulating it. `evidence_count` is user-visible on the Learned tab (INBOX-05: "learned from N dismissals"), so the same sequence of actions produces a different displayed model for the user depending on the surface, and a single CLI-side never_show wipes out the counter accumulated by Desktop. Go's `ON CONFLICT` also overwrites `pipeline`, whereas Swift preserves it — the same kind of drift. Note: today no consumer reads `evidence_count` for these user_rule mutes (the Learned view only shows scopeKey/weight/source, and the AI prompt uses scope/weight/source), so the harm is currently latent.
 
 ```go
 // inbox_learned_rules.go:38-44 — ON CONFLICT ... evidence_count = excluded.evidence_count
@@ -152,65 +152,65 @@ if cfg.Digest.Enabled {
 // InboxFeedbackQueries.swift:66-70 — ON CONFLICT ... evidence_count = evidence_count + 1
 ```
 
-- **Рекомендация:** Выбрать единую семантику `evidence_count` для `source_mute` user_rule (вероятно, накопление) и привести оба upsert'а к ней; заодно согласовать поведение `pipeline` в ON CONFLICT. До появления потребителя это уборка консистентности, но её лучше сделать до того, как Learned-таб начнёт показывать счётчик.
+- **Recommendation:** Pick a single semantics for `evidence_count` on `source_mute` user_rule (accumulation is probably the right one) and bring both upserts in line with it; also reconcile the `pipeline` behavior in `ON CONFLICT`. Until a consumer appears this is just consistency cleanup, but it's best done before the Learned tab starts displaying the counter.
 
-### Swift catch-up acknowledge решает идемпотентность `reviewed_count` по устаревшему снимку от вызывающего и прерывает весь ack на ошибке mark-read, в отличие от Go
+### Swift catch-up acknowledge decides `reviewed_count` idempotency from a stale snapshot passed in by the caller and aborts the whole ack on a mark-read error, unlike Go
 
-- **Где:** `WatchtowerDesktop/Sources/Database/Queries/CatchUpQueries.swift:97`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `WatchtowerDesktop/Sources/Database/Queries/CatchUpQueries.swift:97`
+- **Verification status:** ✅ confirmed
 
-Два дрейфа от Go `Pipeline.Acknowledge`. (1) Источник идемпотентности: Go перечитывает тему из БД в момент ack (`alreadyReviewed := theme.ReviewState == "reviewed"`), поэтому повторный ack всегда видит сохранённое `reviewed`. Swift читает `theme.isReviewed` из значения `CatchUpTheme`, переданного view — снимок, снятый до записи. Двойной клик на «Done» (или ack, гонящийся с CLI-side `catchup ack`) запускает два сериализованных блока `dbPool.write`, оба видят устаревший `isReviewed == false` и оба выполняют `reviewed_count = reviewed_count + 1`, проталкивая счётчик за `total_themes` — ровно тот over-count, что запрещает idempotency-клауза CATCHUP-01 (guard-тест проходит, потому что перечитывает тему между ack'ами). (2) Семантика ошибок: Go-каскад явно best-effort — ошибка каждого `markAreaRead` логируется и цикл продолжается, тема всё равно помечается reviewed. Swift `try`'ит каждый mark-read внутри write-транзакции, поэтому первый упавший ref выбрасывает из `acknowledge`, откатывает транзакцию, и тема не подтверждается вовсе — один плохой ref блокирует ack в Desktop, но не в CLI.
+Two drifts from Go's `Pipeline.Acknowledge`. (1) Source of idempotency: Go re-reads the theme from the DB at ack time (`alreadyReviewed := theme.ReviewState == "reviewed"`), so a repeated ack always sees the persisted `reviewed` state. Swift reads `theme.isReviewed` from the `CatchUpTheme` value passed in by the view — a snapshot taken before the write. A double-click on "Done" (or an ack racing with a CLI-side `catchup ack`) fires two serialized `dbPool.write` blocks, both of which see the stale `isReviewed == false` and both increment `reviewed_count = reviewed_count + 1`, pushing the counter past `total_themes` — exactly the over-count that the CATCHUP-01 idempotency clause forbids (the guard test passes because it re-reads the theme between acks). (2) Error semantics: Go's cascade is explicitly best-effort — each `markAreaRead` error is logged and the loop continues, and the theme is still marked reviewed regardless. Swift `try`s each mark-read inside the write transaction, so the first failing ref throws out of `acknowledge`, rolls back the transaction, and the theme isn't acknowledged at all — one bad ref blocks the ack in Desktop, but not in the CLI.
 
 ```swift
-// CatchUpQueries.swift:97 — устаревший параметр
+// CatchUpQueries.swift:97 — stale parameter
 let wasReviewed = theme.isReviewed
 ```
 ```go
-// pipeline.go:444-459 — перечитывание из БД + best-effort каскад
+// pipeline.go:444-459 — re-read from DB + best-effort cascade
 theme, err := p.db.GetCatchupTheme(themeID)
 alreadyReviewed := theme.ReviewState == "reviewed"
 if err := p.markAreaRead(r.Area, r.ID); err != nil { p.logf(...) } // continue
 ```
 
-- **Рекомендация:** В Swift `acknowledge` перечитывать тему из БД внутри транзакции для проверки `isReviewed` (вместо параметра-снимка) и изолировать ошибки каждого mark-read (логировать и продолжать, всё равно флипая тему в reviewed), приведя поведение к Go best-effort/идемпотентному контракту CATCHUP-01.
+- **Recommendation:** In Swift `acknowledge`, re-read the theme from the DB inside the transaction to check `isReviewed` (instead of the snapshot parameter), and isolate each mark-read error (log and continue, still flipping the theme to reviewed), bringing the behavior in line with Go's best-effort/idempotent CATCHUP-01 contract.
 
-### `inbox.max_items_per_run` определён, дефолтится и документирован, но не потребляется кодом — заявленный per-run cap не применяется
+### `inbox.max_items_per_run` is defined, defaulted, and documented, but never consumed by the code — the declared per-run cap is not applied
 
-- **Где:** `internal/config/config.go:55`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/config/config.go:55`
+- **Verification status:** ✅ confirmed
 
-`InboxConfig.MaxItemsPerRun` существует с viper-дефолтом 100 и документирован в CLAUDE.md как «inbox.max_items_per_run (100)», но repo-wide grep показывает, что единственные ссылки — тег структуры и строка `SetDefault`; `internal/inbox/pipeline.go` его никогда не читает. Пользователь, задавший `inbox.max_items_per_run: 10`, чтобы ограничить объём детекции / стоимость AI-prioritize, не получает изменения поведения; объём детекции ограничен только lookback-watermark'ом. Единственный cap в пакете — захардкоженная `MaxItemsPerAIBatch=50` (размер AI-батча, не per-run cap), и никакого `LIMIT` в inbox-пакете нет.
+`InboxConfig.MaxItemsPerRun` exists with a viper default of 100 and is documented in CLAUDE.md as "inbox.max_items_per_run (100)", but a repo-wide grep shows the only references are the struct tag and the `SetDefault` line; `internal/inbox/pipeline.go` never reads it. A user who sets `inbox.max_items_per_run: 10` to limit detection volume / AI-prioritize cost gets no behavior change; detection volume is bounded only by the lookback watermark. The only cap in the package is the hardcoded `MaxItemsPerAIBatch=50` (an AI batch size, not a per-run cap), and there's no `LIMIT` anywhere in the inbox package.
 
 ```go
 // internal/config/config.go:55
 MaxItemsPerRun int `mapstructure:"max_items_per_run"` // (default: 100)
-// grep 'MaxItemsPerRun|max_items_per_run' → только config.go:55 и :204
+// grep 'MaxItemsPerRun|max_items_per_run' → only config.go:55 and :204
 ```
 
-- **Рекомендация:** Либо применить cap в `internal/inbox/pipeline.go` (например, `LIMIT`/усечение множества кандидатов до `MaxItemsPerRun`), либо удалить ключ из конфига и CLAUDE.md, чтобы не заявлять несуществующую настройку.
+- **Recommendation:** Either apply the cap in `internal/inbox/pipeline.go` (e.g. a `LIMIT`/truncation of the candidate set to `MaxItemsPerRun`), or remove the key from the config and CLAUDE.md so a non-existent setting isn't advertised.
 
-### Дефолт `calendar.sync_days_ahead` расходится между слоями: Go-эффективный дефолт 7, комментарий Go-структуры и Desktop-фолбэк — 2, и Desktop-save молча пишет 2
+### The `calendar.sync_days_ahead` default diverges across layers: the Go effective default is 7, the Go struct comment and Desktop fallback say 2, and Desktop-save silently writes 2
 
-- **Где:** `internal/config/defaults.go:39`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/config/defaults.go:39`
+- **Verification status:** ✅ confirmed
 
-`DefaultCalendarSyncDaysAhead = 7` (используется viper-дефолтом, фолбэком `internal/calendar/sync.go:47` и `cmd/calendar.go:109`), но комментарий структуры (`config.go:82`) говорит «default: 2», CLAUDE.md говорит 2, и Desktop `ConfigService.swift` фолбэчит на 2 при отсутствии ключа. Поскольку `ConfigService.save()` безусловно пишет `calendarDict["sync_days_ahead"] = calendarSyncDaysAhead`, пользователь, в чьём конфиге ключа не было, видит «2» в Settings и, сохранив любую несвязанную настройку, молча сжимает реальное окно синхронизации daemon с 7 до 2 дней — контекст upcoming-events и meeting prep теряют дни 3–7 без единого действия пользователя с календарём.
+`DefaultCalendarSyncDaysAhead = 7` (used as the viper default, the fallback in `internal/calendar/sync.go:47`, and `cmd/calendar.go:109`), but the struct comment (`config.go:82`) says "default: 2", CLAUDE.md says 2, and Desktop's `ConfigService.swift` falls back to 2 when the key is absent. Since `ConfigService.save()` unconditionally writes `calendarDict["sync_days_ahead"] = calendarSyncDaysAhead`, a user whose config had no such key sees "2" in Settings and, upon saving any unrelated setting, silently shrinks the daemon's actual sync window from 7 to 2 days — upcoming-events and meeting-prep context loses days 3–7 without the user ever touching a calendar setting.
 
 ```
 Go:    DefaultCalendarSyncDaysAhead = 7
-Go:    SyncDaysAhead ... // days ahead to fetch (default: 2)   ← комментарий врёт
+Go:    SyncDaysAhead ... // days ahead to fetch (default: 2)   ← comment is wrong
 Swift: calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? 2
 Swift: save(): calendarDict["sync_days_ahead"] = calendarSyncDaysAhead
 ```
 
-- **Рекомендация:** Свести все слои к одному дефолту (скорее всего 7): исправить комментарий `config.go:82` и CLAUDE.md, и заменить Desktop-фолбэк на 7. Ещё лучше — не писать ключ в `save()`, если пользователь его не менял, чтобы не подменять серверный дефолт.
+- **Recommendation:** Converge all layers on a single default (most likely 7): fix the comment at `config.go:82` and CLAUDE.md, and change the Desktop fallback to 7. Even better — don't write the key in `save()` unless the user actually changed it, so the server-side default isn't silently overridden.
 
-### CLI `watchtower feedback` отвергает entity-типы (target, briefing, inbox, catchup_theme), которые разрешает DB CHECK и активно пишет Desktop
+### The CLI `watchtower feedback` command rejects entity types (target, briefing, inbox, catchup_theme) that the DB CHECK allows and Desktop actively writes
 
-- **Где:** `cmd/feedback.go:58`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/feedback.go:58`
+- **Verification status:** ✅ confirmed
 
-CHECK таблицы `feedback` (миграция 00003) разрешает `entity_type IN ('digest','track','decision','user_analysis','briefing','target','inbox','catchup_theme')`, и Desktop пишет `entityType "target"` (`TargetsViewModel.swift:440`, `TargetDetailView.swift:784`) и `"track"`/`"digest"`. Map `validTypes` в CLI принимает лишь digest/track/decision/user_analysis, поэтому `watchtower feedback bad target 12` падает с «invalid type», хотя тот же рейтинг записывается из Desktop и схема его поддерживает — одно и то же действие проходит в одном клиенте и отвергается в другом.
+The `feedback` table's CHECK constraint (migration 00003) allows `entity_type IN ('digest','track','decision','user_analysis','briefing','target','inbox','catchup_theme')`, and Desktop writes `entityType "target"` (`TargetsViewModel.swift:440`, `TargetDetailView.swift:784`) and `"track"`/`"digest"`. The `validTypes` map in the CLI only accepts digest/track/decision/user_analysis, so `watchtower feedback bad target 12` fails with "invalid type," even though the same rating is written by Desktop and supported by the schema — the same action passes on one client and is rejected on the other.
 
 ```go
 // cmd/feedback.go:58
@@ -218,19 +218,19 @@ validTypes := map[string]bool{"digest": true, "track": true, "decision": true, "
 // vs CHECK(entity_type IN ('digest','track','decision','user_analysis','briefing','target','inbox','catchup_theme'))
 ```
 
-- **Рекомендация:** Расширить `validTypes` в `cmd/feedback.go` до полного набора, разрешённого CHECK-ом (`briefing`, `target`, `inbox`, `catchup_theme`), приведя CLI к паритету с DB-схемой и Desktop.
+- **Recommendation:** Extend `validTypes` in `cmd/feedback.go` to the full set allowed by the CHECK (`briefing`, `target`, `inbox`, `catchup_theme`), bringing the CLI to parity with the DB schema and Desktop.
 
-### Ключ `digest.action_items_interval` / `digest.tracks_interval` разбирается, дефолтится, алиасится и allow-листится, но не потребляется
+### The `digest.action_items_interval` / `digest.tracks_interval` key is parsed, defaulted, aliased, and allow-listed, but never consumed
 
-- **Где:** `internal/config/config.go:41`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/config/config.go:41`
+- **Verification status:** ✅ confirmed
 
-`DigestConfig.TracksInterval` анмаршалится из `digest.action_items_interval`, получает дефолт 1h, алиасится (`digest.tracks_interval`), и обе записи есть в `cmd/config.go` `knownConfigKeys`, так что `config set` принимает их как распознанные. Repo-wide, никакой код вне `internal/config` не читает `TracksInterval` — tracks-пайплайн запускается каждый цикл daemon независимо (gate идёт через `lastTracksStartedAt()`, не через этот конфиг). Установка интервала в любое значение ничего не меняет; ключ мёртв, но подаётся пользователям как распознаваемая настройка.
+`DigestConfig.TracksInterval` is unmarshaled from `digest.action_items_interval`, gets a default of 1h, has an alias (`digest.tracks_interval`), and both entries are in `cmd/config.go`'s `knownConfigKeys`, so `config set` accepts them as recognized. Repo-wide, no code outside `internal/config` reads `TracksInterval` — the tracks pipeline runs every daemon cycle independently (gated by `lastTracksStartedAt()`, not by this config value). Setting the interval to any value changes nothing; the key is dead, but it's presented to users as a working setting.
 
 ```go
 // internal/config/config.go:41
 TracksInterval time.Duration `mapstructure:"action_items_interval"`
-// grep 'TracksInterval' → только internal/config/{config.go,defaults.go}
+// grep 'TracksInterval' → only internal/config/{config.go,defaults.go}
 ```
 
-- **Рекомендация:** Либо реально применять интервал в gate-логике tracks-пайплайна, либо удалить поле, дефолт, алиас и обе записи `knownConfigKeys`, чтобы `config set` не выдавал мёртвый ключ за рабочий.
+- **Recommendation:** Either actually apply the interval in the tracks pipeline's gate logic, or remove the field, default, alias, and both `knownConfigKeys` entries, so `config set` doesn't pass off a dead key as a working one.

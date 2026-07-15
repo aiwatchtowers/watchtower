@@ -13,6 +13,11 @@ struct SidebarView: View {
     /// Held in @State so hide/show re-renders; persisted to UserDefaults.
     @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
 
+    /// Token-file check for the "connect" badge on the Calendar item.
+    /// Re-checked on every selection change (cheap file stat) so the badge
+    /// clears right after the user connects from any screen.
+    @State private var googleAuth = GoogleAuthService()
+
     private static func storageKey(_ section: SidebarSection) -> String {
         "sidebar.section.\(section.id).collapsed"
     }
@@ -137,6 +142,8 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { googleAuth.checkStatus() }
+        .onChange(of: selection) { _, _ in googleAuth.checkStatus() }
     }
 
     // MARK: - Main Sidebar Button
@@ -175,6 +182,13 @@ struct SidebarView: View {
                 Circle()
                     .fill(Color.red)
                     .frame(width: 6, height: 6)
+            }
+        } else if item == .calendar {
+            if !googleAuth.isConnected {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .help("Google is not connected — open Calendar to connect it")
             }
         } else {
             let count = self.count(for: item)

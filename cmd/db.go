@@ -25,7 +25,9 @@ var dbMigrateCmd = &cobra.Command{
 
 		// Seed any new prompt templates added since last run
 		store := prompts.New(database, nil)
-		_ = store.Seed()
+		if err := store.Seed(); err != nil {
+			return fmt.Errorf("seeding prompt templates: %w", err)
+		}
 
 		fmt.Println("Database migrations applied successfully.")
 		return nil
