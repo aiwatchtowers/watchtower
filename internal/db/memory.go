@@ -213,6 +213,21 @@ func (db *DB) BumpMemoryAccess(id string) error {
 	return nil
 }
 
+// MessageExists reports whether a message row exists for (channelID, ts) —
+// the MEM-01 write-time check that no unvalidated provenance ref ever
+// reaches the memory vault.
+func (db *DB) MessageExists(channelID, ts string) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM messages WHERE channel_id = ? AND ts = ?`, channelID, ts).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking message %s/%s: %w", channelID, ts, err)
+	}
+	return true, nil
+}
+
 // MemoryWatermark returns the unix ts of the last raw message fully processed
 // by the episode extractor (MEM-04 freeze discipline, same shape as the inbox
 // watermark accessors).
