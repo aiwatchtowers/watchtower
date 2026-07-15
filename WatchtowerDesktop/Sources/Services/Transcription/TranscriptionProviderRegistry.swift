@@ -4,7 +4,7 @@ import Foundation
 enum TranscriptionProviderRegistry {
     static let fallbackProviderID = "whisperkit"
 
-    static var all: [any TranscriptionProvider] = [WhisperKitProvider(), ParakeetProvider(), Qwen3Provider()]
+    static var all: [any TranscriptionProvider] = [WhisperKitProvider(), ParakeetProvider(), Qwen3Provider(), AppleProvider()]
 
     static func provider(id: String) -> (any TranscriptionProvider)? {
         all.first { type(of: $0).id == id }
