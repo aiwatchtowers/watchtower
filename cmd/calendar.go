@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/gmail"
 
 	"github.com/spf13/cobra"
 )
@@ -81,6 +82,7 @@ func init() {
 	calendarEventsCmd.Flags().BoolVar(&calendarFlagJSON, "json", false, "output as JSON")
 
 	calendarLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
+	calendarLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 }
 
 func runCalendar(cmd *cobra.Command, _ []string) error {
@@ -149,9 +151,10 @@ func runCalendarLogin(cmd *cobra.Command, _ []string) error {
 	googleCfg := resolveGoogleOAuthConfig()
 
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
 	out := cmd.OutOrStdout()
 
-	token, err := calendar.Login(cmd.Context(), googleCfg, out, calendar.LoginOptions{SkipBrowserOpen: noOpen})
+	token, err := calendar.Login(cmd.Context(), googleCfg, out, calendar.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
 	if err != nil {
 		return fmt.Errorf("google calendar login: %w", err)
 	}
@@ -187,6 +190,23 @@ func runCalendarLogout(cmd *cobra.Command, _ []string) error {
 	}
 
 	store := calendar.NewTokenStore(cfg.WorkspaceDir())
+
+	// Revoke the grant at Google — otherwise the account keeps it and the
+	// next consent screen says "already has some access" instead of listing
+	// permissions. Skip when the Gmail token shares this grant (combined
+	// `google login`): revocation kills the whole grant, not one scope.
+	if token, loadErr := store.Load(); loadErr == nil && token.RefreshToken != "" {
+		sharedWithGmail := false
+		if gmailToken, gErr := gmail.NewTokenStore(cfg.WorkspaceDir()).Load(); gErr == nil {
+			sharedWithGmail = gmailToken.RefreshToken == token.RefreshToken
+		}
+		if sharedWithGmail {
+			fmt.Fprintln(cmd.OutOrStdout(), "Note: Gmail shares this Google grant — not revoking it at Google. Disconnect Gmail to revoke fully.")
+		} else if revokeErr := calendar.Revoke(cmd.Context(), token.RefreshToken); revokeErr != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "Warning: could not revoke the grant at Google: %v\n", revokeErr)
+		}
+	}
+
 	if err := store.Delete(); err != nil {
 		return fmt.Errorf("deleting token: %w", err)
 	}

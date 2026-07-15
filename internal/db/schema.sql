@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS workspace (
     style_profile TEXT NOT NULL DEFAULT '',  -- AI-distilled, user-editable communication style (see 00013)
     style_profile_updated_at TEXT NOT NULL DEFAULT '',
     compose_last_run_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last situation composer run
+    gmail_last_internal_date REAL NOT NULL DEFAULT 0,  -- Unix timestamp watermark for Gmail sync (see 00016)
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
 );
 
@@ -457,7 +458,8 @@ CREATE TABLE IF NOT EXISTS inbox_items (
         'calendar_invite','calendar_time_change','calendar_cancelled',
         'decision_made','briefing_ready',
         'target_due',
-        'stream'
+        'stream',
+        'email_received','email_cc'
     )),
     snippet         TEXT NOT NULL DEFAULT '',
     context         TEXT NOT NULL DEFAULT '',
@@ -1014,6 +1016,36 @@ CREATE TABLE IF NOT EXISTS calendar_auth_state (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 INSERT OR IGNORE INTO calendar_auth_state (id, status, error) VALUES (1, 'ok', '');
+
+-- Gmail messages (synced inbox items from Gmail)
+CREATE TABLE IF NOT EXISTS gmail_messages (
+    id             TEXT PRIMARY KEY,              -- Gmail message ID
+    thread_id      TEXT NOT NULL DEFAULT '',
+    from_email     TEXT NOT NULL DEFAULT '',
+    from_name      TEXT NOT NULL DEFAULT '',
+    to_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (To)
+    cc_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (Cc)
+    subject        TEXT NOT NULL DEFAULT '',
+    snippet        TEXT NOT NULL DEFAULT '',      -- Gmail-provided preview (~200 chars)
+    body_text      TEXT NOT NULL DEFAULT '',      -- full plain-text body (truncated at sync)
+    internal_date  TEXT NOT NULL DEFAULT '',      -- ISO8601 message time
+    labels_json    TEXT NOT NULL DEFAULT '[]',    -- JSON array of Gmail label IDs
+    is_unread      INTEGER NOT NULL DEFAULT 0,
+    permalink      TEXT NOT NULL DEFAULT '',
+    synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
+
+-- Gmail auth state (tracks whether the Gmail OAuth token is still valid)
+CREATE TABLE IF NOT EXISTS gmail_auth_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    status TEXT NOT NULL DEFAULT 'ok',
+    error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+INSERT OR IGNORE INTO gmail_auth_state (id, status, error) VALUES (1, 'ok', '');
 
 -- Jira releases (fix versions)
 CREATE TABLE IF NOT EXISTS jira_releases (

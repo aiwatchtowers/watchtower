@@ -27,7 +27,7 @@ upgrades the owner asked for:
 
 1. **Comment feedback** — the Catch-Up "comment to teach the system" field
    next to 👍/👎, feeding the learning pipeline.
-2. **Source links everywhere** ("ссылки на первоисточник") — every situation
+2. **Source links everywhere** ("links to the original source") — every situation
    must link back to its origins: Slack deep links on every member signal, and
    navigation rows to the linked Target/Track when the situation has one.
 

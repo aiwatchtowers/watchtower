@@ -96,6 +96,9 @@ final class TargetModelTests: XCTestCase {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
+        // Match the model's UTC-day semantics (todayUTCDayString) — a local-zone
+        // formatter makes this test flaky between local and UTC midnight.
+        fmt.timeZone = TimeZone(identifier: "UTC")
         try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: yesterday)) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertTrue(target.isOverdue)
@@ -107,6 +110,7 @@ final class TargetModelTests: XCTestCase {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
         try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: tomorrow)) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertFalse(target.isOverdue)
@@ -118,6 +122,7 @@ final class TargetModelTests: XCTestCase {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
         try db.write { try TestDatabase.insertTarget($0, status: "done", dueDate: fmt.string(from: yesterday)) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertFalse(target.isOverdue)
@@ -137,6 +142,7 @@ final class TargetModelTests: XCTestCase {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
         try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: Date())) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertTrue(target.isDueToday)

@@ -81,6 +81,9 @@ struct WatchtowerApp: App {
                         NSApplication.shared.activate(ignoringOtherApps: true)
                     }
                 }
+                // Claim external URL events for the EXISTING window — without
+                // this, WindowGroup spawns a brand-new window per open-URL.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .defaultSize(width: 1200, height: 800)
 

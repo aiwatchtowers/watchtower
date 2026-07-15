@@ -19,6 +19,10 @@ import (
 // cheap model tier (see internal/digest/models.go and internal/codex/models.go).
 const extractSource = "memory.extract_episodes"
 
+// extractBatchSource is the WithSource tag for the multi-channel batched
+// extractor call (see extractBatch).
+const extractBatchSource = "memory.extract_episodes_batch"
+
 // seedWindowDays is the activity lookback for mechanical entity seeding
 // (people/channels active in the last 30 days, per the design spec).
 const seedWindowDays = 30
@@ -282,30 +286,48 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 	stats.Windows = len(windows)
 	done := make([]bool, len(windows))
 	current := wm
-	for i := range windows {
+
+	maxCh := p.cfg.BatchMaxChannels
+	if maxCh <= 0 {
+		maxCh = 20
+	}
+	maxBatchMsg := p.cfg.BatchMaxMessages
+	if maxBatchMsg <= 0 {
+		maxBatchMsg = 1500
+	}
+	batches := groupWindowsIntoBatches(windows, maxCh, maxBatchMsg)
+
+	for bi, idxs := range batches {
 		if ctx.Err() != nil {
-			p.logf("memory: extraction interrupted, %d windows left for the next run", len(windows)-i)
+			left := 0
+			for _, b := range batches[bi:] {
+				left += len(b)
+			}
+			p.logf("memory: extraction interrupted, %d windows left for the next run", left)
 			break
 		}
-		w := windows[i]
 		start := time.Now()
-		episodes, rejected, malformed, usage, werr := p.extractWindow(ctx, runID, w)
+		episodes, rejected, malformed, usage, werr := p.extractBatch(ctx, runID, windows, idxs)
 		acc.add(usage)
 		stats.Malformed += malformed
 		status := "done"
 		if werr != nil {
-			// Window isolation: the failure freezes the watermark at the last
-			// safe point, but the run continues with the next channel. This
-			// window's messages stay above the watermark and are re-extracted
-			// next run.
+			// Batch isolation: a failure freezes the watermark at the last
+			// safe point for every channel in this batch (coarser than v1's
+			// per-channel isolation — a batch groups several quiet channels
+			// into one AI call, so one bad reply re-extracts all of them next
+			// run, same "isolated, catch-up-style" spirit as MEM-04, at
+			// batch instead of per-channel granularity).
 			status = "error"
-			stats.WindowsFailed++
-			p.logf("memory: extract #%s: %v", w.ChannelName, werr)
+			stats.WindowsFailed += len(idxs)
+			p.logf("memory: extract batch [%s]: %v", batchChannelNames(windows, idxs), werr)
 		} else {
-			done[i] = true
+			for _, i := range idxs {
+				done[i] = true
+			}
 			stats.Episodes += episodes
 			stats.RefsRejected += rejected
-			// MEM-04: the watermark moves only after this window's vault
+			// MEM-04: the watermark moves only after this batch's vault
 			// commit succeeded, and never past a message that belongs to a
 			// failed or still-pending window.
 			if safe, ok := safeWatermark(windows, done); ok && safe > current {
@@ -321,12 +343,22 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 			if usage != nil {
 				u = *usage
 			}
-			pFrom, pTo := w.tsUnix[0], w.tsUnix[len(w.tsUnix)-1]
+			// Token usage is recorded once per batch (the API call is
+			// per-batch, not per-channel — splitting it across channels would
+			// be a fabricated attribution). One pipeline_steps row per batch;
+			// channel_id is only meaningful for a singleton batch (the common
+			// case when batching is disabled or a channel is too busy to
+			// share a call) and stays empty for a genuine multi-channel batch.
+			pFrom, pTo := batchPeriod(windows, idxs)
+			var channelID string
+			if len(idxs) == 1 {
+				channelID = windows[idxs[0]].ChannelID
+			}
 			if err := p.db.InsertPipelineStep(db.PipelineStep{
-				RunID: runID, Step: i + 1, Total: len(windows), Status: status,
-				ChannelID: w.ChannelID, ChannelName: w.ChannelName,
+				RunID: runID, Step: bi + 1, Total: len(batches), Status: status,
+				ChannelID: channelID, ChannelName: batchChannelNames(windows, idxs),
 				InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalAPITokens: u.TotalAPITokens,
-				MessageCount: len(w.Messages), PeriodFrom: &pFrom, PeriodTo: &pTo,
+				MessageCount: batchMessageCount(windows, idxs), PeriodFrom: &pFrom, PeriodTo: &pTo,
 				DurationSeconds: time.Since(start).Seconds(),
 			}); err != nil {
 				p.logf("memory: record pipeline step: %v", err)
@@ -334,6 +366,84 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 		}
 	}
 	return nil
+}
+
+// groupWindowsIntoBatches groups per-channel windows (already built by
+// buildWindows) into batches of up to maxChannels windows / maxMessages total
+// messages, so quiet channels/DMs share one AI call instead of each paying
+// for its own round-trip (mirrors internal/digest's groupIntoBatches). A
+// window whose own message count already meets or exceeds maxMessages still
+// gets a batch of its own — the cap only stops MORE windows from joining it.
+// Returns index slices into windows, preserving windows' existing order.
+func groupWindowsIntoBatches(windows []runWindow, maxChannels, maxMessages int) [][]int {
+	if len(windows) == 0 {
+		return nil
+	}
+	if maxChannels <= 0 {
+		all := make([]int, len(windows))
+		for i := range windows {
+			all[i] = i
+		}
+		return [][]int{all}
+	}
+	var batches [][]int
+	var current []int
+	currentMsgs := 0
+	for i, w := range windows {
+		n := len(w.Messages)
+		if len(current) > 0 && (len(current) >= maxChannels || (maxMessages > 0 && currentMsgs+n > maxMessages)) {
+			batches = append(batches, current)
+			current = nil
+			currentMsgs = 0
+		}
+		current = append(current, i)
+		currentMsgs += n
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}
+
+// batchChannelNames renders a batch's channel names for logging and the
+// pipeline_steps channel_name column, capped so a large batch cannot blow up
+// a log line or DB column.
+func batchChannelNames(windows []runWindow, idxs []int) string {
+	names := make([]string, len(idxs))
+	for i, idx := range idxs {
+		names[i] = windows[idx].ChannelName
+	}
+	joined := strings.Join(names, ", ")
+	const maxLen = 200
+	if r := []rune(joined); len(r) > maxLen {
+		joined = string(r[:maxLen]) + "…"
+	}
+	return joined
+}
+
+// batchMessageCount sums the message count across a batch's windows.
+func batchMessageCount(windows []runWindow, idxs []int) int {
+	n := 0
+	for _, idx := range idxs {
+		n += len(windows[idx].Messages)
+	}
+	return n
+}
+
+// batchPeriod returns the min/max ts across a batch's windows for the
+// pipeline_steps period_from/period_to columns.
+func batchPeriod(windows []runWindow, idxs []int) (from, to float64) {
+	from, to = math.Inf(1), math.Inf(-1)
+	for _, idx := range idxs {
+		ts := windows[idx].tsUnix
+		if ts[0] < from {
+			from = ts[0]
+		}
+		if last := ts[len(ts)-1]; last > to {
+			to = last
+		}
+	}
+	return from, to
 }
 
 // buildWindows groups the (globally ts-ordered) messages into per-channel
@@ -404,14 +514,33 @@ func safeWatermark(windows []runWindow, done []bool) (ts float64, ok bool) {
 	return best, ok
 }
 
-// extractWindow runs the memory.extract_episodes call for one channel window
-// and commits the resulting episode nodes (plus back-links on hinted entity
-// pages) as one vault commit. Returns episodes written, MEM-01-rejected ref
-// count, and shape-degenerate (zero-ref) episode count. Any error means the
-// window was NOT committed.
-func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) (episodes, rejected, malformed int, usage *digest.Usage, err error) {
-	system, user := buildExtractPrompt(p.getPrompt(prompts.MemoryExtractEpisodes), p.Language, w.channelWindow, p.cfg.MaxEpisodesPerWindow)
-	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, extractSource), system, user, "")
+// extractBatch runs the extraction call for a batch of one or more channel
+// windows and commits the resulting episode nodes (plus back-links on hinted
+// entity pages) as one vault commit. A batch of exactly one window uses the
+// single-channel prompt/template (memory.extract_episodes, unchanged from
+// v1); a batch of several quiet channels uses the multi-channel variant
+// (memory.extract_episodes_batch — digest-pipeline precedent, see
+// buildBatchExtractPrompt). Both share the same JSON schema — refs already
+// carry channel_id per MEM-01, so no schema change was needed for batching.
+// Returns episodes written, MEM-01-rejected ref count, and shape-degenerate
+// (zero-ref) episode count. Any error means NONE of the batch's windows were
+// committed (batch isolation, see runExtract).
+func (p *Pipeline) extractBatch(ctx context.Context, runID int64, windows []runWindow, idxs []int) (episodes, rejected, malformed int, usage *digest.Usage, err error) {
+	label := batchChannelNames(windows, idxs)
+	var system, user string
+	var raw string
+	if len(idxs) == 1 {
+		system, user = buildExtractPrompt(p.getPrompt(prompts.MemoryExtractEpisodes), p.Language, windows[idxs[0]].channelWindow, p.cfg.MaxEpisodesPerWindow)
+		raw, usage, _, err = p.generator.Generate(digest.WithSource(ctx, extractSource), system, user, "")
+	} else {
+		cws := make([]channelWindow, len(idxs))
+		for i, idx := range idxs {
+			cws[i] = windows[idx].channelWindow
+		}
+		maxEpisodes := p.cfg.MaxEpisodesPerWindow * len(idxs)
+		system, user = buildBatchExtractPrompt(p.getPrompt(prompts.MemoryExtractEpisodesBatch), p.Language, cws, maxEpisodes)
+		raw, usage, _, err = p.generator.Generate(digest.WithSource(ctx, extractBatchSource), system, user, "")
+	}
 	if err != nil {
 		return 0, 0, 0, usage, fmt.Errorf("generate: %w", err)
 	}
@@ -419,33 +548,66 @@ func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) 
 	if err != nil {
 		return 0, 0, 0, usage, err
 	}
-	if p.cfg.MaxEpisodesPerWindow > 0 && len(eps) > p.cfg.MaxEpisodesPerWindow {
-		eps = eps[:p.cfg.MaxEpisodesPerWindow]
+	maxTotal := p.cfg.MaxEpisodesPerWindow * len(idxs)
+	if maxTotal > 0 && len(eps) > maxTotal {
+		eps = eps[:maxTotal]
 	}
-	// Success must key off affirmative shape: a reply whose episodes ALL
-	// lack refs is a schema-degenerate answer (misnamed key, wrong nesting),
-	// not routine chatter — fail the window so the watermark freezes exactly
-	// like on an AI error. A genuinely empty [] stays a clean no-episode
-	// window.
+	// Success must key off affirmative shape: ANY schema-degenerate episode
+	// (zero refs, or refs spanning more than one channel — see splitMalformed)
+	// fails the WHOLE batch, not just the episodes affected. A batch groups
+	// several channels behind one call, so a single degenerate episode is the
+	// only signal available that the reply drifted — there is no way to tell
+	// "this channel's share of the reply is untrustworthy" from "the others
+	// are fine" without risking a channel's degenerate output being silently
+	// dropped while its neighbors' episodes commit and its watermark still
+	// advances. Failing the batch trades a coarser retry (the whole batch,
+	// not just the bad channel) for zero silent data loss — the same
+	// preference MEM-04 already makes for a single-channel window. A
+	// genuinely empty [] stays a clean no-episode batch.
 	valid, malformed := splitMalformed(eps)
-	if malformed > 0 && len(valid) == 0 {
-		return 0, 0, malformed, usage, fmt.Errorf("memory: extract returned %d episode(s), all without refs — schema-degenerate reply", malformed)
+	if malformed > 0 {
+		return 0, 0, malformed, usage, fmt.Errorf("memory: extract returned %d episode(s) with zero or cross-channel refs — schema-degenerate reply", malformed)
 	}
 	kept, rejected, err := validateRefs(p.checkMsg, valid)
 	if err != nil {
 		// Lookup failure, not an invalid ref: the check could not run, so
-		// the window fails and is re-extracted next run (MEM-01/MEM-04).
+		// the batch fails and is re-extracted next run (MEM-01/MEM-04).
 		return 0, 0, malformed, usage, err
 	}
 	if rejected > 0 {
-		p.logf("memory: extract #%s: refs_rejected=%d (MEM-01)", w.ChannelName, rejected)
+		p.logf("memory: extract [%s]: refs_rejected=%d (MEM-01)", label, rejected)
 	}
 	if len(kept) == 0 {
-		return 0, rejected, malformed, usage, nil // routine chatter — still a fully processed window
+		return 0, rejected, malformed, usage, nil // routine chatter — still a fully processed batch
 	}
 
-	var nodes []Node
-	var ids []string
+	nodes, ids := p.buildEpisodeNodes(label, kept)
+
+	msg := CommitMsg{
+		Op:      "extract",
+		Summary: fmt.Sprintf("%d episodes from [%s]", len(kept), label),
+		Cause:   fmt.Sprintf("run:%d", runID),
+		NodeIDs: ids,
+	}
+	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
+		return 0, rejected, malformed, usage, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, n, now); err != nil {
+			// The vault commit stands; the index is derived and the next
+			// Reconcile repairs it, so this does not fail the batch.
+			p.logf("memory: index %s after extract: %v", n.ID, err)
+		}
+	}
+	return len(kept), rejected, malformed, usage, nil
+}
+
+// buildEpisodeNodes turns kept episodes into new episode nodes plus updated
+// entity pages carrying back-links for resolved entity hints (aliases resolved
+// via the index; unresolvable hints are dropped, never invented). label is
+// the batch's channel name(s), used only for the unresolved-hint log line.
+func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nodes []Node, ids []string) {
 	entityIdx := make(map[string]int) // entity node ID → index in nodes
 	for _, ep := range kept {
 		title := strings.Join(strings.Fields(ep.Title), " ")
@@ -463,13 +625,11 @@ func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) 
 		nodes = append(nodes, n)
 		ids = append(ids, n.ID)
 
-		// Link the episode from each hinted entity page (aliases resolved via
-		// the index; unresolvable hints are dropped, never invented).
 		link := "- [[" + n.ID + "|" + linkLabel(title) + "]]\n"
 		for _, hint := range ep.EntityHints {
 			en, rerr := Resolve(p.vault, p.db, hint)
 			if rerr != nil {
-				p.logf("memory: extract #%s: entity hint %q unresolved", w.ChannelName, hint)
+				p.logf("memory: extract [%s]: entity hint %q unresolved", label, hint)
 				continue
 			}
 			if en.Type != "entity" || en.Status != "active" {
@@ -485,25 +645,7 @@ func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) 
 			nodes[idx].Body = appendToLinks(nodes[idx].Body, link)
 		}
 	}
-
-	msg := CommitMsg{
-		Op:      "extract",
-		Summary: fmt.Sprintf("%d episodes from #%s", len(kept), w.ChannelName),
-		Cause:   fmt.Sprintf("run:%d", runID),
-		NodeIDs: ids,
-	}
-	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
-		return 0, rejected, malformed, usage, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, n := range nodes {
-		if err := upsertIndexNode(p.db, n, now); err != nil {
-			// The vault commit stands; the index is derived and the next
-			// Reconcile repairs it, so this does not fail the window.
-			p.logf("memory: index %s after extract: %v", n.ID, err)
-		}
-	}
-	return len(kept), rejected, malformed, usage, nil
+	return nodes, ids
 }
 
 // episodeBody renders the v1 episode template for an extracted episode:

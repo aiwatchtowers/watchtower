@@ -19,6 +19,7 @@ func TestModelForSource(t *testing.T) {
 		{"people.batch", ModelLightweight},
 		{"catchup.peel", ModelLightweight},
 		{"memory.extract_episodes", ModelLightweight},
+		{"memory.extract_episodes_batch", ModelLightweight},
 		{"digest.channel", ModelDefault},
 		{"digest.daily", ModelDefault},
 		{"tracks.create", ModelDefault},

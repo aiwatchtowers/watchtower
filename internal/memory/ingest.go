@@ -70,65 +70,16 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 			return stats, fmt.Errorf("memory: ingest lookup %q: %w", alias, err)
 		}
 
+		var n *Node
 		if notIngested {
-			// Only open situations start a node; one already closed before it
-			// was ever ingested predates memory and is skipped for good.
-			if s.status != "open" {
-				continue
-			}
-			refs, err := situationProvenance(database, checker, s.id, logf)
-			if err != nil {
-				logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
-				continue
-			}
-			n := Node{
-				ID:      NewID("episode"),
-				Type:    "episode",
-				Tier:    "short",
-				Status:  "active",
-				Title:   s.title,
-				Aliases: []string{alias},
-				Body:    situationBody(s, refs),
-			}
-			toWrite = append(toWrite, n)
-			ids = append(ids, n.ID)
-			stats.Created++
-			continue
-		}
-
-		n, err := v.ReadNode(nodeID)
-		if err != nil {
-			// A corrupted/quarantined episode file must not brick the whole
-			// ingest pass (F4 spirit): skip this situation, keep going. The
-			// alias row is preserved by Reconcile's quarantine, so the
-			// situation is retried once the owner repairs the file.
-			logf("memory: ingest situation %d: read %s: %v — skipped this run", s.id, nodeID, err)
-			continue
-		}
-		if n.Status != "active" {
-			continue // already finalized — terminal, untouched
-		}
-		refs, err := situationProvenance(database, checker, s.id, logf)
-		if err != nil {
-			logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
-			continue
-		}
-		body := situationBody(s, refs)
-		if s.status == "open" {
-			if body == n.Body {
-				continue // unchanged — untouched
-			}
-			n.Title = s.title
-			n.Body = body
-			stats.Updated++
+			n = ingestNewSituation(database, checker, logf, s, alias, &stats)
 		} else {
-			n.Status = "closed"
-			n.Tier = "long"
-			n.Title = s.title
-			n.Body = body
-			stats.Finalized++
+			n = ingestExistingSituation(v, database, checker, logf, s, nodeID, &stats)
 		}
-		toWrite = append(toWrite, n)
+		if n == nil {
+			continue
+		}
+		toWrite = append(toWrite, *n)
 		ids = append(ids, n.ID)
 	}
 
@@ -151,6 +102,69 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 		}
 	}
 	return stats, nil
+}
+
+// ingestNewSituation builds the episode node for a situation seen for the
+// first time, or nil when it is skipped. Only open situations start a node;
+// one already closed before it was ever ingested predates memory and is
+// skipped for good.
+func ingestNewSituation(database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, alias string, stats *IngestStats) *Node {
+	if s.status != "open" {
+		return nil
+	}
+	refs, err := situationProvenance(database, checker, s.id, logf)
+	if err != nil {
+		logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
+		return nil
+	}
+	stats.Created++
+	return &Node{
+		ID:      NewID("episode"),
+		Type:    "episode",
+		Tier:    "short",
+		Status:  "active",
+		Title:   s.title,
+		Aliases: []string{alias},
+		Body:    situationBody(s, refs),
+	}
+}
+
+// ingestExistingSituation refreshes or finalizes the already-ingested node
+// for a situation, or returns nil when it is untouched this run.
+func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, nodeID string, stats *IngestStats) *Node {
+	n, err := v.ReadNode(nodeID)
+	if err != nil {
+		// A corrupted/quarantined episode file must not brick the whole
+		// ingest pass (F4 spirit): skip this situation, keep going. The
+		// alias row is preserved by Reconcile's quarantine, so the
+		// situation is retried once the owner repairs the file.
+		logf("memory: ingest situation %d: read %s: %v — skipped this run", s.id, nodeID, err)
+		return nil
+	}
+	if n.Status != "active" {
+		return nil // already finalized — terminal, untouched
+	}
+	refs, err := situationProvenance(database, checker, s.id, logf)
+	if err != nil {
+		logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
+		return nil
+	}
+	body := situationBody(s, refs)
+	if s.status == "open" {
+		if body == n.Body {
+			return nil // unchanged — untouched
+		}
+		n.Title = s.title
+		n.Body = body
+		stats.Updated++
+	} else {
+		n.Status = "closed"
+		n.Tier = "long"
+		n.Title = s.title
+		n.Body = body
+		stats.Finalized++
+	}
+	return &n
 }
 
 // listIngestSituations reads the situations relevant to ingest: open ones

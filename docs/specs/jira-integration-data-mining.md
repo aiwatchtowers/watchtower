@@ -3,7 +3,7 @@
 ## Problem
 
 Jira is an extremely flexible system. Each team has:
-- **Its own statuses** — "To Do / In Progress / Done" or "Backlog / Analysis / Dev / Code Review / QA / Staging / Released" or even "New / Открыта / В работе / Тестирование / Готово"
+- **Its own statuses** — "To Do / In Progress / Done" or "Backlog / Analysis / Dev / Code Review / QA / Staging / Released" or even "New / Open / In Progress / Testing / Done"
 - **Its own boards** — a single user can have 5 boards, Scrum and Kanban mixed together
 - **Its own workflows** — transitions between statuses are unique per project
 - **Its own custom fields** — Story Points can be called "Story Points", "SP", "Estimate", or be a custom field `customfield_10016`
@@ -19,16 +19,16 @@ Watchtower cannot hardcode any of these elements. A **discover → normalize →
 
 ```
 Team A:             Team B:             Team C:
-To Do               Backlog             Новая
-In Progress         Analysis            В работе  
-In Review           Development         На ревью
-Done                Code Review         Тестирование
-                    QA                  Готово
-                    Staging             Релиз
+To Do               Backlog             New
+In Progress         Analysis            In Progress
+In Review           Development         In Review
+Done                Code Review         Testing
+                    QA                  Done
+                    Staging             Release
                     Released
 ```
 
-Watchtower cannot know that "Code Review" in Team B = "In Review" in Team A = "На ревью" in Team C.
+Watchtower cannot know that "Code Review" in Team B = "In Review" in Team A = "In Review" in Team C.
 
 ### Solution: Jira Status Categories
 
@@ -53,7 +53,7 @@ GET /rest/api/3/issue/PROJ-123
 ### Watchtower Strategy
 
 **Store both layers:**
-- `status` = original status ("Code Review", "На ревью", "QA") — for display to the user
+- `status` = original status ("Code Review", "In Review", "QA") — for display to the user
 - `status_category` = normalized category (`todo` / `in_progress` / `done`) — for logic
 
 **Watchtower logic works ONLY on status_category:**
@@ -269,7 +269,7 @@ Prompt for Briefing:
    Issues in progress: 12 (5 dev, 4 review, 3 QA)
    Stale: PROJ-142 (Code Review, 5 days, threshold 2 days)
    Iteration: 3 days left, 60% done, avg suggests 75% at end
-   Workload: Пётр 28SP, Аня 15SP, Дима 5SP
+   Workload: Petr 28SP, Anya 15SP, Dima 5SP
    
    Generate an Attention section."
 ```
@@ -441,7 +441,7 @@ Watchtower **does not** try to understand all custom fields. Strategy:
 ```
 Team A: Story, Task, Bug, Sub-task
 Team B: Story, Bug, Improvement, Technical Debt, Spike, Sub-task
-Team C: Задача, Баг, Подзадача, Эпик
+Team C: Task, Bug, Subtask, Epic
 ```
 
 ### Solution: Issue Type Scheme
@@ -461,7 +461,7 @@ Jira API returns for each type:
 |---------------------|--------------------|---------| 
 | `1` (Epic) | `epic` | Epic |
 | `0` (Standard) | `standard` | Story, Task, Bug, Improvement, Technical Debt, Spike |
-| `-1` (Subtask) | `subtask` | Sub-task, Подзадача |
+| `-1` (Subtask) | `subtask` | Sub-task, Subtask |
 
 **Additionally — Bug detection:**
 - `issueType.name` contains "bug" (case-insensitive) → `is_bug = true`
@@ -569,11 +569,11 @@ Phase 1: Email match (high accuracy)
   If email is hidden → fallback
 
 Phase 2: Display name match (medium accuracy)  
-  Jira: assignee.displayName = "Пётр Иванов"
-  Slack: users.real_name = "Пётр Иванов" OR users.display_name
+  Jira: assignee.displayName = "Petr Ivanov"
+  Slack: users.real_name = "Petr Ivanov" OR users.display_name
   Match: case-insensitive, trim whitespace
   
-  Problem: "Peter Ivanov" vs "Пётр Иванов" (different languages)
+  Problem: "Peter Ivanov" vs "Petr Ivanov" (different languages)
   Solution: fuzzy match with threshold >0.85 similarity → candidate,
   but save match_confidence for filtering
 
@@ -589,7 +589,7 @@ Phase 4: Unresolved
   If no method worked:
   → slack_user_id = null
   → Issue is visible but not linked to a Slack profile
-  → In Briefing: "PROJ-123 (assignee: Пётр Иванов, Slack profile not linked)"
+  → In Briefing: "PROJ-123 (assignee: Petr Ivanov, Slack profile not linked)"
 ```
 
 ### User Map Cache
@@ -599,7 +599,7 @@ jira_user_map:
   jira_account_id: "5f1234abc"     # PK
   email: "peter@company.com"        # from Jira
   slack_user_id: "U0123SLACK"       # resolved
-  display_name: "Пётр Иванов"       # for display
+  display_name: "Petr Ivanov"       # for display
   match_method: "email"              # email | display_name | manual | unresolved
   match_confidence: 1.0              # 0.0-1.0
   resolved_at: "2026-04-05T10:00Z"  # cache timestamp
@@ -675,7 +675,7 @@ if old == 'done' AND new != 'done' -> reopened event
     │  Briefing prompt:                                     │
     │    + "JIRA CONTEXT: Sprint 24 (3 days left),          │
     │       5 issues done, 3 in progress, 2 blocked.        │
-    │       Workload: Пётр 28SP, Аня 15SP, Дима 5SP.       │
+    │       Workload: Petr 28SP, Anya 15SP, Dima 5SP.       │
     │       Overdue: PROJ-180 (1 day), PROJ-195 (today)."   │
     │                                                       │
     │  Track enrichment:                                    │

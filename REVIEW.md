@@ -46,8 +46,8 @@
 - All 20 issues resolved, all tests green
 
 ---
-*Создано: 2026-04-02*
-*Статус: all fixed*
+*Created: 2026-04-02*
+*Status: all fixed*
 
 ---
 
@@ -133,8 +133,8 @@
 **APPROVED.** All acceptance criteria met, all arch fixes verified. No blockers found. 5 minor observations reported to Lead for prioritization.
 
 ---
-*Создано: 2026-04-06*
-*Статус: approved*
+*Created: 2026-04-06*
+*Status: approved*
 *Task #7: completed*
 
 ---
@@ -182,5 +182,5 @@ AI proxy changes only (subset of branch diff)
 **APPROVED.** Clean architecture change. Desktop no longer touches Claude/Codex binaries. Zero TCC risk.
 
 ---
-*Создано: 2026-04-06*
-*Статус: approved*
+*Created: 2026-04-06*
+*Status: approved*

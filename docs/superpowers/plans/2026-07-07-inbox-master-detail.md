@@ -993,7 +993,7 @@ struct SituationReviewPane: View {
         }
     }
 
-    // MARK: - Sources (первоисточники: Target/Track navigation + newest Slack link)
+    // MARK: - Sources (primary sources: Target/Track navigation + newest Slack link)
 
     @ViewBuilder
     private var sourcesSection: some View {

@@ -93,7 +93,21 @@ func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_map",
 		Description: "Read the memory world map (map.md) plus node counts by type and tier.",
-	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args memoryMapArgs) (*mcpsdk.CallToolResult, any, error) {
+	}, memoryMapHandler(database, vaultPath))
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "memory_open",
+		Description: "Open one memory node by id, alias, or a stale (tombstoned) id; returns the canonical node with body, aliases, and outgoing links.",
+	}, memoryOpenHandler(database, vaultPath))
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "memory_recall",
+		Description: "Full-text search over memory nodes; an exact alias match ranks first. Returns id, title, type, snippet per hit.",
+	}, memoryRecallHandler(database, vaultPath))
+}
+
+func memoryMapHandler(database *db.DB, vaultPath string) func(context.Context, *mcpsdk.CallToolRequest, memoryMapArgs) (*mcpsdk.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcpsdk.CallToolRequest, args memoryMapArgs) (*mcpsdk.CallToolResult, any, error) {
 		if res := memoryUnavailable(vaultPath); res != nil {
 			return res, nil, nil
 		}
@@ -126,12 +140,11 @@ func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
 			return counts[a].Tier < counts[b].Tier
 		})
 		return jsonResult(memoryMapResult{Map: string(mapMD), Counts: counts})
-	})
+	}
+}
 
-	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "memory_open",
-		Description: "Open one memory node by id, alias, or a stale (tombstoned) id; returns the canonical node with body, aliases, and outgoing links.",
-	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args memoryOpenArgs) (*mcpsdk.CallToolResult, any, error) {
+func memoryOpenHandler(database *db.DB, vaultPath string) func(context.Context, *mcpsdk.CallToolRequest, memoryOpenArgs) (*mcpsdk.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcpsdk.CallToolRequest, args memoryOpenArgs) (*mcpsdk.CallToolResult, any, error) {
 		if res := memoryUnavailable(vaultPath); res != nil {
 			return res, nil, nil
 		}
@@ -170,12 +183,11 @@ func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
 			Links:   links,
 			Body:    n.Body,
 		})
-	})
+	}
+}
 
-	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "memory_recall",
-		Description: "Full-text search over memory nodes; an exact alias match ranks first. Returns id, title, type, snippet per hit.",
-	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args memoryRecallArgs) (*mcpsdk.CallToolResult, any, error) {
+func memoryRecallHandler(database *db.DB, vaultPath string) func(context.Context, *mcpsdk.CallToolRequest, memoryRecallArgs) (*mcpsdk.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcpsdk.CallToolRequest, args memoryRecallArgs) (*mcpsdk.CallToolResult, any, error) {
 		if res := memoryUnavailable(vaultPath); res != nil {
 			return res, nil, nil
 		}
@@ -195,21 +207,9 @@ func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
 		// curated synonyms, so hitting one is a stronger signal than any FTS
 		// rank. Recall never bumps stats — browsing is not use; only
 		// memory_open counts.
-		var hits []memoryHitResult
-		nodeID, aliasErr := database.LookupMemoryAlias(query)
-		if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
-			return errResult("resolving alias: " + aliasErr.Error()), nil, nil
-		}
-		if aliasErr == nil {
-			row, err := database.GetMemoryNode(nodeID)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return errResult("loading alias hit: " + err.Error()), nil, nil
-			}
-			if err == nil && row.Status != "tombstone" {
-				hits = append(hits, memoryHitResult{
-					ID: row.ID, Title: row.Title, Type: row.Type, Snippet: "alias: " + query,
-				})
-			}
+		hits, errRes := recallAliasHit(database, query)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 
 		ftsHits, err := database.SearchMemoryFTS(query, limit)
@@ -226,5 +226,27 @@ func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
 			hits = hits[:limit]
 		}
 		return jsonListResult(hits)
-	})
+	}
+}
+
+// recallAliasHit returns the exact-alias hit for query as a zero-or-one-item
+// slice (tombstones excluded), or a tool error result on a lookup failure.
+func recallAliasHit(database *db.DB, query string) ([]memoryHitResult, *mcpsdk.CallToolResult) {
+	nodeID, aliasErr := database.LookupMemoryAlias(query)
+	if aliasErr != nil && !errors.Is(aliasErr, sql.ErrNoRows) {
+		return nil, errResult("resolving alias: " + aliasErr.Error())
+	}
+	if aliasErr != nil {
+		return nil, nil
+	}
+	row, err := database.GetMemoryNode(nodeID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, errResult("loading alias hit: " + err.Error())
+	}
+	if err == nil && row.Status != "tombstone" {
+		return []memoryHitResult{{
+			ID: row.ID, Title: row.Title, Type: row.Type, Snippet: "alias: " + query,
+		}}, nil
+	}
+	return nil, nil
 }

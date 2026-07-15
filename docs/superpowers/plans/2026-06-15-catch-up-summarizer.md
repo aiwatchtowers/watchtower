@@ -1499,8 +1499,8 @@ struct CatchUpView: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "checkmark.circle").font(.system(size: 40)).foregroundStyle(.green)
-            Text("Всё разгребено").font(.title3)
-            Text("Нет непрочитанного по дайджестам, трекам, инбоксу и брифингам.")
+            Text("All caught up").font(.title3)
+            Text("Nothing unread across digests, tracks, inbox, and briefings.")
                 .font(.subheadline).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
