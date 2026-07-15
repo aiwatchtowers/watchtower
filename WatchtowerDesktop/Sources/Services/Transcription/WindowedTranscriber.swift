@@ -1,6 +1,7 @@
 import Foundation
 
-/// Direct port of snoop transcribe.py's windowing + sticky-language algorithm.
+/// Direct port of snoop transcribe.py's windowing + sticky-language algorithm,
+/// with window boundaries planned by `WindowPlanner` (silence-snapped cuts).
 ///
 /// The audio is sliced into overlapping windows; each window's language is
 /// detected (restricted to the configured langset) and accepted only when both
@@ -22,30 +23,17 @@ struct WindowedTranscriber {
             return TranscriptionOutput(text: "", langStats: [:])
         }
 
-        let sampleRate = Double(TranscriptionConfig.sampleRate)
-        let windowSamples = max(1, Int(config.windowSec * sampleRate))
-        let step = max(1, windowSamples - Int(config.overlapSec * sampleRate))
-
-        // A window reaching the end of the samples is the last one: a further
-        // tail start would lie entirely inside this window's overlap and only
-        // duplicate its audio (and lang stats).
-        var starts: [Int] = []
-        var start = 0
-        while true {
-            starts.append(start)
-            if start + windowSamples >= samples.count { break }
-            start += step
-        }
-        let windowCount = starts.count
+        let planner = WindowPlanner(config: config)
+        let ranges = planner.planWindows(total: samples.count) { samples[$0] }
+        let windowCount = ranges.count
 
         var texts: [String] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
         var lastEngineError: Error?
 
-        for (index, windowStart) in starts.enumerated() {
-            let end = min(windowStart + windowSamples, samples.count)
-            let window = Array(samples[windowStart..<end])
+        for (index, range) in ranges.enumerated() {
+            let window = Array(samples[range])
 
             let language: String
             if let forced = config.forcedLanguage {

@@ -33,6 +33,7 @@ final class StreamingTranscriberTests: XCTestCase {
         var c = TranscriptionConfig()
         c.windowSec = windowSec
         c.overlapSec = overlapSec
+        c.boundarySnapSec = 0 // exact window sizes are asserted; snapping is pinned separately
         c.forcedLanguage = "en"
         return c
     }
@@ -112,6 +113,33 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
         XCTAssertEqual(batchEngine.windowSizes, [1600, 1600, 1600, 1600, 1300],
                        "sanity check: four overlapping full windows plus a truncated tail")
+    }
+
+    func testMatchesBatchWithSnappingOnSameSamples() async throws {
+        // The snapping path must cut IDENTICAL windows live and batch. Loud
+        // signal with quiet dips at irregular offsets so cuts land off the
+        // nominal boundaries (and the post-close tail holds several windows).
+        var samples = [Float](repeating: 0.5, count: 8000)
+        for dip in [1650..<2050, 3100..<3400, 4700..<5000] {
+            for i in dip { samples[i] = 0.0 }
+        }
+        var cfg = forcedConfig() // windowSec 0.1, overlap 0
+        cfg.boundarySnapSec = 0.02
+
+        let batchEngine = MockEngine()
+        batchEngine.texts = (0..<8).map { .success("w\($0)") }
+        let batchOut = try await WindowedTranscriber(engine: batchEngine, config: cfg)
+            .transcribe(samples: samples) { _, _ in }
+
+        let streamEngine = MockEngine()
+        streamEngine.texts = (0..<8).map { .success("w\($0)") }
+        let streamOut = try await StreamingTranscriber(engine: streamEngine, config: cfg)
+            .run(samples: stream(of: samples, pieceSize: 271)) { _ in }
+
+        XCTAssertEqual(streamOut, batchOut)
+        XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
+        XCTAssertNotEqual(batchEngine.windowSizes.first, 1600,
+                          "sanity: snapping actually moved the first boundary")
     }
 
     func testExactWindowLengthIsSingleWindow() async throws {

@@ -52,6 +52,7 @@ final class WindowedTranscriberTests: XCTestCase {
         var config = TranscriptionConfig()
         config.windowSec = 0.01
         config.overlapSec = 0
+        config.boundarySnapSec = 0 // exact window sizes are asserted below
         return config
     }
 
@@ -264,6 +265,7 @@ final class WindowedTranscriberTests: XCTestCase {
         // Defaults: 20 s window, 1 s overlap → step 19 s. 50 s of audio →
         // window starts at 0 s, 19 s, 38 s (3 windows), last one truncated to 12 s.
         var config = TranscriptionConfig()
+        config.boundarySnapSec = 0 // exact nominal boundaries are asserted
         config.forcedLanguage = "en"
         let engine = MockEngine()
         engine.texts = [.success("a"), .success("b"), .success("c")]
@@ -285,6 +287,7 @@ final class WindowedTranscriberTests: XCTestCase {
         // entirely inside the first window's overlap and only duplicate its
         // audio and lang stats — it must not be emitted.
         var config = TranscriptionConfig() // 20 s window, 1 s overlap
+        config.boundarySnapSec = 0
         config.forcedLanguage = "en"
         let engine = MockEngine()
         engine.texts = [.success("only"), .success("dup")]
@@ -304,6 +307,7 @@ final class WindowedTranscriberTests: XCTestCase {
     func testJustOverWindowLengthIsTwoWindows() async throws {
         // 20.5 s: the second window extends past the first one's end → emitted.
         var config = TranscriptionConfig() // 20 s window, 1 s overlap
+        config.boundarySnapSec = 0
         config.forcedLanguage = "en"
         let engine = MockEngine()
         engine.texts = [.success("a"), .success("b")]

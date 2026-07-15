@@ -10,13 +10,14 @@ struct StreamChunk: Equatable, Sendable {
 /// Live counterpart to `WindowedTranscriber`: consumes a running sample stream
 /// and produces the SAME windowing/sticky-language result incrementally.
 ///
-/// A window at absolute offset `start` is a "full, non-last" window as soon as
-/// strictly more than `start + windowSamples` samples have arrived (i.e. there
-/// is at least one sample beyond it — exactly `WindowedTranscriber`'s condition
-/// for NOT breaking). The one remaining window at stream close is the last one,
-/// truncated to the total length — matching the batch "exact-window-length is a
-/// single window" rule. Silent/failed windows never stick and are not counted;
-/// total engine failure throws rather than masquerading as all-silence.
+/// Boundaries come from the shared `WindowPlanner`: a window at absolute
+/// offset `start` is emitted as soon as the buffer covers its full snap zone
+/// (`planner.decidableCount`) — the cut is then identical to what the batch
+/// path derives on the full recording. After the stream closes the total is
+/// final, so the remaining windows (snapped cuts can leave more than one) are
+/// planned with `isFinal` until the truncated last window is emitted. Silent
+/// and failed windows never stick and are not counted; total engine failure
+/// throws rather than masquerading as all-silence.
 ///
 /// Cooperatively cancellable: `Task.isCancelled` is checked at the top of the
 /// outer sample loop and before every window transcription, so a caller that
@@ -30,9 +31,7 @@ struct StreamingTranscriber {
 
     func run(samples: AsyncStream<[Float]>,
              onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
-        let sampleRate = Double(TranscriptionConfig.sampleRate)
-        let windowSamples = max(1, Int(config.windowSec * sampleRate))
-        let step = max(1, windowSamples - Int(config.overlapSec * sampleRate))
+        let planner = WindowPlanner(config: config)
 
         var buffer: [Float] = []      // buffer[0] is absolute sample `consumedBase`
         var consumedBase = 0
@@ -70,13 +69,18 @@ struct StreamingTranscriber {
         for await piece in samples {
             if Task.isCancelled { break }
             buffer.append(contentsOf: piece)
-            // Emit every window we can now prove is not the last one.
-            while consumedBase + buffer.count > absStart + windowSamples {
+            // Emit every window whose cut is already decidable (its full snap
+            // zone is buffered, proving it is not the last one).
+            while let range = planner.nextRange(
+                start: absStart,
+                total: consumedBase + buffer.count,
+                isFinal: false,
+                sample: { buffer[$0 - consumedBase] }
+            ) {
                 if Task.isCancelled { break }
-                let localStart = absStart - consumedBase
-                let window = Array(buffer[localStart..<localStart + windowSamples])
+                let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
                 await process(window: window)
-                absStart += step
+                absStart = planner.nextStart(after: range)
                 let drop = absStart - consumedBase
                 if drop > 0 {
                     buffer.removeFirst(min(drop, buffer.count))
@@ -86,14 +90,27 @@ struct StreamingTranscriber {
             if Task.isCancelled { break }
         }
 
-        // Stream closed: the single remaining window (if any) is the last one,
-        // truncated to whatever samples are left. Skipped when cancelled, so a
-        // cancelled task never runs one more (possibly heavy) window either.
-        let totalCount = consumedBase + buffer.count
-        if !Task.isCancelled, absStart < totalCount {
-            let localStart = absStart - consumedBase
-            let window = Array(buffer[localStart..<buffer.count])
+        // Stream closed: total is now final. The remainder can hold several
+        // windows (snapped cuts land short of nominal ends), so keep planning
+        // with isFinal until the truncated last window is emitted. Skipped
+        // when cancelled, so a cancelled task never runs one more (possibly
+        // heavy) window either.
+        while !Task.isCancelled,
+              let range = planner.nextRange(
+                  start: absStart,
+                  total: consumedBase + buffer.count,
+                  isFinal: true,
+                  sample: { buffer[$0 - consumedBase] }
+              ) {
+            let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
             await process(window: window)
+            if planner.isLastWindow(start: range.lowerBound, total: consumedBase + buffer.count) { break }
+            absStart = planner.nextStart(after: range)
+            let drop = absStart - consumedBase
+            if drop > 0 {
+                buffer.removeFirst(min(drop, buffer.count))
+                consumedBase += drop
+            }
         }
 
         if texts.isEmpty, let lastEngineError {
