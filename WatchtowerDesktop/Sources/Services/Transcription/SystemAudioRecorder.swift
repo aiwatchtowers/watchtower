@@ -67,6 +67,11 @@ private final class TapRecorderImpl {
     /// Live sample sink, handed off from the facade at construction; finished
     /// on `stop()`/`deinit` so a downstream `for await` loop ends.
     private let liveContinuation: AsyncStream<[Float]>.Continuation?
+    /// Best-effort mic/system RMS sidecar (rec_X.activity) for the diarization
+    /// post-pass. Losing it only loses the «Я» speaker label, so every failure
+    /// here is ignored and never latched into `firstWriteError`.
+    private var activityAccumulator: MicActivityAccumulator?
+    private var activityHandle: FileHandle?
 
     /// Serial queue owning file writes and converter state; the realtime IO
     /// block only copies + mixes samples and hops here for everything else.
@@ -113,6 +118,12 @@ private final class TapRecorderImpl {
         fileURL = url
         framesWritten = 0
 
+        // Best-effort activity sidecar; a failure to create it never fails start.
+        let activityURL = MicActivity.url(for: url)
+        FileManager.default.createFile(atPath: activityURL.path, contents: nil)
+        activityHandle = try? FileHandle(forWritingTo: activityURL)
+        activityAccumulator = MicActivityAccumulator(sampleRate: Self.nominalSampleRate(of: aggregateID))
+
         // 5. IO proc: mix to mono on the realtime thread, write on writeQueue.
         var newProcID: AudioDeviceIOProcID?
         status = AudioDeviceCreateIOProcIDWithBlock(&newProcID, aggregateID, writeQueue) { [weak self] _, inInputData, _, _, _ in
@@ -147,6 +158,9 @@ private final class TapRecorderImpl {
             let result = (framesWritten, fileURL, firstWriteError)
             audioFile = nil // deallocating AVAudioFile closes the file
             converter = nil
+            try? activityHandle?.close()
+            activityHandle = nil
+            activityAccumulator = nil
             return result
         }
         liveContinuation?.finish()
@@ -229,7 +243,11 @@ private final class TapRecorderImpl {
                 }
                 system = acc / Float(buffers.count - 1)
             }
+            activityAccumulator?.add(mic: mic, sys: system)
             out[frame] = tanhf(system + 0.9 * mic)
+        }
+        if let lines = activityAccumulator?.flushLines(), !lines.isEmpty {
+            activityHandle.map { try? $0.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8)) }
         }
 
         appendDownsampled(mixed)
