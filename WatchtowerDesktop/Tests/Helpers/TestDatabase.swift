@@ -1002,6 +1002,7 @@ enum TestDatabase {
         lang_stats      TEXT NOT NULL DEFAULT '',
         transcript_text TEXT NOT NULL,
         summary_json    TEXT,
+        notes_md        TEXT,
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
@@ -1498,15 +1499,16 @@ enum TestDatabase {
         audioPath: String? = nil,
         durationSec: Int = 60,
         transcriptText: String = "text",
-        summaryJSON: String? = nil
+        summaryJSON: String? = nil,
+        notesMD: String? = nil
     ) throws {
         try db.execute(sql: """
             INSERT INTO meeting_transcripts (id, event_id, title, audio_path,
-                duration_sec, transcript_text, summary_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                duration_sec, transcript_text, summary_json, notes_md)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [id, eventID, title, audioPath, durationSec,
-                        transcriptText, summaryJSON])
+                        transcriptText, summaryJSON, notesMD])
     }
 
     static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {

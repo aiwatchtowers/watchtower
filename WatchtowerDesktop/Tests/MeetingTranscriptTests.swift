@@ -12,6 +12,7 @@ final class MeetingTranscriptTests: XCTestCase {
             langStats: "",
             transcriptText: "text",
             summaryJSON: summaryJSON,
+            notesMD: nil,
             createdAt: "2026-07-13T10:00:00Z",
             updatedAt: "2026-07-13T10:00:00Z"
         )
@@ -36,5 +37,20 @@ final class MeetingTranscriptTests: XCTestCase {
     func test_parsedSummaryReturnsNilForMalformedJSON() {
         let transcript = makeTranscript(summaryJSON: "not json")
         XCTAssertNil(transcript.parsedSummary)
+    }
+
+    func test_notesMDRoundTrips() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertMeetingTranscript(
+                db, id: 1, title: "With notes", notesMD: "# Notes\n- point")
+            try TestDatabase.insertMeetingTranscript(db, id: 2, title: "Without notes")
+        }
+        try db.read { db in
+            let withNotes = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(withNotes.notesMD, "# Notes\n- point")
+            let without = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 2))
+            XCTAssertNil(without.notesMD)
+        }
     }
 }
