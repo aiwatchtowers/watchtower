@@ -370,16 +370,16 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 
 				status := "Syncing messages..."
 				if sp.SearchAfter != "" {
-					status = fmt.Sprintf("Sync: от %s", sp.SearchAfter)
+					status = fmt.Sprintf("Sync: from %s", sp.SearchAfter)
 				}
 				if sp.DiscoveryPages > 0 {
-					pages := fmt.Sprintf("стр. %d", sp.DiscoveryPages)
+					pages := fmt.Sprintf("p. %d", sp.DiscoveryPages)
 					if sp.DiscoveryTotalPages > 0 {
-						pages = fmt.Sprintf("стр. %d/%d", sp.DiscoveryPages, sp.DiscoveryTotalPages)
+						pages = fmt.Sprintf("p. %d/%d", sp.DiscoveryPages, sp.DiscoveryTotalPages)
 					}
-					msgs := fmt.Sprintf("%d сообщ.", sp.MessagesFetched)
+					msgs := fmt.Sprintf("%d msgs", sp.MessagesFetched)
 					if sp.SearchAfter != "" {
-						status = fmt.Sprintf("Sync: от %s (%s, %s)", sp.SearchAfter, pages, msgs)
+						status = fmt.Sprintf("Sync: from %s (%s, %s)", sp.SearchAfter, pages, msgs)
 					} else {
 						status = fmt.Sprintf("Sync: %s, %s", pages, msgs)
 					}

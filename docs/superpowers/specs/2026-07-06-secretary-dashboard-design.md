@@ -23,7 +23,7 @@ screen becomes a secretary-ranked feed of **situations**:
   track events, target changes) around one theme — not a single message.
 - Goals = the user's active targets and tracks. The secretary matches
   situations to them, but MUST also surface important things outside any goal
-  ("держать руку на пульсе" — nothing important slips by). Digests, briefings,
+  ("keep a finger on the pulse" — nothing important slips by). Digests, briefings,
   and the other pipelines are sources, not destinations.
 - Work updates (new activity on active targets/tracks) appear as the same
   situation items, linked to their target/track.
@@ -83,7 +83,7 @@ Output (JSON): a list of operations —
   re-rank / refresh reason)
 - `rerank`: change priority/rank of an existing situation
 - Situations are ranked against the brief: goal-linked work first-class,
-  important out-of-goal situations must still rank up (the "не проебать"
+  important out-of-goal situations must still rank up (the "don't drop the ball"
   contract).
 
 `kind`: `external` (no goal link) | `target_update` | `track_update` |

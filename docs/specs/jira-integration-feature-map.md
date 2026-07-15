@@ -11,10 +11,10 @@ How each Watchtower feature is enriched with Jira data from the user's perspecti
 **Without Jira:** Only Slack signals — unanswered tracks, mentions, team red flags.
 
 **With Jira:**
-- "PROJ-142 (@Пётр) stuck in Code Review for 5 days. In #backend Пётр wrote that he's waiting for review from @Аня"
+- "PROJ-142 (@Petr) stuck in Code Review for 5 days. In #backend Petr wrote that he's waiting for review from @Anya"
 - "Sprint 24: 3 days left, 65% done. At the current pace — ~75%. 3 tasks blocked"
 - "2 overdue: PROJ-142 (yesterday), PROJ-180 (day before yesterday)"
-- "PROJ-301 (@Дима) blocked 3 days — depends on PROJ-300. In Slack @Дима escalated in #infra"
+- "PROJ-301 (@Dima) blocked 3 days — depends on PROJ-300. In Slack @Dima escalated in #infra"
 
 **Key principle:** Every Jira signal is enriched with Slack context (why it's stuck, who discussed it, what was proposed). A bare Jira status is useless — the value is in the combination.
 
@@ -33,9 +33,9 @@ How each Watchtower feature is enriched with Jira data from the user's perspecti
 **Without Jira:** Only communication signals — volume drop, conflicts, red flags.
 
 **With Jira — compound signals:**
-- "@Пётр: 10 open issues (28 SP) + 45 messages/day + 5 meetings — risk of burnout"
-- "@Дима: 2 open issues (5 SP), low Slack activity — available capacity or blocked?"
-- "Workload imbalance: Пётр 28 SP, Дима 5 SP — consider redistribution"
+- "@Petr: 10 open issues (28 SP) + 45 messages/day + 5 meetings — risk of burnout"
+- "@Dima: 2 open issues (5 SP), low Slack activity — available capacity or blocked?"
+- "Workload imbalance: Petr 28 SP, Dima 5 SP — consider redistribution"
 - "PROJ-142 reopened 3 times in 2 weeks — possible quality issue"
 
 ---
@@ -103,7 +103,7 @@ Everything requires user confirmation, never automatic.
 **Without Jira:** Talking points from Slack tracks and digest decisions.
 
 **With Jira:**
-- "Discuss PROJ-142 — overdue 1 day, @Пётр waiting for review from @Аня. Workaround discussed in #backend"
+- "Discuss PROJ-142 — overdue 1 day, @Petr waiting for review from @Anya. Workaround discussed in #backend"
 - "Sprint 24 at risk — discuss scope reduction for remaining blocked items"
 - Blocked issues with path to resolution: "PROJ-301 blocked by PROJ-300 → ping @infra-team"
 
@@ -134,12 +134,12 @@ Everything requires user confirmation, never automatic.
 - "Blocker to 3 other tasks (PROJ-301, PROJ-302, PROJ-303) — bottleneck"
 
 **Communication guide:**
-- "Reference specific Jira tickets — @Пётр responds faster to 'how's PROJ-142?' than to 'how's it going?'"
+- "Reference specific Jira tickets — @Petr responds faster to 'how's PROJ-142?' than to 'how's it going?'"
 - "With 28 SP open — if assigning new work, first discuss deprioritization"
 
 **Expertise mapping:**
 - From Jira components + labels + Slack channels activity → "Expert in: caching, API design, payments"
-- For onboarding: "For payment questions → @Пётр (epic owner, 15 tasks)"
+- For onboarding: "For payment questions → @Petr (epic owner, 15 tasks)"
 
 ---
 
@@ -160,7 +160,7 @@ Everything requires user confirmation, never automatic.
 - Action item from Slack enriched with Jira status — visible whether it's stuck
 
 **"No task" detection:**
-- "⚠️ Discussion of logger refactoring (12 messages, @Аня and @Дима) — no Jira task found"
+- "⚠️ Discussion of logger refactoring (12 messages, @Anya and @Dima) — no Jira task found"
 - Helps PM and TL not lose work: discussed → should be in Jira
 
 **Running summary enriched:**
@@ -229,9 +229,9 @@ Table for each team member:
 
 | Who | Open | SP | Overdue | Blocked | Cycle Time | Slack Volume | Meetings | Signal |
 |-----|------|----|---------|---------|-----------|-------------|----------|--------|
-| @Пётр | 10 | 28 | 2 | 0 | 3.2d ↑ | 45/day | 5/day | ⚠️ Overload |
-| @Аня | 5 | 15 | 0 | 0 | 2.1d | 20/day | 3/day | ✅ Normal |
-| @Дима | 2 | 5 | 0 | 1 | 1.5d | 8/day | 2/day | 💤 Low load |
+| @Petr | 10 | 28 | 2 | 0 | 3.2d ↑ | 45/day | 5/day | ⚠️ Overload |
+| @Anya | 5 | 15 | 0 | 0 | 2.1d | 20/day | 3/day | ✅ Normal |
+| @Dima | 2 | 5 | 0 | 1 | 1.5d | 8/day | 2/day | 💤 Low load |
 
 Compound signals (Jira + Slack + Calendar):
 - ⚠️ Overload: many tasks + high Slack volume + many meetings
@@ -248,15 +248,15 @@ Each blocked issue with compound context:
 
 **PROJ-301** "OAuth integration" [Blocked 3 days]
 - Blocked by: PROJ-300 (@Infra-team)
-- Slack context: @Дима escalated in #infra 2 days ago, no response
+- Slack context: @Dima escalated in #infra 2 days ago, no response
 - Impact: blocks PROJ-302, PROJ-303 → Epic "User Auth" at risk
-- **Who can unblock:** @Лид-infra (decision-maker) or @CTO (escalation)
+- **Who can unblock:** @Infra-lead (decision-maker) or @CTO (escalation)
 
 **PROJ-142** "Fix payment bug" [Stale in Code Review 5 days]
-- Waiting for: review from @Аня
-- Slack context: @Пётр mentioned 3 times in #backend, @Аня did not respond
+- Waiting for: review from @Anya
+- Slack context: @Petr mentioned 3 times in #backend, @Anya did not respond
 - Impact: overdue 1 day, blocks release
-- **Who can unblock:** @Аня (reviewer) or assign another reviewer
+- **Who can unblock:** @Anya (reviewer) or assign another reviewer
 
 ---
 
@@ -271,7 +271,7 @@ Each blocked issue with compound context:
 
 **Comment on a task:**
 - "In #backend decided to use Redis for PROJ-250 (Decision from Digest #78)"
-- → "Add a comment to PROJ-250? 'Decision: Redis instead of in-memory. Participants: @Пётр, @Аня. Rationale: ...'"
+- → "Add a comment to PROJ-250? 'Decision: Redis instead of in-memory. Participants: @Petr, @Anya. Rationale: ...'"
 - User: ✅ Add comment / ❌ Skip
 
 **Task update:**

@@ -100,7 +100,7 @@ var DefaultVersions = map[string]int{
 	TrackCompose:          1, // v1: draft custom-track title+instruction from a free-text request
 	TrackRun:              1, // v1: custom-track timeline events from recent cross-source activity
 	TrackShortlist:        1, // v1: cheap title-only relevance filter for custom-track backfill
-	InboxCompose:          2, // v2: suggest_resolve op (DASH-07)
+	InboxCompose:          3, // v3: don't merge different matters just because the topic overlaps
 	InboxSituationCard:    1, // v1: context packet for one dashboard situation
 	MemoryExtractEpisodes: 1, // v1: raw-text episode extraction for the memory vault
 }
@@ -1229,11 +1229,21 @@ Return ONLY a JSON object (no markdown fences):
 const defaultInboxCompose = `%s
 
 You are the user's chief-of-staff secretary maintaining their work dashboard.
-The dashboard shows SITUATIONS: clusters of related signals around one theme.
+The dashboard shows SITUATIONS: each one is a SINGLE concrete story — one
+specific request, thread, or decision — not a topic category. Two signals
+belong together only if they are actually part of the SAME unfolding matter
+(same request/thread/decision, and check who is involved and where — a new
+sender or a different channel is a strong sign it's a different matter).
+Sharing a subject, system, or keyword ("access", "YubiKey", "the file") is
+NOT enough — different people asking different things that merely sound
+similar are DIFFERENT situations. Never invent a connecting narrative the
+messages don't actually support.
 Your job every cycle: fold new material into the dashboard so the user stays
 on top of everything — matched to their goals (their active targets and
 tracks, listed in the brief) AND anything important outside those goals.
-Nothing important may slip by; routine noise must not surface.
+Nothing important may slip by; routine noise must not surface — but a wrong
+merge is worse than a missed one: when unsure whether two signals are the
+same matter, create a separate situation instead of merging.
 
 %s
 
@@ -1241,9 +1251,12 @@ Nothing important may slip by; routine noise must not surface.
 %s
 
 Fold the new material below into the dashboard:
-- "merge": a new signal/event continues an existing open situation → add it
-  there. NEVER create a duplicate situation for a theme already open.
-- "create": a genuinely new theme worth the user's attention. kind:
+- "merge": a new signal/event continues an existing open situation — the
+  SAME concrete matter, not just a similar topic → add it there. NEVER
+  create a duplicate situation for a matter already open, and NEVER merge a
+  signal into a situation over a different matter just because the subject
+  overlaps.
+- "create": a genuinely new matter worth the user's attention. kind:
   "external" (not tied to their work items), "target_update" /
   "track_update" (activity on an active target/track — set target_id or
   track_id), "mixed".

@@ -4,14 +4,14 @@ struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
     @State private var meetingPrepVM = MeetingPrepViewModel()
     @State private var selectedEventID: String?
-    @State private var googleAuth = GoogleAuthService()
+    private let google = GoogleConnectFlow.shared
     @State private var expandedAllDayDates: Set<Date> = []
     @State private var expandedEventID: String?
     @State private var userNotes: String = ""
 
     var body: some View {
         Group {
-            if googleAuth.isConnected, let calVM = appState.calendarViewModel {
+            if google.calendar.isConnected, !google.isRunning, let calVM = appState.calendarViewModel {
                 HStack(spacing: 0) {
                     eventsList(calVM)
                         .frame(minWidth: 300, idealWidth: 350)
@@ -296,38 +296,43 @@ struct CalendarEventsView: View {
             Image(systemName: "calendar.badge.exclamationmark")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            Text("Google Calendar not connected")
+            Text("Google not connected")
                 .font(.headline)
-            Text("Connect your Google Calendar to see upcoming meetings and prepare for them.")
+            Text("Choose what to connect — Google will show a single approval "
+                + "screen listing exactly the selected access.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
 
-            if googleAuth.isAuthenticating {
-                ProgressView("Connecting...")
+            GoogleConnectOptionsView(flow: google)
+
+            if google.isRunning {
+                ProgressView("Connecting Google...")
                     .padding(.top, 4)
                 Button("Cancel") {
-                    googleAuth.cancelConnect()
+                    google.cancel()
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             } else {
                 Button {
-                    googleAuth.connect()
+                    google.connect()
                 } label: {
-                    Label("Connect Google Calendar", systemImage: "calendar.badge.plus")
+                    Label("Connect Google", systemImage: "calendar.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!google.hasSelection)
                 .padding(.top, 4)
             }
 
-            if let err = googleAuth.error {
+            if let err = google.error {
                 Text(err)
                     .font(.caption)
                     .foregroundStyle(.red)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { google.refresh() }
     }
 }

@@ -970,3 +970,9 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 		assert.Truef(t, seen[name], "expected pipeline_runs row for %q (phase method missing from runSync?)", name)
 	}
 }
+
+func TestPhaseGmailSyncNilGuard(t *testing.T) {
+	d := newQuietDaemon(t)
+	// No syncer set — must be a no-op, not a panic.
+	d.phaseGmailSync(context.Background())
+}

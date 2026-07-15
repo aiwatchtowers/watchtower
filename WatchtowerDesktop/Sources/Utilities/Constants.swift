@@ -1,10 +1,24 @@
 import Foundation
+import Yams
 
 enum Constants {
     static let configPath = NSString("~/.config/watchtower/config.yaml").expandingTildeInPath
     static let databasePath = NSString("~/.local/share/watchtower").expandingTildeInPath
     static let bundleID = "com.watchtower.desktop"
     static let configDir = NSString("~/.config/watchtower").expandingTildeInPath
+
+    /// Directory of the active workspace from config.yaml, or nil when no
+    /// active_workspace is configured. Connection checks must use this instead
+    /// of scanning all workspace dirs — a stale token left in an old workspace
+    /// would otherwise show the active one as connected.
+    nonisolated static func activeWorkspaceDir() -> String? {
+        guard let data = FileManager.default.contents(atPath: configPath),
+              let str = String(data: data, encoding: .utf8),
+              let yaml = try? Yams.load(yaml: str) as? [String: Any],
+              let workspace = yaml["active_workspace"] as? String,
+              !workspace.isEmpty else { return nil }
+        return "\(databasePath)/\(workspace)"
+    }
 
     /// Safe working directory for subprocesses — avoids TCC prompts for ~/Music, ~/Downloads etc.
     /// Uses ~/.config/watchtower (already ours, not TCC-protected).

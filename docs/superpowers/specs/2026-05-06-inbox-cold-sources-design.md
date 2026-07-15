@@ -6,7 +6,7 @@
 
 ## Problem
 
-User report: "падают только брифинги в инбокс". Diagnosis against the live `whitebit` workspace DB (689 MB) revealed three independent causes, all of which stop legitimate signals from reaching the UI.
+User report: "only briefings are landing in the inbox". Diagnosis against the live `whitebit` workspace DB (689 MB) revealed three independent causes, all of which stop legitimate signals from reaching the UI.
 
 ### Diagnostic facts (DB snapshot 2026-05-06)
 
@@ -27,7 +27,7 @@ User report: "падают только брифинги в инбокс". Diagn
 1. **Stale archive too aggressive.** `pipeline.go:310` runs `ArchiveStaleActionable(14 days)` every cycle. Of the 18 unread pending Slack items currently in the DB, **17 are archived** with `archive_reason='stale'` and `item_class='actionable'`. UI filter `archived_at IS NULL` hides them. Only the latest `briefing_ready` (within 14d window) survives.
 2. **Calendar field-name mismatch.** Real attendee JSON: `{"email":"...","response_status":"needsAction","slack_user_id":"..."}`. `calendar_detector.go:13 calAttendee.RSVPStatus` reads `json:"rsvp_status"` — always empty — switch never picks `calendar_invite`.
 3. **Jira identity gap.** `workspace.current_user_id = U0118BRJH54` (Slack `@whitebit.com`); `jira_user_map` keys by Atlassian account_id, joined by email; the user's Atlassian email is `@ec319.com`. There is no mapping row for `U0118BRJH54`. `DetectJira` is passed Slack ID and matches against `jira_issues.assignee_account_id` — never matches.
-4. **`decision_made` detector and AI prompt out of sync.** AI generates `decision_making`, `decision_needed`, `architecture_decision`, `product_decision`, `decision_deadlock`, etc. (40+ decision-adjacent ситуаций). Detector matches only `type=="decision" AND importance=="high"`. All 7 raw `decision` rows have empty `importance`.
+4. **`decision_made` detector and AI prompt out of sync.** AI generates `decision_making`, `decision_needed`, `architecture_decision`, `product_decision`, `decision_deadlock`, etc. (40+ decision-adjacent situations). Detector matches only `type=="decision" AND importance=="high"`. All 7 raw `decision` rows have empty `importance`.
 
 ## Goals
 

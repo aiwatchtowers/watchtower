@@ -97,6 +97,15 @@ type CalendarConfig struct {
 	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: 2)
 }
 
+// GmailConfig holds Gmail integration settings.
+type GmailConfig struct {
+	Enabled            bool   `mapstructure:"enabled"`               // enable gmail sync (default: false)
+	InitialHistoryDays int    `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync
+	MaxMessagesPerSync int    `mapstructure:"max_messages_per_sync"` // per-cycle cap
+	MaxBodyBytes       int    `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
+	AccountEmail       string `mapstructure:"account_email"`         // connected account's email, written at login; identity fallback when Slack is absent
+}
+
 // JiraFeatureToggles controls which Jira features are enabled for the user.
 type JiraFeatureToggles struct {
 	MyIssuesInBriefing   bool `mapstructure:"my_issues_in_briefing" json:"my_issues_in_briefing"`
@@ -184,6 +193,7 @@ type Config struct {
 	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
+	Gmail           GmailConfig                 `mapstructure:"gmail"`
 	Jira            JiraConfig                  `mapstructure:"jira"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
@@ -245,6 +255,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("catchup.caps.briefings", 20)
 	v.SetDefault("calendar.enabled", DefaultCalendarEnabled)
 	v.SetDefault("calendar.sync_days_ahead", DefaultCalendarSyncDaysAhead)
+	v.SetDefault("gmail.enabled", DefaultGmailEnabled)
+	v.SetDefault("gmail.initial_history_days", DefaultGmailInitialHistoryDays)
+	v.SetDefault("gmail.max_messages_per_sync", DefaultGmailMaxMessagesPerSync)
+	v.SetDefault("gmail.max_body_bytes", DefaultGmailMaxBodyBytes)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)

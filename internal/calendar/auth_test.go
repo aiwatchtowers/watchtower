@@ -69,7 +69,7 @@ func TestTokenStore_LoadMissing(t *testing.T) {
 
 func TestBuildAuthURL(t *testing.T) {
 	cfg := GoogleOAuthConfig{ClientID: "client.apps", ClientSecret: "shh"}
-	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "state-abc")
+	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "state-abc", []string{ScopeCalendarReadonly})
 
 	u, err := url.Parse(got)
 	require.NoError(t, err)
@@ -82,9 +82,17 @@ func TestBuildAuthURL(t *testing.T) {
 	assert.Equal(t, "state-abc", q.Get("state"))
 	assert.Equal(t, "offline", q.Get("access_type"))
 	assert.Equal(t, "consent", q.Get("prompt"))
-	scope := q.Get("scope")
-	assert.Contains(t, scope, "calendar.events.readonly")
-	assert.Contains(t, scope, "calendar.calendarlist.readonly")
+	assert.Equal(t, ScopeCalendarReadonly, q.Get("scope"))
+}
+
+func TestBuildAuthURL_MultipleScopes(t *testing.T) {
+	cfg := GoogleOAuthConfig{ClientID: "client.apps"}
+	gmailScope := "https://www.googleapis.com/auth/gmail.readonly"
+	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "s", []string{ScopeCalendarReadonly, gmailScope})
+
+	u, err := url.Parse(got)
+	require.NoError(t, err)
+	assert.Equal(t, ScopeCalendarReadonly+" "+gmailScope, u.Query().Get("scope"))
 }
 
 func TestPrepare_DefaultRedirect(t *testing.T) {
@@ -168,6 +176,61 @@ func TestExchangeCode_BadJSON(t *testing.T) {
 	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{}, "x", "http://localhost/cb")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decoding token response")
+}
+
+func TestValidateGrantedScopes_NoneGranted(t *testing.T) {
+	tok := &OAuthToken{Scope: "openid"}
+	err := validateGrantedScopes(tok, []string{ScopeCalendarReadonly})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not grant any of the requested access")
+}
+
+func TestValidateGrantedScopes_PartialGrantPasses(t *testing.T) {
+	// The user ticked only the calendar checkbox on a two-scope consent
+	// screen — the login must succeed; the caller enables only calendar.
+	gmailScope := "https://www.googleapis.com/auth/gmail.readonly"
+	tok := &OAuthToken{Scope: ScopeCalendarReadonly}
+	require.NoError(t, validateGrantedScopes(tok, []string{ScopeCalendarReadonly, gmailScope}))
+	assert.True(t, tok.GrantsScope(ScopeCalendarReadonly))
+	assert.False(t, tok.GrantsScope(gmailScope))
+}
+
+func TestGrantsScope_EmptyScopeMeansGranted(t *testing.T) {
+	tok := &OAuthToken{}
+	assert.True(t, tok.GrantsScope(ScopeCalendarReadonly))
+	require.NoError(t, validateGrantedScopes(tok, []string{ScopeCalendarReadonly}))
+}
+
+func TestRevoke_Success(t *testing.T) {
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		gotToken = r.PostForm.Get("token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	prev := googleRevokeEndpoint
+	googleRevokeEndpoint = srv.URL
+	defer func() { googleRevokeEndpoint = prev }()
+
+	require.NoError(t, Revoke(context.Background(), "rt-123"))
+	assert.Equal(t, "rt-123", gotToken)
+}
+
+func TestRevoke_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"invalid_token"}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	prev := googleRevokeEndpoint
+	googleRevokeEndpoint = srv.URL
+	defer func() { googleRevokeEndpoint = prev }()
+
+	err := Revoke(context.Background(), "rt-123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revoke failed")
 }
 
 func TestComplete_RejectsEmptyCode(t *testing.T) {
