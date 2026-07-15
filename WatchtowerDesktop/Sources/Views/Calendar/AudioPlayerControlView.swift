@@ -6,6 +6,11 @@ import SwiftUI
 struct AudioPlayerControlView: View {
     let transcriptID: Int64
     let audioURL: URL
+    /// The transcript's persisted duration (seconds), shown/used as the scrubber's
+    /// range before playback starts — `center.duration` is 0 until this row's
+    /// `AVAudioPlayer` has loaded, which would otherwise make the slider
+    /// un-draggable (range `0...0.01`) on a row that hasn't been played yet.
+    let knownDuration: TimeInterval
     let center: AudioPlaybackCenter
 
     @State private var isScrubbing = false
@@ -13,7 +18,7 @@ struct AudioPlayerControlView: View {
 
     private var isActive: Bool { center.activeTranscriptID == transcriptID }
     private var hasFailed: Bool { center.failedTranscriptID == transcriptID }
-    private var displayedDuration: TimeInterval { isActive ? center.duration : 0 }
+    private var displayedDuration: TimeInterval { isActive ? center.duration : knownDuration }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

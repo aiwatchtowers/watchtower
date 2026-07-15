@@ -25,6 +25,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
+            knownDuration: 10,
             center: center
         )
 
@@ -39,6 +40,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
+            knownDuration: 10,
             center: center
         )
 
@@ -54,6 +56,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
+            knownDuration: 10,
             center: center
         )
 
@@ -67,6 +70,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
+            knownDuration: 10,
             center: center
         )
 
