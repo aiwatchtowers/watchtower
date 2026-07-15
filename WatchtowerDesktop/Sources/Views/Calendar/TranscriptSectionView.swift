@@ -75,6 +75,8 @@ struct TranscriptSectionView: View {
                 }
                 .frame(maxHeight: 300)
 
+                TranscriptAudioControl(transcript: transcript, center: appState.audioPlaybackCenter)
+
                 HStack(spacing: 8) {
                     if !hasRecap {
                         Button {
