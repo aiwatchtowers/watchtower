@@ -60,15 +60,26 @@ func buildExtractPrompt(tmpl, lang string, w channelWindow, maxEpisodes int) (sy
 
 // buildBatchExtractPrompt renders the system and user messages for the
 // memory.extract_episodes_batch call: several channel windows shown in one
-// prompt, each under its own "--- #channel (id) ---" block (digest-pipeline
-// precedent — see internal/digest's generateBatchDigest). maxEpisodes bounds
-// the whole call, not each channel individually.
+// prompt, each under its own "=== #channel (id) ===" block. maxEpisodes
+// bounds the whole call, not each channel individually.
+//
+// The user message deliberately opens with a non-dash line and uses "==="
+// rather than digest's "--- ... ---" delimiter (internal/digest's
+// generateBatchDigest): unlike digest's channel blocks, which sit embedded
+// inside a larger templated prompt, this is the ENTIRE user message, and the
+// claude/codex CLI wrappers pass it as a raw argv token ("-p", userMessage —
+// see internal/ai/client.go), not via stdin. A message beginning with "--"
+// is parsed by the claude CLI as an unrecognized flag instead of the -p
+// value ("unknown option '--- #channel...'"), discovered when the E2E
+// validation run against live data made this the very first batch — no unit
+// test with a fake generator could have caught it.
 func buildBatchExtractPrompt(tmpl, lang string, windows []channelWindow, maxEpisodes int) (system, user string) {
 	system = fmt.Sprintf(tmpl, prompts.Directive(lang), maxEpisodes)
 
 	var b strings.Builder
+	b.WriteString("Channels:\n\n")
 	for _, w := range windows {
-		fmt.Fprintf(&b, "--- #%s (%s) ---\n", w.ChannelName, w.ChannelID)
+		fmt.Fprintf(&b, "=== #%s (%s) ===\n", w.ChannelName, w.ChannelID)
 		writeChannelWindow(&b, w)
 		b.WriteString("\n")
 	}

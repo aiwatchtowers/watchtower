@@ -755,6 +755,24 @@ func TestGroupWindowsIntoBatches(t *testing.T) {
 	})
 }
 
+// TestBuildExtractPromptsNeverStartWithDash guards against the bug found on
+// the first live E2E run: internal/ai/client.go passes the user message as a
+// raw "-p" argv token, so a message beginning with "-" is misparsed by the
+// claude CLI as an unrecognized flag instead of -p's value. Both prompt
+// builders must always open with non-dash text, for any input shape.
+func TestBuildExtractPromptsNeverStartWithDash(t *testing.T) {
+	w := channelWindow{
+		ChannelID: "C1", ChannelName: "general",
+		Messages: []extractMsg{{TS: "1.0", Author: "alice", Text: "hi"}},
+	}
+	_, user := buildExtractPrompt("%s %d", "en", w, 5)
+	assert.False(t, strings.HasPrefix(user, "-"), "single-channel prompt must not start with '-'")
+
+	_, user = buildBatchExtractPrompt("%s %d", "en", []channelWindow{w, w}, 5)
+	assert.False(t, strings.HasPrefix(user, "-"), "batch prompt must not start with '-'")
+	assert.Contains(t, user, "=== #general (C1) ===")
+}
+
 // batchTestConfig enables cross-channel batching (unlike pipelineTestConfig,
 // which pins BatchMaxChannels to 1 to preserve the per-window tests above).
 func batchTestConfig() config.MemoryConfig {
@@ -776,8 +794,9 @@ func TestBatchGroupsQuietChannelsIntoOneCall(t *testing.T) {
 	gen := &fakeGen{
 		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
 		reply: func(user string) (string, error) {
-			require.Contains(t, user, "--- #general (C1GEN) ---", "both channels must appear in one prompt")
-			require.Contains(t, user, "--- #ops (C2OPS) ---")
+			require.False(t, strings.HasPrefix(user, "-"), "the user message must never start with '-': the claude CLI wrapper passes it as a raw \"-p\" argv value (internal/ai/client.go), and a leading dash is parsed as an unrecognized flag instead of -p's value — this broke every batch call on the first live E2E run")
+			require.Contains(t, user, "=== #general (C1GEN) ===", "both channels must appear in one prompt")
+			require.Contains(t, user, "=== #ops (C2OPS) ===")
 			return fmt.Sprintf(`[
 				{"title": "Prod deploy failed", "story": "s", "outcome": "resolved", "participants": ["U1ALICE"], "refs": [{"channel_id": "C1GEN", "ts": %q}], "entity_hints": []},
 				{"title": "Postmortem scheduled", "story": "s", "outcome": null, "participants": ["U1ALICE"], "refs": [{"channel_id": "C2OPS", "ts": %q}], "entity_hints": []}

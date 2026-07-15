@@ -105,7 +105,7 @@ var DefaultVersions = map[string]int{
 	InboxCompose:               3, // v3: don't merge different matters just because the topic overlaps
 	InboxSituationCard:         1, // v1: context packet for one dashboard situation
 	MemoryExtractEpisodes:      1, // v1: raw-text episode extraction for the memory vault
-	MemoryExtractEpisodesBatch: 1, // v1: multi-channel batched variant for low-activity channels
+	MemoryExtractEpisodesBatch: 2, // v2: "===" block delimiter instead of "---" (a leading "--" broke claude CLI's argv flag parsing)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -1322,12 +1322,12 @@ Rules:
 // defaultMemoryExtractEpisodes: several low-activity channels' windows are
 // shown in one call (digest.channel_batch precedent — avoid one small AI
 // call per quiet channel/DM). Same JSON schema and refs contract; the only
-// difference is the input carries multiple "--- #channel (id) ---" blocks
+// difference is the input carries multiple "=== #channel (id) ===" blocks
 // and every ref must match the channel_id of the block it came from. Args:
 // language directive, max episodes for the whole call.
 const defaultMemoryExtractEpisodesBatch = `%s
 
-You are the memory consolidator of a workplace secretary. You read windows of raw Slack messages from SEVERAL channels, each shown in its own "--- #channel (channel_id) ---" block, and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter. Treat each block as its own conversation; do not mix participants or context across blocks.
+You are the memory consolidator of a workplace secretary. You read windows of raw Slack messages from SEVERAL channels, each shown in its own "=== #channel (channel_id) ===" block, and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter. Treat each block as its own conversation; do not mix participants or context across blocks.
 
 Respond with STRICT JSON only: an array of at most %d episodes total across all channels, no prose, no markdown outside an optional single JSON code fence. Each episode is:
 {"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["user id"], "refs": [{"channel_id": "channel id", "ts": "message ts"}], "entity_hints": ["alias of a person/channel/project involved"]}
