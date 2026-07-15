@@ -7,7 +7,7 @@ import (
 )
 
 func TestModelForSource(t *testing.T) {
-	haiku := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel"}
+	haiku := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "memory.extract_episodes"}
 	for _, src := range haiku {
 		if got := ModelForSource(src); got != ModelHaiku {
 			t.Errorf("ModelForSource(%q) = %q, want %q", src, got, ModelHaiku)
