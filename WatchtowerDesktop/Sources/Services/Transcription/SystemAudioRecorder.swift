@@ -118,11 +118,17 @@ private final class TapRecorderImpl {
         fileURL = url
         framesWritten = 0
 
-        // Best-effort activity sidecar; a failure to create it never fails start.
+        // Best-effort activity sidecar; a failure to create it never fails
+        // start. The accumulator exists only while the handle does — RMS math
+        // with no consumer is wasted work, and the empty file would linger.
         let activityURL = MicActivity.url(for: url)
         FileManager.default.createFile(atPath: activityURL.path, contents: nil)
         activityHandle = try? FileHandle(forWritingTo: activityURL)
-        activityAccumulator = MicActivityAccumulator(sampleRate: Self.nominalSampleRate(of: aggregateID))
+        if activityHandle != nil {
+            activityAccumulator = MicActivityAccumulator(sampleRate: Self.nominalSampleRate(of: aggregateID))
+        } else {
+            try? FileManager.default.removeItem(at: activityURL)
+        }
 
         // 5. IO proc: mix to mono on the realtime thread, write on writeQueue.
         var newProcID: AudioDeviceIOProcID?

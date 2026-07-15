@@ -163,7 +163,9 @@ final class MeetingRecorderCenter {
             }
             let diarizer = try await diarizerFactory()
             let speakers = try await diarizer.diarize(pcm)
-            let activity = MicActivity.load(for: audioURL)
+            // The sidecar parse is a full-file read (~36k lines per hour) —
+            // off-main like the decode above.
+            let activity = await Task.detached { MicActivity.load(for: audioURL) }.value
             return RoleAssigner.render(segments: output.segments, speakers: speakers, activity: activity)
                 ?? output.text
         } catch {

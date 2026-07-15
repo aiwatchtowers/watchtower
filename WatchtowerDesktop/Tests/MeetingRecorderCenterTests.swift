@@ -189,11 +189,12 @@ final class MeetingRecorderCenterTests: XCTestCase {
         { _ in [Float](repeating: 0, count: sampleCount) }
     }
 
-    /// Removes the transcript sidecars (`<basename>.txt`/`.json`) the Center
-    /// persists next to `audio` after transcription succeeds.
+    /// Removes the recording's sidecars: the persisted transcript
+    /// (`<basename>.txt`/`.json`) and the mic-activity timeline (`.activity`).
     private func removeSidecars(_ audio: URL) {
-        try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension("txt"))
-        try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension("json"))
+        for ext in ["txt", "json", "activity"] {
+            try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension(ext))
+        }
     }
 
     /// Diarization is off in the shared configs: a test whose output has
@@ -1064,8 +1065,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         audio: URL,
         diarizer: FakeDiarizer,
         defaults: UserDefaults,
-        rolesEnabled: Bool = true,
-        engineTexts: [String] = ["привет", "ответ"]
+        rolesEnabled: Bool = true
     ) async throws -> (savedText: String?, center: MeetingRecorderCenter, notifier: FakeNotifier) {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
@@ -1073,7 +1073,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
-            engineFactory: { _ in ScriptedEngine(texts: engineTexts) },
+            engineFactory: { _ in ScriptedEngine(texts: ["привет", "ответ"]) },
             diarizerFactory: { diarizer },
             decode: stubDecode(sampleCount: 4800), // 3 windows of 0.1 s
             runnerResolver: { runner },
@@ -1114,8 +1114,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let activityURL = MicActivity.url(for: audio)
         defer {
             try? FileManager.default.removeItem(at: audio)
-            try? FileManager.default.removeItem(at: activityURL)
-            removeSidecars(audio)
+            removeSidecars(audio) // covers the .activity sidecar too
         }
         // Bin 0 (0.0–0.1 s) mic-dominated → cluster A is the owner.
         try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
@@ -1150,6 +1149,41 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(saved, "привет\nответ")
         XCTAssertEqual(notifier.readyTitles, ["Roles — saved without speaker labels"],
                        "the notification must flag the missing labels")
+    }
+
+    func testLivePathRendersRolesFromDecodedFile() async throws {
+        // The live path reaches renderRoles with samples: nil — the roles
+        // decode is the ONLY decode (live STT never re-decodes the file).
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.3)]
+        var decodeCalls = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in ScriptedEngine(texts: ["live text"]) },
+            diarizerFactory: { diarizer },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 4800) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        var config = threeWindowConfig()
+        config.diarization = true
+        await center.startRecording(eventID: nil, title: "Live roles", config: config)
+        recorder.emitLive([Float](repeating: 0, count: 4800)) // live pass produces the text
+        await center.stopAndProcess(config: config)
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(decodeCalls, 1, "the roles post-pass decodes the file exactly once")
+        XCTAssertEqual(runner.savedTranscripts.first, "[Speaker 1] live text")
     }
 
     func testDiarizationDisabledSkipsDiarizer() async throws {

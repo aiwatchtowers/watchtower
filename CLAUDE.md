@@ -2,7 +2,7 @@
 
 **Project:** `watchtower` (Go module: `watchtower`)
 **Backend:** Go 1.25, SQLite via `modernc.org/sqlite` (`database/sql`), see `go.mod`
-**Desktop:** SwiftUI macOS app (Swift 5.10, macOS 14+), GRDB.swift, see `WatchtowerDesktop/Package.swift`
+**Desktop:** SwiftUI macOS app (Swift 5.10 language mode, macOS 14+; building requires a Swift 6+ toolchain / Xcode 16+ — the FluidAudio dependency's manifest declares swift-tools 6.0), GRDB.swift, see `WatchtowerDesktop/Package.swift`
 
 ---
 
