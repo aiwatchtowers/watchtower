@@ -86,3 +86,27 @@ struct AudioPlayerControlView: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
+
+/// Audio control for a transcript row, or an explanatory caption when the
+/// retention sweep already deleted the source file (`audioPath == nil`).
+/// Shared by `TranscriptSectionView` (event-linked) and `CalendarEventsView`
+/// (ad-hoc) so the conditional isn't duplicated at each call site.
+struct TranscriptAudioControl: View {
+    let transcript: MeetingTranscript
+    let center: AudioPlaybackCenter
+
+    var body: some View {
+        if let id = transcript.id, let audioPath = transcript.audioPath {
+            AudioPlayerControlView(
+                transcriptID: id,
+                audioURL: URL(fileURLWithPath: audioPath),
+                knownDuration: TimeInterval(transcript.durationSec),
+                center: center
+            )
+        } else if transcript.audioPath == nil {
+            Text("Recording deleted")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
