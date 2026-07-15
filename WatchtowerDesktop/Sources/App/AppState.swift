@@ -37,6 +37,12 @@ final class AppState {
     /// the calendar event that started it.
     let meetingRecorderCenter = MeetingRecorderCenter()
 
+    /// App-wide, single-slot-per-transcript registry for "generate meeting
+    /// notes" runs, so the "generating…" flag survives navigating away from
+    /// and back to a recording's detail (feedback: async ops need
+    /// navigation-surviving state).
+    let transcriptNotesCenter = TranscriptNotesCenter()
+
     /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,
     /// so download progress is visible (and retryable) from anywhere,
     /// independent of whether a recording is in progress.
