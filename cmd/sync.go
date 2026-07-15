@@ -29,7 +29,6 @@ import (
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
-	"watchtower/internal/memory"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -290,14 +289,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				inboxPipe.SetPromptStore(prompts.New(database, nil))
 				d.SetInboxPipeline(inboxPipe)
 			}
-			if cfg.Memory.Enabled {
-				vault, vErr := memory.OpenVault(memoryVaultPath(cfg))
-				if vErr != nil {
-					logger.Printf("memory: failed to open vault, phase disabled: %v", vErr)
-				} else {
-					d.SetMemoryPipeline(newMemoryPipelineFactory(database, vault, cfg, logger.Printf))
-				}
-			}
+			wireMemoryPipeline(d, database, cfg, logger)
 			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
 			customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
 			d.SetCustomTracksPipeline(customTracksPipe)

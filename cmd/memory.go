@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/memory"
 	"watchtower/internal/prompts"
@@ -120,6 +122,21 @@ func memoryConfigAndDB() (*config.Config, *db.DB, error) {
 // configurable in v1 per the design spec.
 func memoryVaultPath(cfg *config.Config) string {
 	return filepath.Join(cfg.WorkspaceDir(), "memory")
+}
+
+// wireMemoryPipeline attaches the memory consolidation phase to the daemon
+// when enabled. A vault-open failure disables the phase for this daemon run
+// instead of aborting sync.
+func wireMemoryPipeline(d *daemon.Daemon, database *db.DB, cfg *config.Config, logger *log.Logger) {
+	if !cfg.Memory.Enabled {
+		return
+	}
+	vault, err := memory.OpenVault(memoryVaultPath(cfg))
+	if err != nil {
+		logger.Printf("memory: failed to open vault, phase disabled: %v", err)
+		return
+	}
+	d.SetMemoryPipeline(newMemoryPipelineFactory(database, vault, cfg, logger.Printf))
 }
 
 // ── handlers ──────────────────────────────────────────────────────────────────
