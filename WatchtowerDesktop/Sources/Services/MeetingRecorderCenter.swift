@@ -120,12 +120,12 @@ final class MeetingRecorderCenter {
     }
 
     /// Production engine: loads the WhisperKit model named in Settings (default
-    /// `large-v3`). Runs lazily on first `stop()`, so first use may download
-    /// model weights. The `TranscriptionConfig` is unused here (the model name is
-    /// a separate `@AppStorage` key); the parameter exists so tests can vary the
-    /// engine per config.
+    /// `large-v3-v20240930`, i.e. large-v3-turbo). Runs lazily on first `stop()`,
+    /// so first use may download model weights. The `TranscriptionConfig` is
+    /// unused here (the model name is a separate `@AppStorage` key); the parameter
+    /// exists so tests can vary the engine per config.
     static func defaultEngineFactory(_ config: TranscriptionConfig) async throws -> TranscriptionEngine {
-        let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3"
+        let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
         return try await WhisperKitEngine.load(modelName: model) { _ in }
     }
 

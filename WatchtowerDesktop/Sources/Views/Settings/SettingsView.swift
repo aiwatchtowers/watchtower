@@ -46,7 +46,7 @@ struct GeneralSettings: View {
     @State private var googleAuth = GoogleAuthService()
     @State private var jiraAuth = JiraAuthService()
 
-    @AppStorage("transcription.model") private var transcriptionModel = "large-v3"
+    @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     @AppStorage("transcription.langset") private var transcriptionLangset = "ru,uk,en"
     @AppStorage("transcription.windowSec") private var transcriptionWindowSec = 20.0
     @AppStorage("transcription.langThreshold") private var transcriptionLangThreshold = 0.6
@@ -440,8 +440,12 @@ struct GeneralSettings: View {
     private var transcriptionSection: some View {
         Section("Transcription") {
             Picker("Model", selection: $transcriptionModel) {
+                // "large-v3-v20240930" is WhisperKit's folder name for OpenAI's
+                // large-v3-turbo (pruned 4-layer decoder): faster than full
+                // large-v3, still multilingual, and Argmax's default on M2+.
+                Text("Large v3 Turbo (recommended)").tag("large-v3-v20240930")
                 Text("Large v3 (best quality)").tag("large-v3")
-                Text("Distil Large v3 (faster)").tag("distil-large-v3")
+                Text("Distil Large v3 (English only)").tag("distil-large-v3")
                 Text("Medium (fastest)").tag("medium")
             }
             .help("WhisperKit model used for on-device transcription")

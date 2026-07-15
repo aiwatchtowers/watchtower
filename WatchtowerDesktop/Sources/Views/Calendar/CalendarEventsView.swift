@@ -2,7 +2,7 @@ import SwiftUI
 
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
-    @AppStorage("transcription.model") private var transcriptionModel = "large-v3"
+    @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     @State private var meetingPrepVM = MeetingPrepViewModel()
     @State private var selectedEventID: String?
     @State private var googleAuth = GoogleAuthService()
