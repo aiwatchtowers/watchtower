@@ -239,6 +239,32 @@ Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Sl
 8. **Maintenance** — unsnoozes tasks and inbox situations whose snooze period has passed, returning them to active status
 9. **Feed publisher** — end of each cycle; mirrors situations/meetings/briefings/recaps/day plans into the feed index (no AI)
 
+When Secretary Memory is enabled (see below), a **Memory consolidation** step also runs each cycle, right after the dashboard/inbox pipeline.
+
+## Secretary Memory
+
+An optional long-term memory for your secretary — off by default. Instead of only reacting to the last few days of messages, the secretary gradually builds a knowledge base about your world: a page per person, channel, and project (who/what it is, current state, links), and episode notes recording what actually happened, each linked back to the real Slack messages it came from. Message links are validated before they are written, so every note is traceable to a source you can open. The AI chat and MCP tools can consult this memory when you ask questions; it does not change how triage, situations, or briefings work.
+
+**Where it lives:** the memory is plain markdown files in a git repository at `~/.local/share/watchtower/<workspace>/memory/`. The files are the memory — the app's database only keeps a search index over them, which can be rebuilt from the files at any time.
+
+**Open it in Obsidian (or any editor):** the vault uses standard wiki-links and frontmatter, so you can open the folder as an Obsidian vault and browse it like a personal wiki — but any text editor works too. **Your manual edits are respected:** before writing anything, the next consolidation run saves your changes as a separate "owner edit" entry in the vault's history. Nothing you wrote is ever silently overwritten, and the git history always shows what you changed versus what the secretary wrote.
+
+**How to enable:**
+
+```
+watchtower config set memory.enabled true
+```
+
+Once enabled, the daemon runs a consolidation pass each cycle: it seeds skeleton pages for active people/channels/projects, mirrors inbox situations into episode notes, and extracts notable episodes from raw channel history in bounded chunks (so a long backlog is worked off gradually).
+
+**CLI commands:**
+- `watchtower memory status` — node counts, extraction progress, remaining backlog, and the last run
+- `watchtower memory consolidate --once` — run a single consolidation pass right now
+- `watchtower memory open <ref>` — print a memory page by ID or any alias (a name, a Slack ID, `situation:<id>`, ...)
+- `watchtower memory recall <query>` — full-text search across all memory pages
+- `watchtower memory seed --dry-run` — preview which entity pages would be created (drop `--dry-run` to create them)
+- `watchtower memory reindex` — rebuild the search index from the vault files (safe anytime; files are never touched)
+
 ## Key Concepts
 
 - **Running context** — AI maintains a "memory" per channel, carrying forward active topics, recent decisions, and open questions between digest runs

@@ -24,6 +24,13 @@
 - Desktop feedback path: Swift `InboxFeedbackQueries.record(...)` mirrors the Go rule derivation logic so UI is immediately consistent. The `watchtower inbox feedback` CLI subcommand and DASH-04 enforce that comment-less 👍/👎 never invoke the AI interpreter — both paths derive rules directly, making bare thumbs fast and local.
 - See `docs/inventory/dashboard.md` for the DASH-01/02/03 behavioral contracts and `docs/inventory/inbox-pulse.md` for INBOX-01..09.
 
+### Secretary Memory (v1, Phases 0–2)
+- `internal/memory/` — a durable memory vault at `Config.WorkspaceDir()/memory`: markdown nodes (entities/episodes/rollups/beliefs, YAML frontmatter + `[[id|label]]` wiki-links) in a go-git repo. **Files + git history are the source of truth**; the SQLite index (`memory_nodes`/`memory_aliases`/`memory_node_stats` + `memory_fts` FTS5) is derived and rebuildable via `watchtower memory reindex` (MEM-02). Obsidian can open the vault, but nothing requires it.
+- Consolidation is a daemon phase (`phaseMemory`, after `phaseInbox`, before `phaseNextStep`), **off by default** (`memory.enabled`). `Pipeline.Run` order (`pipeline.go`): owner-edit commit (MEM-03: a dirty worktree is committed as `memory(owner-edit)` before any machine write) → index reconcile → mechanical seeding (active people/channels/Jira project keys, no AI) → situations ingest (mechanical, situations copied as episode nodes aliased `situation:<id>`, finalized when the situation closes) → raw-text episode extraction (`memory.extract_episodes`, light tier, chunked per-channel windows against the `workspace.memory_last_extracted_ts` watermark) → mechanical `map.md` render.
+- Extraction refs are validated against `messages` at write time — unresolvable refs dropped and counted, episodes with zero surviving refs discarded (MEM-01). A per-window AI failure freezes the watermark at the last fully committed window and never fails the run (MEM-04). Consolidation writes nothing to inbox tables and never touches `inbox_last_processed_ts` (MEM-05) — INBOX-*/DASH-* untouched.
+- MCP read tools in `internal/mcp/memory.go`: `memory_map` (map.md + counts), `memory_open` (resolve id/alias/tombstone, bumps access stats best-effort), `memory_recall` (FTS, alias exact-match first, no stats bump). CLI `cmd/memory.go`: `status`, `reindex`, `open <ref>`, `recall <query>`, `consolidate --once`, `seed [--dry-run]`.
+- See `docs/inventory/memory.md` for MEM-01..05 and the known v1 limitations (approximated cache-token split, best-effort stats bump, possible duplicate episodes on window retry until Phase 3 dedupe).
+
 ---
 
 ## Database & Migrations
