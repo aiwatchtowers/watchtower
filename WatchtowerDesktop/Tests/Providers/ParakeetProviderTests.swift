@@ -7,7 +7,11 @@ final class ParakeetProviderTests: XCTestCase {
         let p = ParakeetProvider()
         XCTAssertEqual(type(of: p).id, "parakeet")
         XCTAssertFalse(p.supportsLive)
-        XCTAssertEqual(p.availability(), .available)
+        if SystemInfo.isAppleSilicon {
+            XCTAssertEqual(p.availability(), .available)
+        } else {
+            XCTAssertEqual(p.availability(), .unavailable(reason: "Requires Apple Silicon"))
+        }
         let langs = p.supportedLanguages(model: "parakeet-tdt-0.6b-v3")
         XCTAssertNotNil(langs)
         XCTAssertTrue(langs!.isSuperset(of: ["ru", "uk", "en"]))

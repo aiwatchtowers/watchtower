@@ -13,7 +13,9 @@ struct ParakeetProvider: TranscriptionProvider {
         [.init(id: "parakeet-tdt-0.6b-v3", label: "Parakeet TDT 0.6B v3")]
     }
     var supportsLive: Bool { false }
-    func availability() -> ProviderAvailability { .available }
+    func availability() -> ProviderAvailability {
+        SystemInfo.isAppleSilicon ? .available : .unavailable(reason: "Requires Apple Silicon")
+    }
 
     /// The 25 European languages `parakeet-tdt-0.6b-v3-coreml` was trained on
     /// (FluidInference/parakeet-tdt-0.6b-v3-coreml model card).
