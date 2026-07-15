@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
+	"watchtower/internal/memory"
 
 	"watchtower/internal/customtracks"
 	"watchtower/internal/sync"
@@ -57,6 +58,7 @@ type Daemon struct {
 	peoplePipe       *guide.Pipeline
 	briefingPipe     *briefing.Pipeline
 	inboxPipe        *inbox.Pipeline
+	memoryPipe       *memory.Pipeline
 	feedPipe         *feed.Pipeline
 	nextStepPipe     *targets.Pipeline
 	customTracksPipe *customtracks.Pipeline
@@ -106,6 +108,16 @@ func (d *Daemon) SetBriefingPipeline(p *briefing.Pipeline) {
 // SetInboxPipeline sets the inbox detection pipeline.
 func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
 	d.inboxPipe = p
+}
+
+// SetMemoryPipeline sets the memory consolidation pipeline (internal/memory).
+// The daemon owns the run context, so the pipeline's pipeline_runs rows are
+// stamped source="daemon" here regardless of how the caller constructed it.
+func (d *Daemon) SetMemoryPipeline(p *memory.Pipeline) {
+	if p != nil {
+		p.Source = "daemon"
+	}
+	d.memoryPipe = p
 }
 
 // SetFeedPipeline installs the dashboard feed publisher (internal/feed).
@@ -253,6 +265,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.autoMarkRead()
 
 	d.phaseInbox(ctx)
+	d.phaseMemory(ctx)
 	d.phaseNextStep(ctx)
 	d.phaseBriefing(ctx)
 
@@ -520,6 +533,32 @@ func (d *Daemon) phaseInbox(ctx context.Context) {
 			cost: cost, totalAPI: totalAPI, err: err,
 		}
 	})
+}
+
+// phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
+// seeding, situation ingest, episode extraction). Runs after inbox so freshly
+// composed situations are visible, before next-step. The pipeline records its
+// own pipeline_runs row (source="daemon", see SetMemoryPipeline), so there is
+// no trackedPipelineRun wrapper here. Errors are logged and never abort the
+// cycle; watermark freeze on failure is the pipeline's own business (MEM-04).
+func (d *Daemon) phaseMemory(ctx context.Context) {
+	if d.memoryPipe == nil {
+		return
+	}
+	if !d.config.Memory.Enabled {
+		d.logger.Printf("memory: disabled, skipping")
+		return
+	}
+	stats, err := d.memoryPipe.Run(ctx)
+	if err != nil {
+		d.logger.Printf("memory error: %v", err)
+		return
+	}
+	situations := stats.Ingested.Created + stats.Ingested.Updated + stats.Ingested.Finalized
+	if stats.Seeded > 0 || situations > 0 || stats.Episodes > 0 || stats.WindowsFailed > 0 {
+		d.logger.Printf("memory: %d seeded, %d situation node(s), %d episode(s) from %d window(s) (%d failed, %d refs rejected)",
+			stats.Seeded, situations, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.RefsRejected)
+	}
 }
 
 // phaseFeed mirrors source tables into the dashboard feed index. Runs last so
