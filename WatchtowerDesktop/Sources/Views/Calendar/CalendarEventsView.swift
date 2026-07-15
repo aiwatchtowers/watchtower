@@ -353,34 +353,47 @@ struct CalendarEventsView: View {
     }
 
     private func adHocRow(_ transcript: MeetingTranscript) -> some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(transcript.title)
-                    .font(.callout)
-                    .fontWeight(.medium)
-                HStack(spacing: 8) {
-                    Text(TranscriptFormatting.formattedDate(transcript.createdAt))
-                    Text(TranscriptFormatting.formatDuration(transcript.durationSec))
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                TranscriptLangBadges(langStatsJSON: transcript.langStats)
 
                 if let summary = transcript.parsedSummary?.summary, !summary.isEmpty {
                     Text(summary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+
+                ScrollView {
+                    Text(transcript.transcriptText)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 300)
+
+                TranscriptAudioControl(transcript: transcript, center: appState.audioPlaybackCenter)
+
+                Button {
+                    linkTarget = transcript
+                } label: {
+                    Label("Link to event…", systemImage: "link")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            Spacer()
-            Button {
-                linkTarget = transcript
-            } label: {
-                Label("Link to event…", systemImage: "link")
+            .padding(.top, 6)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(transcript.title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text("\(TranscriptFormatting.formattedDate(transcript.createdAt)) · \(TranscriptFormatting.formatDuration(transcript.durationSec))")
                     .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
         .padding(10)
         .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
