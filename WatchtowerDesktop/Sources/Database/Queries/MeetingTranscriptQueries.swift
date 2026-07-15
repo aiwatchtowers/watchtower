@@ -46,4 +46,23 @@ enum MeetingTranscriptQueries {
                 """,
             arguments: [eventID, transcript.transcriptText, summaryJSON])
     }
+
+    /// Recordings master list (ad-hoc + event-linked), newest first. A recap
+    /// "exists" when the row has summary_json OR its event has a
+    /// meeting_recaps row (the recap collision guard can put it in either).
+    static func fetchRecordingList(_ db: Database, limit: Int = 200) throws -> [RecordingListItem] {
+        try RecordingListItem.fetchAll(
+            db,
+            sql: """
+                SELECT t.id, t.event_id, t.title, t.duration_sec, t.lang_stats, t.created_at,
+                       (t.summary_json IS NOT NULL
+                        OR EXISTS (SELECT 1 FROM meeting_recaps r WHERE r.event_id = t.event_id)) AS has_recap,
+                       (t.notes_md IS NOT NULL) AS has_notes,
+                       substr(t.transcript_text, 1, 200) AS snippet
+                FROM meeting_transcripts t
+                ORDER BY t.created_at DESC, t.id DESC
+                LIMIT ?
+                """,
+            arguments: [limit])
+    }
 }

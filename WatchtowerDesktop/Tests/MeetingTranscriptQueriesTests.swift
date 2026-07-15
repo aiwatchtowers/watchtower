@@ -122,4 +122,42 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
             XCTAssertNil(try MeetingRecapQueries.fetch(db, eventID: "evt-1"))
         }
     }
+
+    func test_recordingListReturnsAllNewestFirstWithLightFields() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1")
+            try TestDatabase.insertMeetingTranscript(
+                db, id: 1, eventID: "evt-1", title: "Linked",
+                transcriptText: String(repeating: "x", count: 500))
+            try TestDatabase.insertMeetingTranscript(
+                db, id: 2, title: "AdHoc", transcriptText: "short",
+                summaryJSON: self.summaryJSON, notesMD: "# n")
+        }
+        try db.read { db in
+            let items = try MeetingTranscriptQueries.fetchRecordingList(db)
+            XCTAssertEqual(items.map(\.id), [2, 1])
+            XCTAssertEqual(items[0].title, "AdHoc")
+            XCTAssertTrue(items[0].hasRecap, "summary_json counts as a recap")
+            XCTAssertTrue(items[0].hasNotes)
+            XCTAssertEqual(items[0].snippet, "short")
+            XCTAssertFalse(items[1].hasRecap)
+            XCTAssertFalse(items[1].hasNotes)
+            XCTAssertEqual(items[1].snippet.count, 200, "snippet must be capped at 200 chars")
+            XCTAssertEqual(items[1].eventID, "evt-1")
+        }
+    }
+
+    func test_recordingListCountsEventRecapAsRecap() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1")
+            try TestDatabase.insertMeetingRecap(db, eventID: "evt-1", recapJSON: self.summaryJSON)
+            try TestDatabase.insertMeetingTranscript(db, id: 1, eventID: "evt-1", title: "Linked")
+        }
+        try db.read { db in
+            let items = try MeetingTranscriptQueries.fetchRecordingList(db)
+            XCTAssertTrue(items[0].hasRecap, "meeting_recaps row for the linked event counts as a recap")
+        }
+    }
 }
