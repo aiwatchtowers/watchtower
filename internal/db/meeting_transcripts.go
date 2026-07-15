@@ -20,6 +20,7 @@ type MeetingTranscript struct {
 	LangStats      string
 	TranscriptText string
 	SummaryJSON    sql.NullString
+	NotesMD        sql.NullString
 	CreatedAt      string
 	UpdatedAt      string
 }
@@ -33,12 +34,12 @@ type MeetingTranscriptFilter struct {
 	Limit    int    // 0 = 50
 }
 
-const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, created_at, updated_at`
+const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, notes_md, created_at, updated_at`
 
 func scanMeetingTranscript(row interface{ Scan(...any) error }) (MeetingTranscript, error) {
 	var t MeetingTranscript
 	err := row.Scan(&t.ID, &t.EventID, &t.Title, &t.AudioPath, &t.DurationSec,
-		&t.LangStats, &t.TranscriptText, &t.SummaryJSON, &t.CreatedAt, &t.UpdatedAt)
+		&t.LangStats, &t.TranscriptText, &t.SummaryJSON, &t.NotesMD, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
 
@@ -125,6 +126,20 @@ func (db *DB) SetMeetingTranscriptSummary(id int64, summaryJSON string) error {
 	`, summaryJSON, id)
 	if err != nil {
 		return fmt.Errorf("setting meeting transcript %d summary: %w", id, err)
+	}
+	return nil
+}
+
+// SetMeetingTranscriptNotes stores the publishable markdown notes for a
+// transcript and bumps updated_at.
+func (db *DB) SetMeetingTranscriptNotes(id int64, notesMD string) error {
+	_, err := db.Exec(`
+		UPDATE meeting_transcripts
+		SET notes_md = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ?
+	`, notesMD, id)
+	if err != nil {
+		return fmt.Errorf("setting meeting transcript %d notes: %w", id, err)
 	}
 	return nil
 }
