@@ -61,7 +61,7 @@ final class WindowPlannerTests: XCTestCase {
         let s = [Float](repeating: 0.5, count: 1700)
         let ranges = planner.planWindows(total: s.count) { s[$0] }
         XCTAssertEqual(ranges[0].upperBound, 1440) // 1280 + 160
-        XCTAssertEqual(ranges.last!.upperBound, 1700) // tail window to the end
+        XCTAssertEqual(ranges.last?.upperBound, 1700) // tail window to the end
     }
 
     func testTinyWindowZoneSmallerThanFrameFallsBackToNominal() {

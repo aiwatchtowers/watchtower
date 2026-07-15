@@ -87,6 +87,32 @@ extension TranscriptionConfig {
     }
 }
 
+/// Trims engine segments, drops empty ones, and lifts the survivors to
+/// absolute timestamps. nil = the window produced no speech. Shared by
+/// WindowedTranscriber (batch) and StreamingTranscriber (live) so their
+/// text/segment shapes cannot drift.
+func liftWindowSegments(
+    _ raw: [TranscribedSegment],
+    windowStart: Int,
+    language: String
+) -> (windowText: String, segments: [TranscriptSegment])? {
+    let windowStartSec = Double(windowStart) / Double(TranscriptionConfig.sampleRate)
+    let cleaned = raw
+        .map {
+            TranscribedSegment(text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                               startSec: $0.startSec, endSec: $0.endSec)
+        }
+        .filter { !$0.text.isEmpty }
+    guard !cleaned.isEmpty else { return nil }
+    let lifted = cleaned.map {
+        TranscriptSegment(text: $0.text,
+                          startSec: windowStartSec + $0.startSec,
+                          endSec: windowStartSec + $0.endSec,
+                          language: language)
+    }
+    return (cleaned.map(\.text).joined(separator: " "), lifted)
+}
+
 /// Detection with sticky fallback, shared by WindowedTranscriber (batch) and
 /// StreamingTranscriber (live) so their language selection cannot drift. A
 /// detection error is treated as low confidence (fallback), never fatal.

@@ -23,7 +23,7 @@ struct MicActivity: Equatable {
     }
 
     /// nil when the sidecar is missing, unreadable, or holds no valid bins.
-    static func load(for audioURL: URL) -> MicActivity? {
+    static func load(for audioURL: URL) -> Self? {
         guard let text = try? String(contentsOf: url(for: audioURL), encoding: .utf8) else { return nil }
         let bins: [Bin] = text.split(separator: "\n").compactMap { line in
             let parts = line.split(separator: " ")
@@ -31,7 +31,7 @@ struct MicActivity: Equatable {
             return Bin(mic: mic, sys: sys)
         }
         guard !bins.isEmpty else { return nil }
-        return MicActivity(bins: bins)
+        return Self(bins: bins)
     }
 
     /// RMS pair at `timeSec`; nil outside the recorded timeline.

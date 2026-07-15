@@ -99,7 +99,8 @@ struct RecordingIndicatorView: View {
             }
             liveEngineIndicator(center.liveEngineState)
             Button { expanded = true } label: { Image(systemName: "chevron.up") }
-                .buttonStyle(.plain).controlSize(.small)
+                .buttonStyle(.plain)
+                .controlSize(.small)
                 .help("Show live transcript")
             Button {
                 stop(center)
@@ -163,9 +164,11 @@ struct RecordingIndicatorView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(center.liveChunks) { chunk in
                                 HStack(alignment: .top, spacing: 6) {
-                                    Text(chunk.language).font(.caption2.weight(.semibold))
+                                    Text(chunk.language)
+                                        .font(.caption2.weight(.semibold))
                                         .foregroundStyle(.secondary)
-                                        .padding(.horizontal, 4).padding(.vertical, 1)
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
                                         .background(.quaternary, in: Capsule())
                                     Text(chunk.text).font(.callout).textSelection(.enabled)
                                 }

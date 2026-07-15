@@ -58,24 +58,27 @@ struct StreamingTranscriber {
                 lastEngineError = error
                 return // skip: not counted, language does not stick
             }
-            let windowStartSec = Double(windowStart) / Double(TranscriptionConfig.sampleRate)
-            let cleaned = rawSegments
-                .map { TranscribedSegment(text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                                          startSec: $0.startSec, endSec: $0.endSec) }
-                .filter { !$0.text.isEmpty }
-            guard !cleaned.isEmpty else { return }
-            let windowText = cleaned.map(\.text).joined(separator: " ")
-            texts.append(windowText)
-            segments.append(contentsOf: cleaned.map {
-                TranscriptSegment(text: $0.text,
-                                  startSec: windowStartSec + $0.startSec,
-                                  endSec: windowStartSec + $0.endSec,
-                                  language: language)
-            })
+            guard let lifted = liftWindowSegments(rawSegments, windowStart: windowStart, language: language) else {
+                return // silent window: not counted, language does not stick
+            }
+            texts.append(lifted.windowText)
+            segments.append(contentsOf: lifted.segments)
             prevLang = language
             langStats[language, default: 0] += 1
             chunkIndex += 1
-            onChunk(StreamChunk(index: chunkIndex, text: windowText, language: language))
+            onChunk(StreamChunk(index: chunkIndex, text: lifted.windowText, language: language))
+        }
+
+        // Transcribes the window and drops consumed samples from the buffer.
+        func emit(_ range: Range<Int>) async {
+            let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
+            await process(window: window, windowStart: range.lowerBound)
+            absStart = planner.nextStart(after: range)
+            let drop = absStart - consumedBase
+            if drop > 0 {
+                buffer.removeFirst(min(drop, buffer.count))
+                consumedBase += drop
+            }
         }
 
         for await piece in samples {
@@ -90,14 +93,7 @@ struct StreamingTranscriber {
                 sample: { buffer[$0 - consumedBase] }
             ) {
                 if Task.isCancelled { break }
-                let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
-                await process(window: window, windowStart: range.lowerBound)
-                absStart = planner.nextStart(after: range)
-                let drop = absStart - consumedBase
-                if drop > 0 {
-                    buffer.removeFirst(min(drop, buffer.count))
-                    consumedBase += drop
-                }
+                await emit(range)
             }
             if Task.isCancelled { break }
         }
@@ -114,15 +110,9 @@ struct StreamingTranscriber {
                   isFinal: true,
                   sample: { buffer[$0 - consumedBase] }
               ) {
-            let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
-            await process(window: window, windowStart: range.lowerBound)
-            if planner.isLastWindow(start: range.lowerBound, total: consumedBase + buffer.count) { break }
-            absStart = planner.nextStart(after: range)
-            let drop = absStart - consumedBase
-            if drop > 0 {
-                buffer.removeFirst(min(drop, buffer.count))
-                consumedBase += drop
-            }
+            let isLast = planner.isLastWindow(start: range.lowerBound, total: consumedBase + buffer.count)
+            await emit(range)
+            if isLast { break }
         }
 
         if texts.isEmpty, let lastEngineError {

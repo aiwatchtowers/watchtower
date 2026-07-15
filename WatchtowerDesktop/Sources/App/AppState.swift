@@ -37,20 +37,20 @@ final class AppState {
     /// the calendar event that started it.
     let meetingRecorderCenter = MeetingRecorderCenter()
 
+    /// Diarizer models are prefetched only while speaker roles are on; a
+    /// failure is fine — the post-pass retries the download and degrades to a
+    /// role-less transcript.
+    private static let prefetchDiarizerModels: @Sendable () async -> Void = {
+        let defaults = UserDefaults.standard
+        let rolesOn = defaults.object(forKey: "transcription.diarization") == nil
+            || defaults.bool(forKey: "transcription.diarization")
+        if rolesOn { try? await FluidAudioDiarizer.prefetchModels() }
+    }
+
     /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,
     /// so download progress is visible (and retryable) from anywhere,
     /// independent of whether a recording is in progress.
-    let transcriptionModelProvisioner = TranscriptionModelProvisioner(
-        prefetchExtras: {
-            // Diarizer models are prefetched only while speaker roles are on;
-            // a failure is fine — the post-pass retries the download and
-            // degrades to a role-less transcript.
-            let defaults = UserDefaults.standard
-            let rolesOn = defaults.object(forKey: "transcription.diarization") == nil
-                || defaults.bool(forKey: "transcription.diarization")
-            if rolesOn { try? await FluidAudioDiarizer.prefetchModels() }
-        }
-    )
+    let transcriptionModelProvisioner = TranscriptionModelProvisioner(prefetchExtras: AppState.prefetchDiarizerModels)
 
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?

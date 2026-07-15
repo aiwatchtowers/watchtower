@@ -53,19 +53,9 @@ struct WindowedTranscriber {
                 continue
             }
 
-            let windowStartSec = Double(range.lowerBound) / Double(TranscriptionConfig.sampleRate)
-            let cleaned = rawSegments
-                .map { TranscribedSegment(text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                                          startSec: $0.startSec, endSec: $0.endSec) }
-                .filter { !$0.text.isEmpty }
-            if !cleaned.isEmpty {
-                texts.append(cleaned.map(\.text).joined(separator: " "))
-                segments.append(contentsOf: cleaned.map {
-                    TranscriptSegment(text: $0.text,
-                                      startSec: windowStartSec + $0.startSec,
-                                      endSec: windowStartSec + $0.endSec,
-                                      language: language)
-                })
+            if let lifted = liftWindowSegments(rawSegments, windowStart: range.lowerBound, language: language) {
+                texts.append(lifted.windowText)
+                segments.append(contentsOf: lifted.segments)
                 prevLang = language
                 langStats[language, default: 0] += 1
             }
