@@ -1,156 +1,156 @@
-# Аудит реальных данных под память секретаря
+# Real-data audit for secretary memory
 
-> Дата: 2026-07-15. База: рабочая машина, workspace `whitebit`, файл 1.6 ГБ.
-> Метод: только read-only SELECT'ы (`sqlite3 -readonly`). Сырые тексты в отчёт не копировались — только агрегаты и обезличенные наблюдения.
-> Задача: `docs/specs/memory-data-audit-task.md`; контекст: `docs/specs/memory-design-notes.md`.
+> Date: 2026-07-15. DB: work machine, workspace `whitebit`, 1.6 GB file.
+> Method: read-only SELECTs only (`sqlite3 -readonly`). No raw message text was copied into this report — aggregates and anonymized observations only.
+> Task: `docs/specs/memory-data-audit-task.md`; context: `docs/specs/memory-design-notes.md`.
 
-**Методика оценки токенов.** Из `length(text)` (символы) и `length(cast(text as blob))` (байты UTF-8) раскладываю текст на кириллицу (2 байта/символ) и латиницу: `cyr = bytes − chars`, `lat = 2·chars − bytes`; токены ≈ `cyr/2.2 + lat/4.0`. Грубо (±30%), но на порядок точнее, чем «байты БД ÷ 4».
+**Token estimation method.** From `length(text)` (characters) and `length(cast(text as blob))` (UTF-8 bytes) the text splits into Cyrillic (2 bytes/char) and Latin: `cyr = bytes − chars`, `lat = 2·chars − bytes`; tokens ≈ `cyr/2.2 + lat/4.0`. Rough (±30%), but an order of magnitude more accurate than "DB bytes ÷ 4".
 
 ---
 
-## 1. Объёмы и темп
+## 1. Volume and rate
 
-**Главная поправка: оценка дока «3–6М токенов/день текста» завышена в ~50–60 раз.** Она выводилась из роста файла БД (33 МБ/день), но 98%+ этого роста — не текст:
+**Main correction: the doc's estimate of "3–6M tokens/day of text" is ~50–60× too high.** It was derived from DB file growth (33 MB/day), but 98%+ of that growth is not text:
 
-| Компонент базы (1.6 ГБ) | Размер | Доля |
+| DB component (1.6 GB) | Size | Share |
 |---|---|---|
-| `messages.raw_json` (вся история) | 886 МБ | 55% |
-| остальное в таблице `messages` (ключи, permalink, ts…) | ~486 МБ | 30% |
-| `messages.text` — **весь текст всей истории** | 23.5 МБ | **1.4%** |
-| FTS-индекс сообщений | ~42 МБ | 2.6% |
-| B-tree индексы `messages` | ~55 МБ | 3.4% |
-| дистиллят (`digests` + `digest_topics`) | ~36 МБ | 2.2% |
-| `people_cards` | 22 МБ | 1.4% |
+| `messages.raw_json` (full history) | 886 MB | 55% |
+| rest of the `messages` table (keys, permalink, ts…) | ~486 MB | 30% |
+| `messages.text` — **all text of all history** | 23.5 MB | **1.4%** |
+| message FTS index | ~42 MB | 2.6% |
+| `messages` B-tree indexes | ~55 MB | 3.4% |
+| distillate (`digests` + `digest_topics`) | ~36 MB | 2.2% |
+| `people_cards` | 22 MB | 1.4% |
 
-Прочие факты:
+Other facts:
 
-- Всего 451K сообщений; история тянется с 2020 (синк забирал бэклог), активный период — ~2 месяца.
-- Последние 30 дней: **124.4K сообщений, 5.03М символов / 6.36М байт текста ≈ 1.5М токенов/месяц ≈ 50К токенов/день** в среднем; пиковые будни 60–90К, выходные 5–15К.
-- **73% сообщений (90.7K из 124.4K) имеют пустой `text`** — бот-нотификации с контентом в attachments/blocks (`raw_json`; 178 МБ за 30 дней). Текст живых людей (`is_bot=0`): 28.8K сообщений, 3.05М символов (~60% текстового потока, ≈30К токенов/день).
-- Gmail-таблиц в базе нет — почта не синкается, в оценках не участвует.
-- Jira: 1165 issues по 2 проектам, но **синк мёртв с 2026-04-24** — за 30 дней 0 обновлений.
+- 451K messages total; history reaches back to 2020 (sync pulled the backlog), the active period is ~2 months.
+- Last 30 days: **124.4K messages, 5.03M chars / 6.36M bytes of text ≈ 1.5M tokens/month ≈ 50K tokens/day** on average; peak weekdays 60–90K, weekends 5–15K.
+- **73% of messages (90.7K of 124.4K) have empty `text`** — bot notifications with content in attachments/blocks (`raw_json`; 178 MB over 30 days). Human text (`is_bot=0`): 28.8K messages, 3.05M chars (~60% of the text stream, ≈30K tokens/day).
+- No Gmail tables in the DB — mail is not synced, excluded from estimates.
+- Jira: 1165 issues across 2 projects, but **sync has been dead since 2026-04-24** — 0 updates in 30 days.
 
-## 2. Покрытие потока дистиллятом
+## 2. Stream coverage by distillate
 
-### Чем накрыто
+### What is covered
 
-Сообщения последних 30 дней против окон канальных дайджестов (`period_from..period_to` своего канала):
+Messages of the last 30 days against channel digest windows (`period_from..period_to` of their channel):
 
-| Разрез | Всего | В окне дайджеста |
+| Slice | Total | Inside a digest window |
 |---|---|---|
-| Сообщения с текстом | 33.7K | **~40%** (13.9K) |
-| …по символам текста | 5.03М | **~35%** (1.59М) |
-| private-каналы (символы) | 4.43М | 35% |
-| public (символы) | 287К | 9% |
-| group_dm (символы) | 55К | 33% |
-| **DM (символы)** | 255К | **0%** |
-| Пустотекстовые (боты) | 90.7K | ~2% |
+| Messages with text | 33.7K | **~40%** (13.9K) |
+| …by text characters | 5.03M | **~35%** (1.59M) |
+| private channels (chars) | 4.43M | 35% |
+| public (chars) | 287K | 9% |
+| group_dm (chars) | 55K | 33% |
+| **DM (chars)** | 255K | **0%** |
+| Empty-text (bots) | 90.7K | ~2% |
 
-- Покрытие ~40% стабильно по каждому из 30 дней — это не лаг вотермарка, а структура: дайджест-окна короткие (от десятков секунд до пары часов, типично ~30 мин на прогон синка) и генерятся не для всякого канала/окна.
-- По каналам: из 308 активных за месяц дайджесты когда-либо видели 157; в «знакомых дайджестам» каналах лежит 85% символов. Полные дыры: **все 102 DM-канала** (5% текста), 23 private (139К символов), 5 public.
-- Мьютов нет (`channel_settings` пуст) — дыры не объясняются мьютами.
-- `period_summaries` — 0 строк (пайплайн не работает). Catchup (99 тем/30д) ссылается на digests/inbox — дистиллят второго порядка, сырьё не покрывает.
-- Inbox/situations: 1370 inbox items за 30д → 563 уникальных сообщения дошли до situations; 100 situations создано (фича живёт только с 2026-07-07).
+- The ~40% coverage is stable across each of the 30 days — not a watermark lag but structural: digest windows are short (tens of seconds to a couple of hours, typically ~30 min per sync run) and are not generated for every channel/window.
+- By channel: of 308 channels active in the month, digests have ever seen 157; channels "known to digests" hold 85% of the characters. Complete holes: **all 102 DM channels** (5% of text), 23 private (139K chars), 5 public.
+- No mutes (`channel_settings` is empty) — the holes are not explained by muting.
+- `period_summaries` — 0 rows (the pipeline doesn't run). Catchup (99 themes/30d) references digests/inbox — second-order distillate, doesn't cover raw.
+- Inbox/situations: 1370 inbox items in 30d → 563 unique messages reached situations; 100 situations created (the feature has only existed since 2026-07-07).
 
-### Объём дистиллята
+### Distillate volume
 
-Дневной объём **нового** дистиллята (символы, типичный будень):
+Daily volume of **new** distillate (characters, typical weekday):
 
-| Источник | символов/день |
+| Source | chars/day |
 |---|---|
-| digest summaries (новые) | ~12К |
-| digest topics (title+summary+decisions+actions) | ~45К |
-| situations (после 07.07) | 15–50К |
-| briefing | ~10К |
-| catchup (эпизодически) | ~20К |
-| **Итого нового** | **~80–130К симв ≈ 25–45К токенов/день** |
+| digest summaries (new) | ~12K |
+| digest topics (title+summary+decisions+actions) | ~45K |
+| situations (after 07-07) | 15–50K |
+| briefing | ~10K |
+| catchup (episodic) | ~20K |
+| **Total new** | **~80–130K chars ≈ 25–45K tokens/day** |
 
-Нюанс: 82% «объёма» таблицы digests (1.62М из 1.98М символов за 30д) — это `running_summary`, кумулятивное состояние канала, перекопируемое в каждый дайджест. Если считать его повторно, получится ~100К+ токенов/день — так, видимо, и родилась оценка дока 100–300К. Фактический вход сильного тира (новый дистиллят) — **25–45К токенов/день**, в 3–7 раз ниже оценки.
+Nuance: 82% of the `digests` table "volume" (1.62M of 1.98M chars over 30d) is `running_summary` — the cumulative channel state re-copied into every digest. Counting it repeatedly yields ~100K+ tokens/day — which is presumably how the doc's 100–300K estimate was born. The actual strong-tier input (new distillate) is **25–45K tokens/day**, 3–7× below the estimate.
 
-Наивная «компрессия» дайджестов относительно накрытого ими сырья ≈ 1:1 и хуже (1.59М накрытых символов → ~1.7М символов digest-выхлопа с topics): существующий дистиллят **не компрессия 10–20:1, а пересказ** с повторами состояния.
+Naive "compression" of digests relative to the raw they cover is ≈1:1 or worse (1.59M covered chars → ~1.7M chars of digest output including topics): the existing distillate is **not 10–20:1 compression but a restatement** with repeated state.
 
-Фактический расход API за 30 дней (`pipeline_runs`, все статусы) — три цифры с разными ролями:
+Actual API spend over 30 days (`pipeline_runs`, all statuses) — three numbers with different roles:
 
-| Метрика | 30 дней | ~/день | Что означает |
+| Metric | 30 days | ~/day | Meaning |
 |---|---|---|---|
-| uncached input (`input_tokens`) | 1.9М | 64К | нижняя граница *нового* контента, прочитанного моделями (новый контент в агентских сессиях часто идёт как cache_creation и сюда не попадает) |
-| кэш-input (read+write вместе) | 22.4М | 750К | повторные чтения контекста агентскими циклами; read стоит 0.1× обычного input, write — 1.25×, в БД они **не разделены** |
-| output | 19.9М | 664К | генерация (рассуждения + результат); **главный кост-драйвер**: по haiku-ценам ~$100/мес, по sonnet ~$300/мес — на порядки дороже всего input |
+| uncached input (`input_tokens`) | 1.9M | 64K | lower bound of *new* content read by models (new content in agentic sessions often lands as cache_creation and doesn't show here) |
+| cache input (read+write combined) | 22.4M | 750K | repeated context reads by agentic loops; read costs 0.1× regular input, write 1.25×; **not separated** in the DB |
+| output | 19.9M | 664K | generation (reasoning + result); **the main cost driver**: ~$100/mo at haiku prices, ~$300/mo at sonnet — orders of magnitude above all input |
 
-«Первый (дешёвый) проход» действительно уже оплачен: ≥64К/день нового контента input + ~660К/день output. По пайплайнам (полный input): digests 4.6М, inbox 4.6М, tracks 6.2М, people 7.7М, briefing 0.9М. Сверено с Desktop-экраном Usage за 14.07: БД даёт 1.24М in / 57.3К uncached / 872К out против 1.3М / 67.7К / 890К на экране — расхождение объясняется границей дня (started_at в UTC, экран — локальные сутки).
+The "first (cheap) pass" is indeed already paid for: ≥64K/day of new-content input + ~660K/day of output. By pipeline (full input): digests 4.6M, inbox 4.6M, tracks 6.2M, people 7.7M, briefing 0.9M. Cross-checked against the Desktop Usage screen for 07-14: the DB gives 1.24M in / 57.3K uncached / 872K out vs 1.3M / 67.7K / 890K on the screen — the gap is explained by the day boundary (started_at in UTC, the screen uses local days).
 
-Семантика токен-полей (`internal/ai/client.go`): `input_tokens` = только uncached input; `total_api_tokens` = input + cache_read + cache_creation (есть лишь в `pipeline_runs`/`pipeline_steps` — в самих `digests` полного input нет); `cost_usd` нигде не считается (всюду 0).
+Token-field semantics (`internal/ai/client.go`): `input_tokens` = uncached input only; `total_api_tokens` = input + cache_read + cache_creation (present only in `pipeline_runs`/`pipeline_steps` — `digests` rows have no full input); `cost_usd` is computed nowhere (always 0).
 
-Важно про валюту экономики: Watchtower зовёт `claude`/`codex` CLI по подписке — маржинальная цена токена $0, фактический бюджет — **rate limits подписки** (которые учитывают потребление примерно как API-цены: кэш-читы сильно дешевле). API-доллары — санити-чек, не реальный счёт.
+Important, on the economics' currency: Watchtower calls the `claude`/`codex` CLIs on a subscription — marginal token price is $0, the real budget is the **subscription's rate limits** (which weigh consumption roughly like API prices: cache reads are much cheaper). API dollars are a sanity check, not a real bill.
 
-## 3. Пригодность дистиллята как заготовок эпизодов
+## 3. Fitness of the distillate as episode seeds
 
-Разобрано вручную 13 образцов за разные дни: 7 случайных digest topics, 4 situations, 2 catchup themes.
+13 samples across different days reviewed by hand: 7 random digest topics, 4 situations, 2 catchup themes.
 
-### Digest topics — заготовка наполовину
+### Digest topics — half a seed
 
-Есть стабильно: время-рамка (окно дайджеста), участники (имена в тексте + JSON `situations` внутри топика с user_id и ролями), суть эпизода (title+summary читаются как связная история).
+Consistently present: time frame (the digest window), participants (names in text + a `situations` JSON inside the topic with user_id and roles), the gist of the episode (title+summary read as a coherent story).
 
-Систематически нет:
+Systematically missing:
 
-1. **Исход/резолюция.** Окна узкие → топик — снимок середины истории: «дополнительных апдейтов в окне нет», action items вечно `open`. Продолжение той же истории в следующем окне **никак не слинковано** с предыдущим — сшивать эпизод из 3–5 окон придётся консолидации самой.
-2. **Provenance — фактически отсутствует.** `key_messages` заполнен в 42% топиков, и ссылки **галлюцинированы**: из 2173 ts-ссылок за 30 дней ровно **12 (0.6%) резолвятся в реальное сообщение** точным совпадением, 12% — с допуском ±60с. Модель генерирует правдоподобные ts (характерный артефакт — «сдвиг на год»: месяц-день совпадают, epoch из прошлого года). `decisions[].message_ts` — вперемешку реальный ts, время «17:44» или мусор. Channel_id восстановим через родительский digest; message-level ссылок нет.
-3. Мелкое: изредка артефакты генерации (иероглифы посреди русского текста), неразрезолвленные `U0…` id вместо имён.
+1. **Outcome/resolution.** Narrow windows → a topic is a snapshot of a story's middle: "no further updates in the window", action items forever `open`. The same story's continuation in the next window is **not linked** to the previous one — consolidation itself would have to stitch an episode out of 3–5 windows.
+2. **Provenance — effectively absent.** `key_messages` is filled in 42% of topics, and the links are **hallucinated**: of 2173 ts links over 30 days exactly **12 (0.6%) resolve to a real message** by exact match, 12% with a ±60s tolerance. The model generates plausible ts (a telltale artifact — the "year shift": month-day match, epoch from the previous year). `decisions[].message_ts` is a mix of a real ts, a "17:44" time, or garbage. Channel_id is recoverable via the parent digest; message-level links do not exist.
+3. Minor: occasional generation artifacts (CJK glyphs in the middle of Russian text), unresolved `U0…` ids instead of names.
 
-### Situations — готовые эпизоды
+### Situations — ready-made episodes
 
-Лучшая находка аудита. У каждой situation: заголовок, summary, why_matters, **chronology по акторам** («кто → что сделал/заявил → чем опровергли»), статусная жизнь (open/done/stale/converted + resolved_reason), и **безупречный provenance**: 1337 из 1337 inbox-ссылок за 30 дней резолвятся в реальные сообщения (channel_id+ts, написаны детектором, не LLM; есть permalink). Это ровно схема эпизода из design-notes.
+The audit's best find. Every situation has: a title, summary, why_matters, **actor-based chronology** ("who → did/claimed what → what refuted it"), a status lifecycle (open/done/stale/converted + resolved_reason), and **impeccable provenance**: 1337 of 1337 inbox references over 30 days resolve to real messages (channel_id+ts, written by the detector, not an LLM; permalink included). This is exactly the episode schema from the design notes.
 
-Ограничения: покрывают только trigger-поток + верх stream-разбора (563 сообщения из 124К за месяц); история — с 2026-07-07; у open-ситуаций исход по определению ещё не наступил.
+Limitations: they only cover the trigger stream + the top of the stream scan (563 messages of 124K per month); history starts 2026-07-07; open situations by definition have no outcome yet.
 
 ### Catchup themes
 
-refs указывают на digests/inbox items (не на сообщения) — как provenance пригодны транзитивно и только через inbox-ветку.
+refs point to digests/inbox items (not to messages) — usable as provenance only transitively and only through the inbox branch.
 
-## 4. Словарь сущностей (кандидаты в `ent_*` первой волны)
+## 4. Entity vocabulary (first-wave `ent_*` candidates)
 
-| Сущность | За 30 дней |
+| Entity | Over 30 days |
 |---|---|
-| Люди, писавшие хоть раз | 489 |
-| — с ≥5 сообщениями | 270 |
-| — с ≥20 | 155 |
-| — с ≥100 | 65 |
-| people_cards уже существует | 391 |
-| Каналы с текстом | 294 (157 private, 102 dm, 23 gdm, 12 public) |
-| — с ≥20 сообщениями | 163 |
-| Jira-проекты | 2 (синк мёртв) |
-| Tracks (нити) всего | 880 |
+| People who wrote at least once | 489 |
+| — with ≥5 messages | 270 |
+| — with ≥20 | 155 |
+| — with ≥100 | 65 |
+| people_cards already exist | 391 |
+| Channels with text | 294 (157 private, 102 dm, 23 gdm, 12 public) |
+| — with ≥20 messages | 163 |
+| Jira projects | 2 (sync dead) |
+| Tracks (threads) total | 880 |
 | Targets | 27 |
 
-Масштаб первой волны: **сотни узлов, не тысячи** (~150–300 людей + ~160 каналов + проекты/системы/процессы). Семантический ярус в единицы МБ — подтверждается; staggered-переписывание сотен страниц — заведомо посильно.
+First-wave scale: **hundreds of nodes, not thousands** (~150–300 people + ~160 channels + projects/systems/processes). A semantic tier of single-digit MB is confirmed; staggered rewriting of hundreds of pages is clearly feasible.
 
 ---
 
-## Вердикт по ставке «не платить дважды»
+## Verdict on the "don't pay twice" bet
 
-**Подтверждена частично — и в важном смысле оказалась ненужной.**
+**Partially confirmed — and, in the important sense, turned out unnecessary.**
 
-Подтверждено:
-- Первый проход действительно оплачен (за месяц: ≥1.9М uncached input + 22.4М кэш-input + 19.9М output по пайплайнам) и его выхлоп существует.
-- Объём дистиллята сильному тиру по карману: 25–45К токенов/день входа — центы в день. Экономика консолидации сходится с запасом.
-- Situations — готовые заготовки эпизодов с идеальным provenance; их надо брать как есть.
+Confirmed:
+- The first pass is indeed paid for (per month: ≥1.9M uncached input + 22.4M cache input + 19.9M output across pipelines) and its output exists.
+- The distillate volume is affordable for the strong tier: 25–45K tokens/day of input — cents per day. Consolidation economics closes with margin.
+- Situations are ready-made episode seeds with perfect provenance; take them as-is.
 
-Опровергнуто:
-- **Digest topics как основной корпус заготовок не годятся без доработки**: нет исхода (узкие окна, отсутствие сшивки историй между окнами) и нет message-level provenance (99.4% ссылок галлюцинированы). «Нырять в сырьё точечно по ссылкам из дистиллята» на текущих дайджестах невозможно — ссылки битые.
-- Покрытие дырявое: 60–65% текста вне digest-окон, DM — 0%, period_summaries мертвы. Память, питающаяся только выхлопом, унаследует эти дыры.
+Refuted:
+- **Digest topics are unusable as the main seed corpus without rework**: no outcome (narrow windows, no story stitching across windows) and no message-level provenance (99.4% of links hallucinated). "Dive into raw selectively via distillate links" is impossible on current digests — the links are broken.
+- Coverage is full of holes: 60–65% of text outside digest windows, DMs at 0%, period_summaries dead. Memory feeding only on the output would inherit these holes.
 
-Ключевая поправка, меняющая рамку решения:
-- **Проблема, от которой защищала ставка, не существует.** Реальное текстовое сырьё — ~50К токенов/день (не 3–6М). Прочитать **весь** дневной текст целиком стоит: дешёвым тиром ~$0.05–0.1/день, сильным ~$0.2–0.5/день (input). «Экономика ×N» при отказе от ставки — это иксы от копеечной базы.
+The key correction that changes the decision frame:
+- **The problem the bet protected against does not exist.** Real text raw is ~50K tokens/day (not 3–6M). Reading the **entire** daily text costs: ~$0.05–0.1/day on the cheap tier, ~$0.2–0.5/day on the strong tier (input). The "economics ×N" of dropping the bet is a multiple of a negligible base.
 
-Следовательно: «не платить дважды» — не несущая стена, а оптимизация. Дизайн воронки пересматривать не нужно, но и цепляться за дайджесты как единственный вход — незачем.
+Therefore: "don't pay twice" is not a load-bearing wall but an optimization. The funnel design needs no rework, but there is also no reason to cling to digests as the only input.
 
-## Следствия для MVP-среза
+## Consequences for the MVP slice
 
-1. **Эпизоды v1 = situations.** Брать целиком (title/summary/chronology/статус/provenance). Это уже «эпизод по нашей схеме» без доработок.
-2. **Свой дешёвый экстрактор эпизодов поверх сырого текста** вместо попытки чинить сшивку digest-окон: 50К токенов/день сырья читаются haiku-классом за копейки, закрывают DM-дыру и 60% непокрытого потока, и дают честные provenance-ссылки (ts берутся из данных, не из генерации). Это дешевле и надёжнее, чем реконструировать эпизоды из фрагментированных окон с битыми ссылками.
-3. **Дайджесты — фоновый контекст, не источник ссылок.** running_summary канала полезен как «что это за канал сейчас» при переписывании страниц сущностей; key_messages/decisions.message_ts не использовать никогда (галлюцинации). Отдельная (не блокирующая память) задача — чинить генерацию key_messages: передавать реальные ts в промпт и валидировать при записи, иначе поле стоит убрать.
-4. **Бот-поток (73% сообщений, контент в raw_json) — вне памяти v1.** Это алерты/CI/интеграции; если когда-то понадобится — отдельный детерминированный парсер, не LLM.
-5. **Jira-синк чинить до того**, как считать Jira входом памяти (мёртв с апреля); gmail-входа нет вовсе.
-6. Оценки в design-notes скорректировать: сырьё ~50К ток/день (не 3–6М); дистиллят ~25–45К ток/день (не 100–300К); словарь сущностей — сотни узлов; «компрессия 10–20:1» у существующих дайджестов не наблюдается (≈1:1 из-за повторов состояния).
-7. **Экономику консолидации мерить по output, а не по input**: живые данные показывают, что output пайплайнов (664К/день) на порядки дороже input в любой ценовой модели, а основная работа консолидации — переписывание страниц, т.е. генерация. Оценка «десятки центов — доллар в день», посчитанная в design-notes от input дистиллята, занижает главную статью. И валюта бюджета — rate limits подписки CLI, не доллары.
-8. Для капов и учёта консолидации: взвешенный учёт `uncached×1 + cache×~0.1..1.25 + output×(цена output)`; в текущей схеме cache_read и cache_creation слиты в `total_api_tokens` — при добавлении фазы консолидации стоит писать их раздельно. `cost_usd` не заполняется вовсе; AI-чаты токены не логируют никуда — если консолидация будет питаться и из чатов, учёт надо добавить.
+1. **v1 episodes = situations.** Take them wholesale (title/summary/chronology/status/provenance). They already are "episodes per our schema" with no rework.
+2. **Our own cheap episode extractor over raw text** instead of trying to fix digest-window stitching: 50K tokens/day of raw reads on a haiku-class model for pennies, closes the DM hole and the 60% of uncovered stream, and yields honest provenance links (ts taken from data, not generation). Cheaper and more reliable than reconstructing episodes from fragmented windows with broken links.
+3. **Digests are background context, not a source of links.** A channel's running_summary is useful as "what this channel is right now" when rewriting entity pages; never use key_messages/decisions.message_ts (hallucinations). A separate (non-blocking for memory) task — fix key_messages generation: feed real ts into the prompt and validate on write, otherwise drop the field.
+4. **The bot stream (73% of messages, content in raw_json) is out of memory v1.** These are alerts/CI/integrations; if ever needed — a deterministic parser, not an LLM.
+5. **Fix the Jira sync before** counting Jira as a memory input (dead since April); there is no Gmail input at all.
+6. Correct the design-notes estimates: raw ~50K tok/day (not 3–6M); distillate ~25–45K tok/day (not 100–300K); entity vocabulary — hundreds of nodes; the "10–20:1 compression" of existing digests is not observed (≈1:1 due to state repetition).
+7. **Measure consolidation economics by output, not input**: live data shows pipeline output (664K/day) is orders of magnitude more expensive than input in any pricing model, and consolidation's core work is page rewriting, i.e. generation. The "tens of cents to a dollar a day" estimate in the design notes, computed from distillate input, understates the main line item. And the budget currency is the CLI subscription's rate limits, not dollars.
+8. For consolidation caps and accounting: weighted accounting `uncached×1 + cache×~0.1..1.25 + output×(output price)`; in the current schema cache_read and cache_creation are merged into `total_api_tokens` — when adding the consolidation phase, write them separately. `cost_usd` is never populated; AI chats log tokens nowhere — if consolidation also feeds on chats, accounting must be added.
