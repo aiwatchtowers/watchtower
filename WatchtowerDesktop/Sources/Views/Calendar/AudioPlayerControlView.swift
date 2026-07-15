@@ -1,0 +1,83 @@
+import SwiftUI
+
+/// Play/pause + scrubber control for a transcript's recorded audio. Takes the
+/// shared `AudioPlaybackCenter` explicitly (not via `@Environment`) so it is a
+/// self-contained, independently testable unit.
+struct AudioPlayerControlView: View {
+    let transcriptID: Int64
+    let audioURL: URL
+    let center: AudioPlaybackCenter
+
+    @State private var isScrubbing = false
+    @State private var scrubTime: TimeInterval = 0
+
+    private var isActive: Bool { center.activeTranscriptID == transcriptID }
+    private var hasFailed: Bool { center.failedTranscriptID == transcriptID }
+    private var displayedDuration: TimeInterval { isActive ? center.duration : 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Button {
+                    togglePlay()
+                } label: {
+                    Image(systemName: isActive && center.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .help(isActive && center.isPlaying ? "Pause" : "Play")
+
+                Slider(
+                    value: Binding(
+                        get: { isScrubbing ? scrubTime : (isActive ? center.currentTime : 0) },
+                        set: { scrubTime = $0 }
+                    ),
+                    in: 0...max(displayedDuration, 0.01),
+                    onEditingChanged: handleScrub
+                )
+
+                Text(timeLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            if hasFailed, let message = center.errorMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var timeLabel: String {
+        let elapsed = isActive ? center.currentTime : 0
+        return "\(formatSeconds(elapsed)) / \(formatSeconds(displayedDuration))"
+    }
+
+    private func togglePlay() {
+        if isActive {
+            if center.isPlaying {
+                center.pause()
+            } else {
+                center.resume()
+            }
+        } else {
+            center.play(url: audioURL, transcriptID: transcriptID)
+        }
+    }
+
+    private func handleScrub(_ editing: Bool) {
+        isScrubbing = editing
+        guard !editing else { return }
+        if !isActive {
+            center.play(url: audioURL, transcriptID: transcriptID)
+        }
+        center.seek(to: scrubTime)
+    }
+
+    private func formatSeconds(_ value: TimeInterval) -> String {
+        let total = Int(value.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
