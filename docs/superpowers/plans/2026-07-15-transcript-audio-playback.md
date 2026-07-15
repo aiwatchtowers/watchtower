@@ -725,7 +725,7 @@ git commit -m "feat(transcriber): wire AudioPlaybackCenter into AppState"
 
 **Interfaces:**
 - Consumes: `AudioPlaybackCenter` (Task 2) — `activeTranscriptID`, `failedTranscriptID`, `errorMessage`, `isPlaying`, `currentTime`, `duration`, `play(url:transcriptID:)`, `pause()`, `resume()`, `seek(to:)`.
-- Produces: `struct AudioPlayerControlView: View { let transcriptID: Int64; let audioURL: URL; let center: AudioPlaybackCenter }` — consumed by Task 5's `TranscriptAudioControl`.
+- Produces: `struct AudioPlayerControlView: View { let transcriptID: Int64; let audioURL: URL; let knownDuration: TimeInterval; let center: AudioPlaybackCenter }` — consumed by Task 5's `TranscriptAudioControl`. `knownDuration` is the transcript's persisted duration (seconds, from `MeetingTranscript.durationSec`) so the scrubber has a real, usable range before `center`'s own `duration` becomes available (which is 0 until this row's `AVAudioPlayer` has loaded) — without it, dragging the slider on a row that hasn't started playing yet has nothing to drag across.
 
 Takes `center` as an explicit parameter (not `@Environment(AppState.self)`) so it is a self-contained, independently testable unit — this is a deliberate deviation from the design doc's `@Environment` sketch, made because it lets `ViewInspector` exercise the view directly without needing a real `AppState`/`DatabaseManager`.
 
@@ -761,6 +761,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
+            knownDuration: 10,
             center: center
         )
 
@@ -775,6 +776,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
+            knownDuration: 10,
             center: center
         )
 
@@ -790,6 +792,7 @@ final class AudioPlayerControlViewTests: XCTestCase {
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
+            knownDuration: 10,
             center: center
         )
 
@@ -803,13 +806,17 @@ final class AudioPlayerControlViewTests: XCTestCase {
         let view = AudioPlayerControlView(
             transcriptID: 1,
             audioURL: URL(fileURLWithPath: "/tmp/rec.caf"),
+            knownDuration: 10,
             center: center
         )
 
         XCTAssertThrowsError(try view.inspect().find(text: "boom"))
     }
+
 }
 ```
+
+**Known gap, accepted:** the `Slider` → `onEditingChanged` → `center.seek(to:)` wiring itself has no dedicated test. `ViewInspector`'s `Slider.setValue`/`callOnEditingChanged` require the view to be mounted via `ViewHosting.host(view:)` for `@State` (here, `scrubTime`) to actually persist between the two calls — a pattern not used anywhere else in this codebase yet. Introducing it for one test was judged not worth the risk/complexity; `handleScrub`'s two branches (`center.play(...)` when idle, `isActive` gating) are exercised indirectly via `testTapStartsPlaybackOnIdleRow`/`testSecondTapPausesTheSameRow`. Only the final `center.seek(to: scrubTime)` call itself is unverified by an automated test — covered instead by the Task 8 manual verification pass ("dragging the scrubber seeks").
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -829,6 +836,11 @@ import SwiftUI
 struct AudioPlayerControlView: View {
     let transcriptID: Int64
     let audioURL: URL
+    /// The transcript's persisted duration (seconds), shown/used as the scrubber's
+    /// range before playback starts — `center.duration` is 0 until this row's
+    /// `AVAudioPlayer` has loaded, which would otherwise make the slider
+    /// un-draggable (range `0...0.01`) on a row that hasn't been played yet.
+    let knownDuration: TimeInterval
     let center: AudioPlaybackCenter
 
     @State private var isScrubbing = false
@@ -836,7 +848,7 @@ struct AudioPlayerControlView: View {
 
     private var isActive: Bool { center.activeTranscriptID == transcriptID }
     private var hasFailed: Bool { center.failedTranscriptID == transcriptID }
-    private var displayedDuration: TimeInterval { isActive ? center.duration : 0 }
+    private var displayedDuration: TimeInterval { isActive ? center.duration : knownDuration }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -996,6 +1008,7 @@ struct TranscriptAudioControl: View {
             AudioPlayerControlView(
                 transcriptID: id,
                 audioURL: URL(fileURLWithPath: audioPath),
+                knownDuration: TimeInterval(transcript.durationSec),
                 center: center
             )
         } else if transcript.audioPath == nil {
