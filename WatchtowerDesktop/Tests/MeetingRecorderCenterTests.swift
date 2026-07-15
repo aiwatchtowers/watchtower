@@ -1186,6 +1186,46 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(runner.savedTranscripts.first, "[Speaker 1] live text")
     }
 
+    func testRetryAfterSaveFailureKeepsRolesFlagInNotification() async throws {
+        // Diarization failed (text persisted WITHOUT labels), then the save
+        // failed. The retry short-circuits to the persisted text — and the
+        // notification must still flag the missing labels.
+        struct SaveError: Error {}
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let diarizer = FakeDiarizer()
+        diarizer.error = FakeDiarizer.FakeError()
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope, error: SaveError())
+        let notifier = FakeNotifier()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in ScriptedEngine(texts: ["привет"]) },
+            diarizerFactory: { diarizer },
+            decode: stubDecode(sampleCount: 4800),
+            runnerResolver: { runner },
+            notifier: notifier,
+            defaults: try isolatedDefaults()
+        )
+        var config = threeWindowConfig()
+        config.diarization = true
+
+        await center.startRecording(eventID: nil, title: "Retry roles")
+        await center.stopAndProcess(config: config)
+        guard case .failed = center.phase else { return XCTFail("expected failed save") }
+
+        runner.shouldThrow = nil
+        await center.retryTranscription(config: config)
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(notifier.readyTitles, ["Retry roles — saved without speaker labels"],
+                       "the persisted label-less text must keep its roles flag on retry")
+    }
+
     func testDiarizationDisabledSkipsDiarizer() async throws {
         let audio = try makeDummyAudioFile()
         defer {

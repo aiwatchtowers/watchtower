@@ -319,7 +319,9 @@ final class MeetingRecorderCenter {
     /// no pending audio.
     func retryTranscription(config: TranscriptionConfig) async {
         guard !isBusy, let url = pendingAudioURL else { return }
-        lastRolesError = nil // per-run state, reset at the run boundary
+        // The persisted short-circuit re-saves THIS run's already-rendered
+        // text, so a latched roles failure still describes it — reset only
+        // below, before the paths that re-run renderRoles.
         if let persisted = Self.loadPersistedTranscript(audioURL: url) {
             await saveTranscript(
                 text: persisted.text,
@@ -329,6 +331,7 @@ final class MeetingRecorderCenter {
             )
             return
         }
+        lastRolesError = nil // per-run state, reset at the run boundary
         await transcribeAndSave(audioURL: url, config: config)
     }
 
