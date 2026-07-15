@@ -54,7 +54,7 @@
 - Produces:
   - `protocol TranscriptionProvider: Sendable` with `static var id: String`, `var displayName: String`, `var models: [TranscriptionModelOption]`, `var supportsLive: Bool`, `func availability() -> ProviderAvailability`, `func supportedLanguages(model: String) -> Set<String>?`, `func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws`, `func makeTranscriber(model: String, progress: @escaping @Sendable (Double) -> Void) async throws -> Transcriber`.
   - `protocol Transcriber: Sendable` with `func transcribe(_ samples: [Float], config: TranscriptionConfig, progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput` and `func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession?`.
-  - `protocol TranscriptionLiveSession: Sendable` with `func append(_ samples: [Float]) async`, `func finish() async throws -> TranscriptionOutput`, `var chunks: AsyncStream<String> { get }`.
+  - `protocol TranscriptionLiveSession: Sendable` with `func run(samples: AsyncStream<[Float]>, onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput`. This mirrors the EXISTING `StreamingTranscriber.run(samples:onChunk:)` (in `StreamingTranscriber.swift`) verbatim so `WhisperLiveSession` is a thin forwarder; `StreamChunk` is the existing type already declared in `StreamingTranscriber.swift` — reuse it, do not redefine.
   - `enum ProviderAvailability: Equatable { case available; case unavailable(reason: String) }`.
   - `struct TranscriptionModelOption: Equatable, Identifiable { let id: String; let label: String }`.
 
@@ -157,11 +157,13 @@ protocol Transcriber: Sendable {
     func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession?
 }
 
-/// A live transcription session: accepts a 16 kHz mono Float32 stream, emits finalized chunks.
+/// A live transcription session over a 16 kHz mono Float32 input stream, emitting
+/// finalized chunks via `onChunk`. Signature MIRRORS the existing
+/// `StreamingTranscriber.run(samples:onChunk:)` so `WhisperLiveSession` is a thin
+/// forwarder. `StreamChunk` is the existing type in `StreamingTranscriber.swift`.
 protocol TranscriptionLiveSession: Sendable {
-    func append(_ samples: [Float]) async
-    func finish() async throws -> TranscriptionOutput
-    var chunks: AsyncStream<String> { get }
+    func run(samples: AsyncStream<[Float]>,
+             onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput
 }
 ```
 
@@ -393,9 +395,19 @@ final class WhisperTranscriber: Transcriber, @unchecked Sendable {
         WhisperLiveSession(engine: engine, config: config)
     }
 }
+
+/// Thin forwarder: conforms `StreamingTranscriber` to `TranscriptionLiveSession`.
+struct WhisperLiveSession: TranscriptionLiveSession {
+    let engine: WhisperKitEngine
+    let config: TranscriptionConfig
+    func run(samples: AsyncStream<[Float]>,
+             onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
+        try await StreamingTranscriber(engine: engine, config: config).run(samples: samples, onChunk: onChunk)
+    }
+}
 ```
 
-> **Adapt to reality:** the exact `WindowedTranscriber` init and `transcribe(samples:progress:)` signature, and how `StreamingTranscriber` is driven, must match the current code. Open `WindowedTranscriber.swift` and `StreamingTranscriber.swift` first and mirror their real API. `WhisperLiveSession` adapts `StreamingTranscriber` to `TranscriptionLiveSession` (append samples / finish / expose `chunks`). If `StreamingTranscriber` already exposes an equivalent stream, `WhisperLiveSession` is a thin forwarder.
+> **Verified against current code (b75ee27):** `WindowedTranscriber` is a `struct` with `let engine: TranscriptionEngine` / `let config: TranscriptionConfig` and `func transcribe(samples:progress:) async throws -> TranscriptionOutput` — the wrapper above matches it. `StreamingTranscriber` is a `struct` with `func run(samples: AsyncStream<[Float]>, onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput`. Confirm the exact `StreamingTranscriber(engine:config:)` init exists (it is constructed this way in `MeetingRecorderCenter`'s live path today); mirror whatever the real init is.
 
 - [ ] **Step 5: Replace the stub in the registry**
 
