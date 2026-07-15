@@ -32,13 +32,18 @@ final class TranscriptionModelProvisioner {
     private(set) var currentTask: Task<Void, Never>?
 
     private let downloadFn: (String, @escaping @Sendable (Double) -> Void) async throws -> Void
+    /// Extra best-effort warmups run after a successful model download (e.g.
+    /// diarizer models). No progress, failures swallowed by the closure itself.
+    private let prefetchExtras: @Sendable () async -> Void
 
     init(
         downloadFn: @escaping (String, @escaping @Sendable (Double) -> Void) async throws -> Void = { modelName, progress in
             _ = try await WhisperKitEngine.ensureModelFilesDownloaded(modelName: modelName, downloadProgress: progress)
-        }
+        },
+        prefetchExtras: @escaping @Sendable () async -> Void = {}
     ) {
         self.downloadFn = downloadFn
+        self.prefetchExtras = prefetchExtras
     }
 
     /// Starts (or joins) the download of `modelName`'s files. No-op if that
@@ -58,12 +63,13 @@ final class TranscriptionModelProvisioner {
         currentModelName = modelName
         state = .downloading(progress: 0)
 
-        currentTask = Task { [weak self, downloadFn] in
+        currentTask = Task { [weak self, downloadFn, prefetchExtras] in
             guard let self else { return }
             let (stream, continuation) = AsyncStream<Double>.makeStream()
             let work = Task.detached {
                 do {
                     try await downloadFn(modelName) { progress in continuation.yield(progress) }
+                    await prefetchExtras()
                     continuation.finish()
                     return Result<Void, Error>.success(())
                 } catch {

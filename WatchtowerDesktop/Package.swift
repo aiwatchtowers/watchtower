@@ -15,6 +15,8 @@ let package = Package(
         // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
         // (including the misspelled `detectLangauge(audioArray:)`).
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.18.0")),
+        // Speaker diarization (pyannote/VBx on CoreML) for transcript roles.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.0"),
     ],
     targets: [
         .executableTarget(
@@ -23,6 +25,7 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             path: "Sources",
             resources: [
