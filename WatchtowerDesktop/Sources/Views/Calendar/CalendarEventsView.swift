@@ -359,8 +359,8 @@ struct CalendarEventsView: View {
                     .font(.callout)
                     .fontWeight(.medium)
                 HStack(spacing: 8) {
-                    Text(formattedDate(transcript.createdAt))
-                    Text(formatDuration(transcript.durationSec))
+                    Text(TranscriptFormatting.formattedDate(transcript.createdAt))
+                    Text(TranscriptFormatting.formatDuration(transcript.durationSec))
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -395,21 +395,6 @@ struct CalendarEventsView: View {
         } catch {
             // Silent: table may not exist yet on older DB schema versions.
         }
-    }
-
-    private func formatDuration(_ seconds: Int) -> String {
-        let minutes = seconds / 60
-        let secs = seconds % 60
-        return minutes > 0 ? "\(minutes)m \(secs)s" : "\(secs)s"
-    }
-
-    private func formattedDate(_ iso: String) -> String {
-        let parser = ISO8601DateFormatter()
-        guard let date = parser.date(from: iso) else { return iso }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
     }
 
     // MARK: - Empty

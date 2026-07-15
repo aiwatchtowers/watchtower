@@ -54,7 +54,7 @@ struct TranscriptSectionView: View {
     private func transcriptRow(_ transcript: MeetingTranscript) -> some View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) {
-                langBadges(transcript)
+                TranscriptLangBadges(langStatsJSON: transcript.langStats)
 
                 // A transcript saved while the event already had a recap keeps
                 // its own recap in summary_json (the Go guard never overwrites
@@ -104,23 +104,11 @@ struct TranscriptSectionView: View {
             .padding(.top, 6)
         } label: {
             HStack(spacing: 8) {
-                Text(formatDuration(transcript.durationSec))
+                Text(TranscriptFormatting.formatDuration(transcript.durationSec))
                     .font(.callout)
-                Text(formattedDate(transcript.createdAt))
+                Text(TranscriptFormatting.formattedDate(transcript.createdAt))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func langBadges(_ transcript: MeetingTranscript) -> some View {
-        HStack(spacing: 6) {
-            ForEach(decodeLangStats(transcript.langStats), id: \.0) { lang, count in
-                Text("\(lang.uppercased()) \(count)")
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.blue.opacity(0.1), in: Capsule())
             }
         }
     }
@@ -168,28 +156,5 @@ struct TranscriptSectionView: View {
         } catch {
             // Silent: table may not exist yet on older DB schema versions.
         }
-    }
-
-    private func decodeLangStats(_ json: String) -> [(String, Int)] {
-        guard let data = json.data(using: .utf8),
-              let stats = try? JSONDecoder().decode([String: Int].self, from: data) else {
-            return []
-        }
-        return stats.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
-    }
-
-    private func formatDuration(_ seconds: Int) -> String {
-        let minutes = seconds / 60
-        let secs = seconds % 60
-        return minutes > 0 ? "\(minutes)m \(secs)s" : "\(secs)s"
-    }
-
-    private func formattedDate(_ iso: String) -> String {
-        let parser = ISO8601DateFormatter()
-        guard let date = parser.date(from: iso) else { return iso }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
     }
 }
