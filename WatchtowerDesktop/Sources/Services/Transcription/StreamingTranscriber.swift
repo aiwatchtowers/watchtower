@@ -38,32 +38,44 @@ struct StreamingTranscriber {
         var absStart = 0
 
         var texts: [String] = []
+        var segments: [TranscriptSegment] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
         var lastEngineError: Error?
         var chunkIndex = 0
 
-        func process(window: [Float]) async {
+        func process(window: [Float], windowStart: Int) async {
             let language: String
             if let forced = config.forcedLanguage {
                 language = forced
             } else {
                 language = await resolveWindowLanguage(for: window, previous: prevLang, config: config, engine: engine)
             }
-            let text: String
+            let rawSegments: [TranscribedSegment]
             do {
-                text = try await engine.transcribeWindow(window, language: language)
+                rawSegments = try await engine.transcribeWindow(window, language: language)
             } catch {
                 lastEngineError = error
                 return // skip: not counted, language does not stick
             }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            texts.append(trimmed)
+            let windowStartSec = Double(windowStart) / Double(TranscriptionConfig.sampleRate)
+            let cleaned = rawSegments
+                .map { TranscribedSegment(text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                          startSec: $0.startSec, endSec: $0.endSec) }
+                .filter { !$0.text.isEmpty }
+            guard !cleaned.isEmpty else { return }
+            let windowText = cleaned.map(\.text).joined(separator: " ")
+            texts.append(windowText)
+            segments.append(contentsOf: cleaned.map {
+                TranscriptSegment(text: $0.text,
+                                  startSec: windowStartSec + $0.startSec,
+                                  endSec: windowStartSec + $0.endSec,
+                                  language: language)
+            })
             prevLang = language
             langStats[language, default: 0] += 1
             chunkIndex += 1
-            onChunk(StreamChunk(index: chunkIndex, text: trimmed, language: language))
+            onChunk(StreamChunk(index: chunkIndex, text: windowText, language: language))
         }
 
         for await piece in samples {
@@ -79,7 +91,7 @@ struct StreamingTranscriber {
             ) {
                 if Task.isCancelled { break }
                 let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
-                await process(window: window)
+                await process(window: window, windowStart: range.lowerBound)
                 absStart = planner.nextStart(after: range)
                 let drop = absStart - consumedBase
                 if drop > 0 {
@@ -103,7 +115,7 @@ struct StreamingTranscriber {
                   sample: { buffer[$0 - consumedBase] }
               ) {
             let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
-            await process(window: window)
+            await process(window: window, windowStart: range.lowerBound)
             if planner.isLastWindow(start: range.lowerBound, total: consumedBase + buffer.count) { break }
             absStart = planner.nextStart(after: range)
             let drop = absStart - consumedBase
@@ -116,6 +128,6 @@ struct StreamingTranscriber {
         if texts.isEmpty, let lastEngineError {
             throw lastEngineError
         }
-        return TranscriptionOutput(text: texts.joined(separator: "\n"), langStats: langStats)
+        return TranscriptionOutput(text: texts.joined(separator: "\n"), langStats: langStats, segments: segments)
     }
 }

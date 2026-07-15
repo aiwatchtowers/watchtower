@@ -28,6 +28,7 @@ struct WindowedTranscriber {
         let windowCount = ranges.count
 
         var texts: [String] = []
+        var segments: [TranscriptSegment] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
         var lastEngineError: Error?
@@ -42,9 +43,9 @@ struct WindowedTranscriber {
                 language = await resolveWindowLanguage(for: window, previous: prevLang, config: config, engine: engine)
             }
 
-            let text: String
+            let rawSegments: [TranscribedSegment]
             do {
-                text = try await engine.transcribeWindow(window, language: language)
+                rawSegments = try await engine.transcribeWindow(window, language: language)
             } catch {
                 // A failed window is skipped: nothing counted, language does not stick.
                 lastEngineError = error
@@ -52,9 +53,19 @@ struct WindowedTranscriber {
                 continue
             }
 
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                texts.append(trimmed)
+            let windowStartSec = Double(range.lowerBound) / Double(TranscriptionConfig.sampleRate)
+            let cleaned = rawSegments
+                .map { TranscribedSegment(text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                          startSec: $0.startSec, endSec: $0.endSec) }
+                .filter { !$0.text.isEmpty }
+            if !cleaned.isEmpty {
+                texts.append(cleaned.map(\.text).joined(separator: " "))
+                segments.append(contentsOf: cleaned.map {
+                    TranscriptSegment(text: $0.text,
+                                      startSec: windowStartSec + $0.startSec,
+                                      endSec: windowStartSec + $0.endSec,
+                                      language: language)
+                })
                 prevLang = language
                 langStats[language, default: 0] += 1
             }
@@ -68,6 +79,6 @@ struct WindowedTranscriber {
             throw lastEngineError
         }
 
-        return TranscriptionOutput(text: texts.joined(separator: "\n"), langStats: langStats)
+        return TranscriptionOutput(text: texts.joined(separator: "\n"), langStats: langStats, segments: segments)
     }
 }

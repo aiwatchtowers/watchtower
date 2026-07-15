@@ -58,9 +58,11 @@ private final class ScriptedEngine: TranscriptionEngine, @unchecked Sendable {
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String {
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
         defer { index += 1 }
-        return index < texts.count ? texts[index] : ""
+        let text = index < texts.count ? texts[index] : ""
+        return [TranscribedSegment(text: text, startSec: 0,
+                                   endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
     }
 }
 
@@ -85,7 +87,7 @@ private final class GateEngine: TranscriptionEngine, @unchecked Sendable {
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String {
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
         enteredContinuation.yield(())
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
@@ -99,7 +101,9 @@ private final class GateEngine: TranscriptionEngine, @unchecked Sendable {
             }
         }
         defer { index += 1 }
-        return index < texts.count ? texts[index] : ""
+        let text = index < texts.count ? texts[index] : ""
+        return [TranscribedSegment(text: text, startSec: 0,
+                                   endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
     }
 
     /// Lets the currently-blocked (or next) `transcribeWindow` return.
@@ -171,6 +175,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         config.forcedLanguage = "en"
         config.windowSec = 0.1
         config.overlapSec = 0
+        config.boundarySnapSec = 0 // exact 3-window layout is asserted
         return config
     }
 

@@ -28,12 +28,13 @@ private final class MockEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String {
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
         windowSizes.append(samples.count)
         transcribedLanguages.append(language)
         let idx = transcribedLanguages.count - 1
-        guard idx < texts.count else { return "" }
-        return try texts[idx].get()
+        let text = idx < texts.count ? try texts[idx].get() : ""
+        return [TranscribedSegment(text: text, startSec: 0,
+                                   endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
     }
 }
 
@@ -318,6 +319,24 @@ final class WindowedTranscriberTests: XCTestCase {
 
         XCTAssertEqual(engine.windowSizes, [320_000, 24_000])
         XCTAssertEqual(output.text, "a\nb")
+    }
+
+    func testSegmentsCarryAbsoluteTimestamps() async throws {
+        // tinyConfig: 0.01 s windows (160 samples), snap off. The mock returns
+        // one segment per window spanning [0, windowDur) → absolute offsets
+        // must shift by k·0.01 s.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("a"), .success("b")]
+
+        let output = try await run(engine, config, windows: 2)
+
+        XCTAssertEqual(output.segments.map(\.text), ["a", "b"])
+        XCTAssertEqual(output.segments.map(\.language), ["en", "en"])
+        XCTAssertEqual(output.segments[0].startSec, 0.0, accuracy: 1e-9)
+        XCTAssertEqual(output.segments[1].startSec, 0.01, accuracy: 1e-9)
+        XCTAssertEqual(output.segments[1].endSec, 0.02, accuracy: 1e-9)
     }
 
     func testEmptySamplesReturnsEmptyOutput() async throws {

@@ -14,11 +14,13 @@ private final class MockEngine: TranscriptionEngine, @unchecked Sendable {
         defer { detectIdx += 1 }
         return detectIdx < detections.count ? detections[detectIdx] : [:]
     }
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String {
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
         windowSizes.append(samples.count)
         transcribedLanguages.append(language)
         let idx = transcribedLanguages.count - 1
-        return idx < texts.count ? try texts[idx].get() : ""
+        let text = idx < texts.count ? try texts[idx].get() : ""
+        return [TranscribedSegment(text: text, startSec: 0,
+                                   endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
     }
 }
 

@@ -1,11 +1,19 @@
 import Foundation
 
+/// One timestamped segment of a transcribed window (seconds relative to the
+/// window start). An empty array from the engine = no speech in the window.
+struct TranscribedSegment: Equatable, Sendable {
+    let text: String
+    let startSec: Double
+    let endSec: Double
+}
+
 /// Abstraction over the on-device STT engine so tests never load WhisperKit/CoreML.
 protocol TranscriptionEngine: Sendable {
     /// Language probabilities for one audio window (16 kHz mono Float32 samples).
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float]
-    /// Transcribe one window with the language forced. Returns raw text ("" = no speech).
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> String
+    /// Transcribe one window with the language forced.
+    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment]
 }
 
 /// Windowed-transcription parameters. Defaults are ported verbatim from snoop:
@@ -25,10 +33,20 @@ struct TranscriptionConfig: Equatable {
     static let sampleRate = 16_000
 }
 
+/// One timestamped segment of the full recording (absolute seconds), carrying
+/// the language of its parent window. Feeds the diarization post-pass.
+struct TranscriptSegment: Equatable, Sendable {
+    let text: String
+    let startSec: Double
+    let endSec: Double
+    let language: String
+}
+
 /// Result of transcribing a full recording.
 struct TranscriptionOutput: Equatable {
     let text: String                 // newline-joined non-empty window texts
     let langStats: [String: Int]     // windows per language (speech windows only)
+    var segments: [TranscriptSegment] = [] // absolute-timestamped, for diarization
 }
 
 extension TranscriptionConfig {
