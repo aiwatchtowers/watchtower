@@ -179,6 +179,8 @@ type MemoryConfig struct {
 	SeedMinMessages      int  `mapstructure:"seed_min_messages"`       // messages in the last 30 days before a person is seeded as an entity (default: 20)
 	MaxEpisodesPerWindow int  `mapstructure:"max_episodes_per_window"` // episode cap per channel window in the extractor (default: 5)
 	MaxWindowMessages    int  `mapstructure:"max_window_messages"`     // max messages per extraction window; a busier channel forms multiple sequential windows (default: 200)
+	BatchMaxChannels     int  `mapstructure:"batch_max_channels"`      // max channel windows grouped into one extraction call (default: 20, digest-pipeline precedent)
+	BatchMaxMessages     int  `mapstructure:"batch_max_messages"`      // max total messages grouped into one extraction call (default: 1500)
 }
 
 type Config struct {
@@ -273,6 +275,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.seed_min_messages", 20)
 	v.SetDefault("memory.max_episodes_per_window", 5)
 	v.SetDefault("memory.max_window_messages", 200)
+	v.SetDefault("memory.batch_max_channels", DefaultBatchMaxChannels)
+	v.SetDefault("memory.batch_max_messages", DefaultBatchMaxMessages)
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

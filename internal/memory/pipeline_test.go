@@ -20,6 +20,10 @@ import (
 )
 
 // pipelineTestConfig is a permissive enabled config for pipeline tests.
+// BatchMaxChannels: 1 disables cross-channel batching so these tests keep
+// exercising the per-window MEM-01/04 semantics they were written against;
+// batch-specific behavior (several channels sharing one call) has its own
+// tests below (TestBatch*).
 func pipelineTestConfig() config.MemoryConfig {
 	return config.MemoryConfig{
 		Enabled:              true,
@@ -27,6 +31,8 @@ func pipelineTestConfig() config.MemoryConfig {
 		SeedMinMessages:      1,
 		MaxEpisodesPerWindow: 5,
 		MaxWindowMessages:    200,
+		BatchMaxChannels:     1,
+		BatchMaxMessages:     1500,
 	}
 }
 
@@ -700,4 +706,193 @@ func TestPipelineSurfacesQuarantinedFiles(t *testing.T) {
 	require.NoError(t, err, "a malformed vault file must not fail the phase")
 	assert.Equal(t, 1, stats.Reconciled.Quarantined)
 	assert.Equal(t, []string{"entities/ent_01ARZ3NDEKTSV4RRFFQ69G5QP1.md"}, stats.Reconciled.QuarantinedPaths)
+}
+
+// TestGroupWindowsIntoBatches unit-tests the grouping function used to pack
+// quiet channels into one extraction call (digest-pipeline precedent).
+func TestGroupWindowsIntoBatches(t *testing.T) {
+	mk := func(n int) runWindow {
+		w := runWindow{channelWindow: channelWindow{ChannelID: "C", ChannelName: "c"}}
+		for i := 0; i < n; i++ {
+			w.Messages = append(w.Messages, extractMsg{})
+			w.tsUnix = append(w.tsUnix, float64(i))
+		}
+		return w
+	}
+
+	t.Run("packs small windows up to maxMessages", func(t *testing.T) {
+		windows := []runWindow{mk(5), mk(5), mk(5)}
+		batches := groupWindowsIntoBatches(windows, 20, 12)
+		require.Len(t, batches, 2, "5+5 fits in 12, the third 5 starts a new batch")
+		assert.Equal(t, []int{0, 1}, batches[0])
+		assert.Equal(t, []int{2}, batches[1])
+	})
+
+	t.Run("packs up to maxChannels even under maxMessages", func(t *testing.T) {
+		windows := []runWindow{mk(1), mk(1), mk(1)}
+		batches := groupWindowsIntoBatches(windows, 2, 1000)
+		require.Len(t, batches, 2)
+		assert.Equal(t, []int{0, 1}, batches[0])
+		assert.Equal(t, []int{2}, batches[1])
+	})
+
+	t.Run("an oversized window still gets its own batch", func(t *testing.T) {
+		windows := []runWindow{mk(1), mk(50), mk(1)}
+		batches := groupWindowsIntoBatches(windows, 20, 10)
+		require.Len(t, batches, 3, "the 50-message window can't join either neighbor but isn't dropped")
+		assert.Equal(t, []int{1}, batches[1])
+	})
+
+	t.Run("maxChannels <= 0 means one batch with everything", func(t *testing.T) {
+		windows := []runWindow{mk(1), mk(1)}
+		batches := groupWindowsIntoBatches(windows, 0, 1000)
+		require.Len(t, batches, 1)
+		assert.Equal(t, []int{0, 1}, batches[0])
+	})
+
+	t.Run("empty input yields no batches", func(t *testing.T) {
+		assert.Nil(t, groupWindowsIntoBatches(nil, 20, 1000))
+	})
+}
+
+// batchTestConfig enables cross-channel batching (unlike pipelineTestConfig,
+// which pins BatchMaxChannels to 1 to preserve the per-window tests above).
+func batchTestConfig() config.MemoryConfig {
+	cfg := pipelineTestConfig()
+	cfg.BatchMaxChannels = 20
+	cfg.BatchMaxMessages = 1500
+	return cfg
+}
+
+// TestBatchGroupsQuietChannelsIntoOneCall: two quiet channels share a single
+// AI call, and the reply's per-episode refs still route each episode's
+// entity back-links correctly by channel — batching must not blur provenance.
+func TestBatchGroupsQuietChannelsIntoOneCall(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base := pipelineFixture(t, d)
+	ts1 := fmt.Sprintf("%d.000100", base)
+	ts3 := fmt.Sprintf("%d.000300", base+120)
+
+	gen := &fakeGen{
+		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
+		reply: func(user string) (string, error) {
+			require.Contains(t, user, "--- #general (C1GEN) ---", "both channels must appear in one prompt")
+			require.Contains(t, user, "--- #ops (C2OPS) ---")
+			return fmt.Sprintf(`[
+				{"title": "Prod deploy failed", "story": "s", "outcome": "resolved", "participants": ["U1ALICE"], "refs": [{"channel_id": "C1GEN", "ts": %q}], "entity_hints": []},
+				{"title": "Postmortem scheduled", "story": "s", "outcome": null, "participants": ["U1ALICE"], "refs": [{"channel_id": "C2OPS", "ts": %q}], "entity_hints": []}
+			]`, ts1, ts3), nil
+		},
+	}
+	p := NewPipeline(d, v, gen, batchTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.Windows, "still two per-channel windows built")
+	assert.Equal(t, 2, stats.Episodes)
+	require.Len(t, gen.calls, 1, "one call covers both quiet channels")
+
+	runID, status, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
+	assert.Equal(t, "done", status)
+	steps, err := d.GetPipelineSteps(runID)
+	require.NoError(t, err)
+	require.Len(t, steps, 1, "one pipeline_steps row for the whole batch")
+	assert.Equal(t, "done", steps[0].Status)
+	assert.Contains(t, steps[0].ChannelName, "general")
+	assert.Contains(t, steps[0].ChannelName, "ops")
+
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+180), wm, "both windows committed, watermark clears the whole chunk")
+}
+
+// TestBatchFailureFreezesAllChannelsInBatch: when channels share a batch, one
+// failed AI call freezes the watermark for every channel in it (the approved
+// coarser-than-per-channel MEM-04 granularity — see docs/inventory/memory.md).
+func TestBatchFailureFreezesAllChannelsInBatch(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+
+	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("model down") }}
+	p := NewPipeline(d, v, gen, batchTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err, "a batch failure never fails the run")
+	assert.Equal(t, 2, stats.WindowsFailed, "both channels' windows are frozen together")
+	require.Len(t, gen.calls, 1)
+
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Zero(t, wm, "neither channel advances past the shared failed batch")
+}
+
+// TestBatchCrossChannelEpisodeRejected: an episode whose refs span two
+// channels (the model conflating one batch's separate conversations, or
+// hallucinating a ref's channel_id) is schema-degenerate — same as a
+// zero-ref episode — and must never be committed to the vault.
+func TestBatchCrossChannelEpisodeRejected(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base := pipelineFixture(t, d)
+	ts1 := fmt.Sprintf("%d.000100", base)
+	ts3 := fmt.Sprintf("%d.000300", base+120)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		// One episode whose refs mix C1GEN and C2OPS — invalid regardless of
+		// each individual ref resolving to a real message.
+		return fmt.Sprintf(`[{"title": "Mixed", "story": "s", "outcome": null, "participants": [],
+			"refs": [{"channel_id": "C1GEN", "ts": %q}, {"channel_id": "C2OPS", "ts": %q}], "entity_hints": []}]`,
+			ts1, ts3), nil
+	}}
+	p := NewPipeline(d, v, gen, batchTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err, "a schema-degenerate batch never fails the run")
+	assert.Equal(t, 1, stats.Malformed, "cross-channel episode counted as malformed")
+	assert.Zero(t, stats.Episodes)
+	assert.Equal(t, 2, stats.WindowsFailed, "both channels frozen — the batch never committed")
+
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Zero(t, wm)
+
+	nodes, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	for _, n := range nodes {
+		assert.NotEqual(t, "episode", n.Type, "the cross-channel episode must never reach the vault")
+	}
+}
+
+// TestBatchOneDegenerateChannelFailsWholeBatch: a batch mixing one channel's
+// healthy reply with another's schema-degenerate one must not let the
+// degenerate channel's malformed episode slip through uncounted while the
+// batch otherwise "succeeds" — the whole batch fails together (v1's
+// all-or-nothing shape check, now applied per batch instead of per channel).
+func TestBatchOneDegenerateChannelFailsWholeBatch(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base := pipelineFixture(t, d)
+	ts1 := fmt.Sprintf("%d.000100", base)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return fmt.Sprintf(`[
+			{"title": "Prod deploy failed", "story": "s", "outcome": "resolved", "participants": [], "refs": [{"channel_id": "C1GEN", "ts": %q}], "entity_hints": []},
+			{"title": "Degenerate", "story": "s", "outcome": null, "participants": [], "refs": [], "entity_hints": []}
+		]`, ts1), nil
+	}}
+	p := NewPipeline(d, v, gen, batchTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err, "a schema-degenerate batch never fails the run")
+	assert.Equal(t, 1, stats.Malformed)
+	assert.Zero(t, stats.Episodes, "the otherwise-valid episode must NOT be committed alongside a malformed sibling")
+	assert.Equal(t, 2, stats.WindowsFailed)
+
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Zero(t, wm, "no partial success — the whole batch retries next run")
+
+	nodes, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	for _, n := range nodes {
+		assert.NotEqual(t, "episode", n.Type, "no episode written when any sibling in the batch is malformed")
+	}
 }

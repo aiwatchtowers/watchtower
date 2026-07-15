@@ -54,14 +54,39 @@ func buildExtractPrompt(tmpl, lang string, w channelWindow, maxEpisodes int) (sy
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Channel: #%s (%s)\n", w.ChannelName, w.ChannelID)
+	writeChannelWindow(&b, w)
+	return system, b.String()
+}
+
+// buildBatchExtractPrompt renders the system and user messages for the
+// memory.extract_episodes_batch call: several channel windows shown in one
+// prompt, each under its own "--- #channel (id) ---" block (digest-pipeline
+// precedent — see internal/digest's generateBatchDigest). maxEpisodes bounds
+// the whole call, not each channel individually.
+func buildBatchExtractPrompt(tmpl, lang string, windows []channelWindow, maxEpisodes int) (system, user string) {
+	system = fmt.Sprintf(tmpl, prompts.Directive(lang), maxEpisodes)
+
+	var b strings.Builder
+	for _, w := range windows {
+		fmt.Fprintf(&b, "--- #%s (%s) ---\n", w.ChannelName, w.ChannelID)
+		writeChannelWindow(&b, w)
+		b.WriteString("\n")
+	}
+	return system, b.String()
+}
+
+// writeChannelWindow renders one channel's running summary (if any) and
+// "[ts] author: text" message lines — the part buildExtractPrompt and
+// buildBatchExtractPrompt share, so the two prompt paths cannot silently
+// drift on how a message line is formatted.
+func writeChannelWindow(b *strings.Builder, w channelWindow) {
 	if w.RunningSummary != "" {
-		fmt.Fprintf(&b, "Running summary: %s\n", w.RunningSummary)
+		fmt.Fprintf(b, "Running summary: %s\n", w.RunningSummary)
 	}
 	b.WriteString("\nMessages:\n")
 	for _, m := range w.Messages {
-		fmt.Fprintf(&b, "[%s] %s: %s\n", m.TS, m.Author, m.Text)
+		fmt.Fprintf(b, "[%s] %s: %s\n", m.TS, m.Author, m.Text)
 	}
-	return system, b.String()
 }
 
 // parseExtract parses the extractor's reply: a JSON array of episodes,
@@ -92,19 +117,36 @@ type messageChecker interface {
 	MessageExists(channelID, ts string) (bool, error)
 }
 
-// splitMalformed separates shape-valid episodes (at least one ref) from
-// shape-degenerate ones. The extractor schema requires refs on every episode,
-// so a parsed episode with zero refs means the reply drifted from the schema
-// (misnamed key, wrong nesting) — it must never be read as routine chatter.
+// splitMalformed separates shape-valid episodes (at least one ref, all refs
+// from the same channel) from shape-degenerate ones. The extractor schema
+// requires refs on every episode, so a parsed episode with zero refs means
+// the reply drifted from the schema (misnamed key, wrong nesting) — it must
+// never be read as routine chatter. An episode whose refs span more than one
+// channel is equally degenerate: either a batched multi-channel prompt let
+// the model conflate two conversations into one story, or a ref's channel_id
+// was hallucinated — both are schema violations the extractor was told never
+// to produce ("never combine messages from two different channels into one
+// episode"), so they are never written half-trusted.
 func splitMalformed(eps []extractedEpisode) (valid []extractedEpisode, malformed int) {
 	for _, ep := range eps {
-		if len(ep.Refs) == 0 {
+		if len(ep.Refs) == 0 || !refsSameChannel(ep.Refs) {
 			malformed++
 			continue
 		}
 		valid = append(valid, ep)
 	}
 	return valid, malformed
+}
+
+// refsSameChannel reports whether every ref shares one channel_id (vacuously
+// true for zero/one refs — the zero-ref case is caught separately).
+func refsSameChannel(refs []episodeRef) bool {
+	for i := 1; i < len(refs); i++ {
+		if refs[i].ChannelID != refs[0].ChannelID {
+			return false
+		}
+	}
+	return true
 }
 
 // validateRefs enforces MEM-01 at write time: every ref is checked against
