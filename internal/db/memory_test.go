@@ -1,0 +1,321 @@
+package db
+
+import (
+	"database/sql"
+	"errors"
+	"strings"
+	"testing"
+)
+
+// memTestNode returns a valid node row for tests, overridable via mutate.
+func memTestNode(id string, mutate func(*MemoryNodeRow)) MemoryNodeRow {
+	row := MemoryNodeRow{
+		ID:          id,
+		Type:        "entity",
+		Tier:        "long",
+		Status:      "active",
+		Title:       "Test Node " + id,
+		Path:        "entities/" + id + ".md",
+		ContentHash: "hash-" + id,
+		IndexedAt:   "2026-07-15T00:00:00Z",
+	}
+	if mutate != nil {
+		mutate(&row)
+	}
+	return row
+}
+
+func TestUpsertMemoryNodeRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_alpha", nil)
+	if err := db.UpsertMemoryNode(row, "Alpha body about deployments", []string{"C0123abc", "alpha-project"}); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	got, err := db.GetMemoryNode("ent_alpha")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got != row {
+		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got, row)
+	}
+
+	// Aliases resolve to the node.
+	nodeID, err := db.LookupMemoryAlias("alpha-project")
+	if err != nil {
+		t.Fatalf("LookupMemoryAlias: %v", err)
+	}
+	if nodeID != "ent_alpha" {
+		t.Errorf("alias resolved to %q, want ent_alpha", nodeID)
+	}
+
+	// FTS row is searchable.
+	hits, err := db.SearchMemoryFTS("deployments", 10)
+	if err != nil {
+		t.Fatalf("SearchMemoryFTS: %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != "ent_alpha" {
+		t.Fatalf("FTS hits = %+v, want one hit for ent_alpha", hits)
+	}
+}
+
+func TestUpsertMemoryNodeReplacesAliasesAndFTS(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_beta", nil)
+	if err := db.UpsertMemoryNode(row, "first body oldword", []string{"old-alias"}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+
+	// Re-upsert with different aliases and body.
+	row.Title = "Renamed Beta"
+	row.ContentHash = "hash-2"
+	if err := db.UpsertMemoryNode(row, "second body newword", []string{"new-alias"}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	// Old alias is gone, new alias works — replacement is atomic per node.
+	if _, err := db.LookupMemoryAlias("old-alias"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("old alias lookup err = %v, want sql.ErrNoRows", err)
+	}
+	nodeID, err := db.LookupMemoryAlias("new-alias")
+	if err != nil || nodeID != "ent_beta" {
+		t.Errorf("new alias lookup = (%q, %v), want (ent_beta, nil)", nodeID, err)
+	}
+
+	// Node row was updated, not duplicated.
+	got, err := db.GetMemoryNode("ent_beta")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got.Title != "Renamed Beta" || got.ContentHash != "hash-2" {
+		t.Errorf("node not updated: %+v", got)
+	}
+
+	// FTS row replaced: old term gone, new term found, and only one row.
+	if hits, err := db.SearchMemoryFTS("oldword", 10); err != nil || len(hits) != 0 {
+		t.Errorf("oldword hits = %+v (err %v), want none", hits, err)
+	}
+	hits, err := db.SearchMemoryFTS("newword", 10)
+	if err != nil || len(hits) != 1 {
+		t.Fatalf("newword hits = %+v (err %v), want exactly one", hits, err)
+	}
+
+	var ftsCount int
+	if err := db.QueryRow(`SELECT count(*) FROM memory_fts WHERE id = 'ent_beta'`).Scan(&ftsCount); err != nil {
+		t.Fatalf("counting fts rows: %v", err)
+	}
+	if ftsCount != 1 {
+		t.Errorf("fts rows for ent_beta = %d, want 1", ftsCount)
+	}
+}
+
+func TestLookupMemoryAliasCaseInsensitive(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_chan", nil)
+	if err := db.UpsertMemoryNode(row, "channel node", []string{"C0123abc"}); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	nodeID, err := db.LookupMemoryAlias("c0123ABC")
+	if err != nil {
+		t.Fatalf("LookupMemoryAlias: %v", err)
+	}
+	if nodeID != "ent_chan" {
+		t.Errorf("alias resolved to %q, want ent_chan", nodeID)
+	}
+
+	if _, err := db.LookupMemoryAlias("nonexistent"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("unknown alias err = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestGetMemoryNodeNotFound(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.GetMemoryNode("ent_missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetMemoryNode err = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestListMemoryNodesOrderedByID(t *testing.T) {
+	db := openTestDB(t)
+
+	for _, id := range []string{"ep_b", "ent_a", "sum_c"} {
+		if err := db.UpsertMemoryNode(memTestNode(id, nil), "body", nil); err != nil {
+			t.Fatalf("UpsertMemoryNode(%s): %v", id, err)
+		}
+	}
+
+	rows, err := db.ListMemoryNodes()
+	if err != nil {
+		t.Fatalf("ListMemoryNodes: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d nodes, want 3", len(rows))
+	}
+	want := []string{"ent_a", "ep_b", "sum_c"}
+	for i, id := range want {
+		if rows[i].ID != id {
+			t.Errorf("rows[%d].ID = %q, want %q", i, rows[i].ID, id)
+		}
+	}
+}
+
+func TestSearchMemoryFTSSnippetAndTombstones(t *testing.T) {
+	db := openTestDB(t)
+
+	live := memTestNode("ent_live", nil)
+	if err := db.UpsertMemoryNode(live, "the migration rollout finished cleanly", nil); err != nil {
+		t.Fatalf("upsert live: %v", err)
+	}
+	tomb := memTestNode("ent_tomb", func(r *MemoryNodeRow) {
+		r.Status = "tombstone"
+		r.RedirectTo = "ent_live"
+	})
+	if err := db.UpsertMemoryNode(tomb, "the migration rollout duplicate page", nil); err != nil {
+		t.Fatalf("upsert tombstone: %v", err)
+	}
+
+	hits, err := db.SearchMemoryFTS("migration rollout", 10)
+	if err != nil {
+		t.Fatalf("SearchMemoryFTS: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits %+v, want 1 (tombstone excluded)", len(hits), hits)
+	}
+	h := hits[0]
+	if h.ID != "ent_live" || h.Type != "entity" || h.Title != live.Title {
+		t.Errorf("hit = %+v, want ent_live/entity/%q", h, live.Title)
+	}
+	if !strings.Contains(h.Snippet, "migration") {
+		t.Errorf("snippet %q does not contain matched term", h.Snippet)
+	}
+
+	// Hostile input must not break the MATCH query.
+	if _, err := db.SearchMemoryFTS(`"unbalanced OR (dropme`, 10); err != nil {
+		t.Errorf("hostile query errored: %v", err)
+	}
+	if hits, err := db.SearchMemoryFTS("   ", 10); err != nil || hits != nil {
+		t.Errorf("blank query = (%+v, %v), want (nil, nil)", hits, err)
+	}
+}
+
+func TestBumpMemoryAccess(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.UpsertMemoryNode(memTestNode("ent_hot", nil), "body", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	if err := db.BumpMemoryAccess("ent_hot"); err != nil {
+		t.Fatalf("first bump: %v", err)
+	}
+	if err := db.BumpMemoryAccess("ent_hot"); err != nil {
+		t.Fatalf("second bump: %v", err)
+	}
+
+	var count int
+	var lastAccessed sql.NullString
+	err := db.QueryRow(`SELECT access_count, last_accessed_at FROM memory_node_stats WHERE node_id = 'ent_hot'`).
+		Scan(&count, &lastAccessed)
+	if err != nil {
+		t.Fatalf("reading stats: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("access_count = %d, want 2", count)
+	}
+	if !lastAccessed.Valid || lastAccessed.String == "" {
+		t.Errorf("last_accessed_at not set: %+v", lastAccessed)
+	}
+}
+
+func TestMemoryWatermarkRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+
+	ts, err := db.MemoryWatermark()
+	if err != nil {
+		t.Fatalf("MemoryWatermark: %v", err)
+	}
+	if ts != 0 {
+		t.Errorf("initial watermark = %v, want 0", ts)
+	}
+
+	if err := db.SetMemoryWatermark(1752537600.125); err != nil {
+		t.Fatalf("SetMemoryWatermark: %v", err)
+	}
+	ts, err = db.MemoryWatermark()
+	if err != nil {
+		t.Fatalf("MemoryWatermark after set: %v", err)
+	}
+	if ts != 1752537600.125 {
+		t.Errorf("watermark = %v, want 1752537600.125", ts)
+	}
+}
+
+func TestDeleteMemoryNode(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.UpsertMemoryNode(memTestNode("ent_gone", nil), "delete me body", []string{"gone-alias"}); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+	if err := db.BumpMemoryAccess("ent_gone"); err != nil {
+		t.Fatalf("BumpMemoryAccess: %v", err)
+	}
+
+	if err := db.DeleteMemoryNode("ent_gone"); err != nil {
+		t.Fatalf("DeleteMemoryNode: %v", err)
+	}
+
+	if _, err := db.GetMemoryNode("ent_gone"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("node still present, err = %v", err)
+	}
+	if _, err := db.LookupMemoryAlias("gone-alias"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("alias still present, err = %v", err)
+	}
+	for _, q := range []string{
+		`SELECT count(*) FROM memory_node_stats WHERE node_id = 'ent_gone'`,
+		`SELECT count(*) FROM memory_fts WHERE id = 'ent_gone'`,
+	} {
+		var n int
+		if err := db.QueryRow(q).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if n != 0 {
+			t.Errorf("%s = %d, want 0", q, n)
+		}
+	}
+}
+
+func TestDropMemoryIndex(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.UpsertMemoryNode(memTestNode("ent_x", nil), "body x", []string{"x-alias"}); err != nil {
+		t.Fatalf("upsert x: %v", err)
+	}
+	if err := db.UpsertMemoryNode(memTestNode("ep_y", func(r *MemoryNodeRow) { r.Type = "episode"; r.Tier = "short" }), "body y", []string{"situation:42"}); err != nil {
+		t.Fatalf("upsert y: %v", err)
+	}
+	if err := db.BumpMemoryAccess("ent_x"); err != nil {
+		t.Fatalf("bump: %v", err)
+	}
+
+	if err := db.DropMemoryIndex(); err != nil {
+		t.Fatalf("DropMemoryIndex: %v", err)
+	}
+
+	for _, table := range []string{"memory_nodes", "memory_aliases", "memory_node_stats", "memory_fts"} {
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n); err != nil {
+			t.Fatalf("counting %s: %v", table, err)
+		}
+		if n != 0 {
+			t.Errorf("%s has %d rows after drop, want 0", table, n)
+		}
+	}
+}

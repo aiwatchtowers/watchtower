@@ -1,0 +1,262 @@
+package db
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+)
+
+// MemoryNodeRow mirrors one row of memory_nodes — the rebuildable SQLite index
+// over the markdown memory vault (files + git are the source of truth, MEM-02).
+type MemoryNodeRow struct {
+	ID          string // ent_*/ep_*/sum_*/bel_*
+	Type        string // entity|episode|rollup|belief
+	Tier        string // short|long
+	Status      string // active|closed|tombstone
+	RedirectTo  string // target node ID when Status == tombstone, else empty
+	Title       string
+	Path        string // vault-relative file path
+	ContentHash string // sha256 of file bytes at last index
+	IndexedAt   string
+}
+
+// MemoryHit is one full-text search result from SearchMemoryFTS.
+type MemoryHit struct {
+	ID      string
+	Title   string
+	Type    string
+	Snippet string
+}
+
+// UpsertMemoryNode writes a node row, replaces its aliases, and replaces its
+// FTS row in a single transaction, so a reindex interrupted mid-node never
+// leaves the index half-updated for that node.
+func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning memory node tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`INSERT INTO memory_nodes
+		(id, type, tier, status, redirect_to, title, path, content_hash, indexed_at)
+		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			type = excluded.type,
+			tier = excluded.tier,
+			status = excluded.status,
+			redirect_to = excluded.redirect_to,
+			title = excluded.title,
+			path = excluded.path,
+			content_hash = excluded.content_hash,
+			indexed_at = excluded.indexed_at`,
+		row.ID, row.Type, row.Tier, row.Status, row.RedirectTo,
+		row.Title, row.Path, row.ContentHash, row.IndexedAt)
+	if err != nil {
+		return fmt.Errorf("upserting memory node %s: %w", row.ID, err)
+	}
+
+	// Replace this node's aliases wholesale — the vault frontmatter is the
+	// authority, so stale aliases must not survive a re-upsert.
+	if _, err := tx.Exec(`DELETE FROM memory_aliases WHERE node_id = ?`, row.ID); err != nil {
+		return fmt.Errorf("clearing aliases for %s: %w", row.ID, err)
+	}
+	for _, alias := range aliases {
+		if _, err := tx.Exec(`INSERT INTO memory_aliases (alias, node_id) VALUES (?, ?)`, alias, row.ID); err != nil {
+			return fmt.Errorf("inserting alias %q for %s: %w", alias, row.ID, err)
+		}
+	}
+
+	// Replace the FTS row (fts5 has no upsert).
+	if _, err := tx.Exec(`DELETE FROM memory_fts WHERE id = ?`, row.ID); err != nil {
+		return fmt.Errorf("clearing fts row for %s: %w", row.ID, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO memory_fts (id, title, body) VALUES (?, ?, ?)`,
+		row.ID, row.Title, body); err != nil {
+		return fmt.Errorf("inserting fts row for %s: %w", row.ID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing memory node tx for %s: %w", row.ID, err)
+	}
+	return nil
+}
+
+// DeleteMemoryNode removes a node and its aliases, stats, and FTS row in one
+// transaction (used by reconcile when a vault file disappears).
+func (db *DB) DeleteMemoryNode(id string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning memory delete tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Children first: memory_aliases and memory_node_stats reference memory_nodes.
+	for _, stmt := range []string{
+		`DELETE FROM memory_aliases WHERE node_id = ?`,
+		`DELETE FROM memory_node_stats WHERE node_id = ?`,
+		`DELETE FROM memory_fts WHERE id = ?`,
+		`DELETE FROM memory_nodes WHERE id = ?`,
+	} {
+		if _, err := tx.Exec(stmt, id); err != nil {
+			return fmt.Errorf("deleting memory node %s: %w", id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing memory delete tx for %s: %w", id, err)
+	}
+	return nil
+}
+
+// LookupMemoryAlias resolves an alias (case-insensitive — the column is
+// COLLATE NOCASE) to its node ID. Returns sql.ErrNoRows when unknown.
+func (db *DB) LookupMemoryAlias(ref string) (string, error) {
+	var nodeID string
+	err := db.QueryRow(`SELECT node_id FROM memory_aliases WHERE alias = ?`, ref).Scan(&nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if err != nil {
+		return "", fmt.Errorf("looking up memory alias %q: %w", ref, err)
+	}
+	return nodeID, nil
+}
+
+// GetMemoryNode returns one node row by canonical ID. Returns sql.ErrNoRows
+// when the node is not indexed.
+func (db *DB) GetMemoryNode(id string) (MemoryNodeRow, error) {
+	var row MemoryNodeRow
+	err := db.QueryRow(`SELECT id, type, tier, status, COALESCE(redirect_to, ''),
+		title, path, content_hash, indexed_at
+		FROM memory_nodes WHERE id = ?`, id).
+		Scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
+			&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MemoryNodeRow{}, err
+	}
+	if err != nil {
+		return MemoryNodeRow{}, fmt.Errorf("getting memory node %s: %w", id, err)
+	}
+	return row, nil
+}
+
+// ListMemoryNodes returns all indexed nodes ordered by ID (used by reconcile
+// to diff the index against the vault).
+func (db *DB) ListMemoryNodes() ([]MemoryNodeRow, error) {
+	rows, err := db.Query(`SELECT id, type, tier, status, COALESCE(redirect_to, ''),
+		title, path, content_hash, indexed_at
+		FROM memory_nodes ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing memory nodes: %w", err)
+	}
+	defer rows.Close()
+
+	var nodes []MemoryNodeRow
+	for rows.Next() {
+		var row MemoryNodeRow
+		if err := rows.Scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
+			&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt); err != nil {
+			return nil, fmt.Errorf("scanning memory node: %w", err)
+		}
+		nodes = append(nodes, row)
+	}
+	return nodes, rows.Err()
+}
+
+// SearchMemoryFTS runs a full-text search over node titles and bodies,
+// excluding tombstones. The query is sanitized the same way as message search
+// (each term double-quoted) so user input cannot inject FTS5 operators.
+func (db *DB) SearchMemoryFTS(query string, limit int) ([]MemoryHit, error) {
+	sanitized := sanitizeFTS5Query(query)
+	if sanitized == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := db.Query(`SELECT n.id, n.title, n.type,
+			snippet(memory_fts, -1, '', '', '…', 12)
+		FROM memory_fts fts
+		JOIN memory_nodes n ON n.id = fts.id
+		WHERE memory_fts MATCH ? AND n.status != 'tombstone'
+		ORDER BY rank
+		LIMIT ?`, sanitized, limit)
+	if err != nil {
+		return nil, fmt.Errorf("searching memory fts: %w", err)
+	}
+	defer rows.Close()
+
+	var hits []MemoryHit
+	for rows.Next() {
+		var h MemoryHit
+		if err := rows.Scan(&h.ID, &h.Title, &h.Type, &h.Snippet); err != nil {
+			return nil, fmt.Errorf("scanning memory hit: %w", err)
+		}
+		hits = append(hits, h)
+	}
+	return hits, rows.Err()
+}
+
+// BumpMemoryAccess increments a node's access counter and stamps the access
+// time (powers recency/usage stats for the memory_open MCP tool).
+func (db *DB) BumpMemoryAccess(id string) error {
+	_, err := db.Exec(`INSERT INTO memory_node_stats (node_id, access_count, last_accessed_at)
+		VALUES (?, 1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		ON CONFLICT(node_id) DO UPDATE SET
+			access_count = access_count + 1,
+			last_accessed_at = excluded.last_accessed_at`, id)
+	if err != nil {
+		return fmt.Errorf("bumping memory access for %s: %w", id, err)
+	}
+	return nil
+}
+
+// MemoryWatermark returns the unix ts of the last raw message fully processed
+// by the episode extractor (MEM-04 freeze discipline, same shape as the inbox
+// watermark accessors).
+func (db *DB) MemoryWatermark() (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT COALESCE(memory_last_extracted_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	if err != nil {
+		return 0, fmt.Errorf("getting memory watermark: %w", err)
+	}
+	return ts, nil
+}
+
+// SetMemoryWatermark updates the consolidation watermark.
+func (db *DB) SetMemoryWatermark(ts float64) error {
+	_, err := db.Exec(`UPDATE workspace SET memory_last_extracted_ts = ?`, ts)
+	if err != nil {
+		return fmt.Errorf("setting memory watermark: %w", err)
+	}
+	return nil
+}
+
+// DropMemoryIndex empties all four memory index tables in one transaction so
+// a full reindex can rebuild them from the vault (MEM-02).
+func (db *DB) DropMemoryIndex() error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning memory drop tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Children first: aliases and stats reference memory_nodes.
+	for _, stmt := range []string{
+		`DELETE FROM memory_aliases`,
+		`DELETE FROM memory_node_stats`,
+		`DELETE FROM memory_fts`,
+		`DELETE FROM memory_nodes`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("dropping memory index: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing memory drop tx: %w", err)
+	}
+	return nil
+}
