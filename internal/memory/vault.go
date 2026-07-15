@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -188,6 +189,32 @@ func (v *Vault) WriteNodes(nodes []Node, msg CommitMsg) (string, error) {
 		return "", fmt.Errorf("memory: commit nodes: %w", err)
 	}
 	return hash.String(), nil
+}
+
+// WriteFile writes one non-node vault file (v1: the mechanically rendered
+// map.md), stages ONLY that path, and makes exactly one commit. Unchanged
+// content is a no-op (no write, no commit), so a re-render that produces the
+// same bytes adds no history. Nodes must go through WriteNodes. Returns
+// whether a commit was made.
+func (v *Vault) WriteFile(rel string, content []byte, msg CommitMsg) (bool, error) {
+	abs := filepath.Join(v.path, filepath.FromSlash(rel))
+	if prev, err := os.ReadFile(abs); err == nil && bytes.Equal(prev, content) {
+		return false, nil
+	}
+	if err := os.WriteFile(abs, content, 0o644); err != nil {
+		return false, fmt.Errorf("memory: write %s: %w", rel, err)
+	}
+	wt, err := v.repo.Worktree()
+	if err != nil {
+		return false, fmt.Errorf("memory: vault worktree: %w", err)
+	}
+	if _, err := wt.Add(rel); err != nil {
+		return false, fmt.Errorf("memory: stage %s: %w", rel, err)
+	}
+	if _, err := wt.Commit(msg.render(), &git.CommitOptions{Author: signature()}); err != nil {
+		return false, fmt.Errorf("memory: commit %s: %w", rel, err)
+	}
+	return true, nil
 }
 
 // DirtyWorktree reports whether the working tree differs from HEAD (owner

@@ -281,6 +281,35 @@ day_plan:
 	assert.Equal(t, 10, cfg.DayPlan.MaxBacklog)
 }
 
+func TestMemoryConfig_Defaults(t *testing.T) {
+	path := writeTestConfig(t, "")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Memory.Enabled, "memory is off by default until the feature settles")
+	assert.Equal(t, 2000, cfg.Memory.MaxChunkMessages)
+	assert.Equal(t, 20, cfg.Memory.SeedMinMessages)
+	assert.Equal(t, 5, cfg.Memory.MaxEpisodesPerWindow)
+}
+
+func TestMemoryConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  enabled: true
+  max_chunk_messages: 500
+  seed_min_messages: 3
+  max_episodes_per_window: 2
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Enabled)
+	assert.Equal(t, 500, cfg.Memory.MaxChunkMessages)
+	assert.Equal(t, 3, cfg.Memory.SeedMinMessages)
+	assert.Equal(t, 2, cfg.Memory.MaxEpisodesPerWindow)
+}
+
 func TestTargetsConfigDefaults(t *testing.T) {
 	path := writeTestConfig(t, "")
 	cfg, err := Load(path)

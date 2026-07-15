@@ -162,6 +162,15 @@ type DayPlanConfig struct {
 	MaxBacklog        int    `yaml:"max_backlog" mapstructure:"max_backlog"`
 }
 
+// MemoryConfig holds settings for the secretary memory consolidation
+// pipeline (internal/memory).
+type MemoryConfig struct {
+	Enabled              bool `mapstructure:"enabled"`                 // enable memory consolidation (default: false — off until the feature settles)
+	MaxChunkMessages     int  `mapstructure:"max_chunk_messages"`      // max raw messages consumed per consolidation run (default: 2000)
+	SeedMinMessages      int  `mapstructure:"seed_min_messages"`       // messages in the last 30 days before a person is seeded as an entity (default: 20)
+	MaxEpisodesPerWindow int  `mapstructure:"max_episodes_per_window"` // episode cap per channel window in the extractor (default: 5)
+}
+
 type Config struct {
 	ActiveWorkspace string                      `mapstructure:"active_workspace"`
 	Workspaces      map[string]*WorkspaceConfig `mapstructure:"workspaces"`
@@ -177,6 +186,7 @@ type Config struct {
 	Jira            JiraConfig                  `mapstructure:"jira"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
+	Memory          MemoryConfig                `mapstructure:"memory"`
 	Targets         TargetsConfig               `mapstructure:"targets"`
 	Catchup         CatchupConfig               `mapstructure:"catchup"`
 	DB              DBConfig                    `mapstructure:"db"`
@@ -243,6 +253,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
 	v.SetDefault("day_plan.min_backlog", DefaultDayPlanMinBacklog)
 	v.SetDefault("day_plan.max_backlog", DefaultDayPlanMaxBacklog)
+	v.SetDefault("memory.enabled", false) // off by default until the feature settles
+	v.SetDefault("memory.max_chunk_messages", 2000)
+	v.SetDefault("memory.seed_min_messages", 20)
+	v.SetDefault("memory.max_episodes_per_window", 5)
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

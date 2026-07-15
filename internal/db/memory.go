@@ -249,6 +249,56 @@ func (db *DB) SetMemoryWatermark(ts float64) error {
 	return nil
 }
 
+// MemoryExtractMessage is one raw message row fed to the memory episode
+// extractor: human-authored (effective is_bot = 0, not muted for LLM),
+// non-empty text, not deleted, strictly newer than the extraction watermark.
+type MemoryExtractMessage struct {
+	ChannelID   string
+	ChannelName string
+	TS          string
+	TSUnix      float64
+	Author      string
+	Text        string
+}
+
+// ListMemoryExtractMessages returns up to limit extractable messages with
+// ts_unix strictly above sinceTS, oldest first (read-only; the memory
+// pipeline groups them into per-channel windows). Messages without a matching
+// non-bot users row are excluded — bot/webhook traffic is out of scope for
+// episode extraction in v1.
+func (db *DB) ListMemoryExtractMessages(sinceTS float64, limit int) ([]MemoryExtractMessage, error) {
+	if limit <= 0 {
+		limit = 2000
+	}
+	rows, err := db.Query(`
+		SELECT m.channel_id, c.name, m.ts, m.ts_unix,
+		       COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), u.name),
+		       m.text
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		JOIN users u ON u.id = m.user_id
+		WHERE m.text != '' AND m.is_deleted = 0
+		  AND m.ts_unix > ?
+		  AND COALESCE(u.is_bot_override, u.is_bot) = 0
+		  AND u.is_muted_for_llm = 0
+		ORDER BY m.ts_unix, m.channel_id, m.ts
+		LIMIT ?`, sinceTS, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing memory extract messages: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MemoryExtractMessage
+	for rows.Next() {
+		var m MemoryExtractMessage
+		if err := rows.Scan(&m.ChannelID, &m.ChannelName, &m.TS, &m.TSUnix, &m.Author, &m.Text); err != nil {
+			return nil, fmt.Errorf("scanning memory extract message: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // DropMemoryIndex empties all four memory index tables in one transaction so
 // a full reindex can rebuild them from the vault (MEM-02).
 func (db *DB) DropMemoryIndex() error {
