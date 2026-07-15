@@ -569,10 +569,10 @@ final class TargetChatViewModel {
           [#channel-name](slack://channel?team=\(teamID)&id={channel_id})
 
         Message link (top-level message, thread_ts is NULL or empty):
-          [описательный текст](slack://channel?team=\(teamID)&id={channel_id}&message={ts})
+          [descriptive text](slack://channel?team=\(teamID)&id={channel_id}&message={ts})
 
         Message link inside a thread — use thread_ts (the parent's ts), NOT the reply's ts:
-          [описательный текст](slack://channel?team=\(teamID)&id={channel_id}&message={thread_ts})
+          [descriptive text](slack://channel?team=\(teamID)&id={channel_id}&message={thread_ts})
 
         Web permalink (only when the user explicitly asks for an https link):
           Top-level:     https://\(domain).slack.com/archives/{channel_id}/p{ts_without_dot}

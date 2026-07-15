@@ -2,57 +2,57 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Подключить Gmail как источник inbox: письма из Gmail Inbox синхронизируются локально и попадают в inbox/ситуации через существующий AI-конвейер.
+**Goal:** Connect Gmail as an inbox source: messages from the Gmail Inbox are synced locally and flow into inbox/situations through the existing AI pipeline.
 
-**Architecture:** Самодостаточный пакет `internal/gmail/` (OAuth + API-клиент + Syncer) по образцу `internal/calendar/` пишет письма в таблицу `gmail_messages`. Детектор `internal/inbox/gmail_detector.go` читает эту таблицу и создаёт `inbox_items` (`email_received`/`email_cc`), дальше работает существующий pipeline без изменений. Daemon получает фазу `phaseGmailSync`; Desktop — кнопку Connect Gmail.
+**Architecture:** A self-contained package `internal/gmail/` (OAuth + API client + Syncer), modeled on `internal/calendar/`, writes messages to the `gmail_messages` table. The detector `internal/inbox/gmail_detector.go` reads that table and creates `inbox_items` (`email_received`/`email_cc`); the existing pipeline continues from there unchanged. The daemon gets a `phaseGmailSync` phase; Desktop gets a Connect Gmail button.
 
-**Tech Stack:** Go 1.25, `database/sql` + `modernc.org/sqlite`, goose-миграции, raw `net/http` для Gmail REST v1, SwiftUI + GRDB (Desktop).
+**Tech Stack:** Go 1.25, `database/sql` + `modernc.org/sqlite`, goose migrations, raw `net/http` for the Gmail REST v1 API, SwiftUI + GRDB (Desktop).
 
-**Спека:** `docs/superpowers/specs/2026-07-09-gmail-source-design.md`
+**Spec:** `docs/superpowers/specs/2026-07-09-gmail-source-design.md`
 
 ## Global Constraints
 
-- Go 1.25; SQLite через `modernc.org/sqlite` (`database/sql`), никаких CGO-драйверов.
-- `MaxOpenConns(1)` для in-memory SQLite: детекторы обязаны **полностью вычитать `rows` в слайс до любого следующего запроса** (иначе deadlock) — см. `calendar_detector.go`.
-- Расширение enum-CHECK (`inbox_items.trigger_type`) требует «table-recreation dance» (SQLite не умеет `ALTER TABLE ... ADD CONSTRAINT`) — образец `internal/db/migrations/00002_target_due_inbox.sql`.
-- Любое изменение схемы зеркалится в `internal/db/schema.sql`, новые таблицы добавляются в `TestAllTablesExist`, golden snapshot регенерируется: `go test ./internal/db/ -run TestSchemaGolden -update`.
-- Пакет `internal/gmail` **не импортирует** `internal/calendar` (Google-креды связываются на уровне `cmd`).
-- Gmail OAuth scope: `https://www.googleapis.com/auth/gmail.modify` (write-back — отдельный план, но scope запрашивается сразу).
-- Шумовой фильтр до AI: письма с ярлыками `CATEGORY_PROMOTIONS`/`CATEGORY_SOCIAL` не синхронизируются.
-- Дефолты конфига: `InitialHistoryDays=7`, `MaxMessagesPerSync=100`, `MaxBodyBytes=51200`.
-- Проверять реальный exit-код тестов (не пайпить через `tail`); Swift: `cd WatchtowerDesktop && swift build && swift test`.
-- Все commit-сообщения оканчиваются `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- Go 1.25; SQLite via `modernc.org/sqlite` (`database/sql`), no CGO drivers.
+- `MaxOpenConns(1)` for in-memory SQLite: detectors must **fully drain `rows` into a slice before issuing any next query** (otherwise deadlock) — see `calendar_detector.go`.
+- Expanding an enum CHECK (`inbox_items.trigger_type`) requires the "table-recreation dance" (SQLite can't do `ALTER TABLE ... ADD CONSTRAINT`) — see `internal/db/migrations/00002_target_due_inbox.sql` for the pattern.
+- Any schema change is mirrored into `internal/db/schema.sql`, new tables are added to `TestAllTablesExist`, and the golden snapshot is regenerated: `go test ./internal/db/ -run TestSchemaGolden -update`.
+- The `internal/gmail` package **does not import** `internal/calendar` (Google credentials are wired together at the `cmd` level).
+- Gmail OAuth scope: `https://www.googleapis.com/auth/gmail.modify` (write-back is a separate plan, but the scope is requested up front).
+- Noise filter before AI: messages labeled `CATEGORY_PROMOTIONS`/`CATEGORY_SOCIAL` are not synced.
+- Config defaults: `InitialHistoryDays=7`, `MaxMessagesPerSync=100`, `MaxBodyBytes=51200`.
+- Check the actual test exit code (don't pipe through `tail`); Swift: `cd WatchtowerDesktop && swift build && swift test`.
+- All commit messages end with `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
 ---
 
 ## File Structure
 
-**Создаётся:**
-- `internal/db/migrations/00016_gmail_source.sql` — схема (таблицы + watermark + trigger_type).
-- `internal/db/gmail.go` — DB-слой (модель, upsert, чтение для детектора, watermark, auth-state).
+**Created:**
+- `internal/db/migrations/00016_gmail_source.sql` — schema (tables + watermark + trigger_type).
+- `internal/db/gmail.go` — DB layer (model, upsert, detector reads, watermark, auth state).
 - `internal/gmail/auth.go` — OAuth (TokenStore `gmail_token.json`, Login/Prepare/Complete).
-- `internal/gmail/client.go` — Gmail REST v1 клиент (list/get, refresh).
-- `internal/gmail/models.go` — доменный тип письма.
-- `internal/gmail/sync.go` — Syncer (initial/incremental, фильтр, upsert, watermark).
+- `internal/gmail/client.go` — Gmail REST v1 client (list/get, refresh).
+- `internal/gmail/models.go` — domain type for a message.
+- `internal/gmail/sync.go` — Syncer (initial/incremental, filter, upsert, watermark).
 - `internal/inbox/gmail_detector.go` — `DetectGmail`.
 - `cmd/gmail.go` — CLI `gmail login/logout/sync/status`.
-- `WatchtowerDesktop/Sources/Services/GmailAuthService.swift` — Desktop connect-сервис.
-- Тесты: `internal/db/gmail_test.go`, `internal/gmail/*_test.go`, `internal/inbox/gmail_detector_test.go`.
+- `WatchtowerDesktop/Sources/Services/GmailAuthService.swift` — Desktop connect service.
+- Tests: `internal/db/gmail_test.go`, `internal/gmail/*_test.go`, `internal/inbox/gmail_detector_test.go`.
 
-**Модифицируется:**
-- `internal/db/schema.sql` — зеркало схемы.
+**Modified:**
+- `internal/db/schema.sql` — schema mirror.
 - `internal/db/db_test.go` — `TestAllTablesExist` (+`gmail_messages`, `gmail_auth_state`).
-- `internal/db/testdata/schema_golden.sql` (или как называется snapshot) — регенерация.
-- `internal/config/config.go` — `GmailConfig` + поле в `Config` + `SetDefault` в `Load`.
-- `internal/config/defaults.go` — дефолты Gmail.
-- `internal/inbox/classifier.go` — `defaultClasses` (+email типы).
+- `internal/db/testdata/schema_golden.sql` (or whatever the snapshot is named) — regeneration.
+- `internal/config/config.go` — `GmailConfig` + field on `Config` + `SetDefault` in `Load`.
+- `internal/config/defaults.go` — Gmail defaults.
+- `internal/inbox/classifier.go` — `defaultClasses` (+email types).
 - `internal/inbox/pipeline.go` — `detectAll` + `Run` + `RunFastDetection`.
-- `internal/daemon/daemon.go` — поле/сеттер/фаза Gmail.
-- `cmd/sync.go` — проводка Gmail syncer в daemon.
-- `cmd/root.go` — регистрация команды `gmail` (если не через `init()`).
+- `internal/daemon/daemon.go` — Gmail field/setter/phase.
+- `cmd/sync.go` — wiring the Gmail syncer into the daemon.
+- `cmd/root.go` — registering the `gmail` command (if not done via `init()`).
 - `WatchtowerDesktop/Sources/Views/Settings/SettingsView.swift` — `gmailSettingsSection`.
-- `WatchtowerDesktop/Sources/Views/Inbox/InboxCardView.swift` — `case`-ы email-типов.
-- `WatchtowerDesktop/Tests/.../TestDatabase.swift` — синхрон схемы.
+- `WatchtowerDesktop/Sources/Views/Inbox/InboxCardView.swift` — email-type `case`s.
+- `WatchtowerDesktop/Tests/.../TestDatabase.swift` — schema sync.
 
 ---
 
@@ -61,14 +61,14 @@
 **Files:**
 - Create: `internal/db/migrations/00016_gmail_source.sql`
 - Modify: `internal/db/schema.sql`, `internal/db/db_test.go` (TestAllTablesExist)
-- Test: `internal/db/migration_test.go` (или существующий migration-тест), `internal/db/schema_snapshot_test.go`
+- Test: `internal/db/migration_test.go` (or the existing migration test), `internal/db/schema_snapshot_test.go`
 
 **Interfaces:**
-- Produces: таблицы `gmail_messages`, `gmail_auth_state`; колонка `workspace.gmail_last_internal_date REAL NOT NULL DEFAULT 0`; значения `trigger_type` `email_received`, `email_cc`.
+- Produces: tables `gmail_messages`, `gmail_auth_state`; column `workspace.gmail_last_internal_date REAL NOT NULL DEFAULT 0`; `trigger_type` values `email_received`, `email_cc`.
 
-- [ ] **Step 1: Написать миграцию**
+- [ ] **Step 1: Write the migration**
 
-Create `internal/db/migrations/00016_gmail_source.sql`. Секция Up: создать две таблицы, добавить watermark-колонку, затем recreation-dance для `inbox_items`. **Важно:** блок `CREATE TABLE inbox_items_new (...)` копирует ТЕКУЩЕЕ определение `inbox_items` из `schema.sql:447-485` целиком (все колонки до `composed_at` + `UNIQUE(channel_id, message_ts)`), меняя только список `trigger_type`, и воспроизводит все 7 индексов.
+Create `internal/db/migrations/00016_gmail_source.sql`. Up section: create the two tables, add the watermark column, then run the recreation dance for `inbox_items`. **Important:** the `CREATE TABLE inbox_items_new (...)` block copies the CURRENT definition of `inbox_items` from `schema.sql:447-485` in full (all columns through `composed_at` + `UNIQUE(channel_id, message_ts)`), changing only the `trigger_type` list, and reproduces all 7 indexes.
 
 ```sql
 -- +goose Up
@@ -221,13 +221,13 @@ DROP TABLE IF EXISTS gmail_auth_state;
 DROP TABLE IF EXISTS gmail_messages;
 ```
 
-- [ ] **Step 2: Зеркалировать в schema.sql**
+- [ ] **Step 2: Mirror into schema.sql**
 
-В `internal/db/schema.sql`: (а) добавить два `CREATE TABLE` (`gmail_messages` c индексами, `gmail_auth_state` + `INSERT OR IGNORE`) рядом с `calendar_auth_state` (~строка 1007); (б) добавить `gmail_last_internal_date REAL NOT NULL DEFAULT 0` последней колонкой в `CREATE TABLE workspace` (после `compose_last_run_ts` — не забыть запятую перед ней); (в) в `CREATE TABLE inbox_items` в список `trigger_type` дописать `'email_received','email_cc'` (после `'stream'`).
+In `internal/db/schema.sql`: (a) add two `CREATE TABLE` statements (`gmail_messages` with indexes, `gmail_auth_state` + `INSERT OR IGNORE`) next to `calendar_auth_state` (~line 1007); (b) add `gmail_last_internal_date REAL NOT NULL DEFAULT 0` as the last column in `CREATE TABLE workspace` (after `compose_last_run_ts` — don't forget the comma before it); (c) in `CREATE TABLE inbox_items`, append `'email_received','email_cc'` to the `trigger_type` list (after `'stream'`).
 
-- [ ] **Step 3: Написать/дополнить тест миграции**
+- [ ] **Step 3: Write/extend the migration test**
 
-Добавить в существующий migration-тест (или создать `internal/db/gmail_migration_test.go`) проверку, что после `Open()` таблицы существуют и приём email-trigger'а работает:
+Add to the existing migration test (or create `internal/db/gmail_migration_test.go`) a check that after `Open()` the tables exist and the email trigger works:
 
 ```go
 func TestMigration00016GmailSource(t *testing.T) {
@@ -253,26 +253,26 @@ func TestMigration00016GmailSource(t *testing.T) {
 }
 ```
 
-(Смотри, как в пакете открывается тестовая БД — переиспользуй тот же helper, что и соседние тесты.)
+(Check how the test DB is opened elsewhere in the package — reuse the same helper as the neighboring tests.)
 
-- [ ] **Step 4: Добавить таблицы в TestAllTablesExist**
+- [ ] **Step 4: Add the tables to TestAllTablesExist**
 
-В `internal/db/db_test.go` в список ожидаемых таблиц (`TestAllTablesExist`, ~строка 92) добавить `"gmail_messages"` и `"gmail_auth_state"`.
+In `internal/db/db_test.go`, add `"gmail_messages"` and `"gmail_auth_state"` to the list of expected tables (`TestAllTablesExist`, ~line 92).
 
-- [ ] **Step 5: Прогнать тесты, убедиться что падают/проходят как надо**
+- [ ] **Step 5: Run the tests, confirm they fail/pass as expected**
 
 ```bash
 go test ./internal/db/ -run 'TestMigration00016GmailSource|TestAllTablesExist' -v > /tmp/t1.log 2>&1; echo "exit=$?"; tail -30 /tmp/t1.log
 ```
-Expected: PASS обоих.
+Expected: PASS for both.
 
-- [ ] **Step 6: Регенерировать golden snapshot и прогнать весь пакет db**
+- [ ] **Step 6: Regenerate the golden snapshot and run the whole db package**
 
 ```bash
 go test ./internal/db/ -run TestSchemaGolden -update > /tmp/t1g.log 2>&1; echo "exit=$?"
 go test ./internal/db/ > /tmp/t1all.log 2>&1; echo "exit=$?"; tail -20 /tmp/t1all.log
 ```
-Expected: обе команды exit=0.
+Expected: both commands exit=0.
 
 - [ ] **Step 7: Commit**
 
@@ -291,7 +291,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Create: `internal/db/gmail.go`, `internal/db/gmail_test.go`
 
 **Interfaces:**
-- Consumes: таблицы из Task 1.
+- Consumes: tables from Task 1.
 - Produces:
   - type `GmailMessage struct { ID, ThreadID, FromEmail, FromName, ToJSON, CcJSON, Subject, Snippet, BodyText, InternalDate, LabelsJSON string; IsUnread bool; Permalink, SyncedAt, UpdatedAt string }`
   - `func (db *DB) UpsertGmailMessage(m GmailMessage, syncedAt string) error`
@@ -301,7 +301,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
   - `func (db *DB) GetGmailAuthState() (GmailAuthState, error)` / `func (db *DB) SetGmailAuthState(status, errMsg string) error`
   - type `GmailAuthState struct { Status, Error, UpdatedAt string }`
 
-- [ ] **Step 1: Написать тест DB-слоя**
+- [ ] **Step 1: Write the DB layer test**
 
 `internal/db/gmail_test.go`:
 
@@ -355,16 +355,16 @@ func TestGmailAuthState(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Убедиться, что тест не компилируется/падает**
+- [ ] **Step 2: Confirm the test fails to compile/fails**
 
 ```bash
 go test ./internal/db/ -run 'TestGmail' > /tmp/t2.log 2>&1; echo "exit=$?"; tail -20 /tmp/t2.log
 ```
-Expected: FAIL (undefined: UpsertGmailMessage и т.д.).
+Expected: FAIL (undefined: UpsertGmailMessage etc.).
 
-- [ ] **Step 3: Реализовать `internal/db/gmail.go`**
+- [ ] **Step 3: Implement `internal/db/gmail.go`**
 
-Образец методов auth-state и watermark — `internal/db/calendar.go:301-325` и `internal/db/workspace.go` (`GetComposeLastRunTS`/`SetComposeLastRunTS`).
+Model the auth-state and watermark methods on `internal/db/calendar.go:301-325` and `internal/db/workspace.go` (`GetComposeLastRunTS`/`SetComposeLastRunTS`).
 
 ```go
 package db
@@ -503,7 +503,7 @@ func (db *DB) SetGmailAuthState(status, errMsg string) error {
 }
 ```
 
-- [ ] **Step 4: Прогнать тесты**
+- [ ] **Step 4: Run the tests**
 
 ```bash
 go test ./internal/db/ -run 'TestGmail' > /tmp/t2.log 2>&1; echo "exit=$?"; tail -20 /tmp/t2.log
@@ -529,29 +529,29 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Interfaces:**
 - Produces:
   - `type GoogleOAuthConfig struct { ClientID, ClientSecret string }`
-  - `type OAuthToken struct { AccessToken, TokenType, RefreshToken, Expiry string }` (JSON-теги как в calendar)
-  - `type TokenStore` с `NewTokenStore(workspaceDir string) *TokenStore` → файл `gmail_token.json`; методы `Load/Save/Delete/Exists/Path`
+  - `type OAuthToken struct { AccessToken, TokenType, RefreshToken, Expiry string }` (JSON tags as in calendar)
+  - `type TokenStore` with `NewTokenStore(workspaceDir string) *TokenStore` → file `gmail_token.json`; methods `Load/Save/Delete/Exists/Path`
   - `func Login(ctx, cfg GoogleOAuthConfig, out io.Writer, opts ...LoginOptions) (*OAuthToken, error)`
   - `func Prepare(cfg GoogleOAuthConfig, customRedirectURI string) (*PrepareResult, error)`
   - `func Complete(ctx, cfg GoogleOAuthConfig, code, redirectURI string) (*OAuthToken, error)`
-  - `var googleTokenEndpoint string` (экспортируемо в пакете для client.go/tests)
+  - `var googleTokenEndpoint string` (exported within the package for client.go/tests)
 
-- [ ] **Step 1: Скопировать calendar/auth.go как основу и адаптировать**
+- [ ] **Step 1: Copy calendar/auth.go as a base and adapt it**
 
-Создать `internal/gmail/auth.go` на базе `internal/calendar/auth.go` (340 строк). Точечные изменения:
+Create `internal/gmail/auth.go` based on `internal/calendar/auth.go` (340 lines). Targeted changes:
 - `package gmail`;
-- `const gmailScope = "https://www.googleapis.com/auth/gmail.modify"`; удалить `calendarEventsScope`/`calendarCalendarListScope`;
-- в `buildAuthURL` — `"scope": {gmailScope}`;
+- `const gmailScope = "https://www.googleapis.com/auth/gmail.modify"`; remove `calendarEventsScope`/`calendarCalendarListScope`;
+- in `buildAuthURL` — `"scope": {gmailScope}`;
 - `NewTokenStore` → `filepath.Join(workspaceDir, "gmail_token.json")`;
-- `defaultRedirectPort = 18511` (следующий свободный диапазон после Calendar 18501-18510);
-- `listenLocal` preferred-порты `18511..18520`;
-- success/error HTML: заголовок «Watchtower — Gmail Connected», текст «Gmail has been linked to Watchtower.»;
-- в `Login` строки вывода: «Opening browser for Gmail authorization...»;
-- `DefaultGoogleClientID`/`DefaultGoogleClientSecret` **НЕ объявлять** в этом пакете (креды приходят через cmd из `calendar.Default...` — см. Task 9).
+- `defaultRedirectPort = 18511` (the next free range after Calendar's 18501-18510);
+- `listenLocal` preferred ports `18511..18520`;
+- success/error HTML: title "Watchtower — Gmail Connected", body text "Gmail has been linked to Watchtower.";
+- in `Login`, the output lines: "Opening browser for Gmail authorization...";
+- do **NOT** declare `DefaultGoogleClientID`/`DefaultGoogleClientSecret` in this package (credentials come in via cmd from `calendar.Default...` — see Task 9).
 
-- [ ] **Step 2: Скопировать и адаптировать auth_test.go**
+- [ ] **Step 2: Copy and adapt auth_test.go**
 
-Создать `internal/gmail/auth_test.go` на базе `internal/calendar/auth_test.go`. Заменить пакет на `gmail`, проверить что `buildAuthURL` содержит `gmail.modify` scope и `access_type=offline`, что TokenStore пишет/читает `gmail_token.json`, и Login/Complete против `httptest.Server` (переопределяя `googleAuthEndpoint`/`googleTokenEndpoint`). Ключевой новый ассерт:
+Create `internal/gmail/auth_test.go` based on `internal/calendar/auth_test.go`. Change the package to `gmail`, verify that `buildAuthURL` contains the `gmail.modify` scope and `access_type=offline`, that TokenStore writes/reads `gmail_token.json`, and Login/Complete against an `httptest.Server` (overriding `googleAuthEndpoint`/`googleTokenEndpoint`). Key new assertion:
 
 ```go
 func TestBuildAuthURLHasGmailScope(t *testing.T) {
@@ -565,7 +565,7 @@ func TestBuildAuthURLHasGmailScope(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Прогнать тесты**
+- [ ] **Step 3: Run the tests**
 
 ```bash
 go test ./internal/gmail/ > /tmp/t3.log 2>&1; echo "exit=$?"; tail -30 /tmp/t3.log
@@ -593,11 +593,11 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Produces:
   - `var ErrAuthRevoked = errors.New("gmail auth revoked")`
   - `func NewClient(ctx, refreshToken string, cfg GoogleOAuthConfig) (*Client, error)`
-  - `func (c *Client) ListInboxMessageIDs(ctx, query string, maxResults int) ([]string, error)` — возвращает message IDs по `q=` (например `in:inbox newer_than:7d`)
+  - `func (c *Client) ListInboxMessageIDs(ctx, query string, maxResults int) ([]string, error)` — returns message IDs matching a `q=` query (e.g. `in:inbox newer_than:7d`)
   - `func (c *Client) GetMessage(ctx, id string) (*Message, error)`
   - `models.go`: `type Message struct { ID, ThreadID, FromEmail, FromName, Subject, Snippet, BodyText, InternalDate string; To, Cc []string; Labels []string; IsUnread bool; Permalink string }`
 
-- [ ] **Step 1: Написать models.go**
+- [ ] **Step 1: Write models.go**
 
 ```go
 package gmail
@@ -620,7 +620,7 @@ type Message struct {
 }
 ```
 
-- [ ] **Step 2: Написать client_test.go (httptest)**
+- [ ] **Step 2: Write client_test.go (httptest)**
 
 Gmail API: `GET {base}/users/me/messages?q=...&maxResults=N` → `{"messages":[{"id":"m1","threadId":"t1"}],"nextPageToken":""}`; `GET {base}/users/me/messages/m1?format=full` → `{"id","threadId","labelIds":[...],"snippet","internalDate":"<ms>","payload":{"headers":[{"name":"From","value":"A <a@x.com>"},...],"parts":[{"mimeType":"text/plain","body":{"data":"<base64url>"}}]}}`.
 
@@ -667,16 +667,16 @@ func TestClientListAndGet(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Убедиться, что тест падает**
+- [ ] **Step 3: Confirm the test fails**
 
 ```bash
 go test ./internal/gmail/ -run TestClientListAndGet > /tmp/t4.log 2>&1; echo "exit=$?"; tail -20 /tmp/t4.log
 ```
 Expected: FAIL (undefined NewClient/gmailAPIBase).
 
-- [ ] **Step 4: Реализовать client.go**
+- [ ] **Step 4: Implement client.go**
 
-Refresh/`ErrAuthRevoked`/`isInvalidGrant` — по образцу `internal/calendar/client.go:18-137`. Плюс парсинг сообщения.
+Refresh/`ErrAuthRevoked`/`isInvalidGrant` — modeled on `internal/calendar/client.go:18-137`. Plus message parsing.
 
 ```go
 package gmail
@@ -885,9 +885,9 @@ func parseAddressList(v string) []string {
 }
 ```
 
-Примечание для реализатора: приведённый `GetMessage` дважды декодирует тело ради доступа к `payload.headers`. При реализации упрости — сделай `apiPart` с полем `Headers []struct{Name,Value string}` и одним `json.Unmarshal`. Тест из Step 2 — источник истины по поведению; финальная форма парсинга на усмотрение, лишь бы тест проходил и не было двойного декодирования.
+Note for the implementer: the `GetMessage` shown above decodes the body twice just to reach `payload.headers`. Simplify this during implementation — give `apiPart` a `Headers []struct{Name,Value string}` field and do a single `json.Unmarshal`. The test from Step 2 is the source of truth for behavior; the final parsing shape is up to you, as long as the test passes and there's no double decoding.
 
-- [ ] **Step 5: Прогнать тесты**
+- [ ] **Step 5: Run the tests**
 
 ```bash
 go test ./internal/gmail/ > /tmp/t4.log 2>&1; echo "exit=$?"; tail -30 /tmp/t4.log
@@ -912,15 +912,15 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `internal/config/config.go`, `internal/config/defaults.go`
 
 **Interfaces:**
-- Consumes: `Client` (Task 4), DB-слой (Task 2), `config.Config`.
+- Consumes: `Client` (Task 4), the DB layer (Task 2), `config.Config`.
 - Produces:
   - `func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.Logger) *Syncer`
   - `func (s *Syncer) Sync(ctx context.Context) (int, error)`
-  - `config.GmailConfig{ Enabled bool; InitialHistoryDays, MaxMessagesPerSync, MaxBodyBytes int }`; поле `Gmail GmailConfig` в `config.Config`.
+  - `config.GmailConfig{ Enabled bool; InitialHistoryDays, MaxMessagesPerSync, MaxBodyBytes int }`; a `Gmail GmailConfig` field on `config.Config`.
 
-- [ ] **Step 1: Добавить GmailConfig в config**
+- [ ] **Step 1: Add GmailConfig to config**
 
-В `internal/config/config.go` рядом с `CalendarConfig`:
+In `internal/config/config.go`, next to `CalendarConfig`:
 
 ```go
 // GmailConfig holds Gmail integration settings.
@@ -932,12 +932,12 @@ type GmailConfig struct {
 }
 ```
 
-В `Config` struct (после `Calendar CalendarConfig`):
+In the `Config` struct (after `Calendar CalendarConfig`):
 ```go
     Gmail           GmailConfig                 `mapstructure:"gmail"`
 ```
 
-В `internal/config/defaults.go` (рядом с Calendar defaults):
+In `internal/config/defaults.go` (next to the Calendar defaults):
 ```go
     // Gmail defaults
     DefaultGmailEnabled            = false
@@ -946,7 +946,7 @@ type GmailConfig struct {
     DefaultGmailMaxBodyBytes       = 51200
 ```
 
-В `Load` (после `calendar.sync_days_ahead` SetDefault):
+In `Load` (after the `calendar.sync_days_ahead` SetDefault):
 ```go
     v.SetDefault("gmail.enabled", DefaultGmailEnabled)
     v.SetDefault("gmail.initial_history_days", DefaultGmailInitialHistoryDays)
@@ -954,9 +954,9 @@ type GmailConfig struct {
     v.SetDefault("gmail.max_body_bytes", DefaultGmailMaxBodyBytes)
 ```
 
-- [ ] **Step 2: Написать sync_test.go**
+- [ ] **Step 2: Write sync_test.go**
 
-Тест: initial-sync (watermark=0) шлёт запрос `newer_than`, синкает письма, отсекает PROMOTIONS/SOCIAL, усекает тело, продвигает watermark по максимальному internalDate.
+Test: the initial sync (watermark=0) sends a `newer_than` query, syncs messages, filters out PROMOTIONS/SOCIAL, truncates the body, and advances the watermark to the maximum internalDate.
 
 ```go
 func TestSyncFiltersAndUpserts(t *testing.T) {
@@ -995,18 +995,18 @@ func TestSyncFiltersAndUpserts(t *testing.T) {
 }
 ```
 
-(Если в `internal/db` нет экспортированного `OpenTestDB`, используй тот же способ открытия in-memory БД, что применяют существующие тесты `internal/calendar/sync_test.go`.)
+(If `internal/db` doesn't export `OpenTestDB`, use the same in-memory DB setup that the existing `internal/calendar/sync_test.go` tests use.)
 
-- [ ] **Step 3: Убедиться что тест падает**
+- [ ] **Step 3: Confirm the test fails**
 
 ```bash
 go test ./internal/gmail/ -run TestSyncFiltersAndUpserts > /tmp/t5.log 2>&1; echo "exit=$?"; tail -20 /tmp/t5.log
 ```
 Expected: FAIL (undefined NewSyncer).
 
-- [ ] **Step 4: Реализовать sync.go**
+- [ ] **Step 4: Implement sync.go**
 
-Образец структуры — `internal/calendar/sync.go`.
+Model the structure on `internal/calendar/sync.go`.
 
 ```go
 package gmail
@@ -1164,9 +1164,9 @@ func isoToUnix(iso string) float64 {
 var _ = strings.TrimSpace // keep strings import if unused after edits
 ```
 
-(Убери `var _ = strings.TrimSpace`, если `strings` не нужен — это лишь подсказка, что импорт может оказаться неиспользуемым.)
+(Remove `var _ = strings.TrimSpace` if `strings` isn't needed — it's just a hint that the import might end up unused.)
 
-- [ ] **Step 5: Прогнать тесты gmail + config**
+- [ ] **Step 5: Run the gmail + config tests**
 
 ```bash
 go test ./internal/gmail/ ./internal/config/ > /tmp/t5.log 2>&1; echo "exit=$?"; tail -30 /tmp/t5.log
@@ -1194,15 +1194,15 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Consumes: `db.GmailMessagesSyncedAfter` (Task 2), `db.CreateInboxItem`, `DefaultItemClass`.
 - Produces: `func DetectGmail(ctx context.Context, database *db.DB, myEmail string, sinceTS time.Time) (int, error)`
 
-- [ ] **Step 1: Расширить classifier defaultClasses**
+- [ ] **Step 1: Extend classifier defaultClasses**
 
-В `internal/inbox/classifier.go` в map `defaultClasses` добавить:
+In `internal/inbox/classifier.go`, add to the `defaultClasses` map:
 ```go
     "email_received":        "actionable",
     "email_cc":              "ambient",
 ```
 
-- [ ] **Step 2: Написать gmail_detector_test.go**
+- [ ] **Step 2: Write gmail_detector_test.go**
 
 ```go
 func TestDetectGmailReceivedVsCC(t *testing.T) {
@@ -1241,18 +1241,18 @@ func TestDetectGmailReceivedVsCC(t *testing.T) {
 }
 ```
 
-(Реализуй маленькие хелперы `openInboxTestDB` и `inboxTriggerFor` по образцу существующих тестов детекторов в пакете, напр. `calendar_detector_test.go`, если он есть; если нет — используй прямой `database.QueryRow`.)
+(Implement small helpers `openInboxTestDB` and `inboxTriggerFor` modeled on the existing detector tests in the package, e.g. `calendar_detector_test.go`, if it exists; otherwise use a direct `database.QueryRow`.)
 
-- [ ] **Step 3: Убедиться что тест падает**
+- [ ] **Step 3: Confirm the test fails**
 
 ```bash
 go test ./internal/inbox/ -run TestDetectGmail > /tmp/t6.log 2>&1; echo "exit=$?"; tail -20 /tmp/t6.log
 ```
 Expected: FAIL (undefined DetectGmail).
 
-- [ ] **Step 4: Реализовать gmail_detector.go**
+- [ ] **Step 4: Implement gmail_detector.go**
 
-Образец — `internal/inbox/calendar_detector.go` (полное вычитывание rows до вставок обеспечивает `GmailMessagesSyncedAfter`, который сам вычитывает в слайс).
+Model it on `internal/inbox/calendar_detector.go` (fully draining rows before any inserts is handled by `GmailMessagesSyncedAfter`, which drains into a slice itself).
 
 ```go
 package inbox
@@ -1370,9 +1370,9 @@ func gmailInboxExists(database *db.DB, threadID, messageID, triggerType string) 
 }
 ```
 
-Примечание: `equalFoldEmail` сравнивает по длине+lowercase ASCII — достаточно для email. Если в пакете уже есть util для case-insensitive сравнения, используй его вместо этих трёх хелперов (DRY).
+Note: `equalFoldEmail` compares by length + lowercase ASCII — sufficient for email addresses. If the package already has a util for case-insensitive comparison, use it instead of these three helpers (DRY).
 
-- [ ] **Step 5: Прогнать тесты**
+- [ ] **Step 5: Run the tests**
 
 ```bash
 go test ./internal/inbox/ -run TestDetectGmail > /tmp/t6.log 2>&1; echo "exit=$?"; tail -20 /tmp/t6.log
@@ -1394,16 +1394,16 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `internal/inbox/pipeline.go`
-- Test: `internal/inbox/pipeline_test.go` (или существующий)
+- Test: `internal/inbox/pipeline_test.go` (or the existing one)
 
 **Interfaces:**
 - Consumes: `DetectGmail` (Task 6), `p.currentUserEmail`.
-- Produces: расширенная сигнатура `detectAll(...) (slack, jira, cal, gmail, wt int, err error)`.
+- Produces: an extended `detectAll(...) (slack, jira, cal, gmail, wt int, err error)` signature.
 
-- [ ] **Step 1: Расширить detectAll**
+- [ ] **Step 1: Extend detectAll**
 
-В `internal/inbox/pipeline.go` в `detectAll` (~строка 500) изменить сигнатуру на
-`(slack, jira, cal, gmail, wt int, err error)` и добавить после Calendar-блока:
+In `internal/inbox/pipeline.go`, in `detectAll` (~line 500), change the signature to
+`(slack, jira, cal, gmail, wt int, err error)` and add, after the Calendar block:
 
 ```go
     if n, e := DetectGmail(ctx, p.db, p.currentUserEmail, sinceTime); e != nil {
@@ -1413,30 +1413,30 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
         gmail = n
     }
 ```
-и `return slack, jira, cal, gmail, wt, errors.Join(errs...)`.
+and `return slack, jira, cal, gmail, wt, errors.Join(errs...)`.
 
-- [ ] **Step 2: Обновить оба места вызова**
+- [ ] **Step 2: Update both call sites**
 
-В `Run` (~строка 373):
+In `Run` (~line 373):
 ```go
     createdSlack, createdJira, createdCalendar, createdGmail, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
     created := createdSlack + createdJira + createdCalendar + createdGmail + createdWatchtower
 ```
 
-В `RunFastDetection` (~строка 483):
+In `RunFastDetection` (~line 483):
 ```go
     createdSlack, createdJira, createdCalendar, createdGmail, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
     created := createdSlack + createdJira + createdCalendar + createdGmail
 ```
-и обновить лог-строку:
+and update the log line:
 ```go
     p.logger.Printf("inbox fast: +%d new (S%d J%d C%d G%d), %d auto-resolved",
         created, createdSlack, createdJira, createdCalendar, createdGmail, resolved)
 ```
 
-- [ ] **Step 3: Тест — email-письмо доходит до inbox через RunFastDetection**
+- [ ] **Step 3: Test — an email reaches the inbox via RunFastDetection**
 
-Добавить в pipeline-тест (используй существующий способ конструирования `Pipeline` с in-memory DB; выстави `p.SetCurrentUser("U1", "me@x.com")`):
+Add to the pipeline test (use the existing way of constructing a `Pipeline` with an in-memory DB; set `p.SetCurrentUser("U1", "me@x.com")`):
 
 ```go
 func TestRunFastDetectionPicksUpGmail(t *testing.T) {
@@ -1457,14 +1457,14 @@ func TestRunFastDetectionPicksUpGmail(t *testing.T) {
 }
 ```
 
-(Если готового `newTestPipeline` нет — сконструируй `Pipeline` тем же способом, что и соседние тесты в файле.)
+(If there's no ready-made `newTestPipeline`, construct a `Pipeline` the same way the neighboring tests in the file do.)
 
-- [ ] **Step 4: Прогнать тесты пакета inbox**
+- [ ] **Step 4: Run the inbox package tests**
 
 ```bash
 go test ./internal/inbox/ > /tmp/t7.log 2>&1; echo "exit=$?"; tail -30 /tmp/t7.log
 ```
-Expected: PASS (включая существующие тесты — сигнатура detectAll используется только внутри пакета).
+Expected: PASS (including existing tests — the `detectAll` signature is used only within the package).
 
 - [ ] **Step 5: Commit**
 
@@ -1485,22 +1485,22 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `gmail.NewSyncer`, `gmail.Syncer.Sync`, `gmail.NewClient`, `gmail.NewTokenStore`, `gmail.ErrAuthRevoked`.
-- Produces: `func (d *Daemon) SetGmailSyncer(s *gmail.Syncer)`; фаза `phaseGmailSync`.
+- Produces: `func (d *Daemon) SetGmailSyncer(s *gmail.Syncer)`; a `phaseGmailSync` phase.
 
-- [ ] **Step 1: daemon поле + сеттер + фаза + вызов**
+- [ ] **Step 1: daemon field + setter + phase + call**
 
-В `internal/daemon/daemon.go`:
+In `internal/daemon/daemon.go`:
 - import `"watchtower/internal/gmail"`;
-- поле рядом с `calendarSyncer` (~строка 63): `gmailSyncer *gmail.Syncer`;
-- сеттер рядом с `SetCalendarSyncer` (~строка 130):
+- a field next to `calendarSyncer` (~line 63): `gmailSyncer *gmail.Syncer`;
+- a setter next to `SetCalendarSyncer` (~line 130):
 ```go
 // SetGmailSyncer sets the Gmail syncer for post-sync mail fetch.
 func (d *Daemon) SetGmailSyncer(s *gmail.Syncer) {
     d.gmailSyncer = s
 }
 ```
-- вызов в `runCycle` сразу после `d.phaseCalendarSync(ctx)` (~строка 215): `d.phaseGmailSync(ctx)`;
-- метод-фаза рядом с `phaseCalendarSync` (~строка 313):
+- a call in `runCycle` right after `d.phaseCalendarSync(ctx)` (~line 215): `d.phaseGmailSync(ctx)`;
+- a phase method next to `phaseCalendarSync` (~line 313):
 ```go
 // phaseGmailSync pulls Gmail inbox messages. Lightweight, runs every cycle.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
@@ -1516,9 +1516,9 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 }
 ```
 
-- [ ] **Step 2: cmd/sync.go проводка**
+- [ ] **Step 2: cmd/sync.go wiring**
 
-В `cmd/sync.go` сразу после блока Calendar (~строка 355, перед `return d.Run(ctx)`):
+In `cmd/sync.go`, right after the Calendar block (~line 355, before `return d.Run(ctx)`):
 
 ```go
         // Wire gmail syncer if token exists.
@@ -1546,11 +1546,11 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
             }
         }
 ```
-Добавить `"watchtower/internal/gmail"` в импорты `cmd/sync.go`.
+Add `"watchtower/internal/gmail"` to the imports of `cmd/sync.go`.
 
-- [ ] **Step 3: Тест daemon nil-guard**
+- [ ] **Step 3: Daemon nil-guard test**
 
-Добавить в `internal/daemon/daemon_test.go`:
+Add to `internal/daemon/daemon_test.go`:
 ```go
 func TestPhaseGmailSyncNilGuard(t *testing.T) {
     d := &Daemon{logger: log.New(io.Discard, "", 0)}
@@ -1558,9 +1558,9 @@ func TestPhaseGmailSyncNilGuard(t *testing.T) {
     d.phaseGmailSync(context.Background())
 }
 ```
-(Сконструируй `Daemon` тем же способом, что соседние daemon-тесты; если phase приватная и тест в другом пакете — сделай тест в `package daemon`.)
+(Construct the `Daemon` the same way the neighboring daemon tests do; if the phase is private and the test lives in a different package, put the test in `package daemon`.)
 
-- [ ] **Step 4: Прогнать сборку и тесты**
+- [ ] **Step 4: Run the build and tests**
 
 ```bash
 go build ./... > /tmp/t8b.log 2>&1; echo "build=$?"; tail -20 /tmp/t8b.log
@@ -1585,14 +1585,14 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Create: `cmd/gmail.go`, `cmd/gmail_test.go`
 
 **Interfaces:**
-- Consumes: `gmail.*` (Tasks 3-5), `resolveGoogleOAuthConfig` (`cmd/calendar.go:410`), `openDatabaseForWorkspace`/эквивалент (посмотри, как это делает `cmd/calendar.go`).
-- Produces: команда `gmail` с подкомандами `login/logout/sync/status`.
+- Consumes: `gmail.*` (Tasks 3-5), `resolveGoogleOAuthConfig` (`cmd/calendar.go:410`), `openDatabaseForWorkspace`/equivalent (see how `cmd/calendar.go` does it).
+- Produces: a `gmail` command with `login/logout/sync/status` subcommands.
 
-- [ ] **Step 1: Реализовать cmd/gmail.go**
+- [ ] **Step 1: Implement cmd/gmail.go**
 
-Образец — `cmd/calendar.go` (login/logout/sync/status). Ключевые отличия: `gmail.NewTokenStore`, `gmail.Login`, `gmail.NewClient`, `gmail.NewSyncer`, конвертация кредов через `resolveGoogleOAuthConfig()` → `gmail.GoogleOAuthConfig{...}`; статус читает `cfg.Gmail.Enabled` и `store.Path()`. Регистрация подкоманд через `init()` + `rootCmd.AddCommand(gmailCmd)` (как в `cmd/calendar.go:68`).
+Model it on `cmd/calendar.go` (login/logout/sync/status). Key differences: `gmail.NewTokenStore`, `gmail.Login`, `gmail.NewClient`, `gmail.NewSyncer`, converting credentials via `resolveGoogleOAuthConfig()` → `gmail.GoogleOAuthConfig{...}`; status reads `cfg.Gmail.Enabled` and `store.Path()`. Register subcommands via `init()` + `rootCmd.AddCommand(gmailCmd)` (as in `cmd/calendar.go:68`).
 
-Скелет:
+Skeleton:
 ```go
 package cmd
 
@@ -1617,9 +1617,9 @@ func gmailOAuthConfig() gmail.GoogleOAuthConfig {
     return gmail.GoogleOAuthConfig{ClientID: c.ClientID, ClientSecret: c.ClientSecret}
 }
 ```
-`gmailLoginCmd`/`gmailLogoutCmd`/`gmailSyncCmd`/`gmailStatusCmd` — по образцу соответствующих `runCalendar*` из `cmd/calendar.go`, подставив `gmail.*` и `gmailOAuthConfig()`. `login` использует `gmail.Login(ctx, gmailOAuthConfig(), os.Stdout, gmail.LoginOptions{SkipBrowserOpen: noOpen})` и `store.Save(token)`, затем `database.SetGmailAuthState("ok","")`. `sync` — `store.Load()` → `gmail.NewClient` → `gmail.NewSyncer(...).Sync(ctx)`.
+`gmailLoginCmd`/`gmailLogoutCmd`/`gmailSyncCmd`/`gmailStatusCmd` — modeled on the corresponding `runCalendar*` functions in `cmd/calendar.go`, substituting `gmail.*` and `gmailOAuthConfig()`. `login` uses `gmail.Login(ctx, gmailOAuthConfig(), os.Stdout, gmail.LoginOptions{SkipBrowserOpen: noOpen})` and `store.Save(token)`, then `database.SetGmailAuthState("ok","")`. `sync` — `store.Load()` → `gmail.NewClient` → `gmail.NewSyncer(...).Sync(ctx)`.
 
-- [ ] **Step 2: Тест — команда зарегистрирована и OAuth-конфиг конвертируется**
+- [ ] **Step 2: Test — the command is registered and the OAuth config converts correctly**
 
 `cmd/gmail_test.go`:
 ```go
@@ -1645,7 +1645,7 @@ func TestGmailCommandRegistered(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Прогнать сборку и тесты**
+- [ ] **Step 3: Run the build and tests**
 
 ```bash
 go build ./... > /tmp/t9b.log 2>&1; echo "build=$?"; tail -20 /tmp/t9b.log
@@ -1653,12 +1653,12 @@ go test ./cmd/ -run TestGmail > /tmp/t9.log 2>&1; echo "test=$?"; tail -20 /tmp/
 ```
 Expected: build=0, test=0.
 
-- [ ] **Step 4: Ручная проверка CLI (status без токена)**
+- [ ] **Step 4: Manual CLI check (status without a token)**
 
 ```bash
 go run . gmail status > /tmp/t9m.log 2>&1; echo "exit=$?"; cat /tmp/t9m.log
 ```
-Expected: печатает «not connected» (или аналог), exit=0 без паники.
+Expected: prints "not connected" (or similar), exit=0 with no panic.
 
 - [ ] **Step 5: Commit**
 
@@ -1675,40 +1675,40 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Services/GmailAuthService.swift`
-- Modify: `WatchtowerDesktop/Sources/Views/Settings/SettingsView.swift`, `WatchtowerDesktop/Sources/Views/Inbox/InboxCardView.swift`, `WatchtowerDesktop/Tests/.../TestDatabase.swift` (схема-синхрон)
+- Modify: `WatchtowerDesktop/Sources/Views/Settings/SettingsView.swift`, `WatchtowerDesktop/Sources/Views/Inbox/InboxCardView.swift`, `WatchtowerDesktop/Tests/.../TestDatabase.swift` (schema sync)
 
 **Interfaces:**
-- Consumes: CLI-команды `gmail login/logout/status` (Task 9); поле `config.gmailEnabled` (если есть слой конфига в Desktop — иначе только connect/disconnect).
+- Consumes: CLI commands `gmail login/logout/status` (Task 9); the `config.gmailEnabled` field (if a Desktop config layer exists — otherwise just connect/disconnect).
 - Produces: `GmailAuthService` (`isConnected/isAuthenticating/error`, `connect/cancelConnect/disconnect/checkStatus`).
 
 - [ ] **Step 1: GmailAuthService.swift**
 
-Скопировать `WatchtowerDesktop/Sources/Services/GoogleAuthService.swift` в `GmailAuthService.swift`, заменив:
-- имя класса → `GmailAuthService`;
-- аргументы процесса `["calendar", "login"]` → `["gmail", "login"]`, `["calendar", "logout"]` → `["gmail", "logout"]`;
-- в `checkStatus()` сканирование `*/google_token.json` → `*/gmail_token.json`.
+Copy `WatchtowerDesktop/Sources/Services/GoogleAuthService.swift` to `GmailAuthService.swift`, replacing:
+- the class name → `GmailAuthService`;
+- process arguments `["calendar", "login"]` → `["gmail", "login"]`, `["calendar", "logout"]` → `["gmail", "logout"]`;
+- in `checkStatus()`, the scan for `*/google_token.json` → `*/gmail_token.json`.
 
-- [ ] **Step 2: gmailSettingsSection в SettingsView.swift**
+- [ ] **Step 2: gmailSettingsSection in SettingsView.swift**
 
-По образцу `calendarSettingsSection` (`SettingsView.swift:373-429`) добавить:
-- `@State private var gmailAuth = GmailAuthService()` рядом с `googleAuth` (~строка 46);
-- секцию `Section("Gmail")` с той же структурой: connected → зелёная галка + Disconnect + тоггл «Enable Gmail sync» (пишет `config.gmailEnabled`, если поле есть); not connected → кнопка Connect (`gmailAuth.connect()`), ProgressView+Cancel при `isAuthenticating`, красный текст ошибки;
-- подключить `gmailSettingsSection` в тело формы рядом с `calendarSettingsSection`.
+Modeled on `calendarSettingsSection` (`SettingsView.swift:373-429`), add:
+- `@State private var gmailAuth = GmailAuthService()` next to `googleAuth` (~line 46);
+- a `Section("Gmail")` with the same structure: connected → green checkmark + Disconnect + an "Enable Gmail sync" toggle (writes `config.gmailEnabled`, if the field exists); not connected → a Connect button (`gmailAuth.connect()`), ProgressView+Cancel while `isAuthenticating`, red error text;
+- wire `gmailSettingsSection` into the form body next to `calendarSettingsSection`.
 
-Если в Desktop-конфиге нет `gmailEnabled` — добавь его по образцу `calendarEnabled` (найди определение `calendarEnabled` в Desktop config-модели и повтори).
+If the Desktop config doesn't have `gmailEnabled` — add it modeled on `calendarEnabled` (find the `calendarEnabled` definition in the Desktop config model and mirror it).
 
-- [ ] **Step 3: InboxCardView email-типы**
+- [ ] **Step 3: InboxCardView email types**
 
-В `WatchtowerDesktop/Sources/Views/Inbox/InboxCardView.swift` в три `switch item.triggerType`:
+In `WatchtowerDesktop/Sources/Views/Inbox/InboxCardView.swift`, in the three `switch item.triggerType` statements:
 - `triggerLabel` (~260): `case "email_received", "email_cc": return "Email"`;
 - `triggerSymbol` (~278): `case "email_received", "email_cc": return "envelope"`;
 - `triggerColor` (~296): `case "email_received", "email_cc": return .blue`.
 
-- [ ] **Step 4: Синхронизировать TestDatabase.swift**
+- [ ] **Step 4: Sync TestDatabase.swift**
 
-Найти в `WatchtowerDesktop/Tests/` файл, создающий тестовую схему (TestDatabase.swift). Добавить `CREATE TABLE gmail_messages (...)` и `gmail_auth_state`, и расширить `inbox_items.trigger_type` CHECK на `email_received`/`email_cc` — точно как в миграции Task 1 (иначе Swift-тесты, читающие эти таблицы/типы, разъедутся со схемой — известная ловушка репо).
+Find the file under `WatchtowerDesktop/Tests/` that creates the test schema (TestDatabase.swift). Add `CREATE TABLE gmail_messages (...)` and `gmail_auth_state`, and expand the `inbox_items.trigger_type` CHECK with `email_received`/`email_cc` — exactly as in the Task 1 migration (otherwise Swift tests that read these tables/types will drift from the schema — a known pitfall in this repo).
 
-- [ ] **Step 5: Собрать и протестировать Desktop**
+- [ ] **Step 5: Build and test Desktop**
 
 ```bash
 cd WatchtowerDesktop && swift build > /tmp/t10b.log 2>&1; echo "build=$?"; tail -30 /tmp/t10b.log
@@ -1728,9 +1728,9 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Финальная проверка (после всех задач)
+## Final Verification (after all tasks)
 
-- [ ] **Полный прогон Go**
+- [ ] **Full Go run**
 
 ```bash
 gofmt -l internal/ cmd/ > /tmp/fmt.log 2>&1; echo "gofmt-dirty=$(wc -l < /tmp/fmt.log)"
@@ -1740,29 +1740,29 @@ go test ./... > /tmp/all.log 2>&1; echo "test=$?"; tail -30 /tmp/all.log
 ```
 Expected: gofmt-dirty=0, vet=0, build=0, test=0.
 
-- [ ] **Локальный ревью-гейт перед PR:** запустить навык `local-review` (mirror CI + панель ревьюеров) на диффе ветки, оттриажить находки, зафиксировать.
+- [ ] **Local review gate before the PR:** run the `local-review` skill (CI mirror + reviewer panel) against the branch diff, triage the findings, and record them.
 
-- [ ] **Обновить app-guide** (`docs/app-guide.md`) — добавить упоминание Connect Gmail и того, что письма попадают в inbox/ситуации (инжектится в system prompt чат-бота — правило поддержки гайда).
+- [ ] **Update the app guide** (`docs/app-guide.md`) — add a mention of Connect Gmail and the fact that emails flow into inbox/situations (injected into the chatbot's system prompt — the guide-maintenance rule).
 
-- [ ] **Обновить документ инвентаря** при необходимости (`docs/inventory/inbox-pulse.md` / `dashboard.md`) — новые trigger-типы email как источник; свериться, не нарушает ли что-то INBOX-01/09.
+- [ ] **Update the inventory doc** as needed (`docs/inventory/inbox-pulse.md` / `dashboard.md`) — new email trigger types as a source; verify this doesn't violate INBOX-01/09.
 
 ---
 
-## Self-Review (заполнено автором плана)
+## Self-Review (filled in by the plan's author)
 
 **Spec coverage:**
-- OAuth (gmail.modify, gmail_token.json, self-contained) → Task 3, Task 9 (креды). ✓
-- Таблица `gmail_messages` + `gmail_auth_state` + watermark → Task 1, Task 2. ✓
+- OAuth (gmail.modify, gmail_token.json, self-contained) → Task 3, Task 9 (credentials). ✓
+- `gmail_messages` + `gmail_auth_state` tables + watermark → Task 1, Task 2. ✓
 - Sync (initial/incremental, noise filter, body truncation) → Task 5. ✓
-- Детектор (received/cc, дедуп, snippet=subject+preview) → Task 6. ✓
+- Detector (received/cc, dedup, snippet=subject+preview) → Task 6. ✓
 - classifier defaultClasses → Task 6 Step 1. ✓
 - pipeline detectAll/Run/RunFastDetection → Task 7. ✓
 - daemon phase + cmd/sync wiring → Task 8. ✓
 - CLI → Task 9. ✓
 - Desktop connect + card visuals + TestDatabase sync → Task 10. ✓
-- AI-обработка: писем через существующие triage/compose/situation-card — обеспечивается тем, что детектор создаёт обычные `inbox_items`; snippet=subject+preview (Task 6) даёт triage контекст; полное body_text хранится (Task 1/5) для сильного tier. ✓ (Промпты не меняются — по спеке.)
-- Задачи вне охвата (email-дайджесты=План 2, write-back=План 3) — не включены. ✓
+- AI processing of emails via the existing triage/compose/situation-card flow — ensured by the detector creating ordinary `inbox_items`; snippet=subject+preview (Task 6) gives triage context; the full body_text is stored (Task 1/5) for the strong tier. ✓ (Prompts are unchanged — per the spec.)
+- Out-of-scope work (email digests = Plan 2, write-back = Plan 3) — not included. ✓
 
-**Placeholder scan:** нет TBD/«handle errors»; код приведён для всех новых файлов; для копий-образцов (auth.go, cmd/gmail.go, Desktop) указаны точный файл-образец и дельты. ✓
+**Placeholder scan:** no TBD/"handle errors"; code is provided for all new files; for copy-from-sample files (auth.go, cmd/gmail.go, Desktop) the exact source file and deltas are specified. ✓
 
-**Type consistency:** `GmailMessage` (db) и `Message` (gmail) — разные слои, конвертация в Task 5; `GoogleOAuthConfig` определён в `gmail` (Task 3), конвертация из `calendar.GoogleOAuthConfig` на cmd-уровне (Tasks 8, 9); `detectAll` новая сигнатура согласована между Task 7 Step 1 и оба call-site. ✓
+**Type consistency:** `GmailMessage` (db) and `Message` (gmail) are separate layers, converted in Task 5; `GoogleOAuthConfig` is defined in `gmail` (Task 3), converted from `calendar.GoogleOAuthConfig` at the cmd level (Tasks 8, 9); the new `detectAll` signature is consistent between Task 7 Step 1 and both call sites. ✓

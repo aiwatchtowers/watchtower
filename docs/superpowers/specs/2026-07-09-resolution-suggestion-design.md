@@ -6,7 +6,7 @@
 
 ## Problem
 
-Two gaps observed in the field on one situation ("KYC tier структура Nova
+Two gaps observed in the field on one situation ("KYC tier structure Nova
 Card"): the question was answered and closed by colleagues in the Slack
 thread, yet the situation (1) never updated its summary/chronology and
 (2) stayed open indefinitely.
@@ -63,7 +63,7 @@ No new AI calls: the re-fed signal rides the normal compose batch.
 **Data:** migration `00015`: `ALTER TABLE situations ADD COLUMN
 suggested_resolution TEXT NOT NULL DEFAULT ''`. Non-empty = the secretary
 believes the story is closed; the text is the reason, shown verbatim in
-the UI (e.g. "Serhii ответил, Maksym подтвердил — вопрос снят").
+the UI (e.g. "Serhii answered, Maksym confirmed — question resolved").
 Mirror into schema.sql; regenerate golden; mirror into the Swift test
 schema (`TestDatabase.swift` — known drift trap).
 

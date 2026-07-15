@@ -112,7 +112,7 @@ func (p *Pipeline) buildSituationCardBlock(s db.DashboardSituation) string {
 		sender, _ := p.db.UserNameByID(it.SenderUserID)
 		b.WriteString(fmt.Sprintf("from=%s channel=%s :: %s\n", sender, it.ChannelID, enrichSnippet(it.Snippet, p.db)))
 		// Email signals additionally carry the full gmail body_text on this
-		// (strong-tier) card stage — see spec "AI-обработка писем" #3. Triage
+		// (strong-tier) card stage — see spec "email AI processing" #3. Triage
 		// only ever sees the Snippet (subject+preview); the full body is fed
 		// here because situation cards are generated once per situation, not
 		// once per message, so the cost is bounded. message_ts for an email
