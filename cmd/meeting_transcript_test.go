@@ -388,3 +388,85 @@ func TestTranscriptListAndShow(t *testing.T) {
 	assert.Equal(t, "First", shown["title"])
 	assert.Equal(t, longText, shown["transcript_text"], "show must include the full transcript text")
 }
+
+func TestTranscriptNotesGeneratesAndStores(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: "# Sync\n\n## Summary\nShipped v2."})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Sync",
+		TranscriptText: "we shipped v2",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	var buf bytes.Buffer
+	transcriptNotesCmd.SetOut(&buf)
+	require.NoError(t, transcriptNotesCmd.RunE(transcriptNotesCmd, []string{fmt.Sprint(id)}))
+
+	var env struct {
+		TranscriptID int64  `json:"transcript_id"`
+		NotesMD      string `json:"notes_md"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.Equal(t, id, env.TranscriptID)
+	assert.Contains(t, env.NotesMD, "## Summary")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	require.True(t, tr.NotesMD.Valid, "notes_md must be persisted")
+	assert.Equal(t, env.NotesMD, tr.NotesMD.String)
+
+	run := findPipelineRun(t, database, "meeting_notes")
+	require.NotNil(t, run, "a meeting_notes pipeline run must be recorded")
+	assert.Equal(t, "done", run.Status)
+}
+
+func TestTranscriptNotesGenerationFailureExitsNonZeroAndStoresNothing(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{err: errors.New("boom")})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Sync",
+		TranscriptText: "we shipped v2",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	err = transcriptNotesCmd.RunE(transcriptNotesCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err, "notes failure must flip the exit code — nothing was persisted")
+	assert.Contains(t, err.Error(), "boom")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	assert.False(t, tr.NotesMD.Valid, "failed generation must not write notes_md")
+
+	run := findPipelineRun(t, database, "meeting_notes")
+	require.NotNil(t, run)
+	assert.Equal(t, "error", run.Status)
+}
+
+func TestTranscriptNotesUnknownIDFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: "# n"})
+
+	err := transcriptNotesCmd.RunE(transcriptNotesCmd, []string{"9999"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}

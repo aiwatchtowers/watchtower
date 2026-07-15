@@ -71,9 +71,18 @@ var transcriptShowCmd = &cobra.Command{
 	RunE:  runTranscriptShow,
 }
 
+var transcriptNotesCmd = &cobra.Command{
+	Use:   "notes <id>",
+	Short: "Generate publishable markdown meeting notes for a saved transcript",
+	Long: "Runs the meeting.notes AI prompt over the transcript text and stores the result in meeting_transcripts.notes_md. " +
+		"Prints {transcript_id, notes_md} on success; exits 1 on any failure (nothing is persisted on failure).",
+	Args: cobra.ExactArgs(1),
+	RunE: runTranscriptNotes,
+}
+
 func init() {
 	meetingPrepCmd.AddCommand(meetingTranscriptCmd)
-	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd)
+	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd)
 
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagFile, "transcript-file", "", "path to the transcript text file (required)")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagAudio, "audio", "", "path to the recorded audio file")
@@ -371,4 +380,65 @@ func runTranscriptShow(cmd *cobra.Command, args []string) error {
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
 	return enc.Encode(envelope)
+}
+
+func runTranscriptNotes(cmd *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid transcript id %q: %w", args[0], err)
+	}
+
+	cfg, database, err := transcriptEnv()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		return err
+	}
+	if tr == nil {
+		return fmt.Errorf("transcript %d not found", id)
+	}
+
+	runID, err := database.CreatePipelineRun("meeting_notes", "cli", "auto")
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: recording meeting_notes pipeline run: %v\n", err)
+	}
+	completeRun := func(items, in, out, api int, errMsg string) {
+		if err := database.CompletePipelineRun(runID, items, in, out, 0, api, nil, nil, errMsg); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: completing meeting_notes pipeline run %d: %v\n", runID, err)
+		}
+	}
+
+	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg), nil)
+	pipe.SetPromptStore(prompts.New(database, nil))
+
+	eventID := ""
+	if tr.EventID.Valid {
+		eventID = tr.EventID.String
+	}
+	notes, usage, err := pipe.GenerateTranscriptNotes(cmd.Context(), eventID, tr.TranscriptText)
+	if err != nil {
+		completeRun(0, 0, 0, 0, err.Error())
+		return err
+	}
+	if err := database.SetMeetingTranscriptNotes(id, notes); err != nil {
+		completeRun(0, 0, 0, 0, err.Error())
+		return err
+	}
+
+	in, out, api := 0, 0, 0
+	if usage != nil {
+		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+	}
+	completeRun(1, in, out, api, "")
+
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]any{
+		"transcript_id": id,
+		"notes_md":      notes,
+	})
 }
