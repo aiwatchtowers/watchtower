@@ -116,7 +116,11 @@ The node design converged with an Obsidian vault (markdown + wiki links + aliase
 1. **The strong model never reads raw.** Funnel: raw → cheap tier (haiku class) squeezes out episodes (10–20:1 compression) → strong tier (sonnet class) reads only the distillate for facts/beliefs/pages → reflection reads only the journal.
 2. **Don't pay twice**: existing pipelines (triage, digests, running summaries, situations) already run the raw stream through the cheap tier — consolidation feeds on their output as episode seeds and dives into raw only selectively. The first (expensive) funnel pass is already paid for by WT's current budget; the increment = strong tier over ~100–300K tokens of distillate per day → **on the order of tens of cents to a dollar a day**.
    > **Correction from the live-data audit (2026-07-15, `memory-data-audit.md`)**: the scale estimates are off by 1–2 orders of magnitude (raw text ~50K tokens/day, fresh distillate ~25–45K tokens/day), so diving into raw is cheap even for the strong tier. Measure the economics **by output, not input**: for the live pipelines output (~660K tokens/day) dwarfs all input costs in any pricing model, and consolidation's core work — rewriting pages — is generation. And the budget currency is the CLI subscription's rate limits (WT runs without an API key); API dollars are only a sanity check.
-3. **Deltas by default, rewrites on schedule**: a chunk appends deltas to nodes; a full page rewrite happens when N deltas accumulate or staggered (each entity ~once a week, spread out); the root map is re-rendered from pages (cheap). Per-run caps + accounting in `pipeline_runs`.
+3. **Deltas by default, rewrites on schedule**: a chunk appends deltas to nodes; a full page rewrite happens when N deltas accumulate or staggered (each entity ~once a week, spread out — hundreds of entity nodes per the audit, not thousands); the root map is re-rendered from pages (cheap). Per-run caps + accounting in `pipeline_runs`.
+
+**Episode sources (settled by the audit):** v1 episodes = **situations taken as-is** (ready-made episodes: actor chronology, status lifecycle, 100% resolvable detector-written provenance) + **our own cheap-tier extractor over the full raw text** (~50K tokens/day — closes the DM hole and the ~60% of text outside digest windows; ts comes from data, not generation). Digest topics are NOT episode seeds: no outcomes (narrow unstitched windows) and 99.4% of their message links are hallucinated. Digests serve as background context only (channel running_summary when rewriting entity pages) — never as a source of links. The bot stream (73% of messages, content in raw_json) stays out of memory v1; if ever needed, a deterministic parser, not an LLM. "Don't pay twice" is thereby demoted from load-bearing wall to optional optimization.
+
+Preconditions surfaced by the audit (outside memory scope): Jira sync dead since 2026-04-24 (fix before counting Jira as a memory input); `period_summaries` pipeline dead; digest `key_messages` generation hallucinates ts (fix or drop the field).
 
 ## Boundaries against existing systems (do not merge!)
 
@@ -129,15 +133,14 @@ The node design converged with an Obsidian vault (markdown + wiki links + aliase
 
 - The "notability" threshold for mind-changes in the briefing journal (confidence × entity importance?).
 - Whether a fifth node type "prospective memory" is needed after trialing open loops on targets.
-- Exact coupling of consolidation to existing pipeline output (which of digests/situations/summaries work as episode seeds, what's missing).
 - Watcher/SQLite-index rebuild mechanics from the vault; behavior on daemon ↔ manual-edit conflict.
 
-Settled during the brainstorm: addressing (wiki model, see section), cross-source identity stitching (natural keys as aliases), storage (vault+git primary, SQLite index), journal+reflection (see section).
+Settled during the brainstorm: addressing (wiki model, see section), cross-source identity stitching (natural keys as aliases), storage (vault+git primary, SQLite index), journal+reflection (see section). Settled by the live-data audit (`memory-data-audit.md`): episode sources (situations as-is + own raw-text extractor; digests background-only), economics scale and output-based budgeting.
 
 ## MVP slice (first iteration)
 
 1. Node tables + FTS5, types: episode / entity / rollup / belief.
-2. A consolidation phase in the daemon: episodes from chats → facts/beliefs → pages → map.
+2. A consolidation phase in the daemon: episodes from situations (as-is) + own cheap-tier extractor over raw text → facts/beliefs → pages → map.
 3. MCP: `memory_map` / `memory_open` / `memory_recall`.
 4. Working-memory injection + agentic access in Discuss chat; the owner's words from chat are written to memory with owner rank.
 5. Revision journal in the briefing; dispute situations via the `watchtower` detector.
