@@ -18,6 +18,10 @@ let package = Package(
         // Pinned to 0.15.x: ParakeetProvider uses AsrManager/AsrModels API verified
         // against the v0.15.5 tag, and FluidAudioDiarizer uses the diarizer API
         // surface (DiarizerModels.downloadIfNeeded, performCompleteDiarization).
+        // Known cosmetic build warning from the dependency itself ("found 1
+        // file(s) which are unhandled": their ASR/Parakeet/Unified/benchmark.md
+        // is not excluded in FluidAudio's own manifest, unfixed upstream as of
+        // v0.15.5/main) — harmless, cannot be silenced from this manifest.
         .package(url: "https://github.com/FluidInference/FluidAudio.git", .upToNextMinor(from: "0.15.5")),
         // Pinned to the exact 0.0.7 tag: the only speech-swift releases that keep the
         // macOS(.v14) platform floor (0.0.1-0.0.7) — 0.0.8+ requires macOS 15 (MLXState),
