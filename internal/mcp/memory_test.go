@@ -102,6 +102,22 @@ func memoryStatsState(t *testing.T, database *db.DB, nodeID string) (rows, count
 	return rows, count
 }
 
+// callMemoryTool invokes one memory tool, fails the test on a transport or
+// tool error, and unmarshals the JSON payload into out.
+func callMemoryTool(t *testing.T, cs *mcpsdk.ClientSession, name string, args map[string]any, out any) {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("call %s: %v", name, err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	if err := json.Unmarshal([]byte(textContent(t, res)), out); err != nil {
+		t.Fatalf("unmarshaling payload: %v", err)
+	}
+}
+
 // memoryToolCalls are one valid argument set per memory tool, for tests that
 // sweep all three.
 var memoryToolCalls = map[string]map[string]any{
@@ -222,16 +238,6 @@ func TestMemoryOpenAliasBumpsStatsOnce(t *testing.T) {
 	_, vaultPath := seedMemoryFixture(t, database)
 	cs := newMemorySession(t, database, vaultPath)
 
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
-		Name:      "memory_open",
-		Arguments: map[string]any{"ref": "PAY-SVC"},
-	})
-	if err != nil {
-		t.Fatalf("call memory_open: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected error: %s", textContent(t, res))
-	}
 	var payload struct {
 		ID      string   `json:"id"`
 		Type    string   `json:"type"`
@@ -245,9 +251,7 @@ func TestMemoryOpenAliasBumpsStatsOnce(t *testing.T) {
 		} `json:"links"`
 		Body string `json:"body"`
 	}
-	if err := json.Unmarshal([]byte(textContent(t, res)), &payload); err != nil {
-		t.Fatalf("unmarshaling payload: %v", err)
-	}
+	callMemoryTool(t, cs, "memory_open", map[string]any{"ref": "PAY-SVC"}, &payload)
 	if payload.ID != entPayments.ID {
 		t.Errorf("id = %q, want canonical %q", payload.ID, entPayments.ID)
 	}

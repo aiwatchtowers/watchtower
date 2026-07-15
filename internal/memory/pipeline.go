@@ -444,8 +444,32 @@ func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) 
 		return 0, rejected, malformed, usage, nil // routine chatter — still a fully processed window
 	}
 
-	var nodes []Node
-	var ids []string
+	nodes, ids := p.buildEpisodeNodes(w, kept)
+
+	msg := CommitMsg{
+		Op:      "extract",
+		Summary: fmt.Sprintf("%d episodes from #%s", len(kept), w.ChannelName),
+		Cause:   fmt.Sprintf("run:%d", runID),
+		NodeIDs: ids,
+	}
+	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
+		return 0, rejected, malformed, usage, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, n, now); err != nil {
+			// The vault commit stands; the index is derived and the next
+			// Reconcile repairs it, so this does not fail the window.
+			p.logf("memory: index %s after extract: %v", n.ID, err)
+		}
+	}
+	return len(kept), rejected, malformed, usage, nil
+}
+
+// buildEpisodeNodes turns kept episodes into new episode nodes plus updated
+// entity pages carrying back-links for resolved entity hints (aliases resolved
+// via the index; unresolvable hints are dropped, never invented).
+func (p *Pipeline) buildEpisodeNodes(w runWindow, kept []extractedEpisode) (nodes []Node, ids []string) {
 	entityIdx := make(map[string]int) // entity node ID → index in nodes
 	for _, ep := range kept {
 		title := strings.Join(strings.Fields(ep.Title), " ")
@@ -463,8 +487,6 @@ func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) 
 		nodes = append(nodes, n)
 		ids = append(ids, n.ID)
 
-		// Link the episode from each hinted entity page (aliases resolved via
-		// the index; unresolvable hints are dropped, never invented).
 		link := "- [[" + n.ID + "|" + linkLabel(title) + "]]\n"
 		for _, hint := range ep.EntityHints {
 			en, rerr := Resolve(p.vault, p.db, hint)
@@ -485,25 +507,7 @@ func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) 
 			nodes[idx].Body = appendToLinks(nodes[idx].Body, link)
 		}
 	}
-
-	msg := CommitMsg{
-		Op:      "extract",
-		Summary: fmt.Sprintf("%d episodes from #%s", len(kept), w.ChannelName),
-		Cause:   fmt.Sprintf("run:%d", runID),
-		NodeIDs: ids,
-	}
-	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
-		return 0, rejected, malformed, usage, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, n := range nodes {
-		if err := upsertIndexNode(p.db, n, now); err != nil {
-			// The vault commit stands; the index is derived and the next
-			// Reconcile repairs it, so this does not fail the window.
-			p.logf("memory: index %s after extract: %v", n.ID, err)
-		}
-	}
-	return len(kept), rejected, malformed, usage, nil
+	return nodes, ids
 }
 
 // episodeBody renders the v1 episode template for an extracted episode:

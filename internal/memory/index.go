@@ -45,11 +45,6 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 		logf = func(string, ...any) {}
 	}
 	var stats Stats
-	quarantine := func(rel string, reason error) {
-		logf("memory: reconcile: quarantined %s: %v (file kept, existing index row preserved)", rel, reason)
-		stats.Quarantined++
-		stats.QuarantinedPaths = append(stats.QuarantinedPaths, rel)
-	}
 
 	existing, err := database.ListMemoryNodes()
 	if err != nil {
@@ -60,76 +55,29 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 		indexed[row.ID] = row
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	onDisk := make(map[string]bool)
+	pass := &reconcilePass{
+		v:        v,
+		database: database,
+		logf:     logf,
+		indexed:  indexed,
+		onDisk:   make(map[string]bool),
+		now:      time.Now().UTC().Format(time.RFC3339),
+		stats:    &stats,
+	}
 	for _, sub := range vaultSubdirs {
 		entries, err := os.ReadDir(filepath.Join(v.path, sub))
 		if err != nil {
 			return stats, fmt.Errorf("memory: reconcile: read %s: %w", sub, err)
 		}
 		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			id, ok := strings.CutSuffix(entry.Name(), ".md")
-			if !ok {
-				continue
-			}
-			// A node file's ID prefix must match its directory; anything else
-			// (notes.md, a misplaced ent_*.md in episodes/) is not a node.
-			if ownSub, err := subdirFor(id); err != nil || ownSub != sub {
-				continue
-			}
-
-			rel := path.Join(sub, entry.Name())
-			raw, err := os.ReadFile(filepath.Join(v.path, sub, entry.Name()))
-			if err != nil {
-				return stats, fmt.Errorf("memory: reconcile: read %s: %w", rel, err)
-			}
-			onDisk[id] = true
-
-			sum := sha256.Sum256(raw)
-			hash := hex.EncodeToString(sum[:])
-			prev, wasIndexed := indexed[id]
-			if wasIndexed && prev.ContentHash == hash {
-				continue
-			}
-
-			n, err := ParseNode(raw)
-			if err != nil {
-				quarantine(rel, err)
-				continue
-			}
-			if n.ID != id {
-				quarantine(rel, fmt.Errorf("frontmatter id %q does not match filename", n.ID))
-				continue
-			}
-
-			row := db.MemoryNodeRow{
-				ID:          n.ID,
-				Type:        n.Type,
-				Tier:        n.Tier,
-				Status:      n.Status,
-				RedirectTo:  n.RedirectTo,
-				Title:       n.Title,
-				Path:        rel,
-				ContentHash: hash,
-				IndexedAt:   now,
-			}
-			if err := database.UpsertMemoryNode(row, n.Body, n.Aliases); err != nil {
-				quarantine(rel, err)
-				continue
-			}
-			if wasIndexed {
-				stats.Updated++
-			} else {
-				stats.Added++
+			if err := pass.file(sub, entry); err != nil {
+				return stats, err
 			}
 		}
 	}
 
 	for _, row := range existing {
-		if onDisk[row.ID] {
+		if pass.onDisk[row.ID] {
 			continue
 		}
 		if err := database.DeleteMemoryNode(row.ID); err != nil {
@@ -139,6 +87,88 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 	}
 
 	return stats, nil
+}
+
+// reconcilePass carries the shared state of one Reconcile sweep so the
+// per-file work can live in its own function.
+type reconcilePass struct {
+	v        *Vault
+	database *db.DB
+	logf     func(string, ...any)
+	indexed  map[string]db.MemoryNodeRow
+	onDisk   map[string]bool
+	now      string
+	stats    *Stats
+}
+
+func (p *reconcilePass) quarantine(rel string, reason error) {
+	p.logf("memory: reconcile: quarantined %s: %v (file kept, existing index row preserved)", rel, reason)
+	p.stats.Quarantined++
+	p.stats.QuarantinedPaths = append(p.stats.QuarantinedPaths, rel)
+}
+
+// file processes one directory entry: skip non-node files, hash, parse, and
+// upsert. It returns an error only for IO-wide failures; per-file problems
+// quarantine the file and return nil.
+func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
+	if entry.IsDir() {
+		return nil
+	}
+	id, ok := strings.CutSuffix(entry.Name(), ".md")
+	if !ok {
+		return nil
+	}
+	// A node file's ID prefix must match its directory; anything else
+	// (notes.md, a misplaced ent_*.md in episodes/) is not a node.
+	if ownSub, err := subdirFor(id); err != nil || ownSub != sub {
+		return nil //nolint:nilerr // not a node file — skipped, not an error
+	}
+
+	rel := path.Join(sub, entry.Name())
+	raw, err := os.ReadFile(filepath.Join(p.v.path, sub, entry.Name()))
+	if err != nil {
+		return fmt.Errorf("memory: reconcile: read %s: %w", rel, err)
+	}
+	p.onDisk[id] = true
+
+	sum := sha256.Sum256(raw)
+	hash := hex.EncodeToString(sum[:])
+	prev, wasIndexed := p.indexed[id]
+	if wasIndexed && prev.ContentHash == hash {
+		return nil
+	}
+
+	n, err := ParseNode(raw)
+	if err != nil {
+		p.quarantine(rel, err)
+		return nil
+	}
+	if n.ID != id {
+		p.quarantine(rel, fmt.Errorf("frontmatter id %q does not match filename", n.ID))
+		return nil
+	}
+
+	row := db.MemoryNodeRow{
+		ID:          n.ID,
+		Type:        n.Type,
+		Tier:        n.Tier,
+		Status:      n.Status,
+		RedirectTo:  n.RedirectTo,
+		Title:       n.Title,
+		Path:        rel,
+		ContentHash: hash,
+		IndexedAt:   p.now,
+	}
+	if err := p.database.UpsertMemoryNode(row, n.Body, n.Aliases); err != nil {
+		p.quarantine(rel, err)
+		return nil
+	}
+	if wasIndexed {
+		p.stats.Updated++
+	} else {
+		p.stats.Added++
+	}
+	return nil
 }
 
 // Rebuild drops the whole memory index and reconciles it back from the vault
