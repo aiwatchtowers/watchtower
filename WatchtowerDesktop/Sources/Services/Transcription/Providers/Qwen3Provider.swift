@@ -79,6 +79,10 @@ struct Qwen3Provider: TranscriptionProvider {
 /// full clip (no chunked/sliding-window API is exposed), so this wrapper does NOT
 /// window like `WindowedTranscriber` — it hands the full 16 kHz buffer to the SDK
 /// in one call, same as `ParakeetTranscriber`.
+/// `@unchecked Sendable` is sound here: one instance is created per recording and its
+/// `transcribe` is awaited once from a single detached task, never shared concurrently
+/// (same single-use invariant as `WhisperKitEngine`; the Qwen3 model is documented
+/// upstream as not thread-safe, which this usage respects).
 final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
     private let model: Qwen3ASRModel
     init(model: Qwen3ASRModel) { self.model = model }

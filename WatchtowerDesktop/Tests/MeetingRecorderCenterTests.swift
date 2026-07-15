@@ -988,6 +988,41 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1)
     }
 
+    func testNonLiveProviderSkipsLiveAndTranscribesViaBatchOnStop() async throws {
+        // A batch-only provider (supportsLive == false → makeLiveSession returns nil)
+        // must skip the live pass entirely — a DISTINCT branch from live-engine-load
+        // failure — yet still produce a transcript via the batch path on stop.
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        var decodeCalls = 0
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                // Engine loads fine; it just offers no live session.
+                TestTranscriber(ScriptedEngine(texts: ["batch only"]), supportsLive: false)
+            },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: nil, title: "NonLive")
+        guard case .recording = center.phase else { return XCTFail("recording must continue for a batch-only provider") }
+        for _ in 0..<12 { await Task.yield() }
+        XCTAssertEqual(center.liveEngineState, .unavailable, "a batch-only provider exposes no live session")
+
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(decodeCalls, 1, "batch-only provider transcribes via the batch path on stop")
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
+
     func testStopErrorCancelsOrphanedLiveTaskAndFencesStaleAppends() async throws {
         // Regression pin for the whole-branch review fix: `recorder.stop()`
         // finishes `liveSamples` BEFORE throwing, so a stop-time error leaves

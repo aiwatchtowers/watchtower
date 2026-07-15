@@ -46,6 +46,9 @@ struct ParakeetProvider: TranscriptionProvider {
 /// windows stitched with token deduplication) for audio longer than ~15s, so this
 /// wrapper does NOT window like `WindowedTranscriber` — it hands the full 16 kHz
 /// buffer to FluidAudio in one call.
+/// `@unchecked Sendable` is sound here: one instance is created per recording and its
+/// `transcribe` is awaited once from a single detached task, never shared concurrently
+/// (same single-use invariant as `WhisperKitEngine`).
 final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
     private let asrManager: AsrManager
     init(asrManager: AsrManager) { self.asrManager = asrManager }

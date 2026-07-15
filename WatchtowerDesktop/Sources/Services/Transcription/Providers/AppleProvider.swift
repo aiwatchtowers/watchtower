@@ -89,6 +89,9 @@ enum AppleLocaleCatalog {
 /// and collect only `isFinal` results (never volatile/draft text) into one transcript —
 /// mirroring the "only save finalized text" rule from the live-transcription design
 /// (docs/superpowers/specs/2026-07-14-live-transcription-design.md).
+/// `@unchecked Sendable` is sound here: one instance is created per recording and its
+/// `transcribe` is awaited once from a single detached task, never shared concurrently
+/// (same single-use invariant as `WhisperKitEngine`).
 final class AppleTranscriber: Transcriber, @unchecked Sendable {
     func transcribe(_ samples: [Float], config: TranscriptionConfig,
                     progress: @escaping @Sendable (Int, Int) -> Void) async throws -> TranscriptionOutput {
