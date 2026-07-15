@@ -166,9 +166,7 @@ private final class TapRecorderImpl {
             let result = (framesWritten, fileURL, firstWriteError)
             audioFile = nil // deallocating AVAudioFile closes the file
             converter = nil
-            try? activityHandle?.close()
-            activityHandle = nil
-            activityAccumulator = nil
+            closeActivitySidecar()
             return result
         }
         liveContinuation?.finish()
@@ -265,9 +263,7 @@ private final class TapRecorderImpl {
                 // A dropped batch would silently SHIFT every later bin earlier
                 // and misattribute «Я» — stop the sidecar instead: a truncated
                 // timeline degrades to unlabeled bins, never to wrong ones.
-                try? handle.close()
-                activityHandle = nil
-                activityAccumulator = nil
+                closeActivitySidecar()
             }
         }
 
@@ -317,13 +313,17 @@ private final class TapRecorderImpl {
         }
     }
 
-    /// Unwinds the activity sidecar on a start() failure after it was created:
-    /// closes the handle and removes the empty file so it does not linger
-    /// until the Go orphan sweep.
-    private func discardActivitySidecar() {
+    /// Stops the activity sidecar: closes the handle and drops the accumulator.
+    private func closeActivitySidecar() {
         try? activityHandle?.close()
         activityHandle = nil
         activityAccumulator = nil
+    }
+
+    /// Unwinds the activity sidecar on a start() failure after it was created:
+    /// also removes the empty file so it does not linger until the Go sweep.
+    private func discardActivitySidecar() {
+        closeActivitySidecar()
         if let fileURL {
             try? FileManager.default.removeItem(at: MicActivity.url(for: fileURL))
         }

@@ -148,7 +148,6 @@ final class MeetingRecorderCenter {
         samples: [Float]?,
         config: TranscriptionConfig
     ) async -> String {
-        lastRolesError = nil
         guard config.diarization, !output.segments.isEmpty else { return output.text }
         phase = .diarizing
         do {
@@ -166,8 +165,14 @@ final class MeetingRecorderCenter {
             // The sidecar parse is a full-file read (~36k lines per hour) —
             // off-main like the decode above.
             let activity = await Task.detached { MicActivity.load(for: audioURL) }.value
-            return RoleAssigner.render(segments: output.segments, speakers: speakers, activity: activity)
-                ?? output.text
+            if let rendered = RoleAssigner.render(segments: output.segments, speakers: speakers, activity: activity) {
+                return rendered
+            }
+            // Roles undeterminable (diarizer found no speakers) — flag it like
+            // the error path so the notification stays honest.
+            print("[MeetingRecorder] diarization found no speakers, saving without labels")
+            lastRolesError = "no speakers detected"
+            return output.text
         } catch {
             print("[MeetingRecorder] diarization failed, saving without speaker labels: \(error.localizedDescription)")
             lastRolesError = error.localizedDescription
@@ -254,6 +259,7 @@ final class MeetingRecorderCenter {
     func stopAndProcess(config: TranscriptionConfig) async {
         guard case .recording = phase, let recorder else { return }
         self.recorder = nil
+        lastRolesError = nil // per-run state, reset at the run boundary
 
         let result: RecordingResult
         do {
@@ -313,6 +319,7 @@ final class MeetingRecorderCenter {
     /// no pending audio.
     func retryTranscription(config: TranscriptionConfig) async {
         guard !isBusy, let url = pendingAudioURL else { return }
+        lastRolesError = nil // per-run state, reset at the run boundary
         if let persisted = Self.loadPersistedTranscript(audioURL: url) {
             await saveTranscript(
                 text: persisted.text,
