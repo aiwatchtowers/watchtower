@@ -1190,7 +1190,6 @@ final class MeetingRecorderCenterTests: XCTestCase {
         // Diarization failed (text persisted WITHOUT labels), then the save
         // failed. The retry short-circuits to the persisted text — and the
         // notification must still flag the missing labels.
-        struct SaveError: Error {}
         let audio = try makeDummyAudioFile()
         defer {
             try? FileManager.default.removeItem(at: audio)
@@ -1200,7 +1199,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
         let diarizer = FakeDiarizer()
         diarizer.error = FakeDiarizer.FakeError()
-        let runner = FakeCLIRunner(stdout: recapOKEnvelope, error: SaveError())
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope, error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },

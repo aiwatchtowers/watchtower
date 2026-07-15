@@ -260,10 +260,11 @@ private final class TapRecorderImpl {
             do {
                 try handle.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8))
             } catch {
-                // A dropped batch would silently SHIFT every later bin earlier
-                // and misattribute «Я» — stop the sidecar instead: a truncated
-                // timeline degrades to unlabeled bins, never to wrong ones.
-                closeActivitySidecar()
+                // A dropped batch would silently SHIFT every later bin earlier,
+                // and even a clean prefix can mislabel «Я» (a cluster may clear
+                // the share threshold on partial evidence). All-or-nothing:
+                // discard the sidecar entirely.
+                discardActivitySidecar()
             }
         }
 
@@ -320,8 +321,9 @@ private final class TapRecorderImpl {
         activityAccumulator = nil
     }
 
-    /// Unwinds the activity sidecar on a start() failure after it was created:
-    /// also removes the empty file so it does not linger until the Go sweep.
+    /// Discards the activity sidecar (start()-failure unwind, or a mid-write
+    /// failure where a partial timeline could mislabel «Я»): closes the handle
+    /// and removes the file so no partial evidence survives.
     private func discardActivitySidecar() {
         closeActivitySidecar()
         if let fileURL {
