@@ -450,7 +450,7 @@ struct GeneralSettings: View {
             }
             .help("WhisperKit model used for on-device transcription")
             .onChange(of: transcriptionModel) { _, newValue in
-                appState.transcriptionModelProvisioner.ensureDownloaded(modelName: newValue)
+                appState.transcriptionModelProvisioner.ensureDownloaded(providerID: "whisperkit", model: newValue)
             }
 
             TextField(

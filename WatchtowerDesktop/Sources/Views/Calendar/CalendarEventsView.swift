@@ -36,7 +36,7 @@ struct CalendarEventsView: View {
                 .animation(.easeInOut(duration: 0.25), value: selectedEventID)
                 .onAppear {
                     calVM.loadEvents()
-                    appState.transcriptionModelProvisioner.ensureDownloaded(modelName: transcriptionModel)
+                    appState.transcriptionModelProvisioner.ensureDownloaded(providerID: "whisperkit", model: transcriptionModel)
                 }
             } else {
                 notConnectedView

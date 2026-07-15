@@ -21,7 +21,7 @@ private final class GateDownloader: @unchecked Sendable {
         (enteredStream, enteredContinuation) = AsyncStream<String>.makeStream()
     }
 
-    func call(modelName: String, progress: @escaping @Sendable (Double) -> Void) async throws {
+    func call(providerID: String, modelName: String, progress: @escaping @Sendable (Double) -> Void) async throws {
         lock.lock()
         callCount += 1
         calledModels.append(modelName)
@@ -73,7 +73,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         let downloader = GateDownloader()
         let provisioner = TranscriptionModelProvisioner(downloadFn: downloader.call)
 
-        provisioner.ensureDownloaded(modelName: "large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "large-v3")
         var entered = downloader.enteredStream.makeAsyncIterator()
         _ = await entered.next()
         await drainMainActor()
@@ -94,12 +94,12 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         let downloader = GateDownloader()
         let provisioner = TranscriptionModelProvisioner(downloadFn: downloader.call)
 
-        provisioner.ensureDownloaded(modelName: "large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "large-v3")
         var entered = downloader.enteredStream.makeAsyncIterator()
         _ = await entered.next()
         await drainMainActor()
 
-        provisioner.ensureDownloaded(modelName: "large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "large-v3")
 
         XCTAssertEqual(downloader.callCount, 1, "a duplicate request for the same in-flight model must be a no-op")
 
@@ -113,12 +113,12 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         let provisioner = TranscriptionModelProvisioner(downloadFn: downloader.call)
         var entered = downloader.enteredStream.makeAsyncIterator()
 
-        provisioner.ensureDownloaded(modelName: "large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "large-v3")
         _ = await entered.next()
         await drainMainActor()
         let staleTask = provisioner.currentTask
 
-        provisioner.ensureDownloaded(modelName: "distil-large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "distil-large-v3")
         _ = await entered.next()
         await drainMainActor()
 
@@ -145,7 +145,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         let provisioner = TranscriptionModelProvisioner(downloadFn: downloader.call)
         var entered = downloader.enteredStream.makeAsyncIterator()
 
-        provisioner.ensureDownloaded(modelName: "large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "large-v3")
         _ = await entered.next()
         await drainMainActor()
 
@@ -175,7 +175,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         let provisioner = TranscriptionModelProvisioner(downloadFn: downloader.call)
         var entered = downloader.enteredStream.makeAsyncIterator()
 
-        provisioner.ensureDownloaded(modelName: "large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "large-v3")
         _ = await entered.next()
         await drainMainActor()
 
@@ -196,14 +196,14 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         let provisioner = TranscriptionModelProvisioner(downloadFn: downloader.call)
         var entered = downloader.enteredStream.makeAsyncIterator()
 
-        provisioner.ensureDownloaded(modelName: "large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "large-v3")
         _ = await entered.next()
         downloader.release("large-v3")
         await provisioner.currentTask?.value
         XCTAssertEqual(provisioner.state, .idle)
 
         // e.g. reopening the Calendar tab after the model already downloaded.
-        provisioner.ensureDownloaded(modelName: "large-v3")
+        provisioner.ensureDownloaded(providerID: "whisperkit", model: "large-v3")
 
         XCTAssertEqual(downloader.callCount, 1, "re-requesting an already-downloaded model must not re-trigger a download")
     }
