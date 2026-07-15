@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     secretary_profile TEXT NOT NULL DEFAULT '',  -- User-written secretary brief text
     style_profile TEXT NOT NULL DEFAULT '',  -- AI-distilled, user-editable communication style (see 00013)
     style_profile_updated_at TEXT NOT NULL DEFAULT '',
-    compose_last_run_ts REAL NOT NULL DEFAULT 0  -- Unix timestamp of last situation composer run
+    compose_last_run_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last situation composer run
+    memory_last_extracted_ts REAL NOT NULL DEFAULT 0  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
 );
 
 -- Users
@@ -792,7 +793,9 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     period_to        REAL,
     started_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     finished_at      TEXT,
-    duration_seconds REAL NOT NULL DEFAULT 0
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,  -- prompt-cache read tokens (billed cheaper, recorded separately)
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0   -- prompt-cache creation tokens
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC);
@@ -1138,4 +1141,37 @@ CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
 CREATE TABLE IF NOT EXISTS feed_state (
     id               INTEGER PRIMARY KEY CHECK (id = 1),
     bootstrap_cutoff TEXT NOT NULL
+);
+
+-- Secretary memory index — rebuildable SQLite mirror of the markdown vault
+-- (files + git are the source of truth; MEM-02: drop all memory_* tables and
+-- reindex reproduces this index).
+CREATE TABLE IF NOT EXISTS memory_nodes (
+    id            TEXT PRIMARY KEY,             -- ent_*/ep_*/sum_*/bel_*
+    type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),
+    tier          TEXT NOT NULL CHECK (tier IN ('short','long')),
+    status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed','tombstone')),
+    redirect_to   TEXT,
+    title         TEXT NOT NULL DEFAULT '',
+    path          TEXT NOT NULL,                -- vault-relative file path
+    content_hash  TEXT NOT NULL,                -- sha256 of file bytes at last index
+    indexed_at    TEXT NOT NULL
+);
+
+-- Alias → node lookup (natural keys like slack IDs, 'situation:<id>', names).
+CREATE TABLE IF NOT EXISTS memory_aliases (
+    alias    TEXT PRIMARY KEY COLLATE NOCASE,
+    node_id  TEXT NOT NULL REFERENCES memory_nodes(id)
+);
+
+-- Access accounting bumped by memory_open (not by memory_recall).
+CREATE TABLE IF NOT EXISTS memory_node_stats (
+    node_id          TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+    access_count     INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at TEXT
+);
+
+-- FTS5 index over node titles/bodies for memory_recall.
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    id UNINDEXED, title, body
 );

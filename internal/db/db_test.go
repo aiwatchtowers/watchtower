@@ -102,6 +102,7 @@ func TestAllTablesExist(t *testing.T) {
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
 		"feed_items", "feed_state",
+		"memory_nodes", "memory_aliases", "memory_node_stats",
 	}
 
 	for _, table := range expectedTables {
@@ -150,6 +151,65 @@ func assertTableGone(t *testing.T, d *DB, name string) {
 	var n int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("table %s expected to be dropped (n=%d err=%v)", name, n, err)
+	}
+}
+
+func TestMigration00017MemoryIndex(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	// Consolidation watermark on workspace.
+	var count int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = 'memory_last_extracted_ts'`,
+	).Scan(&count)
+	if err != nil || count != 1 {
+		t.Fatalf("workspace.memory_last_extracted_ts missing (count=%d err=%v)", count, err)
+	}
+
+	// Split cache token accounting on pipeline_runs.
+	for _, col := range []string{"cache_read_tokens", "cache_creation_tokens"} {
+		var n int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('pipeline_runs') WHERE name = ?`, col).Scan(&n)
+		if err != nil || n != 1 {
+			t.Fatalf("pipeline_runs.%s missing (count=%d err=%v)", col, n, err)
+		}
+	}
+
+	// FTS index over memory node bodies.
+	assertTableExists(t, database, "memory_fts")
+
+	// Enum CHECKs reject bad values.
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ent_x', 'bogus', 'long', 'entities/x.md', 'h', '2026-07-15T00:00:00Z')`); err == nil {
+		t.Fatal("expected CHECK violation for type='bogus'")
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ent_x', 'entity', 'medium', 'entities/x.md', 'h', '2026-07-15T00:00:00Z')`); err == nil {
+		t.Fatal("expected CHECK violation for tier='medium'")
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('ent_x', 'entity', 'long', 'gone', 'entities/x.md', 'h', '2026-07-15T00:00:00Z')`); err == nil {
+		t.Fatal("expected CHECK violation for status='gone'")
+	}
+
+	// Aliases are case-insensitive (COLLATE NOCASE primary key).
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ent_x', 'entity', 'long', 'entities/x.md', 'h', '2026-07-15T00:00:00Z')`); err != nil {
+		t.Fatalf("inserting memory node: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_aliases (alias, node_id) VALUES ('Alice', 'ent_x')`); err != nil {
+		t.Fatalf("inserting alias: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_aliases (alias, node_id) VALUES ('alice', 'ent_x')`); err == nil {
+		t.Fatal("expected NOCASE PK violation for duplicate alias with different case")
 	}
 }
 

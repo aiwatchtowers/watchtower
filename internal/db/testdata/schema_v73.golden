@@ -816,6 +816,52 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
+table	memory_aliases
+CREATE TABLE memory_aliases (
+alias TEXT PRIMARY KEY COLLATE NOCASE,
+node_id TEXT NOT NULL REFERENCES memory_nodes(id)
+)
+
+table	memory_fts
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+id UNINDEXED, title, body
+)
+
+table	memory_fts_config
+CREATE TABLE 'memory_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID
+
+table	memory_fts_content
+CREATE TABLE 'memory_fts_content'(id INTEGER PRIMARY KEY, c0, c1, c2)
+
+table	memory_fts_data
+CREATE TABLE 'memory_fts_data'(id INTEGER PRIMARY KEY, block BLOB)
+
+table	memory_fts_docsize
+CREATE TABLE 'memory_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
+
+table	memory_fts_idx
+CREATE TABLE 'memory_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
+
+table	memory_node_stats
+CREATE TABLE memory_node_stats (
+node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+access_count INTEGER NOT NULL DEFAULT 0,
+last_accessed_at TEXT
+)
+
+table	memory_nodes
+CREATE TABLE memory_nodes (
+id TEXT PRIMARY KEY, -- ent_*/ep_*/sum_*/bel_*
+type TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),
+tier TEXT NOT NULL CHECK (tier IN ('short','long')),
+status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed','tombstone')),
+redirect_to TEXT,
+title TEXT NOT NULL DEFAULT '',
+path TEXT NOT NULL, -- vault-relative file path
+content_hash TEXT NOT NULL, -- sha256 of file bytes at last index
+indexed_at TEXT NOT NULL
+)
+
 table	messages
 CREATE TABLE messages (
 channel_id TEXT NOT NULL,
@@ -946,7 +992,7 @@ period_to REAL,
 started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 finished_at TEXT,
 duration_seconds REAL NOT NULL DEFAULT 0
-)
+, cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0)
 
 table	pipeline_steps
 CREATE TABLE pipeline_steps (
@@ -1288,7 +1334,7 @@ synced_at TEXT, -- ISO8601 timestamp of last sync
 search_last_date TEXT NOT NULL DEFAULT '', -- YYYY-MM-DD of last search sync
 current_user_id TEXT NOT NULL DEFAULT '', -- Slack user_id of the token owner (from auth.test)
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '')
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0)
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
@@ -1780,6 +1826,54 @@ END
 3	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 4	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
+## memory_aliases
+0	alias	TEXT	notnull=0	dflt=NULL	pk=1
+1	node_id	TEXT	notnull=1	dflt=NULL	pk=0
+
+## memory_fts
+0	id		notnull=0	dflt=NULL	pk=0
+1	title		notnull=0	dflt=NULL	pk=0
+2	body		notnull=0	dflt=NULL	pk=0
+
+## memory_fts_config
+0	k		notnull=1	dflt=NULL	pk=1
+1	v		notnull=0	dflt=NULL	pk=0
+
+## memory_fts_content
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	c0		notnull=0	dflt=NULL	pk=0
+2	c1		notnull=0	dflt=NULL	pk=0
+3	c2		notnull=0	dflt=NULL	pk=0
+
+## memory_fts_data
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	block	BLOB	notnull=0	dflt=NULL	pk=0
+
+## memory_fts_docsize
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	sz	BLOB	notnull=0	dflt=NULL	pk=0
+
+## memory_fts_idx
+0	segid		notnull=1	dflt=NULL	pk=1
+1	term		notnull=1	dflt=NULL	pk=2
+2	pgno		notnull=0	dflt=NULL	pk=0
+
+## memory_node_stats
+0	node_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	access_count	INTEGER	notnull=1	dflt=0	pk=0
+2	last_accessed_at	TEXT	notnull=0	dflt=NULL	pk=0
+
+## memory_nodes
+0	id	TEXT	notnull=0	dflt=NULL	pk=1
+1	type	TEXT	notnull=1	dflt=NULL	pk=0
+2	tier	TEXT	notnull=1	dflt=NULL	pk=0
+3	status	TEXT	notnull=1	dflt='active'	pk=0
+4	redirect_to	TEXT	notnull=0	dflt=NULL	pk=0
+5	title	TEXT	notnull=1	dflt=''	pk=0
+6	path	TEXT	notnull=1	dflt=NULL	pk=0
+7	content_hash	TEXT	notnull=1	dflt=NULL	pk=0
+8	indexed_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## messages
 0	channel_id	TEXT	notnull=1	dflt=NULL	pk=1
 1	ts	TEXT	notnull=1	dflt=NULL	pk=2
@@ -1896,6 +1990,8 @@ END
 13	started_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 14	finished_at	TEXT	notnull=0	dflt=NULL	pk=0
 15	duration_seconds	REAL	notnull=1	dflt=0	pk=0
+16	cache_read_tokens	INTEGER	notnull=1	dflt=0	pk=0
+17	cache_creation_tokens	INTEGER	notnull=1	dflt=0	pk=0
 
 ## pipeline_steps
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -2193,4 +2289,5 @@ END
 8	compose_last_run_ts	REAL	notnull=1	dflt=0	pk=0
 9	style_profile	TEXT	notnull=1	dflt=''	pk=0
 10	style_profile_updated_at	TEXT	notnull=1	dflt=''	pk=0
+11	memory_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
 
