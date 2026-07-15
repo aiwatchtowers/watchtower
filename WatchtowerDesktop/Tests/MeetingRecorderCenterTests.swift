@@ -50,7 +50,7 @@ private final class FakeRecorder: AudioRecording, @unchecked Sendable {
 
 /// Returns canned window texts in order; `""` past the end (silence). Used with a
 /// forced-language config so `detectLanguage` is never consulted.
-private final class ScriptedEngine: TranscriptionEngine, @unchecked Sendable {
+private final class ScriptedEngine: WhisperWindowEngine, @unchecked Sendable {
     let texts: [String]
     private var index = 0
 
@@ -68,7 +68,7 @@ private final class ScriptedEngine: TranscriptionEngine, @unchecked Sendable {
 /// entry via `enteredStream`. This lock-steps the windowed loop with the test so
 /// progress delivery into `phase` can be asserted deterministically (no race
 /// between the off-main transcription and the main-actor progress consumer).
-private final class GateEngine: TranscriptionEngine, @unchecked Sendable {
+private final class GateEngine: WhisperWindowEngine, @unchecked Sendable {
     let texts: [String]
     let enteredStream: AsyncStream<Void>
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Abstraction over the on-device STT engine so tests never load WhisperKit/CoreML.
-protocol TranscriptionEngine: Sendable {
+protocol WhisperWindowEngine: Sendable {
     /// Language probabilities for one audio window (16 kHz mono Float32 samples).
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float]
     /// Transcribe one window with the language forced. Returns raw text ("" = no speech).
@@ -77,7 +77,7 @@ func resolveWindowLanguage(
     for window: [Float],
     previous: String?,
     config: TranscriptionConfig,
-    engine: TranscriptionEngine
+    engine: WhisperWindowEngine
 ) async -> String {
     let fallback = previous ?? config.firstWindowDefault
     guard let probs = try? await engine.detectLanguage(window) else {

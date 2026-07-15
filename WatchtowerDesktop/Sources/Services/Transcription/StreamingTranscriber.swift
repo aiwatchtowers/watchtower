@@ -25,7 +25,7 @@ struct StreamChunk: Equatable, Sendable {
 /// cancelled run returns whatever partial output it already has rather than
 /// throwing — the caller on that path discards the result anyway.
 struct StreamingTranscriber {
-    let engine: TranscriptionEngine
+    let engine: WhisperWindowEngine
     let config: TranscriptionConfig
 
     func run(samples: AsyncStream<[Float]>,

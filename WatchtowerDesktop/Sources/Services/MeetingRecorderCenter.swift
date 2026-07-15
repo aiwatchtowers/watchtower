@@ -52,7 +52,7 @@ final class MeetingRecorderCenter {
 
     /// Engine loaded at record-start for the live pass, reused for the stop-time
     /// batch fallback so we never load twice on a single recording.
-    private var loadedEngine: TranscriptionEngine?
+    private var loadedEngine: WhisperWindowEngine?
     /// The running live transcription; its value is the final output, or nil when
     /// the live pass never ran or produced no usable text (→ batch fallback).
     private var liveTask: Task<TranscriptionOutput?, Never>?
@@ -85,7 +85,7 @@ final class MeetingRecorderCenter {
     static let pendingTitleKey = "recorder.pendingTitle"
 
     private let recorderFactory: () -> AudioRecording
-    private let engineFactory: (TranscriptionConfig) async throws -> TranscriptionEngine
+    private let engineFactory: (TranscriptionConfig) async throws -> WhisperWindowEngine
     private let decode: (URL) throws -> [Float]
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let notifier: MeetingTranscriptNotifying
@@ -105,7 +105,7 @@ final class MeetingRecorderCenter {
     /// the audio (and persisted transcript) kept for retry.
     init(
         recorderFactory: @escaping () -> AudioRecording = { SystemAudioRecorder() },
-        engineFactory: @escaping (TranscriptionConfig) async throws -> TranscriptionEngine = MeetingRecorderCenter.defaultEngineFactory,
+        engineFactory: @escaping (TranscriptionConfig) async throws -> WhisperWindowEngine = MeetingRecorderCenter.defaultEngineFactory,
         decode: @escaping (URL) throws -> [Float] = AudioFileDecoder.decodePCM16k(url:),
         runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
         notifier: MeetingTranscriptNotifying = NotificationService.shared,
@@ -124,7 +124,7 @@ final class MeetingRecorderCenter {
     /// so first use may download model weights. The `TranscriptionConfig` is
     /// unused here (the model name is a separate `@AppStorage` key); the parameter
     /// exists so tests can vary the engine per config.
-    static func defaultEngineFactory(_ config: TranscriptionConfig) async throws -> TranscriptionEngine {
+    static func defaultEngineFactory(_ config: TranscriptionConfig) async throws -> WhisperWindowEngine {
         let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
         return try await WhisperKitEngine.load(modelName: model) { _ in }
     }
@@ -173,7 +173,7 @@ final class MeetingRecorderCenter {
         let generation = liveGeneration
         liveTask = Task { [weak self] () -> TranscriptionOutput? in
             guard let self else { return nil }
-            let engine: TranscriptionEngine
+            let engine: WhisperWindowEngine
             do {
                 engine = try await self.engineFactory(config)
             } catch {
@@ -335,7 +335,7 @@ final class MeetingRecorderCenter {
             return
         }
 
-        let engine: TranscriptionEngine
+        let engine: WhisperWindowEngine
         if let reusableEngine {
             engine = reusableEngine
         } else {
