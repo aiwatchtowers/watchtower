@@ -65,4 +65,33 @@ enum MeetingTranscriptQueries {
                 """,
             arguments: [limit])
     }
+
+    /// Direct notes write from the editor (GRDB, no CLI round-trip — same
+    /// local-write precedent as `linkToEvent`).
+    static func saveNotes(_ db: Database, id: Int64, markdown: String) throws {
+        try db.execute(
+            sql: """
+                UPDATE meeting_transcripts
+                SET notes_md = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [markdown, id])
+    }
+
+    /// Deletes a recording with all its content: the transcript row and its
+    /// "meeting" chat conversation (+ messages). The event's `meeting_recaps`
+    /// row is deliberately NOT touched — a recap can exist independently of
+    /// the recording (safe delete scope). Returns the audio_path (if any) so
+    /// the caller can remove the file AFTER the transaction commits;
+    /// callers must treat a missing file as success (daemon retention may
+    /// have swept it already).
+    static func delete(_ db: Database, id: Int64) throws -> String? {
+        guard let transcript = try fetch(db, id: id) else { return nil }
+        if let conv = try ChatConversationQueries.fetchByContext(db, type: "meeting", id: String(id)) {
+            try ChatMessageQueries.deleteByConversation(db, conversationID: conv.id)
+            try ChatConversationQueries.delete(db, id: conv.id)
+        }
+        try db.execute(sql: "DELETE FROM meeting_transcripts WHERE id = ?", arguments: [id])
+        return transcript.audioPath
+    }
 }
