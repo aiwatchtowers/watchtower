@@ -1,5 +1,16 @@
 import SwiftUI
 
+enum CalendarMode: String, CaseIterable {
+    case events, recordings
+
+    var title: String {
+        switch self {
+        case .events: return "Events"
+        case .recordings: return "Recordings"
+        }
+    }
+}
+
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
@@ -10,38 +21,58 @@ struct CalendarEventsView: View {
     @State private var expandedAllDayDates: Set<Date> = []
     @State private var expandedEventID: String?
     @State private var userNotes: String = ""
-    @State private var adHocTranscripts: [MeetingTranscript] = []
-    @State private var linkTarget: MeetingTranscript?
+    @State private var mode: CalendarMode = .events
 
     var body: some View {
         Group {
             if googleAuth.isConnected, let calVM = appState.calendarViewModel {
-                HStack(spacing: 0) {
-                    eventsList(calVM)
-                        .frame(minWidth: 300, idealWidth: 350)
-
-                    if let eventID = selectedEventID {
-                        Divider()
-                        MeetingPrepDetailView(
-                            eventID: eventID,
-                            viewModel: meetingPrepVM,
-                            userNotes: $userNotes
-                        )                            { selectedEventID = nil }
-                        .id(eventID)
-                        .frame(minWidth: 400, idealWidth: 500)
-                        .transition(
-                            .move(edge: .trailing).combined(with: .opacity)
-                        )
+                VStack(spacing: 0) {
+                    Picker("", selection: $mode) {
+                        ForEach(CalendarMode.allCases, id: \.self) { m in
+                            Text(m.title).tag(m)
+                        }
                     }
-                }
-                .animation(.easeInOut(duration: 0.25), value: selectedEventID)
-                .onAppear {
-                    calVM.loadEvents()
-                    appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: transcriptionModel)
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: 260)
+                    .padding(.top, 10)
+
+                    switch mode {
+                    case .events:
+                        eventsMasterDetail(calVM)
+                    case .recordings:
+                        RecordingsView()
+                    }
                 }
             } else {
                 notConnectedView
             }
+        }
+    }
+
+    private func eventsMasterDetail(_ vm: CalendarViewModel) -> some View {
+        HStack(spacing: 0) {
+            eventsList(vm)
+                .frame(minWidth: 300, idealWidth: 350)
+
+            if let eventID = selectedEventID {
+                Divider()
+                MeetingPrepDetailView(
+                    eventID: eventID,
+                    viewModel: meetingPrepVM,
+                    userNotes: $userNotes
+                )                            { selectedEventID = nil }
+                .id(eventID)
+                .frame(minWidth: 400, idealWidth: 500)
+                .transition(
+                    .move(edge: .trailing).combined(with: .opacity)
+                )
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: selectedEventID)
+        .onAppear {
+            vm.loadEvents()
+            appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: transcriptionModel)
         }
     }
 
@@ -57,18 +88,8 @@ struct CalendarEventsView: View {
                 if vm.dailyEvents.isEmpty {
                     emptyState
                 }
-
-                recordingsSection
             }
             .padding()
-        }
-        .onAppear(perform: loadAdHocTranscripts)
-        .onChange(of: appState.meetingRecorderCenter.phase) { _, phase in
-            if case .idle = phase { loadAdHocTranscripts() }
-        }
-        .sheet(item: $linkTarget) { transcript in
-            LinkTranscriptSheet(transcript: transcript, onLinked: loadAdHocTranscripts)
-                .environment(appState)
         }
     }
 
@@ -333,68 +354,6 @@ struct CalendarEventsView: View {
         case "tentative": return .orange
         case "declined": return .red
         default: return .secondary
-        }
-    }
-
-    // MARK: - Recordings (ad-hoc)
-
-    @ViewBuilder
-    private var recordingsSection: some View {
-        if !adHocTranscripts.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Recordings")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-
-                ForEach(adHocTranscripts) { transcript in
-                    adHocRow(transcript)
-                }
-            }
-        }
-    }
-
-    private func adHocRow(_ transcript: MeetingTranscript) -> some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(transcript.title)
-                    .font(.callout)
-                    .fontWeight(.medium)
-                HStack(spacing: 8) {
-                    Text(TranscriptFormatting.formattedDate(transcript.createdAt))
-                    Text(TranscriptFormatting.formatDuration(transcript.durationSec))
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                if let summary = transcript.parsedSummary?.summary, !summary.isEmpty {
-                    Text(summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
-            Spacer()
-            Button {
-                linkTarget = transcript
-            } label: {
-                Label("Link to event…", systemImage: "link")
-                    .font(.caption)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func loadAdHocTranscripts() {
-        guard let db = appState.databaseManager else { return }
-        do {
-            adHocTranscripts = try db.dbPool.read { conn in
-                try MeetingTranscriptQueries.fetchAdHoc(conn)
-            }
-        } catch {
-            // Silent: table may not exist yet on older DB schema versions.
         }
     }
 
