@@ -14,6 +14,9 @@ protocol TranscriptionEngine: Sendable {
 struct TranscriptionConfig: Equatable {
     var windowSec: Double = 20
     var overlapSec: Double = 1.0
+    /// Snap window boundaries to the quietest point within ±boundarySnapSec
+    /// of the nominal end (0 disables snapping — exact legacy boundaries).
+    var boundarySnapSec: Double = 2.5
     var langset: [String] = ["ru", "uk", "en"]
     var langThreshold: Float = 0.6
     var margin: Float = 0.2
@@ -47,6 +50,10 @@ extension TranscriptionConfig {
         if defaults.object(forKey: "transcription.windowSec") != nil {
             let value = defaults.double(forKey: "transcription.windowSec")
             if value > 0 { config.windowSec = value }
+        }
+        if defaults.object(forKey: "transcription.boundarySnapSec") != nil {
+            let value = defaults.double(forKey: "transcription.boundarySnapSec")
+            if value >= 0 { config.boundarySnapSec = value }
         }
         if defaults.object(forKey: "transcription.langThreshold") != nil {
             config.langThreshold = Float(defaults.double(forKey: "transcription.langThreshold"))
