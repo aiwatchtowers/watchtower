@@ -18,6 +18,11 @@ let package = Package(
         // Pinned to 0.15.x: ParakeetProvider uses AsrManager/AsrModels API verified
         // against the v0.15.5 tag (Sources/FluidAudio/ASR/Parakeet/SlidingWindow/TDT).
         .package(url: "https://github.com/FluidInference/FluidAudio.git", .upToNextMinor(from: "0.15.5")),
+        // Pinned to the exact 0.0.7 tag: the only speech-swift releases that keep the
+        // macOS(.v14) platform floor (0.0.1-0.0.7) — 0.0.8+ requires macOS 15 (MLXState),
+        // and 0.0.20+ additionally pulls in `WhisperKit >=1.0.0`, which conflicts with our
+        // WhisperKitProvider pin to the 0.18.x API surface. See task-7-report.md.
+        .package(url: "https://github.com/soniqo/speech-swift.git", exact: "0.0.7"),
     ],
     targets: [
         .executableTarget(
@@ -27,6 +32,7 @@ let package = Package(
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "Qwen3ASR", package: "speech-swift"),
             ],
             path: "Sources",
             resources: [
