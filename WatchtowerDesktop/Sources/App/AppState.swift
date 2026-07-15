@@ -37,6 +37,11 @@ final class AppState {
     /// the calendar event that started it.
     let meetingRecorderCenter = MeetingRecorderCenter()
 
+    /// App-wide, single-slot registry for meeting-recording audio playback, so
+    /// only one recording's audio plays at a time regardless of how many
+    /// transcript rows are expanded across the app.
+    let audioPlaybackCenter = AudioPlaybackCenter()
+
     /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,
     /// so download progress is visible (and retryable) from anywhere,
     /// independent of whether a recording is in progress.
