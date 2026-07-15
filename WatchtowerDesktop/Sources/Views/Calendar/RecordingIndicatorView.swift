@@ -33,6 +33,11 @@ struct RecordingIndicatorView: View {
                 Text(total > 0 ? "Transcribing \(done)/\(total)" : "Transcribing…")
                     .font(.callout)
             }
+        case .diarizing:
+            capsule {
+                ProgressView().controlSize(.small)
+                Text("Identifying speakers…").font(.callout)
+            }
         case .summarizing:
             capsule {
                 ProgressView().controlSize(.small)
