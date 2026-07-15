@@ -1,34 +1,34 @@
-# TASK: Аудит реальных данных под память секретаря
+# TASK: Real-data audit for secretary memory
 
-> Ветка: `feature/secretary-memory`. Выполнять на **рабочей машине** (там живая база ~2ГБ за ~2 месяца).
-> Контекст: `docs/specs/memory-design-notes.md` — конспект брейншторма по памяти (слои, ярусы, типы узлов, консолидация, экономика). Прочитать перед стартом.
+> Branch: `feature/secretary-memory`. Run on the **work machine** (live DB, ~2GB over ~2 months).
+> Context: `docs/specs/memory-design-notes.md` — brainstorm notes on memory (layers, tiers, node types, consolidation, economics). Read it first.
 
-## Цель
+## Goal
 
-Проверить на живых данных ключевую ставку экономики консолидации — **«не платить дважды»**: существующие пайплайны (digests, situations, running summaries, catchup) уже дистиллируют сырой поток, и консолидация памяти может питаться их выхлопом как заготовками эпизодов, ныряя в сырьё только точечно. Если ставка не подтвердится — дизайн воронки придётся пересматривать (дешёвый тир будет читать сырьё сам, экономика ×N).
+Validate, on live data, the key bet of consolidation economics — **"don't pay twice"**: existing pipelines (digests, situations, running summaries, catchup) already distill the raw stream, so memory consolidation can feed on their output as episode seeds and dive into raw only selectively. If the bet fails, the funnel design must be revisited (the cheap tier would read raw itself, economics ×N).
 
-## Что измерить (read-only, только SELECT'ы по базе)
+## What to measure (read-only, SELECTs against the DB only)
 
-1. **Объёмы и темп**
-   - Реальный размер текстовой доли: суммарные байты/оценка токенов в `messages.text` (и gmail-таблицах, если есть) за последние 30 дней, по дням. Сверить с оценкой из дока (3–6М токенов/день) — она грубая, нужен факт.
-   - Доля базы, приходящаяся на индексы/метаданные vs текст.
+1. **Volume and rate**
+   - Actual text share: total bytes / estimated tokens in `messages.text` (and gmail tables if present) over the last 30 days, per day. Compare against the doc's estimate (3–6M tokens/day) — it's rough, a real number is needed.
+   - Share of the DB taken by indexes/metadata vs text.
 
-2. **Покрытие дистиллятом**
-   - Какая доля дневного потока сообщений «накрыта» хоть каким-то существующим выхлопом: попала в digest topics / situations / running summary окна / catchup themes. Оценить по каналам: где покрытие плотное, где дыры (замьюченные каналы? DM? треды?).
-   - Суммарный дневной объём самого дистиллята в токенах (digests + situation cards + summaries за день) — это вход сильного тира; сверить с оценкой 100–300К/день.
+2. **Distillate coverage**
+   - What share of the daily message stream is "covered" by any existing output: landed in digest topics / situations / running-summary windows / catchup themes. Assess per channel: where coverage is dense, where the gaps are (muted channels? DMs? threads?).
+   - Total daily distillate volume in tokens (digests + situation cards + summaries per day) — this is the strong tier's input; compare against the 100–300K/day estimate.
 
-3. **Пригодность как заготовок эпизодов**
-   - Руками просмотреть 10–15 случайных digest topics / situations за разные дни и ответить: восстановим ли из них эпизод по нашей схеме (время-рамка, участники, исход, ссылки на сырьё)? Чего систематически не хватает (чаще всего подозрение: исход/резолюция и точные ссылки на сообщения).
-   - Есть ли у выхлопа стабильные ссылки на исходные сообщения (channel_id + ts), пригодные как provenance.
+3. **Fitness as episode seeds**
+   - Manually review 10–15 random digest topics / situations across different days and answer: can an episode per our schema (time frame, participants, outcome, links to raw) be reconstructed from them? What is systematically missing (prime suspects: outcome/resolution and precise message links).
+   - Does the output carry stable references to source messages (channel_id + ts) usable as provenance?
 
-4. **Сущности**
-   - Прикинуть словарь сущностей: сколько уникальных людей/каналов/Jira-проектов реально активны за месяц (кандидаты в `ent_*` узлы первой волны). Это масштаб долговременного яруса и staggered-переписываний.
+4. **Entities**
+   - Estimate the entity vocabulary: how many unique people/channels/Jira projects are actually active over a month (candidates for the first wave of `ent_*` nodes). This sizes the long-term tier and staggered rewrites.
 
-## Выход
+## Deliverable
 
-`docs/specs/memory-data-audit.md` в этой ветке: цифры по пунктам 1–4, вердикт по ставке «не платить дважды» (подтверждена / подтверждена частично + что дособирать / опровергнута), и следствия для MVP-среза из design-notes.
+`docs/specs/memory-data-audit.md` in this branch: numbers for items 1–4, a verdict on the "don't pay twice" bet (confirmed / partially confirmed + what to add / refuted), and consequences for the MVP slice in the design notes.
 
-## Ограничения
+## Constraints
 
-- Ничего не менять в базе и конфиге рабочей машины — только чтение.
-- Сырые тексты сообщений в отчёт не копировать (рабочие данные) — только агрегаты, цифры и обезличенные наблюдения.
+- Change nothing in the work machine's DB or config — read only.
+- Do not copy raw message text into the report (work data) — aggregates, numbers, and anonymized observations only.
