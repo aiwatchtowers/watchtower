@@ -50,9 +50,9 @@ final class MeetingRecorderCenter {
     private(set) var liveEngineState: LiveEngineState = .off
     private(set) var liveChunks: [LiveChunk] = []
 
-    /// Engine loaded at record-start for the live pass, reused for the stop-time
-    /// batch fallback so we never load twice on a single recording.
-    private var loadedEngine: WhisperWindowEngine?
+    /// Transcriber loaded at record-start for the live pass, reused for the
+    /// stop-time batch fallback so we never load twice on a single recording.
+    private var loadedTranscriber: Transcriber?
     /// The running live transcription; its value is the final output, or nil when
     /// the live pass never ran or produced no usable text (→ batch fallback).
     private var liveTask: Task<TranscriptionOutput?, Never>?
@@ -85,7 +85,7 @@ final class MeetingRecorderCenter {
     static let pendingTitleKey = "recorder.pendingTitle"
 
     private let recorderFactory: () -> AudioRecording
-    private let engineFactory: (TranscriptionConfig) async throws -> WhisperWindowEngine
+    private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
     private let decode: (URL) throws -> [Float]
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let notifier: MeetingTranscriptNotifying
@@ -105,7 +105,7 @@ final class MeetingRecorderCenter {
     /// the audio (and persisted transcript) kept for retry.
     init(
         recorderFactory: @escaping () -> AudioRecording = { SystemAudioRecorder() },
-        engineFactory: @escaping (TranscriptionConfig) async throws -> WhisperWindowEngine = MeetingRecorderCenter.defaultEngineFactory,
+        engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber = MeetingRecorderCenter.defaultEngineFactory,
         decode: @escaping (URL) throws -> [Float] = AudioFileDecoder.decodePCM16k(url:),
         runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
         notifier: MeetingTranscriptNotifying = NotificationService.shared,
@@ -119,14 +119,19 @@ final class MeetingRecorderCenter {
         self.defaults = defaults
     }
 
-    /// Production engine: loads the WhisperKit model named in Settings (default
-    /// `large-v3-v20240930`, i.e. large-v3-turbo). Runs lazily on first `stop()`,
-    /// so first use may download model weights. The `TranscriptionConfig` is
-    /// unused here (the model name is a separate `@AppStorage` key); the parameter
-    /// exists so tests can vary the engine per config.
-    static func defaultEngineFactory(_ config: TranscriptionConfig) async throws -> WhisperWindowEngine {
+    /// Production factory: resolves the provider+model chosen in Settings
+    /// (`transcription.provider`, default `whisperkit`; `transcription.model`,
+    /// default `large-v3-v20240930` i.e. large-v3-turbo) via
+    /// `TranscriptionProviderRegistry` and loads its `Transcriber`. Runs lazily
+    /// on first `stop()`, so first use may download model weights. The
+    /// `TranscriptionConfig` is unused here (provider/model are separate
+    /// `@AppStorage` keys); the parameter exists so tests can vary the
+    /// transcriber per config.
+    static func defaultEngineFactory(_ config: TranscriptionConfig) async throws -> Transcriber {
+        let providerID = UserDefaults.standard.string(forKey: "transcription.provider") ?? "whisperkit"
         let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
-        return try await WhisperKitEngine.load(modelName: model) { _ in }
+        let provider = TranscriptionProviderRegistry.resolve(providerID: providerID)
+        return try await provider.makeTranscriber(model: model) { _ in }
     }
 
     // MARK: Recording
@@ -162,31 +167,36 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// Loads the engine and runs StreamingTranscriber over the recorder's live
-    /// samples. Never fails the recording: a load/stream failure only sets
-    /// `liveEngineState` and leaves the batch fallback to handle stop.
+    /// Loads the transcriber and, when it supports live (`makeLiveSession`
+    /// returns non-nil), runs its live session over the recorder's live
+    /// samples. Never fails the recording: a load/stream failure — or a
+    /// provider that simply does not support live — only sets
+    /// `liveEngineState` to `.unavailable` and leaves the batch fallback to
+    /// handle stop. The loaded transcriber is stashed either way so the
+    /// stop-time batch fallback reuses it instead of loading twice.
     private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig) {
         liveChunks = []
         liveEngineState = .loading
-        loadedEngine = nil
+        loadedTranscriber = nil
         liveGeneration += 1
         let generation = liveGeneration
         liveTask = Task { [weak self] () -> TranscriptionOutput? in
             guard let self else { return nil }
-            let engine: WhisperWindowEngine
+            let transcriber: Transcriber
             do {
-                engine = try await self.engineFactory(config)
+                transcriber = try await self.engineFactory(config)
             } catch {
                 await MainActor.run { self.liveEngineState = .unavailable }
                 return nil
             }
-            await MainActor.run {
-                self.loadedEngine = engine
-                self.liveEngineState = .running
+            await MainActor.run { self.loadedTranscriber = transcriber }
+            guard let liveSession = transcriber.makeLiveSession(config: config) else {
+                await MainActor.run { self.liveEngineState = .unavailable }
+                return nil // provider has no live session → batch fallback from file
             }
-            let transcriber = StreamingTranscriber(engine: engine, config: config)
+            await MainActor.run { self.liveEngineState = .running }
             do {
-                return try await transcriber.run(samples: recorder.liveSamples) { chunk in
+                return try await liveSession.run(samples: recorder.liveSamples) { chunk in
                     Task { @MainActor in
                         // Fences a stale append from an orphaned/cancelled prior
                         // live pass (see `liveGeneration`'s doc) against the
@@ -223,7 +233,7 @@ final class MeetingRecorderCenter {
             // recording starts next instead of contaminating it.
             liveTask?.cancel()
             liveTask = nil
-            loadedEngine = nil
+            loadedTranscriber = nil
             liveGeneration += 1
             fail(error.localizedDescription)
             return
@@ -248,7 +258,7 @@ final class MeetingRecorderCenter {
                     langStats: liveOutput.langStats,
                     audioURL: result.audioURL
                 )
-                loadedEngine = nil
+                loadedTranscriber = nil
                 return
             }
         }
@@ -320,12 +330,12 @@ final class MeetingRecorderCenter {
     private func transcribeAndSave(audioURL: URL, config: TranscriptionConfig) async {
         phase = .transcribing(done: 0, total: 0)
 
-        // Capture and clear the reusable engine (if any) up front, before any
-        // early-return path below — so a stale, already-consumed-or-abandoned
-        // engine from a prior recording attempt is never left around for a
+        // Capture and clear the reusable transcriber (if any) up front, before
+        // any early-return path below — so a stale, already-consumed-or-abandoned
+        // transcriber from a prior recording attempt is never left around for a
         // later same-session retry to pick up.
-        let reusableEngine = loadedEngine
-        loadedEngine = nil
+        let reusableTranscriber = loadedTranscriber
+        loadedTranscriber = nil
 
         let samples: [Float]
         do {
@@ -335,12 +345,12 @@ final class MeetingRecorderCenter {
             return
         }
 
-        let engine: WhisperWindowEngine
-        if let reusableEngine {
-            engine = reusableEngine
+        let transcriber: Transcriber
+        if let reusableTranscriber {
+            transcriber = reusableTranscriber
         } else {
             do {
-                engine = try await engineFactory(config)
+                transcriber = try await engineFactory(config)
             } catch {
                 fail(error.localizedDescription)
                 return
@@ -349,7 +359,7 @@ final class MeetingRecorderCenter {
 
         let output: TranscriptionOutput
         do {
-            output = try await runTranscription(WindowedTranscriber(engine: engine, config: config), samples: samples)
+            output = try await runTranscription(transcriber, samples: samples, config: config)
         } catch {
             fail(error.localizedDescription)
             return
@@ -406,14 +416,14 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// Drives `WindowedTranscriber` on a detached task and consumes its progress
-    /// on the main actor, so `phase` updates are ordered and never race the
-    /// phase transitions around them.
-    private func runTranscription(_ transcriber: WindowedTranscriber, samples: [Float]) async throws -> TranscriptionOutput {
+    /// Drives `Transcriber.transcribe` on a detached task and consumes its
+    /// progress on the main actor, so `phase` updates are ordered and never
+    /// race the phase transitions around them.
+    private func runTranscription(_ transcriber: Transcriber, samples: [Float], config: TranscriptionConfig) async throws -> TranscriptionOutput {
         let (stream, continuation) = AsyncStream<(Int, Int)>.makeStream()
         let task = Task.detached { () -> Result<TranscriptionOutput, Error> in
             do {
-                let output = try await transcriber.transcribe(samples: samples) { done, total in
+                let output = try await transcriber.transcribe(samples, config: config) { done, total in
                     continuation.yield((done, total))
                 }
                 continuation.finish()

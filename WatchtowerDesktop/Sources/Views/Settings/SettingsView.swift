@@ -46,6 +46,7 @@ struct GeneralSettings: View {
     @State private var googleAuth = GoogleAuthService()
     @State private var jiraAuth = JiraAuthService()
 
+    @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     @AppStorage("transcription.langset") private var transcriptionLangset = "ru,uk,en"
     @AppStorage("transcription.windowSec") private var transcriptionWindowSec = 20.0
@@ -439,18 +440,39 @@ struct GeneralSettings: View {
 
     private var transcriptionSection: some View {
         Section("Transcription") {
-            Picker("Model", selection: $transcriptionModel) {
-                // "large-v3-v20240930" is WhisperKit's folder name for OpenAI's
-                // large-v3-turbo (pruned 4-layer decoder): faster than full
-                // large-v3, still multilingual, and Argmax's default on M2+.
-                Text("Large v3 Turbo (recommended)").tag("large-v3-v20240930")
-                Text("Large v3 (best quality)").tag("large-v3")
-                Text("Distil Large v3 (English only)").tag("distil-large-v3")
-                Text("Medium (fastest)").tag("medium")
+            Picker("Engine", selection: $transcriptionProvider) {
+                ForEach(TranscriptionProviderRegistry.availableProviders(), id: \.displayName) { p in
+                    Text(p.displayName).tag(type(of: p).id)
+                }
             }
-            .help("WhisperKit model used for on-device transcription")
+            .help("On-device transcription engine")
+            .onChange(of: transcriptionProvider) { _, id in
+                // Reset the model to the new provider's default, then prefetch.
+                let provider = TranscriptionProviderRegistry.resolve(providerID: id)
+                transcriptionModel = provider.models.first?.id ?? transcriptionModel
+                appState.transcriptionModelProvisioner.ensureDownloaded(providerID: id, model: transcriptionModel)
+            }
+
+            Picker("Model", selection: $transcriptionModel) {
+                ForEach(TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider).models) { m in
+                    Text(m.label).tag(m.id)
+                }
+            }
+            .help("Model used for on-device transcription")
             .onChange(of: transcriptionModel) { _, newValue in
-                appState.transcriptionModelProvisioner.ensureDownloaded(providerID: "whisperkit", model: newValue)
+                appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: newValue)
+            }
+
+            if let supported = TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider)
+                .supportedLanguages(model: transcriptionModel) {
+                let missing = transcriptionLangset.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && !supported.contains($0) }
+                if !missing.isEmpty {
+                    Label("This engine does not support: \(missing.joined(separator: ", "))",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
             }
 
             TextField(

@@ -22,4 +22,15 @@ final class TranscriptionProviderRegistryTests: XCTestCase {
         let avail = TranscriptionProviderRegistry.availableProviders()
         for p in avail { XCTAssertEqual(p.availability(), .available) }
     }
+
+    /// Migration contract: an install with no `transcription.provider` key
+    /// (i.e. everything shipped before the pluggable-provider work) must
+    /// resolve to whisperkit, so `transcription.model` keeps meaning exactly
+    /// what it always did.
+    func testMigrationDefaultsToWhisperKitWhenProviderKeyAbsent() {
+        let d = UserDefaults(suiteName: "test.migration.\(UUID().uuidString)")!
+        let providerID = d.string(forKey: "transcription.provider") ?? "whisperkit"
+        XCTAssertEqual(providerID, "whisperkit")
+        XCTAssertEqual(type(of: TranscriptionProviderRegistry.resolve(providerID: providerID)).id, "whisperkit")
+    }
 }
