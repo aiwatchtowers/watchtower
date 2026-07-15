@@ -317,7 +317,7 @@ func (db *DB) queryMemoryExtractMessages(tsCond string, tsArg float64, limit int
 		JOIN channels c ON c.id = m.channel_id
 		LEFT JOIN users u ON u.id = m.user_id
 		WHERE m.text != '' AND m.is_deleted = 0
-		  AND (u.id IS NULL OR (COALESCE(u.is_bot_override, u.is_bot) = 0 AND u.is_muted_for_llm = 0))
+		  AND ((u.id IS NULL AND m.user_id != '') OR (COALESCE(u.is_bot_override, u.is_bot) = 0 AND u.is_muted_for_llm = 0))
 		  AND `+tsCond+`
 		ORDER BY m.ts_unix, m.channel_id, m.ts
 		LIMIT ?`, tsArg, limit)

@@ -2,6 +2,8 @@ package memory
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -272,4 +274,28 @@ func TestIngestLogsRejectedRefCount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, IngestStats{Created: 1}, stats)
 	assert.Contains(t, strings.Join(logs, "\n"), fmt.Sprintf("ingest situation %d: refs_rejected=1 (MEM-01)", sitID))
+}
+
+// TestIngestCorruptedEpisodeFileSkipsSituation: a quarantined/corrupted
+// episode file (owner edit gone wrong) must not brick the whole ingest pass —
+// the situation is skipped with a log line and other situations still flow
+// (F4 spirit carried into ingest).
+func TestIngestCorruptedEpisodeFileSkipsSituation(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	brokenID := seedIngestSituation(t, d, "Billing outage")
+	_, err := IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+
+	nodeID, err := d.LookupMemoryAlias(fmt.Sprintf("situation:%d", brokenID))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(v.path, "episodes", nodeID+".md"),
+		[]byte("not frontmatter at all"), 0o644))
+
+	healthyID := seedIngestSituation(t, d, "Deploy freeze question")
+	stats, err := IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err, "corrupted episode file must not fail the pass")
+	assert.Equal(t, 1, stats.Created, "healthy situation still ingested")
+	_, err = d.LookupMemoryAlias(fmt.Sprintf("situation:%d", healthyID))
+	require.NoError(t, err)
 }

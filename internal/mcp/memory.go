@@ -139,7 +139,7 @@ func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
 		if ref == "" {
 			return errResult("ref is required"), nil, nil
 		}
-		v, err := memory.OpenVault(vaultPath)
+		v, err := memory.OpenExistingVault(vaultPath)
 		if err != nil {
 			return errResult("opening memory vault: " + err.Error()), nil, nil
 		}

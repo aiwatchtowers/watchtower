@@ -177,7 +177,7 @@ func runMemoryStatus(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	suffix := ""
-	if cfg.Memory.MaxChunkMessages > 0 && len(msgs) == cfg.Memory.MaxChunkMessages {
+	if cfg.Memory.MaxChunkMessages > 0 && len(msgs) >= cfg.Memory.MaxChunkMessages {
 		suffix = "+"
 	}
 	fmt.Fprintf(out, "Extraction debt: %d%s messages\n", len(msgs), suffix)

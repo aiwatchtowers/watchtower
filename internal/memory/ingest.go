@@ -98,7 +98,12 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 
 		n, err := v.ReadNode(nodeID)
 		if err != nil {
-			return stats, err
+			// A corrupted/quarantined episode file must not brick the whole
+			// ingest pass (F4 spirit): skip this situation, keep going. The
+			// alias row is preserved by Reconcile's quarantine, so the
+			// situation is retried once the owner repairs the file.
+			logf("memory: ingest situation %d: read %s: %v — skipped this run", s.id, nodeID, err)
+			continue
 		}
 		if n.Status != "active" {
 			continue // already finalized — terminal, untouched

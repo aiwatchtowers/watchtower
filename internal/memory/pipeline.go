@@ -271,7 +271,13 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 		return nil
 	}
 
-	windows := buildWindows(msgs, p.cfg.MaxWindowMessages)
+	maxWin := p.cfg.MaxWindowMessages
+	if maxWin <= 0 {
+		// Floor-guard against an explicit max_window_messages: 0 in config —
+		// the poison-window bound must not be silently disabled.
+		maxWin = 200
+	}
+	windows := buildWindows(msgs, maxWin)
 	stats.Messages = len(msgs)
 	stats.Windows = len(windows)
 	done := make([]bool, len(windows))

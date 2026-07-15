@@ -412,13 +412,16 @@ func TestListMemoryExtractMessagesAuthorless(t *testing.T) {
 	seedExtractMessage(t, db, "C1", "1752570000.000001", "UGONE", "authorless but human")
 	seedExtractMessage(t, db, "C1", "1752570000.000002", "UBOT", "bot chatter")
 	seedExtractMessage(t, db, "C1", "1752570000.000003", "UMUTED", "muted user")
+	// Empty user_id is this codebase's bot_message convention (see
+	// channel_stats.go): it must NOT pass through the authorless branch.
+	seedExtractMessage(t, db, "C1", "1752570000.000004", "", "bot event without user")
 
 	msgs, err := db.ListMemoryExtractMessages(0, 100)
 	if err != nil {
 		t.Fatalf("ListMemoryExtractMessages: %v", err)
 	}
 	if len(msgs) != 1 {
-		t.Fatalf("got %d messages, want 1 (authorless kept, bot and muted excluded)", len(msgs))
+		t.Fatalf("got %d messages, want 1 (authorless kept; bot, muted and empty-user_id excluded)", len(msgs))
 	}
 	if msgs[0].Author != "UGONE" {
 		t.Errorf("author = %q, want raw user_id fallback %q", msgs[0].Author, "UGONE")
