@@ -101,7 +101,9 @@ integration and its ldflags):
 - **`auth.go`** — OAuth modeled on `calendar/auth.go`: token endpoint,
   `access_type=offline`, `prompt=consent`, loopback `Login`, `Prepare`/`Complete`.
   Differences from Calendar:
-  - scope: `https://www.googleapis.com/auth/gmail.modify`;
+  - scope: `https://www.googleapis.com/auth/gmail.readonly` (originally
+    `gmail.modify`; narrowed 2026-07-09 ahead of verification — see the
+    revisit in "Open questions" below);
   - its own `TokenStore` → `gmail_token.json` (independent of `google_token.json`);
   - its own `GoogleOAuthConfig` type. The Google client_id/secret are the same as
     Calendar's (one Google Cloud project); they are wired together at the `cmd` level
@@ -306,6 +308,14 @@ will be limited to adding an explanation of the email types to the existing temp
   personal/team use via test users it works immediately; broad production use
   requires a Google security assessment. This is an external process, outside the
   code. See `docs/legal/google-verification.md`.
+  - **Revisited 2026-07-09:** ahead of the verification submission the scope was
+    narrowed to `gmail.readonly` — the code (`internal/gmail/client.go`) only
+    performs `messages.list`/`messages.get` (read-only); nothing writes or
+    modifies, so `gmail.modify` was broader than actual use. Trade-off: Plan 3
+    (write-back) will require widening back to `gmail.modify` and
+    re-authorization/re-verification for all connected users — accepted
+    deliberately in exchange for a faster, cheaper (no security assessment)
+    verification now.
 - **Privacy:** email bodies (`body_text`) are stored locally in SQLite — consistent
   with the existing model of storing Slack messages locally. Confirmed with the
   owner.

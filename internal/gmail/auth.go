@@ -23,7 +23,11 @@ const (
 	defaultRedirectPort = 18521 // separate range from Calendar (18501-18510) and Jira (18511-18520)
 	callbackPath        = "/callback"
 	loginTimeout        = 5 * time.Minute
-	// ScopeGmailReadonly is exported for the combined `google login` flow in cmd.
+	// ScopeGmailReadonly is gmail.readonly (not .modify): the read-path
+	// (List/Get) is all this package does today. Plan 3 (write-back) will
+	// need to widen this and re-authorize existing users — see
+	// docs/legal/google-verification.md. Exported for the combined
+	// `google login` flow in cmd.
 	ScopeGmailReadonly = "https://www.googleapis.com/auth/gmail.readonly"
 )
 

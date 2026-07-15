@@ -66,7 +66,7 @@ const (
 	// Targets defaults
 	DefaultTargetsExtractEnabled        = true
 	DefaultTargetsExtractMaxPerCall     = 10
-	DefaultTargetsExtractTimeoutSeconds = 45
+	DefaultTargetsExtractTimeoutSeconds = 90
 	DefaultTargetsExtractModel          = "" // empty → provider default
 
 	DefaultTargetsResolverSlackEnabled        = true

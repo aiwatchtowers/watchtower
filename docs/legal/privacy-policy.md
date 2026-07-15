@@ -2,15 +2,21 @@
 title: Watchtower — Privacy Policy
 ---
 
+> **STALE — not the live document.** The real privacy policy is
+> `wt-lending/public/privacy/index.html` (`https://aiwatchtowers.com/privacy/`),
+> deployed via Cloudflare Pages from the separate `wt-lending` repo. This file
+> and `privacy-policy.html` in this directory are pre-rewrite leftovers, kept
+> only for history. See `docs/legal/google-verification.md` Step 0.
+
 # Privacy Policy for Watchtower
 
-**Last updated:** 2026-06-26
+**Last updated:** 2026-07-09
 
 Watchtower ("the App") is a personal productivity tool that runs locally on the
 user's own computer. It synchronizes a user's workplace communications (Slack,
-Jira) and Google Calendar into a local database and uses AI to produce digests,
-briefings, and meeting preparation. This policy explains what data the App
-accesses, how it is used, and the choices available to the user.
+Jira, Gmail) and Google Calendar into a local database and uses AI to produce
+digests, briefings, and meeting preparation. This policy explains what data the
+App accesses, how it is used, and the choices available to the user.
 
 ## Who operates the App
 
@@ -29,21 +35,31 @@ When a user connects Google Calendar, the App requests this scope:
   the user's calendars: the calendar list (names, colors, primary flag) and
   calendar events (titles, times, descriptions, attendees, locations).
 
-The App requests **no write, delete, or sharing** permissions on Google
-Calendar data.
+When a user connects Gmail, the App requests this scope:
+
+- `https://www.googleapis.com/auth/gmail.readonly` — **read-only** access to
+  the user's inbox messages (subject, sender, body, labels, timestamps).
+
+The App requests **no write, delete, or sharing** permissions on Google data.
+Calendar and Gmail may be connected in one combined sign-in: the user selects
+which services to include, each scope is requested only for the selected
+services, and a partial grant on Google's consent screen connects only the
+approved service. Neither connection sends, modifies, labels, archives, or
+deletes anything in the user's Google account.
 
 ## How the data is used
 
-- **Local storage.** Calendar data is stored in a SQLite database file on the
-  user's own machine (under the user's local application-data directory). It is
-  not uploaded to any Operator-controlled server.
+- **Local storage.** Calendar and Gmail data are stored in a SQLite database
+  file on the user's own machine (under the user's local application-data
+  directory). It is not uploaded to any Operator-controlled server.
 - **AI analysis.** To generate meeting preparation, daily briefings, and
-  prioritized inbox items, relevant calendar content (event titles,
-  descriptions, attendees, times) may be sent to the AI provider that the user
-  has configured — either Anthropic (Claude) or OpenAI (Codex) — through that
-  provider's official command-line client running on the user's machine. This
-  happens only to produce the user-requested output. Use of those providers is
-  governed by their own privacy policies.
+  prioritized inbox items (including Gmail-derived items), relevant content
+  (event titles, descriptions, attendees, times; email subject/sender/body) may
+  be sent to the AI provider that the user has configured — either Anthropic
+  (Claude) or OpenAI (Codex) — through that provider's official command-line
+  client running on the user's machine. This happens only to produce the
+  user-requested output. Use of those providers is governed by their own
+  privacy policies.
 - **No advertising, no sale.** Google user data is never sold, rented, or used
   for advertising, profiling unrelated to the user's own productivity, or any
   purpose other than the features described above.
@@ -60,8 +76,9 @@ including the Limited Use requirements.
   any time by removing the application-data directory or the token file.
 - The user can revoke the App's access at any time at
   [Google Account → Security → Third-party access](https://myaccount.google.com/connections),
-  or by deleting the local `google_token.json` file. Revoking access stops all
-  further calendar synchronization.
+  or by deleting the local `google_token.json` (Calendar) or `gmail_token.json`
+  (Gmail) file. Revoking access stops all further synchronization for that
+  source.
 
 ## Security
 
