@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 )
 
 // extractedEpisode is one episode returned by the memory.extract_episodes
@@ -42,20 +42,15 @@ type channelWindow struct {
 }
 
 // buildExtractPrompt renders the system and user messages for the
-// memory.extract_episodes call (cheap tier). The system prompt pins the
-// strict-JSON schema, the per-window episode cap, and the copy-don't-invent
-// ts rule that the write-time validator (MEM-01) enforces; the user message
-// carries the channel context line plus the window's messages as
-// "[ts] author: text" lines.
-func buildExtractPrompt(w channelWindow, maxEpisodes int) (system, user string) {
-	system = fmt.Sprintf(`You are the memory consolidator of a workplace secretary. You read a window of raw Slack messages from one channel and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter.
-
-Respond with STRICT JSON only: an array of at most %d episodes, no prose, no markdown outside an optional single JSON code fence. Each episode is:
-{"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["user id"], "refs": [{"channel_id": "channel id", "ts": "message ts"}], "entity_hints": ["alias of a person/channel/project involved"]}
-
-Rules:
-- copy ts values EXACTLY from the input, never invent or adjust them; every ref must point at one of the messages shown to you.
-- most windows are routine chatter and contain no episodes: return [] for those.`, maxEpisodes)
+// memory.extract_episodes call (cheap tier). tmpl is the prompt template
+// (prompts.MemoryExtractEpisodes — user-customizable via the prompt store,
+// falling back to the built-in default); its verbs are the language
+// directive and the per-window episode cap. The template pins the
+// strict-JSON schema and the copy-don't-invent ts rule that the write-time
+// validator (MEM-01) enforces; the user message carries the channel context
+// line plus the window's messages as "[ts] author: text" lines.
+func buildExtractPrompt(tmpl, lang string, w channelWindow, maxEpisodes int) (system, user string) {
+	system = fmt.Sprintf(tmpl, prompts.Directive(lang), maxEpisodes)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Channel: #%s (%s)\n", w.ChannelName, w.ChannelID)
@@ -90,21 +85,49 @@ func parseExtract(raw string) ([]extractedEpisode, error) {
 	return eps, nil
 }
 
+// messageChecker is the write-time provenance lookup behind MEM-01. *db.DB
+// satisfies it; tests inject erroring fakes to exercise the lookup-error
+// path without corrupting a real database.
+type messageChecker interface {
+	MessageExists(channelID, ts string) (bool, error)
+}
+
+// splitMalformed separates shape-valid episodes (at least one ref) from
+// shape-degenerate ones. The extractor schema requires refs on every episode,
+// so a parsed episode with zero refs means the reply drifted from the schema
+// (misnamed key, wrong nesting) — it must never be read as routine chatter.
+func splitMalformed(eps []extractedEpisode) (valid []extractedEpisode, malformed int) {
+	for _, ep := range eps {
+		if len(ep.Refs) == 0 {
+			malformed++
+			continue
+		}
+		valid = append(valid, ep)
+	}
+	return valid, malformed
+}
+
 // validateRefs enforces MEM-01 at write time: every ref is checked against
-// the messages table and dropped when it does not resolve (never repaired).
-// An episode whose refs ALL fail is discarded entirely.
+// the messages table and dropped when it positively does not resolve (never
+// repaired). An episode whose refs ALL fail is discarded entirely.
+//
+// A lookup ERROR is not an invalid ref: it means the check itself could not
+// run, so validateRefs returns the error and the caller must fail the whole
+// window/situation (watermark frozen, nothing written) instead of silently
+// dropping refs it never actually checked.
 //
 // Counting semantics: dropped counts individual refs that failed validation
 // — including the refs of fully-discarded episodes; the number of discarded
 // episodes itself is len(eps) - len(kept).
-func validateRefs(database *db.DB, eps []extractedEpisode) (kept []extractedEpisode, dropped int) {
+func validateRefs(checker messageChecker, eps []extractedEpisode) (kept []extractedEpisode, dropped int, err error) {
 	for _, ep := range eps {
 		var surviving []episodeRef
 		for _, ref := range ep.Refs {
-			ok, err := database.MessageExists(ref.ChannelID, ref.TS)
-			if err != nil || !ok {
-				// A lookup error fails closed: MEM-01 forbids writing a ref
-				// that was not positively validated.
+			ok, err := checker.MessageExists(ref.ChannelID, ref.TS)
+			if err != nil {
+				return nil, 0, fmt.Errorf("memory: validating ref %s/%s: %w", ref.ChannelID, ref.TS, err)
+			}
+			if !ok {
 				dropped++
 				continue
 			}
@@ -116,5 +139,5 @@ func validateRefs(database *db.DB, eps []extractedEpisode) (kept []extractedEpis
 		ep.Refs = surviving
 		kept = append(kept, ep)
 	}
-	return kept, dropped
+	return kept, dropped, nil
 }

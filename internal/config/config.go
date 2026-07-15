@@ -169,6 +169,7 @@ type MemoryConfig struct {
 	MaxChunkMessages     int  `mapstructure:"max_chunk_messages"`      // max raw messages consumed per consolidation run (default: 2000)
 	SeedMinMessages      int  `mapstructure:"seed_min_messages"`       // messages in the last 30 days before a person is seeded as an entity (default: 20)
 	MaxEpisodesPerWindow int  `mapstructure:"max_episodes_per_window"` // episode cap per channel window in the extractor (default: 5)
+	MaxWindowMessages    int  `mapstructure:"max_window_messages"`     // max messages per extraction window; a busier channel forms multiple sequential windows (default: 200)
 }
 
 type Config struct {
@@ -257,6 +258,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.max_chunk_messages", 2000)
 	v.SetDefault("memory.seed_min_messages", 20)
 	v.SetDefault("memory.max_episodes_per_window", 5)
+	v.SetDefault("memory.max_window_messages", 200)
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

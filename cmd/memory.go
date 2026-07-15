@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/memory"
+	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -62,9 +63,14 @@ var memorySeedCmd = &cobra.Command{
 
 // newMemoryPipelineFactory is the seam tests override to inject a fake
 // pipeline (same pattern as newDayPlanPipelineFactory). The default wires
-// the standard CLI generator; NewPipeline labels the run source "cli".
+// the standard CLI generator, the prompt store, and the digest language for
+// the extractor's directive; NewPipeline labels the run source "cli" (the
+// daemon re-labels via SetMemoryPipeline).
 var newMemoryPipelineFactory = func(database *db.DB, vault *memory.Vault, cfg *config.Config) *memory.Pipeline {
-	return memory.NewPipeline(database, vault, cliGenerator(cfg), cfg.Memory, nil)
+	p := memory.NewPipeline(database, vault, cliGenerator(cfg), cfg.Memory, nil)
+	p.Language = cfg.Digest.Language
+	p.SetPromptStore(prompts.New(database, nil))
+	return p
 }
 
 func init() {

@@ -45,7 +45,15 @@ type ingestSituation struct {
 // message refs are re-validated against messages before being written as
 // provenance (MEM-01). All changes of a run land in one commit; a no-op run
 // commits nothing.
-func IngestSituations(v *Vault, database *db.DB) (IngestStats, error) {
+//
+// checker is the MEM-01 provenance lookup (the database in production; the
+// pipeline passes its seam). A provenance lookup ERROR fails only that
+// situation — it is logged and skipped this run, and ingest continues with
+// the next situation, so one broken lookup cannot starve the whole mirror.
+func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf func(string, ...any)) (IngestStats, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	var stats IngestStats
 	sits, err := listIngestSituations(database)
 	if err != nil {
@@ -68,9 +76,10 @@ func IngestSituations(v *Vault, database *db.DB) (IngestStats, error) {
 			if s.status != "open" {
 				continue
 			}
-			refs, err := situationProvenance(database, s.id)
+			refs, err := situationProvenance(database, checker, s.id, logf)
 			if err != nil {
-				return stats, err
+				logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
+				continue
 			}
 			n := Node{
 				ID:      NewID("episode"),
@@ -94,9 +103,10 @@ func IngestSituations(v *Vault, database *db.DB) (IngestStats, error) {
 		if n.Status != "active" {
 			continue // already finalized — terminal, untouched
 		}
-		refs, err := situationProvenance(database, s.id)
+		refs, err := situationProvenance(database, checker, s.id, logf)
 		if err != nil {
-			return stats, err
+			logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
+			continue
 		}
 		body := situationBody(s, refs)
 		if s.status == "open" {
@@ -168,8 +178,10 @@ func listIngestSituations(database *db.DB) ([]ingestSituation, error) {
 
 // situationProvenance collects the situation's signal message refs and
 // re-validates them through the same MEM-01 path as the extractor: refs that
-// do not resolve against messages are dropped, never repaired.
-func situationProvenance(database *db.DB, situationID int) ([]episodeRef, error) {
+// positively do not resolve against messages are dropped (and logged), never
+// repaired. A lookup error propagates — the caller skips this situation for
+// the run rather than writing provenance it could not verify.
+func situationProvenance(database *db.DB, checker messageChecker, situationID int, logf func(string, ...any)) ([]episodeRef, error) {
 	items, err := database.ListSituationSignals(situationID)
 	if err != nil {
 		return nil, fmt.Errorf("memory: ingest signals for situation %d: %w", situationID, err)
@@ -178,7 +190,13 @@ func situationProvenance(database *db.DB, situationID int) ([]episodeRef, error)
 	for _, it := range items {
 		refs = append(refs, episodeRef{ChannelID: it.ChannelID, TS: it.MessageTS})
 	}
-	kept, _ := validateRefs(database, []extractedEpisode{{Refs: refs}})
+	kept, dropped, err := validateRefs(checker, []extractedEpisode{{Refs: refs}})
+	if err != nil {
+		return nil, err
+	}
+	if dropped > 0 {
+		logf("memory: ingest situation %d: refs_rejected=%d (MEM-01)", situationID, dropped)
+	}
 	if len(kept) == 0 {
 		return nil, nil
 	}

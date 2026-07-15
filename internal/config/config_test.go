@@ -290,6 +290,7 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 2000, cfg.Memory.MaxChunkMessages)
 	assert.Equal(t, 20, cfg.Memory.SeedMinMessages)
 	assert.Equal(t, 5, cfg.Memory.MaxEpisodesPerWindow)
+	assert.Equal(t, 200, cfg.Memory.MaxWindowMessages)
 }
 
 func TestMemoryConfig_FromYAML(t *testing.T) {
@@ -299,6 +300,7 @@ memory:
   max_chunk_messages: 500
   seed_min_messages: 3
   max_episodes_per_window: 2
+  max_window_messages: 50
 `
 	path := writeTestConfig(t, yaml)
 	cfg, err := Load(path)
@@ -308,6 +310,7 @@ memory:
 	assert.Equal(t, 500, cfg.Memory.MaxChunkMessages)
 	assert.Equal(t, 3, cfg.Memory.SeedMinMessages)
 	assert.Equal(t, 2, cfg.Memory.MaxEpisodesPerWindow)
+	assert.Equal(t, 50, cfg.Memory.MaxWindowMessages)
 }
 
 func TestTargetsConfigDefaults(t *testing.T) {

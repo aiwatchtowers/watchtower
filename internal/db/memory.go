@@ -230,10 +230,14 @@ func (db *DB) MessageExists(channelID, ts string) (bool, error) {
 
 // MemoryWatermark returns the unix ts of the last raw message fully processed
 // by the episode extractor (MEM-04 freeze discipline, same shape as the inbox
-// watermark accessors).
+// watermark accessors). A fresh workspace without its singleton row yet reads
+// as 0 — nothing extracted — rather than an error.
 func (db *DB) MemoryWatermark() (float64, error) {
 	var ts float64
 	err := db.QueryRow(`SELECT COALESCE(memory_last_extracted_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, fmt.Errorf("getting memory watermark: %w", err)
 	}
@@ -261,28 +265,60 @@ type MemoryExtractMessage struct {
 	Text        string
 }
 
-// ListMemoryExtractMessages returns up to limit extractable messages with
-// ts_unix strictly above sinceTS, oldest first (read-only; the memory
-// pipeline groups them into per-channel windows). Messages without a matching
-// non-bot users row are excluded — bot/webhook traffic is out of scope for
-// episode extraction in v1.
+// ListMemoryExtractMessages returns the extractable messages with ts_unix
+// strictly above sinceTS, oldest first (read-only; the memory pipeline groups
+// them into per-channel windows). Messages authored by bots or LLM-muted
+// users are excluded, but a message whose author has no users row at all
+// (deleted/ex-employee, never synced) IS included, with the raw user_id as
+// the author fallback — an INNER JOIN would skip such messages forever.
+//
+// Boundary drain: ts_unix is a GENERATED column truncated to whole seconds,
+// so a LIMIT cut can land inside a same-second group. The caller's watermark
+// advances to a loaded message's ts_unix and reloads with a strict >, which
+// would permanently skip the unloaded rows of that second. When the limit
+// cuts inside a second, this query therefore extends the result past the
+// limit to include ALL rows sharing the last loaded second, so the boundary
+// second is always fully loaded (the overshoot is at most one second of
+// traffic).
 func (db *DB) ListMemoryExtractMessages(sinceTS float64, limit int) ([]MemoryExtractMessage, error) {
 	if limit <= 0 {
 		limit = 2000
 	}
+	out, err := db.queryMemoryExtractMessages(`m.ts_unix > ?`, sinceTS, limit)
+	if err != nil || len(out) < limit {
+		return out, err
+	}
+	boundary := out[len(out)-1].TSUnix
+	full, err := db.queryMemoryExtractMessages(`m.ts_unix = ?`, boundary, -1) // LIMIT -1: unbounded
+	if err != nil {
+		return nil, err
+	}
+	// Replace the (possibly cut) tail rows of the boundary second with the
+	// full set; both slices share the same deterministic order.
+	i := len(out)
+	for i > 0 && out[i-1].TSUnix == boundary {
+		i--
+	}
+	return append(out[:i], full...), nil
+}
+
+// queryMemoryExtractMessages runs the extract-message select with the given
+// ts_unix condition. The ORDER BY ends in (channel_id, ts) — the messages
+// primary key — so the ordering is fully deterministic within a same-second
+// group, which the boundary-drain logic above relies on.
+func (db *DB) queryMemoryExtractMessages(tsCond string, tsArg float64, limit int) ([]MemoryExtractMessage, error) {
 	rows, err := db.Query(`
 		SELECT m.channel_id, c.name, m.ts, m.ts_unix,
-		       COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), u.name),
+		       COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), NULLIF(u.name, ''), m.user_id),
 		       m.text
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id
-		JOIN users u ON u.id = m.user_id
+		LEFT JOIN users u ON u.id = m.user_id
 		WHERE m.text != '' AND m.is_deleted = 0
-		  AND m.ts_unix > ?
-		  AND COALESCE(u.is_bot_override, u.is_bot) = 0
-		  AND u.is_muted_for_llm = 0
+		  AND (u.id IS NULL OR (COALESCE(u.is_bot_override, u.is_bot) = 0 AND u.is_muted_for_llm = 0))
+		  AND `+tsCond+`
 		ORDER BY m.ts_unix, m.channel_id, m.ts
-		LIMIT ?`, sinceTS, limit)
+		LIMIT ?`, tsArg, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing memory extract messages: %w", err)
 	}

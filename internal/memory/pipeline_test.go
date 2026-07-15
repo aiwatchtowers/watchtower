@@ -26,6 +26,7 @@ func pipelineTestConfig() config.MemoryConfig {
 		MaxChunkMessages:     2000,
 		SeedMinMessages:      1,
 		MaxEpisodesPerWindow: 5,
+		MaxWindowMessages:    200,
 	}
 }
 
@@ -414,4 +415,249 @@ func TestVaultWriteFileSkipsUnchanged(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(v.path, "map.md"))
 	require.NoError(t, err)
 	assert.Equal(t, "# Memory Map\n\ncontent\n", string(raw))
+}
+
+// TestMemory04_ShapeDegenerateJSONFreezesWatermark extends MEM-04: extractor
+// JSON that parses but carries episodes with zero refs (e.g. a misnamed
+// "references" key) is a malformed reply, not routine chatter — the window
+// must FAIL and the watermark must freeze, exactly like an AI error. A
+// genuinely empty [] remains a clean no-episode window and advances.
+func TestMemory04_ShapeDegenerateJSONFreezesWatermark(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+
+	gen := &fakeGen{
+		usage: digest.Usage{InputTokens: 10, OutputTokens: 2, TotalAPITokens: 10},
+		reply: func(user string) (string, error) {
+			if strings.Contains(user, "(C1GEN)") {
+				// Misnamed refs key: unmarshals to episodes with zero refs.
+				return `[{"title": "Prod deploy failed", "story": "It broke.", "references": [{"channel_id": "C1GEN", "ts": "x"}]}]`, nil
+			}
+			return "[]", nil // routine chatter — clean window
+		},
+	}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err, "window isolation: a malformed window never fails the run")
+	assert.Equal(t, 1, stats.WindowsFailed, "shape-degenerate reply is a failed window")
+	assert.Zero(t, stats.Episodes)
+	assert.Equal(t, 1, stats.Malformed, "malformed episode count exposed in RunStats")
+
+	// Watermark frozen below the malformed C1GEN window (its messages are the
+	// earliest); the clean C2OPS [] window cannot pull it past them.
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Zero(t, wm, "watermark frozen: malformed window owns the earliest messages")
+
+	// No episode node reached the vault.
+	nodes, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	for _, n := range nodes {
+		assert.NotEqual(t, "episode", n.Type, "no episode written from a shape-degenerate reply")
+	}
+}
+
+// TestPipelineEmptyArrayAdvancesWatermark: [] from the extractor is a clean
+// no-episode window — the watermark advances past it (contrast with the
+// shape-degenerate case above).
+func TestPipelineEmptyArrayAdvancesWatermark(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base := pipelineFixture(t, d)
+
+	gen := &fakeGen{reply: func(string) (string, error) { return "[]", nil }}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, stats.WindowsFailed)
+	assert.Zero(t, stats.Malformed)
+
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+180), wm, "clean [] windows advance the watermark")
+}
+
+// TestMemory04_SameSecondChunkCapNeverSkips extends MEM-04 for the whole-
+// second granularity of ts_unix: with MORE same-second messages than the
+// chunk cap (cap=3, five messages sharing one second across two channels),
+// the boundary second must be drained in full — across two runs no message
+// is ever permanently skipped by the watermark's strict > reload.
+func TestMemory04_SameSecondChunkCapNeverSkips(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedUserRow(t, d, "U1ALICE", "alice")
+	seedChannelRow(t, d, "C1GEN", "general")
+	seedChannelRow(t, d, "C2OPS", "ops")
+	base := time.Now().Add(-time.Hour).Unix()
+	texts := []string{"tie one", "tie two", "tie three", "tie four", "tie five"}
+	channels := []string{"C1GEN", "C1GEN", "C2OPS", "C2OPS", "C1GEN"}
+	for i, text := range texts {
+		seedMessageRow(t, d, channels[i], fmt.Sprintf("%d.%06d", base, i+1), "U1ALICE", text)
+	}
+
+	gen := &fakeGen{reply: func(string) (string, error) { return "[]", nil }}
+	cfg := pipelineTestConfig()
+	cfg.MaxChunkMessages = 3
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 5, stats.Messages, "the chunk-cap cut inside the second drains the whole second")
+
+	stats, err = p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, stats.Messages, "nothing left as debt")
+
+	seen := strings.Join(gen.calls, "\n")
+	for _, text := range texts {
+		assert.Contains(t, seen, text, "message %q must never be skipped", text)
+	}
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(base), wm)
+}
+
+// TestMemory04_InterleavedWindowFreeze extends MEM-04 for time-interleaved
+// windows: window A (C1GEN) holds ts {base+10, base+40} and succeeds; window
+// B (C2OPS) holds ts {base+20, base+30} and fails. The watermark must stay at
+// or below base+10 — never inside B's span — and BOTH B messages must be
+// re-extracted on the next run.
+func TestMemory04_InterleavedWindowFreeze(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedUserRow(t, d, "U1ALICE", "alice")
+	seedChannelRow(t, d, "C1GEN", "general")
+	seedChannelRow(t, d, "C2OPS", "ops")
+	base := time.Now().Add(-time.Hour).Unix()
+	seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.000001", base+10), "U1ALICE", "a first")
+	seedMessageRow(t, d, "C2OPS", fmt.Sprintf("%d.000002", base+20), "U1ALICE", "b first")
+	seedMessageRow(t, d, "C2OPS", fmt.Sprintf("%d.000003", base+30), "U1ALICE", "b second")
+	seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.000004", base+40), "U1ALICE", "a second")
+
+	fail := true
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if fail && strings.Contains(user, "(C2OPS)") {
+			return "", fmt.Errorf("model exploded")
+		}
+		return "[]", nil
+	}}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.WindowsFailed)
+
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.LessOrEqual(t, wm, float64(base+10), "watermark must not enter the failed window's span")
+
+	// Next run (B healthy now): both B messages come back for extraction.
+	fail = false
+	firstRunCalls := len(gen.calls)
+	_, err = p.Run(context.Background())
+	require.NoError(t, err)
+	rerun := strings.Join(gen.calls[firstRunCalls:], "\n")
+	assert.Contains(t, rerun, "b first", "failed window's first message re-extracted")
+	assert.Contains(t, rerun, "b second", "failed window's second message re-extracted")
+	wm, err = d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+40), wm)
+}
+
+// TestMemory01_LookupErrorFreezesWatermark extends the MEM-01 guard family at
+// pipeline level: when the provenance lookup ERRORS (the check cannot run),
+// the window must FAIL and the watermark freeze — never advance past refs
+// that were only "unverified", and never write the episode.
+func TestMemory01_LookupErrorFreezesWatermark(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base := pipelineFixture(t, d)
+	ts1 := fmt.Sprintf("%d.000100", base)
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "(C1GEN)") {
+			return episodeJSON("Prod deploy failed", "C1GEN", ts1, "C1GEN"), nil
+		}
+		return "[]", nil
+	}}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+	p.checkMsg = errCheckerAfter{db: d, failTS: ts1} // lookup ERROR on the episode's ref
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err, "window isolation: the lookup failure never fails the run")
+	assert.Equal(t, 1, stats.WindowsFailed, "lookup error fails the window")
+	assert.Zero(t, stats.Episodes)
+	assert.Zero(t, stats.RefsRejected, "an errored lookup is not a rejected ref")
+
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Zero(t, wm, "watermark frozen: the failed window owns the earliest messages")
+
+	nodes, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	for _, n := range nodes {
+		assert.NotEqual(t, "episode", n.Type, "no episode written when its refs could not be verified")
+	}
+}
+
+// TestBuildWindowsSplitsOversizedChannel: max_window_messages bounds one
+// window; a busier channel forms multiple sequential windows in chronological
+// order (M3 poison-window bound).
+func TestBuildWindowsSplitsOversizedChannel(t *testing.T) {
+	var msgs []db.MemoryExtractMessage
+	for i := 0; i < 5; i++ {
+		msgs = append(msgs, db.MemoryExtractMessage{
+			ChannelID: "C1GEN", ChannelName: "general",
+			TS: fmt.Sprintf("%d.000001", 1000+i), TSUnix: float64(1000 + i),
+			Author: "alice", Text: fmt.Sprintf("m%d", i+1),
+		})
+	}
+	windows := buildWindows(msgs, 2)
+	require.Len(t, windows, 3, "5 messages at cap 2 → windows of 2/2/1")
+	assert.Len(t, windows[0].Messages, 2)
+	assert.Len(t, windows[1].Messages, 2)
+	assert.Len(t, windows[2].Messages, 1)
+	assert.Equal(t, "m1", windows[0].Messages[0].Text)
+	assert.Equal(t, "m3", windows[1].Messages[0].Text)
+	assert.Equal(t, "m5", windows[2].Messages[0].Text)
+
+	windows = buildWindows(msgs, 0)
+	require.Len(t, windows, 1, "cap 0 = unbounded")
+}
+
+// TestMemory04_LaterWindowNeverPassesEarlierFailedWindow: when a channel is
+// split into sequential windows (max_window_messages), a later window's
+// success must not advance the watermark past an earlier failed window of
+// the same channel.
+func TestMemory04_LaterWindowNeverPassesEarlierFailedWindow(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedUserRow(t, d, "U1ALICE", "alice")
+	seedChannelRow(t, d, "C1GEN", "general")
+	base := time.Now().Add(-time.Hour).Unix()
+	for i := 0; i < 4; i++ {
+		seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.%06d", base+int64(i)*60, i+1), "U1ALICE",
+			fmt.Sprintf("split message %d", i+1))
+	}
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "split message 1") {
+			return "", fmt.Errorf("poison window")
+		}
+		return "[]", nil
+	}}
+	cfg := pipelineTestConfig()
+	cfg.MaxWindowMessages = 2
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.Windows, "channel split into two sequential windows")
+	assert.Equal(t, 1, stats.WindowsFailed)
+	require.Len(t, gen.calls, 2)
+	assert.NotContains(t, gen.calls[0], "split message 3", "the split keeps the giant window bounded")
+
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Zero(t, wm, "later window of the same channel must not advance past the earlier failed one")
 }

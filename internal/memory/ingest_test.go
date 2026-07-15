@@ -55,7 +55,7 @@ func TestIngestOpenSituationCreatesNode(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	sitID := seedIngestSituation(t, d, "Billing outage")
 
-	stats, err := IngestSituations(v, d)
+	stats, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, IngestStats{Created: 1}, stats)
 
@@ -76,7 +76,7 @@ func TestIngestUnchangedSecondRunIsNoOp(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedIngestSituation(t, d, "Billing outage")
 
-	_, err := IngestSituations(v, d)
+	_, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 
 	repo := openTestRepo(t, v.path)
@@ -84,7 +84,7 @@ func TestIngestUnchangedSecondRunIsNoOp(t *testing.T) {
 	nodesBefore, err := d.ListMemoryNodes()
 	require.NoError(t, err)
 
-	stats, err := IngestSituations(v, d)
+	stats, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, IngestStats{}, stats, "unchanged situation is untouched")
 	assert.Equal(t, commits, commitCount(t, repo), "no commit on a no-op run")
@@ -97,12 +97,12 @@ func TestIngestUnchangedSecondRunIsNoOp(t *testing.T) {
 func TestIngestOpenSituationUpdateRewritesBody(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	sitID := seedIngestSituation(t, d, "Billing outage")
-	_, err := IngestSituations(v, d)
+	_, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 
 	require.NoError(t, d.SetSituationCard(sitID, "Rollback finished, watching metrics.", "", "10:00 alarm; 10:30 rollback done."))
 
-	stats, err := IngestSituations(v, d)
+	stats, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, IngestStats{Updated: 1}, stats)
 
@@ -116,12 +116,12 @@ func TestIngestOpenSituationUpdateRewritesBody(t *testing.T) {
 func TestIngestDoneTransitionFinalizes(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	sitID := seedIngestSituation(t, d, "Billing outage")
-	_, err := IngestSituations(v, d)
+	_, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 
 	require.NoError(t, d.SetSituationStatus(sitID, "done", "rollback shipped, incident closed"))
 
-	stats, err := IngestSituations(v, d)
+	stats, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, IngestStats{Finalized: 1}, stats)
 
@@ -132,7 +132,7 @@ func TestIngestDoneTransitionFinalizes(t *testing.T) {
 	assert.Contains(t, n.Body, "## Outcome\nrollback shipped, incident closed\n")
 
 	// A finalized node is terminal for ingest: a third run changes nothing.
-	stats, err = IngestSituations(v, d)
+	stats, err = IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, IngestStats{}, stats)
 }
@@ -141,13 +141,13 @@ func TestIngestConvertedMentionsLink(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	toTarget := seedIngestSituation(t, d, "Billing outage")
 	toTrack := seedIngestSituation(t, d, "Migration saga")
-	_, err := IngestSituations(v, d)
+	_, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 
 	require.NoError(t, d.MarkSituationConverted(toTarget, 7, 0))
 	require.NoError(t, d.MarkSituationConverted(toTrack, 0, 13))
 
-	stats, err := IngestSituations(v, d)
+	stats, err := IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, IngestStats{Finalized: 2}, stats)
 
@@ -198,13 +198,13 @@ func TestMemory05_InboxUntouched(t *testing.T) {
 	situationsBefore := dumpTable(t, d, "situations")
 	signalsBefore := dumpTable(t, d, "situation_signals")
 
-	_, err = IngestSituations(v, d)
+	_, err = IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, situationsBefore, dumpTable(t, d, "situations"), "create pass leaves situations byte-identical")
 
 	require.NoError(t, d.SetSituationStatus(sitID, "done", "closed"))
 	situationsBefore = dumpTable(t, d, "situations") // re-dump: the status change is the test's own write
-	_, err = IngestSituations(v, d)
+	_, err = IngestSituations(v, d, d, t.Logf)
 	require.NoError(t, err)
 
 	assert.Equal(t, inboxBefore, dumpTable(t, d, "inbox_items"), "inbox_items byte-identical")
@@ -214,4 +214,62 @@ func TestMemory05_InboxUntouched(t *testing.T) {
 	var wm float64
 	require.NoError(t, d.QueryRow(`SELECT inbox_last_processed_ts FROM workspace`).Scan(&wm))
 	assert.Equal(t, 1752570123.5, wm, "inbox watermark untouched")
+}
+
+// TestIngestLookupErrorSkipsSituationAndContinues: a provenance lookup ERROR
+// (not a missing message — the check itself failing) must fail only that
+// situation: it is logged and skipped this run while ingest continues to the
+// next situation. Extends the MEM-01 discipline: refs the checker could not
+// verify are never written, and the error is never conflated with a
+// positively-invalid ref.
+func TestIngestLookupErrorSkipsSituationAndContinues(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	// Situation 1's signal ref triggers a lookup error; situation 2's is fine.
+	failTS := "1752570000.900001"
+	okTS := "1752570000.900002"
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text)
+		VALUES ('C1GEN', ?, 'U1ALICE', 'billing is down'), ('C1GEN', ?, 'U1ALICE', 'network flapping')`, failTS, okTS)
+	require.NoError(t, err)
+
+	sitErr, err := d.CreateSituation(db.DashboardSituation{Title: "Lookup breaks", Summary: "s", Chronology: "c"})
+	require.NoError(t, err)
+	require.NoError(t, d.AddSituationSignals(int(sitErr), []int{seedInboxItem(t, d, "C1GEN", failTS)}))
+	sitOK, err := d.CreateSituation(db.DashboardSituation{Title: "Ingests fine", Summary: "s", Chronology: "c"})
+	require.NoError(t, err)
+	require.NoError(t, d.AddSituationSignals(int(sitOK), []int{seedInboxItem(t, d, "C1GEN", okTS)}))
+
+	var logs []string
+	stats, err := IngestSituations(v, d, errCheckerAfter{db: d, failTS: failTS},
+		func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) })
+	require.NoError(t, err, "one situation's lookup error never fails the whole ingest")
+	assert.Equal(t, IngestStats{Created: 1}, stats, "the healthy situation is still ingested")
+
+	_, err = Resolve(v, d, fmt.Sprintf("situation:%d", sitOK))
+	require.NoError(t, err, "healthy situation mirrored")
+	_, err = Resolve(v, d, fmt.Sprintf("situation:%d", sitErr))
+	assert.ErrorIs(t, err, ErrNotFound, "erroring situation skipped this run, not written")
+
+	assert.Contains(t, strings.Join(logs, "\n"), "skipped this run", "the skip is logged")
+
+	// The lookup error is transient: with a healthy checker the skipped
+	// situation is picked up on the next run.
+	stats, err = IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, IngestStats{Created: 1}, stats)
+	_, err = Resolve(v, d, fmt.Sprintf("situation:%d", sitErr))
+	require.NoError(t, err)
+}
+
+// TestIngestLogsRejectedRefCount: positively-invalid signal refs are dropped
+// AND surfaced in the log (previously discarded silently).
+func TestIngestLogsRejectedRefCount(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	sitID := seedIngestSituation(t, d, "Billing outage") // seeds one good + one bad ref
+
+	var logs []string
+	stats, err := IngestSituations(v, d, d, func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) })
+	require.NoError(t, err)
+	assert.Equal(t, IngestStats{Created: 1}, stats)
+	assert.Contains(t, strings.Join(logs, "\n"), fmt.Sprintf("ingest situation %d: refs_rejected=1 (MEM-01)", sitID))
 }

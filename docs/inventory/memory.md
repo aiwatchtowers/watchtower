@@ -16,12 +16,16 @@
 
 **Status:** Enforced
 
-**Observable:** No message reference is ever written to the vault unless it resolves against the local `messages` table at write time (`SELECT 1 FROM messages WHERE channel_id=? AND ts=?`). A ref the extractor invented — a year-shifted ts, a wrong channel — is dropped and counted (`refs_rejected`), never "fixed up" to a nearby real message. An episode whose refs *all* fail validation is discarded entirely, not written ref-less. The same re-validation applies to situation ingest: signal message refs are checked again before being copied into an episode's `## Provenance` section, even though detector-written refs resolve 100% in practice.
+**Observable:** No message reference is ever written to the vault unless it resolves against the local `messages` table at write time (`SELECT 1 FROM messages WHERE channel_id=? AND ts=?`). A ref the extractor invented — a year-shifted ts, a wrong channel — is dropped and counted (`refs_rejected`), never "fixed up" to a nearby real message. An episode whose refs *all* fail validation is discarded entirely, not written ref-less. The same re-validation applies to situation ingest: signal message refs are checked again before being copied into an episode's `## Provenance` section, even though detector-written refs resolve 100% in practice; the rejected count is logged there too, never discarded silently.
 
-**Why locked:** Provenance is the memory's trust anchor — every fact in the vault is supposed to link back to a real message the owner can open. One hallucinated link that 404s in Slack poisons trust in every other link; silently repairing refs would be worse, attributing a claim to a message that never said it. Drop-and-count keeps the vault verifiable and makes extractor hallucination measurable instead of invisible.
+A lookup **error** is not an invalid ref: when the existence check itself fails (DB error), `validateRefs` propagates the error instead of counting the ref as dropped — the extraction window FAILS (watermark frozen, nothing written, re-extracted next run) and the affected situation is skipped for that ingest run (logged, ingest continues with the next situation). Only a positive not-found drops and counts.
+
+**Why locked:** Provenance is the memory's trust anchor — every fact in the vault is supposed to link back to a real message the owner can open. One hallucinated link that 404s in Slack poisons trust in every other link; silently repairing refs would be worse, attributing a claim to a message that never said it. Drop-and-count keeps the vault verifiable and makes extractor hallucination measurable instead of invisible. Conflating a failed check with a failed ref would silently discard verifiable provenance (or entire episodes) whenever the DB hiccups — the error path must freeze, not drop.
 
 **Test guards:**
 - `internal/memory/extract_test.go::TestMemory01_HallucinatedRefsDropped`
+- `internal/memory/extract_test.go::TestMemory01_LookupErrorIsNotAnInvalidRef`
+- `internal/memory/pipeline_test.go::TestMemory01_LookupErrorFreezesWatermark`
 
 **Locked since:** 2026-07-15
 
@@ -57,10 +61,20 @@
 
 **Observable:** The extraction watermark (`workspace.memory_last_extracted_ts`) advances only after the corresponding channel window's vault commit succeeded, and never past a message that belongs to a failed or still-pending window (`safeWatermark` in `pipeline.go`). When the AI call fails for one window, that window's messages stay above the watermark and are re-extracted next run, while earlier windows' episodes stay committed and the run still completes with status `done` — the failure is isolated to its `pipeline_steps` row (`status='error'`), catchup-style. A crash between a vault commit and the watermark write re-processes the chunk rather than skipping it.
 
-**Why locked:** The watermark only ever moves forward, so any window it skips is lost to memory forever. Advancing on failure would mean a transient model error silently drops a day of history from the vault with no way to notice; freezing trades a cheap re-extraction for zero lost windows — the same freeze discipline INBOX-09 established for the inbox watermark.
+"Failure" includes shape-degenerate extractor replies: JSON that parses but whose episodes ALL carry zero refs (a misnamed `refs` key, wrong nesting) fails the window and freezes the watermark exactly like an AI error — it is never read as routine chatter. A genuinely empty `[]` remains a clean no-episode window and advances. Shape-degenerate episodes are counted (`RunStats.Malformed`).
+
+Whole-second safety: `messages.ts_unix` is truncated to whole seconds, so the message loader (`ListMemoryExtractMessages`) drains the chunk boundary — when the chunk cap cuts inside a second, ALL rows sharing that second are loaded (slightly exceeding the cap) so the watermark second is always fully processed and the strict `ts_unix > watermark` reload can never permanently skip same-second rows.
+
+Window bounding: one window holds at most `memory.max_window_messages` messages (default 200); a busier channel forms multiple sequential windows in the same run, so a single poison window cannot blow the model context or stall the whole channel at full cost. A later window of a channel never advances the watermark past an earlier failed window of the same channel.
+
+**Why locked:** The watermark only ever moves forward, so any window it skips is lost to memory forever. Advancing on failure would mean a transient model error silently drops a day of history from the vault with no way to notice; freezing trades a cheap re-extraction for zero lost windows — the same freeze discipline INBOX-09 established for the inbox watermark. The same reasoning covers degenerate-shape replies (a schema drift would otherwise silently discard every episode while looking like healthy chatter) and same-second truncation (a chunk cut inside one busy second would silently drop the rest of that second forever).
 
 **Test guards:**
 - `internal/memory/pipeline_test.go::TestMemory04_WatermarkFreezeOnAIFailure`
+- `internal/memory/pipeline_test.go::TestMemory04_ShapeDegenerateJSONFreezesWatermark`
+- `internal/memory/pipeline_test.go::TestMemory04_SameSecondChunkCapNeverSkips`
+- `internal/memory/pipeline_test.go::TestMemory04_InterleavedWindowFreeze`
+- `internal/memory/pipeline_test.go::TestMemory04_LaterWindowNeverPassesEarlierFailedWindow`
 
 **Locked since:** 2026-07-15
 
@@ -82,7 +96,11 @@
 - **Cache-token split is approximated.** `pipeline_runs` records cache reads and cache creation in separate columns (migration adding `cache_read_tokens`/`cache_creation_tokens`), but `digest.Usage` only exposes a combined API total — so the pipeline records the residual (total API tokens minus prompt tokens) under `cache_read_tokens` and leaves `cache_creation_tokens` at 0 until `Usage` grows the real split (`completeRun` in `pipeline.go`). Numbers in the two columns are an estimate, not provider truth.
 - **Access-stats bump is best-effort.** `memory_open` bumps `memory_node_stats` with an ignored error: under a read-only (query_only) MCP session the write fails and the open must still return the node. Stats are telemetry that under-counts in read-only contexts; nothing may start depending on their accuracy.
 - **Failed-window re-extraction can duplicate episodes.** Per MEM-04, a failed window is re-extracted next run — but extracted episodes get fresh ULIDs, so a window that partially succeeded before failing (or a crash between vault commit and watermark write) can produce near-duplicate episode nodes. Deduplication against prior extractions and situation coverage is deliberately deferred to Phase 3; until then duplicates are accepted, not a bug to hack around at write time.
+- **Boundary drain can exceed the chunk cap.** When `memory.max_chunk_messages` cuts inside one busy second, the loader intentionally loads the whole second (see MEM-04), so a run may consume slightly more than the cap — bounded by one second of traffic. The per-window cap (`memory.max_window_messages`) still bounds each individual prompt.
+- **Malformed count is run-level only.** Shape-degenerate episode counts surface in `RunStats.Malformed` and logs; `pipeline_steps` has no dedicated column for them (the failed window's step row carries `status='error'`). Adding a column is a schema change deferred until the count proves useful.
+- **Authorless messages fall back to the raw user_id.** Messages whose author has no `users` row (deleted/ex-employee, never synced) are extracted with the Slack user ID as the author label — the extractor sees `U0ABC123:` instead of a display name until the user table catches up.
 
 ## Changelog
 
+- 2026-07-15 (correctness hardening, same day as creation): MEM-01 extended — a provenance lookup ERROR now propagates (window fails / situation skipped-and-logged) instead of being counted as a dropped ref; ingest logs its rejected-ref count. MEM-04 extended — shape-degenerate extractor replies (parsed episodes, all zero refs) freeze the watermark instead of advancing as "no episodes"; the message loader drains same-second chunk boundaries so `ts_unix` whole-second truncation can never skip messages; new `memory.max_window_messages` (default 200) splits oversized channel batches into sequential windows; authorless messages (no `users` row) are extracted with a raw-user_id author instead of being skipped forever; a fresh workspace without its singleton row reads watermark 0 instead of failing the run. The extractor prompt moved into the standard prompt store as `memory.extract_episodes` (user-customizable, versioned) and now carries the `prompts.Directive` language instruction from `digest.language`.
 - 2026-07-15: file created with 5 contracts (MEM-01..05), all Enforced. Introduced by Secretary Memory Phases 0–2 (spec `docs/superpowers/specs/2026-07-15-secretary-memory-design.md`): a markdown+go-git memory vault at `WorkspaceDir()/memory` with a rebuildable SQLite index, mechanical entity seeding, situations ingest, a light-tier raw-text episode extractor (`memory.extract_episodes`), the `phaseMemory` daemon phase (after `phaseInbox`, off by default via `memory.enabled`), MCP read tools, and the `watchtower memory` CLI. Beliefs, rollup eviction, and dedupe are Phase 3+; injecting memory into existing pipelines is Phase 4.

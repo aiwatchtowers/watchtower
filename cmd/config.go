@@ -197,6 +197,7 @@ var knownConfigKeys = map[string]bool{
 	"memory.max_chunk_messages":      true,
 	"memory.seed_min_messages":       true,
 	"memory.max_episodes_per_window": true,
+	"memory.max_window_messages":     true,
 	"claude_path":                    true,
 }
 

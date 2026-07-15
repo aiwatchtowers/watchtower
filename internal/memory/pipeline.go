@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 // extractSource is the WithSource tag that routes extractor calls to the
@@ -36,6 +37,7 @@ type RunStats struct {
 	WindowsFailed       int         // windows whose extraction failed (watermark frozen for them)
 	Episodes            int         // episode nodes written by the extractor
 	RefsRejected        int         // provenance refs dropped by MEM-01 validation
+	Malformed           int         // shape-degenerate extractor episodes (parsed but zero refs)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -47,10 +49,37 @@ type Pipeline struct {
 	generator digest.Generator
 	cfg       config.MemoryConfig
 	logf      func(string, ...any)
+	// checkMsg is the MEM-01 provenance lookup — the database in production,
+	// an erroring fake in tests exercising the lookup-failure freeze.
+	checkMsg messageChecker
+	// promptStore optionally serves user-customized templates for the
+	// extractor prompt (same seam as the inbox pipeline); nil falls back to
+	// the built-in default.
+	promptStore *prompts.Store
 
 	// Source labels the pipeline_runs row ("cli" or "daemon"). NewPipeline
 	// defaults it to "cli"; the daemon overrides it.
 	Source string
+	// Language is the response language for extractor output, set from
+	// cfg.Digest.Language at construction (cmd wiring). Empty falls back to
+	// prompts.DefaultLanguage via prompts.Directive.
+	Language string
+}
+
+// SetPromptStore sets an optional prompt store for loading customized prompts.
+func (p *Pipeline) SetPromptStore(store *prompts.Store) {
+	p.promptStore = store
+}
+
+// getPrompt loads a template from the prompt store, falling back to the
+// built-in default (same shape as the inbox pipeline's seam).
+func (p *Pipeline) getPrompt(id string) string {
+	if p.promptStore != nil {
+		if tmpl, _, err := p.promptStore.Get(id); err == nil {
+			return tmpl
+		}
+	}
+	return prompts.Defaults[id]
 }
 
 // NewPipeline creates a memory consolidation pipeline. generator may be nil
@@ -59,7 +88,7 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, Source: "cli"}
+	return &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, checkMsg: database, Source: "cli"}
 }
 
 // Run executes one consolidation pass. Order per the design spec:
@@ -112,7 +141,7 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	}
 
 	// (3) Situations → episode nodes (mechanical).
-	stats.Ingested, err = IngestSituations(p.vault, p.db)
+	stats.Ingested, err = IngestSituations(p.vault, p.db, p.checkMsg, p.logf)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
@@ -134,8 +163,8 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected)",
-		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected)
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed)",
+		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed)
 	return stats, nil
 }
 
@@ -232,7 +261,7 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 		return nil
 	}
 
-	windows := buildWindows(msgs)
+	windows := buildWindows(msgs, p.cfg.MaxWindowMessages)
 	stats.Messages = len(msgs)
 	stats.Windows = len(windows)
 	done := make([]bool, len(windows))
@@ -244,8 +273,9 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 		}
 		w := windows[i]
 		start := time.Now()
-		episodes, rejected, usage, werr := p.extractWindow(ctx, runID, w)
+		episodes, rejected, malformed, usage, werr := p.extractWindow(ctx, runID, w)
 		acc.add(usage)
+		stats.Malformed += malformed
 		status := "done"
 		if werr != nil {
 			// Window isolation: the failure freezes the watermark at the last
@@ -290,14 +320,26 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 	return nil
 }
 
-// buildWindows groups the (globally ts-ordered) messages into one window per
-// channel, then orders the windows by their last message ts so the watermark
+// buildWindows groups the (globally ts-ordered) messages into per-channel
+// windows, then orders the windows by their last message ts so the watermark
 // can trail completed windows (see safeWatermark).
-func buildWindows(msgs []db.MemoryExtractMessage) []runWindow {
+//
+// maxPerWindow bounds one window's message count (memory.max_window_messages)
+// so a single busy channel cannot form one giant prompt that blows the model
+// context and permanently fails as a poison window: a channel with more
+// messages forms multiple sequential windows in the same run. safeWatermark
+// stays correct across them — a later window of the channel starts at or
+// after the earlier one's last ts, so an earlier failed window's first ts
+// lower-bounds the freeze and later successes can never advance past it.
+// maxPerWindow <= 0 means unbounded (used by tests only; config defaults it).
+func buildWindows(msgs []db.MemoryExtractMessage, maxPerWindow int) []runWindow {
 	index := make(map[string]int)
 	var windows []runWindow
 	for _, m := range msgs {
 		i, ok := index[m.ChannelID]
+		if ok && maxPerWindow > 0 && len(windows[i].Messages) >= maxPerWindow {
+			ok = false // window full — start the channel's next sequential window
+		}
 		if !ok {
 			i = len(windows)
 			index[m.ChannelID] = i
@@ -306,6 +348,8 @@ func buildWindows(msgs []db.MemoryExtractMessage) []runWindow {
 		windows[i].Messages = append(windows[i].Messages, extractMsg{TS: m.TS, Author: m.Author, Text: m.Text})
 		windows[i].tsUnix = append(windows[i].tsUnix, m.TSUnix)
 	}
+	// Stable: same-channel windows keep their chronological order even when
+	// last-ts ties (e.g. a same-second split).
 	sort.SliceStable(windows, func(a, b int) bool {
 		return windows[a].tsUnix[len(windows[a].tsUnix)-1] < windows[b].tsUnix[len(windows[b].tsUnix)-1]
 	})
@@ -346,27 +390,42 @@ func safeWatermark(windows []runWindow, done []bool) (ts float64, ok bool) {
 
 // extractWindow runs the memory.extract_episodes call for one channel window
 // and commits the resulting episode nodes (plus back-links on hinted entity
-// pages) as one vault commit. Returns episodes written and MEM-01-rejected
-// ref count. Any error means the window was NOT committed.
-func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) (episodes, rejected int, usage *digest.Usage, err error) {
-	system, user := buildExtractPrompt(w.channelWindow, p.cfg.MaxEpisodesPerWindow)
+// pages) as one vault commit. Returns episodes written, MEM-01-rejected ref
+// count, and shape-degenerate (zero-ref) episode count. Any error means the
+// window was NOT committed.
+func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) (episodes, rejected, malformed int, usage *digest.Usage, err error) {
+	system, user := buildExtractPrompt(p.getPrompt(prompts.MemoryExtractEpisodes), p.Language, w.channelWindow, p.cfg.MaxEpisodesPerWindow)
 	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, extractSource), system, user, "")
 	if err != nil {
-		return 0, 0, usage, fmt.Errorf("generate: %w", err)
+		return 0, 0, 0, usage, fmt.Errorf("generate: %w", err)
 	}
 	eps, err := parseExtract(raw)
 	if err != nil {
-		return 0, 0, usage, err
+		return 0, 0, 0, usage, err
 	}
 	if p.cfg.MaxEpisodesPerWindow > 0 && len(eps) > p.cfg.MaxEpisodesPerWindow {
 		eps = eps[:p.cfg.MaxEpisodesPerWindow]
 	}
-	kept, rejected := validateRefs(p.db, eps)
+	// Success must key off affirmative shape: a reply whose episodes ALL
+	// lack refs is a schema-degenerate answer (misnamed key, wrong nesting),
+	// not routine chatter — fail the window so the watermark freezes exactly
+	// like on an AI error. A genuinely empty [] stays a clean no-episode
+	// window.
+	valid, malformed := splitMalformed(eps)
+	if malformed > 0 && len(valid) == 0 {
+		return 0, 0, malformed, usage, fmt.Errorf("memory: extract returned %d episode(s), all without refs — schema-degenerate reply", malformed)
+	}
+	kept, rejected, err := validateRefs(p.checkMsg, valid)
+	if err != nil {
+		// Lookup failure, not an invalid ref: the check could not run, so
+		// the window fails and is re-extracted next run (MEM-01/MEM-04).
+		return 0, 0, malformed, usage, err
+	}
 	if rejected > 0 {
 		p.logf("memory: extract #%s: refs_rejected=%d (MEM-01)", w.ChannelName, rejected)
 	}
 	if len(kept) == 0 {
-		return 0, rejected, usage, nil // routine chatter — still a fully processed window
+		return 0, rejected, malformed, usage, nil // routine chatter — still a fully processed window
 	}
 
 	var nodes []Node
@@ -418,7 +477,7 @@ func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) 
 		NodeIDs: ids,
 	}
 	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
-		return 0, rejected, usage, err
+		return 0, rejected, malformed, usage, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
@@ -428,7 +487,7 @@ func (p *Pipeline) extractWindow(ctx context.Context, runID int64, w runWindow) 
 			p.logf("memory: index %s after extract: %v", n.ID, err)
 		}
 	}
-	return len(kept), rejected, usage, nil
+	return len(kept), rejected, malformed, usage, nil
 }
 
 // episodeBody renders the v1 episode template for an extracted episode:

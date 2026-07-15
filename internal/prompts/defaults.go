@@ -6,34 +6,35 @@ package prompts
 // in digest, tracks, and analysis packages. They serve as the
 // initial seed and fallback when no DB version exists.
 var Defaults = map[string]string{
-	DigestChannel:        defaultDigestChannel,
-	DigestDaily:          defaultDigestDaily,
-	DigestWeekly:         defaultDigestWeekly,
-	DigestPeriod:         defaultDigestPeriod,
-	TracksExtract:        defaultTracksExtract,
-	TracksUpdate:         defaultTracksUpdate,
-	GuideUser:            defaultGuideUser,
-	GuidePeriod:          defaultGuidePeriod,
-	PeopleReduce:         defaultPeopleReduce,
-	PeopleTeam:           defaultPeopleTeam,
-	BriefingDaily:        defaultBriefingDaily,
-	InboxTriage:          defaultInboxTriage,
-	DigestChannelBatch:   defaultDigestChannelBatch,
-	TracksExtractBatch:   defaultTracksExtractBatch,
-	PeopleBatch:          defaultPeopleBatch,
-	TasksGenerate:        defaultTasksGenerate,
-	TasksUpdate:          defaultTasksUpdate,
-	MeetingPrep:          defaultMeetingPrep,
-	MeetingExtractTopics: defaultMeetingExtractTopics,
-	MeetingRecap:         defaultMeetingRecap,
-	DayPlanGenerate:      defaultDayPlanGenerate,
-	TargetsExtract:       defaultTargetsExtract,
-	TargetsLink:          defaultTargetsLink,
-	TrackCompose:         defaultTrackCompose,
-	TrackRun:             defaultTrackRun,
-	TrackShortlist:       defaultTrackShortlist,
-	InboxCompose:         defaultInboxCompose,
-	InboxSituationCard:   defaultInboxSituationCard,
+	DigestChannel:         defaultDigestChannel,
+	DigestDaily:           defaultDigestDaily,
+	DigestWeekly:          defaultDigestWeekly,
+	DigestPeriod:          defaultDigestPeriod,
+	TracksExtract:         defaultTracksExtract,
+	TracksUpdate:          defaultTracksUpdate,
+	GuideUser:             defaultGuideUser,
+	GuidePeriod:           defaultGuidePeriod,
+	PeopleReduce:          defaultPeopleReduce,
+	PeopleTeam:            defaultPeopleTeam,
+	BriefingDaily:         defaultBriefingDaily,
+	InboxTriage:           defaultInboxTriage,
+	DigestChannelBatch:    defaultDigestChannelBatch,
+	TracksExtractBatch:    defaultTracksExtractBatch,
+	PeopleBatch:           defaultPeopleBatch,
+	TasksGenerate:         defaultTasksGenerate,
+	TasksUpdate:           defaultTasksUpdate,
+	MeetingPrep:           defaultMeetingPrep,
+	MeetingExtractTopics:  defaultMeetingExtractTopics,
+	MeetingRecap:          defaultMeetingRecap,
+	DayPlanGenerate:       defaultDayPlanGenerate,
+	TargetsExtract:        defaultTargetsExtract,
+	TargetsLink:           defaultTargetsLink,
+	TrackCompose:          defaultTrackCompose,
+	TrackRun:              defaultTrackRun,
+	TrackShortlist:        defaultTrackShortlist,
+	InboxCompose:          defaultInboxCompose,
+	InboxSituationCard:    defaultInboxSituationCard,
+	MemoryExtractEpisodes: defaultMemoryExtractEpisodes,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -66,6 +67,7 @@ var AllIDs = []string{
 	TrackShortlist,
 	InboxCompose,
 	InboxSituationCard,
+	MemoryExtractEpisodes,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -73,33 +75,34 @@ var AllIDs = []string{
 // prompts in the DB whose version is lower than the default version, unless
 // the user has customized the prompt (detected by comparing template text).
 var DefaultVersions = map[string]int{
-	DigestChannel:      3, // v3: topics as structured objects (title, summary, decisions, etc.)
-	DigestDaily:        1,
-	DigestWeekly:       1,
-	DigestPeriod:       1,
-	TracksExtract:      1, // v1: per-channel extraction with cross-channel merge
-	TracksUpdate:       1, // v1: check tracks for updates from new messages
-	TracksExtractBatch: 2, // v2: digest-based input instead of raw messages
-	GuideUser:          1,
-	GuidePeriod:        1,
-	PeopleReduce:       1,
-	PeopleTeam:         1,
-	BriefingDaily:      5, // v5: jira integration
-	InboxTriage:        1, // v1: initial triage template
-	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
-	PeopleBatch:        1, // v1: batch people cards for low-data users
-	TasksGenerate:      1, // v1: AI task generation with checklist and due date
-	TasksUpdate:        1, // v1: AI task update from user instruction
-	MeetingPrep:        3, // v3: Jira context for attendees (workload, shared issues)
-	MeetingRecap:       1, // v1: initial meeting recap template
-	DayPlanGenerate:    2, // v2: mandatory language directive at top
-	TargetsExtract:     1, // v1: multi-target extraction with URL enrichments and active snapshot
-	TargetsLink:        1, // v1: single-target link proposal against active snapshot
-	TrackCompose:       1, // v1: draft custom-track title+instruction from a free-text request
-	TrackRun:           1, // v1: custom-track timeline events from recent cross-source activity
-	TrackShortlist:     1, // v1: cheap title-only relevance filter for custom-track backfill
-	InboxCompose:       2, // v2: suggest_resolve op (DASH-07)
-	InboxSituationCard: 1, // v1: context packet for one dashboard situation
+	DigestChannel:         3, // v3: topics as structured objects (title, summary, decisions, etc.)
+	DigestDaily:           1,
+	DigestWeekly:          1,
+	DigestPeriod:          1,
+	TracksExtract:         1, // v1: per-channel extraction with cross-channel merge
+	TracksUpdate:          1, // v1: check tracks for updates from new messages
+	TracksExtractBatch:    2, // v2: digest-based input instead of raw messages
+	GuideUser:             1,
+	GuidePeriod:           1,
+	PeopleReduce:          1,
+	PeopleTeam:            1,
+	BriefingDaily:         5, // v5: jira integration
+	InboxTriage:           1, // v1: initial triage template
+	DigestChannelBatch:    2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
+	PeopleBatch:           1, // v1: batch people cards for low-data users
+	TasksGenerate:         1, // v1: AI task generation with checklist and due date
+	TasksUpdate:           1, // v1: AI task update from user instruction
+	MeetingPrep:           3, // v3: Jira context for attendees (workload, shared issues)
+	MeetingRecap:          1, // v1: initial meeting recap template
+	DayPlanGenerate:       2, // v2: mandatory language directive at top
+	TargetsExtract:        1, // v1: multi-target extraction with URL enrichments and active snapshot
+	TargetsLink:           1, // v1: single-target link proposal against active snapshot
+	TrackCompose:          1, // v1: draft custom-track title+instruction from a free-text request
+	TrackRun:              1, // v1: custom-track timeline events from recent cross-source activity
+	TrackShortlist:        1, // v1: cheap title-only relevance filter for custom-track backfill
+	InboxCompose:          2, // v2: suggest_resolve op (DASH-07)
+	InboxSituationCard:    1, // v1: context packet for one dashboard situation
+	MemoryExtractEpisodes: 1, // v1: raw-text episode extraction for the memory vault
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -108,34 +111,35 @@ func DefaultFor(key string) string { return Defaults[key] }
 
 // Descriptions maps prompt IDs to human-readable descriptions.
 var Descriptions = map[string]string{
-	DigestChannel:        "Channel digest — per-channel message analysis",
-	DigestDaily:          "Daily rollup — cross-channel daily summary",
-	DigestWeekly:         "Weekly trends — week-over-week analysis",
-	DigestPeriod:         "Period summary — comprehensive period overview",
-	TracksExtract:        "Track extraction — per-channel action item extraction with cross-channel merge",
-	TracksUpdate:         "Track update check — detect meaningful updates for existing tracks",
-	TracksExtractBatch:   "Batch track extraction — multi-channel extraction for low-activity channels",
-	GuideUser:            "Communication guide — personal coaching per user",
-	GuidePeriod:          "Team guide — cross-user communication tips",
-	PeopleReduce:         "People card — unified profile from signals",
-	PeopleTeam:           "Team summary — cross-user attention & tips",
-	BriefingDaily:        "Daily briefing — personalized morning summary",
-	InboxTriage:          "Inbox: triage scan of new activity",
-	DigestChannelBatch:   "Channel batch digest — multi-channel analysis for low-activity channels",
-	PeopleBatch:          "People batch cards — lightweight cards for low-data users in one AI call",
-	TasksGenerate:        "Task generation — AI-powered task breakdown with checklist, priority, and due date",
-	TasksUpdate:          "Task update — AI-powered task modification from user instruction",
-	MeetingPrep:          "Meeting prep — AI-powered meeting brief with attendee analysis, talking points, recommendations, and context gaps",
-	MeetingExtractTopics: "Meeting extract topics — split pasted text into atomic discussion topics for a meeting's Discussion Topics list",
-	MeetingRecap:         "Meeting recap — AI-structured post-meeting summary with decisions, action items, and open questions",
-	DayPlanGenerate:      "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
-	TargetsExtract:       "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
-	TargetsLink:          "Target linking — single-target parent and secondary link proposal against active snapshot",
-	TrackRun:             "Custom track run — timeline events from recent cross-source activity",
-	TrackCompose:         "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
-	TrackShortlist:       "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
-	InboxCompose:         "Dashboard: fold new signals into situations",
-	InboxSituationCard:   "Dashboard: context packet for one situation",
+	DigestChannel:         "Channel digest — per-channel message analysis",
+	DigestDaily:           "Daily rollup — cross-channel daily summary",
+	DigestWeekly:          "Weekly trends — week-over-week analysis",
+	DigestPeriod:          "Period summary — comprehensive period overview",
+	TracksExtract:         "Track extraction — per-channel action item extraction with cross-channel merge",
+	TracksUpdate:          "Track update check — detect meaningful updates for existing tracks",
+	TracksExtractBatch:    "Batch track extraction — multi-channel extraction for low-activity channels",
+	GuideUser:             "Communication guide — personal coaching per user",
+	GuidePeriod:           "Team guide — cross-user communication tips",
+	PeopleReduce:          "People card — unified profile from signals",
+	PeopleTeam:            "Team summary — cross-user attention & tips",
+	BriefingDaily:         "Daily briefing — personalized morning summary",
+	InboxTriage:           "Inbox: triage scan of new activity",
+	DigestChannelBatch:    "Channel batch digest — multi-channel analysis for low-activity channels",
+	PeopleBatch:           "People batch cards — lightweight cards for low-data users in one AI call",
+	TasksGenerate:         "Task generation — AI-powered task breakdown with checklist, priority, and due date",
+	TasksUpdate:           "Task update — AI-powered task modification from user instruction",
+	MeetingPrep:           "Meeting prep — AI-powered meeting brief with attendee analysis, talking points, recommendations, and context gaps",
+	MeetingExtractTopics:  "Meeting extract topics — split pasted text into atomic discussion topics for a meeting's Discussion Topics list",
+	MeetingRecap:          "Meeting recap — AI-structured post-meeting summary with decisions, action items, and open questions",
+	DayPlanGenerate:       "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
+	TargetsExtract:        "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
+	TargetsLink:           "Target linking — single-target parent and secondary link proposal against active snapshot",
+	TrackRun:              "Custom track run — timeline events from recent cross-source activity",
+	TrackCompose:          "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
+	TrackShortlist:        "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
+	InboxCompose:          "Dashboard: fold new signals into situations",
+	InboxSituationCard:    "Dashboard: context packet for one situation",
+	MemoryExtractEpisodes: "Memory: extract noteworthy episodes from one channel window of raw messages",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1282,3 +1286,17 @@ Using the situation and its member signals below, produce:
 
 Return ONLY a JSON object (no markdown fences):
 {"summary":"...","why_matters":"...","chronology":"..."}`
+
+// defaultMemoryExtractEpisodes is the raw-text episode extractor for the
+// secretary memory vault (cheap tier — see "memory.extract_episodes" in the
+// model routing). Args: language directive, max episodes per window.
+const defaultMemoryExtractEpisodes = `%s
+
+You are the memory consolidator of a workplace secretary. You read a window of raw Slack messages from one channel and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter.
+
+Respond with STRICT JSON only: an array of at most %d episodes, no prose, no markdown outside an optional single JSON code fence. Each episode is:
+{"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["user id"], "refs": [{"channel_id": "channel id", "ts": "message ts"}], "entity_hints": ["alias of a person/channel/project involved"]}
+
+Rules:
+- copy ts values EXACTLY from the input, never invent or adjust them; every ref must point at one of the messages shown to you.
+- most windows are routine chatter and contain no episodes: return [] for those.`
