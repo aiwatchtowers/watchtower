@@ -1,7 +1,7 @@
 # Secretary Memory — Roadmap
 
 > Single source of truth for the feature's trajectory. Statuses updated as phases land on `feature/secretary-memory` (PR #36, draft until the whole feature ships). Execution protocol: `docs/specs/memory-autonomy-protocol.md` (autonomous; owner touchpoints marked ⚑).
-> Last updated: 2026-07-16 (phase 4 merged — feature is CODE-COMPLETE; awaiting the owner's final validation run).
+> Last updated: 2026-07-16 (final-validation Sections 0–1 run live; three Phase 3 bugs found + fixed; Section 2 still outstanding).
 
 ## Phase 0–2 — Substrate: vault, index, consolidation v1, read surfaces — ✅ DONE, live-validated
 
@@ -17,9 +17,9 @@ Spec: `2026-07-16-memory-phase4-surfaces-design.md`. Discuss-chat MEMORY injecti
 
 Landed 2026-07-16: 10 plan tasks + 16 review fixes; panel converged in 2 rounds + one surgical scope fix (dispute flag gated to owner-rank downgrades). Contracts MEM-09..11 guarded; final-validation Section 2 written. Merged into the integration branch.
 
-## Final validation — ⚑ OWNER (one run, work machine)
+## Final validation — 🔶 IN PROGRESS (Sections 0–1 done live; Section 2 ⚑ OWNER)
 
-`docs/specs/memory-final-validation-task.md` (living doc; Sections 0–1 concrete, Section 2 lands with Phase 4). One trigger on the work machine validates phases 0–4 together on the lived-in vault: regression sweep incl. kill-resilience, semantic-tier hand review (rewrites/beliefs/map quality), staged-disagreement drill for the surfaces. Deliverable: `memory-final-validation-report.md` with a go/no-go verdict.
+`docs/specs/memory-final-validation-task.md` (living doc; Sections 0–1 concrete, Section 2 lands with Phase 4). Sections 0 (regression) and 1 (semantic tier) run live on the work machine 2026-07-16 against the lived-in `whitebit` vault — see `docs/specs/memory-final-validation-report.md` (interim). Section 1 found and fixed three real bugs invisible to mocked-generator unit tests: entity-page rewrite was structurally dead (2/450 entities ever linkable — now 191/450), belief `propose-new` rejected 100% of ops (model never shown a resolvable entity id — now fixed), and `watchtower memory reindex` broke on any live dispute flag (FK violation in `DropMemoryIndex`). All three fixed, tested, and re-verified live (commit `610ea8b`). Section 2 (Phase 4 surfaces: Discuss injection, dispute dashboard, briefing journal, reflection) still needs a human driving the Desktop app — not run yet. No go/no-go verdict until Section 2 is done.
 
 ## Ship — ⚑ OWNER
 
