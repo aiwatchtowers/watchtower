@@ -51,6 +51,8 @@ type RunStats struct {
 
 	// Phase-4 surfaces (zero unless the matching memory.surfaces.* gate is on).
 	ChatTurnsIngested int // owner Discuss turns staged as belief evidence (ingestChatStatements)
+	Reflections       int // meta-observations applied by the weekly reflection pass (Reflect)
+	DisputesFlagged   int // beliefs flagged dispute_pending by reflection (subset of Reflections)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -214,9 +216,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
-		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested)
+		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged)
 	return stats, nil
 }
 
@@ -361,6 +363,30 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 	p.recordSemanticStep(runID, &step, "evict", stepStatus(err), nil, start)
 	if err != nil {
 		p.logf("memory: evict episodes: %v", err)
+	}
+
+	// Phase-4 reflection surface (dark unless memory.surfaces.reflection): a
+	// weekly strong-tier meta-pass over the vault's own git history. It fires at
+	// most once per week (deterministic workspace stagger inside Reflect) and
+	// applies observations ONLY as dispute_pending flags + entity ## Current
+	// notes (MEM-11) — never a direct belief mutation. Budget-gated like the
+	// other strong-tier steps; a per-run failure is logged and never fails the
+	// run (isolation), leaving beliefs and entities untouched.
+	if p.cfg.Surfaces.Reflection {
+		if p.outputBudgetExceeded(acc) {
+			p.logf("memory: reflection skipped: output budget exceeded")
+			p.recordSemanticStep(runID, &step, "reflect", "skipped", nil, time.Now())
+		} else {
+			start = time.Now()
+			reflections, flagged, usage, rerr := p.Reflect(ctx, now)
+			acc.add(usage)
+			stats.Reflections += reflections
+			stats.DisputesFlagged += flagged
+			p.recordSemanticStep(runID, &step, "reflect", stepStatus(rerr), usage, start)
+			if rerr != nil {
+				p.logf("memory: reflect: %v", rerr)
+			}
+		}
 	}
 }
 

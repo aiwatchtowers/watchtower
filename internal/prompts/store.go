@@ -47,6 +47,7 @@ const (
 	MemoryEntityRewrite        = "memory.entity_rewrite"
 	MemoryReviseBeliefs        = "memory.revise_beliefs"
 	MemoryRenderMap            = "memory.render_map"
+	MemoryReflect              = "memory.reflect"
 )
 
 // Store loads, caches, and persists prompt templates.

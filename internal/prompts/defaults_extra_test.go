@@ -26,12 +26,13 @@ func TestDefaultFor_AllKnownKeysHaveDefaults(t *testing.T) {
 }
 
 // TestMemorySemanticPromptsRegistered pins the Phase-3 semantic-tier prompts
-// into every registration surface: constant → Defaults template, AllIDs
-// display order, DefaultVersions (v1), and Descriptions. Each template must
-// open with the language Directive placeholder and must never begin with a
-// dash (the claude-CLI argv gotcha guarded for the extract builders).
+// (plus the Phase-4 reflection prompt) into every registration surface:
+// constant → Defaults template, AllIDs display order, DefaultVersions (v1),
+// and Descriptions. Each template must open with the language Directive
+// placeholder and must never begin with a dash (the claude-CLI argv gotcha
+// guarded for the extract builders).
 func TestMemorySemanticPromptsRegistered(t *testing.T) {
-	ids := []string{MemoryEntityRewrite, MemoryReviseBeliefs, MemoryRenderMap}
+	ids := []string{MemoryEntityRewrite, MemoryReviseBeliefs, MemoryRenderMap, MemoryReflect}
 
 	allIDs := make(map[string]bool, len(AllIDs))
 	for _, id := range AllIDs {

@@ -20,8 +20,9 @@ func TestModelForSource(t *testing.T) {
 		"briefing.daily", "", "unknown.source",
 		prompts.InboxCompose, prompts.InboxSituationCard,
 		// Phase-3 memory semantic tier routes strong (absence from the
-		// light-tier switch above).
+		// light-tier switch above); Phase-4 reflection likewise.
 		prompts.MemoryEntityRewrite, prompts.MemoryReviseBeliefs, prompts.MemoryRenderMap,
+		prompts.MemoryReflect,
 	}
 	for _, src := range sonnet {
 		if got := ModelForSource(src); got != ModelSonnet {

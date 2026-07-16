@@ -29,10 +29,11 @@ func TestModelForSource(t *testing.T) {
 		{prompts.InboxCompose, ModelDefault},
 		{prompts.InboxSituationCard, ModelDefault},
 		// Phase-3 memory semantic tier routes strong (absence from the
-		// light-tier switch).
+		// light-tier switch); Phase-4 reflection likewise.
 		{prompts.MemoryEntityRewrite, ModelDefault},
 		{prompts.MemoryReviseBeliefs, ModelDefault},
 		{prompts.MemoryRenderMap, ModelDefault},
+		{prompts.MemoryReflect, ModelDefault},
 	}
 
 	for _, tt := range tests {
