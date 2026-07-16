@@ -44,6 +44,15 @@ After 5A, renders are cross-source by construction — a day's digest sees mail 
 - Day plan reads open loops from memory; meeting prep reads the attendees' entity pages and beliefs.
 - The secretary's beliefs now range over the whole working universe — mail, calendar, tasks, dialogs — not just Slack.
 
+### 5D — Interaction ingest (the learning loop; owner addition 2026-07-16)
+
+The owner's interactions with entities become memory input — "это и будет наше дообучение":
+
+- **Signal source (already collected relationally):** `inbox_feedback` (👍/👎 + reasons), `user_interactions`, `decision_reads`, situation status transitions (`resolved_reason`, dismissals, snoozes), conversions (situation → target/track), vault owner-edits (already owner-rank), and the Desktop-side access trail (the Phase-3 access stats finally gain their writable consumers — UI interactions land via GRDB and are live, unlike the read-only MCP path).
+- **New evidence rank `owner-action`** — between `observed` and `owner`: authentically the owner, but non-propositional and ambiguous (a dismissal has many readings), so it weighs less than the owner's words. Minted ONLY by code from real interaction rows (`act:<table>:<id>` scheme in the resolver registry) — MEM-09 extends: the model can mint neither `owner` nor `owner-action`.
+- **Mechanical first, semantic second:** (1) episode mirrors gain outcome annotations ("owner dismissed", "converted to target #N"); (2) entities gain engagement aggregates (engage/dismiss rates — the retention-importance input Phase 3 stubbed); (3) only on top of that does the ordinary belief pass form **preference beliefs** ("the owner does not care about X-alerts"), subject to the same hysteresis/shaken/dispute machinery — so everything "learned" is explainable, contestable, and visible in the revision journal. No weight updates, no fine-tuning in the ML sense: evidence accumulation with provenance.
+- **Boundary preserved:** `inbox_learned_rules` ("how to react" in triage) stays its own system; memory learns "what I know about the owner"; rules may reference memory, never merge with it — one learning loop per concern.
+
 ## Non-Goals
 
 - Absorbing raw tables or operational state into the vault (see Concept).
@@ -55,11 +64,12 @@ After 5A, renders are cross-source by construction — a day's digest sees mail 
 - **MEM-12 (resolver registry):** every provenance scheme written to the vault has a registered validator; an unregistered scheme is rejected at write time (MEM-01 generalization).
 - **MEM-13 (render fidelity):** a render consumer switched from legacy must cite only episode provenance (no invented refs) — per-consumer guard extending the MEM-01 family.
 - **MEM-14 (mirror, don't absorb):** memory never becomes the write path for operational tables (MEM-05 generalized beyond inbox to targets/tracks/day plans).
+- **MEM-15 (action rank is code-minted):** `owner-action` evidence comes only from real interaction rows via the registry; the model can mint neither owner nor owner-action rank (MEM-09 extension).
 
 ## Rollout
 
 - Branch: `feature/memory-phase5` off `main` after PR #36 merges (owner: implement in a separate branch). Same autonomy protocol, same review-panel-to-convergence cycle per sub-phase, PR kept draft until the whole phase validates.
-- Order: resolver registry → 5A gmail → 5A calendar → 5A chats-generalization → (jira when sync fixed) → 5B digest compare-mode → 5B switches one by one → 5C. Each step independently shippable dark.
+- Order: resolver registry → 5A gmail → 5A calendar → 5A chats-generalization → (jira when sync fixed) → 5D interaction ingest (mechanical parts can land alongside 5A; preference beliefs after) → 5B digest compare-mode → 5B switches one by one → 5C. Each step independently shippable dark.
 - Validation: per-source sections appended to a Phase-5 validation task; the 5B digest switch additionally requires the live compare report (quality ≥ legacy on the owner's hand-review).
 
 ## Estimated size
