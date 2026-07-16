@@ -1376,3 +1376,111 @@ func TestEngagementSurvivesDropIndex(t *testing.T) {
 		t.Errorf("engagement rows after DropMemoryIndex = %d, want 1 (must survive reindex)", count)
 	}
 }
+
+// TestUpsertDigestShadow_RoundTrip: UpsertDigestShadow writes a row that
+// ListDigestShadow can read back, with all fields intact (Phase-5 slice-3
+// Task 2).
+func TestUpsertDigestShadow_RoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	row := DigestShadowRow{
+		ChannelID:          "C1",
+		PeriodFrom:         1000,
+		PeriodTo:           2000,
+		LegacyDigestID:     42,
+		RenderedJSON:       `{"summary":"s"}`,
+		Coverage:           0.75,
+		RenderRefsRejected: 3,
+		Model:              "haiku",
+		CreatedAt:          "2026-07-16T00:00:00Z",
+	}
+	if err := db.UpsertDigestShadow(row); err != nil {
+		t.Fatalf("UpsertDigestShadow: %v", err)
+	}
+
+	rows, err := db.ListDigestShadow("2026-07-15T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListDigestShadow: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListDigestShadow returned %d rows, want 1", len(rows))
+	}
+	got := rows[0]
+	if got.ChannelID != row.ChannelID || got.PeriodFrom != row.PeriodFrom ||
+		got.PeriodTo != row.PeriodTo || got.LegacyDigestID != row.LegacyDigestID ||
+		got.RenderedJSON != row.RenderedJSON || got.Coverage != row.Coverage ||
+		got.RenderRefsRejected != row.RenderRefsRejected || got.Model != row.Model ||
+		got.CreatedAt != row.CreatedAt {
+		t.Errorf("round-tripped row = %+v, want %+v", got, row)
+	}
+	if got.ID == 0 {
+		t.Errorf("expected a non-zero autoincrement ID")
+	}
+}
+
+// TestUpsertDigestShadow_ReplacesOnPeriodKey: a second Upsert for the same
+// (channel_id, period_from, period_to) replaces the row in place rather than
+// inserting a duplicate — the shadow table self-overwrites on a rerun over
+// the same window (plan resolved ambiguity #7).
+func TestUpsertDigestShadow_ReplacesOnPeriodKey(t *testing.T) {
+	db := openTestDB(t)
+
+	first := DigestShadowRow{
+		ChannelID:    "C1",
+		PeriodFrom:   1000,
+		PeriodTo:     2000,
+		RenderedJSON: `{"summary":"first"}`,
+		CreatedAt:    "2026-07-16T00:00:00Z",
+	}
+	if err := db.UpsertDigestShadow(first); err != nil {
+		t.Fatalf("first UpsertDigestShadow: %v", err)
+	}
+
+	second := first
+	second.RenderedJSON = `{"summary":"second"}`
+	second.RenderRefsRejected = 5
+	second.CreatedAt = "2026-07-16T00:05:00Z"
+	if err := db.UpsertDigestShadow(second); err != nil {
+		t.Fatalf("second UpsertDigestShadow: %v", err)
+	}
+
+	rows, err := db.ListDigestShadow("2026-07-15T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListDigestShadow: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListDigestShadow returned %d rows, want 1 (upsert should replace, not duplicate)", len(rows))
+	}
+	if rows[0].RenderedJSON != second.RenderedJSON || rows[0].RenderRefsRejected != 5 {
+		t.Errorf("row after re-upsert = %+v, want the second write's fields", rows[0])
+	}
+}
+
+// TestListDigestShadow_FiltersBySinceISO: ListDigestShadow returns only rows
+// created at or after sinceISO (the report's bounded-window input).
+func TestListDigestShadow_FiltersBySinceISO(t *testing.T) {
+	db := openTestDB(t)
+
+	old := DigestShadowRow{
+		ChannelID: "C1", PeriodFrom: 1, PeriodTo: 2,
+		RenderedJSON: "{}", CreatedAt: "2026-07-01T00:00:00Z",
+	}
+	recent := DigestShadowRow{
+		ChannelID: "C2", PeriodFrom: 1, PeriodTo: 2,
+		RenderedJSON: "{}", CreatedAt: "2026-07-16T00:00:00Z",
+	}
+	if err := db.UpsertDigestShadow(old); err != nil {
+		t.Fatalf("upsert old: %v", err)
+	}
+	if err := db.UpsertDigestShadow(recent); err != nil {
+		t.Fatalf("upsert recent: %v", err)
+	}
+
+	rows, err := db.ListDigestShadow("2026-07-10T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListDigestShadow: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ChannelID != "C2" {
+		t.Fatalf("ListDigestShadow(since) = %+v, want only the recent row", rows)
+	}
+}

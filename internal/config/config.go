@@ -184,6 +184,7 @@ type MemoryConfig struct {
 	Semantic             MemorySemanticConfig `mapstructure:"semantic"`                // Phase-3 semantic tier (belief/rewrite/dedupe/evict/concept steps), dark by default
 	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/disputes/reflection), each dark by default
 	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // Phase-5 slice-1 sources (gmail/actions), each dark by default
+	Renders              MemoryRendersConfig  `mapstructure:"renders"`                 // Phase-5 slice-3 renders (digest_compare), dark by default
 }
 
 // MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
@@ -227,6 +228,13 @@ type MemorySourcesConfig struct {
 	Actions  bool `mapstructure:"actions"`  // mechanical interaction ingest (owner-action evidence, engagement aggregates), its own Run step (default: false)
 	Calendar bool `mapstructure:"calendar"` // Phase-5 slice-2: mechanical past-event->episode builder + recurring-series seeding (default: false)
 	Chats    bool `mapstructure:"chats"`    // Phase-5 slice-2: generalizes internal-dialogs ingest to target/track Discuss chats + the "remember this" command (default: false)
+}
+
+// MemoryRendersConfig gates the Phase-5 slice-3 render-inversion steps
+// independently. Each is a no-op when its flag is off. All default false
+// (dark by default).
+type MemoryRendersConfig struct {
+	DigestCompare bool `mapstructure:"digest_compare"` // dark compare-mode: render channel digests from memory episodes and diff against the legacy digest pipeline (default: false)
 }
 
 type Config struct {
@@ -341,6 +349,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.sources.actions", false)
 	v.SetDefault("memory.sources.calendar", false) // Phase-5 slice-2 sources dark by default
 	v.SetDefault("memory.sources.chats", false)
+	v.SetDefault("memory.renders.digest_compare", false) // Phase-5 slice-3 renders dark by default
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

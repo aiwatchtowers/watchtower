@@ -158,6 +158,9 @@ CREATE INDEX idx_meeting_notes_event ON meeting_notes(event_id)
 index	idx_meeting_prep_cache_generated
 CREATE INDEX idx_meeting_prep_cache_generated ON meeting_prep_cache(generated_at)
 
+index	idx_memory_provenance_window
+CREATE INDEX idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix)
+
 index	idx_messages_channel_ts_unix
 CREATE INDEX idx_messages_channel_ts_unix ON messages(channel_id, ts_unix)
 
@@ -857,6 +860,21 @@ alias TEXT PRIMARY KEY COLLATE NOCASE,
 node_id TEXT NOT NULL REFERENCES memory_nodes(id)
 )
 
+table	memory_digest_shadow
+CREATE TABLE memory_digest_shadow (
+id INTEGER PRIMARY KEY,
+channel_id TEXT NOT NULL,
+period_from REAL NOT NULL,
+period_to REAL NOT NULL,
+legacy_digest_id INTEGER NOT NULL DEFAULT 0,
+rendered_json TEXT NOT NULL,
+coverage REAL NOT NULL DEFAULT 0,
+render_refs_rejected INTEGER NOT NULL DEFAULT 0,
+model TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL,
+UNIQUE(channel_id, period_from, period_to)
+)
+
 table	memory_dispute_flags
 CREATE TABLE memory_dispute_flags (
 node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id),
@@ -920,6 +938,16 @@ path TEXT NOT NULL, -- vault-relative file path
 content_hash TEXT NOT NULL, -- sha256 of file bytes at last index
 indexed_at TEXT NOT NULL
 , subject TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0)
+
+table	memory_provenance
+CREATE TABLE memory_provenance (
+node_id TEXT NOT NULL REFERENCES memory_nodes(id),
+scheme TEXT NOT NULL DEFAULT '',
+channel_id TEXT NOT NULL,
+ts_raw TEXT NOT NULL,
+ts_unix REAL NOT NULL,
+PRIMARY KEY (node_id, channel_id, ts_raw)
+)
 
 table	messages
 CREATE TABLE messages (
@@ -1912,6 +1940,18 @@ END
 0	alias	TEXT	notnull=0	dflt=NULL	pk=1
 1	node_id	TEXT	notnull=1	dflt=NULL	pk=0
 
+## memory_digest_shadow
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	channel_id	TEXT	notnull=1	dflt=NULL	pk=0
+2	period_from	REAL	notnull=1	dflt=NULL	pk=0
+3	period_to	REAL	notnull=1	dflt=NULL	pk=0
+4	legacy_digest_id	INTEGER	notnull=1	dflt=0	pk=0
+5	rendered_json	TEXT	notnull=1	dflt=NULL	pk=0
+6	coverage	REAL	notnull=1	dflt=0	pk=0
+7	render_refs_rejected	INTEGER	notnull=1	dflt=0	pk=0
+8	model	TEXT	notnull=1	dflt=''	pk=0
+9	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## memory_dispute_flags
 0	node_id	TEXT	notnull=0	dflt=NULL	pk=1
 1	flagged_at	TEXT	notnull=1	dflt=NULL	pk=0
@@ -1974,6 +2014,13 @@ END
 8	indexed_at	TEXT	notnull=1	dflt=NULL	pk=0
 9	subject	TEXT	notnull=1	dflt=''	pk=0
 10	confidence	REAL	notnull=1	dflt=0	pk=0
+
+## memory_provenance
+0	node_id	TEXT	notnull=1	dflt=NULL	pk=1
+1	scheme	TEXT	notnull=1	dflt=''	pk=0
+2	channel_id	TEXT	notnull=1	dflt=NULL	pk=2
+3	ts_raw	TEXT	notnull=1	dflt=NULL	pk=3
+4	ts_unix	REAL	notnull=1	dflt=NULL	pk=0
 
 ## messages
 0	channel_id	TEXT	notnull=1	dflt=NULL	pk=1

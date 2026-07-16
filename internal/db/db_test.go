@@ -106,6 +106,7 @@ func TestAllTablesExist(t *testing.T) {
 		"gmail_messages", "gmail_auth_state",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
 		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",
+		"memory_provenance", "memory_digest_shadow",
 	}
 
 	for _, table := range expectedTables {
@@ -553,6 +554,79 @@ func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
 	if _, err := d.Exec(`UPDATE workspace SET memory_calendar_last_extracted_ts = 0`); err != nil {
 		t.Errorf("memory_calendar_last_extracted_ts missing after cycle: %v", err)
 	}
+}
+
+func TestMigration00022MemoryDigestCompare(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	assertTableExists(t, database, "memory_provenance")
+	assertTableExists(t, database, "memory_digest_shadow")
+
+	// memory_provenance references memory_nodes(id); insert a node first,
+	// then confirm the columns and PRIMARY KEY(node_id, channel_id, ts_raw)
+	// shape.
+	if err := database.UpsertMemoryNode(memTestNode("ep_prov", nil), "body", nil); err != nil {
+		t.Fatalf("upsert node for provenance fk: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_provenance (node_id, scheme, channel_id, ts_raw, ts_unix) VALUES ('ep_prov', '', 'C1', '100.001', 100.001)`,
+	); err != nil {
+		t.Fatalf("inserting memory_provenance row: %v", err)
+	}
+	// A duplicate (node_id, channel_id, ts_raw) violates the PRIMARY KEY.
+	if _, err := database.Exec(
+		`INSERT INTO memory_provenance (node_id, scheme, channel_id, ts_raw, ts_unix) VALUES ('ep_prov', '', 'C1', '100.001', 100.001)`,
+	); err == nil {
+		t.Fatal("expected PRIMARY KEY violation on duplicate (node_id, channel_id, ts_raw)")
+	}
+
+	// memory_digest_shadow: default columns and UNIQUE(channel_id,
+	// period_from, period_to).
+	if _, err := database.Exec(
+		`INSERT INTO memory_digest_shadow (channel_id, period_from, period_to, rendered_json, created_at) VALUES ('C1', 0, 100, '{}', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("inserting memory_digest_shadow row: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_digest_shadow (channel_id, period_from, period_to, rendered_json, created_at) VALUES ('C1', 0, 100, '{}', '2026-07-16T00:01:00Z')`,
+	); err == nil {
+		t.Fatal("expected UNIQUE violation on duplicate (channel_id, period_from, period_to)")
+	}
+
+	var legacyID, refsRejected int
+	var coverage float64
+	var model string
+	if err := database.QueryRow(
+		`SELECT legacy_digest_id, coverage, render_refs_rejected, model FROM memory_digest_shadow WHERE channel_id = 'C1'`,
+	).Scan(&legacyID, &coverage, &refsRejected, &model); err != nil {
+		t.Fatalf("reading memory_digest_shadow defaults: %v", err)
+	}
+	if legacyID != 0 || coverage != 0 || refsRejected != 0 || model != "" {
+		t.Fatalf("memory_digest_shadow defaults = (%d, %v, %d, %q), want (0, 0, 0, \"\")", legacyID, coverage, refsRejected, model)
+	}
+}
+
+// TestMemoryPhase5Slice3MigrationDownUpCycle: 00022's Down drops both
+// additive CREATE TABLEs (precedent: 00017-21's Down), so a down;up cycle is
+// clean.
+func TestMemoryPhase5Slice3MigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "phase5-slice3-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	assertTableExists(t, d, "memory_provenance")
+	assertTableExists(t, d, "memory_digest_shadow")
 }
 
 func TestFTS5TableExists(t *testing.T) {

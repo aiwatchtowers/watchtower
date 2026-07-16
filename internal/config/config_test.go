@@ -316,6 +316,9 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 	// Phase-5 slice-2 sources: dark by default, independently gated.
 	assert.False(t, cfg.Memory.Sources.Calendar, "calendar source off by default")
 	assert.False(t, cfg.Memory.Sources.Chats, "chats source off by default")
+
+	// Phase-5 slice-3 renders: dark by default.
+	assert.False(t, cfg.Memory.Renders.DigestCompare, "digest_compare render off by default")
 }
 
 func TestMemorySourcesConfig_FromYAML(t *testing.T) {
@@ -354,6 +357,19 @@ memory:
 	assert.True(t, cfg.Memory.Surfaces.Briefing)
 	assert.True(t, cfg.Memory.Surfaces.Disputes)
 	assert.True(t, cfg.Memory.Surfaces.Reflection)
+}
+
+func TestMemoryRendersConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  renders:
+    digest_compare: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Renders.DigestCompare)
 }
 
 func TestMemoryConfig_FromYAML(t *testing.T) {

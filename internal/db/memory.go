@@ -1365,3 +1365,70 @@ func (db *DB) DropMemoryIndex() (err error) {
 	}
 	return nil
 }
+
+// DigestShadowRow mirrors one row of memory_digest_shadow (see 00022) — the
+// dark digest_compare render's telemetry, keyed by (channel_id, period_from,
+// period_to). Memory-owned compare telemetry, never the legacy
+// digests/digest_topics tables (MEM-05/MEM-14); never read by any UI.
+type DigestShadowRow struct {
+	ID                 int64
+	ChannelID          string
+	PeriodFrom         float64
+	PeriodTo           float64
+	LegacyDigestID     int64
+	RenderedJSON       string
+	Coverage           float64
+	RenderRefsRejected int
+	Model              string
+	CreatedAt          string
+}
+
+// UpsertDigestShadow writes a shadow row, replacing any existing row for the
+// same (channel_id, period_from, period_to) — a rerun of the compare over
+// the same window self-overwrites rather than accumulating duplicates.
+func (db *DB) UpsertDigestShadow(row DigestShadowRow) error {
+	_, err := db.Exec(`INSERT INTO memory_digest_shadow
+		(channel_id, period_from, period_to, legacy_digest_id, rendered_json, coverage, render_refs_rejected, model, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(channel_id, period_from, period_to) DO UPDATE SET
+			legacy_digest_id = excluded.legacy_digest_id,
+			rendered_json = excluded.rendered_json,
+			coverage = excluded.coverage,
+			render_refs_rejected = excluded.render_refs_rejected,
+			model = excluded.model,
+			created_at = excluded.created_at`,
+		row.ChannelID, row.PeriodFrom, row.PeriodTo, row.LegacyDigestID,
+		row.RenderedJSON, row.Coverage, row.RenderRefsRejected, row.Model, row.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("upserting digest shadow for channel %s [%v,%v]: %w", row.ChannelID, row.PeriodFrom, row.PeriodTo, err)
+	}
+	return nil
+}
+
+// ListDigestShadow returns shadow rows created at or after sinceISO, ordered
+// by channel then window — the report's bounded-window input.
+func (db *DB) ListDigestShadow(sinceISO string) ([]DigestShadowRow, error) {
+	rows, err := db.Query(`SELECT id, channel_id, period_from, period_to, legacy_digest_id,
+			rendered_json, coverage, render_refs_rejected, model, created_at
+		FROM memory_digest_shadow
+		WHERE created_at >= ?
+		ORDER BY channel_id, period_from`, sinceISO)
+	if err != nil {
+		return nil, fmt.Errorf("listing digest shadow rows since %s: %w", sinceISO, err)
+	}
+	defer rows.Close()
+
+	var result []DigestShadowRow
+	for rows.Next() {
+		var r DigestShadowRow
+		if err := rows.Scan(&r.ID, &r.ChannelID, &r.PeriodFrom, &r.PeriodTo, &r.LegacyDigestID,
+			&r.RenderedJSON, &r.Coverage, &r.RenderRefsRejected, &r.Model, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning digest shadow row: %w", err)
+		}
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating digest shadow rows: %w", err)
+	}
+	return result, nil
+}

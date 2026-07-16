@@ -1256,3 +1256,39 @@ CREATE TABLE IF NOT EXISTS memory_engagement (
     dismissed_count     INTEGER NOT NULL DEFAULT 0,
     last_interaction_at TEXT NOT NULL DEFAULT ''
 );
+
+-- Phase-5 slice-3 (see 00022): derived index of each episode/rollup node's
+-- `## Provenance` refs, so a channel+window lookup does not require a full
+-- vault body re-scan. Rebuildable from vault files — INSIDE the MEM-02
+-- reindex-equivalence set (an extension, not a weakening; owner-review
+-- flagged). scheme='' for bare Slack channel_id refs; mail:/cal:/chat:/act:
+-- prefixed refs carry their scheme, naturally excluded from a Slack channel
+-- window query.
+CREATE TABLE IF NOT EXISTS memory_provenance (
+    node_id     TEXT NOT NULL REFERENCES memory_nodes(id),
+    scheme      TEXT NOT NULL DEFAULT '',
+    channel_id  TEXT NOT NULL,
+    ts_raw      TEXT NOT NULL,
+    ts_unix     REAL NOT NULL,
+    PRIMARY KEY (node_id, channel_id, ts_raw)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix);
+
+-- Phase-5 slice-3 (see 00022): dark compare-mode telemetry
+-- (memory.renders.digest_compare) — memory-owned, never the legacy
+-- digests/digest_topics tables (MEM-05/MEM-14). Not a memory_nodes child;
+-- not vault-derived, so DropMemoryIndex leaves it alone. Never read by any
+-- UI; a pure reader of digests/digest_topics/messages writes here.
+CREATE TABLE IF NOT EXISTS memory_digest_shadow (
+    id                   INTEGER PRIMARY KEY,
+    channel_id           TEXT NOT NULL,
+    period_from          REAL NOT NULL,
+    period_to            REAL NOT NULL,
+    legacy_digest_id     INTEGER NOT NULL DEFAULT 0,
+    rendered_json        TEXT NOT NULL,
+    coverage             REAL NOT NULL DEFAULT 0,
+    render_refs_rejected INTEGER NOT NULL DEFAULT 0,
+    model                TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    UNIQUE(channel_id, period_from, period_to)
+);

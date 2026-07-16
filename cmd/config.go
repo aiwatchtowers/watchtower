@@ -218,6 +218,7 @@ var knownConfigKeys = map[string]bool{
 	"memory.sources.actions":               true,
 	"memory.sources.calendar":              true,
 	"memory.sources.chats":                 true,
+	"memory.renders.digest_compare":        true,
 	"claude_path":                          true,
 }
 
