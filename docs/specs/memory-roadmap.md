@@ -25,9 +25,9 @@ Landed 2026-07-16: 10 plan tasks + 16 review fixes; panel converged in 2 rounds 
 
 PR #36 is ready to leave draft on the GO verdict above. Enablement decision at merge time: `memory.enabled` at minimum; all four Phase 4 surface flags validated live this session, safe to stage on.
 
-## Phase 5 — Pipeline convergence — 💡 DIRECTION RECORDED, ⚑ needs owner confirmation before spec
+## Phase 5 — Universal substrate — ✅ CONFIRMED by owner (2026-07-16), spec written, own branch
 
-Working decision (journal, 2026-07-16): the digest/decision stack and memory both distill the same raw stream; the target architecture is the inversion — digests, decisions, briefings, people cards become **renders over memory episodes** (validated provenance kills the hallucinated-key_messages class; raw read once; likely net cheaper). Staged, one consumer at a time, dark-launched against legacy first:
+Owner-confirmed scope (see `2026-07-16-memory-phase5-universal-substrate-design.md`): memory becomes the system's semantic bus — 5A universal ingestion (gmail/calendar/jira/all internal dialogs via a provenance-resolver registry; raw and operational layers mirrored, never absorbed), 5B renders over memory (the inversion below), 5C internal entities linked through memory. Implementation in its OWN integration branch `feature/memory-phase5` off main after PR #36 ships. The 5B render steps, one consumer at a time, dark-launched against legacy first:
 1. Channel digests consume episodes as input (raw only for gaps) — compare vs legacy on live data.
 2. `people_cards` ← person entity pages.
 3. Channel running_summary ← channel page `## Current`.
