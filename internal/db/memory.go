@@ -20,6 +20,12 @@ type MemoryNodeRow struct {
 	Path        string // vault-relative file path
 	ContentHash string // sha256 of file bytes at last index
 	IndexedAt   string
+	Subject     string  // belief subject entity id, "" for non-beliefs; file-derived (Node.Subject, see 00019)
+	Confidence  float64 // belief confidence 0..1, 0 for non-beliefs; file-derived (Node.Confidence, see 00019)
+	// DisputePending mirrors presence in the memory_dispute_flags SIDE TABLE
+	// (see 00019) — runtime state, never written by UpsertMemoryNode. Read-only
+	// here; set/cleared via SetDisputePending/ClearDisputePending.
+	DisputePending bool
 }
 
 // MemoryHit is one full-text search result from SearchMemoryFTS.
@@ -41,8 +47,8 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string)
 	defer tx.Rollback()
 
 	_, err = tx.Exec(`INSERT INTO memory_nodes
-		(id, type, tier, status, redirect_to, title, path, content_hash, indexed_at)
-		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?)
+		(id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence)
+		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			type = excluded.type,
 			tier = excluded.tier,
@@ -51,9 +57,11 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string)
 			title = excluded.title,
 			path = excluded.path,
 			content_hash = excluded.content_hash,
-			indexed_at = excluded.indexed_at`,
+			indexed_at = excluded.indexed_at,
+			subject = excluded.subject,
+			confidence = excluded.confidence`,
 		row.ID, row.Type, row.Tier, row.Status, row.RedirectTo,
-		row.Title, row.Path, row.ContentHash, row.IndexedAt)
+		row.Title, row.Path, row.ContentHash, row.IndexedAt, row.Subject, row.Confidence)
 	if err != nil {
 		return fmt.Errorf("upserting memory node %s: %w", row.ID, err)
 	}
@@ -125,15 +133,27 @@ func (db *DB) LookupMemoryAlias(ref string) (string, error) {
 	return nodeID, nil
 }
 
+// memoryNodeSelectCols is the shared column list for GetMemoryNode/
+// ListMemoryNodes/ListDisputePendingBeliefs: the base memory_nodes columns
+// plus DisputePending, derived via EXISTS over the memory_dispute_flags side
+// table (see 00019) rather than stored on memory_nodes itself.
+const memoryNodeSelectCols = `id, type, tier, status, COALESCE(redirect_to, ''),
+		title, path, content_hash, indexed_at, subject, confidence,
+		EXISTS(SELECT 1 FROM memory_dispute_flags f WHERE f.node_id = memory_nodes.id)`
+
+func scanMemoryNodeRow(scan func(...any) error) (MemoryNodeRow, error) {
+	var row MemoryNodeRow
+	err := scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
+		&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt,
+		&row.Subject, &row.Confidence, &row.DisputePending)
+	return row, err
+}
+
 // GetMemoryNode returns one node row by canonical ID. Returns sql.ErrNoRows
 // when the node is not indexed.
 func (db *DB) GetMemoryNode(id string) (MemoryNodeRow, error) {
-	var row MemoryNodeRow
-	err := db.QueryRow(`SELECT id, type, tier, status, COALESCE(redirect_to, ''),
-		title, path, content_hash, indexed_at
-		FROM memory_nodes WHERE id = ?`, id).
-		Scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
-			&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt)
+	row, err := scanMemoryNodeRow(db.QueryRow(`SELECT `+memoryNodeSelectCols+`
+		FROM memory_nodes WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MemoryNodeRow{}, err
 	}
@@ -146,8 +166,7 @@ func (db *DB) GetMemoryNode(id string) (MemoryNodeRow, error) {
 // ListMemoryNodes returns all indexed nodes ordered by ID (used by reconcile
 // to diff the index against the vault).
 func (db *DB) ListMemoryNodes() ([]MemoryNodeRow, error) {
-	rows, err := db.Query(`SELECT id, type, tier, status, COALESCE(redirect_to, ''),
-		title, path, content_hash, indexed_at
+	rows, err := db.Query(`SELECT ` + memoryNodeSelectCols + `
 		FROM memory_nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing memory nodes: %w", err)
@@ -156,14 +175,84 @@ func (db *DB) ListMemoryNodes() ([]MemoryNodeRow, error) {
 
 	var nodes []MemoryNodeRow
 	for rows.Next() {
-		var row MemoryNodeRow
-		if err := rows.Scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
-			&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt); err != nil {
+		row, err := scanMemoryNodeRow(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scanning memory node: %w", err)
 		}
 		nodes = append(nodes, row)
 	}
 	return nodes, rows.Err()
+}
+
+// ListDisputePendingBeliefs returns belief nodes currently flagged in
+// memory_dispute_flags, oldest flag first (ties broken by node id), capped to
+// limit (<=0 defaults to 2 — the inbox watchtower detector's per-cycle cap,
+// Task 6). Used by the detector to mint dispute trigger items; every
+// returned row has DisputePending == true.
+func (db *DB) ListDisputePendingBeliefs(limit int) ([]MemoryNodeRow, error) {
+	if limit <= 0 {
+		limit = 2
+	}
+	rows, err := db.Query(`SELECT `+memoryNodeSelectCols+`
+		FROM memory_nodes
+		JOIN memory_dispute_flags f ON f.node_id = memory_nodes.id
+		WHERE memory_nodes.type = 'belief'
+		ORDER BY f.flagged_at, memory_nodes.id
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing dispute-pending beliefs: %w", err)
+	}
+	defer rows.Close()
+
+	var nodes []MemoryNodeRow
+	for rows.Next() {
+		row, err := scanMemoryNodeRow(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning dispute-pending belief: %w", err)
+		}
+		nodes = append(nodes, row)
+	}
+	return nodes, rows.Err()
+}
+
+// SetDisputePending flags a belief as disputed: the belief pass or weekly
+// reflection (internal/memory) believes the node's evidence conflicts and the
+// inbox watchtower detector (internal/inbox) should surface it as a dashboard
+// situation. Upserts into the memory_dispute_flags side table (MEM-02-exempt
+// runtime state, memory_node_stats precedent) — a re-flag of an
+// already-pending node just refreshes flagged_at/reason.
+func (db *DB) SetDisputePending(id, reason string) error {
+	_, err := db.Exec(`INSERT INTO memory_dispute_flags (node_id, flagged_at, reason)
+		VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?)
+		ON CONFLICT(node_id) DO UPDATE SET
+			flagged_at = excluded.flagged_at,
+			reason = excluded.reason`,
+		id, reason)
+	if err != nil {
+		return fmt.Errorf("setting dispute pending for %s: %w", id, err)
+	}
+	return nil
+}
+
+// ClearDisputePending removes the memory_dispute_flags row for each id — the
+// inbox watchtower detector calls this in the same transaction it mints a
+// dispute trigger item, so a dispute surfaces exactly once. A nil/empty slice
+// is a no-op, not an error.
+func (db *DB) ClearDisputePending(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := `DELETE FROM memory_dispute_flags WHERE node_id IN (` + strings.Join(placeholders, ",") + `)`
+	if _, err := db.Exec(q, args...); err != nil {
+		return fmt.Errorf("clearing dispute pending: %w", err)
+	}
+	return nil
 }
 
 // SearchMemoryFTS runs a full-text search over node titles and bodies,
@@ -278,6 +367,33 @@ func (db *DB) MemoryIngestFloor() (int64, error) {
 func (db *DB) SetMemoryIngestFloor(id int64) error {
 	if _, err := db.Exec(`UPDATE workspace SET memory_last_ingested_situation_id = ?`, id); err != nil {
 		return fmt.Errorf("setting memory ingest floor: %w", err)
+	}
+	return nil
+}
+
+// MemoryChatTurnFloor returns the owner-chat ingest floor: the highest
+// chat_messages.id (a Swift-owned table) already folded by
+// ingestChatStatements into the belief pass, so a rerun does not re-stage the
+// same owner Discuss turns as evidence (Phase 4, Task 4). A workspace scalar
+// like MemoryIngestFloor, so MEM-05 holds. A fresh workspace without its
+// singleton row reads as 0.
+func (db *DB) MemoryChatTurnFloor() (int64, error) {
+	var id int64
+	err := db.QueryRow(`SELECT COALESCE(memory_chat_turn_floor, 0) FROM workspace LIMIT 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting memory chat turn floor: %w", err)
+	}
+	return id, nil
+}
+
+// SetMemoryChatTurnFloor advances the owner-chat ingest floor (see
+// MemoryChatTurnFloor).
+func (db *DB) SetMemoryChatTurnFloor(id int64) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_chat_turn_floor = ?`, id); err != nil {
+		return fmt.Errorf("setting memory chat turn floor: %w", err)
 	}
 	return nil
 }

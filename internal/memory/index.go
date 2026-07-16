@@ -158,6 +158,8 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 		Path:        rel,
 		ContentHash: hash,
 		IndexedAt:   p.now,
+		Subject:     n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
+		Confidence:  n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
 	}
 	if err := p.database.UpsertMemoryNode(row, n.Body, n.Aliases); err != nil {
 		p.quarantine(rel, err)

@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     compose_last_run_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last situation composer run
     gmail_last_internal_date REAL NOT NULL DEFAULT 0,  -- Unix timestamp watermark for Gmail sync (see 00016)
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
-    memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
+    memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
+    memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
 );
 
 -- Users
@@ -1188,7 +1189,9 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     title         TEXT NOT NULL DEFAULT '',
     path          TEXT NOT NULL,                -- vault-relative file path
     content_hash  TEXT NOT NULL,                -- sha256 of file bytes at last index
-    indexed_at    TEXT NOT NULL
+    indexed_at    TEXT NOT NULL,
+    subject       TEXT NOT NULL DEFAULT '',     -- belief subject entity id, '' for non-beliefs; file-derived (see 00019)
+    confidence    REAL NOT NULL DEFAULT 0       -- belief confidence 0..1, 0 for non-beliefs; file-derived (see 00019)
 );
 
 -- Alias → node lookup (natural keys like slack IDs, 'situation:<id>', names).
@@ -1219,4 +1222,17 @@ CREATE TABLE IF NOT EXISTS memory_entity_hints (
     first_seen  TEXT NOT NULL,
     promoted_to TEXT NOT NULL DEFAULT '', -- ent_* once a concept entity was created; '' until then
     PRIMARY KEY (hint, episode_id)
+);
+
+-- Phase-4 dispute flags (see 00019): a SIDE TABLE, not a memory_nodes
+-- column — runtime state set by the belief pass / weekly reflection when a
+-- belief's evidence looks contested, read and cleared by the inbox
+-- watchtower detector in the same transaction it mints the dispute item
+-- (MEM-05). Same memory_node_stats precedent: excluded from the MEM-02
+-- reindex-equivalence comparison by construction (it lives outside
+-- memory_nodes and Reconcile/Rebuild never touch it).
+CREATE TABLE IF NOT EXISTS memory_dispute_flags (
+    node_id     TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+    flagged_at  TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT ''
 );

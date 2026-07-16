@@ -210,6 +210,10 @@ var knownConfigKeys = map[string]bool{
 	"memory.semantic.concept_min_episodes": true,
 	"memory.semantic.concept_max_create":   true,
 	"memory.semantic.output_budget":        true,
+	"memory.surfaces.chat":                 true,
+	"memory.surfaces.briefing":             true,
+	"memory.surfaces.disputes":             true,
+	"memory.surfaces.reflection":           true,
 	"claude_path":                          true,
 }
 

@@ -166,6 +166,60 @@ func TestListMemoryNodesOrderedByID(t *testing.T) {
 	}
 }
 
+// TestMemoryNodeSubjectConfidenceRoundTrip: memory_nodes.subject/.confidence
+// (Task 1, migration 00019) round-trip through UpsertMemoryNode/GetMemoryNode
+// /ListMemoryNodes, and DisputePending reads false when the node carries no
+// memory_dispute_flags row.
+func TestMemoryNodeSubjectConfidenceRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("bel_alpha", func(r *MemoryNodeRow) {
+		r.Type = "belief"
+		r.Subject = "ent_alpha"
+		r.Confidence = 0.7
+	})
+	if err := db.UpsertMemoryNode(row, "belief body", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	got, err := db.GetMemoryNode("bel_alpha")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got.Subject != "ent_alpha" || got.Confidence != 0.7 {
+		t.Errorf("GetMemoryNode subject/confidence = (%q, %v), want (ent_alpha, 0.7)", got.Subject, got.Confidence)
+	}
+	if got.DisputePending {
+		t.Error("DisputePending = true, want false (no memory_dispute_flags row)")
+	}
+
+	rows, err := db.ListMemoryNodes()
+	if err != nil {
+		t.Fatalf("ListMemoryNodes: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Subject != "ent_alpha" || rows[0].Confidence != 0.7 {
+		t.Fatalf("ListMemoryNodes = %+v, want one row with subject ent_alpha confidence 0.7", rows)
+	}
+}
+
+// TestMemoryNodeSubjectConfidenceDefaults: non-belief nodes (and the memTestNode
+// helper's zero-value Subject/Confidence) persist as ""/0.
+func TestMemoryNodeSubjectConfidenceDefaults(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_plain", nil)
+	if err := db.UpsertMemoryNode(row, "plain body", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+	got, err := db.GetMemoryNode("ent_plain")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got.Subject != "" || got.Confidence != 0 {
+		t.Errorf("defaults = (%q, %v), want (\"\", 0)", got.Subject, got.Confidence)
+	}
+}
+
 // TestCountMemoryLinksInBulk: the grouped links-in query returns the same counts
 // as the per-id CountMemoryLinksIn, in one pass — self-links and tombstones
 // excluded, and every requested id present (0 when unlinked).
@@ -613,6 +667,122 @@ func TestMessageExistsIgnoresDeleted(t *testing.T) {
 	}
 	if ok {
 		t.Error("MessageExists must be false for a deleted message")
+	}
+}
+
+// TestMemoryChatTurnFloorRoundTrip: the owner-chat ingest floor (Task 1,
+// migration 00019) defaults to 0 on a fresh workspace and persists after
+// SetMemoryChatTurnFloor, mirroring MemoryIngestFloor/SetMemoryIngestFloor.
+func TestMemoryChatTurnFloorRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	floor, err := db.MemoryChatTurnFloor()
+	if err != nil {
+		t.Fatalf("MemoryChatTurnFloor on fresh workspace: %v", err)
+	}
+	if floor != 0 {
+		t.Errorf("initial floor = %d, want 0", floor)
+	}
+
+	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	if err := db.SetMemoryChatTurnFloor(42); err != nil {
+		t.Fatalf("SetMemoryChatTurnFloor: %v", err)
+	}
+	floor, err = db.MemoryChatTurnFloor()
+	if err != nil {
+		t.Fatalf("MemoryChatTurnFloor after set: %v", err)
+	}
+	if floor != 42 {
+		t.Errorf("floor after set = %d, want 42", floor)
+	}
+}
+
+// TestDisputePendingSetListClear covers the memory_dispute_flags side table
+// helpers (Task 1): SetDisputePending flags a belief, ListDisputePendingBeliefs
+// returns only flagged belief nodes (oldest first) capped to limit, and
+// ClearDisputePending removes the flag so a second list call returns nothing.
+func TestDisputePendingSetListClear(t *testing.T) {
+	db := openTestDB(t)
+
+	belief1 := memTestNode("bel_one", func(r *MemoryNodeRow) { r.Type = "belief" })
+	belief2 := memTestNode("bel_two", func(r *MemoryNodeRow) { r.Type = "belief" })
+	entity := memTestNode("ent_three", nil) // not a belief — must never surface
+	for _, row := range []MemoryNodeRow{belief1, belief2, entity} {
+		if err := db.UpsertMemoryNode(row, "body", nil); err != nil {
+			t.Fatalf("UpsertMemoryNode(%s): %v", row.ID, err)
+		}
+	}
+
+	if err := db.SetDisputePending("bel_one", "evidence conflicts"); err != nil {
+		t.Fatalf("SetDisputePending(bel_one): %v", err)
+	}
+	// Flag the entity too, to prove ListDisputePendingBeliefs filters by type,
+	// not merely by side-table presence.
+	if err := db.SetDisputePending("ent_three", "should never surface"); err != nil {
+		t.Fatalf("SetDisputePending(ent_three): %v", err)
+	}
+	if err := db.SetDisputePending("bel_two", "also conflicts"); err != nil {
+		t.Fatalf("SetDisputePending(bel_two): %v", err)
+	}
+
+	got, err := db.GetMemoryNode("bel_one")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if !got.DisputePending {
+		t.Error("GetMemoryNode(bel_one).DisputePending = false, want true")
+	}
+
+	pending, err := db.ListDisputePendingBeliefs(10)
+	if err != nil {
+		t.Fatalf("ListDisputePendingBeliefs: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("ListDisputePendingBeliefs = %+v, want 2 belief rows (entity excluded)", pending)
+	}
+	// Ordered by flagged_at, then node id as a tie-break for same-second
+	// flags (as in this test) — bel_one was flagged first either way.
+	if pending[0].ID != "bel_one" || pending[1].ID != "bel_two" {
+		t.Errorf("ListDisputePendingBeliefs order = [%s, %s], want [bel_one, bel_two]",
+			pending[0].ID, pending[1].ID)
+	}
+
+	// Cap bounds the result.
+	capped, err := db.ListDisputePendingBeliefs(1)
+	if err != nil {
+		t.Fatalf("ListDisputePendingBeliefs(1): %v", err)
+	}
+	if len(capped) != 1 || capped[0].ID != "bel_one" {
+		t.Errorf("ListDisputePendingBeliefs(1) = %+v, want [bel_one]", capped)
+	}
+
+	if err := db.ClearDisputePending([]string{"bel_one"}); err != nil {
+		t.Fatalf("ClearDisputePending: %v", err)
+	}
+	got, err = db.GetMemoryNode("bel_one")
+	if err != nil {
+		t.Fatalf("GetMemoryNode after clear: %v", err)
+	}
+	if got.DisputePending {
+		t.Error("DisputePending still true after ClearDisputePending")
+	}
+	remaining, err := db.ListDisputePendingBeliefs(10)
+	if err != nil {
+		t.Fatalf("ListDisputePendingBeliefs after clear: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != "bel_two" {
+		t.Errorf("ListDisputePendingBeliefs after clear = %+v, want [bel_two]", remaining)
+	}
+}
+
+// TestClearDisputePendingEmpty: clearing an empty id list is a no-op, not an
+// error (callers may run the detector with nothing to clear).
+func TestClearDisputePendingEmpty(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.ClearDisputePending(nil); err != nil {
+		t.Errorf("ClearDisputePending(nil) = %v, want nil", err)
 	}
 }
 

@@ -109,6 +109,39 @@ func TestReconcileIndexesNewNodes(t *testing.T) {
 	assert.Equal(t, Stats{}, stats)
 }
 
+// TestReconcileIndexesBeliefSubjectConfidence: memory_nodes.subject/.confidence
+// (Task 1, migration 00019) are populated from the parsed belief node so the
+// Swift Discuss MEMORY block (Task 8) can join belief -> subject entity with a
+// pure GRDB index read. A non-belief node keeps the "" / 0 defaults.
+func TestReconcileIndexesBeliefSubjectConfidence(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	belief := Node{
+		ID:         "bel_01ARZ3NDEKTSV4RRFFQ69G5IX9",
+		Type:       "belief",
+		Tier:       "long",
+		Status:     "active",
+		Confidence: 0.6,
+		Stability:  2,
+		Subject:    "ent_alpha",
+		Body:       "# Alpha ships weekly\n\nBelief body.\n",
+	}
+	entity := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5IXA", "entity", "Alpha")
+	writeNodes(t, v, belief, entity)
+
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	row, err := d.GetMemoryNode(belief.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "ent_alpha", row.Subject)
+	assert.Equal(t, 0.6, row.Confidence)
+
+	entityRow, err := d.GetMemoryNode(entity.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "", entityRow.Subject)
+	assert.Equal(t, 0.0, entityRow.Confidence)
+}
+
 func TestReconcileUpdatesEditedFile(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5IX3", "entity", "Old Title")

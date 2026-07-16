@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,7 +105,7 @@ func TestAllTablesExist(t *testing.T) {
 		"feed_items", "feed_state",
 		"gmail_messages", "gmail_auth_state",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
-		"memory_entity_hints",
+		"memory_entity_hints", "memory_dispute_flags",
 	}
 
 	for _, table := range expectedTables {
@@ -282,6 +283,95 @@ func TestMigration00018MemorySemantic(t *testing.T) {
 		`INSERT INTO memory_entity_hints (hint, episode_id, first_seen) VALUES ('hsm', 'ep_2', '2026-07-16T00:00:00Z')`,
 	); err != nil {
 		t.Fatalf("inserting entity hint for second episode: %v", err)
+	}
+}
+
+func TestMigration00019MemorySurfaces(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	// Belief index columns on memory_nodes: file-derived, default '' / 0.
+	for _, col := range []string{"subject", "confidence"} {
+		var n int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('memory_nodes') WHERE name = ?`, col).Scan(&n)
+		if err != nil || n != 1 {
+			t.Fatalf("memory_nodes.%s missing (count=%d err=%v)", col, n, err)
+		}
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('bel_x', 'belief', 'long', 'beliefs/x.md', 'h', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("inserting memory node without subject/confidence: %v", err)
+	}
+	var subject string
+	var confidence float64
+	if err := database.QueryRow(
+		`SELECT subject, confidence FROM memory_nodes WHERE id = 'bel_x'`).Scan(&subject, &confidence); err != nil {
+		t.Fatalf("reading subject/confidence defaults: %v", err)
+	}
+	if subject != "" || confidence != 0 {
+		t.Fatalf("subject/confidence defaults = (%q, %v), want (\"\", 0)", subject, confidence)
+	}
+
+	// Owner-chat ingest floor on workspace.
+	var count int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = 'memory_chat_turn_floor'`,
+	).Scan(&count)
+	if err != nil || count != 1 {
+		t.Fatalf("workspace.memory_chat_turn_floor missing (count=%d err=%v)", count, err)
+	}
+
+	// memory_dispute_flags: a side table (not a memory_nodes column) keyed on
+	// node_id, referencing memory_nodes.
+	assertTableExists(t, database, "memory_dispute_flags")
+	if _, err := database.Exec(
+		`INSERT INTO memory_dispute_flags (node_id, flagged_at) VALUES ('bel_x', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("inserting dispute flag: %v", err)
+	}
+	var reason string
+	if err := database.QueryRow(
+		`SELECT reason FROM memory_dispute_flags WHERE node_id = 'bel_x'`).Scan(&reason); err != nil {
+		t.Fatalf("reading dispute flag reason default: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason default = %q, want \"\"", reason)
+	}
+}
+
+// TestMemorySurfacesMigrationDownUpCycle: 00019's Down drops its
+// ALTER-added columns and the dispute-flags table (precedent: 00017/00018's
+// Down), so a down;up cycle is clean.
+func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "surfaces-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	if _, err := d.Exec(`UPDATE workspace SET memory_chat_turn_floor = 0`); err != nil {
+		t.Errorf("memory_chat_turn_floor missing after cycle: %v", err)
+	}
+	if _, err := d.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at, subject, confidence)
+		 VALUES ('bel_cycle', 'belief', 'long', 'beliefs/cycle.md', 'h', '2026-07-16T00:00:00Z', 'ent_x', 0.5)`,
+	); err != nil {
+		t.Errorf("subject/confidence columns missing after cycle: %v", err)
+	}
+	if _, err := d.Exec(
+		`INSERT INTO memory_dispute_flags (node_id, flagged_at) VALUES ('bel_cycle', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Errorf("memory_dispute_flags missing after cycle: %v", err)
 	}
 }
 
