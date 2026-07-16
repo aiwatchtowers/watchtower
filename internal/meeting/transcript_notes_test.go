@@ -39,7 +39,7 @@ func TestGenerateTranscriptNotesStripsCodeFence(t *testing.T) {
 	mock := &recordingMockGenerator{response: "```markdown\n# Notes\nbody\n```"}
 	pipe := &Pipeline{generator: mock}
 
-	out, _, err := pipe.GenerateTranscriptNotes(context.Background(), "", "talk talk")
+	out, _, err := pipe.GenerateTranscriptNotes(context.Background(), "", "hello there")
 	if err != nil {
 		t.Fatalf("GenerateTranscriptNotes: %v", err)
 	}

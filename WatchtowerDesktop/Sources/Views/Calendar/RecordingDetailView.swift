@@ -86,10 +86,10 @@ struct RecordingDetailView: View {
             Text("The transcript, its meeting notes, chat and audio file will be removed. This cannot be undone.")
         }
         .sheet(item: $linkTarget) { t in
-            LinkTranscriptSheet(transcript: t, onLinked: {
+            LinkTranscriptSheet(transcript: t) {
                 Task { await load() }
                 onChanged()
-            })
+            }
             .environment(appState)
         }
     }

@@ -39,7 +39,7 @@ struct CalendarEventsView: View {
 
                     switch mode {
                     case .events:
-                        eventsMasterDetail(calVM)
+                        eventsSplitView(calVM)
                     case .recordings:
                         RecordingsView()
                     }
@@ -50,7 +50,7 @@ struct CalendarEventsView: View {
         }
     }
 
-    private func eventsMasterDetail(_ vm: CalendarViewModel) -> some View {
+    private func eventsSplitView(_ vm: CalendarViewModel) -> some View {
         HStack(spacing: 0) {
             eventsList(vm)
                 .frame(minWidth: 300, idealWidth: 350)
@@ -61,7 +61,7 @@ struct CalendarEventsView: View {
                     eventID: eventID,
                     viewModel: meetingPrepVM,
                     userNotes: $userNotes
-                )                            { selectedEventID = nil }
+                ) { selectedEventID = nil }
                 .id(eventID)
                 .frame(minWidth: 400, idealWidth: 500)
                 .transition(

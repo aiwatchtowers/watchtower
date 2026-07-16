@@ -27,22 +27,4 @@ struct RecordingListItem: Decodable, FetchableRecord, Identifiable, Equatable {
         case hasNotes = "has_notes"
         case snippet
     }
-
-    // Explicit memberwise init: the synthesized one is internal by default,
-    // which is fine within the module, but tests (Task 13) construct this
-    // directly — keep it declared for clarity/stability across refactors.
-    init(
-        id: Int64, eventID: String?, title: String, durationSec: Int, langStats: String,
-        createdAt: String, hasRecap: Bool, hasNotes: Bool, snippet: String
-    ) {
-        self.id = id
-        self.eventID = eventID
-        self.title = title
-        self.durationSec = durationSec
-        self.langStats = langStats
-        self.createdAt = createdAt
-        self.hasRecap = hasRecap
-        self.hasNotes = hasNotes
-        self.snippet = snippet
-    }
 }

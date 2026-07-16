@@ -6,8 +6,12 @@ import ViewInspector
 @MainActor
 final class RecordingsListViewTests: XCTestCase {
     private func makeItem(
-        id: Int64, title: String = "Rec", eventID: String? = nil,
-        hasRecap: Bool = false, hasNotes: Bool = false, snippet: String = "…"
+        id: Int64,
+        title: String = "Rec",
+        eventID: String? = nil,
+        hasRecap: Bool = false,
+        hasNotes: Bool = false,
+        snippet: String = "…"
     ) -> RecordingListItem {
         RecordingListItem(
             id: id, eventID: eventID, title: title, durationSec: 125,
