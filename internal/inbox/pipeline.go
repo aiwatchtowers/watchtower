@@ -530,6 +530,17 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 		} else {
 			wt = n
 		}
+		// Memory dispute reader ("the arguing secretary"): dispute_pending
+		// beliefs become ordinary decision_made items, gated dark by default.
+		// An error here freezes the watermark exactly like any other detector
+		// (INBOX-09) — it is joined into errs.
+		disputesEnabled := p.cfg != nil && p.cfg.Memory.Surfaces.Disputes
+		if n, e := detectMemoryDisputes(p.db, disputesEnabled); e != nil {
+			p.logger.Printf("inbox: memory dispute detect error: %v", e)
+			errs = append(errs, fmt.Errorf("memory-dispute: %w", e))
+		} else {
+			wt += n
+		}
 	}
 	return slack, jira, cal, gmail, wt, errors.Join(errs...)
 }

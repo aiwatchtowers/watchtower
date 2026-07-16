@@ -137,7 +137,11 @@ func openToolSession(cmd *cobra.Command) (*internalmcp.LocalSession, func(), err
 		database.Close()
 		return nil, nil, fmt.Errorf("enforcing read-only: %w", err)
 	}
-	session, err := internalmcp.NewServer(database).ConnectLocal(cmdContext(cmd))
+	var mcpOpts []internalmcp.ServerOption
+	if cfg.Memory.Enabled {
+		mcpOpts = append(mcpOpts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))
+	}
+	session, err := internalmcp.NewServer(database, mcpOpts...).ConnectLocal(cmdContext(cmd))
 	if err != nil {
 		database.Close()
 		return nil, nil, fmt.Errorf("connecting tool session: %w", err)

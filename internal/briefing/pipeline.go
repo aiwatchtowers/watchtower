@@ -154,6 +154,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	peopleSummaryCtx := p.gatherPeopleSummary()
 	profileCtx := formatUserProfile(profile)
 	jiraCtx := p.gatherJiraContext(currentUserID)
+	memRevisionsCtx := p.gatherMemoryRevisions(currentUserID, date)
 
 	// Check we have some data (suggestion text alone doesn't count).
 	hasData := digestsCtx != "" || dailyDigestCtx != "" || hasRealTracks || hasRealTargets || hasRealInbox
@@ -192,6 +193,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		peopleSummaryCtx,
 		profileCtx,
 		jiraCtx,
+		memRevisionsCtx,
 	)
 
 	// Prepend learned preferences (derived from catch-up review feedback) so the

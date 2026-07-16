@@ -1,6 +1,8 @@
 package prompts
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,5 +22,39 @@ func TestDefaultFor_AllKnownKeysHaveDefaults(t *testing.T) {
 	// Every key listed in CurrentVersions must have a non-empty default.
 	for key := range DefaultVersions {
 		assert.NotEmpty(t, DefaultFor(key), "missing default for known key %q", key)
+	}
+}
+
+// TestMemorySemanticPromptsRegistered pins the Phase-3 semantic-tier prompts
+// (plus the Phase-4 reflection prompt) into every registration surface:
+// constant → Defaults template, AllIDs display order, DefaultVersions (v1),
+// and Descriptions. Each template must open with the language Directive
+// placeholder and must never begin with a dash (the claude-CLI argv gotcha
+// guarded for the extract builders).
+func TestMemorySemanticPromptsRegistered(t *testing.T) {
+	ids := []string{MemoryEntityRewrite, MemoryReviseBeliefs, MemoryRenderMap, MemoryReflect}
+
+	allIDs := make(map[string]bool, len(AllIDs))
+	for _, id := range AllIDs {
+		allIDs[id] = true
+	}
+
+	for _, id := range ids {
+		t.Run(id, func(t *testing.T) {
+			tmpl, ok := Defaults[id]
+			assert.True(t, ok, "Defaults must contain %q", id)
+			assert.NotEmpty(t, tmpl, "template for %q must be non-empty", id)
+			assert.True(t, allIDs[id], "AllIDs must contain %q", id)
+			assert.Equal(t, 1, DefaultVersions[id], "%q must be registered at v1", id)
+			assert.NotEmpty(t, Descriptions[id], "Descriptions must contain %q", id)
+
+			// Language directive slot: the template's first verb is filled by
+			// prompts.Directive, so rendering it must produce a directive.
+			rendered := DefaultFor(id)
+			assert.True(t, HasDirective(fmt.Sprintf(rendered, Directive(""))),
+				"%q must carry the language directive placeholder", id)
+			assert.False(t, strings.HasPrefix(rendered, "-"),
+				"%q template must not begin with a dash", id)
+		})
 	}
 }

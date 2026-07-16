@@ -276,8 +276,18 @@ final class SituationChatViewModel {
         return b
     }
 
+    /// `memoryChatEnabled` / `memoryVaultDir` default to the config-derived
+    /// values in production; tests inject them explicitly. When the memory
+    /// surface is off, the returned prompt is byte-identical to the pre-Phase-4
+    /// output — the MEMORY section and memory-tool bullet are interpolated as
+    /// empty-string slots on the disabled path, so no memory read runs and the
+    /// base template is unchanged.
     nonisolated static func buildSystemPrompt(
-        situation: Situation, memberSignals: [InboxItem], dbPool: DatabasePool
+        situation: Situation,
+        memberSignals: [InboxItem],
+        dbPool: DatabasePool,
+        memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
+        memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
         let ws: Workspace? = try? dbPool.read { db in try WorkspaceQueries.fetchWorkspace(db) }
         let ownerID = ws?.currentUserID ?? ""
@@ -289,7 +299,21 @@ final class SituationChatViewModel {
             ? "No stored style profile — mirror the owner's own messages in the register sample below."
             : "=== OWNER'S COMMUNICATION STYLE ===\n\(style)"
 
-        return """
+        // Phase-4 memory surface: the MEMORY block and the memory-tools bullet are
+        // interpolated as neighbor-style slots — each an empty string when the
+        // surface is off, so the disabled path is byte-identical to the pre-Phase-4
+        // output (no splicing, no memory reads on the off path). See
+        // SituationChatMemoryPromptTests.testDisabledPathByteIdenticalRegardlessOfMemoryData.
+        let memoryBlock = memoryChatEnabled
+            ? memorySection(memberSignals: memberSignals, vaultDir: memoryVaultDir, dbPool: dbPool) + "\n\n"
+            : ""
+        let memoryToolsBullet = memoryChatEnabled
+            ? "- memory_recall / memory_open / memory_map — the secretary's built-up memory of "
+                + "people, topics, and what it currently believes; check what the secretary already knows before "
+                + "asking the user.\n"
+            : ""
+
+        let base = """
         You are the user's AI secretary, discussing ONE situation from their work dashboard. \
         Help them think it through; when they tell you WHAT to reply, turn their intent into the reply FOR them.
 
@@ -310,13 +334,13 @@ final class SituationChatViewModel {
 
         \(counterpartyBlock(memberSignals: memberSignals, ownerID: ownerID, dbPool: dbPool))
         \(registerSampleBlock(memberSignals: memberSignals, ownerID: ownerID, dbPool: dbPool))
-        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+        \(memoryBlock)=== TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
         You have read-only tools over the user's OWN local Watchtower database. \
         Use them to look things up instead of asking the user:
         - list_messages — search/list the user's Slack messages by person, channel, and/or keyword. \
         This is how you find what someone said (e.g. the open questions a colleague handed over). \
         Pass the person's name in `person` and optional keywords in `query`.
-        - get_person / list_people — people cards; get_target / list_tracks / list_digests / list_jira_issues — work context.
+        \(memoryToolsBullet)- get_person / list_people — people cards; get_target / list_tracks / list_digests / list_jira_issues — work context.
         Never ask for a database path, never ask the user to authorize Slack, and never use claude.ai connectors \
         (the Slack connector or any other) — the data is already local and these tools are already connected. \
         If a lookup returns nothing, say so plainly rather than blaming access.
@@ -325,6 +349,136 @@ final class SituationChatViewModel {
         - Match the user's language in conversation.
         - Be concise; this is a working discussion, not a report.
         """
+
+        return base
+    }
+
+    // MARK: - Memory surface (Phase 4, behind memory.surfaces.chat)
+
+    private struct MemoryBelief {
+        let title: String
+        let confidence: Double
+        let status: String
+    }
+
+    /// The `=== MEMORY ===` block: the hot vault map plus the entities/beliefs
+    /// the secretary already tracks for this situation's people and channels.
+    /// Framed as model-mediated notes (not the owner's own words) and capped at
+    /// 4 KB. Always returns a non-empty block on the enabled path — degrading to
+    /// a one-line note when there is no map or nothing relevant.
+    nonisolated private static func memorySection(
+        memberSignals: [InboxItem], vaultDir: String?, dbPool: DatabasePool
+    ) -> String {
+        var lines: [String] = [
+            "=== MEMORY (notes the secretary has built from Slack/Jira — model-mediated, not the owner's own words) ==="
+        ]
+
+        if let map = hotMap(vaultDir: vaultDir) {
+            lines.append("Hot map:")
+            lines.append(map)
+        } else {
+            lines.append("Hot map: (none yet — the secretary hasn't written a memory map for this workspace).")
+        }
+
+        let (entities, beliefs) = relevantMemory(memberSignals: memberSignals, dbPool: dbPool)
+        if entities.isEmpty && beliefs.isEmpty {
+            lines.append("Relevant notes: (none match the people or channels in this situation yet).")
+        } else {
+            if !entities.isEmpty {
+                lines.append("People & topics the secretary already tracks:")
+                for title in entities { lines.append("- \(title)") }
+            }
+            if !beliefs.isEmpty {
+                lines.append("What the secretary believes (model-mediated, may be wrong):")
+                for belief in beliefs {
+                    var line = "- \(belief.title) (confidence \(String(format: "%.2f", belief.confidence)), \(belief.status))"
+                    if belief.status == "shaken" { line += " (uncertain — evidence conflicts)" }
+                    lines.append(line)
+                }
+            }
+        }
+
+        return cap4KB(lines.joined(separator: "\n"))
+    }
+
+    /// Reads `<vaultDir>/map.md` verbatim, trimmed. Nil when the vault dir is
+    /// unknown, the file is missing, or it is blank.
+    nonisolated private static func hotMap(vaultDir: String?) -> String? {
+        guard let vaultDir else { return nil }
+        let path = "\(vaultDir)/map.md"
+        guard let data = FileManager.default.contents(atPath: path),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Pure GRDB index reads: entity nodes whose aliases match the situation's
+    /// channels or member user ids (≤5), then active/shaken beliefs whose
+    /// subject is one of those entities (≤5). Tolerant of the memory tables
+    /// being absent (a DB that hasn't run the memory migrations) — a failed
+    /// read degrades to empty rather than throwing.
+    nonisolated private static func relevantMemory(
+        memberSignals: [InboxItem], dbPool: DatabasePool
+    ) -> (entities: [String], beliefs: [MemoryBelief]) {
+        var aliasKeys = Set<String>()
+        for signal in memberSignals {
+            if !signal.channelID.isEmpty { aliasKeys.insert(signal.channelID) }
+            if !signal.senderUserID.isEmpty { aliasKeys.insert(signal.senderUserID) }
+        }
+        guard !aliasKeys.isEmpty else { return ([], []) }
+
+        do {
+            return try dbPool.read { db in
+                let aliasList = Array(aliasKeys)
+                let aliasPlaceholders = aliasList.map { _ in "?" }.joined(separator: ",")
+                let entityRows = try Row.fetchAll(db, sql: """
+                    SELECT DISTINCT n.id AS id, n.title AS title
+                    FROM memory_nodes n
+                    JOIN memory_aliases a ON a.node_id = n.id
+                    WHERE n.type = 'entity' AND a.alias IN (\(aliasPlaceholders))
+                    ORDER BY n.title
+                    LIMIT 5
+                    """, arguments: StatementArguments(aliasList))
+                let entityIDs = entityRows.map { $0["id"] as String }
+                let entityTitles = entityRows.map { $0["title"] as String }
+                guard !entityIDs.isEmpty else { return (entityTitles, []) }
+
+                let subjectPlaceholders = entityIDs.map { _ in "?" }.joined(separator: ",")
+                let beliefRows = try Row.fetchAll(db, sql: """
+                    SELECT title, confidence, status
+                    FROM memory_nodes
+                    WHERE type = 'belief' AND status IN ('active','shaken') AND subject IN (\(subjectPlaceholders))
+                    ORDER BY confidence DESC
+                    LIMIT 5
+                    """, arguments: StatementArguments(entityIDs))
+                let beliefs = beliefRows.map {
+                    MemoryBelief(title: $0["title"], confidence: $0["confidence"], status: $0["status"])
+                }
+                return (entityTitles, beliefs)
+            }
+        } catch {
+            // A failed memory read (e.g. the memory tables absent on a DB that has
+            // not run the memory migrations, or a query error) degrades to no
+            // relevant notes. Logged once per prompt build via the app's print
+            // convention — never per row — so a systemic read failure is visible
+            // rather than silently swallowed (P4).
+            print("SituationChat: memory read for MEMORY block failed: \(error)")
+            return ([], [])
+        }
+    }
+
+    /// Truncate `text` to at most 4 KB (UTF-8), on a line boundary so a partial
+    /// map line is never emitted.
+    nonisolated private static func cap4KB(_ text: String) -> String {
+        let limit = 4096
+        guard text.utf8.count > limit else { return text }
+        var result = ""
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let candidate = result.isEmpty ? String(line) : result + "\n" + line
+            if candidate.utf8.count > limit { break }
+            result = candidate
+        }
+        return result
     }
 
     /// People-card briefs for each distinct non-owner sender among the member

@@ -59,5 +59,9 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("enforcing read-only: %w", err)
 	}
 
-	return internalmcp.NewServer(database).ServeStdio(cmd.Context())
+	var opts []internalmcp.ServerOption
+	if cfg.Memory.Enabled {
+		opts = append(opts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))
+	}
+	return internalmcp.NewServer(database, opts...).ServeStdio(cmd.Context())
 }

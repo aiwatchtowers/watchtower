@@ -1,6 +1,7 @@
 // Package mcp implements a read-only Model Context Protocol server that
 // exposes Watchtower's curated product data to MCP clients. Every registered
-// tool is read-only; no tool mutates the database.
+// tool is a read surface; the single deliberate write is memory_open's
+// best-effort usage-stats bump (telemetry, not domain data).
 package mcp
 
 import (
@@ -60,24 +61,43 @@ func firstError(msgs ...string) string {
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.
 type Server struct {
 	s *mcpsdk.Server
+
+	// memoryVaultPath is the workspace memory vault directory; empty when
+	// memory is disabled — the memory_ tools then answer "not initialized".
+	memoryVaultPath string
+}
+
+// ServerOption customizes NewServer additively, so existing call sites keep
+// compiling as new dependencies are introduced.
+type ServerOption func(*Server)
+
+// WithMemoryVault points the memory_ tools at the workspace memory vault
+// directory (WorkspaceDir()/memory). Callers pass it only when memory is
+// enabled; without it the tools report memory as not initialized.
+func WithMemoryVault(path string) ServerOption {
+	return func(srv *Server) { srv.memoryVaultPath = path }
 }
 
 // NewServer builds an MCP server over the given database and registers every
-// read-only domain tool.
-func NewServer(database *db.DB) *Server {
-	s := mcpsdk.NewServer(&mcpsdk.Implementation{
+// domain tool.
+func NewServer(database *db.DB, opts ...ServerOption) *Server {
+	srv := &Server{s: mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "watchtower",
 		Title:   "Watchtower",
 		Version: version,
-	}, nil)
+	}, nil)}
+	for _, opt := range opts {
+		opt(srv)
+	}
 
-	registerTargets(s, database)
-	registerDigests(s, database)
-	registerPeople(s, database)
-	registerJira(s, database)
-	registerMessages(s, database)
+	registerTargets(srv.s, database)
+	registerDigests(srv.s, database)
+	registerPeople(srv.s, database)
+	registerJira(srv.s, database)
+	registerMessages(srv.s, database)
+	registerMemory(srv.s, database, srv.memoryVaultPath)
 
-	return &Server{s: s}
+	return srv
 }
 
 // ServeStdio runs the server over stdio until the context is cancelled or the

@@ -3,6 +3,7 @@ package inbox
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,4 +179,265 @@ func seedInboxItemForWT(t *testing.T, d *db.DB, channelID, msgTS, triggerType st
 		t.Fatalf("seedInboxItemForWT: %v", err)
 	}
 	return id
+}
+
+// seedDisputeBelief indexes a belief node and flags it dispute_pending, the
+// state the memory pipeline leaves behind for the inbox dispute reader (Task 6).
+func seedDisputeBelief(t *testing.T, d *db.DB, id, title string) {
+	t.Helper()
+	if err := d.UpsertMemoryNode(db.MemoryNodeRow{
+		ID:         id,
+		Type:       "belief",
+		Tier:       "long",
+		Status:     "active",
+		Title:      title,
+		Path:       "beliefs/" + id + ".md",
+		Subject:    "ent_x",
+		Confidence: 0.5,
+	}, title, nil); err != nil {
+		t.Fatalf("seedDisputeBelief upsert %s: %v", id, err)
+	}
+	if err := d.SetDisputePending(id, "evidence conflicts"); err != nil {
+		t.Fatalf("seedDisputeBelief flag %s: %v", id, err)
+	}
+}
+
+// countMemoryDisputeItems returns how many decision_made items the dispute
+// reader has minted (channel_id='memory').
+func countMemoryDisputeItems(t *testing.T, d *db.DB) int {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM inbox_items
+		WHERE channel_id='memory' AND trigger_type='decision_made'`).Scan(&n); err != nil {
+		t.Fatalf("countMemoryDisputeItems: %v", err)
+	}
+	return n
+}
+
+// countDisputeFlags returns how many memory_dispute_flags rows remain.
+func countDisputeFlags(t *testing.T, d *db.DB) int {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM memory_dispute_flags`).Scan(&n); err != nil {
+		t.Fatalf("countDisputeFlags: %v", err)
+	}
+	return n
+}
+
+func TestWatchtowerDetector_DisputeMinted(t *testing.T) {
+	d := newTestDB(t)
+	seedDisputeBelief(t, d, "bel_release", "The release is on track")
+
+	n, err := detectMemoryDisputes(d, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 dispute item, got %d", n)
+	}
+
+	// The minted item carries the watchtower dispute shape.
+	var chID, msgTS, sender, trig, snippet, class string
+	if err := d.QueryRow(`SELECT channel_id, message_ts, sender_user_id, trigger_type, snippet, item_class
+		FROM inbox_items WHERE channel_id='memory'`).Scan(&chID, &msgTS, &sender, &trig, &snippet, &class); err != nil {
+		t.Fatalf("loading minted item: %v", err)
+	}
+	if chID != "memory" || msgTS != "dispute:bel_release" || sender != "watchtower" || trig != "decision_made" {
+		t.Errorf("unexpected item identity: ch=%q ts=%q sender=%q trig=%q", chID, msgTS, sender, trig)
+	}
+	if class != "ambient" {
+		t.Errorf("decision_made defaults to ambient item_class, got %q", class)
+	}
+	for _, want := range []string{"The release is on track", "evidence conflicts", "[[bel_release]]"} {
+		if !strings.Contains(snippet, want) {
+			t.Errorf("snippet %q missing %q", snippet, want)
+		}
+	}
+
+	// The flag was cleared in the same run — a dispute surfaces exactly once.
+	if got := countDisputeFlags(t, d); got != 0 {
+		t.Errorf("flag should be cleared after minting, %d remain", got)
+	}
+}
+
+func TestWatchtowerDetector_DisputeSecondRunNoDuplicate(t *testing.T) {
+	d := newTestDB(t)
+	seedDisputeBelief(t, d, "bel_release", "The release is on track")
+
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 1 {
+		t.Fatalf("first run: want 1, got %d (err=%v)", n, err)
+	}
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 0 {
+		t.Fatalf("second run: want 0 duplicates, got %d (err=%v)", n, err)
+	}
+	if got := countMemoryDisputeItems(t, d); got != 1 {
+		t.Errorf("want exactly 1 dispute item after two runs, got %d", got)
+	}
+}
+
+func TestWatchtowerDetector_DisputeCapPerCycle(t *testing.T) {
+	d := newTestDB(t)
+	// Three disputes flagged; the per-cycle cap is <=2.
+	seedDisputeBelief(t, d, "bel_a", "Belief A")
+	seedDisputeBelief(t, d, "bel_b", "Belief B")
+	seedDisputeBelief(t, d, "bel_c", "Belief C")
+
+	n, err := detectMemoryDisputes(d, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("cap: want 2 items this cycle, got %d", n)
+	}
+	if got := countDisputeFlags(t, d); got != 1 {
+		t.Errorf("cap: third flag should survive for the next cycle, %d remain", got)
+	}
+
+	// Next cycle drains the survivor.
+	n2, err := detectMemoryDisputes(d, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 1 {
+		t.Fatalf("next cycle: want the surviving 1, got %d", n2)
+	}
+	if got := countDisputeFlags(t, d); got != 0 {
+		t.Errorf("all flags should be drained, %d remain", got)
+	}
+}
+
+func TestWatchtowerDetector_DisputeGateOff(t *testing.T) {
+	d := newTestDB(t)
+	seedDisputeBelief(t, d, "bel_release", "The release is on track")
+
+	n, err := detectMemoryDisputes(d, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("gate off: want 0 items, got %d", n)
+	}
+	if got := countMemoryDisputeItems(t, d); got != 0 {
+		t.Errorf("gate off: no items should exist, got %d", got)
+	}
+	if got := countDisputeFlags(t, d); got != 1 {
+		t.Errorf("gate off: flag must stay intact, got %d", got)
+	}
+}
+
+// liveMemoryDisputeCount returns how many dispute items are still LIVE (not
+// archived, not resolved/dismissed) — the liveness predicate the dedup keys on.
+func liveMemoryDisputeCount(t *testing.T, d *db.DB) int {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM inbox_items
+		WHERE channel_id='memory' AND trigger_type='decision_made'
+		  AND archived_at IS NULL AND status NOT IN ('resolved','dismissed')`).Scan(&n); err != nil {
+		t.Fatalf("liveMemoryDisputeCount: %v", err)
+	}
+	return n
+}
+
+// TestWatchtowerDetector_DisputeRemintAfterArchive proves the dedup keys only on
+// LIVE items: once the first dispute item has been archived, a re-flagged belief
+// surfaces the dispute again (M2 — an archived item must never suppress a
+// re-dispute forever).
+func TestWatchtowerDetector_DisputeRemintAfterArchive(t *testing.T) {
+	d := newTestDB(t)
+	seedDisputeBelief(t, d, "bel_release", "The release is on track")
+
+	// First cycle mints one item and clears the flag.
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 1 {
+		t.Fatalf("first mint: want 1, got %d (err=%v)", n, err)
+	}
+
+	// The owner (or the archive sweep) archives the dispute item.
+	if _, err := d.Exec(`UPDATE inbox_items SET archived_at='2026-07-16T00:00:00Z', archive_reason='seen_expired'
+		WHERE channel_id='memory' AND message_ts='dispute:bel_release'`); err != nil {
+		t.Fatalf("archiving dispute item: %v", err)
+	}
+	if got := liveMemoryDisputeCount(t, d); got != 0 {
+		t.Fatalf("after archive: want 0 live items, got %d", got)
+	}
+
+	// The belief flaps again — reflection re-flags it.
+	if err := d.SetDisputePending("bel_release", "evidence conflicts again"); err != nil {
+		t.Fatalf("re-flag: %v", err)
+	}
+
+	// The re-dispute surfaces: the dead row is revived to a fresh live item.
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 1 {
+		t.Fatalf("re-mint after archive: want 1, got %d (err=%v)", n, err)
+	}
+	if got := liveMemoryDisputeCount(t, d); got != 1 {
+		t.Errorf("re-dispute must be live again, got %d live", got)
+	}
+	if got := countDisputeFlags(t, d); got != 0 {
+		t.Errorf("flag should be cleared after re-mint, %d remain", got)
+	}
+	// Still a single row (UNIQUE identity preserved — revived, not duplicated).
+	if got := countMemoryDisputeItems(t, d); got != 1 {
+		t.Errorf("want exactly 1 dispute row (revived in place), got %d", got)
+	}
+	// The revived row is pending again, not archived.
+	var status string
+	var archivedAt *string
+	if err := d.QueryRow(`SELECT status, archived_at FROM inbox_items
+		WHERE channel_id='memory' AND message_ts='dispute:bel_release'`).Scan(&status, &archivedAt); err != nil {
+		t.Fatalf("loading revived item: %v", err)
+	}
+	if status != "pending" || archivedAt != nil {
+		t.Errorf("revived item should be pending+unarchived, got status=%q archived=%v", status, archivedAt)
+	}
+}
+
+// TestWatchtowerDetector_DisputeLiveItemReflagNoDuplicate proves a re-flag while
+// the prior dispute item is still LIVE produces no duplicate — the flag is
+// cleared and the single open item is left untouched (M2).
+func TestWatchtowerDetector_DisputeLiveItemReflagNoDuplicate(t *testing.T) {
+	d := newTestDB(t)
+	seedDisputeBelief(t, d, "bel_release", "The release is on track")
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 1 {
+		t.Fatalf("first mint: want 1, got %d (err=%v)", n, err)
+	}
+
+	// Re-flag WITHOUT archiving — the item is still open on the dashboard.
+	if err := d.SetDisputePending("bel_release", "evidence conflicts again"); err != nil {
+		t.Fatalf("re-flag: %v", err)
+	}
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 0 {
+		t.Fatalf("re-flag with live item: want 0 (no dup), got %d (err=%v)", n, err)
+	}
+	if got := countMemoryDisputeItems(t, d); got != 1 {
+		t.Errorf("want exactly 1 dispute item (no duplicate), got %d", got)
+	}
+	if got := countDisputeFlags(t, d); got != 0 {
+		t.Errorf("flag should be cleared even when no dup is minted, %d remain", got)
+	}
+}
+
+// TestWatchtowerDetector_DisputeMintErrorLeavesFlag proves mint+clear are one
+// transaction: a colliding inbox item makes the dispute INSERT fail on the
+// UNIQUE(channel_id, message_ts) constraint, so the flag must NOT be cleared —
+// the dispute survives for a later cycle rather than being lost.
+func TestWatchtowerDetector_DisputeMintErrorLeavesFlag(t *testing.T) {
+	d := newTestDB(t)
+	seedDisputeBelief(t, d, "bel_release", "The release is on track")
+	// A pre-existing row at the same (channel_id, message_ts) but a different
+	// trigger_type slips past the decision_made dedup check and collides on the
+	// UNIQUE index when the dispute INSERT runs.
+	if _, err := d.Exec(`INSERT INTO inbox_items
+		(channel_id, message_ts, sender_user_id, trigger_type, snippet, status, priority, item_class)
+		VALUES ('memory','dispute:bel_release','watchtower','briefing_ready','collision','pending','low','ambient')`); err != nil {
+		t.Fatalf("seeding collision row: %v", err)
+	}
+
+	_, err := detectMemoryDisputes(d, true)
+	if err == nil {
+		t.Fatal("want an error when the dispute mint collides")
+	}
+	// The DELETE rode the same rolled-back tx, so the flag must survive.
+	if got := countDisputeFlags(t, d); got != 1 {
+		t.Errorf("flag must survive a failed mint (atomic tx), %d remain", got)
+	}
 }
