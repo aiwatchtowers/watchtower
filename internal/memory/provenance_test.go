@@ -19,6 +19,7 @@ func TestSchemeOf(t *testing.T) {
 		"C0123":                "",
 		"chat:42":              "chat",
 		"mail:abc":             "mail",
+		"cal:evt_1":            "cal",
 		"act:inbox_feedback:7": "act",
 		"bogus:x":              "bogus",
 		"":                     "",
@@ -37,8 +38,9 @@ func TestSchemeOf(t *testing.T) {
 func fullRegistry(d *db.DB) *provenanceRegistry {
 	return newProvenanceRegistry(
 		messageResolver{d},
-		chatResolver{db: d, logf: func(string, ...any) {}},
+		chatResolver{db: d, logf: func(string, ...any) {}, contextTypes: []string{"situation", "target", "track"}},
 		mailResolver{d},
+		calResolver{d},
 		actResolver{db: d},
 	)
 }
@@ -162,6 +164,60 @@ func TestMailResolverPropagatesLookupError(t *testing.T) {
 	require.Error(t, err, "a resolver lookup error propagates unchanged")
 	assert.True(t, registered, "the scheme was registered — only the lookup failed")
 	assert.Contains(t, err.Error(), "disk I/O error")
+}
+
+// TestProvenanceRegistryDispatchesCal: a cal: ref routes to the cal resolver,
+// which keys existence on the calendar_events id only (resolved ambiguity #2);
+// a missing id is a clean non-resolution, never an error.
+func TestProvenanceRegistryDispatchesCal(t *testing.T) {
+	d := newTestDB(t)
+	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Standup", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z"})
+	reg := fullRegistry(d)
+
+	ok, registered, err := reg.Validate(episodeRef{ChannelID: "cal:evt-1", TS: "1720000000"})
+	require.NoError(t, err)
+	assert.True(t, registered, "cal is a registered scheme")
+	assert.True(t, ok, "an existing calendar event resolves by id")
+
+	ok, registered, err = reg.Validate(episodeRef{ChannelID: "cal:missing", TS: "1720000000"})
+	require.NoError(t, err)
+	assert.True(t, registered)
+	assert.False(t, ok, "a missing event id does not resolve")
+}
+
+// errCalChecker fails CalendarEventExists with a lookup error — the calendar
+// analog of errMailChecker, for the resolver error-propagation path.
+type errCalChecker struct{}
+
+func (errCalChecker) CalendarEventExists(string) (bool, error) {
+	return false, fmt.Errorf("disk I/O error")
+}
+
+// TestCalResolverPropagatesLookupError: a calendar lookup error propagates as
+// err (registered=true) so the caller keeps its freeze-vs-drop disposition.
+func TestCalResolverPropagatesLookupError(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+	p.registry = newProvenanceRegistry(calResolver{errCalChecker{}})
+
+	_, registered, err := p.registry.Validate(episodeRef{ChannelID: "cal:x", TS: "1"})
+	require.Error(t, err, "a resolver lookup error propagates unchanged")
+	assert.True(t, registered, "the scheme was registered — only the lookup failed")
+	assert.Contains(t, err.Error(), "disk I/O error")
+}
+
+// TestCalRegisteredInPipelineRegistry: the cal resolver is registered in the
+// pipeline's belief-surface registry so a belief-pass op could later cite a
+// cal: episode ref (harmless when calendar is dark).
+func TestCalRegisteredInPipelineRegistry(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Standup", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z"})
+	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+
+	ok, registered, err := p.registry.Validate(episodeRef{ChannelID: "cal:evt-1", TS: "1"})
+	require.NoError(t, err)
+	assert.True(t, registered, "cal is registered in the pipeline registry")
+	assert.True(t, ok)
 }
 
 // seedInboxFeedback inserts an inbox_items row and an inbox_feedback row

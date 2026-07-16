@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -323,6 +324,26 @@ func (db *DB) GmailMessageExists(id string) (bool, error) {
 	return true, nil
 }
 
+// CalendarEventExists reports whether a synced calendar_events row with the
+// given Google event id exists — the write-time existence check behind the cal:
+// provenance scheme (resolved ambiguity #2: cal's identity is the event id, not
+// the start time). calendar_events is a migration-guaranteed base table (always
+// present after db.Open), so a query failure is a genuine lookup error that
+// propagates (freezing the calendar build, MEM-01/MEM-04) rather than being
+// masked as a clean miss — unlike the Swift-owned chat tables, which are created
+// lazily and legitimately absent on a headless daemon.
+func (db *DB) CalendarEventExists(id string) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM calendar_events WHERE id = ?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking calendar event %s: %w", id, err)
+	}
+	return true, nil
+}
+
 // MemoryWatermark returns the unix ts of the last raw message fully processed
 // by the episode extractor (MEM-04 freeze discipline, same shape as the inbox
 // watermark accessors). A fresh workspace without its singleton row yet reads
@@ -418,20 +439,29 @@ func (db *DB) ChatTablesPresent() (bool, error) {
 }
 
 // OwnerChatTurnExists reports whether an owner-authored Discuss turn (role='user')
-// exists in a situation conversation for (conversationID, ts) — the MEM-09
-// authenticity check the belief pass runs before elevating a chat:<id> evidence
-// ref to owner rank. Turn ts is chat_messages.created_at (a REAL unix second);
-// the evidence-line ts is whole seconds, so the match is against the truncated
-// second (CAST ... AS INTEGER). Assumes the chat tables exist — the caller
-// guards with ChatTablesPresent, so a missing table surfaces as an error rather
-// than being masked as a clean miss.
-func (db *DB) OwnerChatTurnExists(conversationID, ts int64) (bool, error) {
+// exists for (conversationID, ts) in a conversation whose context_type is in the
+// allowed set — the MEM-09 authenticity check the belief pass runs before
+// elevating a chat:<id> evidence ref to owner rank. contextTypes is {"situation"}
+// when memory.sources.chats is off (byte-identical to the Phase-4 situation-only
+// check) and {"situation","target","track"} when on, so the owner-rank elevation
+// widens in lockstep with the source flag. The IN-clause is parameterized, never
+// interpolated. Turn ts is chat_messages.created_at (a REAL unix second); the
+// evidence-line ts is whole seconds, so the match is against the truncated second
+// (CAST ... AS INTEGER). Assumes the chat tables exist — the caller guards with
+// ChatTablesPresent, so a missing table surfaces as an error rather than being
+// masked as a clean miss.
+func (db *DB) OwnerChatTurnExists(conversationID, ts int64, contextTypes []string) (bool, error) {
+	if len(contextTypes) == 0 {
+		return false, nil
+	}
+	placeholders, args := inClause(contextTypes)
+	args = append(args, conversationID, ts)
 	var one int
 	err := db.QueryRow(`SELECT 1 FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
-		WHERE c.id = ? AND c.context_type = 'situation'
-		  AND m.role = 'user' AND CAST(m.created_at AS INTEGER) = ?
-		LIMIT 1`, conversationID, ts).Scan(&one)
+		WHERE c.context_type IN (`+placeholders+`)
+		  AND c.id = ? AND m.role = 'user' AND CAST(m.created_at AS INTEGER) = ?
+		LIMIT 1`, args...).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -441,35 +471,43 @@ func (db *DB) OwnerChatTurnExists(conversationID, ts int64) (bool, error) {
 	return true, nil
 }
 
-// OwnerChatTurn is one owner-authored (role='user') Discuss turn in a situation
-// conversation, projected for ingestChatStatements (Phase 4, Task 4).
+// OwnerChatTurn is one owner-authored (role='user') Discuss turn, projected for
+// ingestChatStatements. ContextType is the conversation's context_type
+// (situation/target/track) and ContextID its context_id — together they pick the
+// right subject mapper (chatSubjects).
 type OwnerChatTurn struct {
 	ID             int64  // chat_messages.id — the chat-turn ingest floor key
 	ConversationID int64  // chat_messages.conversation_id (the chat:<id> ref target)
-	SituationID    string // chat_conversations.context_id (the situation the chat is about)
+	ContextType    string // chat_conversations.context_type (situation|target|track)
+	ContextID      string // chat_conversations.context_id (the id the chat is about)
 	TurnTS         int64  // created_at truncated to whole unix seconds (the evidence-line ts)
 	Text           string // verbatim owner statement
 }
 
-// ListOwnerChatTurns returns owner Discuss turns (role='user') in situation
-// conversations with chat_messages.id strictly above floor, oldest id first —
-// the input ingestChatStatements folds into the belief pass as owner-rank
-// evidence. The Swift-owned chat tables are absent on a headless daemon; that
-// is a clean empty read (nil, nil), never an error (MEM-05).
-func (db *DB) ListOwnerChatTurns(floor int64) ([]OwnerChatTurn, error) {
+// ListOwnerChatTurns returns owner Discuss turns (role='user') in conversations
+// whose context_type is in the allowed set, with chat_messages.id strictly above
+// floor, oldest id first — the input ingestChatStatements folds into the belief
+// pass. contextTypes is {"situation"} when memory.sources.chats is off (byte-
+// identical to the Phase-4 situation-only read) and {"situation","target","track"}
+// when on. The IN-clause is parameterized, never interpolated. The Swift-owned
+// chat tables are absent on a headless daemon; that is a clean empty read (nil,
+// nil), never an error (MEM-05).
+func (db *DB) ListOwnerChatTurns(floor int64, contextTypes []string) ([]OwnerChatTurn, error) {
 	present, err := db.ChatTablesPresent()
 	if err != nil {
 		return nil, err
 	}
-	if !present {
+	if !present || len(contextTypes) == 0 {
 		return nil, nil
 	}
-	rows, err := db.Query(`SELECT m.id, m.conversation_id, COALESCE(c.context_id, ''),
+	placeholders, args := inClause(contextTypes)
+	args = append(args, floor)
+	rows, err := db.Query(`SELECT m.id, m.conversation_id, c.context_type, COALESCE(c.context_id, ''),
 			CAST(m.created_at AS INTEGER), m.text
 		FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
-		WHERE m.role = 'user' AND c.context_type = 'situation' AND m.id > ?
-		ORDER BY m.id`, floor)
+		WHERE m.role = 'user' AND c.context_type IN (`+placeholders+`) AND m.id > ?
+		ORDER BY m.id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing owner chat turns: %w", err)
 	}
@@ -478,10 +516,82 @@ func (db *DB) ListOwnerChatTurns(floor int64) ([]OwnerChatTurn, error) {
 	var out []OwnerChatTurn
 	for rows.Next() {
 		var t OwnerChatTurn
-		if err := rows.Scan(&t.ID, &t.ConversationID, &t.SituationID, &t.TurnTS, &t.Text); err != nil {
+		if err := rows.Scan(&t.ID, &t.ConversationID, &t.ContextType, &t.ContextID, &t.TurnTS, &t.Text); err != nil {
 			return nil, fmt.Errorf("scanning owner chat turn: %w", err)
 		}
 		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// inClause builds a parameterized "?,?,..." placeholder string and the matching
+// args slice for a SQL IN clause — the values are always bound, never
+// interpolated (no injection).
+func inClause(values []string) (placeholders string, args []any) {
+	ph := make([]string, len(values))
+	args = make([]any, len(values))
+	for i, v := range values {
+		ph[i] = "?"
+		args[i] = v
+	}
+	return strings.Join(ph, ","), args
+}
+
+// TrackSubjectRefs returns a track's memory subject refs: its channel_ids +
+// participant user ids + assignee/requester/owner user ids (raw ids the caller
+// resolves to memory entities). READ-ONLY (MEM-05): tracks is read, never
+// written. An unknown track id is a clean empty read; the JSON columns are
+// app-written valid JSON, so a malformed value is tolerated (the field is
+// skipped) rather than failing the read.
+func (db *DB) TrackSubjectRefs(trackID int) ([]string, error) {
+	var channelIDsJSON, participantsJSON, assignee, requester, owner string
+	err := db.QueryRow(`SELECT channel_ids, participants, assignee_user_id, requester_user_id, owner_user_id
+		FROM tracks WHERE id = ?`, trackID).Scan(&channelIDsJSON, &participantsJSON, &assignee, &requester, &owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading track %d subjects: %w", trackID, err)
+	}
+	var refs []string
+	var channels []string
+	_ = json.Unmarshal([]byte(channelIDsJSON), &channels) // tolerate malformed
+	refs = append(refs, channels...)
+	var participants []struct {
+		UserID string `json:"user_id"`
+	}
+	_ = json.Unmarshal([]byte(participantsJSON), &participants)
+	for _, p := range participants {
+		if p.UserID != "" {
+			refs = append(refs, p.UserID)
+		}
+	}
+	for _, u := range []string{assignee, requester, owner} {
+		if u != "" {
+			refs = append(refs, u)
+		}
+	}
+	return refs, nil
+}
+
+// TrackIDsForTarget returns the ids of tracks linked to the given target
+// (tracks.linked_target_id), oldest first — the target→track subject mapping
+// (resolved ambiguity #7: a target's memory subjects are its linked track(s)).
+// READ-ONLY. A target with no linked track is a clean empty read.
+func (db *DB) TrackIDsForTarget(targetID int) ([]int, error) {
+	rows, err := db.Query(`SELECT id FROM tracks WHERE linked_target_id = ? ORDER BY id`, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("listing tracks for target %d: %w", targetID, err)
+	}
+	defer rows.Close()
+
+	var out []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning track id for target %d: %w", targetID, err)
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }
@@ -780,6 +890,68 @@ func (db *DB) SetMemoryCalendarWatermark(ts float64) error {
 		return fmt.Errorf("setting memory calendar watermark: %w", err)
 	}
 	return nil
+}
+
+// CalendarExtractEvent is one ended calendar_events row projected for the
+// mechanical calendar past-event→episode builder (memory.sources.calendar).
+// StartUnix carries the event start time (the cal:<event_id> ref ts, for age
+// math); EndUnix carries the end time (the watermark key). Attendees is the raw
+// JSON array; RawJSON carries the recurringEventId for series linking.
+type CalendarExtractEvent struct {
+	ID             string
+	Title          string
+	Description    string
+	Location       string
+	OrganizerEmail string
+	Attendees      string // JSON array
+	StartUnix      int64
+	EndUnix        int64
+	IsRecurring    bool
+	RawJSON        string
+}
+
+// ListCalendarEventsForExtract returns ENDED calendar events (end_time before
+// now) whose end_time unix is above (sinceTS - lookbackDays), oldest end-time
+// first, capped at limit — the raw input the mechanical calendar builder folds
+// into episodes. sinceTS is memory_calendar_last_extracted_ts; the bounded
+// lookback re-scan overlap (resolved ambiguity #3) means a recap or event-edit
+// landing after the watermark passed a still-present event refreshes its episode
+// via the calevent: alias, while the content-equality check keeps an unchanged
+// re-scan a no-op. calendar_events is a migration-guaranteed base table, so a
+// query failure propagates (freezing the calendar watermark) rather than being
+// masked as an empty read.
+func (db *DB) ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit int) ([]CalendarExtractEvent, error) {
+	if limit <= 0 {
+		limit = 2000
+	}
+	nowUnix := time.Now().Unix()
+	floorUnix := int64(sinceTS) - int64(lookbackDays)*86400
+	rows, err := db.Query(`
+		SELECT id, title, description, location, organizer_email, attendees,
+		       CAST(strftime('%s', start_time) AS INTEGER),
+		       CAST(strftime('%s', end_time) AS INTEGER),
+		       is_recurring, raw_json
+		FROM calendar_events
+		WHERE end_time != ''
+		  AND CAST(strftime('%s', end_time) AS INTEGER) < ?
+		  AND CAST(strftime('%s', end_time) AS INTEGER) > ?
+		ORDER BY CAST(strftime('%s', end_time) AS INTEGER), id
+		LIMIT ?`, nowUnix, floorUnix, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing calendar events for extract: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CalendarExtractEvent
+	for rows.Next() {
+		var e CalendarExtractEvent
+		if err := rows.Scan(&e.ID, &e.Title, &e.Description, &e.Location, &e.OrganizerEmail,
+			&e.Attendees, &e.StartUnix, &e.EndUnix, &e.IsRecurring, &e.RawJSON); err != nil {
+			return nil, fmt.Errorf("scanning calendar extract event: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // GmailExtractMessage is one gmail_messages row fed to the Gmail thread→episode

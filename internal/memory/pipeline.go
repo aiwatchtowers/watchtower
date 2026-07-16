@@ -26,6 +26,20 @@ const extractBatchSource = "memory.extract_episodes_batch"
 // (people/channels active in the last 30 days, per the design spec).
 const seedWindowDays = 30
 
+// chatContextTypes is the allowed conversation context-type set for the chat
+// surface, derived from memory.sources.chats: {"situation"} when off (byte-
+// identical to the Phase-4 situation-only ingest, so MEM-09 stays unchanged) and
+// {"situation","target","track"} when on (the Slice-2 generalization; onboarding
+// chats are never persisted, so they are out — resolved ambiguity #4). It gates
+// BOTH the ingest read (ListOwnerChatTurns) and the resolver's owner-authenticity
+// widening (chatResolver.contextTypes), so the two move in lockstep.
+func chatContextTypes(chatsOn bool) []string {
+	if chatsOn {
+		return []string{"situation", "target", "track"}
+	}
+	return []string{"situation"}
+}
+
 // RunStats counts what one consolidation run did.
 type RunStats struct {
 	OwnerEditsCommitted bool        // MEM-03: a dirty worktree was committed as owner-edit first
@@ -42,6 +56,10 @@ type RunStats struct {
 	// Gmail source (Phase-5 slice-1, zero unless memory.sources.gmail).
 	GmailEpisodes      int // episode nodes written by the Gmail thread→episode extractor
 	GmailThreadsFailed int // Gmail thread batches whose extraction failed (watermark frozen for them)
+
+	// Calendar source (Phase-5 slice-2, zero unless memory.sources.calendar).
+	CalendarEpisodes     int // episode nodes built/refreshed by the mechanical calendar builder
+	CalendarEventsFailed int // calendar events dropped (unresolved ref) or frozen (step error)
 
 	// Semantic tier (Phase 3, all zero unless memory.semantic.enabled).
 	Deduped           int // episodes merged into their older twin (DedupeEpisodes)
@@ -132,7 +150,8 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 	// through their own message-only / mail-only registries.
 	p.chatChecker = &memoChatChecker{db: database}
 	p.registry = newProvenanceRegistry(
-		chatResolver{db: p.chatChecker, logf: logf},
+		chatResolver{db: p.chatChecker, logf: logf, contextTypes: chatContextTypes(cfg.Sources.Chats)},
+		calResolver{database},
 		actResolver{db: database, logf: logf},
 	)
 	return p
@@ -198,7 +217,7 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 
 	// (2) Mechanical entity seeding (no AI). Gmail-sender seeding is gated on
 	// memory.sources.gmail so the source is literally dark when off.
-	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail})
+	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail, Calendar: p.cfg.Sources.Calendar})
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
@@ -209,11 +228,27 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
 
+	// (3b) Mechanical calendar past-event → episode builder (dark behind
+	// memory.sources.calendar). Runs after seeding (participants + series must be
+	// seeded first) and before Slack extraction. No AI call. Source-isolated: a
+	// calendar-step error is logged, never fatal, and never touches another
+	// watermark. Its pipeline_steps row numbers first, so the Slack extraction
+	// batches number after it.
+	calSteps := 0
+	if p.cfg.Sources.Calendar {
+		n, cerr := p.runCalendarIngest(runID, 0, &stats)
+		if cerr != nil {
+			p.logf("memory: calendar ingest: %v", cerr)
+		}
+		calSteps = n
+	}
+
 	// (4) Episode extraction from raw text.
-	batchSteps, err := p.runExtract(ctx, runID, acc, &stats)
+	slackSteps, err := p.runExtract(ctx, runID, calSteps, acc, &stats)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
+	batchSteps := calSteps + slackSteps
 
 	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
 	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
@@ -271,9 +306,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped)",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
-		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.InteractionsIngested, stats.EngagementUpdated,
+		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.InteractionsIngested, stats.EngagementUpdated,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped)
 	return stats, nil
 }
@@ -314,7 +349,7 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 			p.logf("memory: chat ingest: read floor: %v", ferr)
 			p.recordSemanticStep(runID, &step, "chat-ingest", "error", nil, start)
 		} else {
-			s, nf, ierr := p.ingestChatStatements(floor)
+			s, nf, ierr := p.ingestChatStatements(floor, chatContextTypes(p.cfg.Sources.Chats))
 			chatFloorBefore, chatNewFloor = floor, nf
 			if ierr != nil {
 				p.logf("memory: chat ingest: %v", ierr)
@@ -594,7 +629,7 @@ type runWindow struct {
 // pipeline_steps row while the run continues with the next channel. Returns the
 // number of batch pipeline_steps rows recorded, so the semantic phase can number
 // its own rows after them even when the DB read for numbering later fails.
-func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumulator, stats *RunStats) (int, error) {
+func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, acc *usageAccumulator, stats *RunStats) (int, error) {
 	if p.generator == nil {
 		p.logf("memory: no generator configured, skipping episode extraction")
 		return 0, nil
@@ -652,7 +687,7 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 			stats.RefsRejected += rejected
 			current = p.advanceWatermark(windows, done, current)
 		}
-		p.recordBatchStep(runID, bi+1, len(batches), status, windows, idxs, usage, start)
+		p.recordBatchStep(runID, stepOffset+bi+1, stepOffset+len(batches), status, windows, idxs, usage, start)
 		recorded++
 	}
 	return recorded, nil

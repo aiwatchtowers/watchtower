@@ -2,6 +2,7 @@ package memory
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,6 +16,7 @@ type SeedConfig struct {
 	MinMessages int  // people/senders need at least this many messages in the window
 	WindowDays  int  // activity lookback for people and channels
 	Gmail       bool // seed Gmail senders as person entities (memory.sources.gmail)
+	Calendar    bool // seed recurring calendar series as entities (memory.sources.calendar)
 }
 
 // machineSenderLocalParts are the local-part substrings that mark an email
@@ -68,7 +70,7 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 
 	var candidates []seedCandidate
 	for _, load := range []func(*db.DB, SeedConfig, float64) ([]seedCandidate, error){
-		seedPeople, seedChannels, seedJiraProjects, seedGmailSenders,
+		seedPeople, seedChannels, seedJiraProjects, seedGmailSenders, seedCalendarSeries,
 	} {
 		batch, err := load(database, cfg, since)
 		if err != nil {
@@ -300,6 +302,67 @@ func seedGmailSenders(database *db.DB, cfg SeedConfig, since float64) ([]seedCan
 		})
 	}
 	return out, rows.Err()
+}
+
+// calendarSeriesAliasPrefix marks an entity as a recurring calendar series
+// ("calseries:<recurringEventId>") — the idempotency key that unifies every
+// instance of one Google recurring event under a single series entity.
+const calendarSeriesAliasPrefix = "calseries:"
+
+// seedCalendarSeries returns one candidate per distinct Google recurringEventId
+// among currently-synced recurring events (is_recurring=1), the id parsed from
+// raw_json (the JSON key recurringEventId). Title is the series' event title
+// (any instance's, first by id); alias is "calseries:<recurringEventId>". It is
+// a no-op unless cfg.Calendar (memory.sources.calendar) — the source seeds no
+// series when dark. A non-recurring event, or a recurring event whose raw_json
+// carries no recurringEventId, yields no series candidate; a malformed raw_json
+// is skipped (the Gmail internal_date defensive-skip precedent), never an error.
+// Identity stitching is free (SeedEntities's LookupMemoryAlias idempotency + the
+// within-run claimed set).
+func seedCalendarSeries(database *db.DB, cfg SeedConfig, _ float64) ([]seedCandidate, error) {
+	if !cfg.Calendar {
+		return nil, nil // source dark — seed no series
+	}
+	rows, err := database.Query(`
+		SELECT title, raw_json FROM calendar_events
+		WHERE is_recurring = 1 AND raw_json != ''
+		ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("memory: seed calendar series query: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]bool)
+	var out []seedCandidate
+	for rows.Next() {
+		var title, rawJSON string
+		if err := rows.Scan(&title, &rawJSON); err != nil {
+			return nil, fmt.Errorf("memory: seed calendar series scan: %w", err)
+		}
+		recurringID := parseRecurringEventID(rawJSON)
+		if recurringID == "" || seen[recurringID] {
+			continue // not a series instance, malformed json, or already claimed
+		}
+		seen[recurringID] = true
+		out = append(out, seedCandidate{
+			title:   firstNonEmpty(title, recurringID),
+			aliases: []string{calendarSeriesAliasPrefix + recurringID},
+		})
+	}
+	return out, rows.Err()
+}
+
+// parseRecurringEventID extracts the Google recurringEventId from an event's
+// raw_json. A malformed raw_json (or one with no recurringEventId) yields "" —
+// a skip, never an error (the seedCalendarSeries defensive-skip contract).
+func parseRecurringEventID(rawJSON string) string {
+	var probe struct {
+		RecurringEventID string `json:"recurringEventId"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &probe); err != nil {
+		return ""
+	}
+	return probe.RecurringEventID
 }
 
 // emailLocalPart returns the part of an email address before the first '@',

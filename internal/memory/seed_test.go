@@ -360,6 +360,118 @@ func TestSeedGmailSenderOutsideWindowSkipped(t *testing.T) {
 	assert.Zero(t, created, "out-of-window sender not seeded")
 }
 
+// seedCalendarTestConfig is seedTestConfig with the calendar series source ON.
+var seedCalendarTestConfig = SeedConfig{MinMessages: 3, WindowDays: 30, Calendar: true}
+
+// calEvent is a compact spec for a seeded calendar_events row (shared by the
+// seed and calendar-ingest tests).
+type calEvent struct {
+	id            string
+	calendarID    string
+	title         string
+	description   string
+	location      string
+	organizer     string
+	start         string // ISO8601
+	end           string // ISO8601
+	attendeesJSON string // JSON array; defaults to "[]"
+	isRecurring   bool
+	rawJSON       string // defaults to "{}"
+}
+
+// seedCalendarEvent inserts a calendar_events row (creating its calendar first,
+// since calendar_id is an FK). Sensible defaults keep call sites terse.
+func seedCalendarEvent(t *testing.T, d *db.DB, ev calEvent) {
+	t.Helper()
+	if ev.calendarID == "" {
+		ev.calendarID = "cal1"
+	}
+	require.NoError(t, d.UpsertCalendar(db.CalendarCalendar{ID: ev.calendarID, Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
+	attendees := ev.attendeesJSON
+	if attendees == "" {
+		attendees = "[]"
+	}
+	rawJSON := ev.rawJSON
+	if rawJSON == "" {
+		rawJSON = "{}"
+	}
+	require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{
+		ID: ev.id, CalendarID: ev.calendarID, Title: ev.title,
+		Description: ev.description, Location: ev.location, OrganizerEmail: ev.organizer,
+		StartTime: ev.start, EndTime: ev.end, Attendees: attendees,
+		IsRecurring: ev.isRecurring, RawJSON: rawJSON,
+	}))
+}
+
+// TestSeedCalendarSeries: two recurring instances sharing one recurringEventId
+// seed exactly ONE calseries entity, titled from the series' event title.
+func TestSeedCalendarSeries(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Weekly Sync", start: "2026-07-08T10:00:00Z", end: "2026-07-08T10:30:00Z", isRecurring: true, rawJSON: `{"recurringEventId":"series-A"}`})
+	seedCalendarEvent(t, d, calEvent{id: "evt-2", title: "Weekly Sync", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: true, rawJSON: `{"recurringEventId":"series-A"}`})
+
+	created, err := SeedEntities(v, d, seedCalendarTestConfig)
+	require.NoError(t, err)
+	assert.Equal(t, 1, created, "two instances of one series → one calseries entity")
+
+	n, err := Resolve(v, d, "calseries:series-A")
+	require.NoError(t, err)
+	assert.Equal(t, "entity", n.Type)
+	assert.Equal(t, "long", n.Tier)
+	assert.Equal(t, "Weekly Sync", n.Title)
+	assert.Contains(t, n.Aliases, "calseries:series-A")
+}
+
+// TestSeedCalendarSeriesNonRecurringNone: a non-recurring event, and a
+// recurring event whose raw_json carries no recurringEventId, seed no series.
+func TestSeedCalendarSeriesNonRecurringNone(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "One-off", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: false})
+	seedCalendarEvent(t, d, calEvent{id: "evt-2", title: "Rec no id", start: "2026-07-15T11:00:00Z", end: "2026-07-15T11:30:00Z", isRecurring: true, rawJSON: `{"summary":"x"}`})
+
+	created, err := SeedEntities(v, d, seedCalendarTestConfig)
+	require.NoError(t, err)
+	assert.Zero(t, created, "no recurringEventId → no series entity")
+}
+
+// TestSeedCalendarSeriesMalformedRawJSONSkipped: an event with malformed
+// raw_json is skipped (the Gmail internal_date defensive-skip precedent), not
+// an error.
+func TestSeedCalendarSeriesMalformedRawJSONSkipped(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Bad", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: true, rawJSON: `{not json`})
+
+	created, err := SeedEntities(v, d, seedCalendarTestConfig)
+	require.NoError(t, err, "malformed raw_json is skipped, not an error")
+	assert.Zero(t, created)
+}
+
+// TestSeedCalendarSeriesGateOff: with the calendar source dark
+// (SeedConfig.Calendar false), no series is seeded.
+func TestSeedCalendarSeriesGateOff(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Weekly Sync", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: true, rawJSON: `{"recurringEventId":"series-A"}`})
+
+	created, err := SeedEntities(v, d, seedTestConfig) // Calendar: false
+	require.NoError(t, err)
+	assert.Zero(t, created, "no series seeded when the calendar source is off")
+}
+
+// TestSeedCalendarSeriesIdempotent: re-running SeedEntities creates no second
+// entity for the same series.
+func TestSeedCalendarSeriesIdempotent(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Weekly Sync", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: true, rawJSON: `{"recurringEventId":"series-A"}`})
+
+	created, err := SeedEntities(v, d, seedCalendarTestConfig)
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+
+	created, err = SeedEntities(v, d, seedCalendarTestConfig)
+	require.NoError(t, err)
+	assert.Zero(t, created, "second run creates nothing")
+}
+
 func TestSeedCommitMessage(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedUser(t, d, "U1ALICE", "Alice", "", 0)

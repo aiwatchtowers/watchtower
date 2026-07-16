@@ -96,7 +96,7 @@ func (m messageResolver) Validate(ref episodeRef) (bool, error) {
 // without a live database.
 type chatTurnChecker interface {
 	ChatTablesPresent() (bool, error)
-	OwnerChatTurnExists(conversationID, ts int64) (bool, error)
+	OwnerChatTurnExists(conversationID, ts int64, contextTypes []string) (bool, error)
 }
 
 // memoChatChecker wraps a chatTurnChecker and memoizes ChatTablesPresent for the
@@ -121,22 +121,27 @@ func (m *memoChatChecker) ChatTablesPresent() (bool, error) {
 	return m.present, m.err
 }
 
-func (m *memoChatChecker) OwnerChatTurnExists(conversationID, ts int64) (bool, error) {
-	return m.db.OwnerChatTurnExists(conversationID, ts)
+func (m *memoChatChecker) OwnerChatTurnExists(conversationID, ts int64, contextTypes []string) (bool, error) {
+	return m.db.OwnerChatTurnExists(conversationID, ts, contextTypes)
 }
 
 // chatResolver is the scheme-"chat" resolver: it "resolves" a chat:<id> ref iff
-// the ref is a genuine role='user' situation Discuss turn (ChatTablesPresent +
-// OwnerChatTurnExists). Folding the MEM-09 owner-authenticity check INTO the
-// resolver's existence check is deliberate — a chat: ref that resolves is, by
-// construction, an authored owner turn, which is exactly what lets
-// newEvidenceLines mint it at owner rank (MEM-09 stays a pure code path). Every
-// failure mode (unparseable id, absent tables, non-owner turn) is a positive
-// non-resolution (ok=false); only a genuine DB failure returns err so the
-// belief pass can soft-drop it and re-scan next run.
+// the ref is a genuine role='user' Discuss turn in a conversation whose
+// context_type is in contextTypes (ChatTablesPresent + OwnerChatTurnExists).
+// Folding the MEM-09 owner-authenticity check INTO the resolver's existence
+// check is deliberate — a chat: ref that resolves is, by construction, an
+// authored owner turn, which is exactly what lets newEvidenceLines mint it at
+// owner rank (MEM-09 stays a pure code path). contextTypes is {"situation"} when
+// memory.sources.chats is off (byte-identical to the Phase-4 situation-only
+// check, so every MEM-09 guard passes unchanged) and {"situation","target",
+// "track"} when on, so owner-rank elevation widens in lockstep with the flag.
+// Every failure mode (unparseable id, absent tables, non-owner turn, wrong
+// context type) is a positive non-resolution (ok=false); only a genuine DB
+// failure returns err so the belief pass can soft-drop it and re-scan next run.
 type chatResolver struct {
-	db   chatTurnChecker
-	logf func(string, ...any)
+	db           chatTurnChecker
+	logf         func(string, ...any)
+	contextTypes []string
 }
 
 func (chatResolver) Scheme() string { return strings.TrimSuffix(chatRefPrefix, ":") }
@@ -159,13 +164,13 @@ func (c chatResolver) Validate(ref episodeRef) (bool, error) {
 		c.logf("memory: beliefs: chat ref %s %s dropped (chat tables absent — headless daemon, MEM-09)", ref.ChannelID, ref.TS)
 		return false, nil
 	}
-	owner, cerr := c.db.OwnerChatTurnExists(convID, ts)
+	owner, cerr := c.db.OwnerChatTurnExists(convID, ts, c.contextTypes)
 	if cerr != nil {
 		c.logf("memory: beliefs: chat ref %s %s lookup: %v — dropped", ref.ChannelID, ref.TS, cerr)
 		return false, cerr
 	}
 	if !owner {
-		c.logf("memory: beliefs: chat ref %s %s is not an owner (role='user') situation turn — dropped (MEM-09)", ref.ChannelID, ref.TS)
+		c.logf("memory: beliefs: chat ref %s %s is not an owner (role='user') Discuss turn in an allowed context — dropped (MEM-09)", ref.ChannelID, ref.TS)
 		return false, nil
 	}
 	return true, nil
@@ -194,6 +199,32 @@ func (mailResolver) Scheme() string { return strings.TrimSuffix(mailRefPrefix, "
 
 func (m mailResolver) Validate(ref episodeRef) (bool, error) {
 	return m.db.GmailMessageExists(strings.TrimPrefix(ref.ChannelID, mailRefPrefix))
+}
+
+// calChecker is the write-time calendar-event existence lookup behind the cal:
+// scheme. *db.DB satisfies it; tests inject an erroring fake to exercise the
+// lookup-error propagation path without a live calendar_events table.
+type calChecker interface {
+	CalendarEventExists(id string) (bool, error)
+}
+
+// calResolver is the scheme-"cal" resolver: a cal:<event_id> ref resolves iff a
+// calendar_events row with that id exists (resolved ambiguity #2 — identity is
+// the event id; the ref's ts carries the event start time for age math but is
+// not re-validated here, the mailResolver shape). The mechanical calendar
+// builder validates through a cal-only registry built from it; calendar_events
+// is a migration-guaranteed base table, so a lookup failure is a genuine error
+// (step freeze), not a clean miss (the GmailMessageExists precedent).
+type calResolver struct{ db calChecker }
+
+// calRefPrefix marks an evidence/episode channel_id as a calendar event
+// reference ("cal:<event_id>").
+const calRefPrefix = "cal:"
+
+func (calResolver) Scheme() string { return strings.TrimSuffix(calRefPrefix, ":") }
+
+func (c calResolver) Validate(ref episodeRef) (bool, error) {
+	return c.db.CalendarEventExists(strings.TrimPrefix(ref.ChannelID, calRefPrefix))
 }
 
 // interactionChecker is the write-time owner-interaction existence lookup behind

@@ -6,8 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pressly/goose/v3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // memTestNode returns a valid node row for tests, overridable via mutate.
@@ -898,13 +901,49 @@ func TestOwnerChatTurnExists(t *testing.T) {
 		{"unknown conversation", 999, 1720000000, false},
 	}
 	for _, c := range cases {
-		got, err := db.OwnerChatTurnExists(c.conv, c.ts)
+		got, err := db.OwnerChatTurnExists(c.conv, c.ts, []string{"situation"})
 		if err != nil {
 			t.Fatalf("%s: OwnerChatTurnExists: %v", c.name, err)
 		}
 		if got != c.want {
 			t.Errorf("%s: OwnerChatTurnExists(%d,%d) = %v, want %v", c.name, c.conv, c.ts, got, c.want)
 		}
+	}
+}
+
+// TestOwnerChatTurnExistsWidenedContextTypes: with the widened context-type set
+// {situation,target,track} a track owner turn resolves; with only {situation} it
+// does not (the flag-off MEM-09 shape). The IN-clause is parameterized, so a
+// context type carrying a quote is harmless (no injection).
+func TestOwnerChatTurnExistsWidenedContextTypes(t *testing.T) {
+	db := openTestDB(t)
+	createChatTablesForTest(t, db)
+	track := insertChatConversation(t, db, "track", "9")
+	insertChatMessage(t, db, track, "user", "owner on a track", 1720000000.0)
+
+	off, err := db.OwnerChatTurnExists(track, 1720000000, []string{"situation"})
+	if err != nil {
+		t.Fatalf("OwnerChatTurnExists (situation-only): %v", err)
+	}
+	if off {
+		t.Error("a track turn must NOT resolve under the situation-only set (MEM-09 flag-off shape)")
+	}
+
+	on, err := db.OwnerChatTurnExists(track, 1720000000, []string{"situation", "target", "track"})
+	if err != nil {
+		t.Fatalf("OwnerChatTurnExists (widened): %v", err)
+	}
+	if !on {
+		t.Error("a track turn must resolve under the widened set")
+	}
+
+	// A context type carrying a quote is a normal (unmatched) value, not injection.
+	safe, err := db.OwnerChatTurnExists(track, 1720000000, []string{`track' OR '1'='1`})
+	if err != nil {
+		t.Fatalf("OwnerChatTurnExists (quoted): %v", err)
+	}
+	if safe {
+		t.Error("a quoted context type is parameterized, not interpolated — no match")
 	}
 }
 
@@ -917,7 +956,7 @@ func TestOwnerChatTurnExistsTruncatesFractionalSecond(t *testing.T) {
 	sit := insertChatConversation(t, db, "situation", "1")
 	insertChatMessage(t, db, sit, "user", "x", 1720000000.75)
 
-	ok, err := db.OwnerChatTurnExists(sit, 1720000000)
+	ok, err := db.OwnerChatTurnExists(sit, 1720000000, []string{"situation"})
 	if err != nil {
 		t.Fatalf("OwnerChatTurnExists: %v", err)
 	}
@@ -939,7 +978,7 @@ func TestListOwnerChatTurns(t *testing.T) {
 	u2 := insertChatMessage(t, db, sit, "user", "second", 1720000200.0)
 	insertChatMessage(t, db, other, "user", "elsewhere", 1720000300.0)
 
-	turns, err := db.ListOwnerChatTurns(0)
+	turns, err := db.ListOwnerChatTurns(0, []string{"situation"})
 	if err != nil {
 		t.Fatalf("ListOwnerChatTurns: %v", err)
 	}
@@ -949,8 +988,8 @@ func TestListOwnerChatTurns(t *testing.T) {
 	if turns[0].ID != u1 || turns[1].ID != u2 {
 		t.Errorf("turn ids = [%d,%d], want [%d,%d]", turns[0].ID, turns[1].ID, u1, u2)
 	}
-	if turns[0].ConversationID != sit || turns[0].SituationID != "42" {
-		t.Errorf("turn0 conversation=%d situation=%q, want %d \"42\"", turns[0].ConversationID, turns[0].SituationID, sit)
+	if turns[0].ConversationID != sit || turns[0].ContextID != "42" || turns[0].ContextType != "situation" {
+		t.Errorf("turn0 conversation=%d context=%q/%q, want %d \"situation\"/\"42\"", turns[0].ConversationID, turns[0].ContextType, turns[0].ContextID, sit)
 	}
 	if turns[0].TurnTS != 1720000000 {
 		t.Errorf("turn0 ts = %d, want 1720000000", turns[0].TurnTS)
@@ -960,7 +999,7 @@ func TestListOwnerChatTurns(t *testing.T) {
 	}
 
 	// Floor filters strictly above: floor=u1 drops u1, keeps u2.
-	above, err := db.ListOwnerChatTurns(u1)
+	above, err := db.ListOwnerChatTurns(u1, []string{"situation"})
 	if err != nil {
 		t.Fatalf("ListOwnerChatTurns(floor): %v", err)
 	}
@@ -969,12 +1008,49 @@ func TestListOwnerChatTurns(t *testing.T) {
 	}
 }
 
+// TestListOwnerChatTurnsWidenedContextTypes: the situation-only set returns only
+// the situation turn (MEM-09 flag-off shape); the widened set additionally
+// returns target and track owner turns, each carrying its context_type/id.
+func TestListOwnerChatTurnsWidenedContextTypes(t *testing.T) {
+	db := openTestDB(t)
+	createChatTablesForTest(t, db)
+	sit := insertChatConversation(t, db, "situation", "42")
+	trk := insertChatConversation(t, db, "track", "9")
+	tgt := insertChatConversation(t, db, "target", "3")
+	insertChatMessage(t, db, sit, "user", "on situation", 1720000000.0)
+	insertChatMessage(t, db, trk, "user", "on track", 1720000100.0)
+	insertChatMessage(t, db, tgt, "user", "on target", 1720000200.0)
+
+	only, err := db.ListOwnerChatTurns(0, []string{"situation"})
+	if err != nil {
+		t.Fatalf("ListOwnerChatTurns (situation): %v", err)
+	}
+	if len(only) != 1 || only[0].ContextType != "situation" {
+		t.Fatalf("situation-only set = %+v, want just the situation turn", only)
+	}
+
+	all, err := db.ListOwnerChatTurns(0, []string{"situation", "target", "track"})
+	if err != nil {
+		t.Fatalf("ListOwnerChatTurns (widened): %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("widened set = %+v, want 3 turns", all)
+	}
+	byType := map[string]string{}
+	for _, tn := range all {
+		byType[tn.ContextType] = tn.ContextID
+	}
+	if byType["track"] != "9" || byType["target"] != "3" || byType["situation"] != "42" {
+		t.Errorf("context ids by type = %+v, want situation=42 track=9 target=3", byType)
+	}
+}
+
 // TestListOwnerChatTurnsAbsentTables: on a headless daemon the Swift chat
 // tables never exist — the read is a clean empty no-op, never an error.
 func TestListOwnerChatTurnsAbsentTables(t *testing.T) {
 	db := openTestDB(t)
 
-	turns, err := db.ListOwnerChatTurns(0)
+	turns, err := db.ListOwnerChatTurns(0, []string{"situation"})
 	if err != nil {
 		t.Fatalf("absent chat tables must read empty, got error: %v", err)
 	}
@@ -1072,6 +1148,128 @@ func TestMemoryCalendarWatermarkRoundTrip(t *testing.T) {
 	if ts != 1700000000 {
 		t.Errorf("watermark after set = %v, want 1700000000", ts)
 	}
+}
+
+// TestCalendarEventExists: the write-time existence check behind the cal:
+// provenance scheme resolves an existing calendar_events id and cleanly misses
+// an unknown one.
+func TestCalendarEventExists(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}); err != nil {
+		t.Fatalf("UpsertCalendar: %v", err)
+	}
+	if err := db.UpsertCalendarEvent(CalendarEvent{
+		ID: "evt_1", CalendarID: "cal1", Title: "Standup",
+		StartTime: "2026-07-15T10:00:00Z", EndTime: "2026-07-15T10:30:00Z",
+	}); err != nil {
+		t.Fatalf("UpsertCalendarEvent: %v", err)
+	}
+
+	ok, err := db.CalendarEventExists("evt_1")
+	if err != nil {
+		t.Fatalf("CalendarEventExists(evt_1): %v", err)
+	}
+	if !ok {
+		t.Errorf("existing event should resolve")
+	}
+
+	ok, err = db.CalendarEventExists("missing")
+	if err != nil {
+		t.Fatalf("CalendarEventExists(missing): %v", err)
+	}
+	if ok {
+		t.Errorf("a missing event id must not resolve")
+	}
+}
+
+// TestCalendarEventExistsAbsentTablePropagates: calendar_events is a
+// migration-guaranteed base table, so a query failure propagates as a genuine
+// lookup error rather than being masked as a clean miss.
+func TestCalendarEventExistsAbsentTablePropagates(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.Exec(`DROP TABLE calendar_events`); err != nil {
+		t.Fatalf("dropping calendar_events: %v", err)
+	}
+	if _, err := db.CalendarEventExists("anything"); err == nil {
+		t.Errorf("a failed calendar_events lookup must propagate, not be masked as a miss")
+	}
+}
+
+// TestListCalendarEventsForExtract: only ENDED events (end_time before now)
+// whose end_time is above (watermark - lookback) are returned, oldest-end
+// first; future events and events below the re-scan floor are excluded.
+func TestListCalendarEventsForExtract(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
+	now := time.Now().UTC()
+	mk := func(id string, endOffset time.Duration) {
+		start := now.Add(endOffset - time.Hour)
+		end := now.Add(endOffset)
+		require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+			ID: id, CalendarID: "cal1", Title: id,
+			StartTime: start.Format(time.RFC3339), EndTime: end.Format(time.RFC3339),
+		}))
+	}
+	mk("past-2h", -2*time.Hour) // ended
+	mk("past-1h", -1*time.Hour) // ended, newer
+	mk("future", 2*time.Hour)   // not ended yet — excluded
+
+	// Watermark 0, lookback 2 days → all past events returned, oldest-end first.
+	evs, err := db.ListCalendarEventsForExtract(0, 2, 100)
+	require.NoError(t, err)
+	require.Len(t, evs, 2, "only the two ended events")
+	assert.Equal(t, "past-2h", evs[0].ID, "oldest end_time first")
+	assert.Equal(t, "past-1h", evs[1].ID)
+	assert.Greater(t, evs[1].EndUnix, evs[0].EndUnix)
+	assert.NotZero(t, evs[0].StartUnix, "start unix decoded for the cal: ref ts")
+
+	// Watermark just below past-1h's end, lookback 0 → only past-1h (past-2h is
+	// below the floor).
+	wm := float64(now.Add(-90 * time.Minute).Unix())
+	evs, err = db.ListCalendarEventsForExtract(wm, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, evs, 1)
+	assert.Equal(t, "past-1h", evs[0].ID)
+}
+
+// TestTrackSubjectRefs: a track's subject refs are its channel_ids +
+// participant user ids + assignee/requester/owner user ids, deduped, and an
+// unknown track id is a clean empty read.
+func TestTrackSubjectRefs(t *testing.T) {
+	db := openTestDB(t)
+	res, err := db.Exec(`INSERT INTO tracks (text, channel_ids, participants, assignee_user_id, requester_user_id, owner_user_id)
+		VALUES ('do the thing', ?, ?, 'UASSIGN', 'UREQ', 'UOWN')`,
+		`["C1","C2"]`, `[{"user_id":"UP1"},{"user_id":"UP2"},{"user_id":""}]`)
+	require.NoError(t, err)
+	tid, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	refs, err := db.TrackSubjectRefs(int(tid))
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"C1", "C2", "UP1", "UP2", "UASSIGN", "UREQ", "UOWN"}, refs)
+
+	none, err := db.TrackSubjectRefs(999999)
+	require.NoError(t, err)
+	assert.Empty(t, none, "an unknown track id is a clean empty read")
+}
+
+// TestTrackIDsForTarget: the tracks linked to a target are returned; a target
+// with no linked track is a clean empty read.
+func TestTrackIDsForTarget(t *testing.T) {
+	db := openTestDB(t)
+	tgtID, err := db.CreateTarget(Target{Text: "Ship the thing", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	res, err := db.Exec(`INSERT INTO tracks (text, linked_target_id) VALUES ('t1', ?)`, tgtID)
+	require.NoError(t, err)
+	t1, _ := res.LastInsertId()
+
+	ids, err := db.TrackIDsForTarget(int(tgtID))
+	require.NoError(t, err)
+	assert.Equal(t, []int{int(t1)}, ids)
+
+	none, err := db.TrackIDsForTarget(999999)
+	require.NoError(t, err)
+	assert.Empty(t, none, "a target with no linked track maps to nothing")
 }
 
 // TestMemoryInteractionFloorRoundTrip: the 5D interaction-ingest floor (Task
