@@ -61,6 +61,10 @@ type RunStats struct {
 	CalendarEpisodes     int // episode nodes built/refreshed by the mechanical calendar builder
 	CalendarEventsFailed int // calendar events dropped (unresolved ref) or frozen (step error)
 
+	// Operational mirrors (Phase-5 slice-4, zero unless memory.sources.operational).
+	Mirrored      int // target/track entity mirrors created/refreshed by the mechanical mirror step
+	MirrorsFailed int // mirror steps frozen by a read/resolve/commit error (MEM-14)
+
 	// Semantic tier (Phase 3, all zero unless memory.semantic.enabled).
 	Deduped           int // episodes merged into their older twin (DedupeEpisodes)
 	Promoted          int // concept entities created from recurring hints (PromoteConcepts)
@@ -248,12 +252,27 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		calSteps = n
 	}
 
+	// (3c) Mechanical target/track entity mirrors (dark behind
+	// memory.sources.operational). Runs after situation ingest (its situation:<id>
+	// episodes must exist for the conversion cross-links) and calendar 3b, before
+	// Slack extraction, so the mirror aliases exist before the same run's chat
+	// ingest / belief pass resolves them. No AI call. A read/resolve error fails the
+	// step (logged, MirrorsFailed) but is never fatal to the run (source isolation).
+	mirrorSteps := 0
+	if p.cfg.Sources.Operational {
+		n, merr := p.runOperationalMirrors(runID, calSteps, &stats)
+		if merr != nil {
+			p.logf("memory: operational mirrors: %v", merr)
+		}
+		mirrorSteps = n
+	}
+
 	// (4) Episode extraction from raw text.
-	slackSteps, err := p.runExtract(ctx, runID, calSteps, acc, &stats)
+	slackSteps, err := p.runExtract(ctx, runID, calSteps+mirrorSteps, acc, &stats)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
-	batchSteps := calSteps + slackSteps
+	batchSteps := calSteps + mirrorSteps + slackSteps
 
 	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
 	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
@@ -322,9 +341,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected)",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
-		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.InteractionsIngested, stats.EngagementUpdated,
+		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.InteractionsIngested, stats.EngagementUpdated,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
 		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected)
 	return stats, nil

@@ -1389,6 +1389,136 @@ func (db *DB) ListInteractionSituations(sinceRFC3339 string) ([]InteractionSitua
 	return out, rows.Err()
 }
 
+// MirrorTarget is the read-only projection of a targets row the mechanical
+// operational-mirror step (Phase-5 slice-4, memory.sources.operational) needs to
+// render a target's entity mirror body. READ-ONLY: memory never writes targets
+// (MEM-14). Terminal is true when the target is in a terminal lifecycle state
+// (done / dismissed) — the mirror clears its ## Open loops there.
+type MirrorTarget struct {
+	ID          int
+	Text        string
+	Intent      string
+	Level       string
+	CustomLabel string
+	PeriodStart string
+	PeriodEnd   string
+	Status      string
+	Priority    string
+	BallOn      string
+	DueDate     string
+	SubItems    string // JSON: [{text, done, due_date}]
+	NextStep    string // JSON: {title, ...}, "" when not generated
+	Terminal    bool
+}
+
+// MirrorTrack is the read-only projection of a tracks row the operational-mirror
+// step needs. READ-ONLY (MEM-14). Terminal is true when the track is dismissed
+// (tracks have no separate "done" status — a dismissed_at stamp is the only
+// terminal state), where the mirror clears its ## Open loops.
+type MirrorTrack struct {
+	ID        int
+	Text      string
+	Category  string
+	Ownership string
+	BallOn    string
+	DueDate   float64 // unix seconds, 0 = none
+	Priority  string
+	SubItems  string // JSON: [{text, status}]
+	Terminal  bool
+}
+
+// ListTargetsForMirror returns the target rows the operational-mirror step scans:
+// every non-dismissed target (todo/in_progress/blocked/snoozed/done — a done
+// target is still mirrored, its ## Open loops cleared) PLUS dismissed targets
+// whose updated_at is at/after terminalSinceISO (the bounded terminal window, so
+// a dismissed backlog is mirrored once as it settles and never rides every run).
+// READ-ONLY (MEM-14): targets are only read here, never written. targets is a
+// core (always-migrated) table, so a query failure propagates.
+func (db *DB) ListTargetsForMirror(terminalSinceISO string) ([]MirrorTarget, error) {
+	rows, err := db.Query(`
+		SELECT id, text, intent, level, custom_label, period_start, period_end,
+		       status, priority, ball_on, due_date, sub_items, COALESCE(next_step, ''),
+		       (status IN ('done', 'dismissed'))
+		FROM targets
+		WHERE status != 'dismissed' OR updated_at >= ?
+		ORDER BY id`, terminalSinceISO)
+	if err != nil {
+		return nil, fmt.Errorf("listing targets for mirror: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MirrorTarget
+	for rows.Next() {
+		var t MirrorTarget
+		if err := rows.Scan(&t.ID, &t.Text, &t.Intent, &t.Level, &t.CustomLabel,
+			&t.PeriodStart, &t.PeriodEnd, &t.Status, &t.Priority, &t.BallOn,
+			&t.DueDate, &t.SubItems, &t.NextStep, &t.Terminal); err != nil {
+			return nil, fmt.Errorf("scanning target for mirror: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ListTracksForMirror returns the track rows the operational-mirror step scans:
+// every non-dismissed track PLUS dismissed tracks whose updated_at is at/after
+// terminalSinceISO (the same bounded terminal window as ListTargetsForMirror).
+// READ-ONLY (MEM-14): tracks are only read here, never written. tracks is a core
+// (always-migrated) table, so a query failure propagates.
+func (db *DB) ListTracksForMirror(terminalSinceISO string) ([]MirrorTrack, error) {
+	rows, err := db.Query(`
+		SELECT id, text, category, ownership, ball_on, COALESCE(due_date, 0),
+		       priority, sub_items, (dismissed_at != '')
+		FROM tracks
+		WHERE dismissed_at = '' OR updated_at >= ?
+		ORDER BY id`, terminalSinceISO)
+	if err != nil {
+		return nil, fmt.Errorf("listing tracks for mirror: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MirrorTrack
+	for rows.Next() {
+		var t MirrorTrack
+		if err := rows.Scan(&t.ID, &t.Text, &t.Category, &t.Ownership, &t.BallOn,
+			&t.DueDate, &t.Priority, &t.SubItems, &t.Terminal); err != nil {
+			return nil, fmt.Errorf("scanning track for mirror: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ConvertedSituationIDs returns the ids of situations converted into the given
+// target (converted_target_id = targetID) or track (converted_track_id =
+// trackID), oldest id first — the DASH-03 conversion link the operational mirror
+// resolves to a situation:<id> episode for its ## Links cross-link. A zero
+// targetID/trackID matches nothing on that side (a mirror is a target OR a track,
+// so the caller passes the relevant id and 0 for the other). READ-ONLY (MEM-14):
+// situations are only read here, never written. situations is a core table, so a
+// query failure propagates.
+func (db *DB) ConvertedSituationIDs(targetID, trackID int) ([]int, error) {
+	rows, err := db.Query(`
+		SELECT id FROM situations
+		WHERE (? != 0 AND converted_target_id = ?)
+		   OR (? != 0 AND converted_track_id = ?)
+		ORDER BY id`, targetID, targetID, trackID, trackID)
+	if err != nil {
+		return nil, fmt.Errorf("listing converted situation ids: %w", err)
+	}
+	defer rows.Close()
+
+	var out []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning converted situation id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // LinkedEntityEngagement sums the engagement aggregates of every live entity that
 // links to the given node (its body carries a [[<id>…]] wiki-link) — the
 // retention-importance input eviction reads for an episode (Task 8). It mirrors
