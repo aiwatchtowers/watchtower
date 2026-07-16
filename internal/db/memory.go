@@ -1541,3 +1541,19 @@ func (db *DB) ListDigestShadow(sinceISO string) ([]DigestShadowRow, error) {
 	}
 	return result, nil
 }
+
+// HasFreshDigestShadow reports whether a shadow row already exists for the
+// exact (channel, period) window with created_at at or after the legacy
+// digest's created_at — i.e. the window was already rendered against this
+// legacy digest and re-rendering would only re-spend an AI call for an
+// identical comparison (compare runs on a 48h lookback every cycle).
+func (db *DB) HasFreshDigestShadow(channelID string, periodFrom, periodTo float64, legacyCreatedAt string) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM memory_digest_shadow
+		WHERE channel_id = ? AND period_from = ? AND period_to = ? AND created_at >= ?`,
+		channelID, periodFrom, periodTo, legacyCreatedAt).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("checking digest shadow freshness: %w", err)
+	}
+	return n > 0, nil
+}

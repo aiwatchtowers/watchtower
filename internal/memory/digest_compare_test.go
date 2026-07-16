@@ -308,3 +308,31 @@ func TestRenderCompareReport(t *testing.T) {
 	// Deterministic: rendering twice yields the same bytes.
 	assert.Equal(t, report, RenderCompareReport(cs, at))
 }
+
+// TestCompareDigestsSkipsFreshShadow: a second compare pass over the same
+// legacy digest must not re-spend an AI call — the fresh shadow row short-
+// circuits it (panel review 2026-07-16, MINOR-1).
+func TestCompareDigestsSkipsFreshShadow(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base, _, _, _ := compareFixture(t, d)
+	indexEpisodeWithProvenance(t, v, d, episodeNode("ep_00000000000000000000000031", "Rollout incident", "C0AAA",
+		"The deploy broke prod.", "Rolled back.", fmt.Sprintf("%d.000100", base)))
+
+	calls := 0
+	reply := func(string) (string, error) {
+		calls++
+		return fmt.Sprintf(`{"summary":"rendered","topics":[{"title":"Rollout","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":["%d.000100"]}]}`, base), nil
+	}
+	p := NewPipeline(d, v, &fakeGen{reply: reply}, pipelineTestConfig(), t.Logf)
+
+	cs1, err := p.CompareDigests(context.Background(), time.Now().Add(-24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, cs1.ShadowsWritten)
+	assert.Equal(t, 1, calls)
+
+	cs2, err := p.CompareDigests(context.Background(), time.Now().Add(-24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 0, cs2.ShadowsWritten, "fresh shadow short-circuits the window")
+	assert.Equal(t, 1, cs2.Skipped)
+	assert.Equal(t, 1, calls, "no second AI call")
+}

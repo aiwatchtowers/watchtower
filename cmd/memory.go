@@ -432,6 +432,9 @@ func runMemoryDigestCompare(cmd *cobra.Command, _ []string) error {
 	}
 
 	report := memory.RenderCompareReport(stats, time.Now())
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("creating report directory: %w", err)
+	}
 	if err := os.WriteFile(outPath, []byte(report), 0o644); err != nil {
 		return fmt.Errorf("writing compare report to %s: %w", outPath, err)
 	}

@@ -55,6 +55,7 @@ type ChannelCompare struct {
 type CompareStats struct {
 	Channels       []ChannelCompare
 	ShadowsWritten int // shadow rows written (a covered window OR a coverage-0 no-episode window)
+	Skipped        int // windows already shadow-rendered against the same legacy digest (fresh — no AI re-spend)
 	Failed         int // channels whose render/read failed and were isolated
 	RefsRejected   int // total invented render refs dropped across all channels
 }
@@ -75,6 +76,19 @@ func (p *Pipeline) CompareDigests(ctx context.Context, since time.Time) (Compare
 		return cs, err
 	}
 	for _, d := range digests {
+		// Skip windows already shadow-rendered against this legacy digest —
+		// the 48h lookback would otherwise re-spend an identical haiku call
+		// every memory cycle (panel review 2026-07-16, MINOR-1).
+		fresh, ferr := p.db.HasFreshDigestShadow(d.ChannelID, d.PeriodFrom, d.PeriodTo, d.CreatedAt)
+		if ferr != nil {
+			cs.Failed++
+			p.logf("memory: digest compare [%s]: freshness check: %v", d.ChannelID, ferr)
+			continue
+		}
+		if fresh {
+			cs.Skipped++
+			continue
+		}
 		cc, rejected, cerr := p.compareOneChannel(ctx, d)
 		if cerr != nil {
 			cs.Failed++
