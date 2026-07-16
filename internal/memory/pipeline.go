@@ -1033,6 +1033,28 @@ func (p *Pipeline) batchPrompts(windows []runWindow, idxs []int) (system, user, 
 func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nodes []Node, ids []string) {
 	entityIdx := make(map[string]int) // entity node ID → index in nodes
 	var unresolved []db.EntityHint    // hints with no matching entity, for promotion tracking
+
+	// link resolves hint to an active entity and appends l to its ## Links,
+	// deduping against entityIdx so an entity touched twice in this batch
+	// (once via a structural hint, once via a model hint, or by two
+	// episodes) is only appended to once per episode line (appendToLinks
+	// itself is idempotent against exact-duplicate lines).
+	link := func(hint, l string) (en Node, ok bool) {
+		en, rerr := Resolve(p.vault, p.db, hint)
+		if rerr != nil || en.Type != "entity" || en.Status != "active" {
+			return Node{}, false
+		}
+		idx, seen := entityIdx[en.ID]
+		if !seen {
+			idx = len(nodes)
+			entityIdx[en.ID] = idx
+			nodes = append(nodes, en)
+			ids = append(ids, en.ID)
+		}
+		nodes[idx].Body = appendToLinks(nodes[idx].Body, l)
+		return nodes[idx], true
+	}
+
 	for _, ep := range kept {
 		title := strings.Join(strings.Fields(ep.Title), " ")
 		if title == "" {
@@ -1049,32 +1071,36 @@ func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nod
 		nodes = append(nodes, n)
 		ids = append(ids, n.ID)
 
-		link := "- [[" + n.ID + "|" + linkLabel(title) + "]]\n"
+		linkLine := "- [[" + n.ID + "|" + linkLabel(title) + "]]\n"
+
+		// Structural back-links: participants and the episode's own channel
+		// are exact Slack ids already validated by the extraction schema —
+		// no model free-text judgment involved, so an unresolved one (not
+		// yet seeded, or a bot) is silently skipped, never logged or tracked
+		// for concept-promotion (that stays entity_hints-only, below). This
+		// is the primary link source: entity_hints alone left ~448/450
+		// entities in a lived-in vault with zero linked episodes, since the
+		// extraction prompt gives the model little reason to populate it.
+		for _, uid := range ep.Participants {
+			link(uid, linkLine)
+		}
+		if len(ep.Refs) > 0 && ep.Refs[0].ChannelID != "" {
+			link(ep.Refs[0].ChannelID, linkLine)
+		}
+
 		for _, hint := range ep.EntityHints {
-			en, rerr := Resolve(p.vault, p.db, hint)
-			if rerr != nil {
-				// Unresolved hint: no entity page matches it yet. Log as before
-				// and persist it for concept-entity promotion once it recurs
-				// across enough distinct episodes (spec goal 6). Keyed on the
-				// episode id, so re-extracting the same episode never
-				// double-counts. Normalized the same way conceptAlias expects.
-				p.logf("memory: extract [%s]: entity hint %q unresolved", label, hint)
-				if norm := strings.ToLower(strings.TrimSpace(hint)); norm != "" {
-					unresolved = append(unresolved, db.EntityHint{Hint: norm, EpisodeID: n.ID})
-				}
+			if _, ok := link(hint, linkLine); ok {
 				continue
 			}
-			if en.Type != "entity" || en.Status != "active" {
-				continue
+			// Unresolved hint: no entity page matches it yet. Log as before
+			// and persist it for concept-entity promotion once it recurs
+			// across enough distinct episodes (spec goal 6). Keyed on the
+			// episode id, so re-extracting the same episode never
+			// double-counts. Normalized the same way conceptAlias expects.
+			p.logf("memory: extract [%s]: entity hint %q unresolved", label, hint)
+			if norm := strings.ToLower(strings.TrimSpace(hint)); norm != "" {
+				unresolved = append(unresolved, db.EntityHint{Hint: norm, EpisodeID: n.ID})
 			}
-			idx, seen := entityIdx[en.ID]
-			if !seen {
-				idx = len(nodes)
-				entityIdx[en.ID] = idx
-				nodes = append(nodes, en)
-				ids = append(ids, en.ID)
-			}
-			nodes[idx].Body = appendToLinks(nodes[idx].Body, link)
 		}
 	}
 	// Accumulation runs whenever memory is enabled (harmless when the semantic

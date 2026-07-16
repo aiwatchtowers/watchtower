@@ -460,3 +460,19 @@ func TestReviseBeliefsNonOwnerDowngradeNoDispute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, disputed)
 }
+
+// TestBuildReviseBeliefsPromptListsKnownSubjects guards the fix for the first
+// live semantic-tier run proposing 13 propose-new ops that ALL rejected with
+// "subject does not resolve to an entity": the prompt asked the model for "an
+// entity id" without ever showing it one, so it invented readable slugs
+// instead. The prompt must render every known subject's exact id (so the
+// model can copy it) and must tell the model not to propose-new when nothing
+// is eligible.
+func TestBuildReviseBeliefsPromptListsKnownSubjects(t *testing.T) {
+	subjects := []Node{{ID: "ent_01KNOWNSUBJECT000000000001", Title: "Alice"}}
+	_, user := buildReviseBeliefsPrompt("%s", "en", nil, subjects, nil, nil)
+	assert.Contains(t, user, "ent_01KNOWNSUBJECT000000000001: Alice")
+
+	_, empty := buildReviseBeliefsPrompt("%s", "en", nil, nil, nil, nil)
+	assert.Contains(t, empty, "none — do not propose-new this run")
+}

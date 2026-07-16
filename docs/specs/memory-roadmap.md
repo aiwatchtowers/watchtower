@@ -1,7 +1,7 @@
 # Secretary Memory — Roadmap
 
 > Single source of truth for the feature's trajectory. Statuses updated as phases land on `feature/secretary-memory` (PR #36, draft until the whole feature ships). Execution protocol: `docs/specs/memory-autonomy-protocol.md` (autonomous; owner touchpoints marked ⚑).
-> Last updated: 2026-07-16 (phase 4 merged — feature is CODE-COMPLETE; awaiting the owner's final validation run).
+> Last updated: 2026-07-17 (final validation complete — GO, pending owner content hand-review; PR #36 ready to leave draft).
 
 ## Phase 0–2 — Substrate: vault, index, consolidation v1, read surfaces — ✅ DONE, live-validated
 
@@ -17,13 +17,13 @@ Spec: `2026-07-16-memory-phase4-surfaces-design.md`. Discuss-chat MEMORY injecti
 
 Landed 2026-07-16: 10 plan tasks + 16 review fixes; panel converged in 2 rounds + one surgical scope fix (dispute flag gated to owner-rank downgrades). Contracts MEM-09..11 guarded; final-validation Section 2 written. Merged into the integration branch.
 
-## Final validation — ⚑ OWNER (one run, work machine)
+## Final validation — ✅ DONE — verdict: GO (one owner item outstanding)
 
-`docs/specs/memory-final-validation-task.md` (living doc; Sections 0–1 concrete, Section 2 lands with Phase 4). One trigger on the work machine validates phases 0–4 together on the lived-in vault: regression sweep incl. kill-resilience, semantic-tier hand review (rewrites/beliefs/map quality), staged-disagreement drill for the surfaces. Deliverable: `memory-final-validation-report.md` with a go/no-go verdict.
+`docs/specs/memory-final-validation-task.md` (living doc, all three sections run). Sections 0–2 run live on the work machine 2026-07-16/17 against the lived-in `whitebit` vault — see `docs/specs/memory-final-validation-report.md`. Section 1 found and fixed three real bugs invisible to mocked-generator unit tests: entity-page rewrite was structurally dead (2/450 entities ever linkable — now 191/450), belief `propose-new` rejected 100% of ops (model never shown a resolvable entity id — now fixed), and `watchtower memory reindex` broke on any live dispute flag (FK violation in `DropMemoryIndex`). All three fixed, tested, and re-verified live (commit `610ea8b`). Section 2 (Phase 4 surfaces) validated live via the Desktop app: Discuss injection + owner-rank write-back happened for real and unprompted-generalized to a second belief; the dispute-dashboard drill and MEM-06 rank-math held under real vault/DB/git conditions (scoped, then fully reverted); the briefing revision journal wove memory context into Team Pulse exactly per the prompt's framing rules. Reflection (2d) wasn't exercised — not this workspace's stagger day. **Verdict: GO**, conditional only on the owner's own content-quality read of the AI-written entity pages/beliefs (mechanically sound, accuracy not independently gradable).
 
 ## Ship — ⚑ OWNER
 
-PR #36 leaves draft and merges to `main` on a green final-validation verdict. Enablement decision at merge time: which flags default on (`memory.enabled` at minimum; surfaces likely staged).
+PR #36 is ready to leave draft on the GO verdict above. Enablement decision at merge time: `memory.enabled` at minimum; all four Phase 4 surface flags validated live this session, safe to stage on.
 
 ## Phase 5 — Universal substrate — ✅ CONFIRMED by owner (2026-07-16), spec written, own branch
 

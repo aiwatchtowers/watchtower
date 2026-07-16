@@ -1453,14 +1453,20 @@ func (db *DB) DropMemoryIndex() (err error) {
 	}
 	defer tx.Rollback()
 
-	// Children first: aliases, stats, and provenance reference memory_nodes.
-	// memory_provenance IS vault-derived (rebuilt by Reconcile from each node's
-	// ## Provenance section), so — unlike memory_node_stats/engagement/hints — it
-	// is cleared here and rebuilt on reindex (inside MEM-02).
+	// Children first: aliases, stats, provenance, and dispute flags reference
+	// memory_nodes. memory_provenance IS vault-derived (rebuilt by Reconcile
+	// from each node's ## Provenance section), so — unlike
+	// memory_node_stats/engagement/hints — it is cleared here and rebuilt on
+	// reindex (inside MEM-02). memory_dispute_flags is cleared too — the
+	// "self-healing on reindex" its doc comment promises (found live during
+	// final validation: a single dispute flag from a MEM-06 downgrade broke
+	// the whole reindex on FK). engagement/hints deliberately SURVIVE via the
+	// FK toggle above.
 	for _, stmt := range []string{
 		`DELETE FROM memory_aliases`,
 		`DELETE FROM memory_node_stats`,
 		`DELETE FROM memory_provenance`,
+		`DELETE FROM memory_dispute_flags`,
 		`DELETE FROM memory_fts`,
 		`DELETE FROM memory_nodes`,
 	} {

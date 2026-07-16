@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -72,6 +73,38 @@ func TestIngestOpenSituationCreatesNode(t *testing.T) {
 	assert.Contains(t, n.Body, "10:00 alarm fired; 10:05 rollback started.")
 	assert.Contains(t, n.Body, "## Provenance\n- C1GEN 1752570000.", "validated signal ref copied as provenance")
 	assert.NotContains(t, n.Body, "1721034000.", "seeded bad ref dropped (MEM-01)")
+}
+
+// TestIngestLinksChannelAndSenderEntities guards the structural back-link
+// path: situation-derived episodes never touched entity hints at all
+// (ingest.go never called Resolve/appendToLinks pre-fix), leaving every
+// situation-sourced entity with an empty ## Links section forever — a real
+// gap since ~76/406 episodes in a lived-in vault come from situations. The
+// situation's own signal channel and sender ids (from situation_signals) now
+// link mechanically, no AI judgment involved.
+func TestIngestLinksChannelAndSenderEntities(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedUserRow(t, d, "U1ALICE", "alice")
+	seedChannelRow(t, d, "C1GEN", "general")
+	seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.000001", time.Now().Unix()), "U1ALICE", "recent activity")
+	_, err := SeedEntities(v, d, SeedConfig{MinMessages: 1, WindowDays: 30})
+	require.NoError(t, err)
+
+	seedIngestSituation(t, d, "Billing outage")
+
+	stats, err := IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, IngestStats{Created: 1}, stats)
+
+	channel, err := Resolve(v, d, "C1GEN")
+	require.NoError(t, err)
+	assert.Contains(t, channel.Body, "## Links\n- [[ep_", "channel entity linked from the situation episode")
+	assert.Contains(t, channel.Body, "|Billing outage]]")
+
+	person, err := Resolve(v, d, "U1ALICE")
+	require.NoError(t, err)
+	assert.Contains(t, person.Body, "|Billing outage]]", "sender entity linked from the situation episode")
 }
 
 func TestIngestUnchangedSecondRunIsNoOp(t *testing.T) {

@@ -88,6 +88,7 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 
 	var toWrite []Node
 	var ids []string
+	entityIdx := make(map[string]int) // entity node ID → index in toWrite, shared across situations
 	for _, s := range sits {
 		alias := fmt.Sprintf("situation:%d", s.id)
 		nodeID, err := database.LookupMemoryAlias(alias)
@@ -98,19 +99,56 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 
 		var (
 			n       *Node
+			hints   []string
 			pending bool
 		)
 		if notIngested {
-			n, pending = ingestNewSituation(database, checker, logf, s, alias, &stats)
+			n, hints, pending = ingestNewSituation(database, checker, logf, s, alias, &stats)
 		} else {
-			n, pending = ingestExistingSituation(v, database, checker, logf, s, nodeID, &stats)
+			n, hints, pending = ingestExistingSituation(v, database, checker, logf, s, nodeID, &stats)
 		}
 		advanceFloor(s, pending)
-		if n == nil {
+
+		// The episode's id/title for linking purposes: a freshly-written
+		// node's real generated id, or (when the episode body itself is a
+		// no-op — unchanged/already-finalized) the already-known alias
+		// lookup's nodeID + the situation's title, so back-links still
+		// backfill without forcing a body rewrite. Empty only when the
+		// situation never produced an episode at all (terminal-before-ever-
+		// ingested), in which case there's nothing to link hints to.
+		epID, epTitle := nodeID, s.title
+		if n != nil {
+			toWrite = append(toWrite, *n)
+			ids = append(ids, n.ID)
+			epID, epTitle = n.ID, n.Title
+		}
+
+		// Structural back-links: the situation's own channel(s) and signal
+		// senders — exact Slack ids from situation_signals, no AI judgment
+		// involved (mirrors buildEpisodeNodes' structural-hint path; MEM-05
+		// holds, this only touches memory-vault entity nodes, never
+		// inbox/situations rows). An entity touched by more than one
+		// situation this run accumulates all of them via the shared
+		// entityIdx (appendToLinks is idempotent against an exact-duplicate
+		// line).
+		if epID == "" || len(hints) == 0 {
 			continue
 		}
-		toWrite = append(toWrite, *n)
-		ids = append(ids, n.ID)
+		link := "- [[" + epID + "|" + linkLabel(epTitle) + "]]\n"
+		for _, hint := range hints {
+			en, rerr := Resolve(v, database, hint)
+			if rerr != nil || en.Type != "entity" || en.Status != "active" {
+				continue // not yet seeded (or a bot) — silent, structural not model-authored
+			}
+			idx, seen := entityIdx[en.ID]
+			if !seen {
+				idx = len(toWrite)
+				entityIdx[en.ID] = idx
+				toWrite = append(toWrite, en)
+				ids = append(ids, en.ID)
+			}
+			toWrite[idx].Body = appendToLinks(toWrite[idx].Body, link)
+		}
 	}
 
 	if len(toWrite) > 0 {
@@ -143,18 +181,20 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 }
 
 // ingestNewSituation builds the episode node for a situation seen for the
-// first time (nil when skipped), plus whether the skip is PENDING (a transient
-// error to retry). Only open situations start a node; one already terminal
-// before it was ever ingested predates memory and is skipped for good (settled,
-// pending=false). A provenance lookup error is a transient skip (pending=true).
-func ingestNewSituation(database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, alias string, stats *IngestStats) (*Node, bool) {
+// first time (nil when skipped), the structural entity hints its signals
+// carry (channel + sender ids, for the caller to link — nil alongside a nil
+// node), plus whether the skip is PENDING (a transient error to retry). Only
+// open situations start a node; one already terminal before it was ever
+// ingested predates memory and is skipped for good (settled, pending=false).
+// A provenance lookup error is a transient skip (pending=true).
+func ingestNewSituation(database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, alias string, stats *IngestStats) (*Node, []string, bool) {
 	if s.status != "open" {
-		return nil, false // terminal & never ingested — settled, skipped for good
+		return nil, nil, false // terminal & never ingested — settled, skipped for good
 	}
-	refs, err := situationProvenance(database, checker, s.id, logf)
+	refs, hints, err := situationProvenance(database, checker, s.id, logf)
 	if err != nil {
 		logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
-		return nil, true // transient — retry next run
+		return nil, nil, true // transient — retry next run
 	}
 	stats.Created++
 	return &Node{
@@ -165,15 +205,18 @@ func ingestNewSituation(database *db.DB, checker messageChecker, logf func(strin
 		Title:   s.title,
 		Aliases: []string{alias},
 		Body:    situationBody(s, refs),
-	}, false
+	}, hints, false
 }
 
 // ingestExistingSituation refreshes or finalizes the already-ingested node for
-// a situation (nil when untouched), plus whether a skip is PENDING (a transient
-// error to retry). A read error (corrupted/quarantined file) or a provenance
-// lookup error is pending; an already-finalized node, an unchanged open one, or
-// a normal update/finalize is settled (pending=false).
-func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, nodeID string, stats *IngestStats) (*Node, bool) {
+// a situation (nil when untouched), the structural entity hints for the
+// caller to link (returned even when the episode body itself is a no-op, so
+// entity back-links can backfill without forcing a body rewrite), plus
+// whether the skip is PENDING (a transient error to retry). A read error
+// (corrupted/quarantined file) or a provenance lookup error is pending; an
+// already-finalized node, an unchanged open one, or a normal update/finalize
+// is settled (pending=false).
+func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, nodeID string, stats *IngestStats) (*Node, []string, bool) {
 	n, err := v.ReadNode(nodeID)
 	if err != nil {
 		// A corrupted/quarantined episode file must not brick the whole
@@ -181,20 +224,20 @@ func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, 
 		// alias row is preserved by Reconcile's quarantine, so the
 		// situation is retried once the owner repairs the file.
 		logf("memory: ingest situation %d: read %s: %v — skipped this run", s.id, nodeID, err)
-		return nil, true // transient — retry once the file is repaired
+		return nil, nil, true // transient — retry once the file is repaired
 	}
-	if n.Status != "active" {
-		return nil, false // already finalized — terminal, settled
-	}
-	refs, err := situationProvenance(database, checker, s.id, logf)
+	refs, hints, err := situationProvenance(database, checker, s.id, logf)
 	if err != nil {
 		logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
-		return nil, true // transient — retry next run
+		return nil, nil, true // transient — retry next run
+	}
+	if n.Status != "active" {
+		return nil, hints, false // already finalized episode body — entity links still backfill
 	}
 	body := situationBody(s, refs)
 	if s.status == "open" {
 		if body == n.Body {
-			return nil, false // unchanged — settled (still open, handled by the floor guard)
+			return nil, hints, false // unchanged episode body — entity links still backfill
 		}
 		n.Title = s.title
 		n.Body = body
@@ -206,7 +249,7 @@ func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, 
 		n.Body = body
 		stats.Finalized++
 	}
-	return &n, false
+	return &n, hints, false
 }
 
 // listIngestSituations reads the situations relevant to ingest: every open one
@@ -245,26 +288,42 @@ func listIngestSituations(database *db.DB, floor int64) ([]ingestSituation, erro
 // positively do not resolve against messages are dropped (and logged), never
 // repaired. A lookup error propagates — the caller skips this situation for
 // the run rather than writing provenance it could not verify.
-func situationProvenance(database *db.DB, checker messageChecker, situationID int, logf func(string, ...any)) ([]episodeRef, error) {
+//
+// It also returns the situation's structural entity hints — its distinct
+// channel and sender ids — for the caller to link against the entity index.
+// These come from situation_signals directly (not from the MEM-01-validated
+// refs): a channel/sender is a structural fact about the situation regardless
+// of whether one particular message ref later fails existence validation.
+func situationProvenance(database *db.DB, checker messageChecker, situationID int, logf func(string, ...any)) (refs []episodeRef, hints []string, err error) {
 	items, err := database.ListSituationSignals(situationID)
 	if err != nil {
-		return nil, fmt.Errorf("memory: ingest signals for situation %d: %w", situationID, err)
+		return nil, nil, fmt.Errorf("memory: ingest signals for situation %d: %w", situationID, err)
 	}
-	refs := make([]episodeRef, 0, len(items))
+	refs = make([]episodeRef, 0, len(items))
+	seen := make(map[string]bool, len(items)*2)
+	addHint := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		hints = append(hints, id)
+	}
 	for _, it := range items {
 		refs = append(refs, episodeRef{ChannelID: it.ChannelID, TS: it.MessageTS})
+		addHint(it.ChannelID)
+		addHint(it.SenderUserID)
 	}
 	kept, dropped, err := validateRefs(checker, []extractedEpisode{{Refs: refs}})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if dropped > 0 {
 		logf("memory: ingest situation %d: refs_rejected=%d (MEM-01)", situationID, dropped)
 	}
 	if len(kept) == 0 {
-		return nil, nil
+		return nil, hints, nil
 	}
-	return kept[0].Refs, nil
+	return kept[0].Refs, hints, nil
 }
 
 // situationBody renders the episode node body for a situation, per the v1
