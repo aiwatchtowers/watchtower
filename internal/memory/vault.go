@@ -13,6 +13,7 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 )
 
 // ErrVaultNotInitialized is returned by OpenExistingVault when no vault
@@ -213,6 +214,32 @@ func (v *Vault) Lock() (func(), error) {
 
 func signature() *object.Signature {
 	return &object.Signature{Name: commitAuthorName, Email: commitAuthorEmail, When: time.Now()}
+}
+
+// OwnerEdited reports whether the file at rel (a vault-relative slash path) was
+// ever touched by a memory(owner-edit) commit — the owner-touch input to the
+// retention score. Cheap by construction: the log is filtered to commits that
+// changed this one path, and the walk stops at the first owner-edit. Called
+// only for eviction candidates (a bounded set), never for the whole vault.
+func (v *Vault) OwnerEdited(rel string) (bool, error) {
+	iter, err := v.repo.Log(&git.LogOptions{FileName: &rel})
+	if err != nil {
+		return false, fmt.Errorf("memory: owner-edit log for %s: %w", rel, err)
+	}
+	defer iter.Close()
+
+	found := false
+	err = iter.ForEach(func(c *object.Commit) error {
+		if strings.HasPrefix(c.Message, "memory(owner-edit)") {
+			found = true
+			return storer.ErrStop
+		}
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("memory: owner-edit walk for %s: %w", rel, err)
+	}
+	return found, nil
 }
 
 // nodeRelPath is the vault-relative (slash-separated, git-style) path of a

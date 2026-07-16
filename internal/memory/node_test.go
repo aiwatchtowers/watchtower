@@ -165,6 +165,129 @@ func TestLinksNone(t *testing.T) {
 	assert.Empty(t, n.Links())
 }
 
+// goldenBelief is the canonical on-disk form of a fully-populated belief node:
+// the belief-only frontmatter keys (confidence/stability/subject) after status,
+// the belief-only status shaken, and a ## History journal. Render must
+// reproduce it byte-for-byte.
+const goldenBelief = `---
+id: bel_01ARZ3NDEKTSV4RRFFQ69G5FAV
+type: belief
+tier: long
+status: shaken
+confidence: 0.6
+stability: 3
+subject: ent_01ARZ3NDEKTSV4RRFFQ69G5FB1
+---
+# Billing migration will slip past August
+
+## Statement
+
+The billing migration misses the August cutoff.
+
+## Evidence
+- for: [[ep_01ARZ3NDEKTSV4RRFFQ69G5FB0|deploy freeze]] (observed, 2026-07-10)
+
+## History
+- 2026-07-12 created at 0.6 (run:412)
+- 2026-07-14 shaken: contradicting episode (run:498)
+`
+
+func TestBeliefGoldenRoundTrip(t *testing.T) {
+	n, err := ParseNode([]byte(goldenBelief))
+	require.NoError(t, err)
+
+	assert.Equal(t, "bel_01ARZ3NDEKTSV4RRFFQ69G5FAV", n.ID)
+	assert.Equal(t, "belief", n.Type)
+	assert.Equal(t, "shaken", n.Status)
+	assert.Equal(t, 0.6, n.Confidence)
+	assert.Equal(t, 3, n.Stability)
+	assert.Equal(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5FB1", n.Subject)
+
+	rendered := n.Render()
+	assert.Equal(t, goldenBelief, string(rendered))
+
+	again, err := ParseNode(rendered)
+	require.NoError(t, err)
+	assert.Equal(t, n, again)
+}
+
+func TestParseNodeRejectsBeliefClosedStatus(t *testing.T) {
+	raw := "---\nid: bel_x\ntype: belief\ntier: long\nstatus: closed\nconfidence: 0.5\nstability: 1\nsubject: ent_y\n---\n# B\n"
+	_, err := ParseNode([]byte(raw))
+	require.Error(t, err)
+}
+
+func TestParseNodeRejectsShakenOnNonBelief(t *testing.T) {
+	for _, typ := range []string{"entity", "episode", "rollup"} {
+		for _, status := range []string{"shaken", "retired"} {
+			raw := "---\nid: ent_x\ntype: " + typ + "\ntier: long\nstatus: " + status + "\n---\n# X\n"
+			_, err := ParseNode([]byte(raw))
+			require.Error(t, err, "type %s status %s must be rejected", typ, status)
+		}
+	}
+}
+
+func TestParseNodeRejectsBeliefKeysOnNonBelief(t *testing.T) {
+	cases := []string{
+		"---\nid: ent_x\ntype: entity\ntier: long\nstatus: active\nconfidence: 0.5\n---\n# X\n",
+		"---\nid: ent_x\ntype: entity\ntier: long\nstatus: active\nstability: 2\n---\n# X\n",
+		"---\nid: ent_x\ntype: entity\ntier: long\nstatus: active\nsubject: ent_y\n---\n# X\n",
+	}
+	for _, raw := range cases {
+		_, err := ParseNode([]byte(raw))
+		require.Error(t, err, "belief-only key on an entity must be rejected: %q", raw)
+	}
+}
+
+func TestParseNodeRejectsConfidenceOutOfRange(t *testing.T) {
+	for _, c := range []string{"1.5", "-0.1"} {
+		raw := "---\nid: bel_x\ntype: belief\ntier: long\nstatus: active\nconfidence: " + c + "\nstability: 0\nsubject: ent_y\n---\n# B\n"
+		_, err := ParseNode([]byte(raw))
+		require.Error(t, err, "confidence %s must be rejected", c)
+	}
+}
+
+func TestParseNodeRejectsNegativeStability(t *testing.T) {
+	raw := "---\nid: bel_x\ntype: belief\ntier: long\nstatus: active\nconfidence: 0.5\nstability: -1\nsubject: ent_y\n---\n# B\n"
+	_, err := ParseNode([]byte(raw))
+	require.Error(t, err)
+}
+
+func TestBeliefWithoutOptionalFieldsRoundTrips(t *testing.T) {
+	// A belief tombstone (merge/eviction path) carries none of the belief-only
+	// fields; it must render and parse cleanly and round-trip.
+	n := Node{
+		ID:         "bel_01ARZ3NDEKTSV4RRFFQ69G5FA0",
+		Type:       "belief",
+		Tier:       "long",
+		Status:     "tombstone",
+		RedirectTo: "bel_01ARZ3NDEKTSV4RRFFQ69G5FA1",
+		Body:       "Merged into [[bel_01ARZ3NDEKTSV4RRFFQ69G5FA1]].\n",
+	}
+	again, err := ParseNode(n.Render())
+	require.NoError(t, err)
+	assert.Equal(t, n, again)
+}
+
+func TestAppendHistory(t *testing.T) {
+	// Creates the section when absent.
+	body := "# B\n\n## Statement\n\nA claim.\n"
+	body = appendHistory(body, "- 2026-07-12 created at 0.6 (run:412)\n")
+	assert.Contains(t, body, "## History\n- 2026-07-12 created at 0.6 (run:412)\n")
+
+	// A second append lands after the first (chronological, append-only).
+	body = appendHistory(body, "- 2026-07-14 shaken (run:498)\n")
+	first := strings.Index(body, "2026-07-12")
+	second := strings.Index(body, "2026-07-14")
+	assert.Positive(t, first)
+	assert.Less(t, first, second, "History appends in order, newest last")
+
+	// Idempotent: an identical line is not duplicated (MEM-04 re-processing).
+	before := body
+	body = appendHistory(body, "- 2026-07-14 shaken (run:498)\n")
+	assert.Equal(t, before, body)
+}
+
 func TestNewIDPrefixes(t *testing.T) {
 	cases := map[string]string{
 		"entity":  "ent_",

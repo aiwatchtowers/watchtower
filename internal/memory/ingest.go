@@ -55,9 +55,35 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 		logf = func(string, ...any) {}
 	}
 	var stats IngestStats
-	sits, err := listIngestSituations(database)
+	oldFloor, err := database.MemoryIngestFloor()
 	if err != nil {
 		return stats, err
+	}
+	sits, err := listIngestSituations(database, oldFloor)
+	if err != nil {
+		return stats, err
+	}
+
+	// The floor advances through the contiguous prefix of terminal situations
+	// that settled this run (finalized or already-terminal). Walking ascending
+	// by id, the first still-open OR transiently-skipped situation blocks any
+	// further advance — a lower id must stay scannable (an open situation can
+	// still transition; a skipped one must be retried). Situation ids are
+	// monotonic (autoincrement), so this keeps the invariant "no open situation
+	// has id <= floor": a future open situation always has id > floor.
+	newFloor := oldFloor
+	floorBlocked := false
+	advanceFloor := func(s ingestSituation, pending bool) {
+		if floorBlocked {
+			return
+		}
+		if s.status == "open" || pending {
+			floorBlocked = true
+			return
+		}
+		if int64(s.id) > newFloor {
+			newFloor = int64(s.id)
+		}
 	}
 
 	var toWrite []Node
@@ -70,12 +96,16 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 			return stats, fmt.Errorf("memory: ingest lookup %q: %w", alias, err)
 		}
 
-		var n *Node
+		var (
+			n       *Node
+			pending bool
+		)
 		if notIngested {
-			n = ingestNewSituation(database, checker, logf, s, alias, &stats)
+			n, pending = ingestNewSituation(database, checker, logf, s, alias, &stats)
 		} else {
-			n = ingestExistingSituation(v, database, checker, logf, s, nodeID, &stats)
+			n, pending = ingestExistingSituation(v, database, checker, logf, s, nodeID, &stats)
 		}
+		advanceFloor(s, pending)
 		if n == nil {
 			continue
 		}
@@ -83,21 +113,29 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 		ids = append(ids, n.ID)
 	}
 
-	if len(toWrite) == 0 {
-		return stats, nil
+	if len(toWrite) > 0 {
+		msg := CommitMsg{
+			Op:      "ingest",
+			Summary: ingestSummary(stats),
+			Cause:   "ingest",
+			NodeIDs: ids,
+		}
+		if _, err := v.WriteNodes(toWrite, msg); err != nil {
+			return stats, err
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		for _, n := range toWrite {
+			if err := upsertIndexNode(database, n, now); err != nil {
+				return stats, err
+			}
+		}
 	}
-	msg := CommitMsg{
-		Op:      "ingest",
-		Summary: ingestSummary(stats),
-		Cause:   "ingest",
-		NodeIDs: ids,
-	}
-	if _, err := v.WriteNodes(toWrite, msg); err != nil {
-		return stats, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, n := range toWrite {
-		if err := upsertIndexNode(database, n, now); err != nil {
+
+	// Advance the ingest floor after any commit succeeded (also on a settled
+	// no-op run, so already-terminal situations stop being rescanned). A
+	// workspace scalar, not a situations write — MEM-05 holds.
+	if newFloor > oldFloor {
+		if err := database.SetMemoryIngestFloor(newFloor); err != nil {
 			return stats, err
 		}
 	}
@@ -105,17 +143,18 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 }
 
 // ingestNewSituation builds the episode node for a situation seen for the
-// first time, or nil when it is skipped. Only open situations start a node;
-// one already closed before it was ever ingested predates memory and is
-// skipped for good.
-func ingestNewSituation(database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, alias string, stats *IngestStats) *Node {
+// first time (nil when skipped), plus whether the skip is PENDING (a transient
+// error to retry). Only open situations start a node; one already terminal
+// before it was ever ingested predates memory and is skipped for good (settled,
+// pending=false). A provenance lookup error is a transient skip (pending=true).
+func ingestNewSituation(database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, alias string, stats *IngestStats) (*Node, bool) {
 	if s.status != "open" {
-		return nil
+		return nil, false // terminal & never ingested — settled, skipped for good
 	}
 	refs, err := situationProvenance(database, checker, s.id, logf)
 	if err != nil {
 		logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
-		return nil
+		return nil, true // transient — retry next run
 	}
 	stats.Created++
 	return &Node{
@@ -126,12 +165,15 @@ func ingestNewSituation(database *db.DB, checker messageChecker, logf func(strin
 		Title:   s.title,
 		Aliases: []string{alias},
 		Body:    situationBody(s, refs),
-	}
+	}, false
 }
 
-// ingestExistingSituation refreshes or finalizes the already-ingested node
-// for a situation, or returns nil when it is untouched this run.
-func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, nodeID string, stats *IngestStats) *Node {
+// ingestExistingSituation refreshes or finalizes the already-ingested node for
+// a situation (nil when untouched), plus whether a skip is PENDING (a transient
+// error to retry). A read error (corrupted/quarantined file) or a provenance
+// lookup error is pending; an already-finalized node, an unchanged open one, or
+// a normal update/finalize is settled (pending=false).
+func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, nodeID string, stats *IngestStats) (*Node, bool) {
 	n, err := v.ReadNode(nodeID)
 	if err != nil {
 		// A corrupted/quarantined episode file must not brick the whole
@@ -139,20 +181,20 @@ func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, 
 		// alias row is preserved by Reconcile's quarantine, so the
 		// situation is retried once the owner repairs the file.
 		logf("memory: ingest situation %d: read %s: %v — skipped this run", s.id, nodeID, err)
-		return nil
+		return nil, true // transient — retry once the file is repaired
 	}
 	if n.Status != "active" {
-		return nil // already finalized — terminal, untouched
+		return nil, false // already finalized — terminal, settled
 	}
 	refs, err := situationProvenance(database, checker, s.id, logf)
 	if err != nil {
 		logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
-		return nil
+		return nil, true // transient — retry next run
 	}
 	body := situationBody(s, refs)
 	if s.status == "open" {
 		if body == n.Body {
-			return nil // unchanged — untouched
+			return nil, false // unchanged — settled (still open, handled by the floor guard)
 		}
 		n.Title = s.title
 		n.Body = body
@@ -164,20 +206,23 @@ func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, 
 		n.Body = body
 		stats.Finalized++
 	}
-	return &n
+	return &n, false
 }
 
-// listIngestSituations reads the situations relevant to ingest: open ones
-// (create/update) and done/stale/converted ones (finalize). Dismissed and
-// snoozed situations are excluded — dismissal means the owner declared the
-// story noise, and a snooze is not a lifecycle transition.
-func listIngestSituations(database *db.DB) ([]ingestSituation, error) {
+// listIngestSituations reads the situations relevant to ingest: every open one
+// (create/update, always scanned) and done/stale/converted ones ABOVE the
+// ingest floor (finalize). Dismissed and snoozed situations are excluded —
+// dismissal means the owner declared the story noise, and a snooze is not a
+// lifecycle transition. Terminal situations at or below the floor were already
+// folded into the vault on a prior run and are skipped.
+func listIngestSituations(database *db.DB, floor int64) ([]ingestSituation, error) {
 	rows, err := database.Query(`
 		SELECT id, title, status, summary, chronology, resolved_reason,
 		       COALESCE(converted_target_id, 0), COALESCE(converted_track_id, 0)
 		FROM situations
-		WHERE status IN ('open', 'done', 'stale', 'converted')
-		ORDER BY id`)
+		WHERE status = 'open'
+		   OR (status IN ('done', 'stale', 'converted') AND id > ?)
+		ORDER BY id`, floor)
 	if err != nil {
 		return nil, fmt.Errorf("memory: ingest situations query: %w", err)
 	}

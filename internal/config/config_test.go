@@ -291,6 +291,17 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 20, cfg.Memory.SeedMinMessages)
 	assert.Equal(t, 5, cfg.Memory.MaxEpisodesPerWindow)
 	assert.Equal(t, 200, cfg.Memory.MaxWindowMessages)
+
+	// Phase-3 semantic tier: dark by default, with the documented caps.
+	assert.False(t, cfg.Memory.Semantic.Enabled, "semantic tier off by default")
+	assert.Equal(t, 10, cfg.Memory.Semantic.RewriteMaxEntities)
+	assert.Equal(t, 20, cfg.Memory.Semantic.BeliefsMax)
+	assert.Equal(t, 20, cfg.Memory.Semantic.DedupeMaxMerges)
+	assert.Equal(t, 45, cfg.Memory.Semantic.EvictAfterDays)
+	assert.Equal(t, 50, cfg.Memory.Semantic.EvictMax)
+	assert.Equal(t, 5, cfg.Memory.Semantic.ConceptMinEpisodes)
+	assert.Equal(t, 10, cfg.Memory.Semantic.ConceptMaxCreate)
+	assert.Equal(t, 200000, cfg.Memory.Semantic.OutputBudget)
 }
 
 func TestMemoryConfig_FromYAML(t *testing.T) {
@@ -301,6 +312,16 @@ memory:
   seed_min_messages: 3
   max_episodes_per_window: 2
   max_window_messages: 50
+  semantic:
+    enabled: true
+    rewrite_max_entities: 3
+    beliefs_max: 4
+    dedupe_max_merges: 5
+    evict_after_days: 30
+    evict_max: 7
+    concept_min_episodes: 2
+    concept_max_create: 6
+    output_budget: 12345
 `
 	path := writeTestConfig(t, yaml)
 	cfg, err := Load(path)
@@ -311,6 +332,16 @@ memory:
 	assert.Equal(t, 3, cfg.Memory.SeedMinMessages)
 	assert.Equal(t, 2, cfg.Memory.MaxEpisodesPerWindow)
 	assert.Equal(t, 50, cfg.Memory.MaxWindowMessages)
+
+	assert.True(t, cfg.Memory.Semantic.Enabled)
+	assert.Equal(t, 3, cfg.Memory.Semantic.RewriteMaxEntities)
+	assert.Equal(t, 4, cfg.Memory.Semantic.BeliefsMax)
+	assert.Equal(t, 5, cfg.Memory.Semantic.DedupeMaxMerges)
+	assert.Equal(t, 30, cfg.Memory.Semantic.EvictAfterDays)
+	assert.Equal(t, 7, cfg.Memory.Semantic.EvictMax)
+	assert.Equal(t, 2, cfg.Memory.Semantic.ConceptMinEpisodes)
+	assert.Equal(t, 6, cfg.Memory.Semantic.ConceptMaxCreate)
+	assert.Equal(t, 12345, cfg.Memory.Semantic.OutputBudget)
 }
 
 func TestTargetsConfigDefaults(t *testing.T) {

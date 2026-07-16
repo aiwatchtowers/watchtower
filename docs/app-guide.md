@@ -273,9 +273,10 @@ Once enabled, the daemon runs a consolidation pass each cycle: it seeds skeleton
 
 **CLI commands:**
 - `watchtower memory status` — node counts, extraction progress, remaining backlog, and the last run
-- `watchtower memory consolidate --once` — run a single consolidation pass right now
+- `watchtower memory consolidate` — run a single consolidation pass right now (the daemon owns the recurring schedule)
 - `watchtower memory open <ref>` — print a memory page by ID or any alias (a name, a Slack ID, `situation:<id>`, ...)
 - `watchtower memory recall <query>` — full-text search across all memory pages
+- `watchtower memory index` — print the full mechanical world index (`index.md`); `map.md` is the shorter hot summary
 - `watchtower memory seed --dry-run` — preview which entity pages would be created (drop `--dry-run` to create them)
 - `watchtower memory reindex` — rebuild the search index from the vault files (safe anytime; files are never touched)
 

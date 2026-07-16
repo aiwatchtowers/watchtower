@@ -22,8 +22,14 @@ type Node struct {
 	ID         string
 	Type       string // entity | episode | rollup | belief
 	Tier       string // short | long
-	Status     string // active | closed | tombstone
+	Status     string // active | closed | tombstone; beliefs also shaken | retired
 	RedirectTo string // tombstones only
+	// Belief-only frontmatter (type: belief). Confidence is 0..1, Stability is
+	// a confirmation count (>=0), Subject is the entity id the belief is about.
+	// Carried as plain values; Render emits them only for beliefs.
+	Confidence float64
+	Stability  int
+	Subject    string
 	Title      string // first H1 in Body, "" when absent
 	Aliases    []string
 	Refs       struct {
@@ -44,11 +50,17 @@ const fence = "---\n"
 // frontmatter is the strict YAML schema between the --- fences. Unknown keys
 // are rejected at parse time (schema discipline).
 type frontmatter struct {
-	ID         string    `yaml:"id"`
-	Type       string    `yaml:"type"`
-	Tier       string    `yaml:"tier"`
-	Status     string    `yaml:"status"`
-	RedirectTo string    `yaml:"redirect_to"`
+	ID         string `yaml:"id"`
+	Type       string `yaml:"type"`
+	Tier       string `yaml:"tier"`
+	Status     string `yaml:"status"`
+	RedirectTo string `yaml:"redirect_to"`
+	// Belief-only keys — structurally known (so KnownFields accepts them) but
+	// legal only for type: belief; a post-decode type gate rejects them on any
+	// other type. Pointers so absence is distinguishable from a zero value.
+	Confidence *float64  `yaml:"confidence"`
+	Stability  *int      `yaml:"stability"`
+	Subject    string    `yaml:"subject"`
 	Aliases    []string  `yaml:"aliases"`
 	Refs       *nodeRefs `yaml:"refs"`
 }
@@ -59,12 +71,17 @@ type nodeRefs struct {
 }
 
 var (
-	validTypes    = map[string]bool{"entity": true, "episode": true, "rollup": true, "belief": true}
-	validTiers    = map[string]bool{"short": true, "long": true}
-	validStatuses = map[string]bool{"active": true, "closed": true, "tombstone": true}
+	validTypes = map[string]bool{"entity": true, "episode": true, "rollup": true, "belief": true}
+	validTiers = map[string]bool{"short": true, "long": true}
+	// Non-belief nodes stay active|closed|tombstone; beliefs swap closed for the
+	// belief-only shaken/retired but keep tombstone (merge/eviction paths).
+	validStatuses       = map[string]bool{"active": true, "closed": true, "tombstone": true}
+	validBeliefStatuses = map[string]bool{"active": true, "shaken": true, "retired": true, "tombstone": true}
 
-	wikiLinkRe = regexp.MustCompile(`\[\[([^\[\]|]+)(?:\|([^\[\]|]*))?\]\]`)
-	h1Re       = regexp.MustCompile(`(?m)^# (.+)$`)
+	wikiLinkRe       = regexp.MustCompile(`\[\[([^\[\]|]+)(?:\|([^\[\]|]*))?\]\]`)
+	h1Re             = regexp.MustCompile(`(?m)^# (.+)$`)
+	historyHeadingRe = regexp.MustCompile(`(?m)^## History[ \t]*$`)
+	sectionHeadingRe = regexp.MustCompile(`(?m)^## `)
 )
 
 // ParseNode parses a vault file: YAML frontmatter between --- fences followed
@@ -96,11 +113,27 @@ func ParseNode(raw []byte) (Node, error) {
 	if !validTiers[fm.Tier] {
 		return Node{}, fmt.Errorf("memory: node %s has invalid tier %q", fm.ID, fm.Tier)
 	}
-	if !validStatuses[fm.Status] {
-		return Node{}, fmt.Errorf("memory: node %s has invalid status %q", fm.ID, fm.Status)
+	isBelief := fm.Type == "belief"
+	allowedStatuses := validStatuses
+	if isBelief {
+		allowedStatuses = validBeliefStatuses
+	}
+	if !allowedStatuses[fm.Status] {
+		return Node{}, fmt.Errorf("memory: node %s (type %s) has invalid status %q", fm.ID, fm.Type, fm.Status)
 	}
 	if fm.RedirectTo != "" && fm.Status != "tombstone" {
 		return Node{}, fmt.Errorf("memory: node %s has redirect_to but status %q (tombstones only)", fm.ID, fm.Status)
+	}
+	// Belief-only keys are legal only for type: belief (schema discipline —
+	// mirrors the redirect_to/tombstone gate above).
+	if !isBelief && (fm.Confidence != nil || fm.Stability != nil || fm.Subject != "") {
+		return Node{}, fmt.Errorf("memory: node %s (type %s) carries belief-only keys (confidence/stability/subject)", fm.ID, fm.Type)
+	}
+	if fm.Confidence != nil && (*fm.Confidence < 0 || *fm.Confidence > 1) {
+		return Node{}, fmt.Errorf("memory: belief %s confidence %v out of range [0,1]", fm.ID, *fm.Confidence)
+	}
+	if fm.Stability != nil && *fm.Stability < 0 {
+		return Node{}, fmt.Errorf("memory: belief %s stability %d is negative", fm.ID, *fm.Stability)
 	}
 
 	n := Node{
@@ -109,8 +142,15 @@ func ParseNode(raw []byte) (Node, error) {
 		Tier:       fm.Tier,
 		Status:     fm.Status,
 		RedirectTo: fm.RedirectTo,
+		Subject:    fm.Subject,
 		Aliases:    fm.Aliases,
 		Body:       string(body),
+	}
+	if fm.Confidence != nil {
+		n.Confidence = *fm.Confidence
+	}
+	if fm.Stability != nil {
+		n.Stability = *fm.Stability
 	}
 	if fm.Refs != nil {
 		n.Refs.PeopleCard = fm.Refs.PeopleCard
@@ -134,6 +174,15 @@ func (n Node) Render() []byte {
 	fmt.Fprintf(&b, "status: %s\n", n.Status)
 	if n.RedirectTo != "" {
 		fmt.Fprintf(&b, "redirect_to: %s\n", n.RedirectTo)
+	}
+	if n.Type == "belief" {
+		// Emitted for every belief so an active belief always round-trips its
+		// rank state; confidence uses the shortest float form that re-parses.
+		fmt.Fprintf(&b, "confidence: %s\n", strconv.FormatFloat(n.Confidence, 'g', -1, 64))
+		fmt.Fprintf(&b, "stability: %d\n", n.Stability)
+		if n.Subject != "" {
+			fmt.Fprintf(&b, "subject: %s\n", n.Subject)
+		}
 	}
 	if len(n.Aliases) > 0 {
 		quoted := make([]string, len(n.Aliases))
@@ -168,6 +217,52 @@ func (n Node) Links() []Link {
 		links = append(links, Link{ID: m[1], Label: m[2]})
 	}
 	return links
+}
+
+// appendHistory appends line as the LAST entry of the "## History" section,
+// creating the section at the end of the body when absent. line must be
+// newline-terminated. Sibling of merge.go's appendToLinks, but append-at-end
+// (History is a chronological journal, newest last) rather than insert-first.
+// Idempotent: an identical line already in the body is not added again, so a
+// re-run/re-extraction (MEM-04 re-processing) never duplicates a History entry.
+// Belief mutations and eviction only ever append here — never rewrite — so git
+// log + History form the revision journal.
+func appendHistory(body, line string) string {
+	return appendToSection(body, historyHeadingRe, "## History", line)
+}
+
+// appendToSection appends line as the LAST entry of the section identified by
+// headingRe (heading, e.g. "## History", is used to create the section when
+// absent). The generalization of appendHistory reused for belief ## Evidence
+// blocks; the semantics (append-at-end, idempotent, create-if-absent) are
+// identical.
+func appendToSection(body string, headingRe *regexp.Regexp, heading, line string) string {
+	trimmed := strings.TrimSuffix(line, "\n")
+	for _, existing := range strings.Split(body, "\n") {
+		if existing == trimmed {
+			return body
+		}
+	}
+	loc := headingRe.FindStringIndex(body)
+	if loc == nil {
+		if body != "" && !strings.HasSuffix(body, "\n") {
+			body += "\n"
+		}
+		if body != "" {
+			body += "\n" // blank line before a freshly created section
+		}
+		return body + heading + "\n" + line
+	}
+	// Insert before the next "## " heading after this section, or at end of body.
+	end := len(body)
+	if m := sectionHeadingRe.FindStringIndex(body[loc[1]:]); m != nil {
+		end = loc[1] + m[0]
+	}
+	seg := body[:end]
+	if !strings.HasSuffix(seg, "\n") {
+		seg += "\n"
+	}
+	return seg + line + body[end:]
 }
 
 // NewID mints a node ID for the given kind ("entity", "episode", "rollup",

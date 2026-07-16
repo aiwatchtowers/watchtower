@@ -166,6 +166,56 @@ func TestListMemoryNodesOrderedByID(t *testing.T) {
 	}
 }
 
+// TestCountMemoryLinksInBulk: the grouped links-in query returns the same counts
+// as the per-id CountMemoryLinksIn, in one pass — self-links and tombstones
+// excluded, and every requested id present (0 when unlinked).
+func TestCountMemoryLinksInBulk(t *testing.T) {
+	db := openTestDB(t)
+
+	// a is linked by b and c; b is linked by c; c is linked by nobody. a's own
+	// body links to a (self-link, must not count). A tombstone links to a but is
+	// excluded.
+	if err := db.UpsertMemoryNode(memTestNode("ent_a", nil), "about a, see [[ent_a]] self", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode a: %v", err)
+	}
+	if err := db.UpsertMemoryNode(memTestNode("ent_b", nil), "b references [[ent_a]]", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode b: %v", err)
+	}
+	if err := db.UpsertMemoryNode(memTestNode("ent_c", nil), "c references [[ent_a]] and [[ent_b]]", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode c: %v", err)
+	}
+	tomb := memTestNode("ent_t", func(r *MemoryNodeRow) { r.Status = "tombstone" })
+	if err := db.UpsertMemoryNode(tomb, "tombstone points at [[ent_a]]", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode tomb: %v", err)
+	}
+
+	ids := []string{"ent_a", "ent_b", "ent_c", "ent_missing"}
+	got, err := db.CountMemoryLinksInBulk(ids)
+	if err != nil {
+		t.Fatalf("CountMemoryLinksInBulk: %v", err)
+	}
+
+	// Bulk result matches the per-id method for every id.
+	for _, id := range ids {
+		want, err := db.CountMemoryLinksIn(id)
+		if err != nil {
+			t.Fatalf("CountMemoryLinksIn(%s): %v", id, err)
+		}
+		if got[id] != want {
+			t.Errorf("bulk[%s] = %d, per-id = %d", id, got[id], want)
+		}
+	}
+	if got["ent_a"] != 2 {
+		t.Errorf("ent_a links-in = %d, want 2 (b + c, self and tombstone excluded)", got["ent_a"])
+	}
+	if got["ent_b"] != 1 {
+		t.Errorf("ent_b links-in = %d, want 1 (c)", got["ent_b"])
+	}
+	if _, ok := got["ent_missing"]; !ok {
+		t.Error("an unseen id must still get a (zero) entry")
+	}
+}
+
 func TestSearchMemoryFTSSnippetAndTombstones(t *testing.T) {
 	db := openTestDB(t)
 
@@ -320,6 +370,101 @@ func TestDropMemoryIndex(t *testing.T) {
 		if n != 0 {
 			t.Errorf("%s has %d rows after drop, want 0", table, n)
 		}
+	}
+}
+
+func TestRecordEntityHintsDedupesByPair(t *testing.T) {
+	db := openTestDB(t)
+
+	// Same (hint, episode) recorded twice → one row (re-extraction must not
+	// double-count); a different episode for the same hint is a second row.
+	if err := db.RecordEntityHints([]EntityHint{
+		{Hint: "hsm", EpisodeID: "ep_1"},
+		{Hint: "hsm", EpisodeID: "ep_1"},
+		{Hint: "hsm", EpisodeID: "ep_2"},
+		{Hint: "", EpisodeID: "ep_3"},     // empty hint skipped
+		{Hint: "phishing", EpisodeID: ""}, // empty episode skipped
+	}); err != nil {
+		t.Fatalf("RecordEntityHints: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_entity_hints`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("hint rows = %d, want 2 (deduped pair, empties skipped)", count)
+	}
+}
+
+func TestListPromotableHintsThresholdAndUnpromoted(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.RecordEntityHints([]EntityHint{
+		{Hint: "hsm", EpisodeID: "ep_1"},
+		{Hint: "hsm", EpisodeID: "ep_2"},
+		{Hint: "hsm", EpisodeID: "ep_3"},
+		{Hint: "phishing", EpisodeID: "ep_4"}, // only 1 distinct episode
+	}); err != nil {
+		t.Fatalf("RecordEntityHints: %v", err)
+	}
+
+	// Threshold 3: only "hsm" qualifies, with all three episodes.
+	got, err := db.ListPromotableHints(3)
+	if err != nil {
+		t.Fatalf("ListPromotableHints: %v", err)
+	}
+	if len(got) != 1 || got[0].Hint != "hsm" {
+		t.Fatalf("got %+v, want one hint hsm", got)
+	}
+	if strings.Join(got[0].EpisodeIDs, ",") != "ep_1,ep_2,ep_3" {
+		t.Errorf("episode ids = %v, want ep_1,ep_2,ep_3", got[0].EpisodeIDs)
+	}
+
+	// After marking hsm promoted, it drops out of the list.
+	if err := db.MarkHintPromoted("hsm", "ent_concept"); err != nil {
+		t.Fatalf("MarkHintPromoted: %v", err)
+	}
+	got, err = db.ListPromotableHints(3)
+	if err != nil {
+		t.Fatalf("ListPromotableHints after promote: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %+v, want none (hsm now promoted)", got)
+	}
+
+	// The rows carry the promotion marker.
+	var promotedTo string
+	if err := db.QueryRow(`SELECT promoted_to FROM memory_entity_hints WHERE hint = 'hsm' LIMIT 1`).Scan(&promotedTo); err != nil {
+		t.Fatalf("read promoted_to: %v", err)
+	}
+	if promotedTo != "ent_concept" {
+		t.Errorf("promoted_to = %q, want ent_concept", promotedTo)
+	}
+}
+
+// TestEntityHintsSurviveDropIndex: the hint table is runtime accumulation, not
+// derivable from the vault, so DropMemoryIndex (MEM-02 reindex) must NOT clear
+// it — a reindex never resets promotion progress.
+func TestEntityHintsSurviveDropIndex(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.RecordEntityHints([]EntityHint{
+		{Hint: "hsm", EpisodeID: "ep_1"},
+		{Hint: "hsm", EpisodeID: "ep_2"},
+	}); err != nil {
+		t.Fatalf("RecordEntityHints: %v", err)
+	}
+	if err := db.DropMemoryIndex(); err != nil {
+		t.Fatalf("DropMemoryIndex: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_entity_hints`).Scan(&count); err != nil {
+		t.Fatalf("count after drop: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("hint rows after DropMemoryIndex = %d, want 2 (hints must survive reindex)", count)
 	}
 }
 

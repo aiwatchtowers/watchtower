@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -27,9 +26,6 @@ const extractBatchSource = "memory.extract_episodes_batch"
 // (people/channels active in the last 30 days, per the design spec).
 const seedWindowDays = 30
 
-// mapOpenEpisodesCap bounds the "Recent open episodes" list in map.md.
-const mapOpenEpisodesCap = 10
-
 // RunStats counts what one consolidation run did.
 type RunStats struct {
 	OwnerEditsCommitted bool        // MEM-03: a dirty worktree was committed as owner-edit first
@@ -42,6 +38,16 @@ type RunStats struct {
 	Episodes            int         // episode nodes written by the extractor
 	RefsRejected        int         // provenance refs dropped by MEM-01 validation
 	Malformed           int         // shape-degenerate extractor episodes (parsed but zero refs)
+
+	// Semantic tier (Phase 3, all zero unless memory.semantic.enabled).
+	Deduped           int // episodes merged into their older twin (DedupeEpisodes)
+	Promoted          int // concept entities created from recurring hints (PromoteConcepts)
+	Rewritten         int // entity pages rewritten by the strong tier (RewriteEntityPages)
+	RewriteFailed     int // entity rewrites attempted but not applied (generate/parse/order failures)
+	BeliefOps         int // belief ops applied by the belief pass (ReviseBeliefs)
+	BeliefOpsRejected int // belief ops the rank math refused (MEM-06/08)
+	Aged              int // raw non-situation episodes aged to closed+long (AgeEpisodes)
+	Evicted           int // closed long episodes rolled up and tombstoned (EvictEpisodes)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -103,14 +109,19 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 //  3. Situations → episode nodes.
 //  4. Episode extraction from raw text, chunked per channel window; the
 //     watermark advances only behind fully committed windows (MEM-04).
-//  5. Mechanical map.md render.
-//  6. pipeline_runs finalization.
+//  5. Semantic tier (dedupe → concept promotion → page rewrite → belief pass →
+//     eviction), gated by memory.semantic.enabled and isolated per step.
+//  6. Mechanical index.md render + map.md render (strong when the semantic tier
+//     is on and within budget, mechanical fallback otherwise).
+//  7. pipeline_runs finalization.
 //
 // Failure semantics: errors in steps 1–3 are fatal (the run stops, already
 // committed work stays); a per-window AI failure in step 4 freezes the
 // watermark for that window but never fails the run (window isolation,
-// catchup-style) — it is recorded in the window's pipeline_steps row. A
-// disabled config is a full no-op: nothing written, no pipeline_runs row.
+// catchup-style) — it is recorded in the window's pipeline_steps row; a
+// semantic step failure in step 5 is logged and skipped and never fails the run
+// or moves a watermark. A disabled config is a full no-op: nothing written, no
+// pipeline_runs row.
 func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	var stats RunStats
 	if !p.cfg.Enabled {
@@ -161,15 +172,33 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	}
 
 	// (4) Episode extraction from raw text.
-	if err := p.runExtract(ctx, runID, acc, &stats); err != nil {
+	batchSteps, err := p.runExtract(ctx, runID, acc, &stats)
+	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
 
-	// (5) Mechanical map.md render — non-fatal: the map is derived state and
-	// is re-rendered on the next run.
-	if err := p.renderMap(runID); err != nil {
+	// (5) Semantic tier (Phase 3) — dark behind memory.semantic.enabled. Each
+	// step is isolated (a failure is logged and never fails the run) and never
+	// advances any watermark (compose/card precedent); the strong-tier AI steps
+	// stop launching once the run's accumulated output tokens exceed the budget.
+	semanticEnabled := p.cfg.Semantic.Enabled
+	if semanticEnabled {
+		p.runSemantic(ctx, runID, batchSteps, acc, &stats)
+	}
+
+	// (6) Renders. index.md is the mechanical full listing (always, when memory
+	// is enabled); map.md is the strong-tier hot summary when the semantic tier
+	// is on and within budget, else a mechanical fallback so MCP always has a
+	// map.md to read. Both are derived state — non-fatal and re-rendered next run.
+	if err := p.renderIndex(runID); err != nil {
+		p.logf("memory: render index: %v", err)
+	}
+	strongMap := semanticEnabled && !p.outputBudgetExceeded(acc)
+	mapUsage, err := p.renderMap(ctx, runID, strongMap)
+	if err != nil {
 		p.logf("memory: render map: %v", err)
 	}
+	acc.add(mapUsage)
 
 	wmAfter, err := p.db.MemoryWatermark()
 	if err != nil {
@@ -177,9 +206,167 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined)",
-		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined)
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted",
+		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
+		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted)
 	return stats, nil
+}
+
+// semanticEvictScoreThreshold is the retention-score cutoff below which a cold
+// closed long episode is evicted into a rollup. Like the retention constants
+// (evict.go) it lives in code, not config — one auditable place for the math.
+const semanticEvictScoreThreshold = 0.5
+
+// runSemantic executes the Phase-3 semantic tier in the spec order:
+// dedupe → concept promotion → page rewrite → belief pass → aging → eviction.
+// The mechanical steps (dedupe/promote/age/evict) always run; the two strong-
+// tier AI steps (rewrite/beliefs) are skipped once the run's output-token budget
+// is spent — a budget-skipped step still records a pipeline_steps row with
+// status 'skipped' (the status column is free text; 'skipped' is the cheapest
+// honest representation of "would have run, budget denied it"). Every step
+// records its own row and is failure-isolated: a step error is logged and the
+// next step still runs. No step advances a watermark. Config bounds are floor-
+// guarded (an explicit 0 falls back to the default rather than disabling the
+// bound). batchSteps is the count of extraction batch rows already recorded —
+// the fallback base for step numbering when the DB read fails.
+func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int, acc *usageAccumulator, stats *RunStats) {
+	step := p.nextSemanticStep(runID, batchSteps)
+
+	// Mechanical: episode dedupe.
+	start := time.Now()
+	deduped, err := DedupeEpisodes(p.vault, p.db, orDefault(p.cfg.Semantic.DedupeMaxMerges, 20), p.logf)
+	stats.Deduped += deduped
+	p.recordSemanticStep(runID, &step, "dedupe", stepStatus(err), nil, start)
+	if err != nil {
+		p.logf("memory: dedupe: %v", err)
+	}
+
+	// Mechanical: concept-entity promotion from recurring hints.
+	start = time.Now()
+	promoted, err := PromoteConcepts(p.vault, p.db, orDefault(p.cfg.Semantic.ConceptMinEpisodes, 5), orDefault(p.cfg.Semantic.ConceptMaxCreate, 10))
+	stats.Promoted += promoted
+	p.recordSemanticStep(runID, &step, "promote", stepStatus(err), nil, start)
+	if err != nil {
+		p.logf("memory: promote concepts: %v", err)
+	}
+
+	// Strong tier: entity page rewrites (budget-gated). The rewritten subjects
+	// scope the belief pass.
+	now := time.Now()
+	var rewritten []string
+	if p.outputBudgetExceeded(acc) {
+		p.logf("memory: rewrite skipped: output budget exceeded")
+		p.recordSemanticStep(runID, &step, "rewrite", "skipped", nil, now)
+	} else {
+		start = time.Now()
+		var (
+			usage  *digest.Usage
+			failed int
+		)
+		rewritten, failed, usage, err = p.RewriteEntityPages(ctx, orDefault(p.cfg.Semantic.RewriteMaxEntities, 10), now)
+		acc.add(usage)
+		stats.Rewritten += len(rewritten)
+		stats.RewriteFailed += failed
+		p.recordSemanticStep(runID, &step, "rewrite", stepStatus(err), usage, start)
+		if err != nil {
+			p.logf("memory: rewrite entity pages: %v", err)
+		}
+	}
+
+	// Strong tier: belief revision over the rewritten subjects + shaken beliefs
+	// (budget-gated).
+	if p.outputBudgetExceeded(acc) {
+		p.logf("memory: belief pass skipped: output budget exceeded")
+		p.recordSemanticStep(runID, &step, "beliefs", "skipped", nil, time.Now())
+	} else {
+		start = time.Now()
+		touched, rejected, usage, berr := p.ReviseBeliefs(ctx, rewritten, orDefault(p.cfg.Semantic.BeliefsMax, 20), now)
+		acc.add(usage)
+		stats.BeliefOps += touched
+		stats.BeliefOpsRejected += rejected
+		p.recordSemanticStep(runID, &step, "beliefs", stepStatus(berr), usage, start)
+		if berr != nil {
+			p.logf("memory: revise beliefs: %v", berr)
+		}
+	}
+
+	// Mechanical: age raw non-situation episodes past their prime to closed+long
+	// (they are otherwise never closed) so eviction can roll them up. Runs
+	// BEFORE eviction deliberately: an episode whose newest event already
+	// exceeds the eviction window (e.g. first run over an old backlog) is aged
+	// and then evicted in the SAME run — cold content goes straight to its
+	// rollup with provenance preserved (MEM-07), no one-run grace period.
+	start = time.Now()
+	aged, err := AgeEpisodes(p.vault, p.db, orDefault(p.cfg.Semantic.AgeAfterDays, 14), time.Now(), p.logf)
+	stats.Aged += aged
+	p.recordSemanticStep(runID, &step, "age", stepStatus(err), nil, start)
+	if err != nil {
+		p.logf("memory: age episodes: %v", err)
+	}
+
+	// Mechanical: retention scoring + eviction into rollups.
+	start = time.Now()
+	evicted, err := EvictEpisodes(p.vault, p.db, orDefault(p.cfg.Semantic.EvictAfterDays, 45), semanticEvictScoreThreshold, orDefault(p.cfg.Semantic.EvictMax, 50), p.logf)
+	stats.Evicted += evicted
+	p.recordSemanticStep(runID, &step, "evict", stepStatus(err), nil, start)
+	if err != nil {
+		p.logf("memory: evict episodes: %v", err)
+	}
+}
+
+// outputBudgetExceeded reports whether the run's accumulated output tokens have
+// passed the semantic output budget, after which no further strong-tier AI step
+// is launched this run (output tokens dominate strong-tier cost). The budget is
+// floor-guarded: an explicit non-positive config value falls back to the default
+// bound rather than disabling it.
+func (p *Pipeline) outputBudgetExceeded(acc *usageAccumulator) bool {
+	return acc.output > orDefault(p.cfg.Semantic.OutputBudget, 200000)
+}
+
+// nextSemanticStep returns the pipeline_steps step number the semantic phase
+// should start at — one past the extraction batch rows already recorded — so the
+// semantic rows sort after extraction under GetPipelineSteps' ORDER BY step. On
+// a DB read failure it falls back to lastKnown+1 (the in-run extraction batch
+// count) rather than 1, which would collide with the first extraction row.
+func (p *Pipeline) nextSemanticStep(runID int64, lastKnown int) int {
+	if runID == 0 {
+		return 1
+	}
+	steps, err := p.db.GetPipelineSteps(runID)
+	if err != nil {
+		p.logf("memory: read pipeline steps for semantic numbering: %v", err)
+		return lastKnown + 1
+	}
+	return len(steps) + 1
+}
+
+// stepStatus maps a step error to its pipeline_steps status column.
+func stepStatus(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "done"
+}
+
+// recordSemanticStep writes one pipeline_steps row for a semantic step, labeling
+// it by name in channel_name (semantic steps have no channel). *step is bumped
+// so the next row sorts after this one.
+func (p *Pipeline) recordSemanticStep(runID int64, step *int, name, status string, usage *digest.Usage, start time.Time) {
+	if runID == 0 {
+		return
+	}
+	var u digest.Usage
+	if usage != nil {
+		u = *usage
+	}
+	if err := p.db.InsertPipelineStep(db.PipelineStep{
+		RunID: runID, Step: *step, Status: status, ChannelName: name,
+		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalAPITokens: u.TotalAPITokens,
+		DurationSeconds: time.Since(start).Seconds(),
+	}); err != nil {
+		p.logf("memory: record semantic step %s: %v", name, err)
+	}
+	*step++
 }
 
 // fatal finalizes the pipeline_runs row for a run-stopping error and returns
@@ -257,22 +444,24 @@ type runWindow struct {
 //
 // Only a message-load failure is returned; per-window failures freeze the
 // watermark (MEM-04, see safeWatermark) and are noted in the window's
-// pipeline_steps row while the run continues with the next channel.
-func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumulator, stats *RunStats) error {
+// pipeline_steps row while the run continues with the next channel. Returns the
+// number of batch pipeline_steps rows recorded, so the semantic phase can number
+// its own rows after them even when the DB read for numbering later fails.
+func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumulator, stats *RunStats) (int, error) {
 	if p.generator == nil {
 		p.logf("memory: no generator configured, skipping episode extraction")
-		return nil
+		return 0, nil
 	}
 	wm, err := p.db.MemoryWatermark()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	msgs, err := p.db.ListMemoryExtractMessages(wm, p.cfg.MaxChunkMessages)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(msgs) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	// Floor-guards: a non-positive config value means "unset", so the hard
@@ -287,6 +476,7 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 	batches := groupWindowsIntoBatches(windows,
 		orDefault(p.cfg.BatchMaxChannels, 20), orDefault(p.cfg.BatchMaxMessages, 1500))
 
+	recorded := 0
 	for bi, idxs := range batches {
 		if ctx.Err() != nil {
 			p.logf("memory: extraction interrupted, %d windows left for the next run", remainingWindows(batches[bi:]))
@@ -316,8 +506,9 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 			current = p.advanceWatermark(windows, done, current)
 		}
 		p.recordBatchStep(runID, bi+1, len(batches), status, windows, idxs, usage, start)
+		recorded++
 	}
-	return nil
+	return recorded, nil
 }
 
 // orDefault floor-guards a config value: non-positive means "unset", so def
@@ -642,6 +833,7 @@ func (p *Pipeline) batchPrompts(windows []runWindow, idxs []int) (system, user, 
 // the batch's channel name(s), used only for the unresolved-hint log line.
 func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nodes []Node, ids []string) {
 	entityIdx := make(map[string]int) // entity node ID → index in nodes
+	var unresolved []db.EntityHint    // hints with no matching entity, for promotion tracking
 	for _, ep := range kept {
 		title := strings.Join(strings.Fields(ep.Title), " ")
 		if title == "" {
@@ -662,7 +854,15 @@ func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nod
 		for _, hint := range ep.EntityHints {
 			en, rerr := Resolve(p.vault, p.db, hint)
 			if rerr != nil {
+				// Unresolved hint: no entity page matches it yet. Log as before
+				// and persist it for concept-entity promotion once it recurs
+				// across enough distinct episodes (spec goal 6). Keyed on the
+				// episode id, so re-extracting the same episode never
+				// double-counts. Normalized the same way conceptAlias expects.
 				p.logf("memory: extract [%s]: entity hint %q unresolved", label, hint)
+				if norm := strings.ToLower(strings.TrimSpace(hint)); norm != "" {
+					unresolved = append(unresolved, db.EntityHint{Hint: norm, EpisodeID: n.ID})
+				}
 				continue
 			}
 			if en.Type != "entity" || en.Status != "active" {
@@ -677,6 +877,12 @@ func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nod
 			}
 			nodes[idx].Body = appendToLinks(nodes[idx].Body, link)
 		}
+	}
+	// Accumulation runs whenever memory is enabled (harmless when the semantic
+	// tier is off): promotion reads it later, gated separately. A record
+	// failure must not fail the batch — the hints are best-effort telemetry.
+	if err := p.db.RecordEntityHints(unresolved); err != nil {
+		p.logf("memory: record entity hints [%s]: %v", label, err)
 	}
 	return nodes, ids
 }
@@ -711,150 +917,4 @@ var linkLabelReplacer = strings.NewReplacer("[[", "", "]]", "", "|", "/", "\n", 
 
 func linkLabel(title string) string {
 	return linkLabelReplacer.Replace(title)
-}
-
-var (
-	slackUserAliasRe    = regexp.MustCompile(`^[UW][A-Z0-9]{4,}$`)
-	slackChannelAliasRe = regexp.MustCompile(`^[CDG][A-Z0-9]{4,}$`)
-)
-
-// mapEntry is one entity line in map.md.
-type mapEntry struct {
-	id, title, what string
-}
-
-// renderMap is consolidation step 5: the mechanical v1 map.md render — counts
-// by type/tier, entities grouped people/channels/projects with one-line What
-// excerpts, and the most recent open episodes. Committed via Vault.WriteFile
-// (a byte-identical render adds no commit). The LLM-written map is Phase 3.
-func (p *Pipeline) renderMap(runID int64) error {
-	rows, err := p.db.ListMemoryNodes()
-	if err != nil {
-		return err
-	}
-
-	counts := make(map[string]int) // "type/tier" → count, tombstones excluded
-	var people, channels, other []mapEntry
-	var open []db.MemoryNodeRow
-	for _, row := range rows {
-		if row.Status == "tombstone" {
-			continue
-		}
-		counts[row.Type+"/"+row.Tier]++
-		switch row.Type {
-		case "entity":
-			n, err := p.vault.ReadNode(row.ID)
-			if err != nil {
-				p.logf("memory: map: read %s: %v", row.ID, err)
-				continue
-			}
-			e := mapEntry{id: row.ID, title: row.Title, what: whatExcerpt(n.Body)}
-			switch classifyEntity(n) {
-			case "people":
-				people = append(people, e)
-			case "channels":
-				channels = append(channels, e)
-			default:
-				other = append(other, e)
-			}
-		case "episode":
-			if row.Status == "active" {
-				open = append(open, row)
-			}
-		}
-	}
-	for _, group := range [][]mapEntry{people, channels, other} {
-		sort.Slice(group, func(a, b int) bool {
-			ta, tb := strings.ToLower(group[a].title), strings.ToLower(group[b].title)
-			if ta != tb {
-				return ta < tb
-			}
-			return group[a].id < group[b].id
-		})
-	}
-	// Node IDs are ULIDs — sorting by ID descending is newest-first.
-	sort.Slice(open, func(a, b int) bool { return open[a].ID > open[b].ID })
-	if len(open) > mapOpenEpisodesCap {
-		open = open[:mapOpenEpisodesCap]
-	}
-
-	var b strings.Builder
-	b.WriteString("# Memory Map\n\n## Counts\n")
-	for _, typ := range []string{"entity", "episode", "rollup", "belief"} {
-		short, long := counts[typ+"/short"], counts[typ+"/long"]
-		fmt.Fprintf(&b, "- %s: %d (short %d, long %d)\n", typ, short+long, short, long)
-	}
-	writeMapSection(&b, "People", people)
-	writeMapSection(&b, "Channels", channels)
-	writeMapSection(&b, "Projects & other", other)
-	b.WriteString("\n## Recent open episodes\n")
-	if len(open) == 0 {
-		b.WriteString("(none)\n")
-	}
-	for _, row := range open {
-		fmt.Fprintf(&b, "- [[%s|%s]]\n", row.ID, linkLabel(row.Title))
-	}
-
-	msg := CommitMsg{Op: "map", Summary: "render world map", Cause: fmt.Sprintf("run:%d", runID)}
-	_, err = p.vault.WriteFile(mapFileName, []byte(b.String()), msg)
-	return err
-}
-
-func writeMapSection(b *strings.Builder, heading string, entries []mapEntry) {
-	fmt.Fprintf(b, "\n## %s\n", heading)
-	if len(entries) == 0 {
-		b.WriteString("(none)\n")
-		return
-	}
-	for _, e := range entries {
-		fmt.Fprintf(b, "- [[%s|%s]]", e.id, linkLabel(e.title))
-		if e.what != "" {
-			b.WriteString(" — " + e.what)
-		}
-		b.WriteString("\n")
-	}
-}
-
-// classifyEntity buckets an entity page for the map by its natural-key
-// aliases: Slack user IDs / emails / people-card refs → people, Slack
-// channel-ish IDs or a "#name" title → channels, everything else (Jira
-// project keys, hand-made pages) → other.
-func classifyEntity(n Node) string {
-	if n.Refs.PeopleCard != 0 {
-		return "people"
-	}
-	for _, a := range n.Aliases {
-		if slackUserAliasRe.MatchString(a) || strings.Contains(a, "@") {
-			return "people"
-		}
-	}
-	if strings.HasPrefix(n.Title, "#") {
-		return "channels"
-	}
-	for _, a := range n.Aliases {
-		if slackChannelAliasRe.MatchString(a) {
-			return "channels"
-		}
-	}
-	return "other"
-}
-
-// whatExcerpt returns the first non-empty line of the "## What" section,
-// truncated for the one-line map render.
-func whatExcerpt(body string) string {
-	inWhat := false
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			inWhat = trimmed == "## What"
-			continue
-		}
-		if inWhat && trimmed != "" {
-			if r := []rune(trimmed); len(r) > 120 {
-				return string(r[:120]) + "…"
-			}
-			return trimmed
-		}
-	}
-	return ""
 }
