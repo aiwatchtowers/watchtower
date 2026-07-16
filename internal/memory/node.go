@@ -228,13 +228,22 @@ func (n Node) Links() []Link {
 // Belief mutations and eviction only ever append here — never rewrite — so git
 // log + History form the revision journal.
 func appendHistory(body, line string) string {
+	return appendToSection(body, historyHeadingRe, "## History", line)
+}
+
+// appendToSection appends line as the LAST entry of the section identified by
+// headingRe (heading, e.g. "## History", is used to create the section when
+// absent). The generalization of appendHistory reused for belief ## Evidence
+// blocks; the semantics (append-at-end, idempotent, create-if-absent) are
+// identical.
+func appendToSection(body string, headingRe *regexp.Regexp, heading, line string) string {
 	trimmed := strings.TrimSuffix(line, "\n")
 	for _, existing := range strings.Split(body, "\n") {
 		if existing == trimmed {
 			return body
 		}
 	}
-	loc := historyHeadingRe.FindStringIndex(body)
+	loc := headingRe.FindStringIndex(body)
 	if loc == nil {
 		if body != "" && !strings.HasSuffix(body, "\n") {
 			body += "\n"
@@ -242,9 +251,9 @@ func appendHistory(body, line string) string {
 		if body != "" {
 			body += "\n" // blank line before a freshly created section
 		}
-		return body + "## History\n" + line
+		return body + heading + "\n" + line
 	}
-	// Insert before the next "## " heading after History, or at end of body.
+	// Insert before the next "## " heading after this section, or at end of body.
 	end := len(body)
 	if m := sectionHeadingRe.FindStringIndex(body[loc[1]:]); m != nil {
 		end = loc[1] + m[0]
