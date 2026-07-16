@@ -2,13 +2,115 @@ package dayplan
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"watchtower/internal/briefing"
 	"watchtower/internal/db"
+	"watchtower/internal/memory"
 )
+
+// noMemoryOpenLoops is the sentinel rendered into the MEMORY OPEN LOOPS
+// placeholder when the gate is off, no vault exists, or nothing qualifies. The
+// template instructs the model to ignore memory entirely when it sees this text,
+// so the placeholder is always safe to pass as a Sprintf arg (arg count is fixed).
+const noMemoryOpenLoops = "(no memory open loops)"
+
+// maxMemoryOpenLoops caps the block at ten lines so the day-plan prompt stays
+// focused; memory loops are context, not the schedulable task list.
+const maxMemoryOpenLoops = 10
+
+// gatherMemoryOpenLoops builds the MEMORY OPEN LOOPS block: for each ACTIVE
+// entity in the vault whose "## Open loops" section is non-empty, one
+// "- <entity title>: <loop bullet>" line per bullet, capped at ten. It is a pure
+// reader of the vault (MEM-14): it never creates a vault (OpenExistingVault), never
+// writes, and always returns a string safe to pass as a Sprintf arg — the sentinel
+// when the gate is off, no vault exists, or nothing qualifies.
+//
+// Vault content is framed model-mediated in the template ("open loops the
+// secretary tracks in its memory — model-derived, verify before acting"), never
+// as fact.
+func (p *Pipeline) gatherMemoryOpenLoops() string {
+	if !p.cfg.Memory.Surfaces.DayPlan {
+		return noMemoryOpenLoops
+	}
+
+	vault, err := memory.OpenExistingVault(filepath.Join(p.cfg.WorkspaceDir(), "memory"))
+	if err != nil {
+		// ErrVaultNotInitialized is the benign "memory never run" case — degrade
+		// silently. Any OTHER open failure is logged before degrading, so a real
+		// problem is not swallowed as if the vault simply did not exist (P3).
+		if !errors.Is(err, memory.ErrVaultNotInitialized) && p.logger != nil {
+			p.logger.Printf("dayplan: opening memory vault for open loops: %v", err)
+		}
+		return noMemoryOpenLoops
+	}
+
+	nodes, err := p.db.ListMemoryNodes()
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Printf("dayplan: error listing memory nodes: %v", err)
+		}
+		return noMemoryOpenLoops
+	}
+
+	var lines []string
+	for _, n := range nodes {
+		if n.Type != "entity" || n.Status != "active" {
+			continue
+		}
+		node, err := vault.ReadNode(n.ID)
+		if err != nil {
+			// Index/vault drift (a file removed since indexing): skip, don't fail.
+			continue
+		}
+		title := strings.TrimSpace(node.Title)
+		if title == "" {
+			title = node.ID
+		}
+		for _, bullet := range openLoopBullets(node.Body) {
+			lines = append(lines, "- "+title+": "+bullet)
+			if len(lines) >= maxMemoryOpenLoops {
+				break
+			}
+		}
+		if len(lines) >= maxMemoryOpenLoops {
+			break
+		}
+	}
+
+	if len(lines) == 0 {
+		return noMemoryOpenLoops
+	}
+	return strings.Join(lines, "\n")
+}
+
+// openLoopBullets returns the bullet texts under a node's "## Open loops" section
+// (each "- …" line, with the "- " marker stripped), in file order. Empty when the
+// section is absent or carries no bullets.
+func openLoopBullets(body string) []string {
+	var bullets []string
+	in := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			in = trimmed == "## Open loops"
+			continue
+		}
+		if !in {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			if b := strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")); b != "" {
+				bullets = append(bullets, b)
+			}
+		}
+	}
+	return bullets
+}
 
 // gatherTargets returns active targets (todo, in_progress, blocked), ordered by priority.
 func (p *Pipeline) gatherTargets() ([]db.Target, error) {

@@ -34,6 +34,9 @@ Working hours: %s – %s
 === USER FEEDBACK FOR REGENERATION (if any) ===
 %s
 
+=== MEMORY OPEN LOOPS (secretary's memory — model-derived, verify before acting) ===
+%s
+
 === OUTPUT FORMAT ===
 Return strictly this JSON (no markdown fences, no prose outside JSON):
 {
@@ -71,4 +74,5 @@ Return strictly this JSON (no markdown fences, no prose outside JSON):
 6. source_id MUST match an ID from the input sections (task id as string, jira key, briefing attention source_id).
    For "focus" items, source_id MUST be null.
 7. Every item requires rationale grounded in the inputs.
-8. Respect user feedback literally if provided.`
+8. Respect user feedback literally if provided.
+9. MEMORY OPEN LOOPS lists open loops the secretary tracks in its memory (model-derived, verify before acting). Use them only as context; deduplicate against the ACTIVE TASKS section (the targets) — memory loops add context, they are NOT new tasks, so do not schedule a target that already appears above. If it reads "(no memory open loops)", ignore memory entirely.`

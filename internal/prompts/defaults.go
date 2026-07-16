@@ -108,7 +108,7 @@ var DefaultVersions = map[string]int{
 	TasksUpdate:                1, // v1: AI task update from user instruction
 	MeetingPrep:                3, // v3: Jira context for attendees (workload, shared issues)
 	MeetingRecap:               1, // v1: initial meeting recap template
-	DayPlanGenerate:            2, // v2: mandatory language directive at top
+	DayPlanGenerate:            3, // v3: memory open-loops section (Phase-5 slice-4 surface, behind memory.surfaces.day_plan)
 	TargetsExtract:             1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:                1, // v1: single-target link proposal against active snapshot
 	TrackCompose:               1, // v1: draft custom-track title+instruction from a free-text request
