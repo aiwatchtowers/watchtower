@@ -59,8 +59,8 @@ Slices 1–3 are merged on `feature/memory-phase5` (this worktree). Confirm `go 
 
 Add `Operational bool` to `MemorySourcesConfig`, `DayPlan`/`MeetingPrep bool` to `MemorySurfacesConfig`, `Preferences bool` to `MemorySemanticConfig` (each beside its siblings, config.go:~176–236). Four `v.SetDefault` lines in the `memory.*` block (config.go:~327–352): `memory.sources.operational`, `memory.surfaces.day_plan`, `memory.surfaces.meeting_prep`, `memory.semantic.preferences` — all `false`. Register all four in `knownConfigKeys` (cmd/config.go:~196–221).
 
-- [ ] **Step 1: failing tests** — config test: the four defaults are present and false, and every pre-existing `memory.*` default is untouched; cmd test: `watchtower config set memory.sources.operational true` (and the other three) accepted, not warned as unknown.
-- [ ] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** `go test ./internal/config/ ./cmd/ -run 'Config|Memory'` green; commit `feat(config): slice-4 gates — sources.operational, surfaces.{day_plan,meeting_prep}, semantic.preferences (default false)`.
+- [x] **Step 1: failing tests** — config test: the four defaults are present and false, and every pre-existing `memory.*` default is untouched; cmd test: `watchtower config set memory.sources.operational true` (and the other three) accepted, not warned as unknown.
+- [x] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** `go test ./internal/config/ ./cmd/ -run 'Config|Memory'` green; commit `feat(config): slice-4 gates — sources.operational, surfaces.{day_plan,meeting_prep}, semantic.preferences (default false)`.
 
 ## Task 2: Target/track entity mirrors — `mirror_ingest.go` + Run step 3c (MEM-14 kernel)
 

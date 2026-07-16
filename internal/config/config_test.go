@@ -319,6 +319,33 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 
 	// Phase-5 slice-3 renders: dark by default.
 	assert.False(t, cfg.Memory.Renders.DigestCompare, "digest_compare render off by default")
+
+	// Phase-5 slice-4 gates: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Sources.Operational, "operational source off by default")
+	assert.False(t, cfg.Memory.Surfaces.DayPlan, "day_plan surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.MeetingPrep, "meeting_prep surface off by default")
+	assert.False(t, cfg.Memory.Semantic.Preferences, "preferences semantic gate off by default")
+}
+
+func TestMemorySlice4Config_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  sources:
+    operational: true
+  surfaces:
+    day_plan: true
+    meeting_prep: true
+  semantic:
+    preferences: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Sources.Operational)
+	assert.True(t, cfg.Memory.Surfaces.DayPlan)
+	assert.True(t, cfg.Memory.Surfaces.MeetingPrep)
+	assert.True(t, cfg.Memory.Semantic.Preferences)
 }
 
 func TestMemorySourcesConfig_FromYAML(t *testing.T) {
