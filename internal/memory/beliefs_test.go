@@ -237,3 +237,136 @@ func TestReviseBeliefsCapRespected(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, touched, "cap respected")
 }
+
+// TestMemory06_OwnerRankBeliefNeverAutoFlipped is the MEM-06 formal guard: a
+// belief carrying non-decayed owner-rank evidence, fed contradicting
+// observations through the full belief pass, is at most shaken — never retired
+// or flipped. Owner rank protects until it decays (180d); no amount of observed
+// contradiction auto-flips a fresh owner belief. This drives the full
+// ReviseBeliefs → applyOp seam, not the pure math directly.
+func TestMemory06_OwnerRankBeliefNeverAutoFlipped(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	subjectID := "ent_00000000000000000000000001"
+	epID := "ep_00000000000000000000000001"
+	tsAgainst := fmt.Sprintf("%d.000100", beliefNow.AddDate(0, 0, -5).Unix())
+	writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", tsAgainst))
+	writeAndIndex(t, v, d, beliefSubjectEntity(subjectID, epID))
+
+	freshOwnerTS := fmt.Sprintf("%d", beliefNow.AddDate(0, 0, -10).Unix()) // well within the 180d owner window
+	bel := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", subjectID, 0.6, 3, "active",
+		beliefEvidence{Rank: rankOwner, Support: true, ChannelID: "C1CHAN", TS: freshOwnerTS})
+	writeAndIndex(t, v, d, bel)
+
+	// The model asks to retire the belief on one contradicting observation. The
+	// rank math (belief_math_test.go proves the volume-invariance exhaustively)
+	// downgrades any retire/flip against non-decayed owner support to shaken.
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return opsJSON(t, beliefOpJSON{BeliefID: bel.ID, Op: "retire",
+			Evidence: []episodeRef{{ChannelID: "C1CHAN", TS: tsAgainst}}, Rationale: "one contradicting incident"}), nil
+	}}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	_, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	require.NoError(t, err)
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "shaken", got.Status, "MEM-06: owner-rank belief is shaken at most, never retired")
+	assert.NotEqual(t, "retired", got.Status)
+
+	row, err := d.GetMemoryNode(bel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "shaken", row.Status, "index agrees the belief was never retired")
+}
+
+// TestMemory08_BeliefOpsGatedByRankMath is the MEM-08 formal guard: model output
+// reaches the vault only through code-side validation. A model op the rank/
+// threshold math disallows is not applied; self-declared confidence/status never
+// bypass applyOp; invented evidence is rejected; and a rewrite marker absent from
+// the input set is dropped.
+func TestMemory08_BeliefOpsGatedByRankMath(t *testing.T) {
+	t.Run("model self-declared confidence never reaches the belief", func(t *testing.T) {
+		v, d := newTestVault(t), newTestDB(t)
+		subjectID := "ent_00000000000000000000000001"
+		epID := "ep_00000000000000000000000001"
+		tsRef := fmt.Sprintf("%d.000100", beliefNow.AddDate(0, 0, -5).Unix())
+		writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", tsRef))
+		writeAndIndex(t, v, d, beliefSubjectEntity(subjectID, epID))
+
+		// The model tries to self-declare a high confidence, an active status, and
+		// a stability — all extra JSON keys the op schema does not carry, so they
+		// are ignored; birth confidence comes from the rank math (capped at 0.6).
+		raw := fmt.Sprintf(`{"ops":[{"op":"propose-new","statement":"Alice ships fast","subject":%q,`+
+			`"confidence":0.99,"status":"active","stability":9,`+
+			`"evidence":[{"channel_id":"C1CHAN","ts":%q}],"rationale":"x"}]}`, subjectID, tsRef)
+		gen := &fakeGen{reply: func(string) (string, error) { return raw, nil }}
+		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+		touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+		require.NoError(t, err)
+		require.Equal(t, 1, touched)
+
+		rows, err := d.ListMemoryNodes()
+		require.NoError(t, err)
+		var belID string
+		for _, r := range rows {
+			if r.Type == "belief" {
+				belID = r.ID
+			}
+		}
+		require.NotEmpty(t, belID)
+		bel, err := v.ReadNode(belID)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, bel.Confidence, 0.6, "confidence from the rank math, not the model's 0.99")
+	})
+
+	t.Run("invented-only evidence op is a no-op", func(t *testing.T) {
+		v, d := newTestVault(t), newTestDB(t)
+		subjectID := "ent_00000000000000000000000001"
+		epID := "ep_00000000000000000000000001"
+		tsRef := fmt.Sprintf("%d.000100", beliefNow.AddDate(0, 0, -5).Unix())
+		writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", tsRef))
+		writeAndIndex(t, v, d, beliefSubjectEntity(subjectID, epID))
+		bel := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", subjectID, 0.5, 0, "active")
+		writeAndIndex(t, v, d, bel)
+
+		gen := &fakeGen{reply: func(string) (string, error) {
+			return opsJSON(t, beliefOpJSON{BeliefID: bel.ID, Op: "confirm",
+				Evidence: []episodeRef{{ChannelID: "CFAKE", TS: "9999.000000"}}, Rationale: "made up"}), nil
+		}}
+		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+		touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+		require.NoError(t, err)
+		assert.Zero(t, touched, "an op citing only invented refs never reaches applyOp")
+
+		got, err := v.ReadNode(bel.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 0.5, got.Confidence, "belief left untouched")
+	})
+
+	t.Run("rewrite marker not in the input set is dropped", func(t *testing.T) {
+		v, d := newTestVault(t), newTestDB(t)
+		entID := dueEntityIDs(rewriteNow, 1)[0]
+		epID := "ep_00000000000000000000000001"
+		writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", "1710000000.000100"))
+		writeAndIndex(t, v, d, rewriteEntityNode(entID, "Acme", epID))
+
+		gen := &fakeGen{reply: func(string) (string, error) {
+			return rewriteReplyJSON(t, "w", "c", []string{"f"}, []episodeRef{
+				{ChannelID: "C1CHAN", TS: "1710000000.000100"}, // valid
+				{ChannelID: "CFAKE", TS: "9999.000000"},        // invented
+			}), nil
+		}}
+		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+		rewritten, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+		require.NoError(t, err)
+		require.Len(t, rewritten, 1)
+
+		page, err := v.ReadNode(entID)
+		require.NoError(t, err)
+		assert.Contains(t, page.Body, "C1CHAN 1710000000.000100")
+		assert.NotContains(t, page.Body, "CFAKE", "invented marker never reaches the vault (MEM-08)")
+	})
+}

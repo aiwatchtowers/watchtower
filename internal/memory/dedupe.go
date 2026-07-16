@@ -1,11 +1,17 @@
 package memory
 
 import (
+	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"watchtower/internal/db"
 )
+
+// provenanceHeadingRe matches the "## Provenance" section heading.
+var provenanceHeadingRe = regexp.MustCompile(`(?m)^## Provenance[ \t]*$`)
 
 // DedupeEpisodes is the first real consumer of Merge: a mechanical pass that
 // collapses retry-duplicated episodes (the failed-window re-extraction the E2E
@@ -61,7 +67,13 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int) (merged int, err e
 				if !eps[i].overlaps(eps[j]) || !eps[i].sharesRef(eps[j]) {
 					continue
 				}
-				// i is older (smaller id) → winner; j is newer → loser.
+				// i is older (smaller id) → winner; j is newer → loser. Union the
+				// loser-only provenance refs into the winner BEFORE the merge (the
+				// tombstone stub Merge writes for the loser drops its body), so a
+				// partial-overlap merge never thins provenance (MEM-07).
+				if err := unionProvenance(v, database, eps[i].id, eps[j].id); err != nil {
+					return merged, err
+				}
 				if err := Merge(v, database, eps[j].id, eps[i].id); err != nil {
 					return merged, err
 				}
@@ -71,6 +83,50 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int) (merged int, err e
 		}
 	}
 	return merged, nil
+}
+
+// unionProvenance appends the loser's provenance refs that the winner does not
+// already carry to the winner's ## Provenance section and commits the winner, so
+// a partial-overlap dedupe merge never loses a ref (MEM-07: provenance never
+// thins). Identical ref sets — the common retry-duplicate case — are a no-op:
+// the winner already holds every ref, so nothing is written or committed.
+func unionProvenance(v *Vault, database *db.DB, winnerID, loserID string) error {
+	winner, err := v.ReadNode(winnerID)
+	if err != nil {
+		return err
+	}
+	loser, err := v.ReadNode(loserID)
+	if err != nil {
+		return err
+	}
+	have := make(map[string]bool)
+	for _, r := range parseProvenance(winner.Body) {
+		have[r.ChannelID+" "+r.TS] = true
+	}
+	var missing []episodeRef
+	for _, r := range parseProvenance(loser.Body) {
+		key := r.ChannelID + " " + r.TS
+		if !have[key] {
+			have[key] = true
+			missing = append(missing, r)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	for _, r := range missing {
+		winner.Body = appendToSection(winner.Body, provenanceHeadingRe, "## Provenance", "- "+r.ChannelID+" "+r.TS+"\n")
+	}
+	msg := CommitMsg{
+		Op:      "dedupe",
+		Summary: fmt.Sprintf("union %d provenance ref(s) into %s", len(missing), winnerID),
+		Cause:   "dedupe",
+		NodeIDs: []string{winnerID},
+	}
+	if _, err := v.WriteNodes([]Node{winner}, msg); err != nil {
+		return err
+	}
+	return upsertIndexNode(database, winner, time.Now().UTC().Format(time.RFC3339))
 }
 
 // epCandidate is one episode's dedupe key: its provenance ref set and time

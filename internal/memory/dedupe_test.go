@@ -154,6 +154,34 @@ func TestDedupeProvenanceUnionPreserved(t *testing.T) {
 	}
 }
 
+// TestDedupeUnionsPartialOverlapProvenance: when the loser carries provenance
+// refs the winner lacks (a partial-overlap duplicate, not an identical retry),
+// dedupe must append those loser-only refs to the winner's ## Provenance before
+// the merge — no ref may be lost (MEM-07: provenance never thins). This is the
+// non-identical-ref-set case the identical-refs test above cannot catch.
+func TestDedupeUnionsPartialOverlapProvenance(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	older := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DG1", "First", "C8CHAN",
+		"1752570000.000100", "1752570100.000200")
+	newer := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DG2", "Second", "C8CHAN",
+		"1752570100.000200", "1752570200.000300") // shares the middle ref, adds a tail ref
+	writeAndIndex(t, v, d, older)
+	writeAndIndex(t, v, d, newer)
+
+	merged, err := DedupeEpisodes(v, d, 20)
+	require.NoError(t, err)
+	require.Equal(t, 1, merged)
+
+	winner, err := Resolve(v, d, newer.ID)
+	require.NoError(t, err)
+	require.Equal(t, older.ID, winner.ID)
+	// The winner keeps its own refs AND gains the loser-only ref via the union.
+	for _, ts := range []string{"1752570000.000100", "1752570100.000200", "1752570200.000300"} {
+		assert.Contains(t, winner.Body, "C8CHAN "+ts, "winner has provenance ref %s after union", ts)
+	}
+	assert.Contains(t, winner.Body, "## Provenance", "the union ref lives in the winner's Provenance section")
+}
+
 // countTombstones counts tombstone rows in the index.
 func countTombstones(t *testing.T, d *db.DB) int {
 	t.Helper()

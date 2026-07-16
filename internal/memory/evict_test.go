@@ -48,11 +48,12 @@ func oldEpNode(t *testing.T, id, title, outcome, channel string, ageDays int, ex
 	return Node{ID: id, Type: "episode", Tier: "long", Status: "closed", Title: title, Body: b.String()}
 }
 
-// TestMemory07_EvictionKeepsProvenance (spirit; formal guard is Task 12):
-// evicting a cold closed long episode carries EVERY provenance ref verbatim
-// into the rollup line, tombstones the episode redirecting to the sum_* rollup,
-// and the resolver chases the old id to the rollup; the rollup line is
-// FTS-searchable.
+// TestMemory07_EvictionKeepsProvenance is the MEM-07 formal guard: provenance
+// never thins. Eviction carries EVERY provenance ref verbatim into the rollup
+// line, tombstones the episode redirecting to the sum_* rollup, and the resolver
+// chases the old id to the rollup (the rollup line is FTS-searchable). The
+// dedupe path is covered too: a partial-overlap merge unions the loser-only ref
+// into the winner rather than dropping it. Dropping any ref must fail this test.
 func TestMemory07_EvictionKeepsProvenance(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	base := time.Now().AddDate(0, 0, -100).Unix()
@@ -88,6 +89,20 @@ func TestMemory07_EvictionKeepsProvenance(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, hits, 1)
 	assert.Equal(t, rollup.ID, hits[0].ID)
+
+	// The dedupe path also preserves provenance: a partial-overlap merge unions
+	// the loser-only ref into the winner (MEM-07 — no ref lost on merge either).
+	v2, d2 := newTestVault(t), newTestDB(t)
+	older := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5EW1", "First", "CDCHAN", "1752570000.000100", "1752570100.000200")
+	newer := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5EW2", "Second", "CDCHAN", "1752570100.000200", "1752570200.000300")
+	writeAndIndex(t, v2, d2, older)
+	writeAndIndex(t, v2, d2, newer)
+	merged, err := DedupeEpisodes(v2, d2, 20)
+	require.NoError(t, err)
+	require.Equal(t, 1, merged)
+	winner, err := Resolve(v2, d2, newer.ID)
+	require.NoError(t, err)
+	assert.Contains(t, winner.Body, "CDCHAN 1752570200.000300", "MEM-07: dedupe unions the loser-only provenance ref")
 }
 
 // TestEvictSkipsRecentAndHighScore: a recent episode (inside the window) and an
