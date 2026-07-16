@@ -106,7 +106,7 @@ var DefaultVersions = map[string]int{
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
 	TasksUpdate:                1, // v1: AI task update from user instruction
-	MeetingPrep:                3, // v3: Jira context for attendees (workload, shared issues)
+	MeetingPrep:                4, // v4: attendee memory section (Phase-5 slice-4 surface, behind memory.surfaces.meeting_prep)
 	MeetingRecap:               1, // v1: initial meeting recap template
 	DayPlanGenerate:            3, // v3: memory open-loops section (Phase-5 slice-4 surface, behind memory.surfaces.day_plan)
 	TargetsExtract:             1, // v1: multi-target extraction with URL enrichments and active snapshot
@@ -1019,6 +1019,7 @@ Rules:
 - context_gaps: what's missing that would help prepare better (no agenda, unclear topic, unlinked attendees).
 - If no relevant data exists for a field, return an empty array — don't pad with loosely related filler.
 - If the meeting description/agenda is empty or vague, this is a HIGH priority context_gap and recommendation.
+- ATTENDEE MEMORY holds notes and beliefs the secretary derived from Slack/mail/calendar — model-mediated, NOT the attendees' own words. Treat it as soft context: it may sharpen people_notes and talking_points, but verify before relying on it and never quote it as fact. When it reads "(no memory context)", ignore attendee memory entirely.
 - %s
 - Return valid JSON only.
 
@@ -1038,6 +1039,9 @@ Rules:
 %s
 
 === USER NOTES ===
+%s
+
+=== ATTENDEE MEMORY (secretary's own notes + beliefs — model-mediated, not the attendees' words) ===
 %s`
 
 const defaultMeetingExtractTopics = `You split a raw blob of meeting-prep text into atomic discussion topics.
