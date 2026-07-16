@@ -361,56 +361,23 @@ func newEvidenceLines(refs []episodeRef, op beliefOp) []beliefEvidence {
 // never freezing the run (the chat surface is a soft owner-writeback, re-scanned
 // next run — unlike the episode extractor's fatal MEM-01 lookup freeze).
 func (p *Pipeline) validateChatRefs(refs []episodeRef) (kept []episodeRef, dropped int) {
-	// Fast path: no chat refs → no DB work, so the episode-only belief pass and
-	// its tests never touch the chat tables.
-	hasChat := false
 	for _, r := range refs {
-		if isChatRef(r.ChannelID) {
-			hasChat = true
-			break
-		}
-	}
-	if !hasChat {
-		return refs, 0
-	}
-
-	present, presenceErr := p.db.ChatTablesPresent()
-	if presenceErr != nil {
-		p.logf("memory: beliefs: chat tables presence check failed: %v — chat refs dropped this run", presenceErr)
-	}
-	for _, r := range refs {
+		// Non-chat (episode) refs pass through untouched — they were already
+		// validated against the model's input set (validateMarkers, MEM-08) and
+		// carry no owner-authenticity claim. Only chat: refs consult the registry,
+		// so the episode-only belief pass and its tests never touch the chat
+		// tables (the registry's chat resolver is the sole DB work here).
 		if !isChatRef(r.ChannelID) {
 			kept = append(kept, r)
 			continue
 		}
-		convID, ts, ok := parseChatRef(r.ChannelID, r.TS)
-		if !ok {
+		// The chat resolver's existence check IS the MEM-09 owner-authenticity
+		// check; a lookup error is a soft drop (the chat surface is a soft
+		// owner-writeback, re-scanned next run — never a run-freezing MEM-01
+		// error). registered is always true here (chat: is a registered scheme).
+		ok, _, err := p.registry.Validate(r)
+		if err != nil || !ok {
 			dropped++
-			p.logf("memory: beliefs: chat ref %s %s dropped (unparseable ref, MEM-09)", r.ChannelID, r.TS)
-			continue
-		}
-		// Distinguish a presence-check DB error from genuine table absence: the
-		// former is a transient failure, not evidence the tables do not exist, so
-		// it must never be logged as "tables absent" (P5/style-m3).
-		if presenceErr != nil {
-			dropped++
-			p.logf("memory: beliefs: chat ref %s %s dropped (presence check errored: %v, MEM-09)", r.ChannelID, r.TS, presenceErr)
-			continue
-		}
-		if !present {
-			dropped++
-			p.logf("memory: beliefs: chat ref %s %s dropped (chat tables absent — headless daemon, MEM-09)", r.ChannelID, r.TS)
-			continue
-		}
-		owner, cerr := p.db.OwnerChatTurnExists(convID, ts)
-		if cerr != nil {
-			p.logf("memory: beliefs: chat ref %s %s lookup: %v — dropped", r.ChannelID, r.TS, cerr)
-			dropped++
-			continue
-		}
-		if !owner {
-			dropped++
-			p.logf("memory: beliefs: chat ref %s %s is not an owner (role='user') situation turn — dropped (MEM-09)", r.ChannelID, r.TS)
 			continue
 		}
 		kept = append(kept, r)

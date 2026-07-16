@@ -68,6 +68,12 @@ type Pipeline struct {
 	// checkMsg is the MEM-01 provenance lookup — the database in production,
 	// an erroring fake in tests exercising the lookup-failure freeze.
 	checkMsg messageChecker
+	// registry is the MEM-12 provenance-resolver registry: one resolver per ref
+	// scheme (message/chat, +mail/act in later tasks), the single write-time
+	// answer to "does this ref resolve against a raw source of record?". The
+	// belief pass's chat: validation routes through it; unregistered schemes are
+	// rejected at write.
+	registry *ProvenanceRegistry
 	// promptStore optionally serves user-customized templates for the
 	// extractor prompt (same seam as the inbox pipeline); nil falls back to
 	// the built-in default.
@@ -104,7 +110,16 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, checkMsg: database, Source: "cli"}
+	p := &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, checkMsg: database, Source: "cli"}
+	// MEM-12: build the provenance-resolver registry once. message (scheme "")
+	// and chat (scheme "chat") are the Phase-0–4 schemes; mail/act join in
+	// Tasks 4/6. gmail_messages/interaction tables are base tables, so a
+	// resolver is registered even when its source flag is dark.
+	p.registry = newProvenanceRegistry(
+		messageResolver{database},
+		chatResolver{db: database, logf: logf},
+	)
+	return p
 }
 
 // Run executes one consolidation pass. Order per the design spec:
