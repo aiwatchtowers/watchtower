@@ -56,7 +56,7 @@ func runGoogleLogin(cmd *cobra.Command, _ []string) error {
 
 	var scopes []string
 	if wantCalendar {
-		scopes = append(scopes, calendar.ScopeCalendarReadonly)
+		scopes = append(scopes, calendar.CalendarScopes...)
 	}
 	if wantGmail {
 		scopes = append(scopes, gmail.ScopeGmailReadonly)
@@ -77,7 +77,7 @@ func runGoogleLogin(cmd *cobra.Command, _ []string) error {
 
 	fmt.Fprintln(out)
 	if wantCalendar {
-		if token.GrantsScope(calendar.ScopeCalendarReadonly) {
+		if token.GrantsCalendar() {
 			store := calendar.NewTokenStore(cfg.WorkspaceDir())
 			if err := store.Save(token); err != nil {
 				return fmt.Errorf("saving calendar token: %w", err)

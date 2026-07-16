@@ -23,13 +23,20 @@ const (
 	defaultRedirectPort = 18501 // separate range from Slack (18491-18500)
 	callbackPath        = "/callback"
 	loginTimeout        = 5 * time.Minute
-	// ScopeCalendarReadonly is one broad read-only scope instead of
-	// events.readonly + calendarlist.readonly: Google shows its
-	// granular-consent checkbox screen only for MULTI-scope requests, so a
-	// single scope gives a plain Continue screen the user cannot half-grant.
+	// Two granular read-only scopes instead of the broad calendar.readonly:
+	// Google verification demands the narrowest scopes that cover the app —
+	// events.readonly for event sync, calendarlist.readonly for the calendar
+	// picker (FetchCalendars). The multi-scope checkbox consent screen this
+	// forces is handled by the partial-grant checks on login.
 	// Exported for the combined `google login` flow in cmd.
-	ScopeCalendarReadonly = "https://www.googleapis.com/auth/calendar.readonly"
+	ScopeCalendarEventsReadonly = "https://www.googleapis.com/auth/calendar.events.readonly"
+	ScopeCalendarListReadonly   = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
 )
+
+// CalendarScopes is the full scope set the calendar login flow requests.
+// Tokens issued under the legacy broad calendar.readonly scope keep working:
+// it covers both granular scopes, and grant checks run only at login.
+var CalendarScopes = []string{ScopeCalendarEventsReadonly, ScopeCalendarListReadonly}
 
 // Google OAuth endpoints — vars so tests can point at httptest.Server.
 var (
@@ -122,7 +129,7 @@ func (s *TokenStore) Exists() bool {
 // LoginOptions configures the Login flow behaviour.
 type LoginOptions struct {
 	SkipBrowserOpen bool
-	// Scopes to request; defaults to ScopeCalendarReadonly. The combined
+	// Scopes to request; defaults to CalendarScopes. The combined
 	// `google login` flow passes the user's in-app selection here so one
 	// consent screen covers exactly the chosen services.
 	Scopes []string
@@ -151,7 +158,7 @@ func Prepare(cfg GoogleOAuthConfig, customRedirectURI string) (*PrepareResult, e
 		redirectURI = fmt.Sprintf("http://127.0.0.1:%d%s", defaultRedirectPort, callbackPath)
 	}
 
-	authorizeURL := buildAuthURL(cfg, redirectURI, state, []string{ScopeCalendarReadonly})
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, CalendarScopes)
 
 	return &PrepareResult{
 		AuthorizeURL: authorizeURL,
@@ -217,6 +224,17 @@ func (t *OAuthToken) GrantsScope(scope string) bool {
 		return true
 	}
 	return slices.Contains(strings.Fields(t.Scope), scope)
+}
+
+// GrantsCalendar reports whether the token grants full calendar access —
+// both granular scopes, or the legacy broad calendar.readonly that covers
+// them. Half a grant (events without the calendar list, or vice versa) is
+// useless: sync needs FetchCalendars and event fetches together.
+func (t *OAuthToken) GrantsCalendar() bool {
+	if t.GrantsScope("https://www.googleapis.com/auth/calendar.readonly") {
+		return true
+	}
+	return t.GrantsScope(ScopeCalendarEventsReadonly) && t.GrantsScope(ScopeCalendarListReadonly)
 }
 
 // validateGrantedScopes rejects tokens that carry NONE of the requested
@@ -311,7 +329,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 
 	scopes := opt.Scopes
 	if len(scopes) == 0 {
-		scopes = []string{ScopeCalendarReadonly}
+		scopes = CalendarScopes
 	}
 	authorizeURL := buildAuthURL(cfg, redirectURI, state, scopes)
 

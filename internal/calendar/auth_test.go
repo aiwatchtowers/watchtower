@@ -69,7 +69,7 @@ func TestTokenStore_LoadMissing(t *testing.T) {
 
 func TestBuildAuthURL(t *testing.T) {
 	cfg := GoogleOAuthConfig{ClientID: "client.apps", ClientSecret: "shh"}
-	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "state-abc", []string{ScopeCalendarReadonly})
+	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "state-abc", []string{ScopeCalendarEventsReadonly})
 
 	u, err := url.Parse(got)
 	require.NoError(t, err)
@@ -82,17 +82,17 @@ func TestBuildAuthURL(t *testing.T) {
 	assert.Equal(t, "state-abc", q.Get("state"))
 	assert.Equal(t, "offline", q.Get("access_type"))
 	assert.Equal(t, "consent", q.Get("prompt"))
-	assert.Equal(t, ScopeCalendarReadonly, q.Get("scope"))
+	assert.Equal(t, ScopeCalendarEventsReadonly, q.Get("scope"))
 }
 
 func TestBuildAuthURL_MultipleScopes(t *testing.T) {
 	cfg := GoogleOAuthConfig{ClientID: "client.apps"}
 	gmailScope := "https://www.googleapis.com/auth/gmail.readonly"
-	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "s", []string{ScopeCalendarReadonly, gmailScope})
+	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "s", []string{ScopeCalendarEventsReadonly, gmailScope})
 
 	u, err := url.Parse(got)
 	require.NoError(t, err)
-	assert.Equal(t, ScopeCalendarReadonly+" "+gmailScope, u.Query().Get("scope"))
+	assert.Equal(t, ScopeCalendarEventsReadonly+" "+gmailScope, u.Query().Get("scope"))
 }
 
 func TestPrepare_DefaultRedirect(t *testing.T) {
@@ -180,7 +180,7 @@ func TestExchangeCode_BadJSON(t *testing.T) {
 
 func TestValidateGrantedScopes_NoneGranted(t *testing.T) {
 	tok := &OAuthToken{Scope: "openid"}
-	err := validateGrantedScopes(tok, []string{ScopeCalendarReadonly})
+	err := validateGrantedScopes(tok, []string{ScopeCalendarEventsReadonly})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "did not grant any of the requested access")
 }
@@ -189,16 +189,34 @@ func TestValidateGrantedScopes_PartialGrantPasses(t *testing.T) {
 	// The user ticked only the calendar checkbox on a two-scope consent
 	// screen — the login must succeed; the caller enables only calendar.
 	gmailScope := "https://www.googleapis.com/auth/gmail.readonly"
-	tok := &OAuthToken{Scope: ScopeCalendarReadonly}
-	require.NoError(t, validateGrantedScopes(tok, []string{ScopeCalendarReadonly, gmailScope}))
-	assert.True(t, tok.GrantsScope(ScopeCalendarReadonly))
+	tok := &OAuthToken{Scope: ScopeCalendarEventsReadonly}
+	require.NoError(t, validateGrantedScopes(tok, []string{ScopeCalendarEventsReadonly, gmailScope}))
+	assert.True(t, tok.GrantsScope(ScopeCalendarEventsReadonly))
 	assert.False(t, tok.GrantsScope(gmailScope))
 }
 
 func TestGrantsScope_EmptyScopeMeansGranted(t *testing.T) {
 	tok := &OAuthToken{}
-	assert.True(t, tok.GrantsScope(ScopeCalendarReadonly))
-	require.NoError(t, validateGrantedScopes(tok, []string{ScopeCalendarReadonly}))
+	assert.True(t, tok.GrantsScope(ScopeCalendarEventsReadonly))
+	require.NoError(t, validateGrantedScopes(tok, []string{ScopeCalendarEventsReadonly}))
+}
+
+func TestGrantsCalendar_BothGranularScopes(t *testing.T) {
+	tok := &OAuthToken{Scope: ScopeCalendarEventsReadonly + " " + ScopeCalendarListReadonly}
+	assert.True(t, tok.GrantsCalendar())
+}
+
+func TestGrantsCalendar_HalfGrantRejected(t *testing.T) {
+	// Events without the calendar list (or vice versa) cannot sync — the
+	// picker needs calendarList.list and the fetch needs events.list.
+	assert.False(t, (&OAuthToken{Scope: ScopeCalendarEventsReadonly}).GrantsCalendar())
+	assert.False(t, (&OAuthToken{Scope: ScopeCalendarListReadonly}).GrantsCalendar())
+}
+
+func TestGrantsCalendar_LegacyBroadScope(t *testing.T) {
+	// Tokens issued before the granular-scope switch stay valid.
+	tok := &OAuthToken{Scope: "https://www.googleapis.com/auth/calendar.readonly"}
+	assert.True(t, tok.GrantsCalendar())
 }
 
 func TestRevoke_Success(t *testing.T) {

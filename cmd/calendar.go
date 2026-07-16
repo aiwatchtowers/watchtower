@@ -158,6 +158,9 @@ func runCalendarLogin(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("google calendar login: %w", err)
 	}
+	if !token.GrantsCalendar() {
+		return fmt.Errorf("google granted only part of the calendar access (granted: %q) — run login again and approve both calendar permissions on the consent screen", token.Scope)
+	}
 
 	store := calendar.NewTokenStore(cfg.WorkspaceDir())
 	if err := store.Save(token); err != nil {
