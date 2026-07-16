@@ -33,6 +33,27 @@ type stagedChat struct {
 	subjects   map[string]bool
 }
 
+// mergeStaged unions two staged-input sets for the belief pass — the Phase-4
+// chat turns and the Phase-5 act: interaction refs. Either may be nil. The chat
+// set (a) is mutated in place and returned; only chat turns carry verbatim
+// statements (the act path stages refs + subjects only, never OWNER SAID prose).
+func mergeStaged(a, b *stagedChat) *stagedChat {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	for r := range b.refs {
+		a.refs[r] = true
+	}
+	for s := range b.subjects {
+		a.subjects[s] = true
+	}
+	a.statements = append(a.statements, b.statements...)
+	return a
+}
+
 // ingestChatStatements is the mechanical head of the Phase-4 chat surface
 // (MEM-09): it scans owner Discuss turns (role='user') in situation
 // conversations above the chat-turn floor, maps each turn's situation to the

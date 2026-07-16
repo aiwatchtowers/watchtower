@@ -293,6 +293,16 @@ watchtower config set memory.surfaces.reflection true  # a weekly self-review of
 
 Turn on only what you want; the four switches have independent effects, and with all of them off the memory quietly builds itself without ever changing how triage, situations, or briefings look.
 
+**Sources — what the memory learns from (both off by default):** by default the memory is built from Slack/Jira. Two more independent switches let it learn from more of your world:
+
+```
+watchtower config set memory.sources.gmail true     # build memory from Gmail threads too
+watchtower config set memory.sources.actions true   # learn from your own dashboard actions
+```
+
+- **Gmail (`gmail`)** — once your Gmail is connected and synced, the secretary reads your mail the same way it reads Slack: each email **thread** becomes one episode (its participants, the question, how it resolved), linked back to the real messages, and each sender becomes a person page. A sender whose email already belongs to a known Slack colleague is recognized as the same person, not a duplicate. Gmail memory builds on its own schedule, independent of the Slack side.
+- **Learning from your actions (`actions`)** — the secretary watches how *you* handle the dashboard and quietly learns from it. When you dismiss a situation, convert one into a Target, or thumbs-up/down a signal, that verdict is recorded on the relevant memory note and counts toward how much the people and projects involved matter to you — so things you actively engage with are kept, and things you repeatedly wave away fade sooner. It records the fact that you acted; it does **not** yet turn your actions into stated preferences (that comes later), and an action never carries the weight of something you said in your own words.
+
 **CLI commands:**
 - `watchtower memory status` — node counts, extraction progress, remaining backlog, and the last run
 - `watchtower memory consolidate` — run a single consolidation pass right now (the daemon owns the recurring schedule)

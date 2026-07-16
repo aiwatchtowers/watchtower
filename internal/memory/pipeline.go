@@ -58,6 +58,10 @@ type RunStats struct {
 	Reflections        int // meta-observations applied by the weekly reflection pass (Reflect)
 	DisputesFlagged    int // beliefs flagged dispute_pending by reflection (subset of Reflections)
 	ReflectionsDropped int // reflection observations refused by code (invented/sub-threshold/wrong-kind)
+
+	// Phase-5 5D interaction ingest (zero unless memory.sources.actions).
+	InteractionsIngested int // owner interactions folded (feedback + situation verdicts) into episode-mirror annotations
+	EngagementUpdated    int // per-entity engagement aggregates bumped (memory_engagement)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -299,6 +303,38 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 				staged = s
 			}
 			p.recordSemanticStep(runID, &step, "chat-ingest", stepStatus(ierr), nil, start)
+		}
+	}
+
+	// Phase-5 5D interaction ingest (dark unless memory.sources.actions): a
+	// mechanical, no-AI fold of the owner's dashboard interactions into episode-
+	// mirror outcome annotations + per-entity engagement aggregates, PLUS act:
+	// refs staged for the belief pass (the MEM-15 seam). It commits its own
+	// annotations and advances its OWN interaction floor after that commit (unlike
+	// the chat floor, which the belief pass gates), so a later belief-pass failure
+	// never rewinds it. Its staged act: refs merge into `staged` so a model op
+	// citing one validates; it forms no preference beliefs in this slice.
+	if p.cfg.Sources.Actions {
+		start := time.Now()
+		floor, ferr := p.db.MemoryInteractionFloor()
+		if ferr != nil {
+			p.logf("memory: interaction ingest: read floor: %v", ferr)
+			p.recordSemanticStep(runID, &step, "interaction-ingest", "error", nil, start)
+		} else {
+			actStaged, folded, bumped, nf, ierr := p.ingestInteractions(floor)
+			if ierr != nil {
+				p.logf("memory: interaction ingest: %v", ierr) // floor held (nf == floor)
+			} else {
+				stats.InteractionsIngested += folded
+				stats.EngagementUpdated += bumped
+				staged = mergeStaged(staged, actStaged)
+				if nf > floor {
+					if serr := p.db.SetMemoryInteractionFloor(nf); serr != nil {
+						p.logf("memory: interaction ingest: advance floor: %v", serr)
+					}
+				}
+			}
+			p.recordSemanticStep(runID, &step, "interaction-ingest", stepStatus(ierr), nil, start)
 		}
 	}
 

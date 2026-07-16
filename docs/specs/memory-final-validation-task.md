@@ -11,6 +11,7 @@ make build
 ./watchtower config set memory.enabled true
 ./watchtower config set memory.semantic.enabled true      # phase 3 (dark by default)
 # phase 4 flags: memory.surfaces.{chat,briefing,disputes,reflection} — all default false, enabled per-drill in Section 2
+# phase 5 slice-1 flags: memory.sources.{gmail,actions} — both default false, enabled per-drill in Section 3
 ```
 
 The vault at `~/.local/share/watchtower/whitebit/memory/` already contains the phases 0–2 E2E data (447+ entities, ~384+ episodes incl. 8 known duplicate episodes from the killed-run incident, one manually-set watermark) — this is deliberately the starting state: phase 3 must cope with a lived-in vault, not a fresh one.
@@ -75,6 +76,33 @@ Reflection is a **weekly** strong-tier pass on a deterministic per-workspace sta
 - Sanity-grade the weekly note: does it name genuinely unstable areas, or invent instability? Record any garbage verbatim (anonymized).
 
 Abort criteria (in addition to Section 0/1): any memory-side write to an inbox table, any owner-rank line minted from a non-`role='user'` source, or any surface mutating a belief's confidence/status directly — stop and report (these break MEM-09/10/11).
+
+## Section 3 — Phase 5 slice 1: universal substrate (registry + Gmail source + interaction ingest)
+
+Both sources default false. First confirm the **dark-default invariant**: with `memory.sources.gmail` and `memory.sources.actions` both false, one `consolidate` is byte-identical to pre-Slice-1 behavior — no Gmail work, no interaction ingest, and all THREE watermarks (`gmail_last_internal_date`, `memory_last_extracted_ts`, `memory_gmail_last_extracted_ts`) plus the interaction floor (`memory_last_interaction_id`) unmoved. Then run the drills.
+
+Prereq: Gmail sync must have populated `gmail_messages` (`./watchtower gmail sync` on a Gmail-connected workspace). Requires the `feature/gmail-source` work merged.
+
+### 3a — Gmail threads → episodes with working `mail:` provenance (`memory.sources.gmail`)
+
+1. `./watchtower config set memory.sources.gmail true`, then `./watchtower memory consolidate`. Expect the run-done log's Gmail counters to move (`GmailEpisodes` > 0, `GmailThreadsFailed` low) and `memory_gmail_last_extracted_ts` to advance — **without** touching the Slack extraction watermark or the Gmail *sync* watermark (three independent watermarks, resolved ambiguity #7).
+2. Hand-review a handful of new episodes (`./watchtower memory recall …` / `memory open <ep-id>`): a thread became **one** episode (participants, subject-as-title-ish, one story arc); each provenance ref is `mail:<message_id>`, and it **resolves** — the `mail:` resolver confirms a real `gmail_messages` row (a fabricated `mail:` id would have been dropped at write, MEM-01/MEM-12). Grade extraction quality; record any thread that split into many episodes or fabricated participants.
+3. **Sender stitching check.** Confirm distinct external `from_email` senders became **person entities** aliased by their email (`memory recall <sender name>`). An email that already aliased a seeded Slack person (same address on the `users` row) must be **stitched** — no duplicate entity — while a genuinely external sender is a new entity. Spot-check one of each: `memory open <ent-id>` shows the email in the aliases; `grep` the index for the address returns exactly one node.
+
+### 3b — Owner-action drill: interactions → annotations + engagement (`memory.sources.actions`)
+
+1. `./watchtower config set memory.sources.actions true`. In the Desktop dashboard, act on a live situation whose channel/members alias a known entity: **dismiss** one situation and **convert** another to a Target. Also 👎 one signal. Then `./watchtower memory consolidate`.
+2. **Episode-mirror annotation.** Open each acted-on situation's mirror (`memory recall`/`open` by its `situation:<id>` alias): its `## Outcome` gained a dated owner-action bullet — `owner dismissed` for the dismissal, `converted to target #N` for the conversion, `owner dismissed` for the 👎 (distinct from IngestSituations's status-derived Outcome — this records the OWNER'S action). Re-run `consolidate` once: the bullet is **not** duplicated and (verdict path) engagement is **not** double-counted — the re-scan is idempotent.
+3. **Engagement aggregate moved.** Confirm the subject entity's `memory_engagement` row moved: `sqlite3 …/watchtower.db "SELECT * FROM memory_engagement WHERE node_id='<ent-id>'"` — `engaged_count` up for the conversion, `dismissed_count` up for the dismissal/👎. The interaction floor (`memory_last_interaction_id`) advanced past the folded `inbox_feedback` rows.
+4. **Owner-action rank, no MEM-06 protection (MEM-15).** Take a belief on the dismissed situation's subject entity, stage its `act:` ref into the belief pass (it is staged automatically when actions is on), and confirm: a validated `act:<table>:<row_id>` mints a canonical `- owner-action …` evidence line (weight 0.8), the model never named the rank (op JSON has no rank field), and — decisively — that owner-action line does **NOT** protect the belief from retirement (`hasFreshOwnerSupport` keys on `rankOwner` only). An `act:` ref to a non-existent/non-whitelisted row is dropped like an invented ref.
+5. **Retention consumes engagement.** Confirm an engaged entity's cold episode resists eviction while an otherwise-identical un-engaged twin evicts: find (or age) a cold closed episode linked from an engaged entity and one linked from an un-engaged entity, run `consolidate`, and confirm only the un-engaged one rolled into a `sum_*` rollup. The engagement bonus is the deciding factor (`RetentionInputs.Engagement`).
+
+### 3c — Substrate invariants (MEM-05 + MEM-12)
+
+- **MEM-05:** with both sources on, the Gmail extractor and interaction ingest wrote **no** `inbox_items`/`situations`/`situation_signals`/`inbox_feedback` row and never moved `inbox_last_processed_ts` (`grep -rn "inbox_\|situations" internal/memory/` shows reads only; dump the tables before/after a `consolidate` and diff).
+- **MEM-12:** inject a provenance ref of a bogus scheme (e.g. hand-edit a test extractor reply, or reason from the guard test) and confirm it is **rejected at write, counted, never written** — only the four registered schemes (`""`/`chat`/`mail`/`act`) resolve.
+
+Abort criteria (in addition to Sections 0–2): any memory-side write to an inbox table from the Gmail or interaction step, an `owner-action` line minted from anything but a validated whitelisted interaction row, an `owner-action` line conferring MEM-06 protection, or either source doing work while its gate is off — stop and report (these break MEM-05/12/15).
 
 ## Deliverable
 

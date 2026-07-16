@@ -19,6 +19,12 @@ type RetentionInputs struct {
 	LinksIn          int     // live nodes linking to this one
 	SituationOrigin  bool    // node carries a situation:<id> alias
 	OwnerTouched     bool    // file was ever touched by a memory(owner-edit) commit
+	// Engagement is the NET owner-engagement of the entities linking this episode
+	// (engaged_count − dismissed_count summed over its linking entities, Phase-5
+	// 5D memory_engagement). Only a positive net raises importance — a dismissed
+	// or never-touched episode gets no bonus and never scores below the
+	// un-engaged baseline.
+	Engagement int
 }
 
 // Retention constants live in code, not config (mirrors belief_math.go): one
@@ -28,13 +34,20 @@ const (
 	retentionRecencyFloor       = 0.25  // ancient nodes keep a little recency so links-in still protect them
 	retentionSituationBonus     = 1.0
 	retentionOwnerBonus         = 2.0 // owner-touched outweighs the situation bonus
+	// retentionEngagementWeight scales net owner-engagement into importance: an
+	// entity the owner actively engages with (👍, converts, resolves — Phase-5 5D)
+	// resists eviction on par with an owner-touched file. This is the first LIVE,
+	// writable feed for Phase-3's stubbed retention-importance input — NOT the
+	// write-dead memory_node_stats access counters (still dead this slice).
+	retentionEngagementWeight = 2.0
 )
 
 // RetentionScore is the pure retention formula: recency(last event) ×
 // importance, where importance = links-in + situation-origin bonus +
-// owner-touch bonus. A cold, unreferenced, un-touched episode scores 0
-// (importance 0) and is always evictable; links-in or an owner edit lift it
-// above a positive threshold. Side-effect free and exhaustively unit-tested.
+// owner-touch bonus + engagement bonus. A cold, unreferenced, un-touched,
+// un-engaged episode scores 0 (importance 0) and is always evictable; links-in,
+// an owner edit, or positive owner-engagement lift it above a positive
+// threshold. Side-effect free and exhaustively unit-tested.
 func RetentionScore(in RetentionInputs) float64 {
 	recency := 1.0 - in.LastEventAgeDays/retentionRecencyHorizonDays
 	if recency < retentionRecencyFloor {
@@ -49,6 +62,9 @@ func RetentionScore(in RetentionInputs) float64 {
 	}
 	if in.OwnerTouched {
 		importance += retentionOwnerBonus
+	}
+	if in.Engagement > 0 {
+		importance += retentionEngagementWeight * float64(in.Engagement)
 	}
 	return recency * importance
 }
@@ -114,11 +130,19 @@ func EvictEpisodes(v *Vault, database *db.DB, olderThanDays int, scoreThreshold 
 		if oerr != nil {
 			return evicted, oerr
 		}
+		// Net owner-engagement of the entities linking this episode (Phase-5 5D):
+		// one bounded query per candidate, the same per-candidate scoping as the
+		// OwnerEdited git read (no full scan).
+		engaged, dismissed, eerr := database.LinkedEntityEngagement(n.ID)
+		if eerr != nil {
+			return evicted, eerr
+		}
 		score := RetentionScore(RetentionInputs{
 			LastEventAgeDays: ageDays,
 			LinksIn:          linksIn,
 			SituationOrigin:  hasSituationAlias(n.Aliases),
 			OwnerTouched:     ownerTouched,
+			Engagement:       engaged - dismissed,
 		})
 		if score >= scoreThreshold {
 			continue // still warm enough — keep the episode

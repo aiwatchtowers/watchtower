@@ -32,6 +32,72 @@ func TestRetentionScore(t *testing.T) {
 	assert.InDelta(t, retentionRecencyFloor*10, ancient, 1e-9)
 }
 
+// TestRetentionScoreEngagement: positive net owner-engagement raises importance;
+// zero or negative net adds no bonus and never lowers the score below the
+// un-engaged baseline (Phase-5 5D, Task 8).
+func TestRetentionScoreEngagement(t *testing.T) {
+	base := RetentionInputs{LastEventAgeDays: 50, LinksIn: 1}
+	engaged := base
+	engaged.Engagement = 2
+	assert.Greater(t, RetentionScore(engaged), RetentionScore(base), "engagement raises importance")
+
+	zero := base
+	zero.Engagement = 0
+	assert.Equal(t, RetentionScore(base), RetentionScore(zero), "zero net adds no bonus")
+
+	negative := base
+	negative.Engagement = -5
+	assert.Equal(t, RetentionScore(base), RetentionScore(negative),
+		"a net-dismissed entity never scores below the un-engaged baseline")
+
+	// Monotonic in the positive range.
+	more := base
+	more.Engagement = 4
+	assert.Greater(t, RetentionScore(more), RetentionScore(engaged), "score rises with engagement")
+}
+
+// TestEvictEngagedEpisodeSurvivesTwinEvicts: two otherwise-identical cold, closed,
+// linked episodes — the one whose linking entity has positive engagement survives
+// eviction while its un-engaged twin is rolled up. Isolates engagement as the
+// deciding factor (both carry one link-in, so the only difference is the
+// engagement aggregate feeding importance).
+func TestEvictEngagedEpisodeSurvivesTwinEvicts(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	engagedEp := oldEpNode(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5EP1", "Warm story", "handled", "C1CHAN", 100)
+	coldEp := oldEpNode(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5EP2", "Cold story", "handled", "C2CHAN", 100)
+	writeAndIndex(t, v, d, engagedEp)
+	writeAndIndex(t, v, d, coldEp)
+
+	// One entity links each episode (both get links-in = 1); only the first's
+	// entity carries owner engagement.
+	engagedEnt := linkingEntity(t, "ent_00000000000000000000000001", "Alice", engagedEp.ID)
+	coldEnt := linkingEntity(t, "ent_00000000000000000000000002", "Bob", coldEp.ID)
+	writeAndIndex(t, v, d, engagedEnt)
+	writeAndIndex(t, v, d, coldEnt)
+	require.NoError(t, d.BumpEngagement(engagedEnt.ID, true, "2026-07-16T10:00:00Z"))
+
+	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
+	require.NoError(t, err)
+	require.Equal(t, 1, evicted, "only the un-engaged twin evicts")
+
+	warm, err := v.ReadNode(engagedEp.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "closed", warm.Status, "the engaged episode survives")
+
+	tomb, err := v.ReadNode(coldEp.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "tombstone", tomb.Status, "the un-engaged twin is rolled up")
+}
+
+// linkingEntity is an active entity page whose ## Links section wiki-links the
+// given episode (so CountMemoryLinksIn/LinkedEntityEngagement see the link).
+func linkingEntity(t *testing.T, id, title, episodeID string) Node {
+	t.Helper()
+	body := "# " + title + "\n\n## What\nx\n\n## Current\n\n## Facts\n\n## Links\n- [[" + episodeID + "|ep]]\n\n## Open loops\n"
+	return Node{ID: id, Type: "entity", Tier: "long", Status: "active", Title: title, Aliases: []string{id + "-alias"}, Body: body}
+}
+
 // oldEpNode builds a closed long-tier episode whose newest provenance event is
 // ageDays old, with the given refs, title and outcome — the eviction candidate
 // shape.

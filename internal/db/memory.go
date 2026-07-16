@@ -940,6 +940,119 @@ func (db *DB) GetEngagement(nodeID string) (engaged, dismissed int, err error) {
 	return engaged, dismissed, nil
 }
 
+// InteractionFeedback is one owner 👍/👎 (inbox_feedback) row projected for the
+// mechanical interaction ingest (Phase-5 5D), joined to the situation its inbox
+// item belongs to. A feedback item that belongs to no situation yields
+// SituationID 0 (a LEFT JOIN, so the row is still consumed by the floor).
+type InteractionFeedback struct {
+	ID          int64  // inbox_feedback.id — the interaction-ingest floor key
+	SituationID int    // situation the feedback item belongs to (0 = none)
+	Rating      int    // -1 (dismissed) or +1 (engaged)
+	Date        string // created_at as YYYY-MM-DD — the annotation bullet date
+	At          string // created_at verbatim — the memory_engagement last_interaction_at stamp
+	TSUnix      int64  // created_at unix seconds — the act:inbox_feedback:<id> ref ts
+}
+
+// ListInteractionFeedback returns inbox_feedback rows with id strictly above the
+// interaction floor, oldest id first, each joined to the situation its inbox item
+// belongs to — the append-only owner-action log the mechanical interaction ingest
+// folds (memory.sources.actions). READ-ONLY: memory never writes inbox_feedback /
+// situation_signals / situations (MEM-05); it only reads them here, exactly as
+// IngestSituations already does. An item attached to several situations yields one
+// row per situation (all sharing the feedback id, so the floor still advances once
+// past it). inbox_feedback / situation_signals are core (always-migrated) tables,
+// so a query failure propagates (freezing the floor) rather than being masked.
+func (db *DB) ListInteractionFeedback(floor int64) ([]InteractionFeedback, error) {
+	rows, err := db.Query(`
+		SELECT fb.id, COALESCE(ss.situation_id, 0), fb.rating,
+		       strftime('%Y-%m-%d', fb.created_at), fb.created_at,
+		       CAST(strftime('%s', fb.created_at) AS INTEGER)
+		FROM inbox_feedback fb
+		LEFT JOIN situation_signals ss ON ss.inbox_item_id = fb.inbox_item_id
+		WHERE fb.id > ?
+		ORDER BY fb.id, ss.situation_id`, floor)
+	if err != nil {
+		return nil, fmt.Errorf("listing interaction feedback: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InteractionFeedback
+	for rows.Next() {
+		var f InteractionFeedback
+		if err := rows.Scan(&f.ID, &f.SituationID, &f.Rating, &f.Date, &f.At, &f.TSUnix); err != nil {
+			return nil, fmt.Errorf("scanning interaction feedback: %w", err)
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// InteractionSituation is one terminal owner-action situation (converted /
+// dismissed / done) projected for the mechanical interaction ingest — the
+// owner's own lifecycle verdict on a story.
+type InteractionSituation struct {
+	ID                int
+	Status            string // 'converted' | 'dismissed' | 'done'
+	ConvertedTargetID int
+	ConvertedTrackID  int
+	Date              string // updated_at as YYYY-MM-DD — the stable annotation bullet date
+	At                string // updated_at verbatim — the last_interaction_at stamp
+	TSUnix            int64  // updated_at unix seconds — the act:situations:<id> ref ts
+}
+
+// ListInteractionSituations returns situations the owner has terminally acted on
+// (converted / dismissed / done), oldest id first — the situation-lifecycle half
+// of the mechanical interaction ingest. READ-ONLY (MEM-05): situations are read
+// exactly as IngestSituations reads them, never written. The bullet date is
+// derived from updated_at (stable once the situation is terminal), so the
+// interaction ingest can re-scan idempotently without an id floor: an
+// already-annotated mirror is a no-op. situations is a core (always-migrated)
+// table, so a query failure propagates rather than being masked.
+func (db *DB) ListInteractionSituations() ([]InteractionSituation, error) {
+	rows, err := db.Query(`
+		SELECT id, status, COALESCE(converted_target_id, 0), COALESCE(converted_track_id, 0),
+		       strftime('%Y-%m-%d', updated_at), updated_at, CAST(strftime('%s', updated_at) AS INTEGER)
+		FROM situations
+		WHERE status IN ('converted', 'dismissed', 'done')
+		ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing interaction situations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InteractionSituation
+	for rows.Next() {
+		var s InteractionSituation
+		if err := rows.Scan(&s.ID, &s.Status, &s.ConvertedTargetID, &s.ConvertedTrackID,
+			&s.Date, &s.At, &s.TSUnix); err != nil {
+			return nil, fmt.Errorf("scanning interaction situation: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// LinkedEntityEngagement sums the engagement aggregates of every live entity that
+// links to the given node (its body carries a [[<id>…]] wiki-link) — the
+// retention-importance input eviction reads for an episode (Task 8). It mirrors
+// CountMemoryLinksIn's link test (instr(body,'[['||id), self-links and tombstones
+// excluded) but joins memory_engagement to fold the linking entities' engaged /
+// dismissed counts. A node no entity links to, or whose linkers have no
+// engagement row, reads as (0, 0, nil).
+func (db *DB) LinkedEntityEngagement(id string) (engaged, dismissed int, err error) {
+	err = db.QueryRow(`
+		SELECT COALESCE(SUM(e.engaged_count), 0), COALESCE(SUM(e.dismissed_count), 0)
+		FROM memory_fts f
+		JOIN memory_nodes m ON m.id = f.id
+		JOIN memory_engagement e ON e.node_id = m.id
+		WHERE m.type = 'entity' AND m.status != 'tombstone' AND m.id != ?
+		  AND instr(f.body, '[[' || ?) > 0`, id, id).Scan(&engaged, &dismissed)
+	if err != nil {
+		return 0, 0, fmt.Errorf("summing linked-entity engagement for %s: %w", id, err)
+	}
+	return engaged, dismissed, nil
+}
+
 // DropMemoryIndex empties all four memory index tables in one transaction so
 // a full reindex can rebuild them from the vault (MEM-02).
 //
