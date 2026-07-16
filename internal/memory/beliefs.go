@@ -71,20 +71,32 @@ func (e beliefEvidence) weigh(now time.Time) evidence {
 // Applied/downgraded ops mutate the belief frontmatter through the node fields,
 // append a ## History line, and commit as one vault batch ("memory(beliefs)")
 // mirrored into the index. maxBeliefs caps applied ops per run (<= 0 =
-// unbounded). The pipeline gates the call behind memory.semantic.enabled
+// unbounded); capHit reports whether that cap cut the op loop short, so the
+// caller can hold the chat-turn floor (staged owner refs may be uncited — M3).
+// staged carries this run's owner Discuss turns (nil unless the chat surface
+// staged some): they widen the candidate scope and admit their chat: refs into
+// the input set. The pipeline gates the call behind memory.semantic.enabled
 // (Task 11); this function is unconditional so it can be unit-tested directly.
-func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string, maxBeliefs int, now time.Time) (touched, rejected int, usage *digest.Usage, err error) {
+func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string, staged *stagedChat, maxBeliefs int, now time.Time) (touched, rejected int, capHit bool, usage *digest.Usage, err error) {
 	if p.generator == nil {
-		return 0, 0, nil, nil
+		return 0, 0, false, nil, nil
 	}
 	rows, err := p.db.ListMemoryNodes()
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, false, nil, err
 	}
 
 	subjectSet := make(map[string]bool, len(rewrittenSubjects))
 	for _, s := range rewrittenSubjects {
 		subjectSet[s] = true
+	}
+	// Phase-4 chat surface: owner Discuss turns staged this run widen the
+	// candidate scope to the entities they bear on, so a belief the owner
+	// contradicts in chat is revised even when its subject was not rewritten.
+	if staged != nil {
+		for s := range staged.subjects {
+			subjectSet[s] = true
+		}
 	}
 
 	// Candidate beliefs: subject rewritten this run, or currently shaken.
@@ -110,15 +122,26 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	episodes := p.subjectEpisodes(rewrittenSubjects)
 	inputSet := episodeRefSet(episodes)
 
-	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, episodes)
+	// Admit the staged owner chat refs into the input set so a model op citing
+	// one validates (Task 3) instead of being dropped as invented (MEM-08); the
+	// verbatim statements render into the prompt's OWNER SAID block.
+	var statements []ownerStatement
+	if staged != nil {
+		for ref := range staged.refs {
+			inputSet[ref] = true
+		}
+		statements = staged.statements
+	}
+
+	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, episodes, statements)
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reviseSource), system, user, "")
 	usage = u // single call — the reply's usage is the step's usage
 	if gerr != nil {
-		return 0, 0, usage, fmt.Errorf("memory: revise beliefs: generate: %w", gerr)
+		return 0, 0, false, usage, fmt.Errorf("memory: revise beliefs: generate: %w", gerr)
 	}
 	ops, perr := parseBeliefOps(raw)
 	if perr != nil {
-		return 0, 0, usage, perr
+		return 0, 0, false, usage, perr
 	}
 
 	var (
@@ -127,6 +150,10 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	)
 	for _, op := range ops.Ops {
 		if maxBeliefs > 0 && touched >= maxBeliefs {
+			// The cap cut the loop short with ops still unprocessed: staged owner
+			// chat refs among them may be uncited this run, so the caller holds the
+			// chat-turn floor for a re-scan (M3).
+			capHit = true
 			break
 		}
 		node, applied, mathRejected := p.applyBeliefOp(op, candidatesByID, inputSet, now)
@@ -142,10 +169,10 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	}
 	// Observability: an aggregate so a run that proposed many ops but applied few
 	// (systemic rank-math rejection) is visible, not silent.
-	p.logf("memory: beliefs: proposed=%d applied=%d rejected=%d", len(ops.Ops), touched, rejected)
+	p.logf("memory: beliefs: proposed=%d applied=%d rejected=%d cap_hit=%t", len(ops.Ops), touched, rejected, capHit)
 
 	if len(nodes) == 0 {
-		return 0, rejected, usage, nil
+		return 0, rejected, capHit, usage, nil
 	}
 	msg := CommitMsg{
 		Op:      "beliefs",
@@ -154,17 +181,17 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 		NodeIDs: ids,
 	}
 	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
-		return 0, rejected, usage, err
+		return 0, rejected, capHit, usage, err
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
 		if err := upsertIndexNode(p.db, n, nowStr); err != nil {
 			// Index-mirror consistency: return the error so the step is recorded
 			// as error; reconcile self-heals the missed mirror next run.
-			return touched, rejected, usage, err
+			return touched, rejected, capHit, usage, err
 		}
 	}
-	return touched, rejected, usage, nil
+	return touched, rejected, capHit, usage, nil
 }
 
 // applyBeliefOp disposes of one proposed op through the rank math and returns
@@ -174,9 +201,17 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 // a transition the rank math refuses yields mathRejected=true (counted into
 // RunStats.BeliefOpsRejected).
 func (p *Pipeline) applyBeliefOp(op beliefOpJSON, candidatesByID map[string]Node, inputSet map[string]bool, now time.Time) (node Node, applied, mathRejected bool) {
+	// Two-stage validation. First MEM-08/MEM-01: the ref must be in the model's
+	// input set (episode provenance + any owner chat turns staged this run) or it
+	// is invented and dropped. Then MEM-09: a chat: ref must additionally resolve
+	// to a role='user' Discuss turn before newEvidenceLines can mint it at owner
+	// rank — so DB existence alone never mints owner rank, only a ref the model
+	// received AND that is a genuine owner turn does.
 	kept, dropped := validateMarkers(inputSet, op.Evidence)
+	kept, chatDropped := p.validateChatRefs(kept)
+	dropped += chatDropped
 	if dropped > 0 {
-		p.logf("memory: beliefs: op %q evidence_rejected=%d (MEM-01)", op.Op, dropped)
+		p.logf("memory: beliefs: op %q evidence_rejected=%d (MEM-01/09)", op.Op, dropped)
 	}
 	if len(kept) == 0 {
 		return Node{}, false, false // invented-only / evidence-less op is a no-op
@@ -254,6 +289,20 @@ func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]No
 	cause := op.Op
 	if decision == opDowngraded {
 		cause += " (downgraded)"
+		// Design §4 case (a): raise a dispute ONLY when the downgrade came from
+		// MEM-06 fresh-owner protection — the secretary's evidence collided with
+		// the owner's word. decideOp also downgrades a retire that merely lacks
+		// preponderance on a belief with NO owner rank; that is routine hysteresis,
+		// not a disagreement with the boss, and must not spam the inbox.
+		// MEM-05 holds: memory_dispute_flags is memory-owned, never an inbox
+		// table. Implicitly capped by beliefs_max (per-op loop). A flag-write
+		// failure is logged, not fatal — the downgrade itself still applies
+		// (mirrors reflection's isolated SetDisputePending).
+		if hasFreshOwnerSupport(combined) {
+			if serr := p.db.SetDisputePending(op.BeliefID, "owner-rank belief challenged"); serr != nil {
+				p.logf("memory: beliefs: set dispute pending %s: %v", op.BeliefID, serr)
+			}
+		}
 	}
 	node.Body = appendHistory(node.Body, historyLine(now, cause, op.Rationale))
 	return node, true, false
@@ -271,18 +320,116 @@ func decisionName(d opDecision) string {
 	}
 }
 
-// newEvidenceLines turns validated model refs into stored evidence lines. Model
-// evidence is treated as rank observed (an observed episode); support direction
-// follows the op (confirm/propose-new support the belief, the rest weigh
-// against). Owner-rank evidence only ever enters via pre-existing/hand-authored
-// belief pages — the model can never mint owner rank.
+// chatRefPrefix marks an evidence channel_id as a Discuss chat reference
+// ("chat:<conversation_id>") rather than a Slack/Jira channel id — the seam
+// that carries owner-authored provenance into the belief math.
+const chatRefPrefix = "chat:"
+
+// isChatRef reports whether an evidence ref points at a Discuss chat turn.
+func isChatRef(channelID string) bool {
+	return strings.HasPrefix(channelID, chatRefPrefix)
+}
+
+// newEvidenceLines turns validated model refs into stored evidence lines.
+// Support direction follows the op (confirm/propose-new support the belief, the
+// rest weigh against). Rank is minted by CODE, never the model (MEM-08/09): an
+// episode ref is observed rank; a chat: ref is owner rank — but a chat: ref only
+// reaches here after validateChatRefs confirmed it resolves to a role='user'
+// Discuss turn, so the elevation is authored by the code path, not the model.
 func newEvidenceLines(refs []episodeRef, op beliefOp) []beliefEvidence {
 	support := op == opConfirm || op == opProposeNew
 	out := make([]beliefEvidence, len(refs))
 	for i, r := range refs {
-		out[i] = beliefEvidence{Rank: rankObserved, Support: support, ChannelID: r.ChannelID, TS: r.TS}
+		rank := rankObserved
+		if isChatRef(r.ChannelID) {
+			rank = rankOwner // MEM-09: validated owner Discuss turn
+		}
+		out[i] = beliefEvidence{Rank: rank, Support: support, ChannelID: r.ChannelID, TS: r.TS}
 	}
 	return out
+}
+
+// validateChatRefs enforces the MEM-09 owner-authenticity check on chat:
+// evidence refs. Episode refs pass through untouched. A chat: ref
+// ("chat:<conversation_id>") is kept only if it resolves to a role='user'
+// Discuss turn in a situation conversation (OwnerChatTurnExists) — otherwise it
+// is dropped and counted exactly like an invented episode ref (MEM-01
+// discipline). A chat ref never resolves when the Swift-owned chat tables are
+// absent (headless daemon), when the conversation/ts does not match, when the
+// turn was an assistant reply, or when the conversation is not a situation. The
+// check is non-fatal: a lookup error drops that ref and keeps the pass alive,
+// never freezing the run (the chat surface is a soft owner-writeback, re-scanned
+// next run — unlike the episode extractor's fatal MEM-01 lookup freeze).
+func (p *Pipeline) validateChatRefs(refs []episodeRef) (kept []episodeRef, dropped int) {
+	// Fast path: no chat refs → no DB work, so the episode-only belief pass and
+	// its tests never touch the chat tables.
+	hasChat := false
+	for _, r := range refs {
+		if isChatRef(r.ChannelID) {
+			hasChat = true
+			break
+		}
+	}
+	if !hasChat {
+		return refs, 0
+	}
+
+	present, presenceErr := p.db.ChatTablesPresent()
+	if presenceErr != nil {
+		p.logf("memory: beliefs: chat tables presence check failed: %v — chat refs dropped this run", presenceErr)
+	}
+	for _, r := range refs {
+		if !isChatRef(r.ChannelID) {
+			kept = append(kept, r)
+			continue
+		}
+		convID, ts, ok := parseChatRef(r.ChannelID, r.TS)
+		if !ok {
+			dropped++
+			p.logf("memory: beliefs: chat ref %s %s dropped (unparseable ref, MEM-09)", r.ChannelID, r.TS)
+			continue
+		}
+		// Distinguish a presence-check DB error from genuine table absence: the
+		// former is a transient failure, not evidence the tables do not exist, so
+		// it must never be logged as "tables absent" (P5/style-m3).
+		if presenceErr != nil {
+			dropped++
+			p.logf("memory: beliefs: chat ref %s %s dropped (presence check errored: %v, MEM-09)", r.ChannelID, r.TS, presenceErr)
+			continue
+		}
+		if !present {
+			dropped++
+			p.logf("memory: beliefs: chat ref %s %s dropped (chat tables absent — headless daemon, MEM-09)", r.ChannelID, r.TS)
+			continue
+		}
+		owner, cerr := p.db.OwnerChatTurnExists(convID, ts)
+		if cerr != nil {
+			p.logf("memory: beliefs: chat ref %s %s lookup: %v — dropped", r.ChannelID, r.TS, cerr)
+			dropped++
+			continue
+		}
+		if !owner {
+			dropped++
+			p.logf("memory: beliefs: chat ref %s %s is not an owner (role='user') situation turn — dropped (MEM-09)", r.ChannelID, r.TS)
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept, dropped
+}
+
+// parseChatRef splits a "chat:<conversation_id>" channel id and its whole-second
+// ts into the ints the owner-turn lookup needs. A malformed id/ts yields ok=false.
+func parseChatRef(channelID, ts string) (convID, tsSec int64, ok bool) {
+	convID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(channelID, chatRefPrefix)), 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(ts), 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return convID, int64(f), true
 }
 
 func weighAll(ev []beliefEvidence, now time.Time) []evidence {
@@ -352,7 +499,7 @@ func (p *Pipeline) subjectEpisodes(subjects []string) []Node {
 // fills the template's single %s slot; the user message digests the existing
 // beliefs (id/statement/confidence/evidence) then the new episodes. It never
 // opens with a "-"/"--" line (the claude-CLI argv gotcha).
-func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, episodes []Node) (system, user string) {
+func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, episodes []Node, statements []ownerStatement) (system, user string) {
 	system = fmt.Sprintf(tmpl, prompts.Directive(lang))
 
 	var b strings.Builder
@@ -365,6 +512,16 @@ func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, episodes []Node) (syst
 		fmt.Fprintf(&b, "  statement: %s\n", bel.Title)
 		fmt.Fprintf(&b, "  confidence: %s\n", strconv.FormatFloat(bel.Confidence, 'g', -1, 64))
 		fmt.Fprintf(&b, "  status: %s\n", bel.Status)
+	}
+	// OWNER SAID: verbatim owner Discuss turns staged this run (Phase-4 chat
+	// surface). These are the ONLY owner-asserted input in the belief pass — the
+	// model may cite a "chat:<id> <ts>" ref to weigh a belief with owner rank;
+	// the code mints the rank, the model only chooses the direction (MEM-09).
+	if len(statements) > 0 {
+		b.WriteString("\nOWNER SAID (verbatim, ranked owner — cite as `chat:<id> <ts>` to weigh a belief):\n\n")
+		for _, s := range statements {
+			fmt.Fprintf(&b, "chat:%d %d: %s\n", s.conversationID, s.turnTS, s.text)
+		}
 	}
 	b.WriteString("\nNew episodes:\n\n")
 	for _, ep := range episodes {
@@ -400,6 +557,62 @@ func parseBeliefOps(raw string) (beliefOpsReply, error) {
 		return beliefOpsReply{}, fmt.Errorf("memory: parse revise-beliefs response: %w", err)
 	}
 	return r, nil
+}
+
+// HistoryBullet is one parsed "## History" line — the inverse of historyLine.
+// Cause has any trailing " (downgraded)" suffix stripped so a downgraded op is
+// classified by its base op; Rationale is the free text after the em dash ("" if
+// absent).
+type HistoryBullet struct {
+	Date      string // "YYYY-MM-DD"
+	Cause     string
+	Rationale string
+}
+
+// ParseHistory parses a node body's "## History" section into its bullets in
+// file order (oldest first) — the single reader shared by the briefing revision
+// journal (historyEntriesSince) and the reflection churn counter
+// (historyChurnSince). Only canonical bullets ("- YYYY-MM-DD: cause[ —
+// rationale]", as historyLine writes them) are returned; anything else in the
+// section is skipped.
+func ParseHistory(body string) []HistoryBullet {
+	var out []HistoryBullet
+	inHistory := false
+	for _, raw := range strings.Split(body, "\n") {
+		if strings.HasPrefix(raw, "## ") {
+			inHistory = strings.TrimSpace(raw) == "## History"
+			continue
+		}
+		if !inHistory {
+			continue
+		}
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "- ")
+		colon := strings.Index(rest, ": ")
+		if colon != len("2006-01-02") {
+			continue
+		}
+		cause, rationale := splitCauseRationale(strings.TrimSpace(rest[colon+2:]))
+		out = append(out, HistoryBullet{Date: rest[:colon], Cause: cause, Rationale: rationale})
+	}
+	return out
+}
+
+// splitCauseRationale splits "cause — rationale" (em dash) into the op cause and
+// its digest, stripping a trailing " (downgraded)" so a downgraded op is still
+// classified by its base op. A cause without a dash has an empty rationale.
+func splitCauseRationale(rest string) (cause, rationale string) {
+	if idx := strings.Index(rest, " — "); idx >= 0 {
+		cause = strings.TrimSpace(rest[:idx])
+		rationale = strings.TrimSpace(rest[idx+len(" — "):])
+	} else {
+		cause = strings.TrimSpace(rest)
+	}
+	cause = strings.TrimSuffix(cause, " (downgraded)")
+	return cause, rationale
 }
 
 // historyLine renders a dated ## History bullet with the op cause and a

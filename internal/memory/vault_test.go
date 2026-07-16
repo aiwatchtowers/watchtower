@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -106,6 +107,52 @@ func TestOpenVaultReopensExistingRepo(t *testing.T) {
 	// Reopen must not create a second initial commit.
 	repo := openTestRepo(t, dir)
 	assert.Equal(t, 1, commitCount(t, repo))
+}
+
+// TestLogMemoryCommits: the reflection churn read returns only the belief /
+// rewrite / owner-edit commit subjects since the window, with their Nodes ids,
+// and excludes extract/seed/init subjects and anything older than the window.
+func TestLogMemoryCommits(t *testing.T) {
+	v := newTestVault(t)
+	bel := Node{ID: "bel_00000000000000000000000001", Type: "belief", Tier: "long", Status: "active",
+		Title: "Alice ships fast", Body: "# Alice ships fast\n\n## Evidence\n\n## History\n- 2026-01-01: seeded\n"}
+	ent := Node{ID: "ent_00000000000000000000000001", Type: "entity", Tier: "long", Status: "active",
+		Title: "Acme", Body: "# Acme\n\n## What\nx\n\n## Current\n\n## Facts\n\n## Links\n\n## Open loops\n"}
+
+	// Counted ops.
+	_, err := v.WriteNodes([]Node{bel}, CommitMsg{Op: "beliefs", Summary: "revised", Cause: "beliefs", NodeIDs: []string{bel.ID}})
+	require.NoError(t, err)
+	_, err = v.WriteNodes([]Node{ent}, CommitMsg{Op: "rewrite", Summary: "1 page", Cause: "rewrite", NodeIDs: []string{ent.ID}})
+	require.NoError(t, err)
+	// Uncounted op (extraction).
+	ep := Node{ID: "ep_00000000000000000000000001", Type: "episode", Tier: "short", Status: "active",
+		Title: "E", Body: "# E\n\n## Story\ns\n\n## Provenance\n- C1 1.0\n"}
+	_, err = v.WriteNodes([]Node{ep}, CommitMsg{Op: "extract", Summary: "1 ep", Cause: "run:1", NodeIDs: []string{ep.ID}})
+	require.NoError(t, err)
+	// Owner edit (dirty worktree → CommitOwnerEdits).
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "beliefs", bel.ID+".md"),
+		append(bel.Render(), []byte("\nhand edit\n")...), 0o644))
+	made, err := v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	got, err := v.LogMemoryCommits(time.Now().Add(-24 * time.Hour))
+	require.NoError(t, err)
+	ops := map[string][]string{}
+	for _, c := range got {
+		ops[c.Op] = c.NodeIDs
+	}
+	assert.Contains(t, ops, "beliefs")
+	assert.Contains(t, ops, "rewrite")
+	assert.Contains(t, ops, "owner-edit")
+	assert.NotContains(t, ops, "extract", "extraction is not a reflected op")
+	assert.NotContains(t, ops, "init", "the init commit is not a reflected op")
+	assert.Equal(t, []string{bel.ID}, ops["beliefs"], "Nodes line parsed into ids")
+
+	// The window lower-bound excludes everything when since is in the future.
+	none, err := v.LogMemoryCommits(time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	assert.Empty(t, none, "no commit is at or after a future window start")
 }
 
 func TestVaultWriteNodesSingleCommit(t *testing.T) {

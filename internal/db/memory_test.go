@@ -166,6 +166,60 @@ func TestListMemoryNodesOrderedByID(t *testing.T) {
 	}
 }
 
+// TestMemoryNodeSubjectConfidenceRoundTrip: memory_nodes.subject/.confidence
+// (Task 1, migration 00019) round-trip through UpsertMemoryNode/GetMemoryNode
+// /ListMemoryNodes, and DisputePending reads false when the node carries no
+// memory_dispute_flags row.
+func TestMemoryNodeSubjectConfidenceRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("bel_alpha", func(r *MemoryNodeRow) {
+		r.Type = "belief"
+		r.Subject = "ent_alpha"
+		r.Confidence = 0.7
+	})
+	if err := db.UpsertMemoryNode(row, "belief body", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	got, err := db.GetMemoryNode("bel_alpha")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got.Subject != "ent_alpha" || got.Confidence != 0.7 {
+		t.Errorf("GetMemoryNode subject/confidence = (%q, %v), want (ent_alpha, 0.7)", got.Subject, got.Confidence)
+	}
+	if got.DisputePending {
+		t.Error("DisputePending = true, want false (no memory_dispute_flags row)")
+	}
+
+	rows, err := db.ListMemoryNodes()
+	if err != nil {
+		t.Fatalf("ListMemoryNodes: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Subject != "ent_alpha" || rows[0].Confidence != 0.7 {
+		t.Fatalf("ListMemoryNodes = %+v, want one row with subject ent_alpha confidence 0.7", rows)
+	}
+}
+
+// TestMemoryNodeSubjectConfidenceDefaults: non-belief nodes (and the memTestNode
+// helper's zero-value Subject/Confidence) persist as ""/0.
+func TestMemoryNodeSubjectConfidenceDefaults(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_plain", nil)
+	if err := db.UpsertMemoryNode(row, "plain body", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+	got, err := db.GetMemoryNode("ent_plain")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got.Subject != "" || got.Confidence != 0 {
+		t.Errorf("defaults = (%q, %v), want (\"\", 0)", got.Subject, got.Confidence)
+	}
+}
+
 // TestCountMemoryLinksInBulk: the grouped links-in query returns the same counts
 // as the per-id CountMemoryLinksIn, in one pass — self-links and tombstones
 // excluded, and every requested id present (0 when unlinked).
@@ -613,6 +667,308 @@ func TestMessageExistsIgnoresDeleted(t *testing.T) {
 	}
 	if ok {
 		t.Error("MessageExists must be false for a deleted message")
+	}
+}
+
+// TestMemoryChatTurnFloorRoundTrip: the owner-chat ingest floor (Task 1,
+// migration 00019) defaults to 0 on a fresh workspace and persists after
+// SetMemoryChatTurnFloor, mirroring MemoryIngestFloor/SetMemoryIngestFloor.
+func TestMemoryChatTurnFloorRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	floor, err := db.MemoryChatTurnFloor()
+	if err != nil {
+		t.Fatalf("MemoryChatTurnFloor on fresh workspace: %v", err)
+	}
+	if floor != 0 {
+		t.Errorf("initial floor = %d, want 0", floor)
+	}
+
+	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	if err := db.SetMemoryChatTurnFloor(42); err != nil {
+		t.Fatalf("SetMemoryChatTurnFloor: %v", err)
+	}
+	floor, err = db.MemoryChatTurnFloor()
+	if err != nil {
+		t.Fatalf("MemoryChatTurnFloor after set: %v", err)
+	}
+	if floor != 42 {
+		t.Errorf("floor after set = %d, want 42", floor)
+	}
+}
+
+// TestDisputePendingSetList covers the memory_dispute_flags side table helpers
+// (Task 1): SetDisputePending flags a belief, ListDisputePendingBeliefs returns
+// only flagged belief nodes (oldest first) capped to limit, and clearing the
+// side-table row (the inbox detector's same-tx DELETE path) flips the derived
+// DisputePending back to false.
+func TestDisputePendingSetList(t *testing.T) {
+	db := openTestDB(t)
+
+	belief1 := memTestNode("bel_one", func(r *MemoryNodeRow) { r.Type = "belief" })
+	belief2 := memTestNode("bel_two", func(r *MemoryNodeRow) { r.Type = "belief" })
+	entity := memTestNode("ent_three", nil) // not a belief — must never surface
+	for _, row := range []MemoryNodeRow{belief1, belief2, entity} {
+		if err := db.UpsertMemoryNode(row, "body", nil); err != nil {
+			t.Fatalf("UpsertMemoryNode(%s): %v", row.ID, err)
+		}
+	}
+
+	if err := db.SetDisputePending("bel_one", "evidence conflicts"); err != nil {
+		t.Fatalf("SetDisputePending(bel_one): %v", err)
+	}
+	// Flag the entity too, to prove ListDisputePendingBeliefs filters by type,
+	// not merely by side-table presence.
+	if err := db.SetDisputePending("ent_three", "should never surface"); err != nil {
+		t.Fatalf("SetDisputePending(ent_three): %v", err)
+	}
+	if err := db.SetDisputePending("bel_two", "also conflicts"); err != nil {
+		t.Fatalf("SetDisputePending(bel_two): %v", err)
+	}
+
+	got, err := db.GetMemoryNode("bel_one")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if !got.DisputePending {
+		t.Error("GetMemoryNode(bel_one).DisputePending = false, want true")
+	}
+
+	pending, err := db.ListDisputePendingBeliefs(10)
+	if err != nil {
+		t.Fatalf("ListDisputePendingBeliefs: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("ListDisputePendingBeliefs = %+v, want 2 belief rows (entity excluded)", pending)
+	}
+	// Ordered by flagged_at, then node id as a tie-break for same-second
+	// flags (as in this test) — bel_one was flagged first either way.
+	if pending[0].ID != "bel_one" || pending[1].ID != "bel_two" {
+		t.Errorf("ListDisputePendingBeliefs order = [%s, %s], want [bel_one, bel_two]",
+			pending[0].ID, pending[1].ID)
+	}
+
+	// Cap bounds the result.
+	capped, err := db.ListDisputePendingBeliefs(1)
+	if err != nil {
+		t.Fatalf("ListDisputePendingBeliefs(1): %v", err)
+	}
+	if len(capped) != 1 || capped[0].ID != "bel_one" {
+		t.Errorf("ListDisputePendingBeliefs(1) = %+v, want [bel_one]", capped)
+	}
+
+	// Clearing the side-table row (the inbox detector's same-tx DELETE path)
+	// flips the derived DisputePending back to false.
+	if _, err := db.Exec(`DELETE FROM memory_dispute_flags WHERE node_id = 'bel_one'`); err != nil {
+		t.Fatalf("clearing dispute flag: %v", err)
+	}
+	got, err = db.GetMemoryNode("bel_one")
+	if err != nil {
+		t.Fatalf("GetMemoryNode after clear: %v", err)
+	}
+	if got.DisputePending {
+		t.Error("DisputePending still true after clearing the side-table row")
+	}
+	remaining, err := db.ListDisputePendingBeliefs(10)
+	if err != nil {
+		t.Fatalf("ListDisputePendingBeliefs after clear: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != "bel_two" {
+		t.Errorf("ListDisputePendingBeliefs after clear = %+v, want [bel_two]", remaining)
+	}
+}
+
+// createChatTablesForTest creates the Swift-owned chat tables
+// (chat_conversations + chat_messages) exactly the way the Desktop app's GRDB
+// ensureTable helpers do. They are ABSENT from Go's goose schema (Phase-4
+// resolved ambiguity #1: created lazily by the Desktop app the first time the
+// owner opens a Discuss chat), so every Go chat reader must tolerate both their
+// presence and their absence.
+func createChatTablesForTest(t *testing.T, db *DB) {
+	t.Helper()
+	stmts := []string{
+		`CREATE TABLE chat_conversations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL DEFAULT '',
+			session_id TEXT,
+			context_type TEXT,
+			context_id TEXT,
+			created_at REAL NOT NULL,
+			updated_at REAL NOT NULL)`,
+		`CREATE TABLE chat_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			text TEXT NOT NULL,
+			created_at REAL NOT NULL)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("create chat table: %v", err)
+		}
+	}
+}
+
+func insertChatConversation(t *testing.T, db *DB, contextType, contextID string) int64 {
+	t.Helper()
+	res, err := db.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+		VALUES ('', ?, ?, 0, 0)`, contextType, contextID)
+	if err != nil {
+		t.Fatalf("insert chat conversation: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("chat conversation id: %v", err)
+	}
+	return id
+}
+
+func insertChatMessage(t *testing.T, db *DB, convID int64, role, text string, createdAt float64) int64 {
+	t.Helper()
+	res, err := db.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at)
+		VALUES (?, ?, ?, ?)`, convID, role, text, createdAt)
+	if err != nil {
+		t.Fatalf("insert chat message: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("chat message id: %v", err)
+	}
+	return id
+}
+
+// TestChatTablesPresent: the guard reports false on a fresh goose schema (the
+// Swift chat tables do not exist) and true once they are created.
+func TestChatTablesPresent(t *testing.T) {
+	db := openTestDB(t)
+
+	present, err := db.ChatTablesPresent()
+	if err != nil {
+		t.Fatalf("ChatTablesPresent (absent): %v", err)
+	}
+	if present {
+		t.Fatal("chat tables must be reported absent on a fresh goose schema")
+	}
+
+	createChatTablesForTest(t, db)
+	present, err = db.ChatTablesPresent()
+	if err != nil {
+		t.Fatalf("ChatTablesPresent (present): %v", err)
+	}
+	if !present {
+		t.Fatal("chat tables must be reported present after creation")
+	}
+}
+
+// TestOwnerChatTurnExists: the MEM-09 authenticity check resolves only
+// role='user' turns of situation conversations — never an assistant turn, a
+// wrong ts, a non-situation conversation, or an unknown conversation.
+func TestOwnerChatTurnExists(t *testing.T) {
+	db := openTestDB(t)
+	createChatTablesForTest(t, db)
+	sit := insertChatConversation(t, db, "situation", "42")
+	other := insertChatConversation(t, db, "track", "9") // non-situation context
+	insertChatMessage(t, db, sit, "user", "owner said", 1720000000.0)
+	insertChatMessage(t, db, sit, "assistant", "secretary said", 1720000100.0)
+	insertChatMessage(t, db, other, "user", "elsewhere", 1720000200.0)
+
+	cases := []struct {
+		name string
+		conv int64
+		ts   int64
+		want bool
+	}{
+		{"owner user turn", sit, 1720000000, true},
+		{"assistant turn is not owner", sit, 1720000100, false},
+		{"wrong ts", sit, 1720000999, false},
+		{"non-situation conversation", other, 1720000200, false},
+		{"unknown conversation", 999, 1720000000, false},
+	}
+	for _, c := range cases {
+		got, err := db.OwnerChatTurnExists(c.conv, c.ts)
+		if err != nil {
+			t.Fatalf("%s: OwnerChatTurnExists: %v", c.name, err)
+		}
+		if got != c.want {
+			t.Errorf("%s: OwnerChatTurnExists(%d,%d) = %v, want %v", c.name, c.conv, c.ts, got, c.want)
+		}
+	}
+}
+
+// TestOwnerChatTurnExistsTruncatesFractionalSecond: created_at is a REAL unix
+// second; the evidence-line ts is whole seconds, so the lookup must match a
+// fractional-second turn against its truncated second (CAST ... AS INTEGER).
+func TestOwnerChatTurnExistsTruncatesFractionalSecond(t *testing.T) {
+	db := openTestDB(t)
+	createChatTablesForTest(t, db)
+	sit := insertChatConversation(t, db, "situation", "1")
+	insertChatMessage(t, db, sit, "user", "x", 1720000000.75)
+
+	ok, err := db.OwnerChatTurnExists(sit, 1720000000)
+	if err != nil {
+		t.Fatalf("OwnerChatTurnExists: %v", err)
+	}
+	if !ok {
+		t.Error("a fractional-second turn must match its truncated whole second")
+	}
+}
+
+// TestListOwnerChatTurns: only role='user' turns of situation conversations are
+// returned, ordered by id, filtered strictly above the floor, carrying the
+// situation context_id, whole-second ts, and verbatim text.
+func TestListOwnerChatTurns(t *testing.T) {
+	db := openTestDB(t)
+	createChatTablesForTest(t, db)
+	sit := insertChatConversation(t, db, "situation", "42")
+	other := insertChatConversation(t, db, "track", "9")
+	u1 := insertChatMessage(t, db, sit, "user", "first", 1720000000.0)
+	insertChatMessage(t, db, sit, "assistant", "reply", 1720000100.0)
+	u2 := insertChatMessage(t, db, sit, "user", "second", 1720000200.0)
+	insertChatMessage(t, db, other, "user", "elsewhere", 1720000300.0)
+
+	turns, err := db.ListOwnerChatTurns(0)
+	if err != nil {
+		t.Fatalf("ListOwnerChatTurns: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("ListOwnerChatTurns = %+v, want 2 user situation turns", turns)
+	}
+	if turns[0].ID != u1 || turns[1].ID != u2 {
+		t.Errorf("turn ids = [%d,%d], want [%d,%d]", turns[0].ID, turns[1].ID, u1, u2)
+	}
+	if turns[0].ConversationID != sit || turns[0].SituationID != "42" {
+		t.Errorf("turn0 conversation=%d situation=%q, want %d \"42\"", turns[0].ConversationID, turns[0].SituationID, sit)
+	}
+	if turns[0].TurnTS != 1720000000 {
+		t.Errorf("turn0 ts = %d, want 1720000000", turns[0].TurnTS)
+	}
+	if turns[0].Text != "first" {
+		t.Errorf("turn0 text = %q, want \"first\"", turns[0].Text)
+	}
+
+	// Floor filters strictly above: floor=u1 drops u1, keeps u2.
+	above, err := db.ListOwnerChatTurns(u1)
+	if err != nil {
+		t.Fatalf("ListOwnerChatTurns(floor): %v", err)
+	}
+	if len(above) != 1 || above[0].ID != u2 {
+		t.Errorf("ListOwnerChatTurns(%d) = %+v, want only u2 (%d)", u1, above, u2)
+	}
+}
+
+// TestListOwnerChatTurnsAbsentTables: on a headless daemon the Swift chat
+// tables never exist — the read is a clean empty no-op, never an error.
+func TestListOwnerChatTurnsAbsentTables(t *testing.T) {
+	db := openTestDB(t)
+
+	turns, err := db.ListOwnerChatTurns(0)
+	if err != nil {
+		t.Fatalf("absent chat tables must read empty, got error: %v", err)
+	}
+	if turns != nil {
+		t.Fatalf("absent chat tables must yield nil turns, got %+v", turns)
 	}
 }
 

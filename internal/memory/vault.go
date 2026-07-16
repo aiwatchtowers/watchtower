@@ -242,6 +242,81 @@ func (v *Vault) OwnerEdited(rel string) (bool, error) {
 	return found, nil
 }
 
+// MemoryCommit is one machine memory commit summarized for the weekly
+// reflection pass: the op parsed from its "memory(<op>)" subject, the summary
+// text, the node ids it touched (from the Nodes: line), and its author time.
+type MemoryCommit struct {
+	Op      string // beliefs | rewrite | owner-edit (the reflected ops)
+	Summary string
+	NodeIDs []string
+	When    time.Time
+}
+
+// reflectedOps is the set of machine op subjects the reflection churn digest
+// counts — the belief pass, entity rewrites, and owner vault edits. Extraction
+// (extract), seeding (seed), map renders (map), and init are intentionally
+// excluded: they are not the "is this area unstable?" signal reflection reads.
+var reflectedOps = map[string]bool{"beliefs": true, "rewrite": true, "owner-edit": true}
+
+// LogMemoryCommits walks the vault history newest-first and returns the
+// memory(beliefs)/memory(rewrite)/memory(owner-edit) commits whose author time
+// is at or after since — the commit-churn input for the weekly reflection pass
+// (Reflect). It reads only the commit subject + Nodes line, never a diff
+// (sibling of OwnerEdited). The vault history is linear (single author, no
+// merges), so the walk stops at the first commit older than since.
+func (v *Vault) LogMemoryCommits(since time.Time) ([]MemoryCommit, error) {
+	iter, err := v.repo.Log(&git.LogOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("memory: reflect log: %w", err)
+	}
+	defer iter.Close()
+
+	var out []MemoryCommit
+	err = iter.ForEach(func(c *object.Commit) error {
+		if c.Author.When.Before(since) {
+			return storer.ErrStop // linear history: nothing older can be in-window
+		}
+		op, summary, nodes, ok := parseMemoryCommit(c.Message)
+		if !ok || !reflectedOps[op] {
+			return nil
+		}
+		out = append(out, MemoryCommit{Op: op, Summary: summary, NodeIDs: nodes, When: c.Author.When})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: reflect walk: %w", err)
+	}
+	return out, nil
+}
+
+// parseMemoryCommit extracts the op, summary, and Nodes ids from a structured
+// machine commit message rendered by CommitMsg.render ("memory(<op>): <summary>\n\nNodes: <id> ...\nCause: ..."). ok is false for a commit whose
+// first line is not "memory(<op>): ...".
+func parseMemoryCommit(message string) (op, summary string, nodeIDs []string, ok bool) {
+	lines := strings.Split(message, "\n")
+	if len(lines) == 0 {
+		return "", "", nil, false
+	}
+	head := lines[0]
+	if !strings.HasPrefix(head, "memory(") {
+		return "", "", nil, false
+	}
+	closeIdx := strings.Index(head, ")")
+	if closeIdx < 0 {
+		return "", "", nil, false
+	}
+	op = head[len("memory("):closeIdx]
+	rest := head[closeIdx+1:]
+	summary = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ":"))
+	for _, l := range lines[1:] {
+		if strings.HasPrefix(l, "Nodes: ") {
+			nodeIDs = strings.Fields(strings.TrimPrefix(l, "Nodes: "))
+			break
+		}
+	}
+	return op, summary, nodeIDs, true
+}
+
 // nodeRelPath is the vault-relative (slash-separated, git-style) path of a
 // node file.
 func nodeRelPath(id string) (string, error) {

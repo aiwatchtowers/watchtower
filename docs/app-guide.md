@@ -271,6 +271,28 @@ watchtower config set memory.enabled true
 
 Once enabled, the daemon runs a consolidation pass each cycle: it seeds skeleton pages for active people/channels/projects, mirrors inbox situations into episode notes, and extracts notable episodes from raw channel history in bounded chunks (so a long backlog is worked off gradually).
 
+**Deeper understanding (optional):** a second tier can be turned on that makes the memory smarter over time — it rewrites entity pages as new episodes arrive, merges duplicate notes, ages and archives cold history into compact rollups (never losing a source link), and forms falsifiable **beliefs** about people and projects (e.g. "Alice owns the deploy pipeline") with a confidence that rises and falls as evidence accumulates. It is off by default:
+
+```
+watchtower config set memory.semantic.enabled true
+```
+
+**Surfaces — where the memory shows up (all off by default):** four independent switches decide whether the memory is allowed to *reach* you. Each is dark until you turn it on:
+
+```
+watchtower config set memory.surfaces.chat true        # Discuss chat sees memory + your replies feed it
+watchtower config set memory.surfaces.briefing true    # briefings note what the memory revised
+watchtower config set memory.surfaces.disputes true    # serious disagreements become dashboard situations
+watchtower config set memory.surfaces.reflection true  # a weekly self-review of the memory
+```
+
+- **Discuss chat (`chat`)** — when you open the Discuss chat on a dashboard situation, the secretary's prompt gains a short MEMORY section: the hot map plus the people/projects and beliefs relevant to that situation (a shaky belief is marked "uncertain — evidence conflicts"), and the chat can look things up with its memory tools before asking you. It is framed as notes the secretary built from Slack/Jira, not your own words. **And it listens back:** what you type in Discuss is treated as your own high-trust statement — if you tell the secretary something that contradicts a belief, that correction is recorded as *your* evidence and the belief updates on the next consolidation. This is the only place your literal words become memory (that, and your manual vault edits).
+- **Briefing revisions (`briefing`)** — your morning briefing may carry a short *Memory revisions* note when a belief meaningfully changed since yesterday (shaken, retired, or a clear confidence swing), phrased as something the memory noticed. Nothing changed worth mentioning → the briefing stays silent about memory.
+- **The arguing secretary (`disputes`)** — when the memory's evidence seriously conflicts with something you asserted, the disagreement arrives as an ordinary **dashboard situation** (with a link to the belief and its conflicting evidence), so you can settle it — the secretary surfaces the conflict through the normal inbox flow rather than silently overruling you or silently giving in. Your reply in that situation closes the loop.
+- **Weekly reflection (`reflection`)** — about once a week the secretary reviews its *own* recent history and flags the areas that keep flip-flopping: an unstable belief is put up for dispute, a churning page gets a dated note. Reflection never rewrites a belief's confidence on its own — it only points at what looks unsettled.
+
+Turn on only what you want; the four switches have independent effects, and with all of them off the memory quietly builds itself without ever changing how triage, situations, or briefings look.
+
 **CLI commands:**
 - `watchtower memory status` — node counts, extraction progress, remaining backlog, and the last run
 - `watchtower memory consolidate` — run a single consolidation pass right now (the daemon owns the recurring schedule)

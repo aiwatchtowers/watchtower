@@ -302,6 +302,31 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 5, cfg.Memory.Semantic.ConceptMinEpisodes)
 	assert.Equal(t, 10, cfg.Memory.Semantic.ConceptMaxCreate)
 	assert.Equal(t, 200000, cfg.Memory.Semantic.OutputBudget)
+
+	// Phase-4 surfaces: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Surfaces.Chat, "chat surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.Briefing, "briefing surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.Disputes, "disputes surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.Reflection, "reflection surface off by default")
+}
+
+func TestMemorySurfacesConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  surfaces:
+    chat: true
+    briefing: true
+    disputes: true
+    reflection: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Surfaces.Chat)
+	assert.True(t, cfg.Memory.Surfaces.Briefing)
+	assert.True(t, cfg.Memory.Surfaces.Disputes)
+	assert.True(t, cfg.Memory.Surfaces.Reflection)
 }
 
 func TestMemoryConfig_FromYAML(t *testing.T) {

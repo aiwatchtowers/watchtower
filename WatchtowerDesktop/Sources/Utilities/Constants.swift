@@ -20,6 +20,29 @@ enum Constants {
         return "\(databasePath)/\(workspace)"
     }
 
+    /// Whether the Phase-4 memory surface for the Discuss chat is enabled
+    /// (`memory.surfaces.chat` in config.yaml). Default false — the whole
+    /// memory-in-prompt injection is dark unless the owner opts in. Read
+    /// nonisolated (Yams parse, mirror of `activeWorkspaceDir()`) so the
+    /// `nonisolated static` prompt builder can consult it without hopping actors.
+    nonisolated static func memorySurfacesChatEnabled() -> Bool {
+        guard let data = FileManager.default.contents(atPath: configPath),
+              let str = String(data: data, encoding: .utf8),
+              let yaml = try? Yams.load(yaml: str) as? [String: Any],
+              let memory = yaml["memory"] as? [String: Any],
+              let surfaces = memory["surfaces"] as? [String: Any],
+              let chat = surfaces["chat"] as? Bool else { return false }
+        return chat
+    }
+
+    /// The memory vault directory for the active workspace
+    /// (`<activeWorkspaceDir>/memory`), or nil when no workspace is active.
+    /// The hot `map.md` lives directly under it.
+    nonisolated static func memoryVaultDir() -> String? {
+        guard let workspaceDir = activeWorkspaceDir() else { return nil }
+        return "\(workspaceDir)/memory"
+    }
+
     /// Safe working directory for subprocesses — avoids TCC prompts for ~/Music, ~/Downloads etc.
     /// Uses ~/.config/watchtower (already ours, not TCC-protected).
     nonisolated static func processWorkingDirectory() -> URL {

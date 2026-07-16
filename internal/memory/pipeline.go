@@ -48,6 +48,12 @@ type RunStats struct {
 	BeliefOpsRejected int // belief ops the rank math refused (MEM-06/08)
 	Aged              int // raw non-situation episodes aged to closed+long (AgeEpisodes)
 	Evicted           int // closed long episodes rolled up and tombstoned (EvictEpisodes)
+
+	// Phase-4 surfaces (zero unless the matching memory.surfaces.* gate is on).
+	ChatTurnsIngested  int // owner Discuss turns staged as belief evidence (ingestChatStatements)
+	Reflections        int // meta-observations applied by the weekly reflection pass (Reflect)
+	DisputesFlagged    int // beliefs flagged dispute_pending by reflection (subset of Reflections)
+	ReflectionsDropped int // reflection observations refused by code (invented/sub-threshold/wrong-kind)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -206,9 +212,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
-		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted)
+		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped)
 	return stats, nil
 }
 
@@ -231,6 +237,34 @@ const semanticEvictScoreThreshold = 0.5
 // the fallback base for step numbering when the DB read fails.
 func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int, acc *usageAccumulator, stats *RunStats) {
 	step := p.nextSemanticStep(runID, batchSteps)
+
+	// Phase-4 chat surface (dark unless memory.surfaces.chat): stage owner Discuss
+	// turns as owner-rank belief evidence BEFORE the belief pass. No AI call of its
+	// own. The floor advances only after the belief pass consumed the staged turns
+	// without a cap-break (below), so a failed, budget-skipped, or cap-truncated
+	// pass re-scans the same turns next run.
+	var (
+		chatFloorBefore, chatNewFloor int64
+		staged                        *stagedChat
+	)
+	if p.cfg.Surfaces.Chat {
+		start := time.Now()
+		floor, ferr := p.db.MemoryChatTurnFloor()
+		if ferr != nil {
+			p.logf("memory: chat ingest: read floor: %v", ferr)
+			p.recordSemanticStep(runID, &step, "chat-ingest", "error", nil, start)
+		} else {
+			s, nf, ierr := p.ingestChatStatements(floor)
+			chatFloorBefore, chatNewFloor = floor, nf
+			if ierr != nil {
+				p.logf("memory: chat ingest: %v", ierr)
+				chatNewFloor = floor // do not advance on error
+			} else {
+				staged = s
+			}
+			p.recordSemanticStep(runID, &step, "chat-ingest", stepStatus(ierr), nil, start)
+		}
+	}
 
 	// Mechanical: episode dedupe.
 	start := time.Now()
@@ -274,19 +308,41 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 	}
 
 	// Strong tier: belief revision over the rewritten subjects + shaken beliefs
-	// (budget-gated).
+	// (budget-gated). beliefsConsumed reports whether the pass ran to a clean
+	// commit and capHit whether the beliefs_max cap truncated the op loop — both
+	// gate advancing the chat-turn floor (below), so a budget-skip, a belief-pass
+	// error, or a cap-break re-stages the same owner turns next run.
+	beliefsConsumed, beliefsCapHit := false, false
 	if p.outputBudgetExceeded(acc) {
 		p.logf("memory: belief pass skipped: output budget exceeded")
 		p.recordSemanticStep(runID, &step, "beliefs", "skipped", nil, time.Now())
 	} else {
 		start = time.Now()
-		touched, rejected, usage, berr := p.ReviseBeliefs(ctx, rewritten, orDefault(p.cfg.Semantic.BeliefsMax, 20), now)
+		touched, rejected, capHit, usage, berr := p.ReviseBeliefs(ctx, rewritten, staged, orDefault(p.cfg.Semantic.BeliefsMax, 20), now)
 		acc.add(usage)
 		stats.BeliefOps += touched
 		stats.BeliefOpsRejected += rejected
+		beliefsCapHit = capHit
 		p.recordSemanticStep(runID, &step, "beliefs", stepStatus(berr), usage, start)
 		if berr != nil {
 			p.logf("memory: revise beliefs: %v", berr)
+		} else {
+			beliefsConsumed = true
+		}
+	}
+
+	// Phase-4 chat floor: advance only after the belief pass consumed the staged
+	// owner turns to a clean commit AND was not cut short by the cap (mirrors the
+	// ingest-floor "advance after success" discipline). Only then are the staged
+	// turns counted as ingested — a held floor means they re-scan next run, so
+	// counting them now would double-count (n8). A pass that completed without a
+	// cap-break advances even if the model declined to cite any staged ref
+	// (by-design: the turns had their chance — see spec §2 / MEM known-limitations).
+	if p.cfg.Surfaces.Chat && beliefsConsumed && !beliefsCapHit && chatNewFloor > chatFloorBefore {
+		if err := p.db.SetMemoryChatTurnFloor(chatNewFloor); err != nil {
+			p.logf("memory: chat ingest: advance floor: %v", err)
+		} else if staged != nil {
+			stats.ChatTurnsIngested += len(staged.statements)
 		}
 	}
 
@@ -311,6 +367,31 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 	p.recordSemanticStep(runID, &step, "evict", stepStatus(err), nil, start)
 	if err != nil {
 		p.logf("memory: evict episodes: %v", err)
+	}
+
+	// Phase-4 reflection surface (dark unless memory.surfaces.reflection): a
+	// weekly strong-tier meta-pass over the vault's own git history. It fires at
+	// most once per week (deterministic workspace stagger inside Reflect) and
+	// applies observations ONLY as dispute_pending flags + entity ## Current
+	// notes (MEM-11) — never a direct belief mutation. Budget-gated like the
+	// other strong-tier steps; a per-run failure is logged and never fails the
+	// run (isolation), leaving beliefs and entities untouched.
+	if p.cfg.Surfaces.Reflection {
+		if p.outputBudgetExceeded(acc) {
+			p.logf("memory: reflection skipped: output budget exceeded")
+			p.recordSemanticStep(runID, &step, "reflect", "skipped", nil, time.Now())
+		} else {
+			start = time.Now()
+			reflections, flagged, droppedObs, usage, rerr := p.Reflect(ctx, now)
+			acc.add(usage)
+			stats.Reflections += reflections
+			stats.DisputesFlagged += flagged
+			stats.ReflectionsDropped += droppedObs
+			p.recordSemanticStep(runID, &step, "reflect", stepStatus(rerr), usage, start)
+			if rerr != nil {
+				p.logf("memory: reflect: %v", rerr)
+			}
+		}
 	}
 }
 

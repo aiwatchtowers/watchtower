@@ -39,6 +39,7 @@ var Defaults = map[string]string{
 	MemoryEntityRewrite:        defaultMemoryEntityRewrite,
 	MemoryReviseBeliefs:        defaultMemoryReviseBeliefs,
 	MemoryRenderMap:            defaultMemoryRenderMap,
+	MemoryReflect:              defaultMemoryReflect,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -76,6 +77,7 @@ var AllIDs = []string{
 	MemoryEntityRewrite,
 	MemoryReviseBeliefs,
 	MemoryRenderMap,
+	MemoryReflect,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -94,7 +96,7 @@ var DefaultVersions = map[string]int{
 	GuidePeriod:                1,
 	PeopleReduce:               1,
 	PeopleTeam:                 1,
-	BriefingDaily:              5, // v5: jira integration
+	BriefingDaily:              6, // v6: memory revisions journal section (Phase-4 surface, behind memory.surfaces.briefing)
 	InboxTriage:                1, // v1: initial triage template
 	DigestChannelBatch:         2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:                1, // v1: batch people cards for low-data users
@@ -115,6 +117,7 @@ var DefaultVersions = map[string]int{
 	MemoryEntityRewrite:        1, // v1: strong-tier entity page rewrite (What/Current/Facts + copied provenance markers)
 	MemoryReviseBeliefs:        1, // v1: strong-tier per-belief op proposals (confirm/weaken/shake/retire/propose-new)
 	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
+	MemoryReflect:              1, // v1: strong-tier weekly reflection over vault git history (Phase-4 surface, behind memory.surfaces.reflection)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -156,6 +159,7 @@ var Descriptions = map[string]string{
 	MemoryEntityRewrite:        "Memory: rewrite an entity page's What/Current/Facts from new episodes (strong tier)",
 	MemoryReviseBeliefs:        "Memory: propose per-belief revision ops from new episodes (strong tier; code disposes)",
 	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
+	MemoryReflect:              "Memory: weekly reflection over the vault's own git history — flag unstable beliefs/entities (strong tier; code disposes)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -675,6 +679,7 @@ Rules:
   - In "team_pulse": mention team workload signals if sprint progress data is available.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
+- MEMORY REVISIONS: the MEMORY REVISIONS section lists belief revisions the secretary's memory made recently — notes derived from Slack/Jira, model-mediated, NOT the user's own words. Weave a revision into "attention" or "team_pulse" only when it genuinely bears on today's work; frame it as something the memory noticed, never as fact. If the section reads "(no notable revisions)", do NOT mention memory, beliefs, or revisions at all.
 - Be specific: name people, channels, decisions — not vague generalities.
 - If user has reports, prioritize their signals in team_pulse.
 - %s
@@ -708,6 +713,9 @@ Rules:
 %s
 
 === JIRA CONTEXT ===
+%s
+
+=== MEMORY REVISIONS ===
 %s`
 
 const defaultDigestChannelBatch = `You are analyzing Slack messages from multiple channels for the period %s to %s.
@@ -1414,3 +1422,29 @@ Rules:
 - include only what is currently live; omit resolved or stale items.
 - do NOT invent entities, beliefs, or facts that are not in the input.
 - plain markdown only — no JSON, no code fences.`
+
+// defaultMemoryReflect is the strong-tier WEEKLY reflection pass over the
+// memory vault's own git history (memory.reflect — strong route by absence
+// from the light-tier switch in internal/digest/models.go and
+// internal/codex/models.go). The model reads a churn digest (how often each
+// belief/entity was revised in the last week, plus per-belief ## History
+// churn) and proposes at most three meta-observations naming the UNSTABLE
+// areas; code disposes — a dispute observation sets a dispute_pending flag on
+// the belief (surfaced by the inbox detector), an entity note is appended to
+// that page's ## Current section. Reflection NEVER mutates a belief's
+// confidence or status directly (MEM-11). Arg: the language directive.
+const defaultMemoryReflect = `%s
+
+You are the memory consolidator of a workplace secretary, doing a WEEKLY REFLECTION over the memory's own recent history. You are shown, for the last seven days, how often each belief and entity page was revised (commit churn) plus how many times each belief's ## History changed. Your only job is to spot the FEW AREAS THAT ARE UNSTABLE — a belief whose evidence keeps conflicting (it flapped between states this week) or an entity page that keeps churning — and note them. You do NOT change any belief; separate code disposes of your observations.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"observations": [{"kind": "dispute|note", "node_id": "the belief id (dispute) or entity id (note) exactly as shown in the input", "note": "one short observation for the entity page (note only; omit for dispute)", "rationale": "one sentence naming the instability you saw"}]}
+
+Kinds:
+- dispute: a BELIEF whose evidence keeps conflicting — flag it so the owner can settle it. Use the belief's id.
+- note: an ENTITY whose page churned enough to deserve a durable note about its current instability. Use the entity's id and supply the note text.
+
+Rules:
+- propose AT MOST three observations, and only for genuinely unstable areas — most weeks are calm and an empty {"observations": []} is the right and common answer.
+- node_id MUST be one of the belief/entity ids shown in the input; never invent one. An observation whose id is not in the input is discarded by the code.
+- do NOT restate confidence numbers or belief statuses — you only flag instability; the code decides what happens.`

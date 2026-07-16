@@ -182,6 +182,7 @@ type MemoryConfig struct {
 	BatchMaxChannels     int                  `mapstructure:"batch_max_channels"`      // max channel windows grouped into one extraction call (default: 20, digest-pipeline precedent)
 	BatchMaxMessages     int                  `mapstructure:"batch_max_messages"`      // max total messages grouped into one extraction call (default: 1500)
 	Semantic             MemorySemanticConfig `mapstructure:"semantic"`                // Phase-3 semantic tier (belief/rewrite/dedupe/evict/concept steps), dark by default
+	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/disputes/reflection), each dark by default
 }
 
 // MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
@@ -200,6 +201,16 @@ type MemorySemanticConfig struct {
 	ConceptMinEpisodes int  `mapstructure:"concept_min_episodes"` // distinct-episode recurrence before a hint is promoted (default: 5)
 	ConceptMaxCreate   int  `mapstructure:"concept_max_create"`   // max concept entities created per run (default: 10)
 	OutputBudget       int  `mapstructure:"output_budget"`        // stop launching further strong-tier AI steps once the run's output tokens exceed this (default: 200000)
+}
+
+// MemorySurfacesConfig gates the four Phase-4 memory surfaces independently —
+// each is a no-op when its flag is off, so the four have independent blast
+// radii. All default false (dark by default).
+type MemorySurfacesConfig struct {
+	Chat       bool `mapstructure:"chat"`       // Discuss chat MEMORY block + ingestChatStatements owner-evidence minting (default: false)
+	Briefing   bool `mapstructure:"briefing"`   // daily briefing "Memory revisions" journal block (default: false)
+	Disputes   bool `mapstructure:"disputes"`   // inbox watchtower detector surfaces dispute_pending beliefs as dashboard situations (default: false)
+	Reflection bool `mapstructure:"reflection"` // weekly strong-tier reflection pass over vault git history (default: false)
 }
 
 type Config struct {
@@ -306,6 +317,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.semantic.concept_min_episodes", 5)
 	v.SetDefault("memory.semantic.concept_max_create", 10)
 	v.SetDefault("memory.semantic.output_budget", 200000)
+	v.SetDefault("memory.surfaces.chat", false) // Phase-4 surfaces dark by default
+	v.SetDefault("memory.surfaces.briefing", false)
+	v.SetDefault("memory.surfaces.disputes", false)
+	v.SetDefault("memory.surfaces.reflection", false)
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

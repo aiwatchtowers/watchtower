@@ -20,6 +20,14 @@ type MemoryNodeRow struct {
 	Path        string // vault-relative file path
 	ContentHash string // sha256 of file bytes at last index
 	IndexedAt   string
+	Subject     string  // belief subject entity id, "" for non-beliefs; file-derived (Node.Subject, see 00019)
+	Confidence  float64 // belief confidence 0..1, 0 for non-beliefs; file-derived (Node.Confidence, see 00019)
+	// DisputePending mirrors presence in the memory_dispute_flags SIDE TABLE
+	// (see 00019) — runtime state, never written by UpsertMemoryNode. Read-only
+	// here; set via SetDisputePending and cleared by the inbox watchtower
+	// detector's same-transaction DELETE when it mints a dispute item
+	// (mintDisputeItem) — the only clear path, so a dispute surfaces exactly once.
+	DisputePending bool
 }
 
 // MemoryHit is one full-text search result from SearchMemoryFTS.
@@ -41,8 +49,8 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string)
 	defer tx.Rollback()
 
 	_, err = tx.Exec(`INSERT INTO memory_nodes
-		(id, type, tier, status, redirect_to, title, path, content_hash, indexed_at)
-		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?)
+		(id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence)
+		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			type = excluded.type,
 			tier = excluded.tier,
@@ -51,9 +59,11 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string)
 			title = excluded.title,
 			path = excluded.path,
 			content_hash = excluded.content_hash,
-			indexed_at = excluded.indexed_at`,
+			indexed_at = excluded.indexed_at,
+			subject = excluded.subject,
+			confidence = excluded.confidence`,
 		row.ID, row.Type, row.Tier, row.Status, row.RedirectTo,
-		row.Title, row.Path, row.ContentHash, row.IndexedAt)
+		row.Title, row.Path, row.ContentHash, row.IndexedAt, row.Subject, row.Confidence)
 	if err != nil {
 		return fmt.Errorf("upserting memory node %s: %w", row.ID, err)
 	}
@@ -125,15 +135,27 @@ func (db *DB) LookupMemoryAlias(ref string) (string, error) {
 	return nodeID, nil
 }
 
+// memoryNodeSelectCols is the shared column list for GetMemoryNode/
+// ListMemoryNodes/ListDisputePendingBeliefs: the base memory_nodes columns
+// plus DisputePending, derived via EXISTS over the memory_dispute_flags side
+// table (see 00019) rather than stored on memory_nodes itself.
+const memoryNodeSelectCols = `id, type, tier, status, COALESCE(redirect_to, ''),
+		title, path, content_hash, indexed_at, subject, confidence,
+		EXISTS(SELECT 1 FROM memory_dispute_flags f WHERE f.node_id = memory_nodes.id)`
+
+func scanMemoryNodeRow(scan func(...any) error) (MemoryNodeRow, error) {
+	var row MemoryNodeRow
+	err := scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
+		&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt,
+		&row.Subject, &row.Confidence, &row.DisputePending)
+	return row, err
+}
+
 // GetMemoryNode returns one node row by canonical ID. Returns sql.ErrNoRows
 // when the node is not indexed.
 func (db *DB) GetMemoryNode(id string) (MemoryNodeRow, error) {
-	var row MemoryNodeRow
-	err := db.QueryRow(`SELECT id, type, tier, status, COALESCE(redirect_to, ''),
-		title, path, content_hash, indexed_at
-		FROM memory_nodes WHERE id = ?`, id).
-		Scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
-			&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt)
+	row, err := scanMemoryNodeRow(db.QueryRow(`SELECT `+memoryNodeSelectCols+`
+		FROM memory_nodes WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MemoryNodeRow{}, err
 	}
@@ -146,8 +168,7 @@ func (db *DB) GetMemoryNode(id string) (MemoryNodeRow, error) {
 // ListMemoryNodes returns all indexed nodes ordered by ID (used by reconcile
 // to diff the index against the vault).
 func (db *DB) ListMemoryNodes() ([]MemoryNodeRow, error) {
-	rows, err := db.Query(`SELECT id, type, tier, status, COALESCE(redirect_to, ''),
-		title, path, content_hash, indexed_at
+	rows, err := db.Query(`SELECT ` + memoryNodeSelectCols + `
 		FROM memory_nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing memory nodes: %w", err)
@@ -156,14 +177,64 @@ func (db *DB) ListMemoryNodes() ([]MemoryNodeRow, error) {
 
 	var nodes []MemoryNodeRow
 	for rows.Next() {
-		var row MemoryNodeRow
-		if err := rows.Scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
-			&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt); err != nil {
+		row, err := scanMemoryNodeRow(rows.Scan)
+		if err != nil {
 			return nil, fmt.Errorf("scanning memory node: %w", err)
 		}
 		nodes = append(nodes, row)
 	}
 	return nodes, rows.Err()
+}
+
+// ListDisputePendingBeliefs returns belief nodes currently flagged in
+// memory_dispute_flags, oldest flag first (ties broken by node id), capped to
+// limit. A non-positive limit means NO limit (SQLite LIMIT -1) — the per-cycle
+// cap policy lives solely at the inbox watchtower detector (memoryDisputeCap),
+// never here. Used by the detector to mint dispute trigger items; every
+// returned row has DisputePending == true.
+func (db *DB) ListDisputePendingBeliefs(limit int) ([]MemoryNodeRow, error) {
+	if limit <= 0 {
+		limit = -1 // SQLite: LIMIT -1 is unbounded
+	}
+	rows, err := db.Query(`SELECT `+memoryNodeSelectCols+`
+		FROM memory_nodes
+		JOIN memory_dispute_flags f ON f.node_id = memory_nodes.id
+		WHERE memory_nodes.type = 'belief'
+		ORDER BY f.flagged_at, memory_nodes.id
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing dispute-pending beliefs: %w", err)
+	}
+	defer rows.Close()
+
+	var nodes []MemoryNodeRow
+	for rows.Next() {
+		row, err := scanMemoryNodeRow(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning dispute-pending belief: %w", err)
+		}
+		nodes = append(nodes, row)
+	}
+	return nodes, rows.Err()
+}
+
+// SetDisputePending flags a belief as disputed: the belief pass or weekly
+// reflection (internal/memory) believes the node's evidence conflicts and the
+// inbox watchtower detector (internal/inbox) should surface it as a dashboard
+// situation. Upserts into the memory_dispute_flags side table (MEM-02-exempt
+// runtime state, memory_node_stats precedent) — a re-flag of an
+// already-pending node just refreshes flagged_at/reason.
+func (db *DB) SetDisputePending(id, reason string) error {
+	_, err := db.Exec(`INSERT INTO memory_dispute_flags (node_id, flagged_at, reason)
+		VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?)
+		ON CONFLICT(node_id) DO UPDATE SET
+			flagged_at = excluded.flagged_at,
+			reason = excluded.reason`,
+		id, reason)
+	if err != nil {
+		return fmt.Errorf("setting dispute pending for %s: %w", id, err)
+	}
+	return nil
 }
 
 // SearchMemoryFTS runs a full-text search over node titles and bodies,
@@ -280,6 +351,119 @@ func (db *DB) SetMemoryIngestFloor(id int64) error {
 		return fmt.Errorf("setting memory ingest floor: %w", err)
 	}
 	return nil
+}
+
+// MemoryChatTurnFloor returns the owner-chat ingest floor: the highest
+// chat_messages.id (a Swift-owned table) already folded by
+// ingestChatStatements into the belief pass, so a rerun does not re-stage the
+// same owner Discuss turns as evidence (Phase 4, Task 4). A workspace scalar
+// like MemoryIngestFloor, so MEM-05 holds. A fresh workspace without its
+// singleton row reads as 0.
+func (db *DB) MemoryChatTurnFloor() (int64, error) {
+	var id int64
+	err := db.QueryRow(`SELECT COALESCE(memory_chat_turn_floor, 0) FROM workspace LIMIT 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting memory chat turn floor: %w", err)
+	}
+	return id, nil
+}
+
+// SetMemoryChatTurnFloor advances the owner-chat ingest floor (see
+// MemoryChatTurnFloor).
+func (db *DB) SetMemoryChatTurnFloor(id int64) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_chat_turn_floor = ?`, id); err != nil {
+		return fmt.Errorf("setting memory chat turn floor: %w", err)
+	}
+	return nil
+}
+
+// ChatTablesPresent reports whether the Swift-owned chat_conversations and
+// chat_messages tables both exist. The Desktop app creates them lazily via
+// GRDB (ChatConversationQueries/ChatMessageQueries ensureTable) the first time
+// the owner opens a Discuss chat, so a headless daemon sees them absent — the
+// Phase-4 chat surface (ingestChatStatements + the belief pass's chat: ref
+// validation) must treat their absence as an empty read, never an error
+// (MEM-05/MEM-09, resolved ambiguity #1).
+func (db *DB) ChatTablesPresent() (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name IN ('chat_conversations', 'chat_messages')`).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("checking chat tables presence: %w", err)
+	}
+	return n == 2, nil
+}
+
+// OwnerChatTurnExists reports whether an owner-authored Discuss turn (role='user')
+// exists in a situation conversation for (conversationID, ts) — the MEM-09
+// authenticity check the belief pass runs before elevating a chat:<id> evidence
+// ref to owner rank. Turn ts is chat_messages.created_at (a REAL unix second);
+// the evidence-line ts is whole seconds, so the match is against the truncated
+// second (CAST ... AS INTEGER). Assumes the chat tables exist — the caller
+// guards with ChatTablesPresent, so a missing table surfaces as an error rather
+// than being masked as a clean miss.
+func (db *DB) OwnerChatTurnExists(conversationID, ts int64) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM chat_messages m
+		JOIN chat_conversations c ON c.id = m.conversation_id
+		WHERE c.id = ? AND c.context_type = 'situation'
+		  AND m.role = 'user' AND CAST(m.created_at AS INTEGER) = ?
+		LIMIT 1`, conversationID, ts).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking owner chat turn %d/%d: %w", conversationID, ts, err)
+	}
+	return true, nil
+}
+
+// OwnerChatTurn is one owner-authored (role='user') Discuss turn in a situation
+// conversation, projected for ingestChatStatements (Phase 4, Task 4).
+type OwnerChatTurn struct {
+	ID             int64  // chat_messages.id — the chat-turn ingest floor key
+	ConversationID int64  // chat_messages.conversation_id (the chat:<id> ref target)
+	SituationID    string // chat_conversations.context_id (the situation the chat is about)
+	TurnTS         int64  // created_at truncated to whole unix seconds (the evidence-line ts)
+	Text           string // verbatim owner statement
+}
+
+// ListOwnerChatTurns returns owner Discuss turns (role='user') in situation
+// conversations with chat_messages.id strictly above floor, oldest id first —
+// the input ingestChatStatements folds into the belief pass as owner-rank
+// evidence. The Swift-owned chat tables are absent on a headless daemon; that
+// is a clean empty read (nil, nil), never an error (MEM-05).
+func (db *DB) ListOwnerChatTurns(floor int64) ([]OwnerChatTurn, error) {
+	present, err := db.ChatTablesPresent()
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, nil
+	}
+	rows, err := db.Query(`SELECT m.id, m.conversation_id, COALESCE(c.context_id, ''),
+			CAST(m.created_at AS INTEGER), m.text
+		FROM chat_messages m
+		JOIN chat_conversations c ON c.id = m.conversation_id
+		WHERE m.role = 'user' AND c.context_type = 'situation' AND m.id > ?
+		ORDER BY m.id`, floor)
+	if err != nil {
+		return nil, fmt.Errorf("listing owner chat turns: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OwnerChatTurn
+	for rows.Next() {
+		var t OwnerChatTurn
+		if err := rows.Scan(&t.ID, &t.ConversationID, &t.SituationID, &t.TurnTS, &t.Text); err != nil {
+			return nil, fmt.Errorf("scanning owner chat turn: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // MemoryExtractMessage is one raw message row fed to the memory episode
