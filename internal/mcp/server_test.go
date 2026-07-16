@@ -76,6 +76,7 @@ func TestToolsList(t *testing.T) {
 		"get_today_briefing", "list_digests", "get_digest",
 		"list_people", "get_person", "list_tracks", "get_track", "list_upcoming_events",
 		"list_jira_issues", "get_jira_issue",
+		"list_messages",
 	}
 	for _, name := range want {
 		if !got[name] {

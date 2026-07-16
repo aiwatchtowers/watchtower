@@ -18,6 +18,7 @@ final class ReplicaWiringTests: XCTestCase {
         .briefing: 1,
         .calendarEvent: 2,
         .inboxItem: 2,
+        .situation: 2,
         .target: 3,
         .track: 2,
     ]
@@ -192,9 +193,14 @@ final class ReplicaWiringTests: XCTestCase {
 
         let inbox = InboxViewModel()
         inbox.start(store: store, outbox: ActionOutbox(transport: InMemoryCloudTransport(), store: store))
-        try await poll { inbox.items.count == self.seededCounts[.inboxItem] }
-        // Priority-sorted: the high-priority mention leads the medium DM.
-        XCTAssertEqual(inbox.items.first?.priority, "high")
+        try await poll { inbox.situations.count == self.seededCounts[.situation] }
+        // Rank-sorted: the high-rank launch situation leads.
+        XCTAssertEqual(inbox.situations.first?.priority, "high")
+        // Member signals join in from the inbox slice via signal_ids.
+        try await poll { inbox.itemsByID.count == self.seededCounts[.inboxItem] }
+        let lead = try XCTUnwrap(inbox.situations.first)
+        XCTAssertEqual(inbox.memberSignals(of: lead).map(\.id), [2, 1],
+                       "bubbles run oldest-first (the DM predates the mention)")
     }
 
     func testTasksTracksAndSettingsViewModelsExposeSeededRows() async throws {

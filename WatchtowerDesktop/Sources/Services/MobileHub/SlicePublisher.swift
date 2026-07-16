@@ -42,7 +42,21 @@ final class SlicePublisher: Sendable {
             WHERE datetime(start_time) >= datetime('now', '-1 day')
               AND datetime(start_time) <= datetime('now', '+14 days')
             """,
-        .personCard: "SELECT * FROM people_cards ORDER BY id DESC LIMIT 100"
+        .personCard: "SELECT * FROM people_cards ORDER BY id DESC LIMIT 100",
+        // Open situations only — done/dismissed/snoozed/converted leave the
+        // desktop dashboard feed, so their records fall out of the slice and
+        // the diff deletes them from the phone. `signal_ids` joins in the
+        // member inbox-item ids so the phone renders member signals from its
+        // own inbox slice without syncing the situation_signals table.
+        .situation: """
+            SELECT situations.*,
+                   (SELECT json_group_array(inbox_item_id)
+                      FROM situation_signals
+                     WHERE situation_id = situations.id) AS signal_ids
+            FROM situations
+            WHERE status = 'open'
+            ORDER BY id DESC LIMIT 100
+            """
     ]
 
     // MARK: - Publishing

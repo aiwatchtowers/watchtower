@@ -84,4 +84,33 @@ final class SidebarCountsViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.catchUpTotalCount, 3 + 5 + 2 + 4)
     }
+
+    /// The Dashboard sidebar badge is the count of open situations — the Feed tab
+    /// no longer counts unread inbox items directly (see D9 dashboard task).
+    func testSituationsCountReflectsOnlyOpenSituations() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+
+        try await manager.dbPool.write { db in
+            try TestDatabase.insertSituation(db, status: "open")
+            try TestDatabase.insertSituation(db, status: "open")
+            try TestDatabase.insertSituation(db, status: "done")
+            try TestDatabase.insertSituation(db, status: "snoozed")
+        }
+
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+
+        XCTAssertEqual(vm.situationsCount, 2)
+    }
+
+    func testSituationsCountIsZeroOnEmptyDB() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+
+        XCTAssertEqual(vm.situationsCount, 0)
+    }
 }

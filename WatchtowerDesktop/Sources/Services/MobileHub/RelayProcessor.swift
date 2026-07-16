@@ -384,6 +384,23 @@ final class RelayProcessor: Sendable {
             let id = try entityInt(action)
             try requireRow(db, table: "tracks", id: id)
             try TrackQueries.markRead(db, id: id)
+        case .situationDone:
+            let id = try entityInt(action)
+            try requireRow(db, table: "situations", id: id)
+            try SituationQueries.done(db, id: id)
+        case .situationDismiss:
+            let id = try entityInt(action)
+            try requireRow(db, table: "situations", id: id)
+            try SituationQueries.dismiss(db, id: id)
+        case .situationSnooze:
+            let id = try entityInt(action)
+            try requireRow(db, table: "situations", id: id)
+            // Situation snooze stores the raw string, like inbox snooze.
+            try SituationQueries.snooze(db, id: id, until: try stringParam(action, "snooze_until"))
+        case .situationKeepOpen:
+            let id = try entityInt(action)
+            try requireRow(db, table: "situations", id: id)
+            try SituationQueries.clearSuggestedResolution(db, id: id)
         }
     }
 

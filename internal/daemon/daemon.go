@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/feed"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
@@ -56,6 +57,7 @@ type Daemon struct {
 	peoplePipe       *guide.Pipeline
 	briefingPipe     *briefing.Pipeline
 	inboxPipe        *inbox.Pipeline
+	feedPipe         *feed.Pipeline
 	nextStepPipe     *targets.Pipeline
 	customTracksPipe *customtracks.Pipeline
 	calendarSyncer   *calendar.Syncer
@@ -104,6 +106,11 @@ func (d *Daemon) SetBriefingPipeline(p *briefing.Pipeline) {
 // SetInboxPipeline sets the inbox detection pipeline.
 func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
 	d.inboxPipe = p
+}
+
+// SetFeedPipeline installs the dashboard feed publisher (internal/feed).
+func (d *Daemon) SetFeedPipeline(p *feed.Pipeline) {
+	d.feedPipe = p
 }
 
 // SetNextStepPipeline sets the targets pipeline used to refresh AI next-step
@@ -252,6 +259,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	now := time.Now()
 	d.runDayPlanPhase(ctx, now)
 	d.runDayPlanConflictPhase(ctx, now)
+	d.phaseFeed()
 }
 
 // pipelineRunStats are the bookkeeping metrics recorded for a daemon-managed
@@ -512,6 +520,23 @@ func (d *Daemon) phaseInbox(ctx context.Context) {
 			cost: cost, totalAPI: totalAPI, err: err,
 		}
 	})
+}
+
+// phaseFeed mirrors source tables into the dashboard feed index. Runs last so
+// it sees everything this cycle produced (situations, briefings, recaps, day
+// plans). AI-free and best-effort: errors are logged, never propagated, and
+// never affect the inbox pipeline or its watermarks (DASH-06).
+func (d *Daemon) phaseFeed() {
+	if d.feedPipe == nil {
+		return
+	}
+	n, err := d.feedPipe.Publish(time.Now())
+	if err != nil {
+		d.logger.Printf("feed error: %v", err)
+	}
+	if n > 0 {
+		d.logger.Printf("feed: published %d items", n)
+	}
 }
 
 // phaseNextStep refreshes AI next-step suggestions for active targets whose

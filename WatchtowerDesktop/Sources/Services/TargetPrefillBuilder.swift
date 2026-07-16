@@ -158,6 +158,43 @@ enum TargetPrefillBuilder {
         )
     }
 
+    // MARK: - fromSituation
+
+    /// Prefill for "Create target" from a Dashboard `Situation` card (DASH-03).
+    /// `sourceType` stays `"inbox"` — the `targets.source_type` CHECK has no
+    /// `situation` value and expanding a CHECK requires a table-recreation
+    /// migration; the dashboard is the inbox's successor, so the `inbox` source
+    /// family is semantically correct, and the `situation:<id>` prefix on
+    /// `sourceID` keeps the linkage exact.
+    static func fromSituation(_ s: Situation, db: DatabaseManager) async throws -> TargetPrefill {
+        let members = try await db.dbPool.read { dbConn in
+            try SituationQueries.memberSignals(dbConn, situationID: s.id)
+        }
+
+        let summary = s.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let aiReason = s.aiReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let intent = summary.isEmpty ? aiReason : summary
+
+        // external_ref follows the documented `slack:<channelID>:<messageTs>`
+        // format (see TargetLink.swift); capped at 3 like fromTrack's channel cap.
+        let links: [TargetPrefillLink] = members.prefix(3).compactMap { item -> TargetPrefillLink? in
+            guard !item.channelID.isEmpty else { return nil }
+            let ref = item.messageTS.isEmpty
+                ? "slack:\(item.channelID)"
+                : "slack:\(item.channelID):\(item.messageTS)"
+            return TargetPrefillLink(externalRef: ref, relation: "related")
+        }
+
+        return TargetPrefill(
+            text: s.title,
+            intent: intent,
+            sourceType: "inbox",
+            sourceID: "situation:\(s.id)",
+            secondaryLinks: links,
+            parentID: nil
+        )
+    }
+
     // MARK: - fromBriefingItem
 
     static func fromBriefingItem(_ item: AttentionItem,

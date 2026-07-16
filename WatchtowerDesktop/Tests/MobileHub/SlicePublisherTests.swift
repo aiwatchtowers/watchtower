@@ -326,4 +326,50 @@ final class SlicePublisherTests: XCTestCase {
         let records = try await transport.changes(in: .data, since: token).changed
         XCTAssertEqual(records.map(\.notifyLevel), ["briefing"])
     }
+
+    // MARK: - Situation slice
+
+    /// Open situations publish with the member inbox-item ids joined in as a
+    /// `signal_ids` JSON array — the phone renders member signals from its
+    /// own inbox slice, so the join table itself never syncs. Non-open
+    /// situations stay out of the window entirely.
+    func testSituationSliceEmbedsSignalIDsAndSkipsClosed() async throws {
+        try await dbPool.write { db in
+            let itemA = try TestDatabase.insertInboxItem(db)
+            let itemB = try TestDatabase.insertInboxItem(db, messageTS: "1700000000.000200")
+            let open = try TestDatabase.insertSituation(db, title: "Open story")
+            try TestDatabase.linkSituationSignal(db, situationID: open, inboxItemID: itemA)
+            try TestDatabase.linkSituationSignal(db, situationID: open, inboxItemID: itemB)
+            _ = try TestDatabase.insertSituation(db, title: "Closed story", status: "done")
+        }
+
+        _ = try await publisher.publishOnce()
+
+        let batch = try await transport.changes(in: .data, since: nil)
+        let situationRecords = batch.changed.filter { $0.kind == SliceKind.situation.rawValue }
+        XCTAssertEqual(situationRecords.map(\.recordName), ["situation-1"])
+
+        let row = try RowPayloadCoder.row(from: try XCTUnwrap(situationRecords.first).payload)
+        XCTAssertEqual(row["title"], "Open story")
+        XCTAssertEqual(row["signal_ids"], "[1,2]")
+    }
+
+    /// Closing a situation on the desktop drops it from the slice window, so
+    /// the next cycle deletes its record — the phone's row disappears instead
+    /// of going stale.
+    func testClosedSituationIsDeletedFromSlice() async throws {
+        try await dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db)
+        }
+        _ = try await publisher.publishOnce()
+
+        try await dbPool.write { db in
+            try SituationQueries.done(db, id: 1)
+        }
+        let second = try await publisher.publishOnce()
+
+        XCTAssertEqual(second.deleted, 1)
+        let batch = try await transport.changes(in: .data, since: nil)
+        XCTAssertTrue(batch.deletedRecordNames.contains("situation-1"))
+    }
 }

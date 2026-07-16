@@ -10,7 +10,10 @@ CREATE TABLE IF NOT EXISTS workspace (
     search_last_date  TEXT NOT NULL DEFAULT '',  -- YYYY-MM-DD of last search sync
     current_user_id   TEXT NOT NULL DEFAULT '',  -- Slack user_id of the token owner (from auth.test)
     inbox_last_processed_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last inbox pipeline run
-    secretary_profile TEXT NOT NULL DEFAULT ''  -- User-written secretary brief text
+    secretary_profile TEXT NOT NULL DEFAULT '',  -- User-written secretary brief text
+    style_profile TEXT NOT NULL DEFAULT '',  -- AI-distilled, user-editable communication style (see 00013)
+    style_profile_updated_at TEXT NOT NULL DEFAULT '',
+    compose_last_run_ts REAL NOT NULL DEFAULT 0  -- Unix timestamp of last situation composer run
 );
 
 -- Users
@@ -477,6 +480,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     draft_reply     TEXT NOT NULL DEFAULT '',
     card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
     card_generated_at TEXT,
+    composed_at     TEXT,
     UNIQUE(channel_id, message_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);
@@ -1068,3 +1072,70 @@ CREATE TABLE IF NOT EXISTS day_plan_items (
 );
 CREATE INDEX IF NOT EXISTS idx_day_plan_items_plan ON day_plan_items(day_plan_id);
 CREATE INDEX IF NOT EXISTS idx_day_plan_items_source ON day_plan_items(source_type, source_id);
+
+-- Situations (clusters of inbox signals composed into a single narrative unit
+-- for the secretary dashboard)
+CREATE TABLE IF NOT EXISTS situations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    title           TEXT NOT NULL,
+    kind            TEXT NOT NULL DEFAULT 'external' CHECK(kind IN ('external','target_update','track_update','mixed')),
+    status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done','dismissed','converted','stale','snoozed')),
+    snooze_until    TEXT NOT NULL DEFAULT '',
+    priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+    rank            REAL NOT NULL DEFAULT 0,
+    ai_reason       TEXT NOT NULL DEFAULT '',
+    summary         TEXT NOT NULL DEFAULT '',
+    why_matters     TEXT NOT NULL DEFAULT '',
+    chronology      TEXT NOT NULL DEFAULT '',
+    card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
+    card_generated_at TEXT,
+    target_id       INTEGER,
+    track_id        INTEGER,
+    converted_target_id INTEGER,
+    converted_track_id  INTEGER,
+    last_signal_at  TEXT NOT NULL DEFAULT '',
+    resolved_reason TEXT NOT NULL DEFAULT '',
+    -- The secretary's "looks resolved" mark (DASH-07): set by the composer's
+    -- suggest_resolve op when new material shows the story concluded without the
+    -- owner acting; cleared by a later merge without a re-suggest, or by the
+    -- user's "Keep open". Never closes the situation — status stays 'open'.
+    suggested_resolution TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_situations_status_rank ON situations(status, rank DESC);
+CREATE INDEX IF NOT EXISTS idx_situations_updated ON situations(updated_at DESC);
+
+-- Situation signals (join table linking situations to their constituent inbox items)
+CREATE TABLE IF NOT EXISTS situation_signals (
+    situation_id   INTEGER NOT NULL REFERENCES situations(id) ON DELETE CASCADE,
+    inbox_item_id  INTEGER NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
+    UNIQUE(situation_id, inbox_item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_situation_signals_item ON situation_signals(inbox_item_id);
+
+-- Feed index for the dashboard's social-wall feed: one row per feed item,
+-- holding chronology and per-item user state only. Content is always joined
+-- live from the source tables (situations, calendar_events, briefings,
+-- meeting_recaps, day_plans) — never duplicated here.
+CREATE TABLE IF NOT EXISTS feed_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_type   TEXT NOT NULL CHECK (item_type IN ('situation','meeting','briefing','meeting_recap','day_plan')),
+    source_id   TEXT NOT NULL,
+    event_ts    TEXT NOT NULL,
+    importance  INTEGER NOT NULL DEFAULT 50,
+    hidden_at   TEXT,
+    seen_at     TEXT,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(item_type, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
+
+-- Bootstrap cutoff: the moment this migration ran. The publisher only feeds
+-- briefings/recaps/day-plans created after this, so an old backlog doesn't
+-- flood the feed on first publish.
+CREATE TABLE IF NOT EXISTS feed_state (
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    bootstrap_cutoff TEXT NOT NULL
+);
