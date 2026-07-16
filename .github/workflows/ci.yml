@@ -4,6 +4,10 @@ on:
   push:
     branches: [main, feature/*]
   pull_request:
+  # Manual escape hatch: lets a maintainer force a real run (bypassing the
+  # `gate` job's push-vs-pull_request dedupe below, since its event_name
+  # isn't "push") when a PR's pull_request-triggered run never materializes.
+  workflow_dispatch:
 
 # One live run per branch and event: rapid successive pushes (or PR syncs)
 # cancel their stale predecessors. Cross-event dedupe (push vs pull_request
