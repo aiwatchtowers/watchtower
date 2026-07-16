@@ -86,8 +86,8 @@ Add `Operational bool` to `MemorySourcesConfig`, `DayPlan`/`MeetingPrep bool` to
 
 `trackSubjects` prepends `track:<id>` to the refs list before `TrackSubjectRefs`' channels/participants; `targetSubjects` prepends `target:<id>` before the linked-track union. `resolveSubjectRefs` already skips a ref with no memory alias silently, so: mirrors on → the chat maps to the mirror entity (a bare target with no linked track finally stages); mirrors off/absent → byte-identical to slice 2 (the alias never resolves). No new gating — the behavior keys off mirror existence, which keys off `memory.sources.operational`.
 
-- [ ] **Step 1: failing tests** — with a `target:<id>` mirror present, a `remember this:` turn in a bare-target Discuss chat (no linked track) stages owner-rank evidence subject-mapped to the mirror; without the mirror the same turn is consumed-not-staged (the slice-2 behavior, byte-unchanged); a track chat's subjects include the track mirror plus the existing channel/participant entities; every pre-existing `TestMemory09_*` and `TestChatSubjects*`/`TestIngestChatStatements*` guard byte-green.
-- [ ] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** `go test ./internal/memory/ -run 'Chat|Subjects|Memory09|Remember'` green; commit `feat(memory): target/track chats map to their own entity mirrors when present`.
+- [x] **Step 1: failing tests** — with a `target:<id>` mirror present, a `remember this:` turn in a bare-target Discuss chat (no linked track) stages owner-rank evidence subject-mapped to the mirror; without the mirror the same turn is consumed-not-staged (the slice-2 behavior, byte-unchanged); a track chat's subjects include the track mirror plus the existing channel/participant entities; every pre-existing `TestMemory09_*` and `TestChatSubjects*`/`TestIngestChatStatements*` guard byte-green.
+- [x] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** `go test ./internal/memory/ -run 'Chat|Subjects|Memory09|Remember'` green; commit `feat(memory): target/track chats map to their own entity mirrors when present`.
 
 ## Task 4: Day plan reads open loops from memory (`memory.surfaces.day_plan`)
 

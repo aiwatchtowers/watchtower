@@ -211,9 +211,13 @@ func (p *Pipeline) situationSubjects(situationID string) ([]string, error) {
 	return p.resolveSubjectRefs(refs), nil
 }
 
-// trackSubjects resolves a track's channel_ids + participant/assignee/requester/
-// owner user ids to memory entity ids (deduped). A non-numeric context id is a
-// normal no-entity case; a DB read error propagates (the caller holds the floor).
+// trackSubjects resolves a track's OWN entity mirror (target:<id> — 5C, present
+// only behind memory.sources.operational) plus its channel_ids + participant/
+// assignee/requester/owner user ids to memory entity ids (deduped, mirror
+// first). A non-numeric context id is a normal no-entity case; a DB read error
+// propagates (the caller holds the floor). When the mirror does not exist,
+// resolveSubjectRefs silently skips its unresolved alias — byte-identical to
+// the pre-mirror (slice-2) behavior.
 func (p *Pipeline) trackSubjects(trackID string) ([]string, error) {
 	tid, convErr := strconv.Atoi(strings.TrimSpace(trackID))
 	if convErr != nil {
@@ -223,14 +227,18 @@ func (p *Pipeline) trackSubjects(trackID string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("track subjects: %w", err)
 	}
-	return p.resolveSubjectRefs(refs), nil
+	allRefs := append([]string{trackMirrorAlias(tid)}, refs...)
+	return p.resolveSubjectRefs(allRefs), nil
 }
 
-// targetSubjects maps a target to the entities of its linked track(s)
-// (tracks.linked_target_id), unioned — targets carry no channels/members of
-// their own and their entity mirror is 5C (out of scope), so the honest
-// mechanical mapping is via the linked track (resolved ambiguity #7). A target
-// with no linked track maps to nothing (consumed, not staged).
+// targetSubjects prepends the target's OWN entity mirror (target:<id> — 5C,
+// present only behind memory.sources.operational) to the union of its linked
+// track(s)' entities (tracks.linked_target_id). Before mirrors existed, targets
+// carried no channels/members of their own, so the linked track was the only
+// mechanical mapping (resolved ambiguity #7); now a bare target with no linked
+// track still maps to its own mirror when one exists, and to nothing when it
+// does not — resolveSubjectRefs silently skips the unresolved alias, so gate-off
+// / mirror-absent behavior is byte-identical to slice 2.
 func (p *Pipeline) targetSubjects(targetID string) ([]string, error) {
 	tid, convErr := strconv.Atoi(strings.TrimSpace(targetID))
 	if convErr != nil {
@@ -242,6 +250,12 @@ func (p *Pipeline) targetSubjects(targetID string) ([]string, error) {
 	}
 	seen := map[string]bool{}
 	var out []string
+	for _, id := range p.resolveSubjectRefs([]string{targetMirrorAlias(tid)}) {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
 	for _, tkID := range trackIDs {
 		refs, rerr := p.db.TrackSubjectRefs(tkID)
 		if rerr != nil {

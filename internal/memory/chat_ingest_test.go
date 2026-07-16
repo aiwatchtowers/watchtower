@@ -398,6 +398,89 @@ func TestChatSubjectsTargetNoLinkedTrackEmpty(t *testing.T) {
 	assert.Empty(t, subjects, "a target with no linked track maps to no entity")
 }
 
+// TestChatSubjectsTrackIncludesMirror: a track chat's subjects include the
+// track's OWN entity mirror (track:<id>, the 5C mirror alias) UNIONED with the
+// existing channel/participant entities — Task 3.
+func TestChatSubjectsTrackIncludesMirror(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	chID := "ent_00000000000000000000000001"
+	upID := "ent_00000000000000000000000002"
+	mirrorID := "ent_00000000000000000000000003"
+	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
+	writeAndIndex(t, v, d, bareEntity(upID, "U2BOB"))
+	trackID := seedTrack(t, d, `["C1TRACK"]`, `[{"user_id":"U2BOB"}]`, "U2BOB")
+	writeAndIndex(t, v, d, bareEntity(mirrorID, trackMirrorAlias(trackID)))
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	subjects, err := p.chatSubjects("track", fmt.Sprintf("%d", trackID))
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{mirrorID, chID, upID}, subjects, "the track's own mirror plus its channel/participant entities")
+}
+
+// TestChatSubjectsTargetMirrorPresentMapsToMirror: with a target:<id> mirror
+// present, a bare target with NO linked track maps to its own mirror entity —
+// the slice-2 known-limitation ("a bare target chat maps to nothing") resolved
+// once operational mirrors exist (Task 3).
+func TestChatSubjectsTargetMirrorPresentMapsToMirror(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	mirrorID := "ent_00000000000000000000000001"
+	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	writeAndIndex(t, v, d, bareEntity(mirrorID, targetMirrorAlias(int(tgtID))))
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	subjects, err := p.chatSubjects("target", fmt.Sprintf("%d", tgtID))
+	require.NoError(t, err)
+	assert.Equal(t, []string{mirrorID}, subjects, "a bare target maps to its own mirror when one exists")
+}
+
+// TestIngestChatStatementsTargetMirrorPresentStages is the Task-3 end-to-end
+// contract: with a target:<id> mirror present, a "remember this:" turn in a
+// bare-target Discuss chat (no linked track) stages owner-rank evidence
+// subject-mapped to the mirror.
+func TestIngestChatStatementsTargetMirrorPresentStages(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	mirrorID := "ent_00000000000000000000000001"
+	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	writeAndIndex(t, v, d, bareEntity(mirrorID, targetMirrorAlias(int(tgtID))))
+	conv := seedChatConversation(t, d, "target", fmt.Sprintf("%d", tgtID))
+	turnID := seedChatMessage(t, d, conv, "user", "remember this: this needs a design doc first", 1720000100.0)
+
+	types := []string{"situation", "target", "track"}
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	staged, newFloor, err := p.ingestChatStatements(0, types)
+	require.NoError(t, err)
+	require.NotNil(t, staged, "with the mirror present, the bare-target turn stages")
+	require.Len(t, staged.statements, 1)
+	assert.Equal(t, "this needs a design doc first", staged.statements[0].text, "the command prefix is stripped")
+	assert.Equal(t, []string{mirrorID}, staged.statements[0].subjects, "subject-mapped to the target's own mirror")
+	assert.True(t, staged.subjects[mirrorID])
+	assert.Equal(t, turnID, newFloor)
+}
+
+// TestIngestChatStatementsTargetNoMirrorNotStaged: without a target:<id>
+// mirror, the same "remember this:" bare-target turn is consumed (the floor
+// advances) but NOT staged — byte-unchanged slice-2 behavior (Task 3).
+func TestIngestChatStatementsTargetNoMirrorNotStaged(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	conv := seedChatConversation(t, d, "target", fmt.Sprintf("%d", tgtID))
+	turnID := seedChatMessage(t, d, conv, "user", "remember this: this needs a design doc first", 1720000100.0)
+
+	types := []string{"situation", "target", "track"}
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	staged, newFloor, err := p.ingestChatStatements(0, types)
+	require.NoError(t, err)
+	assert.Nil(t, staged, "no mirror — the turn maps to no entity, consumed-not-staged")
+	assert.Equal(t, turnID, newFloor, "the turn is still consumed (floor advances past it)")
+}
+
 // TestParseRememberCommand pins the "remember this" prefix parser: case-
 // insensitive "remember:" / "remember this:", the remainder returned verbatim
 // (original case preserved), empty/prefix-only remainders and no-prefix text
