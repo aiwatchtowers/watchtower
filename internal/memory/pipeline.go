@@ -642,6 +642,7 @@ func (p *Pipeline) batchPrompts(windows []runWindow, idxs []int) (system, user, 
 // the batch's channel name(s), used only for the unresolved-hint log line.
 func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nodes []Node, ids []string) {
 	entityIdx := make(map[string]int) // entity node ID → index in nodes
+	var unresolved []db.EntityHint    // hints with no matching entity, for promotion tracking
 	for _, ep := range kept {
 		title := strings.Join(strings.Fields(ep.Title), " ")
 		if title == "" {
@@ -662,7 +663,15 @@ func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nod
 		for _, hint := range ep.EntityHints {
 			en, rerr := Resolve(p.vault, p.db, hint)
 			if rerr != nil {
+				// Unresolved hint: no entity page matches it yet. Log as before
+				// and persist it for concept-entity promotion once it recurs
+				// across enough distinct episodes (spec goal 6). Keyed on the
+				// episode id, so re-extracting the same episode never
+				// double-counts. Normalized the same way conceptAlias expects.
 				p.logf("memory: extract [%s]: entity hint %q unresolved", label, hint)
+				if norm := strings.ToLower(strings.TrimSpace(hint)); norm != "" {
+					unresolved = append(unresolved, db.EntityHint{Hint: norm, EpisodeID: n.ID})
+				}
 				continue
 			}
 			if en.Type != "entity" || en.Status != "active" {
@@ -677,6 +686,12 @@ func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nod
 			}
 			nodes[idx].Body = appendToLinks(nodes[idx].Body, link)
 		}
+	}
+	// Accumulation runs whenever memory is enabled (harmless when the semantic
+	// tier is off): promotion reads it later, gated separately. A record
+	// failure must not fail the batch — the hints are best-effort telemetry.
+	if err := p.db.RecordEntityHints(unresolved); err != nil {
+		p.logf("memory: record entity hints [%s]: %v", label, err)
 	}
 	return nodes, ids
 }

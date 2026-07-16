@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // MemoryNodeRow mirrors one row of memory_nodes — the rebuildable SQLite index
@@ -335,6 +336,118 @@ func (db *DB) queryMemoryExtractMessages(tsCond string, tsArg float64, limit int
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// EntityHint is one (hint, episode) observation to persist: an unresolved
+// extractor entity hint together with the episode node that emitted it.
+type EntityHint struct {
+	Hint      string // normalized (lowercased, trimmed) hint text
+	EpisodeID string // the ep_* node that emitted it
+}
+
+// PromotableHint is one recurring hint eligible for concept-entity promotion:
+// the hint text and the distinct episode IDs that emitted it (unpromoted only).
+type PromotableHint struct {
+	Hint       string
+	EpisodeIDs []string
+}
+
+// RecordEntityHints persists unresolved extractor hints for concept-entity
+// promotion. Each (hint, episode_id) pair is INSERT OR IGNORE'd (the table's
+// PRIMARY KEY), so re-extracting the same episode never double-counts a hint —
+// distinct-episode recurrence is COUNT(*) per hint. first_seen is stamped on
+// first insert only. Empty hint or episode_id pairs are skipped. This is
+// runtime accumulation (like memory_node_stats), NOT derivable from files, so
+// it is excluded from MEM-02 and deliberately survives DropMemoryIndex.
+func (db *DB) RecordEntityHints(hints []EntityHint) error {
+	if len(hints) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning entity-hint tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, h := range hints {
+		if h.Hint == "" || h.EpisodeID == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO memory_entity_hints
+			(hint, episode_id, first_seen) VALUES (?, ?, ?)`,
+			h.Hint, h.EpisodeID, now); err != nil {
+			return fmt.Errorf("recording entity hint %q/%s: %w", h.Hint, h.EpisodeID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing entity-hint tx: %w", err)
+	}
+	return nil
+}
+
+// ListPromotableHints returns hints that have recurred across at least
+// minEpisodes distinct episodes and have not yet been promoted, each with its
+// contributing (unpromoted) episode IDs. Ordered by hint, then episode id, so
+// promotion is deterministic across runs.
+func (db *DB) ListPromotableHints(minEpisodes int) ([]PromotableHint, error) {
+	if minEpisodes < 1 {
+		minEpisodes = 1
+	}
+	rows, err := db.Query(`
+		SELECT hint, episode_id FROM memory_entity_hints
+		WHERE promoted_to = ''
+		  AND hint IN (
+			SELECT hint FROM memory_entity_hints
+			WHERE promoted_to = ''
+			GROUP BY hint HAVING COUNT(*) >= ?)
+		ORDER BY hint, episode_id`, minEpisodes)
+	if err != nil {
+		return nil, fmt.Errorf("listing promotable hints: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PromotableHint
+	for rows.Next() {
+		var hint, episodeID string
+		if err := rows.Scan(&hint, &episodeID); err != nil {
+			return nil, fmt.Errorf("scanning promotable hint: %w", err)
+		}
+		if len(out) == 0 || out[len(out)-1].Hint != hint {
+			out = append(out, PromotableHint{Hint: hint})
+		}
+		last := &out[len(out)-1]
+		last.EpisodeIDs = append(last.EpisodeIDs, episodeID)
+	}
+	return out, rows.Err()
+}
+
+// MarkHintPromoted stamps every unpromoted row of a hint with the concept
+// entity id it was promoted into, so a later run never re-promotes it.
+func (db *DB) MarkHintPromoted(hint, nodeID string) error {
+	if _, err := db.Exec(`UPDATE memory_entity_hints SET promoted_to = ?
+		WHERE hint = ? AND promoted_to = ''`, nodeID, hint); err != nil {
+		return fmt.Errorf("marking hint %q promoted to %s: %w", hint, nodeID, err)
+	}
+	return nil
+}
+
+// CountMemoryLinksIn counts the live (non-tombstone) nodes whose body contains
+// a [[<id>...]] wiki-link to the given node — the "links-in" importance input
+// to the retention score. Self-links and tombstones (whose only link is their
+// own redirect stub) are excluded. Uses instr for an exact substring match so
+// the underscore in an id prefix cannot act as a LIKE wildcard.
+func (db *DB) CountMemoryLinksIn(id string) (int, error) {
+	var n int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM memory_fts f
+		JOIN memory_nodes m ON m.id = f.id
+		WHERE m.status != 'tombstone' AND m.id != ?
+		  AND instr(f.body, '[[' || ?) > 0`, id, id).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting links-in for %s: %w", id, err)
+	}
+	return n, nil
 }
 
 // DropMemoryIndex empties all four memory index tables in one transaction so

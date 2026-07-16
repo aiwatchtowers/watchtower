@@ -323,6 +323,101 @@ func TestDropMemoryIndex(t *testing.T) {
 	}
 }
 
+func TestRecordEntityHintsDedupesByPair(t *testing.T) {
+	db := openTestDB(t)
+
+	// Same (hint, episode) recorded twice → one row (re-extraction must not
+	// double-count); a different episode for the same hint is a second row.
+	if err := db.RecordEntityHints([]EntityHint{
+		{Hint: "hsm", EpisodeID: "ep_1"},
+		{Hint: "hsm", EpisodeID: "ep_1"},
+		{Hint: "hsm", EpisodeID: "ep_2"},
+		{Hint: "", EpisodeID: "ep_3"},     // empty hint skipped
+		{Hint: "phishing", EpisodeID: ""}, // empty episode skipped
+	}); err != nil {
+		t.Fatalf("RecordEntityHints: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_entity_hints`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("hint rows = %d, want 2 (deduped pair, empties skipped)", count)
+	}
+}
+
+func TestListPromotableHintsThresholdAndUnpromoted(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.RecordEntityHints([]EntityHint{
+		{Hint: "hsm", EpisodeID: "ep_1"},
+		{Hint: "hsm", EpisodeID: "ep_2"},
+		{Hint: "hsm", EpisodeID: "ep_3"},
+		{Hint: "phishing", EpisodeID: "ep_4"}, // only 1 distinct episode
+	}); err != nil {
+		t.Fatalf("RecordEntityHints: %v", err)
+	}
+
+	// Threshold 3: only "hsm" qualifies, with all three episodes.
+	got, err := db.ListPromotableHints(3)
+	if err != nil {
+		t.Fatalf("ListPromotableHints: %v", err)
+	}
+	if len(got) != 1 || got[0].Hint != "hsm" {
+		t.Fatalf("got %+v, want one hint hsm", got)
+	}
+	if strings.Join(got[0].EpisodeIDs, ",") != "ep_1,ep_2,ep_3" {
+		t.Errorf("episode ids = %v, want ep_1,ep_2,ep_3", got[0].EpisodeIDs)
+	}
+
+	// After marking hsm promoted, it drops out of the list.
+	if err := db.MarkHintPromoted("hsm", "ent_concept"); err != nil {
+		t.Fatalf("MarkHintPromoted: %v", err)
+	}
+	got, err = db.ListPromotableHints(3)
+	if err != nil {
+		t.Fatalf("ListPromotableHints after promote: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %+v, want none (hsm now promoted)", got)
+	}
+
+	// The rows carry the promotion marker.
+	var promotedTo string
+	if err := db.QueryRow(`SELECT promoted_to FROM memory_entity_hints WHERE hint = 'hsm' LIMIT 1`).Scan(&promotedTo); err != nil {
+		t.Fatalf("read promoted_to: %v", err)
+	}
+	if promotedTo != "ent_concept" {
+		t.Errorf("promoted_to = %q, want ent_concept", promotedTo)
+	}
+}
+
+// TestEntityHintsSurviveDropIndex: the hint table is runtime accumulation, not
+// derivable from the vault, so DropMemoryIndex (MEM-02 reindex) must NOT clear
+// it — a reindex never resets promotion progress.
+func TestEntityHintsSurviveDropIndex(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.RecordEntityHints([]EntityHint{
+		{Hint: "hsm", EpisodeID: "ep_1"},
+		{Hint: "hsm", EpisodeID: "ep_2"},
+	}); err != nil {
+		t.Fatalf("RecordEntityHints: %v", err)
+	}
+	if err := db.DropMemoryIndex(); err != nil {
+		t.Fatalf("DropMemoryIndex: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_entity_hints`).Scan(&count); err != nil {
+		t.Fatalf("count after drop: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("hint rows after DropMemoryIndex = %d, want 2 (hints must survive reindex)", count)
+	}
+}
+
 // seedExtractMessage inserts a channel-message pair for extract-query tests.
 func seedExtractMessage(t *testing.T, db *DB, channelID, ts, userID, text string) {
 	t.Helper()
