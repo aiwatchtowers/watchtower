@@ -42,6 +42,12 @@ final class AppState {
     /// transcript rows are expanded across the app.
     let audioPlaybackCenter = AudioPlaybackCenter()
 
+    /// App-wide, single-slot-per-transcript registry for "generate meeting
+    /// notes" runs, so the "generating…" flag survives navigating away from
+    /// and back to a recording's detail (feedback: async ops need
+    /// navigation-surviving state).
+    let transcriptNotesCenter = TranscriptNotesCenter()
+
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
     /// role-less transcript.

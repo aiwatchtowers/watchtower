@@ -172,6 +172,40 @@ func TestSetMeetingTranscriptSummary(t *testing.T) {
 	}
 }
 
+func TestSetMeetingTranscriptNotes(t *testing.T) {
+	database := openTestDB(t)
+
+	id, err := database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Notes target",
+		TranscriptText: "we talked",
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if err := database.SetMeetingTranscriptNotes(id, "# Notes\n- decided X"); err != nil {
+		t.Fatalf("SetMeetingTranscriptNotes: %v", err)
+	}
+
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !tr.NotesMD.Valid || tr.NotesMD.String != "# Notes\n- decided X" {
+		t.Fatalf("notes_md not stored, got %+v", tr.NotesMD)
+	}
+	if tr.UpdatedAt < tr.CreatedAt {
+		t.Fatalf("updated_at must be bumped")
+	}
+
+	// Fresh rows have no notes.
+	id2, _ := database.InsertMeetingTranscript(MeetingTranscript{Title: "No notes", TranscriptText: "x"})
+	tr2, _ := database.GetMeetingTranscript(id2)
+	if tr2.NotesMD.Valid {
+		t.Fatalf("fresh transcript must have NULL notes_md")
+	}
+}
+
 func TestTranscriptAudioRetention(t *testing.T) {
 	database := openTestDB(t)
 

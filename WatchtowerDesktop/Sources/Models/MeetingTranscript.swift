@@ -6,6 +6,7 @@ import GRDB
 /// `audioPath` is NULLed by the daemon retention phase once the audio file is
 /// deleted; the transcript text is kept forever. `summaryJSON` holds the recap
 /// for ad-hoc recordings only — event-linked recaps live in `meeting_recaps`.
+/// `notesMD` holds user-editable publishable markdown notes.
 struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "meeting_transcripts"
 
@@ -17,6 +18,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     let langStats: String
     let transcriptText: String
     let summaryJSON: String?
+    let notesMD: String?
     let createdAt: String
     let updatedAt: String
 
@@ -35,6 +37,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         case langStats = "lang_stats"
         case transcriptText = "transcript_text"
         case summaryJSON = "summary_json"
+        case notesMD = "notes_md"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

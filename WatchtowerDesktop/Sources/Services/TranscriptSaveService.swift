@@ -17,6 +17,21 @@ struct TranscriptSaveResult: Decodable, Equatable {
     }
 }
 
+// MARK: - TranscriptNotesResult
+
+/// Decoded stdout envelope of `watchtower meeting-prep transcript notes <id>`.
+/// The CLI exits non-zero on any failure (nothing persisted), so decoding
+/// only happens on success.
+struct TranscriptNotesResult: Decodable, Equatable {
+    let transcriptID: Int64
+    let notesMD: String
+
+    enum CodingKeys: String, CodingKey {
+        case transcriptID = "transcript_id"
+        case notesMD = "notes_md"
+    }
+}
+
 // MARK: - TranscriptSaveService
 
 /// Bridges the Desktop app to `watchtower meeting-prep transcript`.
@@ -65,5 +80,14 @@ struct TranscriptSaveService {
         let args = ["meeting-prep", "transcript", "recap", String(transcriptID)]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(TranscriptSaveResult.self, from: data)
+    }
+
+    /// `meeting-prep transcript notes <id>` — generate publishable markdown
+    /// meeting notes. The CLI persists notes_md itself; the returned markdown
+    /// is for immediate display.
+    func generateNotes(transcriptID: Int64) async throws -> TranscriptNotesResult {
+        let args = ["meeting-prep", "transcript", "notes", String(transcriptID)]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(TranscriptNotesResult.self, from: data)
     }
 }

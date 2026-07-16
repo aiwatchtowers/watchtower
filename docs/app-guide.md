@@ -60,6 +60,8 @@ Google Calendar integration showing upcoming events and AI-powered meeting prepa
 
 **Connecting:** Go to Settings > Google Calendar and click "Connect". This opens the Google OAuth flow via the CLI (`watchtower calendar login`). Once connected, calendar events sync automatically after each Slack sync.
 
+**Tabs** — When connected, the Calendar screen has an "Events | Recordings" segmented control at the top. **Events** is the schedule + meeting-prep view described below; **Recordings** is the home for all meeting recordings (see "Recordings tab" further down).
+
 **Events view** — Shows today's and tomorrow's events. Each event displays: time range (or "All day"), duration, title, location, and attendee count. Events happening now have a green highlight; upcoming events (within 1 hour) have a blue highlight.
 
 **Meeting Prep** — Click "Prepare" on any event to open the AI-powered meeting prep sheet. The AI analyzes attendees' people cards, shared tracks, open items, and recent context to generate:
@@ -99,12 +101,21 @@ Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] 
 - **Global indicator:** while recording, a floating pill (bottom-right, visible from any tab) shows elapsed time and a Stop button. Recording survives navigating between tabs. After Stop it shows transcription progress (window N of M), then "Summarizing…".
 - **Transcription is fully local** (on-device; the model downloads once on first use). The transcription **Engine** is chosen in Settings › Transcription — WhisperKit is the default and its **Large v3 Turbo** model is the default choice, faster and lighter than full Large v3 while staying multilingual; both the engine and its model are switchable there, with a warning if the engine doesn't support your configured languages. Mixed ru/uk/en meetings are handled by per-window language detection with a sticky fallback. Only the transcript text is sent to the AI provider for the recap.
 - **Speaker roles:** saved transcripts label who was speaking — `[Я]` for you (detected from the microphone channel) and `[Speaker 1..N]` for other participants (on-device diarization; models download once on first use). Toggle "Speaker roles" in Settings › Transcription; while roles are being computed the floating pill shows "Identifying speakers…". If diarization is unavailable the transcript is saved without labels.
-- **Results:** the transcript appears in a collapsible "Transcript" section on the event (next to the recap); the recap itself is generated through the standard Meeting Recap flow. Ad-hoc recordings are listed in a "Recordings" section on the Calendar tab and can be linked to an event afterwards ("Link to event…").
+- **Results:** the transcript appears in a collapsible "Transcript" section on the event (next to the recap); the recap itself is generated through the standard Meeting Recap flow. Every recording (event-linked and ad-hoc) also gets its own screen in the Calendar's **Recordings** tab.
 - **Failure handling:** the audio file is never lost — failed transcription or recap offers Retry; if the app quits mid-recording, the next launch offers to transcribe the recovered file.
 - **Retention:** audio files are auto-deleted after `transcripts.audio_retention_days` (default 30); transcripts are kept forever.
 - **Chat integration:** the secretary chat can search transcripts via MCP tools `list_transcripts` / `get_transcript` ("what did we decide about X in Tuesday's meeting").
 - **Settings → General → Transcription:** Engine picker, model picker (options depend on the selected engine), language set, retention days, advanced detection tuning (window size, confidence threshold, margin, force language). The live in-progress transcript panel while recording only appears for engines that support live transcription.
-- **CLI:** `watchtower meeting-prep transcript save|recap|list|show` (the app calls `save` after transcribing; `recap <id>` retries a failed recap).
+- **CLI:** `watchtower meeting-prep transcript save|recap|list|show|notes` (the app calls `save` after transcribing; `recap <id>` retries a failed recap; `notes <id>` generates publishable meeting notes).
+
+**Recordings tab** — The Calendar screen's second tab: a master-detail list of ALL recordings (event-linked and ad-hoc), newest first. Each row shows the title, an event/ad-hoc icon, date, duration, language badges, a snippet of the transcript, and indicators for an existing recap (sparkles) and meeting notes (document). Selecting a row opens the recording's own screen with four tabs:
+
+- **Recap** — the structured AI recap (summary, decisions, action items, open questions) with a "Generate recap" / "Re-generate" button. For event-linked recordings the event's recap is shown; ad-hoc recordings use their own.
+- **Notes** — publishable meeting notes: click "Generate" and the AI writes a markdown document (title, participants, summary, decisions, action items, next steps) from the transcript, in a neutral publication-ready tone. Edit it right there (autosaves; the editor is locked while generation runs), then "Copy" puts the markdown on the clipboard for pasting into Slack, Confluence, etc.
+- **Transcript** — the full transcript text.
+- **Chat** — discuss this meeting with the secretary ("what exactly did we decide about X?", "draft a follow-up") — the conversation persists per recording, and the secretary can pull the full transcript via the `get_transcript` tool.
+
+The detail header has "Link to event…" for ad-hoc recordings and a **Delete** button: after confirmation it removes the recording with everything it owns — transcript, meeting notes, its chat, and the audio file. An event's recap is NOT deleted with the recording (it belongs to the event). Deleting cannot be undone.
 
 ### Tasks
 Personal action items — what you need to do, follow up on, or react to. Unlike Tracks (which are informational narratives about ongoing initiatives), Tasks are concrete, personal to-do items with ownership and deadlines.

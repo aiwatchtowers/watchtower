@@ -214,4 +214,33 @@ final class TranscriptSaveServiceTests: XCTestCase {
             XCTFail("unexpected error type: \(error)")
         }
     }
+
+    // MARK: - generateNotes
+
+    func test_generateNotesInvokesCLIAndDecodesEnvelope() async throws {
+        let mock = FakeCLIRunner(stdout: Data("""
+            {"transcript_id": 7, "notes_md": "# Sync\\n\\n## Summary\\nShipped."}
+            """.utf8))
+        let service = TranscriptSaveService(runner: mock)
+
+        let result = try await service.generateNotes(transcriptID: 7)
+
+        XCTAssertEqual(result.transcriptID, 7)
+        XCTAssertTrue(result.notesMD.contains("## Summary"))
+        XCTAssertEqual(mock.invocations.first, ["meeting-prep", "transcript", "notes", "7"])
+    }
+
+    func test_generateNotesPropagatesRunnerError() async {
+        let fake = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let svc = TranscriptSaveService(runner: fake)
+
+        do {
+            _ = try await svc.generateNotes(transcriptID: 3)
+            XCTFail("expected throw")
+        } catch CLIRunnerError.nonZeroExit(let code, _) {
+            XCTAssertEqual(code, 1)
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+    }
 }

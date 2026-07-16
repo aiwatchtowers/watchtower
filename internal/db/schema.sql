@@ -1019,6 +1019,7 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     lang_stats      TEXT NOT NULL DEFAULT '',
     transcript_text TEXT NOT NULL,
     summary_json    TEXT,
+    notes_md        TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
