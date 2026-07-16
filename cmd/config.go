@@ -204,6 +204,7 @@ var knownConfigKeys = map[string]bool{
 	"memory.semantic.rewrite_max_entities": true,
 	"memory.semantic.beliefs_max":          true,
 	"memory.semantic.dedupe_max_merges":    true,
+	"memory.semantic.age_after_days":       true,
 	"memory.semantic.evict_after_days":     true,
 	"memory.semantic.evict_max":            true,
 	"memory.semantic.concept_min_episodes": true,

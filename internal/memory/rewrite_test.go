@@ -70,7 +70,7 @@ func TestRewriteEntityPagesHappyPath(t *testing.T) {
 	}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	rewritten, usage, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	rewritten, _, usage, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
 	require.NoError(t, err)
 	assert.Equal(t, []string{entID}, rewritten)
 	require.NotNil(t, usage)
@@ -104,7 +104,7 @@ func TestRewriteEntityPagesDropsInventedMarker(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	rewritten, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	rewritten, _, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
 	require.NoError(t, err)
 	assert.Len(t, rewritten, 1, "page still written with the valid marker")
 
@@ -128,7 +128,7 @@ func TestRewriteEntityPagesGarbageJSONSkips(t *testing.T) {
 	gen := &fakeGen{reply: func(string) (string, error) { return "not json at all", nil }}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	rewritten, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	rewritten, _, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
 	require.NoError(t, err)
 	assert.Empty(t, rewritten)
 
@@ -157,10 +157,78 @@ func TestRewriteEntityPagesStaggerGate(t *testing.T) {
 	gen := &fakeGen{reply: func(string) (string, error) { return "{}", nil }}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	rewritten, _, err := p.RewriteEntityPages(context.Background(), 10, notDue)
+	rewritten, _, _, err := p.RewriteEntityPages(context.Background(), 10, notDue)
 	require.NoError(t, err)
 	assert.Empty(t, rewritten)
 	assert.Empty(t, gen.calls, "an entity not in its stagger slot is skipped without an AI call")
+}
+
+// TestRewriteEntityPagesSkipsTombstoneOnlyLinks: an entity whose only linked
+// episode was evicted (tombstoned) has nothing new to rewrite from, so it is
+// skipped without an AI call (fix 6).
+func TestRewriteEntityPagesSkipsTombstoneOnlyLinks(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	entID := dueEntityIDs(rewriteNow, 1)[0]
+	epID := "ep_00000000000000000000000001"
+	tomb := rewriteEpisodeNode(epID, "C1CHAN", "1710000000.000100")
+	tomb.Status = "tombstone"
+	writeAndIndex(t, v, d, tomb)
+	writeAndIndex(t, v, d, rewriteEntityNode(entID, "Acme", epID))
+
+	gen := &fakeGen{reply: func(string) (string, error) { return "{}", nil }}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	rewritten, _, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	require.NoError(t, err)
+	assert.Empty(t, rewritten, "entity with only a tombstoned linked episode is not rewritten")
+	assert.Empty(t, gen.calls, "no AI call when there is nothing to rewrite from")
+}
+
+// TestRewriteEntityPagesSkipsReorderedPage: a page whose sections are out of the
+// expected order (## Links before ## What) is skipped with a log instead of being
+// mangled; it is byte-identical after and counts as a failed attempt (fix 7).
+func TestRewriteEntityPagesSkipsReorderedPage(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	entID := dueEntityIDs(rewriteNow, 1)[0]
+	epID := "ep_00000000000000000000000001"
+	writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", "1710000000.000100"))
+
+	// ## Links precedes ## What — the head/tail regions would overlap.
+	reordered := "# Acme\n\n## Links\n- [[" + epID + "]]\n\n## What\nold what\n\n## Current\nold current\n\n## Facts\n- keep me\n"
+	ent := Node{ID: entID, Type: "entity", Tier: "long", Status: "active", Title: "Acme", Aliases: []string{"Acme"}, Body: reordered}
+	writeAndIndex(t, v, d, ent)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return rewriteReplyJSON(t, "new what", "new current", []string{"f"}, []episodeRef{{ChannelID: "C1CHAN", TS: "1710000000.000100"}}), nil
+	}}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	rewritten, failed, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	require.NoError(t, err)
+	assert.Empty(t, rewritten, "reordered page not rewritten")
+	assert.Equal(t, 1, failed, "the skipped reorder counts as a failed attempt")
+
+	got, err := v.ReadNode(entID)
+	require.NoError(t, err)
+	assert.Equal(t, reordered, got.Body, "reordered page left byte-identical")
+}
+
+// TestRewriteEntityPagesCountsFailures: a generate failure is isolated and
+// surfaced as a failed count (observability of systemic AI-step failure, fix 3).
+func TestRewriteEntityPagesCountsFailures(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	entID := dueEntityIDs(rewriteNow, 1)[0]
+	epID := "ep_00000000000000000000000001"
+	writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", "1710000000.000100"))
+	writeAndIndex(t, v, d, rewriteEntityNode(entID, "Acme", epID))
+
+	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("model down") }}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	rewritten, failed, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	require.NoError(t, err, "a per-entity failure is isolated, not fatal")
+	assert.Empty(t, rewritten)
+	assert.Equal(t, 1, failed, "the failed rewrite is counted")
 }
 
 func TestRewriteEntityPagesCapRespected(t *testing.T) {
@@ -177,7 +245,7 @@ func TestRewriteEntityPagesCapRespected(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	rewritten, _, err := p.RewriteEntityPages(context.Background(), 1, rewriteNow)
+	rewritten, _, _, err := p.RewriteEntityPages(context.Background(), 1, rewriteNow)
 	require.NoError(t, err)
 	assert.Len(t, rewritten, 1, "cap respected")
 	assert.Len(t, gen.calls, 1)

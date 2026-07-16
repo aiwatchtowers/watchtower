@@ -3,7 +3,6 @@ package memory
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,12 +20,16 @@ var provenanceHeadingRe = regexp.MustCompile(`(?m)^## Provenance[ \t]*$`)
 // reliable signal.
 //
 // A pair is merged when both episodes are active short-tier, belong to the same
-// channel, have overlapping time ranges, and share at least one provenance ref.
-// The older id wins (ULIDs sort by creation time, so the lexicographically
-// smaller id is older): Merge(loser=newer, winner=older) tombstones the newer
-// and the resolver chases it back. Closed/long/tombstone episodes are out of
-// scope. maxMerges caps merges per run; <= 0 means unlimited.
-func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int) (merged int, err error) {
+// channel, and share at least one provenance ref. A shared channel_id+ts ref
+// already implies overlapping time (MEM-01 guarantees every ref is a real,
+// parseable message ts), so no separate time-range check is needed. The older
+// id wins (ULIDs sort by creation time, so the lexicographically smaller id is
+// older): Merge(loser=newer, winner=older) tombstones the newer and the
+// resolver chases it back. Closed/long/tombstone episodes are out of scope.
+// maxMerges caps merges per run; <= 0 means unlimited. A per-node read failure
+// is skipped-and-logged (the package quarantine convention) so one corrupted
+// candidate never stops the pass.
+func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, ...any)) (merged int, err error) {
 	rows, err := database.ListMemoryNodes()
 	if err != nil {
 		return 0, err
@@ -41,7 +44,8 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int) (merged int, err e
 		}
 		n, rerr := v.ReadNode(row.ID)
 		if rerr != nil {
-			return merged, rerr
+			logf("memory: dedupe: read %s: %v (skipped)", row.ID, rerr)
+			continue
 		}
 		refs := parseProvenance(n.Body)
 		if len(refs) == 0 {
@@ -64,7 +68,7 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int) (merged int, err e
 				if consumed[eps[j].id] {
 					continue
 				}
-				if !eps[i].overlaps(eps[j]) || !eps[i].sharesRef(eps[j]) {
+				if !eps[i].sharesRef(eps[j]) {
 					continue
 				}
 				// i is older (smaller id) → winner; j is newer → loser. Union the
@@ -76,6 +80,12 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int) (merged int, err e
 				}
 				if err := Merge(v, database, eps[j].id, eps[i].id); err != nil {
 					return merged, err
+				}
+				// Fold the loser's refs into the winner's in-memory candidate so a
+				// later candidate that overlaps ONLY through the loser still merges
+				// in this same run (A<B<C where C shares only B's ref → all merge).
+				for k := range eps[j].refs {
+					eps[i].refs[k] = true
 				}
 				consumed[eps[j].id] = true
 				merged++
@@ -129,37 +139,20 @@ func unionProvenance(v *Vault, database *db.DB, winnerID, loserID string) error 
 	return upsertIndexNode(database, winner, time.Now().UTC().Format(time.RFC3339))
 }
 
-// epCandidate is one episode's dedupe key: its provenance ref set and time
-// range, all within a single channel.
+// epCandidate is one episode's dedupe key: its provenance ref set within a
+// single channel. A shared ref is the whole merge signal (MEM-01 guarantees the
+// ts is a real message time), so no separate time range is tracked.
 type epCandidate struct {
-	id       string
-	refs     map[string]bool // "<channel_id> <ts>" keys
-	min, max float64         // ts range across the refs
+	id   string
+	refs map[string]bool // "<channel_id> <ts>" keys
 }
 
 func newEpCandidate(id string, refs []episodeRef) epCandidate {
 	c := epCandidate{id: id, refs: make(map[string]bool, len(refs))}
-	first := true
 	for _, r := range refs {
 		c.refs[r.ChannelID+" "+r.TS] = true
-		ts, err := strconv.ParseFloat(r.TS, 64)
-		if err != nil {
-			continue
-		}
-		if first || ts < c.min {
-			c.min = ts
-		}
-		if first || ts > c.max {
-			c.max = ts
-		}
-		first = false
 	}
 	return c
-}
-
-// overlaps reports whether the two candidates' ts ranges intersect.
-func (c epCandidate) overlaps(o epCandidate) bool {
-	return c.min <= o.max && o.min <= c.max
 }
 
 // sharesRef reports whether the candidates share at least one channel_id+ts

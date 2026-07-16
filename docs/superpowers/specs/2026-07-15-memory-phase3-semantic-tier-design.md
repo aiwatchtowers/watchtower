@@ -52,14 +52,16 @@ subject: ent_7f3a       # the entity this belief is about (one primary subject)
 One-paragraph precise claim, falsifiable.
 
 ## Evidence
-- for: [[ep_...|deploy freeze announced]] (observed, 2026-07-10)
-- for: owner said "billing is behind" (owner, 2026-07-12)
-- against: [[ep_...|two releases shipped]] (observed, 2026-07-14)
+- observed for C07ABC 1720598400
+- owner for C07ABC 1720771200
+- observed against C07ABC 1720944000
 
 ## History
 - 2026-07-12 created at 0.6 (run:412)
 - 2026-07-14 shaken: contradicting episode (run:498)
 ```
+
+Each `## Evidence` bullet is a **canonical 4-field line**: `- <rank> <for|against> <channel_id> <ts>` (rank ∈ `owner|observed|inferred`; ts = the provenance unix-second the age/decay math reads). This is the shape `parseBeliefEvidence` accepts and `render()` writes. A prose bullet (e.g. `- owner said "billing is behind"`) does **not** parse — it is logged with a warning and ignored, never silently dropped. Owner-rank protection (MEM-06) therefore only holds for owner support written as a canonical line; a prose "owner said…" note carries no rank weight.
 
 Rules (contract candidates, see MEM-06/07 below):
 
@@ -84,6 +86,7 @@ After ingest+extraction, a cheap mechanical pass over *active short-tier episode
 ### Retention & eviction
 
 - **Retention score** (computed in the index, never in files): `recency(last event ts) × importance` where importance = links-in count + situation origin bonus + owner-touch bonus (file ever owner-edited). **Access stats are NOT an input in Phase 3** — the counters are write-dead in production (documented); they join the formula only when Phase 4 gives chat a writable stats path. This resolves the review's "needs human": keep the table, keep the best-effort bump, wire nothing to it yet.
+- **Aging** (mechanical, runs before eviction — `AgeEpisodes`): raw extracted episodes are minted **active + short** and nothing in extraction ever closes them (only *situation-finalized* episodes reach closed + long, through ingest). Without a closing step a raw non-situation episode would stay active/short forever and never become an eviction candidate. So a mechanical aging pass transitions an active short-tier **non-situation** episode (no `situation:<id>` alias — those age through ingest, not here) whose newest provenance event is older than `memory.semantic.age_after_days` (default 14) to **closed + long**, in one `memory(age)` commit mirrored into the index. Situation-aliased episodes and still-recent episodes are left byte-identical. The two windows compose: an episode ages at ~14 days, then the 45-day eviction window (below) applies to the now-closed episode — so a raw episode is first observed for its remaining life as short/open, then closed, then (much later) rolled up.
 - **Eviction**: closed long-tier episodes below score threshold and older than `memory.evict_after_days` (default 45) collapse into a per-channel-per-month rollup (`sum_*`): one gist line each (title + outcome + provenance refs carried verbatim). The episode file becomes a tombstone `redirect_to` the rollup — resolver and old links keep working; FTS drops the body but the rollup line remains searchable. Cap per run. **Nothing is deleted; provenance never thins** (contract below).
 - Entities and beliefs are never evicted in Phase 3 (hundreds of nodes — no pressure).
 

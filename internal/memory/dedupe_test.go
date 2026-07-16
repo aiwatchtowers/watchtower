@@ -35,7 +35,7 @@ func TestDedupeMergesSharedProvenance(t *testing.T) {
 	writeAndIndex(t, v, d, older)
 	writeAndIndex(t, v, d, newer)
 
-	merged, err := DedupeEpisodes(v, d, 20)
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 1, merged)
 
@@ -61,7 +61,7 @@ func TestDedupeDisjointRefsNeverMerge(t *testing.T) {
 	writeAndIndex(t, v, d, a)
 	writeAndIndex(t, v, d, b)
 
-	merged, err := DedupeEpisodes(v, d, 20)
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 0, merged, "identical titles with disjoint refs do not merge")
 
@@ -79,7 +79,7 @@ func TestDedupeNeverCrossChannel(t *testing.T) {
 	writeAndIndex(t, v, d, a)
 	writeAndIndex(t, v, d, b)
 
-	merged, err := DedupeEpisodes(v, d, 20)
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 0, merged, "same ts in different channels is not a shared ref")
 }
@@ -101,7 +101,7 @@ func TestDedupeSkipsClosedAndLong(t *testing.T) {
 	writeAndIndex(t, v, d, longOld)
 	writeAndIndex(t, v, d, shortNew)
 
-	merged, err := DedupeEpisodes(v, d, 20)
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 0, merged, "closed and long episodes are out of scope")
 
@@ -124,7 +124,7 @@ func TestDedupeCapRespected(t *testing.T) {
 		writeAndIndex(t, v, d, newer)
 	}
 
-	merged, err := DedupeEpisodes(v, d, 1)
+	merged, err := DedupeEpisodes(v, d, 1, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 1, merged, "cap of one stops after a single merge")
 
@@ -142,7 +142,7 @@ func TestDedupeProvenanceUnionPreserved(t *testing.T) {
 	writeAndIndex(t, v, d, older)
 	writeAndIndex(t, v, d, newer)
 
-	merged, err := DedupeEpisodes(v, d, 20)
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
 	require.NoError(t, err)
 	require.Equal(t, 1, merged)
 
@@ -168,7 +168,7 @@ func TestDedupeUnionsPartialOverlapProvenance(t *testing.T) {
 	writeAndIndex(t, v, d, older)
 	writeAndIndex(t, v, d, newer)
 
-	merged, err := DedupeEpisodes(v, d, 20)
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
 	require.NoError(t, err)
 	require.Equal(t, 1, merged)
 
@@ -180,6 +180,52 @@ func TestDedupeUnionsPartialOverlapProvenance(t *testing.T) {
 		assert.Contains(t, winner.Body, "C8CHAN "+ts, "winner has provenance ref %s after union", ts)
 	}
 	assert.Contains(t, winner.Body, "## Provenance", "the union ref lives in the winner's Provenance section")
+}
+
+// TestDedupeSkipsCorruptedCandidate: a candidate whose file cannot be read
+// (indexed but not written) is skipped-and-logged, and a healthy duplicate pair
+// in another channel still merges — one bad node never aborts the pass.
+func TestDedupeSkipsCorruptedCandidate(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	// Corrupted candidate: indexed as an active short episode, no vault file.
+	indexNode(t, d, Node{ID: "ep_01ARZ3NDEKTSV4RRFFQ69G5DX1", Type: "episode", Tier: "short", Status: "active", Title: "ghost"})
+
+	older := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DX2", "First", "CXCHAN", "1752570000.000100")
+	newer := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DX3", "Second", "CXCHAN", "1752570000.000100")
+	writeAndIndex(t, v, d, older)
+	writeAndIndex(t, v, d, newer)
+
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
+	require.NoError(t, err, "a corrupted candidate does not abort the pass")
+	assert.Equal(t, 1, merged, "the healthy duplicate pair still merges")
+
+	got, err := v.ReadNode(newer.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "tombstone", got.Status)
+}
+
+// TestDedupeThreeWayChainOneRun: A<B<C where C shares a ref only with B (not A).
+// After A absorbs B, the loser B's refs are folded into A's in-memory candidate,
+// so C then overlaps A and all three collapse into A in a single run.
+func TestDedupeThreeWayChainOneRun(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	a := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5CH1", "A", "CHCHAN", "1752570000.000100", "1752570100.000200")
+	b := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5CH2", "B", "CHCHAN", "1752570100.000200", "1752570200.000300") // shares middle ref with A
+	c := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5CH3", "C", "CHCHAN", "1752570200.000300", "1752570300.000400") // shares only with B
+	writeAndIndex(t, v, d, a)
+	writeAndIndex(t, v, d, b)
+	writeAndIndex(t, v, d, c)
+
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, 2, merged, "both B and C merge into A in one run")
+
+	for _, loser := range []Node{b, c} {
+		resolved, rerr := Resolve(v, d, loser.ID)
+		require.NoError(t, rerr)
+		assert.Equal(t, a.ID, resolved.ID, "%s resolves to A", loser.Title)
+	}
 }
 
 // countTombstones counts tombstone rows in the index.

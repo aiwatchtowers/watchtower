@@ -62,7 +62,7 @@ func TestMemory07_EvictionKeepsProvenance(t *testing.T) {
 	ep := oldEpNode(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5EV1", "Deploy freeze retro", "Freeze lifted after two days", "C1CHAN", 100, ts2)
 	writeAndIndex(t, v, d, ep)
 
-	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20)
+	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
 	require.NoError(t, err)
 	require.Equal(t, 1, evicted)
 
@@ -97,7 +97,7 @@ func TestMemory07_EvictionKeepsProvenance(t *testing.T) {
 	newer := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5EW2", "Second", "CDCHAN", "1752570100.000200", "1752570200.000300")
 	writeAndIndex(t, v2, d2, older)
 	writeAndIndex(t, v2, d2, newer)
-	merged, err := DedupeEpisodes(v2, d2, 20)
+	merged, err := DedupeEpisodes(v2, d2, 20, t.Logf)
 	require.NoError(t, err)
 	require.Equal(t, 1, merged)
 	winner, err := Resolve(v2, d2, newer.ID)
@@ -122,7 +122,7 @@ func TestEvictSkipsRecentAndHighScore(t *testing.T) {
 		writeAndIndex(t, v, d, e)
 	}
 
-	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20)
+	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 0, evicted, "recent and well-linked episodes are kept")
 	for _, id := range []string{recent.ID, linked.ID} {
@@ -144,7 +144,7 @@ func TestEvictNeverActiveOrShort(t *testing.T) {
 	short.Tier = "short"
 	writeAndIndex(t, v, d, short)
 
-	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20)
+	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 0, evicted)
 }
@@ -156,13 +156,13 @@ func TestEvictAppendsToExistingRollup(t *testing.T) {
 	// Two episodes in the same channel and month (both ~100 days old).
 	e1 := oldEpNode(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5EV6", "First cold", "closed", "C4CHAN", 100)
 	writeAndIndex(t, v, d, e1)
-	n1, err := EvictEpisodes(v, d, 45, 0.5, 20)
+	n1, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
 	require.NoError(t, err)
 	require.Equal(t, 1, n1)
 
 	e2 := oldEpNode(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5EV7", "Second cold", "closed", "C4CHAN", 100)
 	writeAndIndex(t, v, d, e2)
-	n2, err := EvictEpisodes(v, d, 45, 0.5, 20)
+	n2, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
 	require.NoError(t, err)
 	require.Equal(t, 1, n2)
 
@@ -193,7 +193,7 @@ func TestEvictCapRespected(t *testing.T) {
 		ep := oldEpNode(t, fmt.Sprintf("ep_01ARZ3NDEKTSV4RRFFQ69G5EC%d", i), "Cold", "done", fmt.Sprintf("C5CHA%d", i), 100)
 		writeAndIndex(t, v, d, ep)
 	}
-	evicted, err := EvictEpisodes(v, d, 45, 0.5, 1)
+	evicted, err := EvictEpisodes(v, d, 45, 0.5, 1, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 1, evicted)
 }
@@ -207,7 +207,7 @@ func TestEvictReindexEquivalence(t *testing.T) {
 	ep.Aliases = []string{"situation:99"} // situation-origin alias must migrate to the rollup
 	writeAndIndex(t, v, d, ep)
 
-	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20)
+	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
 	require.NoError(t, err)
 	require.Equal(t, 1, evicted)
 
@@ -221,6 +221,26 @@ func TestEvictReindexEquivalence(t *testing.T) {
 	got, err := Resolve(v, d, "situation:99")
 	require.NoError(t, err)
 	assert.Equal(t, "rollup", got.Type)
+}
+
+// TestEvictSkipsCorruptedCandidate: a candidate whose file cannot be read
+// (indexed as a cold closed long episode but not written) is skipped-and-logged,
+// and a healthy cold episode is still evicted — one bad node never aborts the
+// pass.
+func TestEvictSkipsCorruptedCandidate(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	indexNode(t, d, Node{ID: "ep_01ARZ3NDEKTSV4RRFFQ69G5EX1", Type: "episode", Tier: "long", Status: "closed", Title: "ghost"})
+	healthy := oldEpNode(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5EX2", "Cold retro", "done", "CXCHAN", 100)
+	writeAndIndex(t, v, d, healthy)
+
+	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
+	require.NoError(t, err, "a corrupted candidate does not abort the pass")
+	assert.Equal(t, 1, evicted, "the healthy cold episode is still evicted")
+
+	got, err := v.ReadNode(healthy.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "tombstone", got.Status)
 }
 
 // TestEvictOwnerTouchedKept: an owner-edited episode (its file carried a
@@ -245,7 +265,7 @@ func TestEvictOwnerTouchedKept(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, touched, "OwnerEdited must see the owner-edit commit")
 
-	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20)
+	evicted, err := EvictEpisodes(v, d, 45, 0.5, 20, t.Logf)
 	require.NoError(t, err)
 	assert.Equal(t, 0, evicted, "owner-touched episode is kept (bonus lifts score)")
 }
