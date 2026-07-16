@@ -19,6 +19,9 @@ func TestModelForSource(t *testing.T) {
 		"tracks.extract_batch", "people.reduce", "people.team",
 		"briefing.daily", "", "unknown.source",
 		prompts.InboxCompose, prompts.InboxSituationCard,
+		// Phase-3 memory semantic tier routes strong (absence from the
+		// light-tier switch above).
+		prompts.MemoryEntityRewrite, prompts.MemoryReviseBeliefs, prompts.MemoryRenderMap,
 	}
 	for _, src := range sonnet {
 		if got := ModelForSource(src); got != ModelSonnet {

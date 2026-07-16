@@ -36,6 +36,9 @@ var Defaults = map[string]string{
 	InboxSituationCard:         defaultInboxSituationCard,
 	MemoryExtractEpisodes:      defaultMemoryExtractEpisodes,
 	MemoryExtractEpisodesBatch: defaultMemoryExtractEpisodesBatch,
+	MemoryEntityRewrite:        defaultMemoryEntityRewrite,
+	MemoryReviseBeliefs:        defaultMemoryReviseBeliefs,
+	MemoryRenderMap:            defaultMemoryRenderMap,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -70,6 +73,9 @@ var AllIDs = []string{
 	InboxSituationCard,
 	MemoryExtractEpisodes,
 	MemoryExtractEpisodesBatch,
+	MemoryEntityRewrite,
+	MemoryReviseBeliefs,
+	MemoryRenderMap,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -106,6 +112,9 @@ var DefaultVersions = map[string]int{
 	InboxSituationCard:         1, // v1: context packet for one dashboard situation
 	MemoryExtractEpisodes:      1, // v1: raw-text episode extraction for the memory vault
 	MemoryExtractEpisodesBatch: 2, // v2: "===" block delimiter instead of "---" (a leading "--" broke claude CLI's argv flag parsing)
+	MemoryEntityRewrite:        1, // v1: strong-tier entity page rewrite (What/Current/Facts + copied provenance markers)
+	MemoryReviseBeliefs:        1, // v1: strong-tier per-belief op proposals (confirm/weaken/shake/retire/propose-new)
+	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -144,6 +153,9 @@ var Descriptions = map[string]string{
 	InboxSituationCard:         "Dashboard: context packet for one situation",
 	MemoryExtractEpisodes:      "Memory: extract noteworthy episodes from one channel window of raw messages",
 	MemoryExtractEpisodesBatch: "Memory: extract noteworthy episodes from several low-activity channel windows in one call",
+	MemoryEntityRewrite:        "Memory: rewrite an entity page's What/Current/Facts from new episodes (strong tier)",
+	MemoryReviseBeliefs:        "Memory: propose per-belief revision ops from new episodes (strong tier; code disposes)",
+	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1336,3 +1348,69 @@ Rules:
 - copy ts values EXACTLY from the input, never invent or adjust them; every ref must point at one of the messages shown to you, under the channel_id of the block it came from.
 - an episode's refs must all belong to the SAME channel block — never combine messages from two different channels into one episode.
 - most windows are routine chatter and contain no episodes: return [] for those; a channel with nothing noteworthy simply contributes no episodes.`
+
+// defaultMemoryEntityRewrite is the strong-tier entity-page rewrite for the
+// secretary memory vault (memory.entity_rewrite — routed to the default/strong
+// model by being ABSENT from the light-tier switch in internal/digest/models.go
+// and internal/codex/models.go). Arg: the language directive. The model
+// proposes new What/Current/Facts prose plus the provenance markers it cites;
+// code disposes — every marker is re-validated against the supplied episodes
+// (MEM-01 discipline), and ## Links / ## Open loops are maintained mechanically,
+// never by the model.
+const defaultMemoryEntityRewrite = `%s
+
+You are the memory consolidator of a workplace secretary. You maintain the durable page for ONE entity — a person, a channel, or a project. New episodes about it have been observed; rewrite its prose so the page reflects them while staying faithful to the evidence you were shown.
+
+You receive the entity's current page (its ## What, ## Current, ## Facts, ## Links, and ## Open loops sections), then the new episodes' ## Story and ## Outcome sections, then an optional one-line background. Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"what": "1-2 sentence description of who or what this entity is", "current": "2-4 sentence summary of the current state, most recent developments first", "facts": ["a durable fact worth keeping", "..."], "markers": [{"channel_id": "channel id", "ts": "message ts"}]}
+
+Rules:
+- markers: cite ONLY provenance refs (channel_id + ts) that appear verbatim in the episodes shown to you; copy them EXACTLY and never invent, adjust, or infer one. Any claim you cannot back with a supplied ref must not be stated as fact.
+- facts: keep every existing ## Facts bullet you cannot positively contradict, and add newly established durable facts; do NOT drop a fact merely because it is old.
+- leave ## Links and ## Open loops alone — they are maintained mechanically and anything you emit for them is ignored.
+- prefer specifics over routine chatter; keep every section tight.`
+
+// defaultMemoryReviseBeliefs is the strong-tier belief-revision proposer
+// (memory.revise_beliefs — strong route by absence from the light switch). The
+// model proposes one op per belief with cited evidence; Go's rank/hysteresis
+// math (MEM-08) decides whether each op is applied and computes the resulting
+// confidence/status. Arg: the language directive.
+const defaultMemoryReviseBeliefs = `%s
+
+You are the memory consolidator of a workplace secretary. You review the secretary's standing BELIEFS about people and projects against newly observed episodes and PROPOSE how each belief should change. You only propose; separate code decides whether a proposal is applied and recomputes confidence — never assume your proposal takes effect.
+
+You receive the existing beliefs (each with its statement, current confidence, and an evidence digest), then the new episodes. Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"ops": [{"belief_id": "id of an existing belief, or empty for propose-new", "op": "confirm|weaken|shake|retire|propose-new", "statement": "the belief text (required only for propose-new)", "subject": "entity id the belief is about (propose-new only)", "evidence": [{"channel_id": "channel id", "ts": "message ts"}], "rationale": "one sentence tying the cited evidence to the op"}]}
+
+Ops:
+- confirm: the new evidence supports the belief as stated.
+- weaken: the evidence softens the belief without contradicting it.
+- shake: an episode outcome directly contradicts the belief statement.
+- retire: the belief is no longer true and should be closed.
+- propose-new: assert a new belief the episodes justify (it starts at low confidence until later runs confirm it).
+
+Rules:
+- evidence: cite ONLY refs (channel_id + ts) that appear verbatim in the episodes shown to you; copy them EXACTLY and never invent one. An op whose evidence cannot be found in the input is discarded by the code.
+- propose at most ONE op per existing belief, and omit beliefs the new episodes say nothing about.
+- do NOT restate confidence numbers or statuses — the code computes them from your op and its own rank math.`
+
+// defaultMemoryRenderMap is the strong-tier hot world-map summary
+// (memory.render_map — strong route by absence from the light switch). Output
+// is compact markdown, not JSON; the ~2 KB budget is a hard CODE-side
+// truncation after render (the prompt cannot be trusted to obey a byte cap),
+// so the instruction only asks for brevity. Arg: the language directive.
+const defaultMemoryRenderMap = `%s
+
+You are the memory consolidator of a workplace secretary. You write the HOT world map — a tiny at-a-glance briefing the secretary reads first, pointing to the fuller index for anything not shown.
+
+You receive the top entities' ## Current excerpts (ordered by importance), the open episodes, and the active beliefs. Respond with a compact MARKDOWN hot summary (NOT JSON), structured as:
+- a short "# World map" heading line;
+- 5-8 area bullets, one line each: an entity or theme and its current state;
+- a short "Beliefs" list of the few most notable active beliefs, each with its confidence;
+- a final pointer line telling the reader to use recall or the full index for anything not shown here.
+
+Rules:
+- aim for WELL under 2 KB of text; be ruthlessly brief — one line per area, no paragraphs. A hard byte cap is enforced afterwards in code, so anything over budget is truncated and lost — stay small.
+- include only what is currently live; omit resolved or stale items.
+- do NOT invent entities, beliefs, or facts that are not in the input.
+- plain markdown only — no JSON, no code fences.`
