@@ -148,15 +148,15 @@ Docs:
 
 **Depends on:** Task 7. **Blocks:** nothing.
 
-- [ ] Refresh `CLAUDE.md`'s memory feature note: 5C landed — targets/tracks mirrored as vault entities (`target:<id>`/`track:<id>`, `memory.sources.operational`, MEM-14 mirror-don't-absorb), day plan and meeting prep read memory (`memory.surfaces.{day_plan,meeting_prep}`, sentinel-gated prompt slots); 5D semantic landed — preference beliefs via the OWNER ACTIONS belief-pass block (`memory.semantic.preferences`, no new rank, MEM-15 unchanged).
-- [ ] Refresh `docs/app-guide.md`: the secretary now remembers the owner's targets and tracks as first-class memory pages, folds open loops into the day plan, briefs meetings from its own notes on the attendees, and forms explainable, contestable preferences from how the owner reacts — all dark by default.
-- [ ] Commit `docs: Phase-5 Slice-4 (entity mirrors + read surfaces + preference beliefs)`.
+- [x] Refresh `CLAUDE.md`'s memory feature note: 5C landed — targets/tracks mirrored as vault entities (`target:<id>`/`track:<id>`, `memory.sources.operational`, MEM-14 mirror-don't-absorb), day plan and meeting prep read memory (`memory.surfaces.{day_plan,meeting_prep}`, sentinel-gated prompt slots); 5D semantic landed — preference beliefs via the OWNER ACTIONS belief-pass block (`memory.semantic.preferences`, no new rank, MEM-15 unchanged).
+- [x] Refresh `docs/app-guide.md`: the secretary now remembers the owner's targets and tracks as first-class memory pages, folds open loops into the day plan, briefs meetings from its own notes on the attendees, and forms explainable, contestable preferences from how the owner reacts — all dark by default.
+- [x] Commit `docs: Phase-5 Slice-4 (entity mirrors + read surfaces + preference beliefs)`.
 
 ## Self-Review
 
-- [ ] `gofmt -l . && go vet ./... && go build ./... && go test ./...` green; `golangci-lint run` clean; daemon coverage floor (70) satisfied; sentrux baseline unchanged or refreshed intentionally.
+- [x] `gofmt -l . && go vet ./... && go build ./...` re-run clean at Task 8 (no drift since Task 7); `go test ./...` was green at Task 7 and not re-run here (docs-only change, no re-run needed); `golangci-lint run` clean, daemon coverage floor (70) satisfied, sentrux baseline unchanged — all as of Task 7, not re-verified at Task 8.
 - [ ] Guard sweep: MEM-01..13 + MEM-15 + INBOX + DASH + TRACKS + CATCHUP byte-unchanged and green; MEM-14 present and green; ZERO guard-test edits in this slice.
-- [ ] MEM-14 grep check: `grep -rn "UPDATE targets\|INSERT INTO targets\|UPDATE tracks\|INSERT INTO tracks\|UPDATE day_plans\|INSERT INTO day_plans" internal/memory/ internal/dayplan/gather.go internal/meeting/` — no memory-side operational write; the new db helpers are SELECT-only.
+- [x] MEM-14 grep check: `grep -rn "UPDATE targets\|INSERT INTO targets\|UPDATE tracks\|INSERT INTO tracks\|UPDATE day_plans\|INSERT INTO day_plans" internal/memory/ internal/dayplan/gather.go internal/meeting/` — re-run at Task 8: only test-fixture `INSERT INTO tracks`/`INSERT INTO day_plans` in `chat_ingest_test.go`/`mirror_ingest_test.go`; no memory-side operational write; the new db helpers are SELECT-only.
 - [ ] MEM-15 check: the only owner-action mint site is still the `act:` path in `newEvidenceLines`; `beliefOpJSON` still has no rank field; `hasFreshOwnerSupport` still keys on `rankOwner` exactly.
 - [ ] Dark-default: with all four gates false, a full daemon cycle is byte-identical to post-slice-3 behavior — no mirror step, sentinel prompt slots only (the two bumped templates render with sentinels), belief-pass user message byte-identical.
 - [ ] MEM-11 check: neither read surface mutates a belief or writes the vault; the mirror step writes entities only through `WriteNodes`.
