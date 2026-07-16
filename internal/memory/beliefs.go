@@ -133,9 +133,9 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	episodes := p.subjectEpisodes(rewrittenSubjects)
 	inputSet := episodeRefSet(episodes)
 
-	// Admit the staged owner chat refs into the input set so a model op citing
-	// one validates (Task 3) instead of being dropped as invented (MEM-08); the
-	// verbatim statements render into the prompt's OWNER SAID block.
+	// Admit the staged owner chat + act refs into the input set so a model op
+	// citing one validates (Task 3 / MEM-15) instead of being dropped as invented
+	// (MEM-08); the verbatim statements render into the prompt's OWNER SAID block.
 	var statements []ownerStatement
 	if staged != nil {
 		for ref := range staged.refs {
@@ -144,7 +144,18 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 		statements = staged.statements
 	}
 
-	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, knownSubjects, episodes, statements)
+	// OWNER ACTIONS (Phase-5 5D, dark behind memory.semantic.preferences): the
+	// staged mechanical owner interactions plus per-subject engagement aggregates,
+	// so the model can form preference beliefs. The block is built only when the
+	// gate is on AND actions were staged — otherwise ownerActions is nil and the
+	// prompt is byte-identical to the pre-preferences behavior (the block is
+	// absent, not empty-rendered).
+	var ownerActions *ownerActionsBlock
+	if p.cfg.Semantic.Preferences && staged != nil && len(staged.actions) > 0 {
+		ownerActions = p.buildOwnerActionsBlock(staged.actions)
+	}
+
+	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, knownSubjects, episodes, statements, ownerActions)
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reviseSource), system, user, "")
 	usage = u // single call — the reply's usage is the step's usage
 	if gerr != nil {
@@ -484,12 +495,50 @@ func (p *Pipeline) subjectEpisodes(subjects []string) []Node {
 	return eps
 }
 
+// ownerActionsBlock is the prebuilt OWNER ACTIONS render for the belief pass
+// (Phase-5 5D): one line per staged owner interaction and one engagement
+// aggregate per distinct subject. Built only behind memory.semantic.preferences;
+// a nil block renders nothing (gate-off byte-identity).
+type ownerActionsBlock struct {
+	lines      []string // "act:<table>:<id> <ts>: <bullet> (re <subject ids>)"
+	engagement []string // "<subject id>: engaged N, dismissed M"
+}
+
+// buildOwnerActionsBlock renders the staged owner actions plus per-subject
+// engagement aggregates (p.db.GetEngagement) for the OWNER ACTIONS prompt block.
+// Subjects are gathered in first-seen order across the actions; a GetEngagement
+// error drops that subject's aggregate line (logged) and never fails the pass.
+func (p *Pipeline) buildOwnerActionsBlock(actions []stagedAction) *ownerActionsBlock {
+	oab := &ownerActionsBlock{}
+	seen := map[string]bool{}
+	var subjects []string
+	for _, a := range actions {
+		oab.lines = append(oab.lines, fmt.Sprintf("%s %d: %s (re %s)", a.ref, a.tsUnix, a.text, strings.Join(a.subjects, ", ")))
+		for _, s := range a.subjects {
+			if !seen[s] {
+				seen[s] = true
+				subjects = append(subjects, s)
+			}
+		}
+	}
+	for _, s := range subjects {
+		engaged, dismissed, err := p.db.GetEngagement(s)
+		if err != nil {
+			p.logf("memory: beliefs: owner-actions engagement %s: %v — line dropped", s, err)
+			continue
+		}
+		oab.engagement = append(oab.engagement, fmt.Sprintf("%s: engaged %d, dismissed %d", s, engaged, dismissed))
+	}
+	return oab
+}
+
 // buildReviseBeliefsPrompt renders the belief pass call: the language directive
 // fills the template's single %s slot; the user message digests the existing
 // beliefs (id/statement/confidence/evidence), the known subjects a propose-new
 // op may name, then the new episodes. It never opens with a "-"/"--" line (the
-// claude-CLI argv gotcha).
-func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, knownSubjects, episodes []Node, statements []ownerStatement) (system, user string) {
+// claude-CLI argv gotcha). ownerActions is nil unless memory.semantic.preferences
+// staged an OWNER ACTIONS block — nil renders nothing (gate-off byte-identity).
+func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, knownSubjects, episodes []Node, statements []ownerStatement, ownerActions *ownerActionsBlock) (system, user string) {
 	system = fmt.Sprintf(tmpl, prompts.Directive(lang))
 
 	var b strings.Builder
@@ -523,6 +572,24 @@ func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, knownSubjects, episode
 		for _, s := range statements {
 			fmt.Fprintf(&b, "chat:%d %d: %s\n", s.conversationID, s.turnTS, s.text)
 		}
+	}
+	// OWNER ACTIONS: this run's mechanical owner interactions (Phase-5 5D, dark
+	// behind memory.semantic.preferences). These are ranked owner-action — weaker
+	// than the owner's own words — so the code mints owner-action rank for a cited
+	// `act:<table>:<id> <ts>` ref; the model only chooses the direction. A nil
+	// block renders nothing, keeping gate-off output byte-identical.
+	if ownerActions != nil && len(ownerActions.lines) > 0 {
+		b.WriteString("\nOWNER ACTIONS (this run's mechanical owner interactions, ranked owner-action — weaker than the owner's words; cite as `act:<table>:<id> <ts>` to weigh a belief):\n\n")
+		for _, l := range ownerActions.lines {
+			b.WriteString(l + "\n")
+		}
+		if len(ownerActions.engagement) > 0 {
+			b.WriteString("\nEngagement so far (per subject — trend context the single actions cannot carry):\n")
+			for _, e := range ownerActions.engagement {
+				b.WriteString(e + "\n")
+			}
+		}
+		b.WriteString("\nForming a preference belief about the owner (\"the owner does / does not …\") is an ordinary propose-new: its `subject` MUST be one of the EXACT Known-subject ids above, copied verbatim. Do NOT over-read a single dismissal — prefer patterns the engagement counts support.\n")
 	}
 	b.WriteString("\nNew episodes:\n\n")
 	for _, ep := range episodes {

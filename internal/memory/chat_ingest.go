@@ -23,20 +23,37 @@ func (s ownerStatement) refKey() string {
 	return fmt.Sprintf("%s%d %d", chatRefPrefix, s.conversationID, s.turnTS)
 }
 
+// stagedAction is one mechanical owner interaction (Phase-5 5D) folded for THIS
+// run's belief pass: its "act:<table>:<id>" evidence ref, the interaction ts
+// (whole unix seconds, rendered next to the ref so the model may cite
+// "act:<table>:<id> <ts>"), the human-readable bullet describing the action, and
+// the memory entity ids the interaction's situation maps to. Rendered into the
+// OWNER ACTIONS prompt block only behind memory.semantic.preferences.
+type stagedAction struct {
+	ref      string
+	tsUnix   int64
+	text     string
+	subjects []string
+}
+
 // stagedChat is the owner Discuss evidence ingestChatStatements folded for THIS
 // run's belief pass: the verbatim statements for the OWNER SAID prompt block,
-// the chat: ref keys to admit into the belief-pass input set, and the union of
-// entity ids to widen the candidate scope by.
+// the chat:/act: ref keys to admit into the belief-pass input set, the union of
+// entity ids to widen the candidate scope by, and — from the Phase-5 act path —
+// the owner-action descriptions rendered into the OWNER ACTIONS block.
 type stagedChat struct {
 	statements []ownerStatement
+	actions    []stagedAction
 	refs       map[string]bool
 	subjects   map[string]bool
 }
 
 // mergeStaged unions two staged-input sets for the belief pass — the Phase-4
 // chat turns and the Phase-5 act: interaction refs. Either may be nil. The chat
-// set (a) is mutated in place and returned; only chat turns carry verbatim
-// statements (the act path stages refs + subjects only, never OWNER SAID prose).
+// set (a) is mutated in place and returned. Only chat turns carry verbatim OWNER
+// SAID statements; the act path carries refs + subjects PLUS owner-action
+// descriptions (the OWNER ACTIONS block, rendered only behind
+// memory.semantic.preferences).
 func mergeStaged(a, b *stagedChat) *stagedChat {
 	if a == nil {
 		return b
@@ -51,6 +68,7 @@ func mergeStaged(a, b *stagedChat) *stagedChat {
 		a.subjects[s] = true
 	}
 	a.statements = append(a.statements, b.statements...)
+	a.actions = append(a.actions, b.actions...)
 	return a
 }
 

@@ -176,6 +176,13 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 			sc.subjects[s] = true
 			bumps[ref+"\x00"+s] = db.EngagementBump{NodeID: s, Engaged: engaged, At: stamp}
 		}
+		// Stage the action description for the OWNER ACTIONS belief-pass block
+		// (rendered only behind memory.semantic.preferences). tsUnix is whole unix
+		// seconds, so parsing it back to int64 for the render matches the ref key
+		// exactly. A parse failure (never expected — the callers format it with
+		// strconv.FormatInt) leaves ts 0, harmless.
+		ts, _ := strconv.ParseInt(tsUnix, 10, 64)
+		sc.actions = append(sc.actions, stagedAction{ref: ref, tsUnix: ts, text: bullet, subjects: subjects})
 		return true, nil
 	}
 

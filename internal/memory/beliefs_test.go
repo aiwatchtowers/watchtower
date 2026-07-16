@@ -470,9 +470,9 @@ func TestReviseBeliefsNonOwnerDowngradeNoDispute(t *testing.T) {
 // is eligible.
 func TestBuildReviseBeliefsPromptListsKnownSubjects(t *testing.T) {
 	subjects := []Node{{ID: "ent_01KNOWNSUBJECT000000000001", Title: "Alice"}}
-	_, user := buildReviseBeliefsPrompt("%s", "en", nil, subjects, nil, nil)
+	_, user := buildReviseBeliefsPrompt("%s", "en", nil, subjects, nil, nil, nil)
 	assert.Contains(t, user, "ent_01KNOWNSUBJECT000000000001: Alice")
 
-	_, empty := buildReviseBeliefsPrompt("%s", "en", nil, nil, nil, nil)
+	_, empty := buildReviseBeliefsPrompt("%s", "en", nil, nil, nil, nil, nil)
 	assert.Contains(t, empty, "none — do not propose-new this run")
 }
