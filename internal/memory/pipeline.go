@@ -275,35 +275,21 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 		return nil
 	}
 
-	maxWin := p.cfg.MaxWindowMessages
-	if maxWin <= 0 {
-		// Floor-guard against an explicit max_window_messages: 0 in config —
-		// the poison-window bound must not be silently disabled.
-		maxWin = 200
-	}
-	windows := buildWindows(msgs, maxWin)
+	// Floor-guards: a non-positive config value means "unset", so the hard
+	// default applies (e.g. an explicit max_window_messages: 0 must not
+	// silently disable the poison-window bound).
+	windows := buildWindows(msgs, orDefault(p.cfg.MaxWindowMessages, 200))
 	stats.Messages = len(msgs)
 	stats.Windows = len(windows)
 	done := make([]bool, len(windows))
 	current := wm
 
-	maxCh := p.cfg.BatchMaxChannels
-	if maxCh <= 0 {
-		maxCh = 20
-	}
-	maxBatchMsg := p.cfg.BatchMaxMessages
-	if maxBatchMsg <= 0 {
-		maxBatchMsg = 1500
-	}
-	batches := groupWindowsIntoBatches(windows, maxCh, maxBatchMsg)
+	batches := groupWindowsIntoBatches(windows,
+		orDefault(p.cfg.BatchMaxChannels, 20), orDefault(p.cfg.BatchMaxMessages, 1500))
 
 	for bi, idxs := range batches {
 		if ctx.Err() != nil {
-			left := 0
-			for _, b := range batches[bi:] {
-				left += len(b)
-			}
-			p.logf("memory: extraction interrupted, %d windows left for the next run", left)
+			p.logf("memory: extraction interrupted, %d windows left for the next run", remainingWindows(batches[bi:]))
 			break
 		}
 		start := time.Now()
@@ -327,45 +313,77 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, acc *usageAccumu
 			}
 			stats.Episodes += episodes
 			stats.RefsRejected += rejected
-			// MEM-04: the watermark moves only after this batch's vault
-			// commit succeeded, and never past a message that belongs to a
-			// failed or still-pending window.
-			if safe, ok := safeWatermark(windows, done); ok && safe > current {
-				if err := p.db.SetMemoryWatermark(safe); err != nil {
-					p.logf("memory: set watermark: %v", err)
-				} else {
-					current = safe
-				}
-			}
+			current = p.advanceWatermark(windows, done, current)
 		}
-		if runID != 0 {
-			var u digest.Usage
-			if usage != nil {
-				u = *usage
-			}
-			// Token usage is recorded once per batch (the API call is
-			// per-batch, not per-channel — splitting it across channels would
-			// be a fabricated attribution). One pipeline_steps row per batch;
-			// channel_id is only meaningful for a singleton batch (the common
-			// case when batching is disabled or a channel is too busy to
-			// share a call) and stays empty for a genuine multi-channel batch.
-			pFrom, pTo := batchPeriod(windows, idxs)
-			var channelID string
-			if len(idxs) == 1 {
-				channelID = windows[idxs[0]].ChannelID
-			}
-			if err := p.db.InsertPipelineStep(db.PipelineStep{
-				RunID: runID, Step: bi + 1, Total: len(batches), Status: status,
-				ChannelID: channelID, ChannelName: batchChannelNames(windows, idxs),
-				InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalAPITokens: u.TotalAPITokens,
-				MessageCount: batchMessageCount(windows, idxs), PeriodFrom: &pFrom, PeriodTo: &pTo,
-				DurationSeconds: time.Since(start).Seconds(),
-			}); err != nil {
-				p.logf("memory: record pipeline step: %v", err)
-			}
-		}
+		p.recordBatchStep(runID, bi+1, len(batches), status, windows, idxs, usage, start)
 	}
 	return nil
+}
+
+// orDefault floor-guards a config value: non-positive means "unset", so def
+// applies.
+func orDefault(v, def int) int {
+	if v <= 0 {
+		return def
+	}
+	return v
+}
+
+// remainingWindows counts the windows across the given batches, for the
+// interruption log line.
+func remainingWindows(batches [][]int) int {
+	n := 0
+	for _, b := range batches {
+		n += len(b)
+	}
+	return n
+}
+
+// advanceWatermark moves the extraction watermark to the highest safe point
+// behind the committed windows and returns the possibly-updated value.
+// MEM-04: the watermark moves only after a batch's vault commit succeeded,
+// and never past a message that belongs to a failed or still-pending window.
+func (p *Pipeline) advanceWatermark(windows []runWindow, done []bool, current float64) float64 {
+	safe, ok := safeWatermark(windows, done)
+	if !ok || safe <= current {
+		return current
+	}
+	if err := p.db.SetMemoryWatermark(safe); err != nil {
+		p.logf("memory: set watermark: %v", err)
+		return current
+	}
+	return safe
+}
+
+// recordBatchStep writes one pipeline_steps row for a batch (skipped when the
+// run itself could not be recorded). Token usage is recorded once per batch —
+// the API call is per-batch, not per-channel, and splitting it across
+// channels would be a fabricated attribution. channel_id is only meaningful
+// for a singleton batch (the common case when batching is disabled or a
+// channel is too busy to share a call) and stays empty for a genuine
+// multi-channel batch.
+func (p *Pipeline) recordBatchStep(runID int64, step, total int, status string, windows []runWindow, idxs []int, usage *digest.Usage, start time.Time) {
+	if runID == 0 {
+		return
+	}
+	var u digest.Usage
+	if usage != nil {
+		u = *usage
+	}
+	pFrom, pTo := batchPeriod(windows, idxs)
+	var channelID string
+	if len(idxs) == 1 {
+		channelID = windows[idxs[0]].ChannelID
+	}
+	if err := p.db.InsertPipelineStep(db.PipelineStep{
+		RunID: runID, Step: step, Total: total, Status: status,
+		ChannelID: channelID, ChannelName: batchChannelNames(windows, idxs),
+		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalAPITokens: u.TotalAPITokens,
+		MessageCount: batchMessageCount(windows, idxs), PeriodFrom: &pFrom, PeriodTo: &pTo,
+		DurationSeconds: time.Since(start).Seconds(),
+	}); err != nil {
+		p.logf("memory: record pipeline step: %v", err)
+	}
 }
 
 // groupWindowsIntoBatches groups per-channel windows (already built by
@@ -447,8 +465,16 @@ func batchPeriod(windows []runWindow, idxs []int) (from, to float64) {
 }
 
 // buildWindows groups the (globally ts-ordered) messages into per-channel
-// windows, then orders the windows by their last message ts so the watermark
-// can trail completed windows (see safeWatermark).
+// windows, then orders the windows by their FIRST message ts so the watermark
+// can trail completed windows (see safeWatermark): the bound that caps every
+// advance is the earliest first-ts among still-pending windows, so processing
+// windows in ascending first-ts order lifts that bound as early-starting
+// windows complete. Ordering by last ts instead parks a long-spanning window
+// (early first message, late last message) at the END of the run, and its
+// early first-ts clamps the bound at the run's start — no per-batch advance
+// ever fires and an interrupted run loses every committed batch's progress
+// together (the 2026-07 E2E watermark-loss incident, see
+// docs/specs/memory-e2e-report.md "Second issue found").
 //
 // maxPerWindow bounds one window's message count (memory.max_window_messages)
 // so a single busy channel cannot form one giant prompt that blows the model
@@ -475,9 +501,9 @@ func buildWindows(msgs []db.MemoryExtractMessage, maxPerWindow int) []runWindow 
 		windows[i].tsUnix = append(windows[i].tsUnix, m.TSUnix)
 	}
 	// Stable: same-channel windows keep their chronological order even when
-	// last-ts ties (e.g. a same-second split).
+	// first-ts ties (e.g. a same-second split).
 	sort.SliceStable(windows, func(a, b int) bool {
-		return windows[a].tsUnix[len(windows[a].tsUnix)-1] < windows[b].tsUnix[len(windows[b].tsUnix)-1]
+		return windows[a].tsUnix[0] < windows[b].tsUnix[0]
 	})
 	return windows
 }
@@ -527,20 +553,9 @@ func safeWatermark(windows []runWindow, done []bool) (ts float64, ok bool) {
 // committed (batch isolation, see runExtract).
 func (p *Pipeline) extractBatch(ctx context.Context, runID int64, windows []runWindow, idxs []int) (episodes, rejected, malformed int, usage *digest.Usage, err error) {
 	label := batchChannelNames(windows, idxs)
-	var system, user string
+	system, user, source := p.batchPrompts(windows, idxs)
 	var raw string
-	if len(idxs) == 1 {
-		system, user = buildExtractPrompt(p.getPrompt(prompts.MemoryExtractEpisodes), p.Language, windows[idxs[0]].channelWindow, p.cfg.MaxEpisodesPerWindow)
-		raw, usage, _, err = p.generator.Generate(digest.WithSource(ctx, extractSource), system, user, "")
-	} else {
-		cws := make([]channelWindow, len(idxs))
-		for i, idx := range idxs {
-			cws[i] = windows[idx].channelWindow
-		}
-		maxEpisodes := p.cfg.MaxEpisodesPerWindow * len(idxs)
-		system, user = buildBatchExtractPrompt(p.getPrompt(prompts.MemoryExtractEpisodesBatch), p.Language, cws, maxEpisodes)
-		raw, usage, _, err = p.generator.Generate(digest.WithSource(ctx, extractBatchSource), system, user, "")
-	}
+	raw, usage, _, err = p.generator.Generate(digest.WithSource(ctx, source), system, user, "")
 	if err != nil {
 		return 0, 0, 0, usage, fmt.Errorf("generate: %w", err)
 	}
@@ -601,6 +616,24 @@ func (p *Pipeline) extractBatch(ctx context.Context, runID int64, windows []runW
 		}
 	}
 	return len(kept), rejected, malformed, usage, nil
+}
+
+// batchPrompts renders the extraction prompt for a batch: a single window
+// uses the single-channel prompt/template (memory.extract_episodes, unchanged
+// from v1); several quiet channels share the multi-channel variant
+// (memory.extract_episodes_batch). Returns the WithSource routing tag
+// alongside the rendered prompt pair.
+func (p *Pipeline) batchPrompts(windows []runWindow, idxs []int) (system, user, source string) {
+	if len(idxs) == 1 {
+		system, user = buildExtractPrompt(p.getPrompt(prompts.MemoryExtractEpisodes), p.Language, windows[idxs[0]].channelWindow, p.cfg.MaxEpisodesPerWindow)
+		return system, user, extractSource
+	}
+	cws := make([]channelWindow, len(idxs))
+	for i, idx := range idxs {
+		cws[i] = windows[idx].channelWindow
+	}
+	system, user = buildBatchExtractPrompt(p.getPrompt(prompts.MemoryExtractEpisodesBatch), p.Language, cws, p.cfg.MaxEpisodesPerWindow*len(idxs))
+	return system, user, extractBatchSource
 }
 
 // buildEpisodeNodes turns kept episodes into new episode nodes plus updated

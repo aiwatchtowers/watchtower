@@ -881,6 +881,114 @@ func TestBatchCrossChannelEpisodeRejected(t *testing.T) {
 	}
 }
 
+// TestMemory04_InterruptedRunKeepsCommittedBatchesBehindWatermark reproduces
+// the E2E watermark-loss incident (docs/specs/memory-e2e-report.md, "Second
+// issue found"): a run is interrupted (process kill / AI failure) at its LAST
+// batch after earlier batches already committed to the vault. The committed
+// batches' fully-covered messages must be behind a DURABLY persisted watermark
+// — losing the entire run's advance together means every committed batch is
+// silently re-extracted next run, producing duplicate episode nodes.
+//
+// The incident geometry: one long-spanning window (a channel with a message
+// near the run's start AND its end) plus quiet channels in between. Windows
+// must be ordered so that completing the early-starting windows first lifts
+// safeWatermark's pending-window bound; ordering by LAST ts instead parks the
+// long-spanning window in the final batch, whose early first-ts clamps the
+// bound at the run's start and suppresses every per-batch watermark write.
+func TestMemory04_InterruptedRunKeepsCommittedBatchesBehindWatermark(t *testing.T) {
+	// File-backed DB (not :memory:) so a second, independent connection can
+	// verify the per-batch watermark write is durably on disk — the incident
+	// report doubted WAL durability; this pins the write down at the SQL level.
+	dbPath := filepath.Join(t.TempDir(), "watchtower.db")
+	d, err := db.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	v := newTestVault(t)
+
+	seedWorkspaceRow(t, d)
+	seedUserRow(t, d, "U1ALICE", "alice")
+	seedChannelRow(t, d, "C0SPAN", "spanner")
+	seedChannelRow(t, d, "C1QUIET", "quiet1")
+	seedChannelRow(t, d, "C2QUIET", "quiet2")
+	base := time.Now().Add(-time.Hour).Unix()
+	seedMessageRow(t, d, "C0SPAN", fmt.Sprintf("%d.000001", base), "U1ALICE", "span first")
+	seedMessageRow(t, d, "C1QUIET", fmt.Sprintf("%d.000002", base+60), "U1ALICE", "q1 one")
+	seedMessageRow(t, d, "C1QUIET", fmt.Sprintf("%d.000003", base+70), "U1ALICE", "q1 two")
+	seedMessageRow(t, d, "C2QUIET", fmt.Sprintf("%d.000004", base+120), "U1ALICE", "q2 one")
+	seedMessageRow(t, d, "C2QUIET", fmt.Sprintf("%d.000005", base+130), "U1ALICE", "q2 two")
+	seedMessageRow(t, d, "C0SPAN", fmt.Sprintf("%d.000006", base+300), "U1ALICE", "span last")
+
+	// Batch 1 commits an episode to the vault; the SECOND call dies mid-flight
+	// (the in-test analogue of the incident's SIGKILL during a later batch's
+	// AI call — everything written before it must already be durable).
+	tsQ1 := fmt.Sprintf("%d.000002", base+60)
+	killed := false
+	gen := &fakeGen{reply: func(string) (string, error) {
+		if killed {
+			return "", fmt.Errorf("process killed mid-flight")
+		}
+		killed = true
+		return episodeJSON("Quiet channel decision", "C1QUIET", tsQ1, "C1QUIET"), nil
+	}}
+	cfg := batchTestConfig()
+	cfg.BatchMaxChannels = 2
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err, "batch isolation: the interrupted batch never fails the run")
+	require.Len(t, gen.calls, 2, "geometry must yield exactly two batches")
+	assert.Equal(t, 1, stats.Episodes, "batch 1's episode committed to the vault before the interruption")
+
+	// The heart of the incident: batch 1 committed, so the watermark must
+	// already trail its fully-covered messages (q1 two, base+70) instead of
+	// sitting at the pre-run value until the whole run finishes.
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+70), wm,
+		"committed batches must advance the watermark before the run ends — losing the whole run's advance re-extracts every committed batch")
+
+	// Durability: a second, independent connection to the same file sees the
+	// advance (WAL + synchronous=NORMAL survives an app-level kill; the write
+	// is an autocommit UPDATE, so once Exec returned it is on disk).
+	d2, err := db.Open(dbPath)
+	require.NoError(t, err)
+	wm2, err := d2.MemoryWatermark()
+	require.NoError(t, d2.Close())
+	require.NoError(t, err)
+	assert.Equal(t, wm, wm2, "watermark advance must be durable across connections")
+
+	// Next run: messages behind the watermark are NOT re-extracted (no
+	// duplicate episodes for committed work); the interrupted batch and the
+	// spanner's uncovered tail (span last, above the watermark) come back.
+	firstRunCalls := len(gen.calls)
+	killed = false
+	gen.reply = func(string) (string, error) { return "[]", nil }
+	_, err = p.Run(context.Background())
+	require.NoError(t, err)
+	rerun := strings.Join(gen.calls[firstRunCalls:], "\n")
+	assert.NotContains(t, rerun, "span first", "message behind the watermark must not be re-extracted")
+	assert.NotContains(t, rerun, "q1 one", "committed batch must not be re-extracted")
+	assert.NotContains(t, rerun, "q1 two", "committed batch must not be re-extracted")
+	assert.Contains(t, rerun, "q2 one", "interrupted batch is re-extracted (MEM-04 freeze)")
+	assert.Contains(t, rerun, "span last", "uncovered tail above the watermark is re-extracted (duplicates tolerated over skips)")
+}
+
+// TestBuildWindowsOrdersByFirstTS: windows are processed in ascending
+// first-message order so that safeWatermark's pending-window bound rises as
+// early-starting windows complete — the property that makes per-batch
+// watermark advances possible at all (see the incident test above).
+func TestBuildWindowsOrdersByFirstTS(t *testing.T) {
+	msgs := []db.MemoryExtractMessage{
+		{ChannelID: "CB", ChannelName: "b", TS: "1.000001", TSUnix: 1, Author: "a", Text: "b first"},
+		{ChannelID: "CA", ChannelName: "a", TS: "5.000002", TSUnix: 5, Author: "a", Text: "a only"},
+		{ChannelID: "CB", ChannelName: "b", TS: "10.000003", TSUnix: 10, Author: "a", Text: "b last"},
+	}
+	windows := buildWindows(msgs, 0)
+	require.Len(t, windows, 2)
+	assert.Equal(t, "CB", windows[0].ChannelID, "the long-spanning window starts earliest and must be processed first")
+	assert.Equal(t, "CA", windows[1].ChannelID)
+}
+
 // TestBatchOneDegenerateChannelFailsWholeBatch: a batch mixing one channel's
 // healthy reply with another's schema-degenerate one must not let the
 // degenerate channel's malformed episode slip through uncounted while the

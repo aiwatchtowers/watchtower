@@ -144,7 +144,7 @@ enum TargetQueries {
                 WHERE status IN ('todo', 'in_progress', 'blocked')
                 AND due_date != '' AND due_date >= ? AND due_date < ?
                 """,
-            arguments: [today, today + "T23:59"]
+            arguments: [today, today + "T24:00"]
         ) ?? 0
         let highPriority = try Int.fetchOne(
             db,
