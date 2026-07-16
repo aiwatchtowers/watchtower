@@ -501,6 +501,60 @@ func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
 	}
 }
 
+// TestMigration00021MemoryPhase5Slice2 covers the Slice-2 Task 2 change: the
+// calendar episode-build watermark on workspace (defaults 0), a FOURTH
+// independent memory watermark alongside memory_last_extracted_ts (Slack),
+// memory_gmail_last_extracted_ts (Gmail), and memory_last_interaction_id (5D
+// floor). Additive ALTER TABLE ADD COLUMN only — no new table, no CHECK
+// change.
+func TestMigration00021MemoryPhase5Slice2(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = ?`, "memory_calendar_last_extracted_ts").Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("workspace.memory_calendar_last_extracted_ts missing (count=%d err=%v)", n, err)
+	}
+
+	if _, err := database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	var calTS float64
+	if err := database.QueryRow(
+		`SELECT memory_calendar_last_extracted_ts FROM workspace WHERE id = 'T1'`,
+	).Scan(&calTS); err != nil {
+		t.Fatalf("reading calendar watermark default: %v", err)
+	}
+	if calTS != 0 {
+		t.Fatalf("calendar watermark default = %v, want 0", calTS)
+	}
+}
+
+// TestMemoryPhase5Slice2MigrationDownUpCycle: 00021's Down drops its
+// ALTER-added column (precedent: 00017-20's Down), so a down;up cycle is
+// clean.
+func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "phase5-slice2-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	if _, err := d.Exec(`UPDATE workspace SET memory_calendar_last_extracted_ts = 0`); err != nil {
+		t.Errorf("memory_calendar_last_extracted_ts missing after cycle: %v", err)
+	}
+}
+
 func TestFTS5TableExists(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

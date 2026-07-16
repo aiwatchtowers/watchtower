@@ -751,6 +751,37 @@ func (db *DB) SetMemoryGmailWatermark(ts float64) error {
 	return nil
 }
 
+// MemoryCalendarWatermark returns the unix ts of the last ended calendar
+// event fully folded into an episode by the mechanical calendar
+// past-event->episode builder (memory.sources.calendar), mirroring
+// MemoryGmailWatermark. Deliberately a FOURTH, independent watermark
+// alongside memory_last_extracted_ts (Slack extraction),
+// memory_gmail_last_extracted_ts (Gmail extraction), and
+// memory_last_interaction_id (5D interaction-ingest floor) — see 00021. A
+// fresh workspace without its singleton row reads as 0.
+func (db *DB) MemoryCalendarWatermark() (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT COALESCE(memory_calendar_last_extracted_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting memory calendar watermark: %w", err)
+	}
+	return ts, nil
+}
+
+// SetMemoryCalendarWatermark advances the calendar episode-build watermark
+// (see MemoryCalendarWatermark). The calendar builder advances this only
+// behind fully-committed event episodes (MEM-04, adapted), never past an
+// un-built event.
+func (db *DB) SetMemoryCalendarWatermark(ts float64) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_calendar_last_extracted_ts = ?`, ts); err != nil {
+		return fmt.Errorf("setting memory calendar watermark: %w", err)
+	}
+	return nil
+}
+
 // GmailExtractMessage is one gmail_messages row fed to the Gmail thread→episode
 // extractor. TSUnix is internal_date decoded to whole unix seconds (the Gmail
 // sync stores internal_date as an RFC3339 string, NOT the raw ms-epoch API

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
     memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0,  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
     memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00020)
-    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00020)
+    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00020)
+    memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00021)
 );
 
 -- Users

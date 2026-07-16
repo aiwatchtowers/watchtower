@@ -312,6 +312,10 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 	// Phase-5 slice-1 sources: dark by default, independently gated.
 	assert.False(t, cfg.Memory.Sources.Gmail, "gmail source off by default")
 	assert.False(t, cfg.Memory.Sources.Actions, "actions source off by default")
+
+	// Phase-5 slice-2 sources: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Sources.Calendar, "calendar source off by default")
+	assert.False(t, cfg.Memory.Sources.Chats, "chats source off by default")
 }
 
 func TestMemorySourcesConfig_FromYAML(t *testing.T) {
@@ -320,6 +324,8 @@ memory:
   sources:
     gmail: true
     actions: true
+    calendar: true
+    chats: true
 `
 	path := writeTestConfig(t, yaml)
 	cfg, err := Load(path)
@@ -327,6 +333,8 @@ memory:
 
 	assert.True(t, cfg.Memory.Sources.Gmail)
 	assert.True(t, cfg.Memory.Sources.Actions)
+	assert.True(t, cfg.Memory.Sources.Calendar)
+	assert.True(t, cfg.Memory.Sources.Chats)
 }
 
 func TestMemorySurfacesConfig_FromYAML(t *testing.T) {

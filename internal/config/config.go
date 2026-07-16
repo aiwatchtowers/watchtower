@@ -223,8 +223,10 @@ type MemorySurfacesConfig struct {
 // its annotations + engagement land even with the semantic tier off (the staged
 // act: refs are simply unused then). All default false (dark by default).
 type MemorySourcesConfig struct {
-	Gmail   bool `mapstructure:"gmail"`   // Gmail thread->episode extractor + sender->person seeding (default: false)
-	Actions bool `mapstructure:"actions"` // mechanical interaction ingest (owner-action evidence, engagement aggregates), its own Run step (default: false)
+	Gmail    bool `mapstructure:"gmail"`    // Gmail thread->episode extractor + sender->person seeding (default: false)
+	Actions  bool `mapstructure:"actions"`  // mechanical interaction ingest (owner-action evidence, engagement aggregates), its own Run step (default: false)
+	Calendar bool `mapstructure:"calendar"` // Phase-5 slice-2: mechanical past-event->episode builder + recurring-series seeding (default: false)
+	Chats    bool `mapstructure:"chats"`    // Phase-5 slice-2: generalizes internal-dialogs ingest to target/track Discuss chats + the "remember this" command (default: false)
 }
 
 type Config struct {
@@ -337,6 +339,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.surfaces.reflection", false)
 	v.SetDefault("memory.sources.gmail", false) // Phase-5 slice-1 sources dark by default
 	v.SetDefault("memory.sources.actions", false)
+	v.SetDefault("memory.sources.calendar", false) // Phase-5 slice-2 sources dark by default
+	v.SetDefault("memory.sources.chats", false)
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

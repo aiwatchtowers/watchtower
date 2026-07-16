@@ -1044,6 +1044,36 @@ func TestMemoryGmailWatermarkRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMemoryCalendarWatermarkRoundTrip: the calendar episode-build watermark
+// (Task 2, migration 00021) defaults to 0 on a fresh workspace and persists
+// after SetMemoryCalendarWatermark, mirroring MemoryGmailWatermark/
+// SetMemoryGmailWatermark — a FOURTH, independent memory watermark.
+func TestMemoryCalendarWatermarkRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	ts, err := db.MemoryCalendarWatermark()
+	if err != nil {
+		t.Fatalf("MemoryCalendarWatermark on fresh workspace: %v", err)
+	}
+	if ts != 0 {
+		t.Errorf("initial watermark = %v, want 0", ts)
+	}
+
+	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	if err := db.SetMemoryCalendarWatermark(1700000000); err != nil {
+		t.Fatalf("SetMemoryCalendarWatermark: %v", err)
+	}
+	ts, err = db.MemoryCalendarWatermark()
+	if err != nil {
+		t.Fatalf("MemoryCalendarWatermark after set: %v", err)
+	}
+	if ts != 1700000000 {
+		t.Errorf("watermark after set = %v, want 1700000000", ts)
+	}
+}
+
 // TestMemoryInteractionFloorRoundTrip: the 5D interaction-ingest floor (Task
 // 3, migration 00020) defaults to 0 on a fresh workspace and persists after
 // SetMemoryInteractionFloor, mirroring MemoryChatTurnFloor/

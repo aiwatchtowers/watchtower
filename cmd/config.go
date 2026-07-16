@@ -216,6 +216,8 @@ var knownConfigKeys = map[string]bool{
 	"memory.surfaces.reflection":           true,
 	"memory.sources.gmail":                 true,
 	"memory.sources.actions":               true,
+	"memory.sources.calendar":              true,
+	"memory.sources.chats":                 true,
 	"claude_path":                          true,
 }
 
