@@ -224,6 +224,48 @@ func TestPipelineHappyPath(t *testing.T) {
 	assert.Equal(t, "haiku", model)
 }
 
+// TestExtractLinksParticipantsAndChannelWithoutEntityHints guards the
+// structural back-link path added alongside entity_hints: on a lived-in
+// vault, extraction almost never populated entity_hints in practice (little
+// prompt guidance, exact-match only), leaving nearly every entity page with
+// an empty ## Links section and therefore never eligible for the Phase 3
+// entity-page rewrite (which requires len(linkedEpisodes) > 0). Participants
+// and the episode's own ref channel are already-validated Slack ids from the
+// JSON schema, so they link mechanically even when the model emits no hints
+// at all.
+func TestExtractLinksParticipantsAndChannelWithoutEntityHints(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base := pipelineFixture(t, d)
+	ts3 := fmt.Sprintf("%d.000300", base+120)
+
+	gen := &fakeGen{
+		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
+		reply: func(user string) (string, error) {
+			if strings.Contains(user, "(C1GEN)") {
+				return "[]", nil // nothing noteworthy on this window
+			}
+			return fmt.Sprintf(`[{"title": "Postmortem scheduled", "story": "s", "outcome": null,
+				"participants": ["U1ALICE", "U2BOB"],
+				"refs": [{"channel_id": "C2OPS", "ts": %q}], "entity_hints": []}]`, ts3), nil
+		},
+	}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Episodes)
+
+	alice, err := Resolve(v, d, "U1ALICE")
+	require.NoError(t, err)
+	assert.Contains(t, alice.Body, "|Postmortem scheduled]]", "participant linked with no entity_hints")
+	bob, err := Resolve(v, d, "U2BOB")
+	require.NoError(t, err)
+	assert.Contains(t, bob.Body, "|Postmortem scheduled]]", "second participant linked with no entity_hints")
+	ops, err := Resolve(v, d, "C2OPS")
+	require.NoError(t, err)
+	assert.Contains(t, ops.Body, "|Postmortem scheduled]]", "episode's own channel linked with no entity_hints")
+}
+
 // TestMemory04_WatermarkFreezeOnAIFailure guards MEM-04: a generator failure
 // on a later window leaves the watermark at the end of the last fully
 // committed earlier window — never past the unprocessed one — while the

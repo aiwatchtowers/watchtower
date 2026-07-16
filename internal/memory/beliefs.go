@@ -102,7 +102,18 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	// Candidate beliefs: subject rewritten this run, or currently shaken.
 	candidatesByID := make(map[string]Node)
 	var candidates []Node
+	// Known subjects: the active entities a propose-new op is allowed to name,
+	// rendered as id+title pairs so the model copies an exact id instead of
+	// inventing a readable slug (which can never resolve — see the 2026-07-16
+	// changelog entry: the first live semantic-tier run proposed 13 ops, all
+	// rejected, because the prompt asked for "an entity id" without ever
+	// showing the model one).
+	var knownSubjects []Node
 	for _, row := range rows {
+		if row.Type == "entity" && row.Status == "active" && subjectSet[row.ID] {
+			knownSubjects = append(knownSubjects, Node{ID: row.ID, Title: row.Title})
+			continue
+		}
 		if row.Type != "belief" || row.Status == "tombstone" || row.Status == statusRetired {
 			continue
 		}
@@ -133,7 +144,7 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 		statements = staged.statements
 	}
 
-	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, episodes, statements)
+	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, knownSubjects, episodes, statements)
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reviseSource), system, user, "")
 	usage = u // single call — the reply's usage is the step's usage
 	if gerr != nil {
@@ -497,9 +508,10 @@ func (p *Pipeline) subjectEpisodes(subjects []string) []Node {
 
 // buildReviseBeliefsPrompt renders the belief pass call: the language directive
 // fills the template's single %s slot; the user message digests the existing
-// beliefs (id/statement/confidence/evidence) then the new episodes. It never
-// opens with a "-"/"--" line (the claude-CLI argv gotcha).
-func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, episodes []Node, statements []ownerStatement) (system, user string) {
+// beliefs (id/statement/confidence/evidence), the known subjects a propose-new
+// op may name, then the new episodes. It never opens with a "-"/"--" line (the
+// claude-CLI argv gotcha).
+func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, knownSubjects, episodes []Node, statements []ownerStatement) (system, user string) {
 	system = fmt.Sprintf(tmpl, prompts.Directive(lang))
 
 	var b strings.Builder
@@ -512,6 +524,17 @@ func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, episodes []Node, state
 		fmt.Fprintf(&b, "  statement: %s\n", bel.Title)
 		fmt.Fprintf(&b, "  confidence: %s\n", strconv.FormatFloat(bel.Confidence, 'g', -1, 64))
 		fmt.Fprintf(&b, "  status: %s\n", bel.Status)
+	}
+	// Known subjects: the only ids a propose-new op's "subject" may name. Shown
+	// as id+title pairs so the model copies one verbatim rather than inventing
+	// a readable slug that can never resolve (Resolve requires an exact node ID
+	// or alias match — see applyProposeNew).
+	b.WriteString("\nKnown subjects (propose-new's subject must be one of these EXACT ids, copied verbatim):\n\n")
+	if len(knownSubjects) == 0 {
+		b.WriteString("(none — do not propose-new this run)\n")
+	}
+	for _, s := range knownSubjects {
+		fmt.Fprintf(&b, "%s: %s\n", s.ID, s.Title)
 	}
 	// OWNER SAID: verbatim owner Discuss turns staged this run (Phase-4 chat
 	// surface). These are the ONLY owner-asserted input in the belief pass — the

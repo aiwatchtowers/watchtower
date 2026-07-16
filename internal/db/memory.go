@@ -703,8 +703,8 @@ func (db *DB) CountMemoryLinksInBulk(ids []string) (map[string]int, error) {
 	return counts, nil
 }
 
-// DropMemoryIndex empties all four memory index tables in one transaction so
-// a full reindex can rebuild them from the vault (MEM-02).
+// DropMemoryIndex empties the memory index tables in one transaction so a
+// full reindex can rebuild them from the vault (MEM-02).
 func (db *DB) DropMemoryIndex() error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -712,10 +712,17 @@ func (db *DB) DropMemoryIndex() error {
 	}
 	defer tx.Rollback()
 
-	// Children first: aliases and stats reference memory_nodes.
+	// Children first: aliases, stats, and dispute flags reference
+	// memory_nodes. Dropping memory_dispute_flags here is exactly the
+	// "self-healing on reindex" the table's own doc comment promises (see
+	// docs/inventory/memory.md) — without it, dropping memory_nodes while
+	// any flag row still points at a live belief violates the FK and the
+	// whole reindex fails (found live: a single dispute flag, from a MEM-06
+	// downgrade, was enough to break `watchtower memory reindex`).
 	for _, stmt := range []string{
 		`DELETE FROM memory_aliases`,
 		`DELETE FROM memory_node_stats`,
+		`DELETE FROM memory_dispute_flags`,
 		`DELETE FROM memory_fts`,
 		`DELETE FROM memory_nodes`,
 	} {

@@ -1336,7 +1336,8 @@ Respond with STRICT JSON only: an array of at most %d episodes, no prose, no mar
 
 Rules:
 - copy ts values EXACTLY from the input, never invent or adjust them; every ref must point at one of the messages shown to you.
-- most windows are routine chatter and contain no episodes: return [] for those.`
+- most windows are routine chatter and contain no episodes: return [] for those.
+- entity_hints: participants and the channel are already linked automatically — use entity_hints ONLY for a named project, system, or recurring topic the episode is specifically about (e.g. "CEX-7457", "HSM", "the migration"), not for people or channels. Omit it (empty array) when nothing like that is named.`
 
 // defaultMemoryExtractEpisodesBatch is the multi-channel variant of
 // defaultMemoryExtractEpisodes: several low-activity channels' windows are
@@ -1355,7 +1356,8 @@ Respond with STRICT JSON only: an array of at most %d episodes total across all 
 Rules:
 - copy ts values EXACTLY from the input, never invent or adjust them; every ref must point at one of the messages shown to you, under the channel_id of the block it came from.
 - an episode's refs must all belong to the SAME channel block — never combine messages from two different channels into one episode.
-- most windows are routine chatter and contain no episodes: return [] for those; a channel with nothing noteworthy simply contributes no episodes.`
+- most windows are routine chatter and contain no episodes: return [] for those; a channel with nothing noteworthy simply contributes no episodes.
+- entity_hints: participants and the channel are already linked automatically — use entity_hints ONLY for a named project, system, or recurring topic the episode is specifically about (e.g. "CEX-7457", "HSM", "the migration"), not for people or channels. Omit it (empty array) when nothing like that is named.`
 
 // defaultMemoryEntityRewrite is the strong-tier entity-page rewrite for the
 // secretary memory vault (memory.entity_rewrite — routed to the default/strong
@@ -1387,8 +1389,8 @@ const defaultMemoryReviseBeliefs = `%s
 
 You are the memory consolidator of a workplace secretary. You review the secretary's standing BELIEFS about people and projects against newly observed episodes and PROPOSE how each belief should change. You only propose; separate code decides whether a proposal is applied and recomputes confidence — never assume your proposal takes effect.
 
-You receive the existing beliefs (each with its statement, current confidence, and an evidence digest), then the new episodes. Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
-{"ops": [{"belief_id": "id of an existing belief, or empty for propose-new", "op": "confirm|weaken|shake|retire|propose-new", "statement": "the belief text (required only for propose-new)", "subject": "entity id the belief is about (propose-new only)", "evidence": [{"channel_id": "channel id", "ts": "message ts"}], "rationale": "one sentence tying the cited evidence to the op"}]}
+You receive the existing beliefs (each with its statement, current confidence, and an evidence digest), the known subjects a new belief may be about, then the new episodes. Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"ops": [{"belief_id": "id of an existing belief, or empty for propose-new", "op": "confirm|weaken|shake|retire|propose-new", "statement": "the belief text (required only for propose-new)", "subject": "one of the Known subjects' ids, copied EXACTLY (propose-new only)", "evidence": [{"channel_id": "channel id", "ts": "message ts"}], "rationale": "one sentence tying the cited evidence to the op"}]}
 
 Ops:
 - confirm: the new evidence supports the belief as stated.
@@ -1399,6 +1401,7 @@ Ops:
 
 Rules:
 - evidence: cite ONLY refs (channel_id + ts) that appear verbatim in the episodes shown to you; copy them EXACTLY and never invent one. An op whose evidence cannot be found in the input is discarded by the code.
+- subject: copy an id EXACTLY from the Known subjects list; never invent one or write a readable name/slug instead of the given id. If the belief you want to assert is about someone/something not in that list, do not propose it this run.
 - propose at most ONE op per existing belief, and omit beliefs the new episodes say nothing about.
 - do NOT restate confidence numbers or statuses — the code computes them from your op and its own rank math.`
 

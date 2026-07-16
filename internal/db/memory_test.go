@@ -427,6 +427,37 @@ func TestDropMemoryIndex(t *testing.T) {
 	}
 }
 
+// TestDropMemoryIndexWithDisputeFlagDoesNotViolateFK guards a live-found bug:
+// memory_dispute_flags.node_id REFERENCES memory_nodes(id), so a full drop
+// that deletes memory_nodes without first clearing a live dispute flag trips
+// the FK and the whole reindex fails — found live when a single MEM-06
+// downgrade's dispute flag broke `watchtower memory reindex`. Dropping the
+// flag here is exactly the "self-healing on reindex" its own doc comment
+// promises: a still-conflicting belief is simply re-flagged by the next
+// belief/reflection pass.
+func TestDropMemoryIndexWithDisputeFlagDoesNotViolateFK(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.UpsertMemoryNode(memTestNode("bel_x", func(r *MemoryNodeRow) { r.Type = "belief"; r.Tier = "long" }), "body", nil); err != nil {
+		t.Fatalf("upsert bel_x: %v", err)
+	}
+	if err := db.SetDisputePending("bel_x", "owner-rank belief challenged"); err != nil {
+		t.Fatalf("SetDisputePending: %v", err)
+	}
+
+	if err := db.DropMemoryIndex(); err != nil {
+		t.Fatalf("DropMemoryIndex: %v", err)
+	}
+
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM memory_dispute_flags`).Scan(&n); err != nil {
+		t.Fatalf("counting memory_dispute_flags: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("memory_dispute_flags has %d rows after drop, want 0", n)
+	}
+}
+
 func TestRecordEntityHintsDedupesByPair(t *testing.T) {
 	db := openTestDB(t)
 
