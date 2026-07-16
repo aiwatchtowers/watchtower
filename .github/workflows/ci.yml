@@ -111,6 +111,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The runner's default toolchain (Xcode 16.4) predates the macOS 26 SDK, so
+      # any reference to Speech's SpeechTranscriber/SpeechAnalyzer/AssetInventory/
+      # AnalyzerInput (AppleProvider.swift) fails to compile with "cannot find type
+      # in scope" rather than an availability diagnostic. Xcode 26.3 is installed on
+      # this image (non-default) and ships the macOS 26 SDK those declarations live
+      # in; selecting it lets the file weak-link as designed without needing a
+      # macOS-26 runner to execute the guarded code.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.3"
+
       - name: Build
         run: swift build
 
