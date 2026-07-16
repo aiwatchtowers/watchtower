@@ -131,7 +131,7 @@ func TestRunSemanticChatOwnerEvidence(t *testing.T) {
 	before := dumpInboxSituationState(t, d)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 	assert.Equal(t, 1, stats.ChatTurnsIngested)
 
 	got, err := v.ReadNode(bel.ID)
@@ -165,7 +165,7 @@ func TestRunSemanticChatFloorHeldOnBeliefError(t *testing.T) {
 	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)
@@ -199,7 +199,7 @@ func TestRunSemanticChatGateOffNoop(t *testing.T) {
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 	assert.Zero(t, stats.ChatTurnsIngested, "gate off → nothing ingested")
 
 	floor, err := d.MemoryChatTurnFloor()
@@ -300,7 +300,7 @@ func TestRunSemanticChatFloorHeldOnCapBreak(t *testing.T) {
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)
@@ -328,7 +328,7 @@ func TestRunSemanticChatFloorAdvancesWhenModelDeclinesToCite(t *testing.T) {
 	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)

@@ -218,14 +218,32 @@ func recentISO(offsetSeconds int) string {
 	return time.Now().Add(-time.Hour).Add(time.Duration(offsetSeconds) * time.Second).UTC().Format(time.RFC3339)
 }
 
-// TestSeedGmailSenderNewPerson: a distinct external from_email that sent a
-// message in the window becomes a person entity aliased by its (lower-cased)
-// email, titled from from_name.
+// seedGmailTestConfig is seedTestConfig with the Gmail sender source ON.
+var seedGmailTestConfig = SeedConfig{MinMessages: 3, WindowDays: 30, Gmail: true}
+
+// gmailSeedSeq gives each seeded gmail message a process-unique id so repeated
+// seedGmailSenderN calls (e.g. below- then above-threshold) never collide.
+var gmailSeedSeq int
+
+// seedGmailSenderN inserts n messages from one sender (distinct ids/threads) so
+// a sender can cross the MinMessages seed threshold.
+func seedGmailSenderN(t *testing.T, d *db.DB, email, name string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		gmailSeedSeq++
+		id := fmt.Sprintf("%s-m%d", email, gmailSeedSeq)
+		seedGmailMessage(t, d, id, id, email, name, "Subj", "body", recentISO(gmailSeedSeq))
+	}
+}
+
+// TestSeedGmailSenderNewPerson: a distinct external from_email that sent at
+// least MinMessages messages in the window becomes a person entity aliased by
+// its (lower-cased) email, titled from from_name.
 func TestSeedGmailSenderNewPerson(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	seedGmailMessage(t, d, "m1", "t1", "Ext.Sender@Example.com", "External Sender", "Hi", "hello there", recentISO(0))
+	seedGmailSenderN(t, d, "Ext.Sender@Example.com", "External Sender", 3)
 
-	created, err := SeedEntities(v, d, seedTestConfig)
+	created, err := SeedEntities(v, d, seedGmailTestConfig)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created, "one external sender → one person entity")
 
@@ -236,18 +254,49 @@ func TestSeedGmailSenderNewPerson(t *testing.T) {
 	assert.Contains(t, n.Aliases, "ext.sender@example.com", "aliased by the lower-cased email")
 }
 
+// TestSeedGmailSenderBelowThresholdSkipped: a human sender under the MinMessages
+// floor is not seeded; the same sender at/above the floor is (the noise gate #2).
+func TestSeedGmailSenderBelowThresholdSkipped(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedGmailSenderN(t, d, "sparse@example.com", "Sparse", 2) // below MinMessages=3
+
+	created, err := SeedEntities(v, d, seedGmailTestConfig)
+	require.NoError(t, err)
+	assert.Zero(t, created, "a below-threshold sender is not seeded")
+
+	seedGmailSenderN(t, d, "sparse@example.com", "Sparse", 3) // now 5 total, over the floor
+	created, err = SeedEntities(v, d, seedGmailTestConfig)
+	require.NoError(t, err)
+	assert.Equal(t, 1, created, "the same sender is seeded once it clears the floor")
+}
+
+// TestSeedGmailSenderMachineSenderDropped: an automated sender (no-reply@) is
+// never seeded no matter how high its volume (the machine-sender pattern gate).
+func TestSeedGmailSenderMachineSenderDropped(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedGmailSenderN(t, d, "no-reply@vendor.io", "Vendor Bot", 25) // high volume
+	seedGmailSenderN(t, d, "notifications@github.com", "GitHub", 10)
+
+	created, err := SeedEntities(v, d, seedGmailTestConfig)
+	require.NoError(t, err)
+	assert.Zero(t, created, "machine senders are dropped regardless of volume")
+
+	_, err = Resolve(v, d, "no-reply@vendor.io")
+	require.Error(t, err, "no-reply@ is never a person entity")
+}
+
 // TestSeedGmailSenderTitleFallsBackToLocalPart: a sender with no from_name is
 // titled from the local-part of its email.
 func TestSeedGmailSenderTitleFallsBackToLocalPart(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	seedGmailMessage(t, d, "m1", "t1", "noreply@vendor.io", "", "Receipt", "body", recentISO(0))
+	seedGmailSenderN(t, d, "billing@vendor.io", "", 3)
 
-	_, err := SeedEntities(v, d, seedTestConfig)
+	_, err := SeedEntities(v, d, seedGmailTestConfig)
 	require.NoError(t, err)
 
-	n, err := Resolve(v, d, "noreply@vendor.io")
+	n, err := Resolve(v, d, "billing@vendor.io")
 	require.NoError(t, err)
-	assert.Equal(t, "noreply", n.Title, "local-part fallback")
+	assert.Equal(t, "billing", n.Title, "local-part fallback")
 }
 
 // TestSeedGmailSenderStitchedToSlackPerson: a from_email equal to an
@@ -258,10 +307,10 @@ func TestSeedGmailSenderStitchedToSlackPerson(t *testing.T) {
 	seedUser(t, d, "U1ALICE", "Alice Adams", "alice@example.com", 0)
 	seedChannel(t, d, "C1GEN", "general", "", "")
 	seedMessages(t, d, "C1GEN", "U1ALICE", 3)
-	// Alice also appears as a Gmail sender (case-differing) — must NOT duplicate.
-	seedGmailMessage(t, d, "m1", "t1", "Alice@example.com", "Alice A.", "Re: billing", "body", recentISO(0))
+	// Alice also appears as a high-volume Gmail sender (case-differing) — must NOT duplicate.
+	seedGmailSenderN(t, d, "Alice@example.com", "Alice A.", 4)
 
-	created, err := SeedEntities(v, d, seedTestConfig)
+	created, err := SeedEntities(v, d, seedGmailTestConfig)
 	require.NoError(t, err)
 	assert.Equal(t, 2, created, "alice (person) + #general — NO duplicate for the gmail sender")
 
@@ -273,17 +322,28 @@ func TestSeedGmailSenderStitchedToSlackPerson(t *testing.T) {
 	assert.Equal(t, byID.ID, byEmail.ID, "gmail sender unified with the Slack person")
 }
 
+// TestSeedGmailSenderGateOff: with the Gmail source dark (SeedConfig.Gmail
+// false), no sender is seeded even at high volume — the source is literally dark.
+func TestSeedGmailSenderGateOff(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedGmailSenderN(t, d, "ext@example.com", "Ext", 10)
+
+	created, err := SeedEntities(v, d, seedTestConfig) // Gmail: false
+	require.NoError(t, err)
+	assert.Zero(t, created, "no senders seeded when the gmail source is off")
+}
+
 // TestSeedGmailSenderIdempotent: re-running SeedEntities creates no second
 // entity for the same sender.
 func TestSeedGmailSenderIdempotent(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	seedGmailMessage(t, d, "m1", "t1", "sender@example.com", "Sender", "Hi", "body", recentISO(0))
+	seedGmailSenderN(t, d, "sender@example.com", "Sender", 3)
 
-	created, err := SeedEntities(v, d, seedTestConfig)
+	created, err := SeedEntities(v, d, seedGmailTestConfig)
 	require.NoError(t, err)
 	require.Equal(t, 1, created)
 
-	created, err = SeedEntities(v, d, seedTestConfig)
+	created, err = SeedEntities(v, d, seedGmailTestConfig)
 	require.NoError(t, err)
 	assert.Zero(t, created, "second run creates nothing")
 }

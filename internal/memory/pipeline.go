@@ -76,12 +76,17 @@ type Pipeline struct {
 	// checkMsg is the MEM-01 provenance lookup — the database in production,
 	// an erroring fake in tests exercising the lookup-failure freeze.
 	checkMsg messageChecker
-	// registry is the MEM-12 provenance-resolver registry: one resolver per ref
-	// scheme (message/chat, +mail/act in later tasks), the single write-time
-	// answer to "does this ref resolve against a raw source of record?". The
-	// belief pass's chat: validation routes through it; unregistered schemes are
-	// rejected at write.
-	registry *ProvenanceRegistry
+	// registry is the belief surface's MEM-12 provenance-resolver registry: the
+	// chat and act resolvers, the only schemes validateChatRefs routes through it
+	// (episode/mail refs pass that surface untouched). The Slack and Gmail
+	// extractors validate through their own scheme-scoped registries
+	// (extractorRegistry / a mail-only registry), so each write site accepts only
+	// its own schemes and a stray scheme is rejected at write (MEM-12).
+	registry *provenanceRegistry
+	// chatChecker is the memoizing chat-presence checker the belief surface's chat
+	// resolver reads through; validateChatRefs resets it once per call so
+	// ChatTablesPresent is one round-trip per pass, not one per chat ref.
+	chatChecker *memoChatChecker
 	// promptStore optionally serves user-customized templates for the
 	// extractor prompt (same seam as the inbox pipeline); nil falls back to
 	// the built-in default.
@@ -119,16 +124,16 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 		logf = func(string, ...any) {}
 	}
 	p := &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, checkMsg: database, Source: "cli"}
-	// MEM-12: build the provenance-resolver registry once. message (scheme "")
-	// and chat (scheme "chat") are the Phase-0–4 schemes; mail (scheme "mail")
-	// and act (scheme "act") join in Tasks 4/6. gmail_messages and the
-	// owner-interaction tables are base tables, so a resolver is registered even
-	// when its source flag is dark.
+	// MEM-12: the belief surface's registry — chat (MEM-09) and act (MEM-15), the
+	// only schemes validateChatRefs routes through it. The interaction tables are
+	// base tables, so the act resolver is registered even when memory.sources.
+	// actions is dark (a stray act: ref can only reach the belief pass through the
+	// independently gated interaction ingest). The Slack/Gmail extractors validate
+	// through their own message-only / mail-only registries.
+	p.chatChecker = &memoChatChecker{db: database}
 	p.registry = newProvenanceRegistry(
-		messageResolver{database},
-		chatResolver{db: database, logf: logf},
-		mailResolver{database},
-		actResolver{database},
+		chatResolver{db: p.chatChecker, logf: logf},
+		actResolver{db: database, logf: logf},
 	)
 	return p
 }
@@ -191,8 +196,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
 
-	// (2) Mechanical entity seeding (no AI).
-	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays})
+	// (2) Mechanical entity seeding (no AI). Gmail-sender seeding is gated on
+	// memory.sources.gmail so the source is literally dark when off.
+	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail})
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
@@ -223,13 +229,26 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		batchSteps += gmailSteps
 	}
 
+	// (4c) Mechanical interaction ingest (dark behind memory.sources.actions):
+	// its OWN Run step, gated ONLY on Sources.Actions and independent of the
+	// semantic tier — the annotations + engagement aggregates have value without
+	// the belief pass. It stages act: refs for the belief pass; when the semantic
+	// tier is off those staged refs are simply unused (the annotations + engagement
+	// still land).
+	var actStaged *stagedChat
+	if p.cfg.Sources.Actions {
+		var n int
+		actStaged, n = p.runInteractionIngest(runID, batchSteps, &stats)
+		batchSteps += n
+	}
+
 	// (5) Semantic tier (Phase 3) — dark behind memory.semantic.enabled. Each
 	// step is isolated (a failure is logged and never fails the run) and never
 	// advances any watermark (compose/card precedent); the strong-tier AI steps
 	// stop launching once the run's accumulated output tokens exceed the budget.
 	semanticEnabled := p.cfg.Semantic.Enabled
 	if semanticEnabled {
-		p.runSemantic(ctx, runID, batchSteps, acc, &stats)
+		p.runSemantic(ctx, runID, batchSteps, actStaged, acc, &stats)
 	}
 
 	// (6) Renders. index.md is the mechanical full listing (always, when memory
@@ -252,8 +271,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped)",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
+		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.InteractionsIngested, stats.EngagementUpdated,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped)
 	return stats, nil
 }
@@ -275,7 +295,7 @@ const semanticEvictScoreThreshold = 0.5
 // guarded (an explicit 0 falls back to the default rather than disabling the
 // bound). batchSteps is the count of extraction batch rows already recorded —
 // the fallback base for step numbering when the DB read fails.
-func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int, acc *usageAccumulator, stats *RunStats) {
+func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int, actStaged *stagedChat, acc *usageAccumulator, stats *RunStats) {
 	step := p.nextSemanticStep(runID, batchSteps)
 
 	// Phase-4 chat surface (dark unless memory.surfaces.chat): stage owner Discuss
@@ -306,37 +326,11 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 		}
 	}
 
-	// Phase-5 5D interaction ingest (dark unless memory.sources.actions): a
-	// mechanical, no-AI fold of the owner's dashboard interactions into episode-
-	// mirror outcome annotations + per-entity engagement aggregates, PLUS act:
-	// refs staged for the belief pass (the MEM-15 seam). It commits its own
-	// annotations and advances its OWN interaction floor after that commit (unlike
-	// the chat floor, which the belief pass gates), so a later belief-pass failure
-	// never rewinds it. Its staged act: refs merge into `staged` so a model op
-	// citing one validates; it forms no preference beliefs in this slice.
-	if p.cfg.Sources.Actions {
-		start := time.Now()
-		floor, ferr := p.db.MemoryInteractionFloor()
-		if ferr != nil {
-			p.logf("memory: interaction ingest: read floor: %v", ferr)
-			p.recordSemanticStep(runID, &step, "interaction-ingest", "error", nil, start)
-		} else {
-			actStaged, folded, bumped, nf, ierr := p.ingestInteractions(floor)
-			if ierr != nil {
-				p.logf("memory: interaction ingest: %v", ierr) // floor held (nf == floor)
-			} else {
-				stats.InteractionsIngested += folded
-				stats.EngagementUpdated += bumped
-				staged = mergeStaged(staged, actStaged)
-				if nf > floor {
-					if serr := p.db.SetMemoryInteractionFloor(nf); serr != nil {
-						p.logf("memory: interaction ingest: advance floor: %v", serr)
-					}
-				}
-			}
-			p.recordSemanticStep(runID, &step, "interaction-ingest", stepStatus(ierr), nil, start)
-		}
-	}
+	// The Phase-5 5D interaction ingest already ran as its own Run step (4c,
+	// committing its annotations + engagement and advancing its own floor). Its
+	// staged act: refs merge into the belief-pass input here so a model op citing
+	// one validates (MEM-15); it forms no preference beliefs in this slice.
+	staged = mergeStaged(staged, actStaged)
 
 	// Mechanical: episode dedupe.
 	start := time.Now()

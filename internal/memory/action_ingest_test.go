@@ -96,6 +96,26 @@ func TestIngestInteractionsFeedbackAnnotatesAndBumps(t *testing.T) {
 	assert.True(t, staged.subjects[entID])
 }
 
+// TestIngestInteractions_EngagementStampIsRFC3339 guards fix #14: the
+// memory_engagement.last_interaction_at stamp is the interaction's RFC3339
+// created_at (not its unix-seconds ref ts), matching the column's timestamp
+// intent.
+func TestIngestInteractions_EngagementStampIsRFC3339(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	_, itemID, entID := seedActSituation(t, v, d, "C1GEN")
+	seedFeedback(t, d, itemID, 1, "2026-07-16T10:00:00Z")
+
+	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
+	_, _, bumped, _, err := p.ingestInteractions(0)
+	require.NoError(t, err)
+	require.Equal(t, 1, bumped)
+
+	var stamp string
+	require.NoError(t, d.QueryRow(`SELECT last_interaction_at FROM memory_engagement WHERE node_id = ?`, entID).Scan(&stamp))
+	assert.Equal(t, "2026-07-16T10:00:00Z", stamp, "last_interaction_at is the RFC3339 created_at, not a unix string")
+}
+
 // tsOf returns the unix-seconds string of an inbox_feedback row's created_at, for
 // asserting the staged act: ref key.
 func tsOf(t *testing.T, d *db.DB, fid int64) string {
@@ -232,23 +252,20 @@ func TestMemory05_InteractionIngestInboxUntouched(t *testing.T) {
 	assert.Equal(t, 1752570123.5, wm, "inbox watermark untouched")
 }
 
-// TestRunSemanticInteractionGateOff: with memory.sources.actions off, runSemantic
-// does no interaction work — the floor is unmoved and no engagement row is
-// written (byte-identical to pre-Slice-1 behavior).
-func TestRunSemanticInteractionGateOff(t *testing.T) {
+// TestInteractionIngest_GateOff: with memory.sources.actions off, a full Run does
+// no interaction work — the floor is unmoved and no engagement row is written.
+func TestInteractionIngest_GateOff(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
 	_, itemID, entID := seedActSituation(t, v, d, "C1GEN")
 	seedFeedback(t, d, itemID, -1, "2026-07-16T10:00:00Z")
 
-	cfg := actionsConfig()
-	cfg.Sources.Actions = false // gate OFF
-	gen := &fakeGen{reply: func(string) (string, error) { return `{"ops":[]}`, nil }}
+	cfg := pipelineTestConfig() // Sources.Actions default false
+	gen := &fakeGen{reply: func(string) (string, error) { return "[]", nil }}
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
-	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
-
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
 	assert.Zero(t, stats.InteractionsIngested)
 	assert.Zero(t, stats.EngagementUpdated)
 	floor, err := d.MemoryInteractionFloor()
@@ -260,28 +277,126 @@ func TestRunSemanticInteractionGateOff(t *testing.T) {
 	assert.Zero(t, dismissed)
 }
 
-// TestRunSemanticInteractionGateOnAdvancesFloor: with the gate on, runSemantic
-// runs the interaction ingest — the floor advances and the entity is bumped.
-func TestRunSemanticInteractionGateOnAdvancesFloor(t *testing.T) {
+// TestInteractionIngest_SemanticOffStillAnnotatesAndBumps guards fix #4a: with
+// memory.sources.actions ON but the semantic tier OFF, a full Run still folds the
+// owner's interactions — the annotation lands, the entity is bumped, and the
+// floor advances. Interaction ingest is its own Run step, not a semantic-tier
+// sub-step, so it has value without the belief pass.
+func TestInteractionIngest_SemanticOffStillAnnotatesAndBumps(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
 	_, itemID, entID := seedActSituation(t, v, d, "C1GEN")
 	fid := seedFeedback(t, d, itemID, 1, "2026-07-16T10:00:00Z")
 
-	// A generator whose belief pass returns no ops, so runSemantic's only durable
-	// effect here is the interaction ingest.
-	gen := &fakeGen{reply: func(string) (string, error) { return `{"ops":[]}`, nil }}
-	p := NewPipeline(d, v, gen, actionsConfig(), t.Logf)
+	cfg := pipelineTestConfig()
+	cfg.Sources.Actions = true   // interaction ingest ON
+	cfg.Semantic.Enabled = false // semantic tier OFF
+	gen := &fakeGen{reply: func(string) (string, error) { return "[]", nil }}
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
-	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
-
-	assert.Equal(t, 1, stats.InteractionsIngested)
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.InteractionsIngested, "interaction folded with the semantic tier off")
 	assert.Equal(t, 1, stats.EngagementUpdated)
 	floor, err := d.MemoryInteractionFloor()
 	require.NoError(t, err)
-	assert.Equal(t, fid, floor, "the interaction floor advances after the commit")
+	assert.Equal(t, fid, floor, "the interaction floor advances")
 	engaged, _, err := d.GetEngagement(entID)
 	require.NoError(t, err)
 	assert.Equal(t, 1, engaged, "👍 → engaged_count")
+}
+
+// TestIngestInteractions_SharedEntityBumpedOnce guards fix #9b: one 👍 whose inbox
+// item belongs to TWO situations sharing the same entity bumps that entity ONCE,
+// and InteractionsIngested counts the one distinct feedback id (not once per
+// situation).
+func TestIngestInteractions_SharedEntityBumpedOnce(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	entID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
+
+	item, err := d.CreateInboxItem(db.InboxItem{ChannelID: "C1GEN", MessageTS: "1.1", SenderUserID: "U2BOB", TriggerType: "stream"})
+	require.NoError(t, err)
+	// Two situations, both carrying the same item (hence the same entity C1GEN).
+	for _, title := range []string{"sit-a", "sit-b"} {
+		sit, serr := d.CreateSituation(db.DashboardSituation{Title: title, Kind: "external", Priority: "medium"})
+		require.NoError(t, serr)
+		require.NoError(t, d.AddSituationSignals(int(sit), []int{int(item)}))
+		writeAndIndex(t, v, d, actMirror(int(sit)))
+	}
+	fid := seedFeedback(t, d, int(item), 1, "2026-07-16T10:00:00Z")
+
+	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
+	_, folded, bumped, newFloor, err := p.ingestInteractions(0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, folded, "one DISTINCT feedback id, not one per situation")
+	assert.Equal(t, 1, bumped, "the shared entity is bumped once")
+	assert.Equal(t, fid, newFloor)
+
+	engaged, _, err := d.GetEngagement(entID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, engaged, "shared entity engaged_count incremented exactly once")
+}
+
+// TestIngestInteractions_FloorHeldOnBumpFailure guards fix #9c: if a bump fails
+// (memory_engagement gone), the whole batch rolls back and the feedback floor is
+// HELD so the batch re-scans next run (transient-error semantics, no double-count).
+func TestIngestInteractions_FloorHeldOnBumpFailure(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	_, itemID, _ := seedActSituation(t, v, d, "C1GEN")
+	seedFeedback(t, d, itemID, 1, "2026-07-16T10:00:00Z")
+
+	_, err := d.Exec(`DROP TABLE memory_engagement`) // force the bump tx to fail
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
+	_, _, bumped, newFloor, err := p.ingestInteractions(0)
+	require.Error(t, err, "a bump failure fails the step")
+	assert.Zero(t, bumped)
+	assert.Equal(t, int64(0), newFloor, "the feedback floor holds so the batch re-scans")
+}
+
+// TestIngestInteractions_VerdictStableKeyOnUpdatedAtMove guards fix #7b: moving a
+// situation's updated_at (an AttachSignal bump) with the SAME verdict does NOT
+// re-annotate or re-bump (novelty keys on verdict TEXT, not the date); a verdict
+// that genuinely changes (a track added) appends once more.
+func TestIngestInteractions_VerdictStableKeyOnUpdatedAtMove(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	sitID, _, entID := seedActSituation(t, v, d, "C1GEN")
+	require.NoError(t, d.MarkSituationConverted(sitID, 12, 0))
+
+	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
+	_, folded, bumped, _, err := p.ingestInteractions(0)
+	require.NoError(t, err)
+	require.Equal(t, 1, folded)
+	require.Equal(t, 1, bumped)
+
+	// AttachSignal-style bump of updated_at, verdict UNCHANGED.
+	_, err = d.Exec(`UPDATE situations SET updated_at = '2026-07-16T12:00:00Z' WHERE id = ?`, sitID)
+	require.NoError(t, err)
+	_, folded, bumped, _, err = p.ingestInteractions(0)
+	require.NoError(t, err)
+	assert.Zero(t, folded, "same verdict, moved date → not re-folded")
+	assert.Zero(t, bumped)
+	engaged, _, err := d.GetEngagement(entID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, engaged, "no double-bump on an updated_at move")
+
+	// A genuinely changed verdict (track added) appends once more.
+	_, err = d.Exec(`UPDATE situations SET converted_track_id = 5 WHERE id = ?`, sitID)
+	require.NoError(t, err)
+	_, folded, bumped, _, err = p.ingestInteractions(0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, folded, "a changed verdict is folded once more")
+	assert.Equal(t, 1, bumped)
+	engaged, _, err = d.GetEngagement(entID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, engaged, "the changed verdict bumps once more")
+
+	n, err := Resolve(v, d, fmt.Sprintf("situation:%d", sitID))
+	require.NoError(t, err)
+	assert.Contains(t, n.Body, "converted to target #12 and track #5")
 }

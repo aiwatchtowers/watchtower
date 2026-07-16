@@ -306,10 +306,11 @@ func (db *DB) MessageExists(channelID, ts string) (bool, error) {
 // GmailMessageExists reports whether a synced gmail_messages row with the given
 // Gmail message id exists — the write-time existence check behind the mail:
 // provenance scheme (resolved ambiguity #5: mail's identity is the message id,
-// not channel+ts). The gmail_messages table is a base table (migration 00016),
-// but its absence is tolerated as a clean miss (false, nil) rather than an
-// error, mirroring the chat resolver's tolerance of the Swift-owned chat tables
-// being absent on a headless deployment.
+// not channel+ts). gmail_messages is a migration-guaranteed base table (00016,
+// always present after db.Open), so a query failure is a genuine lookup error
+// that propagates (freezing the extract batch, MEM-01/MEM-04) rather than being
+// masked as a clean miss — unlike the Swift-owned chat tables, which are
+// created lazily and legitimately absent on a headless daemon.
 func (db *DB) GmailMessageExists(id string) (bool, error) {
 	var one int
 	err := db.QueryRow(`SELECT 1 FROM gmail_messages WHERE id = ?`, id).Scan(&one)
@@ -317,9 +318,6 @@ func (db *DB) GmailMessageExists(id string) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "no such table") {
-			return false, nil // gmail_messages absent — a clean miss, not a lookup error
-		}
 		return false, fmt.Errorf("checking gmail message %s: %w", id, err)
 	}
 	return true, nil
@@ -784,8 +782,9 @@ const gmailTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
 // limit cuts inside a second this query extends past the limit to include ALL
 // rows sharing the last loaded second (overshoot at most one second of mail).
 //
-// An absent gmail_messages table is tolerated as an empty read (nil, nil) — the
-// gated Gmail extractor is then a clean no-op, mirroring GmailMessageExists.
+// gmail_messages is a migration-guaranteed base table (00016), so a query
+// failure propagates as a genuine error (freezing the Gmail watermark) rather
+// than being masked as an empty read.
 func (db *DB) ListGmailThreadsForExtract(sinceTS float64, limit int) ([]GmailExtractMessage, error) {
 	if limit <= 0 {
 		limit = 2000
@@ -810,8 +809,8 @@ func (db *DB) ListGmailThreadsForExtract(sinceTS float64, limit int) ([]GmailExt
 // comparison operator (">" or "="; never user input) against the decoded
 // internal_date. The ORDER BY ends in id (the gmail_messages primary key) so the
 // ordering is fully deterministic within a same-second group, which the
-// boundary-drain above relies on. An absent gmail_messages table is a clean
-// empty read.
+// boundary-drain above relies on. gmail_messages is a migration-guaranteed base
+// table, so a query failure propagates rather than being masked.
 func (db *DB) queryGmailExtractMessages(op string, tsArg float64, limit int) ([]GmailExtractMessage, error) {
 	rows, err := db.Query(`
 		SELECT id, thread_id, subject, from_email, from_name, body_text, `+gmailTSUnixExpr+`
@@ -820,9 +819,6 @@ func (db *DB) queryGmailExtractMessages(op string, tsArg float64, limit int) ([]
 		ORDER BY `+gmailTSUnixExpr+`, id
 		LIMIT ?`, tsArg, limit)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such table") {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("listing gmail threads for extract: %w", err)
 	}
 	defer rows.Close()
@@ -900,11 +896,12 @@ func (db *DB) SetMemoryInteractionFloor(id int64) error {
 }
 
 // BumpEngagement records one owner interaction against a node's engagement
-// aggregates (the mechanical interaction-ingest step's per-entity write),
-// incrementing engaged_count when engaged is true, else dismissed_count, and
-// stamping last_interaction_at — the memory_node_stats upsert precedent.
-// Runtime state: MEM-02-exempt like memory_entity_hints, survives
-// DropMemoryIndex (see 00020, resolved ambiguity #3).
+// aggregates, incrementing engaged_count when engaged is true, else
+// dismissed_count, and stamping last_interaction_at — the memory_node_stats
+// upsert precedent. The interaction-ingest step applies its per-run bumps
+// atomically through BumpEngagements (all-or-nothing); this single-bump variant
+// is the direct seam tests exercise. Runtime state: MEM-02-exempt like
+// memory_entity_hints, survives DropMemoryIndex (see 00020, resolved ambiguity #3).
 func (db *DB) BumpEngagement(nodeID string, engaged bool, at string) error {
 	stmt := `INSERT INTO memory_engagement (node_id, dismissed_count, last_interaction_at)
 		VALUES (?, 1, ?)
@@ -924,10 +921,61 @@ func (db *DB) BumpEngagement(nodeID string, engaged bool, at string) error {
 	return nil
 }
 
-// GetEngagement returns a node's accumulated engagement aggregates — the
-// retention-importance input eviction scoring reads (Task 8). A node with no
-// memory_engagement row (never interacted with) reads as (0, 0, nil) rather
-// than an error.
+// EngagementBump is one pending per-entity engagement update for the atomic
+// batch applied by BumpEngagements.
+type EngagementBump struct {
+	NodeID  string
+	Engaged bool
+	At      string // last_interaction_at stamp (RFC3339)
+}
+
+// BumpEngagements applies a whole batch of per-entity bumps in ONE transaction:
+// either every bump lands or none do (the tx rolls back on the first error).
+// This is what lets the mechanical interaction-ingest hold its feedback floor on
+// a transient failure without risking a double-count — a half-applied batch
+// followed by a floor rewind would re-count the bumps that had already landed,
+// so all-or-nothing makes the re-scan clean (the chat-ingest transient-error
+// discipline). An empty batch is a no-op.
+func (db *DB) BumpEngagements(bumps []EngagementBump) error {
+	if len(bumps) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning engagement bump tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	const dismissedStmt = `INSERT INTO memory_engagement (node_id, dismissed_count, last_interaction_at)
+		VALUES (?, 1, ?)
+		ON CONFLICT(node_id) DO UPDATE SET
+			dismissed_count = dismissed_count + 1,
+			last_interaction_at = excluded.last_interaction_at`
+	const engagedStmt = `INSERT INTO memory_engagement (node_id, engaged_count, last_interaction_at)
+		VALUES (?, 1, ?)
+		ON CONFLICT(node_id) DO UPDATE SET
+			engaged_count = engaged_count + 1,
+			last_interaction_at = excluded.last_interaction_at`
+	for _, b := range bumps {
+		stmt := dismissedStmt
+		if b.Engaged {
+			stmt = engagedStmt
+		}
+		if _, err := tx.Exec(stmt, b.NodeID, b.At); err != nil {
+			return fmt.Errorf("bumping engagement for %s: %w", b.NodeID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing engagement bump tx: %w", err)
+	}
+	return nil
+}
+
+// GetEngagement returns a node's accumulated engagement aggregates. It is a
+// TEST SEAM only: production retention scoring reads engagement through
+// LinkedEntityEngagement (which sums a node's LINKING entities), never a node's
+// own row directly. A node with no memory_engagement row (never interacted
+// with) reads as (0, 0, nil) rather than an error.
 func (db *DB) GetEngagement(nodeID string) (engaged, dismissed int, err error) {
 	err = db.QueryRow(`SELECT engaged_count, dismissed_count FROM memory_engagement WHERE node_id = ?`, nodeID).
 		Scan(&engaged, &dismissed)
@@ -1001,20 +1049,22 @@ type InteractionSituation struct {
 }
 
 // ListInteractionSituations returns situations the owner has terminally acted on
-// (converted / dismissed / done), oldest id first — the situation-lifecycle half
-// of the mechanical interaction ingest. READ-ONLY (MEM-05): situations are read
-// exactly as IngestSituations reads them, never written. The bullet date is
-// derived from updated_at (stable once the situation is terminal), so the
-// interaction ingest can re-scan idempotently without an id floor: an
-// already-annotated mirror is a no-op. situations is a core (always-migrated)
-// table, so a query failure propagates rather than being masked.
-func (db *DB) ListInteractionSituations() ([]InteractionSituation, error) {
+// (converted / dismissed / done) whose updated_at is at/after sinceRFC3339,
+// oldest id first — the situation-lifecycle half of the mechanical interaction
+// ingest. READ-ONLY (MEM-05): situations are read exactly as IngestSituations
+// reads them, never written. The re-scan has no id floor (verdicts are not
+// id-monotonic; the mirror's verdict text is the novelty key), so the updated_at
+// window bounds it: a situation terminal for longer than the window has already
+// had every re-scan chance and is skipped, keeping the unbounded terminal
+// backlog off every run. situations is a core (always-migrated) table, so a
+// query failure propagates rather than being masked.
+func (db *DB) ListInteractionSituations(sinceRFC3339 string) ([]InteractionSituation, error) {
 	rows, err := db.Query(`
 		SELECT id, status, COALESCE(converted_target_id, 0), COALESCE(converted_track_id, 0),
 		       strftime('%Y-%m-%d', updated_at), updated_at, CAST(strftime('%s', updated_at) AS INTEGER)
 		FROM situations
-		WHERE status IN ('converted', 'dismissed', 'done')
-		ORDER BY id`)
+		WHERE status IN ('converted', 'dismissed', 'done') AND updated_at >= ?
+		ORDER BY id`, sinceRFC3339)
 	if err != nil {
 		return nil, fmt.Errorf("listing interaction situations: %w", err)
 	}
@@ -1069,11 +1119,25 @@ func (db *DB) LinkedEntityEngagement(id string) (engaged, dismissed int, err err
 // nothing re-inserts the parent row within this transaction (see
 // TestMigration_TableRecreationPreservesCascadeChildren) — and only outside
 // an open transaction, since SQLite refuses to change it mid-BEGIN.
-func (db *DB) DropMemoryIndex() error {
+//
+// The re-enable is not fire-and-forget: if PRAGMA foreign_keys = ON fails, the
+// connection is left with FK enforcement OFF for every subsequent statement on
+// it, silently voiding the integrity guarantee the whole database relies on. A
+// reindex must fail LOUDLY in that case, so the re-enable error is logged AND
+// surfaced as the function's error (via the named return) rather than swallowed
+// — a successful drop with FKs stuck off is not a success.
+func (db *DB) DropMemoryIndex() (err error) {
 	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
 		return fmt.Errorf("disabling foreign keys for memory index drop: %w", err)
 	}
-	defer func() { _, _ = db.Exec(`PRAGMA foreign_keys = ON`) }()
+	defer func() {
+		if _, rerr := db.Exec(`PRAGMA foreign_keys = ON`); rerr != nil {
+			rerr = fmt.Errorf("re-enabling foreign keys after memory index drop: %w", rerr)
+			if err == nil {
+				err = rerr // reindex fails loudly rather than continuing with FKs off
+			}
+		}
+	}()
 
 	tx, err := db.Begin()
 	if err != nil {

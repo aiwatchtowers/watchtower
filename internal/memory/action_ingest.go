@@ -8,8 +8,9 @@ package memory
 //  1. a dated owner-action bullet appended to the situation's episode-mirror
 //     "## Outcome" (distinct from IngestSituations's status-derived Outcome — it
 //     records the OWNER'S ACTION, not the situation's terminal state);
-//  2. per-entity engagement aggregates in memory_engagement (BumpEngagement),
-//     the retention-importance input eviction consumes (Task 8);
+//  2. per-entity engagement aggregates in memory_engagement (BumpEngagements,
+//     one transaction per run), the retention-importance input eviction consumes
+//     (Task 8);
 //  3. staged act:<table>:<row_id> refs for the belief pass input (the MEM-15
 //     seam) — the belief math mints owner-action rank only for a validated act:
 //     ref.
@@ -32,6 +33,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -42,21 +44,68 @@ import (
 // (appendToSection is idempotent, so a re-scan never duplicates a bullet).
 var outcomeHeadingRe = regexp.MustCompile(`(?m)^## Outcome[ \t]*$`)
 
-// engagementBump is one pending per-entity engagement update, applied AFTER the
-// annotation commit so a commit failure never leaves an aggregate ahead of the
-// vault (the "advance after success" discipline).
-type engagementBump struct {
-	nodeID  string
-	engaged bool
-	at      string
+// interactionRescanWindowDays bounds the floor-less situation-verdict re-scan: a
+// situation terminal for longer than this has already had every re-scan chance,
+// so it is skipped and the unbounded terminal backlog never rides every run. A
+// code const (not config), like the retention/belief math constants.
+const interactionRescanWindowDays = 14
+
+// runInteractionIngest is Run step 4c (behind memory.sources.actions): the
+// mechanical, no-AI fold of the owner's dashboard interactions into episode-
+// mirror outcome annotations + per-entity engagement aggregates, PLUS act: refs
+// staged for the belief pass (the MEM-15 seam). It runs as its OWN Run step —
+// gated ONLY on memory.sources.actions, independent of the semantic tier —
+// because the annotations and engagement aggregates have value on their own; the
+// staged act: refs are simply unused when the semantic tier is off. It commits
+// its own annotations and advances its OWN interaction floor after that commit
+// (a later belief-pass failure never rewinds it), holding the floor on a
+// mapping/commit/bump error. It records one pipeline_steps row at stepOffset+1
+// and returns the staged act: refs (for runSemantic's belief pass) plus the
+// number of step rows recorded (always 1).
+func (p *Pipeline) runInteractionIngest(runID int64, stepOffset int, stats *RunStats) (*stagedChat, int) {
+	step := stepOffset + 1
+	start := time.Now()
+	floor, ferr := p.db.MemoryInteractionFloor()
+	if ferr != nil {
+		p.logf("memory: interaction ingest: read floor: %v", ferr)
+		p.recordSemanticStep(runID, &step, "interaction-ingest", "error", nil, start)
+		return nil, 1
+	}
+	staged, folded, bumped, nf, ierr := p.ingestInteractions(floor)
+	if ierr != nil {
+		p.logf("memory: interaction ingest: %v", ierr) // floor held (nf == floor)
+		p.recordSemanticStep(runID, &step, "interaction-ingest", "error", nil, start)
+		return nil, 1
+	}
+	stats.InteractionsIngested += folded
+	stats.EngagementUpdated += bumped
+	if nf > floor {
+		if serr := p.db.SetMemoryInteractionFloor(nf); serr != nil {
+			p.logf("memory: interaction ingest: advance floor: %v", serr)
+		}
+	}
+	p.recordSemanticStep(runID, &step, "interaction-ingest", "done", nil, start)
+	return staged, 1
 }
 
 // ingestInteractions folds the owner's dashboard interactions above the given
 // interaction floor. It returns the act: refs staged for the belief pass (nil
-// when none), the number of interaction events folded, the number of engagement
-// aggregates bumped, and the new floor (== floor on a commit/mapping error, so
-// the caller holds it and re-scans next run). A mapping DB error freezes the
-// whole step; a commit failure leaves the floor unmoved and nothing bumped.
+// when none), the count of distinct interactions folded, the number of
+// engagement aggregates bumped, and the new floor (== floor on a
+// mapping/commit/bump error, so the caller holds it and re-scans next run).
+//
+// Idempotency & discipline:
+//   - inbox_feedback is append-only and floor-driven; InteractionsIngested counts
+//     DISTINCT feedback ids (one 👍 shared by N situations is one interaction).
+//   - situation verdicts have no floor: they are folded by a bounded idempotent
+//     re-scan whose novelty key is the situation id + verdict TEXT (not the
+//     movable updated_at date), so AttachSignal bumping updated_at cannot
+//     double-annotate/double-bump; a genuinely changed verdict (a target added)
+//     still appends.
+//   - engagement bumps are deduped per (act: ref, entity), so one interaction
+//     bumps a shared entity once, and applied in ONE transaction (BumpEngagements):
+//     if ANY bump fails the whole batch rolls back and the feedback floor is HELD
+//     (transient-error semantics like chat ingest), so the re-scan is clean.
 func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interactions, bumped int, newFloor int64, err error) {
 	newFloor = floor
 	sc := &stagedChat{refs: map[string]bool{}, subjects: map[string]bool{}}
@@ -67,10 +116,10 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 	loaded := map[string]*Node{}
 	dirty := map[string]bool{}
 	var order []string
-	var bumps []engagementBump
+	// bumps is deduped per (act: ref, entity) so one interaction touching a
+	// shared entity through several situations bumps it once.
+	bumps := map[string]db.EngagementBump{}
 
-	// load reads a situation's episode mirror once (nil, false when memory holds no
-	// mirror for it — e.g. a situation dismissed before it was ever ingested).
 	load := func(alias string) (*Node, bool, error) {
 		if n, ok := loaded[alias]; ok {
 			return n, true, nil
@@ -92,12 +141,12 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 		}
 	}
 
-	// fold applies one interaction to the vault + engagement: annotate the mirror
-	// (when present), stage the act: ref, and record the per-entity engagement
-	// bumps. gateOnNovelty gates the situation-verdict path on the bullet being
-	// genuinely new (idempotent re-scan); the feedback path always folds (the
-	// floor, not the bullet, is its dedupe key).
-	fold := func(sitID int, ref, at, date, bullet string, engaged, gateOnNovelty bool) (folded bool, ferr error) {
+	// fold applies one interaction: annotate the mirror (when present), stage the
+	// act: ref (ts in whole unix seconds), and record the deduped per-entity
+	// engagement bumps (stamp in RFC3339). verdictText is "" for the feedback path
+	// (which always folds, keyed by the floor); a non-empty verdictText gates the
+	// situation path on the verdict being genuinely new (idempotent re-scan).
+	fold := func(sitID int, ref, tsUnix, stamp, date, bullet, verdictText string, engaged bool) (folded bool, ferr error) {
 		subjects, serr := p.situationSubjects(fmt.Sprintf("%d", sitID))
 		if serr != nil {
 			return false, fmt.Errorf("memory: interactions: situation %d: %w", sitID, serr)
@@ -110,30 +159,33 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 		if merr != nil {
 			return false, merr
 		}
-		if gateOnNovelty {
-			// A verdict is folded only when its dated bullet is newly added — an
-			// already-annotated mirror (or a mirror memory does not hold) is a no-op,
-			// so a bounded re-scan never double-counts engagement.
-			if !ok || !annotateOutcome(n, date, bullet) {
+		if verdictText != "" {
+			// A verdict is folded only when its verdict text is not already present
+			// (any date) — an already-annotated mirror, or one memory does not hold,
+			// is a no-op, so a bounded re-scan never double-counts engagement.
+			if !ok || outcomeHasVerdict(n.Body, verdictText) {
 				return false, nil
 			}
+			n.Body = appendOutcomeBullet(n.Body, date, bullet)
 			markDirty(alias)
 		} else if ok && annotateOutcome(n, date, bullet) {
 			markDirty(alias) // best-effort trace; the floor is the feedback dedupe key
 		}
-		sc.refs[ref+" "+at] = true
+		sc.refs[ref+" "+tsUnix] = true
 		for _, s := range subjects {
 			sc.subjects[s] = true
-			bumps = append(bumps, engagementBump{nodeID: s, engaged: engaged, at: at})
+			bumps[ref+"\x00"+s] = db.EngagementBump{NodeID: s, Engaged: engaged, At: stamp}
 		}
 		return true, nil
 	}
 
-	// (A) inbox_feedback — append-only, floor-driven.
+	// (A) inbox_feedback — append-only, floor-driven. InteractionsIngested counts
+	// distinct feedback ids, so a feedback item on several situations is one.
 	feedback, ferr := p.db.ListInteractionFeedback(floor)
 	if ferr != nil {
 		return nil, 0, 0, floor, ferr
 	}
+	foldedFB := map[int64]bool{}
 	for _, fb := range feedback {
 		if fb.SituationID != 0 {
 			ref := fmt.Sprintf("act:inbox_feedback:%d", fb.ID)
@@ -141,28 +193,32 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 			if fb.Rating < 0 {
 				bullet = "owner dismissed"
 			}
-			folded, fErr := fold(fb.SituationID, ref, strconv.FormatInt(fb.TSUnix, 10), fb.Date, bullet, fb.Rating > 0, false)
+			folded, fErr := fold(fb.SituationID, ref, strconv.FormatInt(fb.TSUnix, 10), fb.At, fb.Date, bullet, "", fb.Rating > 0)
 			if fErr != nil {
 				return nil, 0, 0, floor, fErr
 			}
 			if folded {
-				interactions++
+				foldedFB[fb.ID] = true
 			}
 		}
 		if fb.ID > newFloor {
 			newFloor = fb.ID // consumed whether or not it mapped to an entity
 		}
 	}
+	interactions += len(foldedFB)
 
-	// (B) situation verdicts — bounded idempotent re-scan (no floor).
-	sits, serr := p.db.ListInteractionSituations()
+	// (B) situation verdicts — bounded idempotent re-scan (no floor): a situation
+	// terminal for longer than interactionRescanWindowDays is skipped, so the
+	// unbounded terminal backlog never rides every run.
+	since := time.Now().AddDate(0, 0, -interactionRescanWindowDays).UTC().Format(time.RFC3339)
+	sits, serr := p.db.ListInteractionSituations(since)
 	if serr != nil {
 		return nil, 0, 0, floor, serr
 	}
 	for _, s := range sits {
 		ref := fmt.Sprintf("act:situations:%d", s.ID)
 		bullet, engaged := verdictBullet(s)
-		folded, fErr := fold(s.ID, ref, strconv.FormatInt(s.TSUnix, 10), s.Date, bullet, engaged, true)
+		folded, fErr := fold(s.ID, ref, strconv.FormatInt(s.TSUnix, 10), s.At, s.Date, bullet, bullet, engaged)
 		if fErr != nil {
 			return nil, 0, 0, floor, fErr
 		}
@@ -198,15 +254,20 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 		}
 	}
 
-	// Aggregate writes AFTER the commit succeeded. A per-entity bump failure is
-	// logged, not fatal — the floor still advances (the annotation is durable), so
-	// a rare lost count is preferred over a re-scan double-count.
-	for _, b := range bumps {
-		if berr := p.db.BumpEngagement(b.nodeID, b.engaged, b.at); berr != nil {
-			p.logf("memory: interactions: bump engagement %s: %v", b.nodeID, berr)
-			continue
+	// Aggregate writes AFTER the commit, all-or-nothing: if ANY bump fails the tx
+	// rolls back and we HOLD the feedback floor (return floor + error) so the whole
+	// batch re-scans next run — because the tx left nothing partially applied, the
+	// re-scan re-bumps cleanly with no double-count (feedback annotations are
+	// idempotent; the situation path re-folds only if its verdict is still novel).
+	if len(bumps) > 0 {
+		batch := make([]db.EngagementBump, 0, len(bumps))
+		for _, b := range bumps {
+			batch = append(batch, b)
 		}
-		bumped++
+		if berr := p.db.BumpEngagements(batch); berr != nil {
+			return nil, 0, 0, floor, fmt.Errorf("memory: interactions: bump engagement: %w", berr)
+		}
+		bumped = len(batch)
 	}
 
 	if len(sc.refs) == 0 {
@@ -217,14 +278,45 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 
 // annotateOutcome appends a dated owner-action bullet to the mirror's "## Outcome"
 // section, returning whether the body actually changed (false when the identical
-// bullet is already present — the idempotent re-scan guard).
+// dated bullet is already present — the feedback path's idempotent re-scan guard,
+// keyed on the stable created_at date).
 func annotateOutcome(n *Node, date, text string) bool {
-	nb := appendToSection(n.Body, outcomeHeadingRe, "## Outcome", fmt.Sprintf("- %s: %s\n", date, text))
+	nb := appendOutcomeBullet(n.Body, date, text)
 	if nb == n.Body {
 		return false
 	}
 	n.Body = nb
 	return true
+}
+
+// appendOutcomeBullet appends "- <date>: <text>" to the "## Outcome" section
+// (appendToSection is verbatim-idempotent).
+func appendOutcomeBullet(body, date, text string) string {
+	return appendToSection(body, outcomeHeadingRe, "## Outcome", fmt.Sprintf("- %s: %s\n", date, text))
+}
+
+// outcomeHasVerdict reports whether the mirror's "## Outcome" already carries a
+// bullet with the given verdict text (ANY date). The situation-verdict novelty
+// key is the verdict TEXT, not the dated line, so re-scanning after AttachSignal
+// moved updated_at (hence the bullet date) never re-folds the same verdict; a
+// genuinely changed verdict is different text and does append.
+func outcomeHasVerdict(body, verdictText string) bool {
+	inOutcome := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			inOutcome = trimmed == "## Outcome"
+			continue
+		}
+		if !inOutcome || !strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		// A bullet is "- <date>: <verdict text>"; compare the text after the date.
+		if _, rest, ok := strings.Cut(strings.TrimPrefix(trimmed, "- "), ": "); ok && rest == verdictText {
+			return true
+		}
+	}
+	return false
 }
 
 // verdictBullet renders a terminal situation's owner-action bullet text and
@@ -242,26 +334,10 @@ func verdictBullet(s db.InteractionSituation) (bullet string, engaged bool) {
 		if len(links) == 0 {
 			return "converted", true
 		}
-		return "converted to " + joinAnd(links), true
+		return "converted to " + strings.Join(links, " and "), true
 	case "done":
 		return "owner resolved", true
 	default: // dismissed
 		return "owner dismissed", false
-	}
-}
-
-// joinAnd renders a short list as "a" / "a and b" / "a and b and c".
-func joinAnd(parts []string) string {
-	switch len(parts) {
-	case 0:
-		return ""
-	case 1:
-		return parts[0]
-	default:
-		out := parts[0]
-		for _, p := range parts[1:] {
-			out += " and " + p
-		}
-		return out
 	}
 }

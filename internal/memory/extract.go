@@ -188,7 +188,7 @@ func validateRefs(checker messageChecker, eps []extractedEpisode) (kept []extrac
 // unchanged so the caller keeps its freeze-vs-drop disposition. The Slack
 // extractor passes a message-only registry; the Gmail extractor passes a
 // mail-only one — the disposition (batch freeze on error) is identical.
-func validateRefsVia(reg *ProvenanceRegistry, eps []extractedEpisode) (kept []extractedEpisode, dropped int, err error) {
+func validateRefsVia(reg *provenanceRegistry, eps []extractedEpisode) (kept []extractedEpisode, dropped int, err error) {
 	for _, ep := range eps {
 		var surviving []episodeRef
 		for _, ref := range ep.Refs {

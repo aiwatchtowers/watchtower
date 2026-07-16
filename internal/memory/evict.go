@@ -23,9 +23,16 @@ type RetentionInputs struct {
 	// (engaged_count − dismissed_count summed over its linking entities, Phase-5
 	// 5D memory_engagement). Only a positive net raises importance — a dismissed
 	// or never-touched episode gets no bonus and never scores below the
-	// un-engaged baseline.
+	// un-engaged baseline. The net is CLAMPED to [-engagementNetClamp,
+	// +engagementNetClamp] before scoring so one heavily-engaged entity cannot
+	// pin an episode in memory forever (a runaway counter is bounded).
 	Engagement int
 }
+
+// engagementNetClamp bounds the net-engagement contribution to importance: a
+// net beyond ±3 is clamped, so no single entity's counter can dominate the
+// retention score. A code const like the other retention weights.
+const engagementNetClamp = 3
 
 // Retention constants live in code, not config (mirrors belief_math.go): one
 // auditable place for the eviction math.
@@ -63,8 +70,14 @@ func RetentionScore(in RetentionInputs) float64 {
 	if in.OwnerTouched {
 		importance += retentionOwnerBonus
 	}
-	if in.Engagement > 0 {
-		importance += retentionEngagementWeight * float64(in.Engagement)
+	net := in.Engagement
+	if net > engagementNetClamp {
+		net = engagementNetClamp
+	} else if net < -engagementNetClamp {
+		net = -engagementNetClamp
+	}
+	if net > 0 { // only positive net raises importance (a dismissed entity never scores below baseline)
+		importance += retentionEngagementWeight * float64(net)
 	}
 	return recency * importance
 }

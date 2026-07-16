@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
 
@@ -126,24 +127,6 @@ func TestGmailExtract_ShapeDegenerateFreezesWatermark(t *testing.T) {
 	assert.Equal(t, float64(u1), wm)
 }
 
-// TestGmailExtract_AbsentGmailTablesNoOp: with gmail_messages absent, the gated
-// Gmail extractor is a clean no-op — no error, watermark unmoved.
-func TestGmailExtract_AbsentGmailTablesNoOp(t *testing.T) {
-	v, d := newTestVault(t), newTestDB(t)
-	seedWorkspaceRow(t, d)
-	_, err := d.Exec(`DROP TABLE gmail_messages`)
-	require.NoError(t, err)
-
-	p := NewPipeline(d, v, &fakeGen{reply: func(string) (string, error) { return "[]", nil }}, gmailPipelineConfig(), t.Logf)
-	stats, err := p.Run(context.Background())
-	require.NoError(t, err)
-	assert.Zero(t, stats.GmailEpisodes)
-
-	wm, err := d.MemoryGmailWatermark()
-	require.NoError(t, err)
-	assert.Zero(t, wm)
-}
-
 // TestGmailExtract_GateOffNoOp: with memory.sources.gmail false, no Gmail work
 // happens even when gmail_messages has rows — watermark unmoved, no episodes.
 func TestGmailExtract_GateOffNoOp(t *testing.T) {
@@ -164,6 +147,161 @@ func TestGmailExtract_GateOffNoOp(t *testing.T) {
 	wm, err := d.MemoryGmailWatermark()
 	require.NoError(t, err)
 	assert.Zero(t, wm, "gmail watermark unmoved when the source is dark")
+}
+
+// liveEpisodeNodes returns the ids of every non-tombstone episode node.
+func liveEpisodeNodes(t *testing.T, d *db.DB) []string {
+	t.Helper()
+	nodes, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	var ids []string
+	for _, n := range nodes {
+		if n.Type == "episode" && n.Status != "tombstone" {
+			ids = append(ids, n.ID)
+		}
+	}
+	return ids
+}
+
+// gmailReplyFor returns an extractor reply referencing every mail:<id> shown in
+// the user prompt — so a run that only sees the newest messages (a reply, or a
+// chunk-cap straddle) refs exactly those.
+func gmailReplyFor(title string) func(string) (string, error) {
+	return func(user string) (string, error) {
+		var refs [][2]string
+		for _, line := range strings.Split(user, "\n") {
+			i := strings.Index(line, "(mail:")
+			if i < 0 {
+				continue
+			}
+			rest := line[i+len("(mail:"):]
+			id := rest[:strings.IndexByte(rest, ')')]
+			tsStart := strings.IndexByte(line, '[') + 1
+			ts := line[tsStart:strings.IndexByte(line, ']')]
+			refs = append(refs, [2]string{"mail:" + id, ts})
+		}
+		if len(refs) == 0 {
+			return "[]", nil
+		}
+		return emailEpisodeJSON(title, refs...), nil
+	}
+}
+
+// TestMemory_GmailThreadIdempotent_ReplyArrives: a thread extracted in run 1,
+// then a reply arrives and run 2 re-extracts it — the SAME episode node id
+// survives (no duplicate), and its provenance is the UNION of both runs' refs.
+func TestMemory_GmailThreadIdempotent_ReplyArrives(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	iso1, _ := gmailMsgTime(0)
+	iso2, _ := gmailMsgTime(60)
+	seedGmailMessage(t, d, "m1", "thr-1", "a@example.com", "Ann", "Budget", "Q?", iso1)
+	seedGmailMessage(t, d, "m2", "thr-1", "b@example.com", "Bob", "Re: Budget", "A.", iso2)
+
+	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: gmailReplyFor("Budget thread")}
+	p := NewPipeline(d, v, gen, gmailPipelineConfig(), t.Logf)
+	_, err := p.Run(context.Background())
+	require.NoError(t, err)
+
+	ids1 := liveEpisodeNodes(t, d)
+	require.Len(t, ids1, 1, "one episode after run 1")
+	firstID := ids1[0]
+
+	// A reply lands with a newer internal_date (above the Gmail watermark).
+	iso3, u3 := gmailMsgTime(120)
+	seedGmailMessage(t, d, "m3", "thr-1", "a@example.com", "Ann", "Re: Budget", "Thanks.", iso3)
+
+	_, err = p.Run(context.Background())
+	require.NoError(t, err)
+
+	ids2 := liveEpisodeNodes(t, d)
+	require.Len(t, ids2, 1, "re-extraction UPDATES in place — no second episode")
+	assert.Equal(t, firstID, ids2[0], "same node id survives the update")
+
+	node, err := v.ReadNode(firstID)
+	require.NoError(t, err)
+	assert.Contains(t, node.Body, "mail:m1", "run-1 refs preserved")
+	assert.Contains(t, node.Body, "mail:m2")
+	assert.Contains(t, node.Body, "mail:m3", "run-2 reply ref unioned in")
+
+	wm, err := d.MemoryGmailWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(u3), wm, "watermark trails the reply")
+}
+
+// TestMemory_GmailThreadIdempotent_ChunkCapStraddle: a thread whose messages are
+// split across two runs by the chunk cap folds into ONE episode (same node id),
+// provenance unioned — the straddle case of the thread idempotency contract.
+func TestMemory_GmailThreadIdempotent_ChunkCapStraddle(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	iso1, _ := gmailMsgTime(0)
+	iso2, u2 := gmailMsgTime(60)
+	seedGmailMessage(t, d, "m1", "thr-1", "a@example.com", "Ann", "Budget", "Q?", iso1)
+	seedGmailMessage(t, d, "m2", "thr-1", "b@example.com", "Bob", "Re: Budget", "A.", iso2)
+
+	cfg := gmailPipelineConfig()
+	cfg.MaxChunkMessages = 1 // run 1 loads only m1; run 2 loads m2 (same thread)
+	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: gmailReplyFor("Budget thread")}
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	_, err := p.Run(context.Background())
+	require.NoError(t, err)
+	ids1 := liveEpisodeNodes(t, d)
+	require.Len(t, ids1, 1)
+	firstID := ids1[0]
+
+	_, err = p.Run(context.Background())
+	require.NoError(t, err)
+	ids2 := liveEpisodeNodes(t, d)
+	require.Len(t, ids2, 1, "the straddling thread stays one episode")
+	assert.Equal(t, firstID, ids2[0])
+
+	node, err := v.ReadNode(firstID)
+	require.NoError(t, err)
+	assert.Contains(t, node.Body, "mail:m1")
+	assert.Contains(t, node.Body, "mail:m2")
+
+	wm, err := d.MemoryGmailWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(u2), wm)
+}
+
+// TestMemory_GmailPoisonThreadTruncated: a thread larger than the per-thread cap
+// is truncated to its newest N messages, the prompt carries the truncation note,
+// and extraction still succeeds.
+func TestMemory_GmailPoisonThreadTruncated(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	const total = 5
+	for i := 0; i < total; i++ {
+		iso, _ := gmailMsgTime(i * 10)
+		seedGmailMessage(t, d, fmt.Sprintf("m%d", i), "thr-1", "a@example.com", "Ann", "Big thread", "line", iso)
+	}
+
+	cfg := gmailPipelineConfig()
+	cfg.MaxWindowMessages = 2 // cap each thread to its newest 2 messages
+
+	var seenPrompt string
+	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: func(user string) (string, error) {
+		seenPrompt = user
+		return gmailReplyFor("Big thread")(user)
+	}}
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.GmailEpisodes, "the truncated thread still extracts")
+	assert.Contains(t, seenPrompt, "older message(s) omitted", "prompt carries the truncation note")
+	// Only the newest 2 messages are shown (m3, m4); m0-m2 omitted from the prompt.
+	assert.Contains(t, seenPrompt, "mail:m4")
+	assert.NotContains(t, seenPrompt, "mail:m0")
+
+	// The watermark still trails EVERY loaded message (incl. the truncated older ones).
+	_, uLast := gmailMsgTime((total - 1) * 10)
+	wm, err := d.MemoryGmailWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(uLast), wm, "watermark covers the dropped older messages too")
 }
 
 // TestListGmailThreadsForExtract_BoundaryDrain: the same-second boundary is

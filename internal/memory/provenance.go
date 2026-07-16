@@ -5,23 +5,31 @@ import (
 	"strings"
 )
 
-// This file is the MEM-12 provenance-resolver registry: the single write-time
-// seam that answers "does this provenance ref resolve against a raw source of
+// This file is the MEM-12 provenance-resolver registry: the write-time seam
+// that answers "does this provenance ref resolve against a raw source of
 // record?" for every ref scheme the vault can carry. It generalizes the two
 // hardcoded checks that predate it — the Slack message check (MessageExists,
 // MEM-01) and the chat: owner-turn check (ChatTablesPresent + OwnerChatTurnExists,
 // MEM-09) — into one interface with one resolver per scheme.
 //
+// There is no single global registry: each write site validates through a
+// registry SCOPED to the schemes valid at that site, so a scheme can never be
+// smuggled in where it does not belong. The Slack extractor validates through a
+// message-only registry (extractorRegistry, built from the checkMsg seam so the
+// MEM-01 lookup-freeze test keeps biting); the Gmail extractor through a
+// mail-only registry (built once per run); the belief surface through the
+// pipeline's chat+act registry (p.registry, the only schemes validateChatRefs
+// routes). A ref of a scheme the site's registry does not carry is rejected at
+// write and counted like an invented ref (MEM-12), never written.
+//
 // Contract (resolved ambiguity #8): the registry unifies the LOOKUP, never the
 // POLICY. Validate returns (ok, registered, err); the CALLER keeps its
 // disposition — the extractor freezes the window on a lookup error (MEM-01/04),
-// the belief pass soft-drops a chat: lookup error. An unregistered scheme
-// (registered=false) is rejected at write and counted like an invented ref
-// (MEM-12), never written.
+// the belief pass soft-drops a chat:/act: lookup error.
 
-// ProvenanceResolver answers whether one provenance ref of its scheme resolves
+// provenanceResolver answers whether one provenance ref of its scheme resolves
 // against a raw source of record. One resolver is registered per ref scheme.
-type ProvenanceResolver interface {
+type provenanceResolver interface {
 	// Scheme is the ref grammar's scheme this resolver owns: "" (Slack message),
 	// "chat", "mail", "act". It is the key schemeOf classifies a ref into.
 	Scheme() string
@@ -31,21 +39,20 @@ type ProvenanceResolver interface {
 	Validate(ref episodeRef) (ok bool, err error)
 }
 
-// ProvenanceRegistry dispatches a ref to the resolver registered for its
-// scheme. Built once in NewPipeline with the message and chat resolvers (mail
-// and act join in Tasks 4/6).
-type ProvenanceRegistry struct {
-	byScheme map[string]ProvenanceResolver
+// provenanceRegistry dispatches a ref to the resolver registered for its
+// scheme. Callers build one scoped to their write site's valid schemes.
+type provenanceRegistry struct {
+	byScheme map[string]provenanceResolver
 }
 
 // newProvenanceRegistry indexes the resolvers by their scheme. A later resolver
 // for the same scheme wins (construction-time wiring only, never a runtime race).
-func newProvenanceRegistry(resolvers ...ProvenanceResolver) *ProvenanceRegistry {
-	m := make(map[string]ProvenanceResolver, len(resolvers))
+func newProvenanceRegistry(resolvers ...provenanceResolver) *provenanceRegistry {
+	m := make(map[string]provenanceResolver, len(resolvers))
 	for _, r := range resolvers {
 		m[r.Scheme()] = r
 	}
-	return &ProvenanceRegistry{byScheme: m}
+	return &provenanceRegistry{byScheme: m}
 }
 
 // schemeOf classifies a channel_id by the substring before its first colon: a
@@ -64,7 +71,7 @@ func schemeOf(channelID string) string {
 // resolver owns the ref's scheme (MEM-12: the ref is rejected at write, never
 // written); ok/err are the resolver's existence answer, which the caller
 // disposes of per its own freeze-vs-drop policy (resolved ambiguity #8).
-func (r *ProvenanceRegistry) Validate(ref episodeRef) (ok, registered bool, err error) {
+func (r *provenanceRegistry) Validate(ref episodeRef) (ok, registered bool, err error) {
 	res, found := r.byScheme[schemeOf(ref.ChannelID)]
 	if !found {
 		return false, false, nil
@@ -90,6 +97,32 @@ func (m messageResolver) Validate(ref episodeRef) (bool, error) {
 type chatTurnChecker interface {
 	ChatTablesPresent() (bool, error)
 	OwnerChatTurnExists(conversationID, ts int64) (bool, error)
+}
+
+// memoChatChecker wraps a chatTurnChecker and memoizes ChatTablesPresent for the
+// span of one validateChatRefs call: without it the chat resolver round-trips the
+// presence query once per chat ref. reset() is called at the start of each
+// validateChatRefs pass, so a chat table created lazily between runs is still
+// picked up on the next pass. OwnerChatTurnExists is NOT cached — it is per-ref.
+type memoChatChecker struct {
+	db      chatTurnChecker
+	checked bool
+	present bool
+	err     error
+}
+
+func (m *memoChatChecker) reset() { m.checked = false }
+
+func (m *memoChatChecker) ChatTablesPresent() (bool, error) {
+	if !m.checked {
+		m.present, m.err = m.db.ChatTablesPresent()
+		m.checked = true
+	}
+	return m.present, m.err
+}
+
+func (m *memoChatChecker) OwnerChatTurnExists(conversationID, ts int64) (bool, error) {
+	return m.db.OwnerChatTurnExists(conversationID, ts)
 }
 
 // chatResolver is the scheme-"chat" resolver: it "resolves" a chat:<id> ref iff
@@ -148,9 +181,9 @@ type mailChecker interface {
 // mailResolver is the scheme-"mail" resolver: a mail:<message_id> ref resolves
 // iff a gmail_messages row with that id exists (resolved ambiguity #5 — identity
 // is the message id; the ref's ts carries the internal_date for age math but is
-// not re-validated here). Registered even when memory.sources.gmail is dark —
-// gmail_messages is a base table, and a mail: ref can only ever reach the vault
-// through the (independently gated) Gmail extractor.
+// not re-validated here). The Gmail extractor builds a mail-only registry from
+// it once per run; gmail_messages is a migration-guaranteed base table, so a
+// lookup failure is a genuine error (batch freeze), not a clean miss.
 type mailResolver struct{ db mailChecker }
 
 // mailRefPrefix marks an evidence/episode channel_id as a Gmail message
@@ -176,8 +209,13 @@ type interactionChecker interface {
 // malformed ref or a non-whitelisted table is a clean non-resolution (ok=false,
 // no error), so it drops like an invented ref. This existence check is what lets
 // newEvidenceLines mint owner-action rank for an act: ref (MEM-15) — the model
-// can propose the ref, but only a real interaction row makes it count.
-type actResolver struct{ db interactionChecker }
+// can propose the ref, but only a real interaction row makes it count. Drops are
+// logged here at the resolver, the same one consistent site as the chat
+// resolver's drop logs (belief-surface drop-logging parity).
+type actResolver struct {
+	db   interactionChecker
+	logf func(string, ...any)
+}
 
 // actRefPrefix marks an evidence channel_id as an owner-interaction reference
 // ("act:<table>:<row_id>"). It classifies as scheme "act" on its first colon
@@ -187,11 +225,24 @@ const actRefPrefix = "act:"
 func (actResolver) Scheme() string { return strings.TrimSuffix(actRefPrefix, ":") }
 
 func (a actResolver) Validate(ref episodeRef) (bool, error) {
+	logf := a.logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	table, id, ok := parseActRef(ref.ChannelID)
 	if !ok {
+		logf("memory: beliefs: act ref %s dropped (malformed ref, MEM-15)", ref.ChannelID)
 		return false, nil
 	}
-	return a.db.InteractionExists(table, id)
+	exists, err := a.db.InteractionExists(table, id)
+	if err != nil {
+		logf("memory: beliefs: act ref %s lookup: %v — dropped", ref.ChannelID, err)
+		return false, err
+	}
+	if !exists {
+		logf("memory: beliefs: act ref %s dropped (no such %s interaction row, MEM-15)", ref.ChannelID, table)
+	}
+	return exists, nil
 }
 
 // parseActRef splits an "act:<table>:<row_id>" channel id into its table and
@@ -212,12 +263,12 @@ func parseActRef(channelID string) (table string, id int64, ok bool) {
 	return table, id, true
 }
 
-// extractorRegistry is the registry the Slack episode extractor validates
-// against: the message resolver over the given checker (scheme ""). The
-// extractor only ever emits bare-channel refs, so any other scheme is
-// unregistered and rejected at write (MEM-12). It is built from the passed
-// checker rather than the pipeline's stored registry so the checkMsg
-// lookup-failure seam (pipeline_test.go) keeps freezing the watermark on error.
-func extractorRegistry(checker messageChecker) *ProvenanceRegistry {
+// extractorRegistry is the message-only registry the Slack episode extractor
+// validates against (scheme ""). The extractor only ever emits bare-channel
+// refs, so any other scheme is unregistered and rejected at write (MEM-12). It
+// is built per call from the passed checker (not the pipeline's chat+act
+// registry) so the checkMsg lookup-failure seam (pipeline_test.go) keeps
+// freezing the watermark on error.
+func extractorRegistry(checker messageChecker) *provenanceRegistry {
 	return newProvenanceRegistry(messageResolver{checker})
 }

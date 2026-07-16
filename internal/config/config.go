@@ -216,11 +216,15 @@ type MemorySurfacesConfig struct {
 
 // MemorySourcesConfig gates the two Phase-5 slice-1 memory sources
 // independently — each gated path is a byte-identical no-op when its flag is
-// off, and the two flags have independent blast radii from each other and
-// from Semantic.Enabled/Surfaces.*. All default false (dark by default).
+// off, and the two flags have independent blast radii from each other AND from
+// Semantic.Enabled/Surfaces.*. This independence is literal: Gmail gates BOTH the
+// thread->episode extractor AND sender->person seeding, and Actions runs the
+// mechanical interaction ingest as its OWN Run step (not a semantic sub-step), so
+// its annotations + engagement land even with the semantic tier off (the staged
+// act: refs are simply unused then). All default false (dark by default).
 type MemorySourcesConfig struct {
 	Gmail   bool `mapstructure:"gmail"`   // Gmail thread->episode extractor + sender->person seeding (default: false)
-	Actions bool `mapstructure:"actions"` // mechanical interaction ingest (owner-action evidence, engagement aggregates) (default: false)
+	Actions bool `mapstructure:"actions"` // mechanical interaction ingest (owner-action evidence, engagement aggregates), its own Run step (default: false)
 }
 
 type Config struct {

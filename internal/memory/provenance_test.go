@@ -30,18 +30,31 @@ func TestSchemeOf(t *testing.T) {
 
 // TestProvenanceRegistryDispatchesMessage: a bare-channel ref routes to the
 // message resolver (scheme ""), which keys existence on the messages table.
+// fullRegistry builds a registry carrying every scheme's resolver — the shape
+// the MEM-12 dispatch guards exercise. Production has no single global registry;
+// each write site scopes its own (extractor: message-only; gmail: mail-only;
+// belief surface: chat+act, the pipeline's p.registry).
+func fullRegistry(d *db.DB) *provenanceRegistry {
+	return newProvenanceRegistry(
+		messageResolver{d},
+		chatResolver{db: d, logf: func(string, ...any) {}},
+		mailResolver{d},
+		actResolver{db: d},
+	)
+}
+
 func TestProvenanceRegistryDispatchesMessage(t *testing.T) {
-	v, d := newTestVault(t), newTestDB(t)
+	d := newTestDB(t)
 	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1GEN', '100.000100', 'U1', 'hi')`)
 	require.NoError(t, err)
-	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+	reg := fullRegistry(d)
 
-	ok, registered, err := p.registry.Validate(episodeRef{ChannelID: "C1GEN", TS: "100.000100"})
+	ok, registered, err := reg.Validate(episodeRef{ChannelID: "C1GEN", TS: "100.000100"})
 	require.NoError(t, err)
 	assert.True(t, registered, "a bare channel id is the registered message scheme")
 	assert.True(t, ok, "a real message resolves")
 
-	ok, registered, err = p.registry.Validate(episodeRef{ChannelID: "C1GEN", TS: "999.000000"})
+	ok, registered, err = reg.Validate(episodeRef{ChannelID: "C1GEN", TS: "999.000000"})
 	require.NoError(t, err)
 	assert.True(t, registered)
 	assert.False(t, ok, "a missing message does not resolve")
@@ -101,32 +114,33 @@ func TestProvenanceRegistryPropagatesLookupError(t *testing.T) {
 // resolver, which keys existence on the gmail_messages id only (resolved
 // ambiguity #5); a missing id is a clean non-resolution, never an error.
 func TestProvenanceRegistryDispatchesMail(t *testing.T) {
-	v, d := newTestVault(t), newTestDB(t)
+	d := newTestDB(t)
 	seedGmailMessage(t, d, "msg-1", "thr-1", "a@example.com", "A", "Subj", "body", recentISO(0))
-	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+	reg := fullRegistry(d)
 
-	ok, registered, err := p.registry.Validate(episodeRef{ChannelID: "mail:msg-1", TS: "1720000000"})
+	ok, registered, err := reg.Validate(episodeRef{ChannelID: "mail:msg-1", TS: "1720000000"})
 	require.NoError(t, err)
 	assert.True(t, registered, "mail is a registered scheme")
 	assert.True(t, ok, "an existing gmail message resolves by id")
 
-	ok, registered, err = p.registry.Validate(episodeRef{ChannelID: "mail:missing", TS: "1720000000"})
+	ok, registered, err = reg.Validate(episodeRef{ChannelID: "mail:missing", TS: "1720000000"})
 	require.NoError(t, err)
 	assert.True(t, registered)
 	assert.False(t, ok, "a missing message id does not resolve")
 }
 
-// TestGmailMessageExistsAbsentTable: GmailMessageExists tolerates an absent
-// gmail_messages table as a clean miss (the chat-resolver precedent), never an
-// error.
+// TestGmailMessageExistsAbsentTable: gmail_messages is a migration-guaranteed
+// base table, so a query failure (here, the table dropped out from under the
+// check) propagates as a genuine lookup error rather than being masked as a
+// clean miss — a masked miss would let the extractor's MEM-01 freeze silently
+// pass a batch it never actually validated.
 func TestGmailMessageExistsAbsentTable(t *testing.T) {
 	d := newTestDB(t)
 	_, err := d.Exec(`DROP TABLE gmail_messages`)
 	require.NoError(t, err)
 
-	ok, err := d.GmailMessageExists("anything")
-	require.NoError(t, err, "an absent gmail_messages table is a clean miss, not an error")
-	assert.False(t, ok)
+	_, err = d.GmailMessageExists("anything")
+	require.Error(t, err, "a failed gmail_messages lookup propagates, not masked as a miss")
 }
 
 // errMailChecker fails GmailMessageExists with a lookup error — the mail analog

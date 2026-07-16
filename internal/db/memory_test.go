@@ -425,6 +425,17 @@ func TestDropMemoryIndex(t *testing.T) {
 			t.Errorf("%s has %d rows after drop, want 0", table, n)
 		}
 	}
+
+	// The drop disables foreign_keys for the duration and must re-enable it: a
+	// reindex left with FK enforcement stuck OFF silently voids integrity for
+	// every later statement on the connection (fix #5).
+	var fk int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		t.Fatalf("reading foreign_keys: %v", err)
+	}
+	if fk != 1 {
+		t.Errorf("foreign_keys = %d after DropMemoryIndex, want 1 (re-enabled)", fk)
+	}
 }
 
 func TestRecordEntityHintsDedupesByPair(t *testing.T) {

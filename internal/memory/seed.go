@@ -12,8 +12,31 @@ import (
 
 // SeedConfig bounds the mechanical entity seeding pass.
 type SeedConfig struct {
-	MinMessages int // people need at least this many messages in the window
-	WindowDays  int // activity lookback for people and channels
+	MinMessages int  // people/senders need at least this many messages in the window
+	WindowDays  int  // activity lookback for people and channels
+	Gmail       bool // seed Gmail senders as person entities (memory.sources.gmail)
+}
+
+// machineSenderLocalParts are the local-part substrings that mark an email
+// address as an automated/no-reply sender rather than a human worth a person
+// entity. Matched case-insensitively against the address's local part. A code
+// const (not config): the list is a definitional noise filter, not a tuning
+// knob.
+var machineSenderLocalParts = []string{
+	"no-reply", "noreply", "do-not-reply", "donotreply",
+	"notifications", "mailer-daemon", "postmaster", "bounce",
+}
+
+// isMachineSender reports whether an email's local part looks automated (any
+// machineSenderLocalParts substring, case-insensitive) — dropped before seeding.
+func isMachineSender(email string) bool {
+	local := strings.ToLower(emailLocalPart(email))
+	for _, m := range machineSenderLocalParts {
+		if strings.Contains(local, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // seedCandidate is one entity the seeding pass may create: a display name,
@@ -212,12 +235,19 @@ func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate
 	return out, rows.Err()
 }
 
-// seedGmailSenders returns one candidate per distinct from_email that sent a
-// gmail message inside the window (internal_date unix > since), titled from
-// from_name (falling back to the email's local-part), aliased by the lower-cased
-// email address. There is no message-count threshold beyond "sent >=1 in the
-// window": external senders are sparse and the seed_min_messages floor is
-// Slack-specific.
+// seedGmailSenders returns one candidate per distinct from_email that sent at
+// least cfg.MinMessages gmail messages inside the window (internal_date unix >
+// since), titled from from_name (falling back to the email's local-part),
+// aliased by the lower-cased email address. It is a no-op unless cfg.Gmail
+// (memory.sources.gmail) is on — the source seeds no senders when dark, so the
+// "independently dark" contract is literally true.
+//
+// Two noise gates keep the person graph from filling with automated traffic:
+//   - a min-message threshold (SeedConfig.MinMessages, the same floor people
+//     use): a one-off sender is not worth a person entity (the plan's "external
+//     senders are sparse" rationale was empirically wrong);
+//   - a machine-sender pattern filter (isMachineSender): no-reply@, notifications@,
+//     mailer-daemon@ and friends are dropped no matter how high their volume.
 //
 // Identity stitching is free (resolved ambiguity, §5A): SeedEntities's
 // LookupMemoryAlias(aliases[0]) idempotency check unifies a sender whose email
@@ -227,19 +257,21 @@ func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate
 //
 // internal_date is stored as an RFC3339 string by the Gmail sync (not the raw
 // ms-epoch API value), so strftime('%s', internal_date) yields its whole-second
-// unix time for the window comparison.
-func seedGmailSenders(database *db.DB, _ SeedConfig, since float64) ([]seedCandidate, error) {
+// unix time for the window comparison. gmail_messages is a migration-guaranteed
+// base table, so a query failure propagates rather than being masked.
+func seedGmailSenders(database *db.DB, cfg SeedConfig, since float64) ([]seedCandidate, error) {
+	if !cfg.Gmail {
+		return nil, nil // source dark — seed no senders
+	}
 	rows, err := database.Query(`
 		SELECT lower(from_email) AS email, MAX(from_name) AS name
 		FROM gmail_messages
 		WHERE from_email != '' AND internal_date != ''
 		  AND CAST(strftime('%s', internal_date) AS INTEGER) > ?
 		GROUP BY lower(from_email)
-		ORDER BY email`, since)
+		HAVING COUNT(*) >= ?
+		ORDER BY email`, since, cfg.MinMessages)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such table") {
-			return nil, nil // gmail_messages absent — no senders to seed (a clean no-op)
-		}
 		return nil, fmt.Errorf("memory: seed gmail senders query: %w", err)
 	}
 	defer rows.Close()
@@ -249,6 +281,9 @@ func seedGmailSenders(database *db.DB, _ SeedConfig, since float64) ([]seedCandi
 		var email, name string
 		if err := rows.Scan(&email, &name); err != nil {
 			return nil, fmt.Errorf("memory: seed gmail senders scan: %w", err)
+		}
+		if isMachineSender(email) {
+			continue // automated/no-reply sender — never a person entity
 		}
 		out = append(out, seedCandidate{
 			title:   firstNonEmpty(name, emailLocalPart(email)),

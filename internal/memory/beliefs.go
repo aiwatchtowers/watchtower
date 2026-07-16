@@ -376,6 +376,7 @@ func newEvidenceLines(refs []episodeRef, op beliefOp) []beliefEvidence {
 // owner-writebacks re-scanned next run — unlike the episode extractor's fatal
 // MEM-01 lookup freeze).
 func (p *Pipeline) validateChatRefs(refs []episodeRef) (kept []episodeRef, dropped int) {
+	p.chatChecker.reset() // one ChatTablesPresent round-trip per call, not per chat ref
 	for _, r := range refs {
 		if !isChatRef(r.ChannelID) && !isActRef(r.ChannelID) {
 			kept = append(kept, r)

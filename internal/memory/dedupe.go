@@ -26,6 +26,13 @@ var provenanceHeadingRe = regexp.MustCompile(`(?m)^## Provenance[ \t]*$`)
 // id wins (ULIDs sort by creation time, so the lexicographically smaller id is
 // older): Merge(loser=newer, winner=older) tombstones the newer and the
 // resolver chases it back. Closed/long/tombstone episodes are out of scope.
+//
+// This pass is Slack-SCOPED: a Gmail episode carries a unique mail:<message_id>
+// as its first provenance ref, so two runs' extractions of one thread never
+// share a bucket here. Gmail thread idempotency is instead guaranteed at WRITE
+// time by the stable "gmailthread:<thread_id>" alias (buildGmailEpisodeNodes
+// updates the existing episode in place), so a mail-ref episode is deliberately
+// skipped — it can never be a retry duplicate needing a mechanical merge.
 // maxMerges caps merges per run; <= 0 means unlimited. A per-node read failure
 // is skipped-and-logged (the package quarantine convention) so one corrupted
 // candidate never stops the pass.
@@ -52,6 +59,9 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 			continue // no provenance key to match on
 		}
 		ch := refs[0].ChannelID
+		if schemeOf(ch) == "mail" {
+			continue // Gmail thread idempotency is alias-keyed, not dedupe-keyed (Slack-scoped)
+		}
 		byChannel[ch] = append(byChannel[ch], newEpCandidate(row.ID, refs))
 	}
 
