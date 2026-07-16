@@ -30,6 +30,13 @@ func testDeps(t *testing.T) Deps {
 
 	cfg := &config.Config{
 		ActiveWorkspace: "test-workspace",
+		// Any existing non-claude binary: tests exercising the AI error path must
+		// fail instantly instead of finding the real claude CLI on a dev machine.
+		// A real CLI here launches an actual API conversation whose --mcp-config
+		// points back at this test binary, which re-runs the suite — a fork bomb
+		// of orphaned claude processes (FindBinary falls back to PATH search, so
+		// a nonexistent path would not be enough).
+		ClaudePath: "/usr/bin/false",
 		Workspaces: map[string]*config.WorkspaceConfig{
 			"test-workspace": {SlackToken: "xoxp-test"},
 		},
@@ -1275,8 +1282,9 @@ func TestRunCatchupWithMessagesActiveContext(t *testing.T) {
 	recentTS := fmt.Sprintf("%d.000001", time.Now().Add(-1*time.Hour).Unix())
 	seedMessage(t, r.deps.DB, "C001", recentTS, "U001", "hello everyone")
 
-	// Don't cancel context — let the AI call actually attempt (and fail since no claude binary)
-	// The AI call will fail with "claude CLI error" which is handled gracefully
+	// Don't cancel context — let the AI call actually attempt and fail fast
+	// (testDeps pins ClaudePath to /usr/bin/false). The AI call fails with
+	// "claude CLI error" which is handled gracefully.
 	r.runCatchup()
 
 	// Streaming should be cleaned up
@@ -1292,7 +1300,7 @@ func TestProcessInputAIQueryPath(t *testing.T) {
 	r, _ := newTestREPL(t)
 
 	// Non-slash input should go to runAIQuery
-	// This will fail since there's no claude binary, but exercises the code path
+	// Fails fast (testDeps pins ClaudePath to /usr/bin/false), but exercises the code path
 	r.processInput("tell me about recent discussions")
 
 	assert.False(t, r.streaming.Load())
