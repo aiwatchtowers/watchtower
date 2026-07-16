@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     style_profile_updated_at TEXT NOT NULL DEFAULT '',
     compose_last_run_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last situation composer run
     gmail_last_internal_date REAL NOT NULL DEFAULT 0,  -- Unix timestamp watermark for Gmail sync (see 00016)
-    memory_last_extracted_ts REAL NOT NULL DEFAULT 0  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
+    memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
+    memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
 );
 
 -- Users
@@ -1182,7 +1183,7 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     id            TEXT PRIMARY KEY,             -- ent_*/ep_*/sum_*/bel_*
     type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),
     tier          TEXT NOT NULL CHECK (tier IN ('short','long')),
-    status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed','tombstone')),
+    status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed','tombstone','shaken','retired')),  -- shaken/retired are belief-only (see 00018)
     redirect_to   TEXT,
     title         TEXT NOT NULL DEFAULT '',
     path          TEXT NOT NULL,                -- vault-relative file path
@@ -1206,4 +1207,16 @@ CREATE TABLE IF NOT EXISTS memory_node_stats (
 -- FTS5 index over node titles/bodies for memory_recall.
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     id UNINDEXED, title, body
+);
+
+-- Unresolved extractor entity hints, persisted for concept-entity promotion
+-- once a hint recurs across enough distinct episodes (see 00018). Runtime
+-- accumulation like memory_node_stats — excluded from the MEM-02 reindex-
+-- equivalence comparison and NOT cleared by a reindex.
+CREATE TABLE IF NOT EXISTS memory_entity_hints (
+    hint        TEXT NOT NULL,          -- normalized (lowercased, trimmed) hint text
+    episode_id  TEXT NOT NULL,          -- the ep_* node that emitted it (distinct-episode counting)
+    first_seen  TEXT NOT NULL,
+    promoted_to TEXT NOT NULL DEFAULT '', -- ent_* once a concept entity was created; '' until then
+    PRIMARY KEY (hint, episode_id)
 );

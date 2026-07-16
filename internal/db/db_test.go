@@ -104,6 +104,7 @@ func TestAllTablesExist(t *testing.T) {
 		"feed_items", "feed_state",
 		"gmail_messages", "gmail_auth_state",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
+		"memory_entity_hints",
 	}
 
 	for _, table := range expectedTables {
@@ -211,6 +212,76 @@ func TestMigration00017MemoryIndex(t *testing.T) {
 	if _, err := database.Exec(
 		`INSERT INTO memory_aliases (alias, node_id) VALUES ('alice', 'ent_x')`); err == nil {
 		t.Fatal("expected NOCASE PK violation for duplicate alias with different case")
+	}
+}
+
+func TestMigration00018MemorySemantic(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	// Ingest floor scalar on workspace (Task 13 reads/advances this).
+	var count int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = 'memory_last_ingested_situation_id'`,
+	).Scan(&count)
+	if err != nil || count != 1 {
+		t.Fatalf("workspace.memory_last_ingested_situation_id missing (count=%d err=%v)", count, err)
+	}
+
+	// Expanded memory_nodes.status CHECK accepts the new belief statuses.
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('bel_x', 'belief', 'long', 'shaken', 'beliefs/x.md', 'h', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("expected status='shaken' to be accepted post-migration: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('bel_y', 'belief', 'long', 'retired', 'beliefs/y.md', 'h', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("expected status='retired' to be accepted post-migration: %v", err)
+	}
+	// The CHECK still rejects values outside the (now five-member) enum.
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('ent_z', 'entity', 'long', 'gone', 'entities/z.md', 'h', '2026-07-16T00:00:00Z')`); err == nil {
+		t.Fatal("expected CHECK violation for status='gone'")
+	}
+	// Existing statuses are still accepted (table-recreation preserved the
+	// original enum members).
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('ep_a', 'episode', 'short', 'active', 'episodes/a.md', 'h', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("expected status='active' to still be accepted: %v", err)
+	}
+
+	// memory_entity_hints: persists unresolved extractor hints for concept
+	// promotion; distinct-episode recurrence keyed on (hint, episode_id).
+	assertTableExists(t, database, "memory_entity_hints")
+	for _, col := range []string{"hint", "episode_id", "first_seen", "promoted_to"} {
+		var n int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('memory_entity_hints') WHERE name = ?`, col).Scan(&n)
+		if err != nil || n != 1 {
+			t.Fatalf("memory_entity_hints.%s missing (count=%d err=%v)", col, n, err)
+		}
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_entity_hints (hint, episode_id, first_seen) VALUES ('hsm', 'ep_1', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("inserting entity hint: %v", err)
+	}
+	// Same (hint, episode_id) is rejected — re-extracting the same episode
+	// must never double-count recurrence.
+	if _, err := database.Exec(
+		`INSERT INTO memory_entity_hints (hint, episode_id, first_seen) VALUES ('hsm', 'ep_1', '2026-07-16T00:00:01Z')`,
+	); err == nil {
+		t.Fatal("expected PK violation for duplicate (hint, episode_id)")
+	}
+	// A different episode contributing the same hint is a distinct row
+	// (recurrence counting is COUNT(*) per hint).
+	if _, err := database.Exec(
+		`INSERT INTO memory_entity_hints (hint, episode_id, first_seen) VALUES ('hsm', 'ep_2', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("inserting entity hint for second episode: %v", err)
 	}
 }
 
