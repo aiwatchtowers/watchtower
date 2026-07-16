@@ -777,6 +777,198 @@ func TestDisputePendingSetListClear(t *testing.T) {
 	}
 }
 
+// createChatTablesForTest creates the Swift-owned chat tables
+// (chat_conversations + chat_messages) exactly the way the Desktop app's GRDB
+// ensureTable helpers do. They are ABSENT from Go's goose schema (Phase-4
+// resolved ambiguity #1: created lazily by the Desktop app the first time the
+// owner opens a Discuss chat), so every Go chat reader must tolerate both their
+// presence and their absence.
+func createChatTablesForTest(t *testing.T, db *DB) {
+	t.Helper()
+	stmts := []string{
+		`CREATE TABLE chat_conversations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL DEFAULT '',
+			session_id TEXT,
+			context_type TEXT,
+			context_id TEXT,
+			created_at REAL NOT NULL,
+			updated_at REAL NOT NULL)`,
+		`CREATE TABLE chat_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			text TEXT NOT NULL,
+			created_at REAL NOT NULL)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatalf("create chat table: %v", err)
+		}
+	}
+}
+
+func insertChatConversation(t *testing.T, db *DB, contextType, contextID string) int64 {
+	t.Helper()
+	res, err := db.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+		VALUES ('', ?, ?, 0, 0)`, contextType, contextID)
+	if err != nil {
+		t.Fatalf("insert chat conversation: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("chat conversation id: %v", err)
+	}
+	return id
+}
+
+func insertChatMessage(t *testing.T, db *DB, convID int64, role, text string, createdAt float64) int64 {
+	t.Helper()
+	res, err := db.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at)
+		VALUES (?, ?, ?, ?)`, convID, role, text, createdAt)
+	if err != nil {
+		t.Fatalf("insert chat message: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("chat message id: %v", err)
+	}
+	return id
+}
+
+// TestChatTablesPresent: the guard reports false on a fresh goose schema (the
+// Swift chat tables do not exist) and true once they are created.
+func TestChatTablesPresent(t *testing.T) {
+	db := openTestDB(t)
+
+	present, err := db.ChatTablesPresent()
+	if err != nil {
+		t.Fatalf("ChatTablesPresent (absent): %v", err)
+	}
+	if present {
+		t.Fatal("chat tables must be reported absent on a fresh goose schema")
+	}
+
+	createChatTablesForTest(t, db)
+	present, err = db.ChatTablesPresent()
+	if err != nil {
+		t.Fatalf("ChatTablesPresent (present): %v", err)
+	}
+	if !present {
+		t.Fatal("chat tables must be reported present after creation")
+	}
+}
+
+// TestOwnerChatTurnExists: the MEM-09 authenticity check resolves only
+// role='user' turns of situation conversations — never an assistant turn, a
+// wrong ts, a non-situation conversation, or an unknown conversation.
+func TestOwnerChatTurnExists(t *testing.T) {
+	db := openTestDB(t)
+	createChatTablesForTest(t, db)
+	sit := insertChatConversation(t, db, "situation", "42")
+	other := insertChatConversation(t, db, "track", "9") // non-situation context
+	insertChatMessage(t, db, sit, "user", "owner said", 1720000000.0)
+	insertChatMessage(t, db, sit, "assistant", "secretary said", 1720000100.0)
+	insertChatMessage(t, db, other, "user", "elsewhere", 1720000200.0)
+
+	cases := []struct {
+		name string
+		conv int64
+		ts   int64
+		want bool
+	}{
+		{"owner user turn", sit, 1720000000, true},
+		{"assistant turn is not owner", sit, 1720000100, false},
+		{"wrong ts", sit, 1720000999, false},
+		{"non-situation conversation", other, 1720000200, false},
+		{"unknown conversation", 999, 1720000000, false},
+	}
+	for _, c := range cases {
+		got, err := db.OwnerChatTurnExists(c.conv, c.ts)
+		if err != nil {
+			t.Fatalf("%s: OwnerChatTurnExists: %v", c.name, err)
+		}
+		if got != c.want {
+			t.Errorf("%s: OwnerChatTurnExists(%d,%d) = %v, want %v", c.name, c.conv, c.ts, got, c.want)
+		}
+	}
+}
+
+// TestOwnerChatTurnExistsTruncatesFractionalSecond: created_at is a REAL unix
+// second; the evidence-line ts is whole seconds, so the lookup must match a
+// fractional-second turn against its truncated second (CAST ... AS INTEGER).
+func TestOwnerChatTurnExistsTruncatesFractionalSecond(t *testing.T) {
+	db := openTestDB(t)
+	createChatTablesForTest(t, db)
+	sit := insertChatConversation(t, db, "situation", "1")
+	insertChatMessage(t, db, sit, "user", "x", 1720000000.75)
+
+	ok, err := db.OwnerChatTurnExists(sit, 1720000000)
+	if err != nil {
+		t.Fatalf("OwnerChatTurnExists: %v", err)
+	}
+	if !ok {
+		t.Error("a fractional-second turn must match its truncated whole second")
+	}
+}
+
+// TestListOwnerChatTurns: only role='user' turns of situation conversations are
+// returned, ordered by id, filtered strictly above the floor, carrying the
+// situation context_id, whole-second ts, and verbatim text.
+func TestListOwnerChatTurns(t *testing.T) {
+	db := openTestDB(t)
+	createChatTablesForTest(t, db)
+	sit := insertChatConversation(t, db, "situation", "42")
+	other := insertChatConversation(t, db, "track", "9")
+	u1 := insertChatMessage(t, db, sit, "user", "first", 1720000000.0)
+	insertChatMessage(t, db, sit, "assistant", "reply", 1720000100.0)
+	u2 := insertChatMessage(t, db, sit, "user", "second", 1720000200.0)
+	insertChatMessage(t, db, other, "user", "elsewhere", 1720000300.0)
+
+	turns, err := db.ListOwnerChatTurns(0)
+	if err != nil {
+		t.Fatalf("ListOwnerChatTurns: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("ListOwnerChatTurns = %+v, want 2 user situation turns", turns)
+	}
+	if turns[0].ID != u1 || turns[1].ID != u2 {
+		t.Errorf("turn ids = [%d,%d], want [%d,%d]", turns[0].ID, turns[1].ID, u1, u2)
+	}
+	if turns[0].ConversationID != sit || turns[0].SituationID != "42" {
+		t.Errorf("turn0 conversation=%d situation=%q, want %d \"42\"", turns[0].ConversationID, turns[0].SituationID, sit)
+	}
+	if turns[0].TurnTS != 1720000000 {
+		t.Errorf("turn0 ts = %d, want 1720000000", turns[0].TurnTS)
+	}
+	if turns[0].Text != "first" {
+		t.Errorf("turn0 text = %q, want \"first\"", turns[0].Text)
+	}
+
+	// Floor filters strictly above: floor=u1 drops u1, keeps u2.
+	above, err := db.ListOwnerChatTurns(u1)
+	if err != nil {
+		t.Fatalf("ListOwnerChatTurns(floor): %v", err)
+	}
+	if len(above) != 1 || above[0].ID != u2 {
+		t.Errorf("ListOwnerChatTurns(%d) = %+v, want only u2 (%d)", u1, above, u2)
+	}
+}
+
+// TestListOwnerChatTurnsAbsentTables: on a headless daemon the Swift chat
+// tables never exist — the read is a clean empty no-op, never an error.
+func TestListOwnerChatTurnsAbsentTables(t *testing.T) {
+	db := openTestDB(t)
+
+	turns, err := db.ListOwnerChatTurns(0)
+	if err != nil {
+		t.Fatalf("absent chat tables must read empty, got error: %v", err)
+	}
+	if turns != nil {
+		t.Fatalf("absent chat tables must yield nil turns, got %+v", turns)
+	}
+}
+
 // TestClearDisputePendingEmpty: clearing an empty id list is a no-op, not an
 // error (callers may run the detector with nothing to clear).
 func TestClearDisputePendingEmpty(t *testing.T) {

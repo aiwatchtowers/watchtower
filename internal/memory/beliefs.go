@@ -86,6 +86,14 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	for _, s := range rewrittenSubjects {
 		subjectSet[s] = true
 	}
+	// Phase-4 chat surface: owner Discuss turns staged this run widen the
+	// candidate scope to the entities they bear on, so a belief the owner
+	// contradicts in chat is revised even when its subject was not rewritten.
+	if p.chat != nil {
+		for s := range p.chat.subjects {
+			subjectSet[s] = true
+		}
+	}
 
 	// Candidate beliefs: subject rewritten this run, or currently shaken.
 	candidatesByID := make(map[string]Node)
@@ -110,7 +118,18 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	episodes := p.subjectEpisodes(rewrittenSubjects)
 	inputSet := episodeRefSet(episodes)
 
-	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, episodes)
+	// Admit the staged owner chat refs into the input set so a model op citing
+	// one validates (Task 3) instead of being dropped as invented (MEM-08); the
+	// verbatim statements render into the prompt's OWNER SAID block.
+	var statements []ownerStatement
+	if p.chat != nil {
+		for ref := range p.chat.refs {
+			inputSet[ref] = true
+		}
+		statements = p.chat.statements
+	}
+
+	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, episodes, statements)
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reviseSource), system, user, "")
 	usage = u // single call — the reply's usage is the step's usage
 	if gerr != nil {
@@ -174,9 +193,17 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 // a transition the rank math refuses yields mathRejected=true (counted into
 // RunStats.BeliefOpsRejected).
 func (p *Pipeline) applyBeliefOp(op beliefOpJSON, candidatesByID map[string]Node, inputSet map[string]bool, now time.Time) (node Node, applied, mathRejected bool) {
+	// Two-stage validation. First MEM-08/MEM-01: the ref must be in the model's
+	// input set (episode provenance + any owner chat turns staged this run) or it
+	// is invented and dropped. Then MEM-09: a chat: ref must additionally resolve
+	// to a role='user' Discuss turn before newEvidenceLines can mint it at owner
+	// rank — so DB existence alone never mints owner rank, only a ref the model
+	// received AND that is a genuine owner turn does.
 	kept, dropped := validateMarkers(inputSet, op.Evidence)
+	kept, chatDropped := p.validateChatRefs(kept)
+	dropped += chatDropped
 	if dropped > 0 {
-		p.logf("memory: beliefs: op %q evidence_rejected=%d (MEM-01)", op.Op, dropped)
+		p.logf("memory: beliefs: op %q evidence_rejected=%d (MEM-01/09)", op.Op, dropped)
 	}
 	if len(kept) == 0 {
 		return Node{}, false, false // invented-only / evidence-less op is a no-op
@@ -271,18 +298,103 @@ func decisionName(d opDecision) string {
 	}
 }
 
-// newEvidenceLines turns validated model refs into stored evidence lines. Model
-// evidence is treated as rank observed (an observed episode); support direction
-// follows the op (confirm/propose-new support the belief, the rest weigh
-// against). Owner-rank evidence only ever enters via pre-existing/hand-authored
-// belief pages — the model can never mint owner rank.
+// chatRefPrefix marks an evidence channel_id as a Discuss chat reference
+// ("chat:<conversation_id>") rather than a Slack/Jira channel id — the seam
+// that carries owner-authored provenance into the belief math.
+const chatRefPrefix = "chat:"
+
+// isChatRef reports whether an evidence ref points at a Discuss chat turn.
+func isChatRef(channelID string) bool {
+	return strings.HasPrefix(channelID, chatRefPrefix)
+}
+
+// newEvidenceLines turns validated model refs into stored evidence lines.
+// Support direction follows the op (confirm/propose-new support the belief, the
+// rest weigh against). Rank is minted by CODE, never the model (MEM-08/09): an
+// episode ref is observed rank; a chat: ref is owner rank — but a chat: ref only
+// reaches here after validateChatRefs confirmed it resolves to a role='user'
+// Discuss turn, so the elevation is authored by the code path, not the model.
 func newEvidenceLines(refs []episodeRef, op beliefOp) []beliefEvidence {
 	support := op == opConfirm || op == opProposeNew
 	out := make([]beliefEvidence, len(refs))
 	for i, r := range refs {
-		out[i] = beliefEvidence{Rank: rankObserved, Support: support, ChannelID: r.ChannelID, TS: r.TS}
+		rank := rankObserved
+		if isChatRef(r.ChannelID) {
+			rank = rankOwner // MEM-09: validated owner Discuss turn
+		}
+		out[i] = beliefEvidence{Rank: rank, Support: support, ChannelID: r.ChannelID, TS: r.TS}
 	}
 	return out
+}
+
+// validateChatRefs enforces the MEM-09 owner-authenticity check on chat:
+// evidence refs. Episode refs pass through untouched. A chat: ref
+// ("chat:<conversation_id>") is kept only if it resolves to a role='user'
+// Discuss turn in a situation conversation (OwnerChatTurnExists) — otherwise it
+// is dropped and counted exactly like an invented episode ref (MEM-01
+// discipline). A chat ref never resolves when the Swift-owned chat tables are
+// absent (headless daemon), when the conversation/ts does not match, when the
+// turn was an assistant reply, or when the conversation is not a situation. The
+// check is non-fatal: a lookup error drops that ref and keeps the pass alive,
+// never freezing the run (the chat surface is a soft owner-writeback, re-scanned
+// next run — unlike the episode extractor's fatal MEM-01 lookup freeze).
+func (p *Pipeline) validateChatRefs(refs []episodeRef) (kept []episodeRef, dropped int) {
+	// Fast path: no chat refs → no DB work, so the episode-only belief pass and
+	// its tests never touch the chat tables.
+	hasChat := false
+	for _, r := range refs {
+		if isChatRef(r.ChannelID) {
+			hasChat = true
+			break
+		}
+	}
+	if !hasChat {
+		return refs, 0
+	}
+
+	present, err := p.db.ChatTablesPresent()
+	if err != nil {
+		p.logf("memory: beliefs: chat tables presence check: %v", err)
+	}
+	for _, r := range refs {
+		if !isChatRef(r.ChannelID) {
+			kept = append(kept, r)
+			continue
+		}
+		convID, ts, ok := parseChatRef(r.ChannelID, r.TS)
+		if !ok || !present {
+			dropped++
+			p.logf("memory: beliefs: chat ref %s %s dropped (unparseable or chat tables absent, MEM-09)", r.ChannelID, r.TS)
+			continue
+		}
+		owner, cerr := p.db.OwnerChatTurnExists(convID, ts)
+		if cerr != nil {
+			p.logf("memory: beliefs: chat ref %s %s lookup: %v — dropped", r.ChannelID, r.TS, cerr)
+			dropped++
+			continue
+		}
+		if !owner {
+			dropped++
+			p.logf("memory: beliefs: chat ref %s %s is not an owner (role='user') situation turn — dropped (MEM-09)", r.ChannelID, r.TS)
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept, dropped
+}
+
+// parseChatRef splits a "chat:<conversation_id>" channel id and its whole-second
+// ts into the ints the owner-turn lookup needs. A malformed id/ts yields ok=false.
+func parseChatRef(channelID, ts string) (convID, tsSec int64, ok bool) {
+	convID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(channelID, chatRefPrefix)), 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(ts), 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return convID, int64(f), true
 }
 
 func weighAll(ev []beliefEvidence, now time.Time) []evidence {
@@ -352,7 +464,7 @@ func (p *Pipeline) subjectEpisodes(subjects []string) []Node {
 // fills the template's single %s slot; the user message digests the existing
 // beliefs (id/statement/confidence/evidence) then the new episodes. It never
 // opens with a "-"/"--" line (the claude-CLI argv gotcha).
-func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, episodes []Node) (system, user string) {
+func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, episodes []Node, statements []ownerStatement) (system, user string) {
 	system = fmt.Sprintf(tmpl, prompts.Directive(lang))
 
 	var b strings.Builder
@@ -365,6 +477,16 @@ func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, episodes []Node) (syst
 		fmt.Fprintf(&b, "  statement: %s\n", bel.Title)
 		fmt.Fprintf(&b, "  confidence: %s\n", strconv.FormatFloat(bel.Confidence, 'g', -1, 64))
 		fmt.Fprintf(&b, "  status: %s\n", bel.Status)
+	}
+	// OWNER SAID: verbatim owner Discuss turns staged this run (Phase-4 chat
+	// surface). These are the ONLY owner-asserted input in the belief pass — the
+	// model may cite a "chat:<id> <ts>" ref to weigh a belief with owner rank;
+	// the code mints the rank, the model only chooses the direction (MEM-09).
+	if len(statements) > 0 {
+		b.WriteString("\nOWNER SAID (verbatim, ranked owner — cite as `chat:<id> <ts>` to weigh a belief):\n\n")
+		for _, s := range statements {
+			fmt.Fprintf(&b, "chat:%d %d: %s\n", s.conversationID, s.turnTS, s.text)
+		}
 	}
 	b.WriteString("\nNew episodes:\n\n")
 	for _, ep := range episodes {

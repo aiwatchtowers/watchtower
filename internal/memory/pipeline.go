@@ -48,6 +48,9 @@ type RunStats struct {
 	BeliefOpsRejected int // belief ops the rank math refused (MEM-06/08)
 	Aged              int // raw non-situation episodes aged to closed+long (AgeEpisodes)
 	Evicted           int // closed long episodes rolled up and tombstoned (EvictEpisodes)
+
+	// Phase-4 surfaces (zero unless the matching memory.surfaces.* gate is on).
+	ChatTurnsIngested int // owner Discuss turns staged as belief evidence (ingestChatStatements)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -66,6 +69,11 @@ type Pipeline struct {
 	// extractor prompt (same seam as the inbox pipeline); nil falls back to
 	// the built-in default.
 	promptStore *prompts.Store
+
+	// chat holds the owner Discuss turns ingestChatStatements staged for THIS
+	// run's belief pass (nil unless memory.surfaces.chat staged some). Set at the
+	// head of runSemantic, read by ReviseBeliefs, cleared after the belief pass.
+	chat *stagedChat
 
 	// Source labels the pipeline_runs row ("cli" or "daemon"). NewPipeline
 	// defaults it to "cli"; the daemon overrides it.
@@ -206,9 +214,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
-		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted)
+		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested)
 	return stats, nil
 }
 
@@ -231,6 +239,35 @@ const semanticEvictScoreThreshold = 0.5
 // the fallback base for step numbering when the DB read fails.
 func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int, acc *usageAccumulator, stats *RunStats) {
 	step := p.nextSemanticStep(runID, batchSteps)
+
+	// Phase-4 chat surface (dark unless memory.surfaces.chat): stage owner Discuss
+	// turns as owner-rank belief evidence BEFORE the belief pass. No AI call of its
+	// own. The floor advances only after the belief pass commits (below), so a
+	// failed or budget-skipped pass re-scans the same turns next run.
+	var chatFloorBefore, chatNewFloor int64
+	p.chat = nil
+	defer func() { p.chat = nil }()
+	if p.cfg.Surfaces.Chat {
+		start := time.Now()
+		floor, ferr := p.db.MemoryChatTurnFloor()
+		if ferr != nil {
+			p.logf("memory: chat ingest: read floor: %v", ferr)
+			p.recordSemanticStep(runID, &step, "chat-ingest", "error", nil, start)
+		} else {
+			staged, nf, ierr := p.ingestChatStatements(floor)
+			chatFloorBefore, chatNewFloor = floor, nf
+			if ierr != nil {
+				p.logf("memory: chat ingest: %v", ierr)
+				chatNewFloor = floor // do not advance on error
+			} else {
+				p.chat = staged
+				if staged != nil {
+					stats.ChatTurnsIngested += len(staged.statements)
+				}
+			}
+			p.recordSemanticStep(runID, &step, "chat-ingest", stepStatus(ierr), nil, start)
+		}
+	}
 
 	// Mechanical: episode dedupe.
 	start := time.Now()
@@ -274,7 +311,10 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 	}
 
 	// Strong tier: belief revision over the rewritten subjects + shaken beliefs
-	// (budget-gated).
+	// (budget-gated). beliefsConsumed reports whether the pass actually ran to a
+	// clean commit — the gate on advancing the chat-turn floor (below), so a
+	// budget-skip or a belief-pass error re-stages the same owner turns next run.
+	beliefsConsumed := false
 	if p.outputBudgetExceeded(acc) {
 		p.logf("memory: belief pass skipped: output budget exceeded")
 		p.recordSemanticStep(runID, &step, "beliefs", "skipped", nil, time.Now())
@@ -287,6 +327,16 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 		p.recordSemanticStep(runID, &step, "beliefs", stepStatus(berr), usage, start)
 		if berr != nil {
 			p.logf("memory: revise beliefs: %v", berr)
+		} else {
+			beliefsConsumed = true
+		}
+	}
+
+	// Phase-4 chat floor: advance only after the belief pass consumed the staged
+	// owner turns (mirrors the ingest-floor "advance after success" discipline).
+	if p.cfg.Surfaces.Chat && beliefsConsumed && chatNewFloor > chatFloorBefore {
+		if err := p.db.SetMemoryChatTurnFloor(chatNewFloor); err != nil {
+			p.logf("memory: chat ingest: advance floor: %v", err)
 		}
 	}
 
