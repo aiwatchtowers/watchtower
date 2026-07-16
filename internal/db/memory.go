@@ -256,6 +256,31 @@ func (db *DB) SetMemoryWatermark(ts float64) error {
 	return nil
 }
 
+// MemoryIngestFloor returns the ingest floor: the highest situation id whose
+// terminal (done|stale|converted) scan has already been folded into the vault.
+// listIngestSituations rescans terminal situations only above it (open ones are
+// always scanned). A workspace scalar like the watermark, so MEM-05 holds. A
+// fresh workspace without its singleton row reads as 0.
+func (db *DB) MemoryIngestFloor() (int64, error) {
+	var id int64
+	err := db.QueryRow(`SELECT COALESCE(memory_last_ingested_situation_id, 0) FROM workspace LIMIT 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting memory ingest floor: %w", err)
+	}
+	return id, nil
+}
+
+// SetMemoryIngestFloor advances the ingest floor (see MemoryIngestFloor).
+func (db *DB) SetMemoryIngestFloor(id int64) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_last_ingested_situation_id = ?`, id); err != nil {
+		return fmt.Errorf("setting memory ingest floor: %w", err)
+	}
+	return nil
+}
+
 // MemoryExtractMessage is one raw message row fed to the memory episode
 // extractor: human-authored (effective is_bot = 0, not muted for LLM),
 // non-empty text, not deleted, strictly newer than the extraction watermark.

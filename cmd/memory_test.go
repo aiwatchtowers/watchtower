@@ -257,8 +257,6 @@ func TestCLI_MemoryConsolidate_Disabled(t *testing.T) {
 
 	var buf bytes.Buffer
 	memoryConsolidateCmd.SetOut(&buf)
-	require.NoError(t, memoryConsolidateCmd.Flags().Set("once", "true"))
-	t.Cleanup(func() { _ = memoryConsolidateCmd.Flags().Set("once", "false") })
 
 	require.NoError(t, memoryConsolidateCmd.RunE(memoryConsolidateCmd, nil))
 	assert.Contains(t, buf.String(), "disabled")
@@ -291,8 +289,6 @@ func TestCLI_MemoryConsolidateOnce_RunsPipeline(t *testing.T) {
 
 	var buf bytes.Buffer
 	memoryConsolidateCmd.SetOut(&buf)
-	require.NoError(t, memoryConsolidateCmd.Flags().Set("once", "true"))
-	t.Cleanup(func() { _ = memoryConsolidateCmd.Flags().Set("once", "false") })
 
 	require.NoError(t, memoryConsolidateCmd.RunE(memoryConsolidateCmd, nil))
 	assert.Contains(t, buf.String(), "Consolidation done")
@@ -307,6 +303,14 @@ func TestCLI_MemoryConsolidateOnce_RunsPipeline(t *testing.T) {
 		Scan(&source, &status))
 	assert.Equal(t, "cli", source)
 	assert.Equal(t, "done", status)
+}
+
+// TestCLI_MemoryConsolidate_OnceFlagRemoved: the mandatory --once flag was
+// dropped (Task 13) — consolidate runs a single pass unflagged, and --once is
+// now an unrecognized flag.
+func TestCLI_MemoryConsolidate_OnceFlagRemoved(t *testing.T) {
+	assert.Nil(t, memoryConsolidateCmd.Flags().Lookup("once"), "the --once flag is gone")
+	assert.Error(t, memoryConsolidateCmd.Flags().Set("once", "true"), "--once is now an unknown flag")
 }
 
 // TestCLI_MemorySeedDryRun verifies seed --dry-run lists what would be

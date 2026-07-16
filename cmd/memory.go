@@ -98,7 +98,6 @@ func init() {
 		memoryRecallCmd, memoryConsolidateCmd, memorySeedCmd, memoryIndexCmd)
 
 	memoryRecallCmd.Flags().Int("limit", 10, "max results to print")
-	memoryConsolidateCmd.Flags().Bool("once", false, "run a single consolidation pass and exit")
 	memorySeedCmd.Flags().Bool("dry-run", false, "print what would be created without writing")
 }
 
@@ -349,11 +348,6 @@ func runMemoryRecall(cmd *cobra.Command, args []string) error {
 }
 
 func runMemoryConsolidate(cmd *cobra.Command, _ []string) error {
-	once, _ := cmd.Flags().GetBool("once")
-	if !once {
-		return fmt.Errorf("memory consolidate requires --once (the daemon owns the recurring schedule)")
-	}
-
 	cfg, database, err := memoryConfigAndDB()
 	if err != nil {
 		return err

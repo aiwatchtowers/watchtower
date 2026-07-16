@@ -139,6 +139,82 @@ func TestIngestDoneTransitionFinalizes(t *testing.T) {
 	assert.Equal(t, IngestStats{}, stats)
 }
 
+// TestIngestFloorAdvancesAndSkipsTerminal: finalizing a situation advances the
+// ingest floor past it, and a later run no longer rescans terminal situations at
+// or below the floor (Task 13). Open situations do not advance the floor.
+func TestIngestFloorAdvancesAndSkipsTerminal(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d) // so the floor scalar persists
+	sitID := seedIngestSituation(t, d, "Billing outage")
+
+	// First run ingests the OPEN situation — an open situation never advances
+	// the floor (it can still transition and must stay scannable).
+	_, err := IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+	floor, err := d.MemoryIngestFloor()
+	require.NoError(t, err)
+	assert.Zero(t, floor, "open situation does not advance the floor")
+
+	// Finalize it → the next run finalizes the node and advances the floor.
+	require.NoError(t, d.SetSituationStatus(sitID, "done", "closed"))
+	stats, err := IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Finalized)
+	floor, err = d.MemoryIngestFloor()
+	require.NoError(t, err)
+	assert.Equal(t, int64(sitID), floor, "floor advanced to the finalized situation id")
+
+	// The terminal situation is now at/below the floor: listIngestSituations no
+	// longer returns it.
+	sits, err := listIngestSituations(d, floor)
+	require.NoError(t, err)
+	for _, s := range sits {
+		assert.NotEqual(t, sitID, s.id, "terminal situation at/below the floor is not rescanned")
+	}
+
+	// A third run is a clean no-op — nothing terminal left to rescan.
+	stats, err = IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, IngestStats{}, stats)
+}
+
+// TestIngestFloorBlockedByLowerOpenSituation: the floor never advances past a
+// still-open lower-id situation, even when a higher-id terminal situation
+// finalizes — so the open one stays scannable if it later transitions (the
+// contiguous-terminal-prefix invariant). Open situations are always scanned.
+func TestIngestFloorBlockedByLowerOpenSituation(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	openID := seedIngestSituation(t, d, "Long-running") // lower id, stays open
+	termID := seedIngestSituation(t, d, "Short-lived")  // higher id, will finalize
+
+	// Ingest both while open.
+	_, err := IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+
+	// Finalize only the higher-id one.
+	require.NoError(t, d.SetSituationStatus(termID, "done", "closed"))
+	stats, err := IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Finalized)
+
+	// The floor must stay below the still-open lower-id situation.
+	floor, err := d.MemoryIngestFloor()
+	require.NoError(t, err)
+	assert.Less(t, floor, int64(openID), "floor stays below the still-open lower-id situation")
+
+	// The open situation is still returned by listIngestSituations.
+	sits, err := listIngestSituations(d, floor)
+	require.NoError(t, err)
+	found := false
+	for _, s := range sits {
+		if s.id == openID {
+			found = true
+		}
+	}
+	assert.True(t, found, "open situation always scanned regardless of the floor")
+}
+
 func TestIngestConvertedMentionsLink(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	toTarget := seedIngestSituation(t, d, "Billing outage")
