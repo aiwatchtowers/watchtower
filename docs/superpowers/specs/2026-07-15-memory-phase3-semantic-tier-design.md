@@ -1,7 +1,11 @@
 # Secretary Memory Phase 3 — Semantic Tier: Design Spec
 
-> Date: 2026-07-15. Branch: `feature/memory-phase3` (stacked on `feature/secretary-memory`, PR #36).
-> Background: `docs/superpowers/specs/2026-07-15-secretary-memory-design.md` (phases 0–2, implemented), `docs/specs/memory-design-notes.md` (concept), `docs/inventory/memory.md` (MEM-01..05 + known limitations). Status: **draft — to be finalized after the work-machine E2E of phases 0–2** (real extraction quality and volumes feed several knobs here).
+> Date: 2026-07-15, revised 2026-07-16 after the work-machine E2E. Branch: `feature/memory-phase3` (stacked on `feature/secretary-memory`, PR #36 draft).
+> Background: `docs/superpowers/specs/2026-07-15-secretary-memory-design.md` (phases 0–2, implemented), `docs/specs/memory-e2e-report.md` (live validation that set this spec's numbers), `docs/specs/memory-design-notes.md` (concept), `docs/inventory/memory.md` (MEM-01..05 + known limitations). Status: **final draft** — E2E numbers folded in; one hard precondition below.
+
+## Precondition (E2E blocker)
+
+**Watermark persistence after a killed run** (E2E report, "Second issue found"): committed batches lost their watermark advance together, causing duplicate re-extraction. Root-cause investigation is in flight on the integration branch; Phase 3 implementation does not start until the fix (expected shape: forward-only startup reconcile of the watermark against vault commits / `pipeline_steps`, plus whatever the diagnosis demands) lands with a contract-grade test. Dedupe (goal 3) additionally mops up any duplicates such incidents already produced.
 
 ## Context
 
@@ -13,10 +17,11 @@ Review debts explicitly assigned here: duplicate episodes from failed-window re-
 
 1. **Entity-page rewrites** (strong tier): accumulated episode deltas → periodic staggered rewrite of `## What` / `## Current` / `## Facts` with provenance markers preserved; the page becomes a living "what I know about X".
 2. **Beliefs**: a fourth node type in active use — falsifiable inferences with confidence, ranked evidence, asymmetric hysteresis, and a `shaken` state; revised only by consolidation, never silently flipped against owner-rank evidence.
-3. **Episode dedupe**: retry-duplicated episodes detected and merged (first real consumer of the `Merge` primitive).
-4. **Retention & eviction**: cold closed episodes collapse into rollups (`sum_*`) with provenance kept; nothing is ever deleted.
-5. **LLM world map**: `map.md` rendered by the strong tier from entity pages (mechanical render stays as fallback).
-6. **Housekeeping debts**: ingest floor; access-stats decision (below); output-based budget caps.
+3. **Episode dedupe**: retry-duplicated episodes detected and merged (first real consumer of the `Merge` primitive). **Keyed on provenance-ref overlap, not title similarity** — the E2E's own duplicate pairs had differing titles, so a title heuristic is empirically dead on arrival; shared `channel_id+ts` refs are the reliable signal.
+4. **Retention & eviction**: cold closed episodes collapse into rollups (`sum_*`) with provenance kept; nothing is ever deleted. E2E sizing: ~55 episodes/day on the live workspace → the 45-day window holds ~2,500 episodes before first eviction — comfortable.
+5. **Two-tier world map** (revised from "LLM map" after E2E: the mechanical map hit **56 KB at 447 entities** vs the ~2 KB always-inject assumption — a 28× budget miss). Split: `map.md` becomes a strong-tier-curated **hot summary** hard-capped at ~2 KB (areas, current state, notable beliefs — the thing Phase 4 injects wholesale), and a mechanically-rendered `index.md` keeps the full per-entity listing (browsing/Obsidian surface, never injected). `memory_map` (MCP) returns the hot summary + counts and points to `memory_recall`/`memory_open` for depth.
+6. **Entity vocabulary broadening** (promoted from open question to goal by E2E: 1/447 entities ever received a back-link because extractor hints — "HSM", "phishing", free-text concepts — cannot match natural-key-only aliases). Mechanism: collect unresolved `entity_hints` with counts (they are already logged; persist them into a small index table); when a hint recurs ≥N times (default 5) across distinct episodes, consolidation creates a **concept entity** (`ent_*`, kind: concept, alias = normalized hint) and links the contributing episodes. Model proposes nothing here — creation is mechanical from recurrence, so no hallucinated entities; the strong-tier page rewrite then fills the page. Cap per run.
+7. **Housekeeping debts**: ingest floor; access-stats decision (below); output-based budget caps.
 
 ## Non-Goals
 
@@ -82,9 +87,11 @@ After ingest+extraction, a cheap mechanical pass over *active short-tier episode
 - **Eviction**: closed long-tier episodes below score threshold and older than `memory.evict_after_days` (default 45) collapse into a per-channel-per-month rollup (`sum_*`): one gist line each (title + outcome + provenance refs carried verbatim). The episode file becomes a tombstone `redirect_to` the rollup — resolver and old links keep working; FTS drops the body but the rollup line remains searchable. Cap per run. **Nothing is deleted; provenance never thins** (contract below).
 - Entities and beliefs are never evicted in Phase 3 (hundreds of nodes — no pressure).
 
-### LLM world map
+### Two-tier world map
 
-`memory.render_map` (strong tier): input = all entity `## What`/`## Current` excerpts + open episodes + active beliefs (statements only); output = a curated `map.md` (~2KB): areas, current state one-liners, notable beliefs with confidence. Mechanical render remains the fallback on failure (map is derived state — MEM-04 untouched). Cap: at most once per run when anything changed.
+- **`index.md`** (mechanical, replaces today's monolithic map render): the full per-entity listing with one-line excerpts and recent-episodes list — the browsing/Obsidian surface. Unbounded size is fine; it is never injected into prompts.
+- **`map.md`** (strong tier, `memory.render_map`): the hot summary, **hard-capped at ~2 KB post-render** (code-side truncation guard, not a prompt promise): 5–8 areas with current-state one-liners, notable active beliefs with confidence, pointer line to recall/index. Input = entity `## Current` excerpts (top by retention score), open episodes, active beliefs. Mechanical fallback on failure = the previous committed map.md (derived state — MEM-04 untouched). Cap: at most once per run when anything changed.
+- MCP `memory_map` returns map.md (hot) + counts; the CLI gains `memory index` or `memory map --full` to print index.md. E2E grounding: mechanical one-line-per-entity render measured 56 KB at 447 entities — 28× over the inject budget, hence the split.
 
 ### Housekeeping
 
@@ -105,7 +112,7 @@ Same discipline as phases 0–2: fake Generator fixtures for every AI step; guar
 ## Rollout & dependencies
 
 - Implement behind the same `memory.enabled` flag; strong-tier steps additionally gated by `memory.semantic.enabled` (default false) so phases 0–2 can run alone on the work machine first.
-- **Finalize-after-E2E knobs**: rewrite trigger N, window for dedupe similarity, eviction threshold — set from real work-machine data before implementation, not guessed.
+- **Knobs set from the E2E run (2026-07-16)**: eviction window 45d confirmed viable (~55 episodes/day → ~2.5K live episodes); dedupe keyed on provenance-ref overlap (≥1 shared `channel_id+ts` ref within the same channel and overlapping time range — title similarity empirically insufficient); map hard cap 2 KB (56 KB mechanical render observed at 447 entities); concept-entity promotion threshold: hint recurring ≥5 times across distinct episodes. Rewrite trigger stays at the draft default N=5 — unvalidatable until back-links exist (1/447 in E2E); revisit after the vocabulary broadening ships.
 - Depends on PR #36 landing (after `feature/gmail-source` per the merge gate).
 
 ## Estimated size
