@@ -56,13 +56,13 @@ type rewriteResult struct {
 // them as its rewritten-subject scope. The pipeline gates the call behind
 // memory.semantic.enabled (Task 11); this function itself is unconditional so it
 // can be unit-tested directly.
-func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now time.Time) (rewritten []string, usage *digest.Usage, err error) {
+func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now time.Time) (rewritten []string, failed int, usage *digest.Usage, err error) {
 	if p.generator == nil {
-		return nil, nil, nil
+		return nil, 0, nil, nil
 	}
 	rows, err := p.db.ListMemoryNodes()
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, nil, err
 	}
 
 	var (
@@ -98,11 +98,13 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		addUsage(&acc, u)
 		if gerr != nil {
 			p.logf("memory: rewrite %s: generate: %v", row.ID, gerr) // isolated — page untouched
+			failed++
 			continue
 		}
 		res, perr := parseRewrite(raw)
 		if perr != nil {
 			p.logf("memory: rewrite %s: %v", row.ID, perr) // isolated — page untouched
+			failed++
 			continue
 		}
 
@@ -113,7 +115,13 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		}
 		facts := mergeFacts(parseFactsBullets(page.Body), res.Facts)
 
-		page.Body = rebuildEntityBody(page, res.What, res.Current, facts, markers)
+		body, ok := rebuildEntityBody(page, res.What, res.Current, facts, markers)
+		if !ok {
+			p.logf("memory: rewrite %s: unexpected section order, skipped (page untouched)", row.ID)
+			failed++
+			continue
+		}
+		page.Body = body
 		nodes = append(nodes, page)
 		ids = append(ids, page.ID)
 		rewritten = append(rewritten, page.ID)
@@ -121,9 +129,13 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 
 	if calls > 0 {
 		usage = &acc
+		// Observability of systemic AI-step failure: a run where every call
+		// failed (a model outage, a schema drift) surfaces here instead of a
+		// silent zero-rewrite run.
+		p.logf("memory: rewrite: attempted=%d succeeded=%d failed=%d", calls, len(rewritten), failed)
 	}
 	if len(nodes) == 0 {
-		return nil, usage, nil
+		return rewritten, failed, usage, nil
 	}
 
 	msg := CommitMsg{
@@ -133,19 +145,23 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		NodeIDs: ids,
 	}
 	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
-		return nil, usage, err
+		return nil, failed, usage, err
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
 		if err := upsertIndexNode(p.db, n, nowStr); err != nil {
-			p.logf("memory: index %s after rewrite: %v", n.ID, err)
+			// Index-mirror consistency: return the error so the step is recorded
+			// as error; reconcile self-heals the missed mirror next run.
+			return rewritten, failed, usage, err
 		}
 	}
-	return rewritten, usage, nil
+	return rewritten, failed, usage, nil
 }
 
-// linkedEpisodes reads the active episode nodes wiki-linked from an entity
-// page's body (## Links), skipping links that do not resolve to an episode.
+// linkedEpisodes reads the live episode nodes wiki-linked from an entity page's
+// body (## Links), skipping links that do not resolve to an episode and episodes
+// that have been evicted (Status == "tombstone") — an entity whose only linked
+// episode was rolled up has nothing new to rewrite from.
 func (p *Pipeline) linkedEpisodes(page Node) []Node {
 	seen := make(map[string]bool)
 	var eps []Node
@@ -155,7 +171,7 @@ func (p *Pipeline) linkedEpisodes(page Node) []Node {
 		}
 		seen[l.ID] = true
 		ep, err := p.vault.ReadNode(l.ID)
-		if err != nil || ep.Type != "episode" {
+		if err != nil || ep.Type != "episode" || ep.Status == "tombstone" {
 			continue
 		}
 		eps = append(eps, ep)
@@ -302,16 +318,24 @@ func mergeFacts(existing, model []string) []string {
 // rebuildEntityBody rewrites ONLY the ## What / ## Current / ## Facts sections,
 // preserving the head (title, anything before ## What) and the tail (## Links
 // onward — Links and Open loops) byte-for-byte: they are maintained mechanically
-// and the model never touches them.
-func rebuildEntityBody(page Node, what, current string, facts []string, markers []episodeRef) string {
+// and the model never touches them. It returns ok=false without touching the
+// page when the section order is unexpected (## Links precedes ## What, so the
+// head and tail regions would overlap) — a rebuild would mangle the page, so the
+// caller skips it with a log instead.
+func rebuildEntityBody(page Node, what, current string, facts []string, markers []episodeRef) (string, bool) {
 	body := page.Body
+	whatLoc := whatHeadingRe.FindStringIndex(body)
+	linksLoc := linksHeadingRe.FindStringIndex(body)
+	if whatLoc != nil && linksLoc != nil && linksLoc[0] <= whatLoc[0] {
+		return "", false // malformed order: head (before What) and tail (Links on) overlap
+	}
 	head := "# " + page.Title + "\n\n"
-	if loc := whatHeadingRe.FindStringIndex(body); loc != nil {
-		head = body[:loc[0]]
+	if whatLoc != nil {
+		head = body[:whatLoc[0]]
 	}
 	tail := ""
-	if loc := linksHeadingRe.FindStringIndex(body); loc != nil {
-		tail = body[loc[0]:]
+	if linksLoc != nil {
+		tail = body[linksLoc[0]:]
 	}
 
 	var b strings.Builder
@@ -337,7 +361,7 @@ func rebuildEntityBody(page Node, what, current string, facts []string, markers 
 	if tail != "" {
 		b.WriteString("\n" + tail)
 	}
-	return b.String()
+	return b.String(), true
 }
 
 // sectionFirstLine returns the first non-empty line under the given "## X"

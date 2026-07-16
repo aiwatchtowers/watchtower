@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -473,6 +474,49 @@ func (db *DB) CountMemoryLinksIn(id string) (int, error) {
 		return 0, fmt.Errorf("counting links-in for %s: %w", id, err)
 	}
 	return n, nil
+}
+
+// CountMemoryLinksInBulk returns the links-in count for every id in one pass:
+// how many live (non-tombstone) OTHER nodes carry a [[<id>...]] wiki-link to it.
+// It loads each live node's body once with a single query instead of the
+// per-id round trip CountMemoryLinksIn does, so a caller scoring many entities
+// (the world-map render) avoids an N+1. Self-links and tombstones are excluded,
+// matching CountMemoryLinksIn; the substring test mirrors that method's
+// instr(body,'[['||id) exactly. Every requested id gets an entry (0 when unseen).
+func (db *DB) CountMemoryLinksInBulk(ids []string) (map[string]int, error) {
+	counts := make(map[string]int, len(ids))
+	for _, id := range ids {
+		counts[id] = 0
+	}
+	if len(ids) == 0 {
+		return counts, nil
+	}
+	rows, err := db.Query(`
+		SELECT f.id, f.body FROM memory_fts f
+		JOIN memory_nodes m ON m.id = f.id
+		WHERE m.status != 'tombstone'`)
+	if err != nil {
+		return nil, fmt.Errorf("counting links-in (bulk): %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var srcID, body string
+		if err := rows.Scan(&srcID, &body); err != nil {
+			return nil, fmt.Errorf("scanning links-in (bulk): %w", err)
+		}
+		for _, id := range ids {
+			if id == srcID {
+				continue // self-links excluded
+			}
+			if strings.Contains(body, "[["+id) {
+				counts[id]++
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating links-in (bulk): %w", err)
+	}
+	return counts, nil
 }
 
 // DropMemoryIndex empties all four memory index tables in one transaction so

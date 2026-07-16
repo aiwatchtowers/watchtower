@@ -64,7 +64,9 @@ func RetentionScore(in RetentionInputs) float64 {
 // eviction into the same channel-month appends to the existing rollup rather
 // than duplicating it. One "memory(evict)" commit per run; maxEvict caps
 // evictions per run (<= 0 = unbounded). Entities and beliefs are never evicted.
-func EvictEpisodes(v *Vault, database *db.DB, olderThanDays int, scoreThreshold float64, maxEvict int) (evicted int, err error) {
+// A per-node read failure is skipped-and-logged (the package quarantine
+// convention) so one corrupted candidate never stops the pass.
+func EvictEpisodes(v *Vault, database *db.DB, olderThanDays int, scoreThreshold float64, maxEvict int, logf func(string, ...any)) (evicted int, err error) {
 	rows, err := database.ListMemoryNodes()
 	if err != nil {
 		return 0, err
@@ -84,7 +86,8 @@ func EvictEpisodes(v *Vault, database *db.DB, olderThanDays int, scoreThreshold 
 		}
 		n, rerr := v.ReadNode(row.ID)
 		if rerr != nil {
-			return evicted, rerr
+			logf("memory: evict: read %s: %v (skipped)", row.ID, rerr)
+			continue
 		}
 		refs := parseProvenance(n.Body)
 		if len(refs) == 0 {
@@ -219,7 +222,7 @@ func loadOrCreateRollup(v *Vault, database *db.DB, channelID, month string) (*No
 func gistLine(n Node, refs []episodeRef) string {
 	var b strings.Builder
 	b.WriteString("- " + strings.ReplaceAll(n.Title, "\n", " "))
-	if out := outcomeExcerpt(n.Body); out != "" {
+	if out := sectionFirstLine(n.Body, "## Outcome"); out != "" {
 		b.WriteString(" — " + out)
 	}
 	b.WriteString(" [")
@@ -239,22 +242,6 @@ func appendGist(body, line string) string {
 		body += "\n"
 	}
 	return body + line
-}
-
-// outcomeExcerpt returns the first non-empty line of the "## Outcome" section.
-func outcomeExcerpt(body string) string {
-	inOutcome := false
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			inOutcome = trimmed == "## Outcome"
-			continue
-		}
-		if inOutcome && trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 // hasSituationAlias reports whether any alias marks a situation origin.

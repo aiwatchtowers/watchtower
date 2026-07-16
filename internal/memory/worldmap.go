@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -133,13 +134,14 @@ func (p *Pipeline) renderIndex(runID int64) error {
 }
 
 // renderMap renders the strong-tier hot summary to map.md, hard-capped at
-// mapByteCap. When semanticEnabled is false (or no generator), the map generator
-// is NEVER called and the fallback runs. On a generator failure the previous
+// mapByteCap. strong means the semantic tier is enabled AND the run is within
+// its output budget; when it is false (or no generator), the map generator is
+// NEVER called and the fallback runs. On a generator failure the previous
 // committed map.md is kept. Returns the call's usage (nil when no AI call ran)
 // so the pipeline can fold it into run accounting. Non-fatal by contract: a
 // failed map render never fails the run and leaves the last good map in place.
-func (p *Pipeline) renderMap(ctx context.Context, runID int64, semanticEnabled bool) (*digest.Usage, error) {
-	if semanticEnabled && p.generator != nil {
+func (p *Pipeline) renderMap(ctx context.Context, runID int64, strong bool) (*digest.Usage, error) {
+	if strong && p.generator != nil {
 		content, usage, err := p.strongMapContent(ctx)
 		if err != nil {
 			p.logf("memory: strong map render failed, keeping previous map.md: %v", err)
@@ -181,12 +183,11 @@ func (p *Pipeline) mapInputs() (entities []mapEntry, open []string, beliefs []be
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	type ranked struct {
-		e     mapEntry
-		links int
-	}
-	var cand []ranked
-	var openRows []db.MemoryNodeRow
+	var (
+		entries  []mapEntry
+		entIDs   []string
+		openRows []db.MemoryNodeRow
+	)
 	for _, row := range rows {
 		if row.Status == "tombstone" {
 			continue
@@ -201,11 +202,8 @@ func (p *Pipeline) mapInputs() (entities []mapEntry, open []string, beliefs []be
 				p.logf("memory: map: read %s: %v", row.ID, rerr)
 				continue
 			}
-			links, lerr := p.db.CountMemoryLinksIn(row.ID)
-			if lerr != nil {
-				return nil, nil, nil, lerr
-			}
-			cand = append(cand, ranked{mapEntry{id: row.ID, title: row.Title, what: sectionFirstLine(n.Body, "## Current")}, links})
+			entries = append(entries, mapEntry{id: row.ID, title: row.Title, what: sectionFirstLine(n.Body, "## Current")})
+			entIDs = append(entIDs, row.ID)
 		case "episode":
 			if row.Status == "active" {
 				openRows = append(openRows, row)
@@ -220,6 +218,20 @@ func (p *Pipeline) mapInputs() (entities []mapEntry, open []string, beliefs []be
 			}
 			beliefs = append(beliefs, beliefEntry{statement: row.Title, confidence: n.Confidence})
 		}
+	}
+
+	// One grouped links-in query for every entity (avoids the per-entity N+1).
+	linkCounts, err := p.db.CountMemoryLinksInBulk(entIDs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	type ranked struct {
+		e     mapEntry
+		links int
+	}
+	cand := make([]ranked, len(entries))
+	for i, e := range entries {
+		cand[i] = ranked{e, linkCounts[e.id]}
 	}
 
 	sort.Slice(cand, func(a, b int) bool {
@@ -290,6 +302,15 @@ func capMapBytes(s string) string {
 	cut := s[:budget]
 	if i := strings.LastIndexByte(cut, '\n'); i >= 0 {
 		cut = cut[:i]
+	}
+	// UTF-8 safety: if the byte cut landed inside a multibyte rune (no newline to
+	// snap to), back up over the partial trailing bytes so we never emit a split
+	// rune. A legitimately-encoded U+FFFD (size 3) is left intact.
+	for len(cut) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(cut); r != utf8.RuneError || size > 1 {
+			break
+		}
+		cut = cut[:len(cut)-1]
 	}
 	return cut + note
 }

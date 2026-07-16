@@ -73,13 +73,13 @@ func (e beliefEvidence) weigh(now time.Time) evidence {
 // mirrored into the index. maxBeliefs caps applied ops per run (<= 0 =
 // unbounded). The pipeline gates the call behind memory.semantic.enabled
 // (Task 11); this function is unconditional so it can be unit-tested directly.
-func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string, maxBeliefs int, now time.Time) (touched int, usage *digest.Usage, err error) {
+func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string, maxBeliefs int, now time.Time) (touched, rejected int, usage *digest.Usage, err error) {
 	if p.generator == nil {
-		return 0, nil, nil
+		return 0, 0, nil, nil
 	}
 	rows, err := p.db.ListMemoryNodes()
 	if err != nil {
-		return 0, nil, err
+		return 0, 0, nil, err
 	}
 
 	subjectSet := make(map[string]bool, len(rewrittenSubjects))
@@ -112,15 +112,13 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 
 	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, episodes)
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reviseSource), system, user, "")
-	var acc digest.Usage
-	addUsage(&acc, u)
-	usage = &acc
+	usage = u // single call — the reply's usage is the step's usage
 	if gerr != nil {
-		return 0, usage, fmt.Errorf("memory: revise beliefs: generate: %w", gerr)
+		return 0, 0, usage, fmt.Errorf("memory: revise beliefs: generate: %w", gerr)
 	}
 	ops, perr := parseBeliefOps(raw)
 	if perr != nil {
-		return 0, usage, perr
+		return 0, 0, usage, perr
 	}
 
 	var (
@@ -131,17 +129,23 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 		if maxBeliefs > 0 && touched >= maxBeliefs {
 			break
 		}
-		node, ok := p.applyBeliefOp(op, candidatesByID, inputSet, now)
-		if !ok {
+		node, applied, mathRejected := p.applyBeliefOp(op, candidatesByID, inputSet, now)
+		if mathRejected {
+			rejected++
+		}
+		if !applied {
 			continue
 		}
 		nodes = append(nodes, node)
 		ids = append(ids, node.ID)
 		touched++
 	}
+	// Observability: an aggregate so a run that proposed many ops but applied few
+	// (systemic rank-math rejection) is visible, not silent.
+	p.logf("memory: beliefs: proposed=%d applied=%d rejected=%d", len(ops.Ops), touched, rejected)
 
 	if len(nodes) == 0 {
-		return 0, usage, nil
+		return 0, rejected, usage, nil
 	}
 	msg := CommitMsg{
 		Op:      "beliefs",
@@ -150,38 +154,43 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 		NodeIDs: ids,
 	}
 	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
-		return 0, usage, err
+		return 0, rejected, usage, err
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
 		if err := upsertIndexNode(p.db, n, nowStr); err != nil {
-			p.logf("memory: index %s after belief pass: %v", n.ID, err)
+			// Index-mirror consistency: return the error so the step is recorded
+			// as error; reconcile self-heals the missed mirror next run.
+			return touched, rejected, usage, err
 		}
 	}
-	return touched, usage, nil
+	return touched, rejected, usage, nil
 }
 
 // applyBeliefOp disposes of one proposed op through the rank math and returns
-// the node to write plus whether the op was applied. Invented-only evidence, an
-// unknown belief, an unresolvable propose-new subject, or a math-rejected
-// transition all yield ok=false (nothing written).
-func (p *Pipeline) applyBeliefOp(op beliefOpJSON, candidatesByID map[string]Node, inputSet map[string]bool, now time.Time) (Node, bool) {
+// the node to write, whether the op was applied, and whether it was rejected by
+// the rank math specifically. Invented-only evidence, an unknown belief, or an
+// unresolvable propose-new subject yield applied=false with mathRejected=false;
+// a transition the rank math refuses yields mathRejected=true (counted into
+// RunStats.BeliefOpsRejected).
+func (p *Pipeline) applyBeliefOp(op beliefOpJSON, candidatesByID map[string]Node, inputSet map[string]bool, now time.Time) (node Node, applied, mathRejected bool) {
 	kept, dropped := validateMarkers(inputSet, op.Evidence)
 	if dropped > 0 {
 		p.logf("memory: beliefs: op %q evidence_rejected=%d (MEM-01)", op.Op, dropped)
 	}
 	if len(kept) == 0 {
-		return Node{}, false // invented-only / evidence-less op is a no-op
+		return Node{}, false, false // invented-only / evidence-less op is a no-op
 	}
 
 	switch beliefOp(op.Op) {
 	case opProposeNew:
-		return p.applyProposeNew(op, kept, now)
+		n, ok := p.applyProposeNew(op, kept, now)
+		return n, ok, false
 	case opConfirm, opWeaken, opShake, opRetire:
 		return p.applyExistingOp(op, candidatesByID, kept, now)
 	default:
 		p.logf("memory: beliefs: unknown op %q", op.Op)
-		return Node{}, false
+		return Node{}, false, false
 	}
 }
 
@@ -222,17 +231,18 @@ func (p *Pipeline) applyProposeNew(op beliefOpJSON, kept []episodeRef, now time.
 // applyExistingOp mutates an in-scope belief. The op only takes effect when the
 // rank math (applyOp) allows or downgrades it; a downgraded retire lands as
 // shaken (MEM-06 owner-rank protection).
-func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]Node, kept []episodeRef, now time.Time) (Node, bool) {
+func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]Node, kept []episodeRef, now time.Time) (node Node, applied, mathRejected bool) {
 	node, ok := candidatesByID[op.BeliefID]
 	if !ok {
-		return Node{}, false // out of scope / unknown belief id
+		return Node{}, false, false // out of scope / unknown belief id
 	}
 	newEv := newEvidenceLines(kept, beliefOp(op.Op))
-	combined := append(weighAll(parseBeliefEvidence(node.Body), now), weighAll(newEv, now)...)
+	combined := append(weighAll(parseBeliefEvidence(node.Body, p.logf), now), weighAll(newEv, now)...)
 	state := beliefState{Confidence: node.Confidence, Stability: node.Stability, Status: node.Status}
 	next, decision := applyOp(state, beliefOp(op.Op), combined)
 	if decision == opRejected {
-		return Node{}, false
+		p.logf("memory: beliefs: op %q on %s rejected by rank math (decision=%s)", op.Op, op.BeliefID, decisionName(decision))
+		return Node{}, false, true
 	}
 
 	node.Confidence = next.Confidence
@@ -246,7 +256,19 @@ func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]No
 		cause += " (downgraded)"
 	}
 	node.Body = appendHistory(node.Body, historyLine(now, cause, op.Rationale))
-	return node, true
+	return node, true, false
+}
+
+// decisionName renders an opDecision for a log line.
+func decisionName(d opDecision) string {
+	switch d {
+	case opAllowed:
+		return "allowed"
+	case opDowngraded:
+		return "downgraded"
+	default:
+		return "rejected"
+	}
 }
 
 // newEvidenceLines turns validated model refs into stored evidence lines. Model
@@ -271,9 +293,13 @@ func weighAll(ev []beliefEvidence, now time.Time) []evidence {
 	return out
 }
 
-// parseBeliefEvidence reads a belief node's "## Evidence" lines
-// ("- <rank> <for|against> <channel_id> <ts>").
-func parseBeliefEvidence(body string) []beliefEvidence {
+// parseBeliefEvidence reads a belief node's canonical "## Evidence" lines
+// ("- <rank> <for|against> <channel_id> <ts>"). A bullet that does not match
+// the canonical 4-field shape (e.g. a prose evidence note) is logged and
+// skipped rather than dropped silently — silently ignored evidence would
+// weaken MEM-06's owner-rank protection, which only holds when owner support
+// is written as a canonical line.
+func parseBeliefEvidence(body string, logf func(string, ...any)) []beliefEvidence {
 	var ev []beliefEvidence
 	inEvidence := false
 	for _, line := range strings.Split(body, "\n") {
@@ -287,10 +313,12 @@ func parseBeliefEvidence(body string) []beliefEvidence {
 		}
 		fields := strings.Fields(strings.TrimPrefix(trimmed, "- "))
 		if len(fields) != 4 {
+			logf("memory: beliefs: unparseable evidence line %q (want '- <rank> <for|against> <channel_id> <ts>'); ignored", trimmed)
 			continue
 		}
 		rank, ok := parseEvidenceRank(fields[0])
 		if !ok {
+			logf("memory: beliefs: unknown evidence rank %q in %q; ignored", fields[0], trimmed)
 			continue
 		}
 		ev = append(ev, beliefEvidence{Rank: rank, Support: fields[1] == "for", ChannelID: fields[2], TS: fields[3]})

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,6 +60,17 @@ func TestRenderMapStrongTruncatesTo2KB(t *testing.T) {
 	assert.LessOrEqual(t, len(content), mapByteCap, "map.md hard-capped")
 	assert.True(t, strings.HasSuffix(string(content), "\n"), "truncated at a line boundary")
 	assert.Contains(t, string(content), "truncated", "truncation note appended")
+}
+
+// TestCapMapBytesUTF8Safe: when the byte cut lands inside a multibyte rune (no
+// newline to snap to), capMapBytes backs up to a rune boundary so the output is
+// always valid UTF-8 and never ends in a split rune (fix 13).
+func TestCapMapBytesUTF8Safe(t *testing.T) {
+	// All 3-byte runes, no newlines: the byte budget cannot fall on a boundary.
+	s := strings.Repeat("世", 2000) // 6000 bytes
+	out := capMapBytes(s)
+	assert.LessOrEqual(t, len(out), mapByteCap, "still under the hard cap")
+	assert.True(t, utf8.ValidString(out), "no rune is split at the truncation point")
 }
 
 func TestRenderMapFailureKeepsPreviousMap(t *testing.T) {

@@ -51,7 +51,7 @@ func TestReviseBeliefsProposeNew(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched)
 
@@ -94,7 +94,7 @@ func TestReviseBeliefsFreshOwnerRetireDowngraded(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched)
 
@@ -127,7 +127,7 @@ func TestReviseBeliefsRetireAppliedWhenOwnerDecayed(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched)
 
@@ -152,7 +152,7 @@ func TestReviseBeliefsInventedEvidenceRejected(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 	require.NoError(t, err)
 	assert.Zero(t, touched, "an op citing only invented refs is a no-op")
 
@@ -175,7 +175,7 @@ func TestReviseBeliefsProposeNewUnknownSubjectRejected(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 	require.NoError(t, err)
 	assert.Zero(t, touched)
 
@@ -202,7 +202,7 @@ func TestReviseBeliefsShakeAppendsHistory(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched)
 
@@ -233,9 +233,47 @@ func TestReviseBeliefsCapRespected(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 1, beliefNow)
+	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 1, beliefNow)
 	require.NoError(t, err)
 	assert.Equal(t, 1, touched, "cap respected")
+}
+
+// TestApplyBeliefOpMathRejectedCounts: an op the rank math refuses (a shake
+// against an already-retired belief) is reported as mathRejected so ReviseBeliefs
+// can count it into RunStats.BeliefOpsRejected (fix 3). Driven at applyBeliefOp
+// because ReviseBeliefs excludes retired beliefs from its candidate scan.
+func TestApplyBeliefOpMathRejectedCounts(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	gen := &fakeGen{reply: func(string) (string, error) { return "{}", nil }}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	retired := beliefTestNode("bel_00000000000000000000000009", "Retired belief", "ent_x", 0.2, 0, statusRetired)
+	candidates := map[string]Node{retired.ID: retired}
+	inputSet := map[string]bool{"C1CHAN 100.000100": true}
+	op := beliefOpJSON{BeliefID: retired.ID, Op: "shake",
+		Evidence: []episodeRef{{ChannelID: "C1CHAN", TS: "100.000100"}}}
+
+	_, applied, mathRejected := p.applyBeliefOp(op, candidates, inputSet, beliefNow)
+	assert.False(t, applied, "a shake on a retired belief is not applied")
+	assert.True(t, mathRejected, "the refusal is reported so it can be counted")
+}
+
+// TestParseBeliefEvidenceLogsUnparseable: a prose evidence bullet and a bad-rank
+// bullet are skipped but LOGGED (not silently dropped), while canonical 4-field
+// lines parse normally (fix 8 — owner-rank protection depends on canonical lines).
+func TestParseBeliefEvidenceLogsUnparseable(t *testing.T) {
+	body := "# B\n\n## Evidence\n" +
+		"- owner for C1CHAN 100\n" + // canonical
+		"- billing is behind, owner said so\n" + // prose (wrong field count)
+		"- bogus for C2CHAN 200\n" // unknown rank
+
+	var logs []string
+	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+
+	ev := parseBeliefEvidence(body, logf)
+	require.Len(t, ev, 1, "only the canonical line parses")
+	assert.Equal(t, rankOwner, ev[0].Rank)
+	assert.Len(t, logs, 2, "both unparseable lines are logged, not silently dropped")
 }
 
 // TestMemory06_OwnerRankBeliefNeverAutoFlipped is the MEM-06 formal guard: a
@@ -266,7 +304,7 @@ func TestMemory06_OwnerRankBeliefNeverAutoFlipped(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	_, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	_, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 	require.NoError(t, err)
 
 	got, err := v.ReadNode(bel.ID)
@@ -302,7 +340,7 @@ func TestMemory08_BeliefOpsGatedByRankMath(t *testing.T) {
 		gen := &fakeGen{reply: func(string) (string, error) { return raw, nil }}
 		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-		touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+		touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 		require.NoError(t, err)
 		require.Equal(t, 1, touched)
 
@@ -336,7 +374,7 @@ func TestMemory08_BeliefOpsGatedByRankMath(t *testing.T) {
 		}}
 		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-		touched, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+		touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
 		require.NoError(t, err)
 		assert.Zero(t, touched, "an op citing only invented refs never reaches applyOp")
 
@@ -360,7 +398,7 @@ func TestMemory08_BeliefOpsGatedByRankMath(t *testing.T) {
 		}}
 		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-		rewritten, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+		rewritten, _, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
 		require.NoError(t, err)
 		require.Len(t, rewritten, 1)
 

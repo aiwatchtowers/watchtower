@@ -1073,8 +1073,8 @@ func semanticStepNames(t *testing.T, d *db.DB, runID int64) []string {
 	require.NoError(t, err)
 	var names []string
 	for _, s := range steps {
-		if s.ChannelName == "dedupe" || s.ChannelName == "promote" || s.ChannelName == "rewrite" ||
-			s.ChannelName == "beliefs" || s.ChannelName == "evict" {
+		switch s.ChannelName {
+		case "dedupe", "promote", "rewrite", "beliefs", "age", "evict":
 			names = append(names, s.ChannelName)
 		}
 	}
@@ -1111,16 +1111,19 @@ func TestMemorySemanticDisabledByteIdentical(t *testing.T) {
 }
 
 // TestMemorySemanticEnabledRunsInOrder verifies the semantic sub-steps run in
-// the spec order (dedupe → promote → rewrite → beliefs → evict), each emitting a
-// pipeline_steps row after the extraction rows, and that RunStats counters are
-// populated (a pre-seeded duplicate pair is merged).
+// the spec order (dedupe → promote → rewrite → beliefs → age → evict), each
+// emitting a pipeline_steps row after the extraction rows, and that RunStats
+// counters are populated (a pre-seeded duplicate pair is merged).
 func TestMemorySemanticEnabledRunsInOrder(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	pipelineFixture(t, d)
 
 	// A duplicate episode pair in an isolated channel, merged by the dedupe step.
-	writeAndIndex(t, v, d, dupEpisode("ep_01ARZ3NDEKTSV4RRFFQ69G5DA1", "C9DUP", "1000.000100"))
-	writeAndIndex(t, v, d, dupEpisode("ep_01ARZ3NDEKTSV4RRFFQ69G5DB2", "C9DUP", "1000.000100"))
+	// A RECENT ref keeps the merged winner young enough that the aging + eviction
+	// steps leave it in place, so this test observes the dedupe resolution alone.
+	recentTS := fmt.Sprintf("%d.000100", time.Now().Add(-time.Hour).Unix())
+	writeAndIndex(t, v, d, dupEpisode("ep_01ARZ3NDEKTSV4RRFFQ69G5DA1", "C9DUP", recentTS))
+	writeAndIndex(t, v, d, dupEpisode("ep_01ARZ3NDEKTSV4RRFFQ69G5DB2", "C9DUP", recentTS))
 
 	gen := &fakeGen{
 		usage: digest.Usage{InputTokens: 10, OutputTokens: 2, TotalAPITokens: 10},
@@ -1134,7 +1137,7 @@ func TestMemorySemanticEnabledRunsInOrder(t *testing.T) {
 
 	runID, status, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
 	assert.Equal(t, "done", status)
-	assert.Equal(t, []string{"dedupe", "promote", "rewrite", "beliefs", "evict"},
+	assert.Equal(t, []string{"dedupe", "promote", "rewrite", "beliefs", "age", "evict"},
 		semanticStepNames(t, d, runID), "semantic steps run and record in the spec order")
 
 	// The newer episode now redirects to the older one (dedupe via Merge).
@@ -1176,10 +1179,37 @@ func TestMemorySemanticStepFailureIsolated(t *testing.T) {
 	assert.Equal(t, "done", byName["promote"])
 }
 
+// TestMemorySemanticAgeFloorGuardExplicitZero: an explicit age_after_days: 0 in
+// config must NOT disable the aging bound — it falls back to the default (14),
+// so a 5-day-old raw episode is left active/short. Were 0 passed through as-is,
+// AgeEpisodes would age every episode past 0 days (fix 12).
+func TestMemorySemanticAgeFloorGuardExplicitZero(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+
+	recent := agingEpNode(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5FG1", "C9FLOOR", 5) // 5 days old, non-situation
+	writeAndIndex(t, v, d, recent)
+
+	cfg := semanticTestConfig()
+	cfg.Semantic.AgeAfterDays = 0 // explicit zero must fall back to the default bound
+
+	gen := &fakeGen{reply: semanticReply}
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, stats.Aged, "a 5-day episode is not aged under the defaulted 14-day bound")
+
+	got, err := v.ReadNode(recent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", got.Status, "the bound was defaulted, not disabled")
+	assert.Equal(t, "short", got.Tier)
+}
+
 // TestMemorySemanticBudgetStopsAISteps: once the run's accumulated output tokens
 // exceed memory.semantic.output_budget, no further strong-tier AI step launches
-// — rewrite and belief pass are skipped (no rows, no AI calls), while the
-// mechanical steps still run.
+// — rewrite and belief pass fire no AI call, but still record a pipeline_steps
+// row with status 'skipped' (observability), while the mechanical steps run.
 func TestMemorySemanticBudgetStopsAISteps(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	pipelineFixture(t, d)
@@ -1207,9 +1237,22 @@ func TestMemorySemanticBudgetStopsAISteps(t *testing.T) {
 
 	runID, _, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
 	names := semanticStepNames(t, d, runID)
-	assert.NotContains(t, names, "rewrite", "rewrite skipped over budget (no step row)")
-	assert.NotContains(t, names, "beliefs", "belief pass skipped over budget (no step row)")
+	assert.Contains(t, names, "rewrite", "rewrite still records a row (status skipped) over budget")
+	assert.Contains(t, names, "beliefs", "belief pass still records a row (status skipped) over budget")
 	assert.Contains(t, names, "dedupe", "mechanical steps still run")
 	assert.Contains(t, names, "promote")
+	assert.Contains(t, names, "age")
 	assert.Contains(t, names, "evict")
+
+	// The budget-skipped AI steps carry status 'skipped', not 'done' or 'error'.
+	steps, err := d.GetPipelineSteps(runID)
+	require.NoError(t, err)
+	byName := map[string]string{}
+	for _, s := range steps {
+		byName[s.ChannelName] = s.Status
+	}
+	assert.Equal(t, "skipped", byName["rewrite"], "budget-skipped rewrite row is status 'skipped'")
+	assert.Equal(t, "skipped", byName["beliefs"], "budget-skipped belief pass row is status 'skipped'")
+	assert.Equal(t, "done", byName["dedupe"])
+	assert.Equal(t, "done", byName["evict"])
 }
