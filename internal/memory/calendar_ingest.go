@@ -76,11 +76,20 @@ type calAttendee struct {
 func (p *Pipeline) runCalendarIngest(runID int64, stepOffset int, stats *RunStats) (int, error) {
 	wm, err := p.db.MemoryCalendarWatermark()
 	if err != nil {
-		return 0, err
+		// Pre-build failures get the same accounting as build failures: a step
+		// row + counter, so a top-level calendar read outage is as observable
+		// as an extraction error (review 2026-07-16, slice-2 minor #1).
+		stats.CalendarEventsFailed++
+		step := stepOffset + 1
+		p.recordSemanticStep(runID, &step, "calendar-ingest", "error", nil, time.Now())
+		return 1, err
 	}
 	events, err := p.db.ListCalendarEventsForExtract(wm, calendarReprocessLookbackDays, orDefault(p.cfg.MaxChunkMessages, 2000))
 	if err != nil {
-		return 0, err
+		stats.CalendarEventsFailed++
+		step := stepOffset + 1
+		p.recordSemanticStep(runID, &step, "calendar-ingest", "error", nil, time.Now())
+		return 1, err
 	}
 	if len(events) == 0 {
 		return 0, nil
@@ -135,6 +144,11 @@ func (p *Pipeline) buildCalendarEpisodes(runID int64, calReg *provenanceRegistry
 	}
 
 	for _, ev := range events {
+		// maxEnd lifts BEFORE ref validation on purpose: an event whose cal:
+		// ref fails to resolve was swept by the sync's retention delete and is
+		// permanently gone from calendar_events — it can never be built later,
+		// so advancing the watermark past it loses nothing (unlike MEM-04's
+		// message freeze, where the raw row survives for a retry).
 		if ev.EndUnix > maxEnd {
 			maxEnd = ev.EndUnix
 		}
