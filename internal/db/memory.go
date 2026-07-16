@@ -1123,7 +1123,7 @@ func (db *DB) LinkedEntityEngagement(id string) (engaged, dismissed int, err err
 // The re-enable is not fire-and-forget: if PRAGMA foreign_keys = ON fails, the
 // connection is left with FK enforcement OFF for every subsequent statement on
 // it, silently voiding the integrity guarantee the whole database relies on. A
-// reindex must fail LOUDLY in that case, so the re-enable error is logged AND
+// reindex must fail LOUDLY in that case, so the re-enable error is
 // surfaced as the function's error (via the named return) rather than swallowed
 // — a successful drop with FKs stuck off is not a success.
 func (db *DB) DropMemoryIndex() (err error) {

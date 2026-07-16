@@ -27,12 +27,20 @@ var machineSenderLocalParts = []string{
 	"notifications", "mailer-daemon", "postmaster", "bounce",
 }
 
-// isMachineSender reports whether an email's local part looks automated (any
-// machineSenderLocalParts substring, case-insensitive) — dropped before seeding.
+// gmailSenderMinMessages is the email-specific seeding floor: a human
+// correspondent who sent >=3 emails in the 30-day window earns a person
+// entity. Deliberately much lower than the Slack SeedConfig.MinMessages floor
+// (chat and email volumes differ by an order of magnitude).
+const gmailSenderMinMessages = 3
+
+// isMachineSender reports whether an email's local part looks automated —
+// dropped before seeding. Patterns match as a PREFIX of the local part (or the
+// whole part), not a substring, so a human like jbouncer@ is not swept up by
+// "bounce".
 func isMachineSender(email string) bool {
 	local := strings.ToLower(emailLocalPart(email))
 	for _, m := range machineSenderLocalParts {
-		if strings.Contains(local, m) {
+		if local == m || strings.HasPrefix(local, m) {
 			return true
 		}
 	}
@@ -236,16 +244,17 @@ func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate
 }
 
 // seedGmailSenders returns one candidate per distinct from_email that sent at
-// least cfg.MinMessages gmail messages inside the window (internal_date unix >
-// since), titled from from_name (falling back to the email's local-part),
-// aliased by the lower-cased email address. It is a no-op unless cfg.Gmail
-// (memory.sources.gmail) is on — the source seeds no senders when dark, so the
-// "independently dark" contract is literally true.
+// least gmailSenderMinMessages gmail messages inside the window (internal_date
+// unix > since), titled from from_name (falling back to the email's
+// local-part), aliased by the lower-cased email address. It is a no-op unless
+// cfg.Gmail (memory.sources.gmail) is on — the source seeds no senders when
+// dark, so the "independently dark" contract is literally true.
 //
 // Two noise gates keep the person graph from filling with automated traffic:
-//   - a min-message threshold (SeedConfig.MinMessages, the same floor people
-//     use): a one-off sender is not worth a person entity (the plan's "external
-//     senders are sparse" rationale was empirically wrong);
+//   - a min-message threshold (gmailSenderMinMessages, NOT the Slack-calibrated
+//     SeedConfig.MinMessages: 20 chat messages/month is normal, 20 emails from
+//     one human correspondent is not — a Slack floor would leave email seeding
+//     effectively inert; convergence-review calibration, 2026-07-16);
 //   - a machine-sender pattern filter (isMachineSender): no-reply@, notifications@,
 //     mailer-daemon@ and friends are dropped no matter how high their volume.
 //
@@ -270,7 +279,7 @@ func seedGmailSenders(database *db.DB, cfg SeedConfig, since float64) ([]seedCan
 		  AND CAST(strftime('%s', internal_date) AS INTEGER) > ?
 		GROUP BY lower(from_email)
 		HAVING COUNT(*) >= ?
-		ORDER BY email`, since, cfg.MinMessages)
+		ORDER BY email`, since, gmailSenderMinMessages)
 	if err != nil {
 		return nil, fmt.Errorf("memory: seed gmail senders query: %w", err)
 	}
