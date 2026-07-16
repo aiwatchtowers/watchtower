@@ -403,3 +403,34 @@ func TestCLI_MemoryFactoryPassesLogf(t *testing.T) {
 	assert.Contains(t, logged.String(), "memory: run done",
 		"the factory must pass logf through to the pipeline")
 }
+
+// TestCLI_MemoryIndex prints the mechanical index.md (the browsing surface of
+// the two-tier world map).
+func TestCLI_MemoryIndex(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	_, err = vault.WriteFile("index.md", []byte("# Memory Index\n\n## Counts\n- entity: 3 (short 0, long 3)\n"),
+		memory.CommitMsg{Op: "index", Summary: "seed", Cause: "test"})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	memoryIndexCmd.SetOut(&buf)
+	require.NoError(t, memoryIndexCmd.RunE(memoryIndexCmd, nil))
+
+	out := buf.String()
+	assert.Contains(t, out, "# Memory Index")
+	assert.Contains(t, out, "- entity: 3 (short 0, long 3)")
+}
+
+// TestCLI_MemoryIndex_NotGenerated reports cleanly when index.md does not exist
+// yet (no vault / no consolidation run).
+func TestCLI_MemoryIndex_NotGenerated(t *testing.T) {
+	setupMemoryTestEnv(t, false)
+
+	var buf bytes.Buffer
+	memoryIndexCmd.SetOut(&buf)
+	require.NoError(t, memoryIndexCmd.RunE(memoryIndexCmd, nil))
+	assert.Contains(t, buf.String(), "not generated yet")
+}

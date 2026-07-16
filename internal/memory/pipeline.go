@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,9 +25,6 @@ const extractBatchSource = "memory.extract_episodes_batch"
 // seedWindowDays is the activity lookback for mechanical entity seeding
 // (people/channels active in the last 30 days, per the design spec).
 const seedWindowDays = 30
-
-// mapOpenEpisodesCap bounds the "Recent open episodes" list in map.md.
-const mapOpenEpisodesCap = 10
 
 // RunStats counts what one consolidation run did.
 type RunStats struct {
@@ -103,7 +99,7 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 //  3. Situations → episode nodes.
 //  4. Episode extraction from raw text, chunked per channel window; the
 //     watermark advances only behind fully committed windows (MEM-04).
-//  5. Mechanical map.md render.
+//  5. Mechanical index.md render.
 //  6. pipeline_runs finalization.
 //
 // Failure semantics: errors in steps 1–3 are fatal (the run stops, already
@@ -165,10 +161,11 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
 
-	// (5) Mechanical map.md render — non-fatal: the map is derived state and
-	// is re-rendered on the next run.
-	if err := p.renderMap(runID); err != nil {
-		p.logf("memory: render map: %v", err)
+	// (5) Mechanical index.md render — non-fatal: the index is derived state
+	// and is re-rendered on the next run. The strong-tier map.md render is
+	// wired separately behind memory.semantic.enabled (Task 11).
+	if err := p.renderIndex(runID); err != nil {
+		p.logf("memory: render index: %v", err)
 	}
 
 	wmAfter, err := p.db.MemoryWatermark()
@@ -726,150 +723,4 @@ var linkLabelReplacer = strings.NewReplacer("[[", "", "]]", "", "|", "/", "\n", 
 
 func linkLabel(title string) string {
 	return linkLabelReplacer.Replace(title)
-}
-
-var (
-	slackUserAliasRe    = regexp.MustCompile(`^[UW][A-Z0-9]{4,}$`)
-	slackChannelAliasRe = regexp.MustCompile(`^[CDG][A-Z0-9]{4,}$`)
-)
-
-// mapEntry is one entity line in map.md.
-type mapEntry struct {
-	id, title, what string
-}
-
-// renderMap is consolidation step 5: the mechanical v1 map.md render — counts
-// by type/tier, entities grouped people/channels/projects with one-line What
-// excerpts, and the most recent open episodes. Committed via Vault.WriteFile
-// (a byte-identical render adds no commit). The LLM-written map is Phase 3.
-func (p *Pipeline) renderMap(runID int64) error {
-	rows, err := p.db.ListMemoryNodes()
-	if err != nil {
-		return err
-	}
-
-	counts := make(map[string]int) // "type/tier" → count, tombstones excluded
-	var people, channels, other []mapEntry
-	var open []db.MemoryNodeRow
-	for _, row := range rows {
-		if row.Status == "tombstone" {
-			continue
-		}
-		counts[row.Type+"/"+row.Tier]++
-		switch row.Type {
-		case "entity":
-			n, err := p.vault.ReadNode(row.ID)
-			if err != nil {
-				p.logf("memory: map: read %s: %v", row.ID, err)
-				continue
-			}
-			e := mapEntry{id: row.ID, title: row.Title, what: whatExcerpt(n.Body)}
-			switch classifyEntity(n) {
-			case "people":
-				people = append(people, e)
-			case "channels":
-				channels = append(channels, e)
-			default:
-				other = append(other, e)
-			}
-		case "episode":
-			if row.Status == "active" {
-				open = append(open, row)
-			}
-		}
-	}
-	for _, group := range [][]mapEntry{people, channels, other} {
-		sort.Slice(group, func(a, b int) bool {
-			ta, tb := strings.ToLower(group[a].title), strings.ToLower(group[b].title)
-			if ta != tb {
-				return ta < tb
-			}
-			return group[a].id < group[b].id
-		})
-	}
-	// Node IDs are ULIDs — sorting by ID descending is newest-first.
-	sort.Slice(open, func(a, b int) bool { return open[a].ID > open[b].ID })
-	if len(open) > mapOpenEpisodesCap {
-		open = open[:mapOpenEpisodesCap]
-	}
-
-	var b strings.Builder
-	b.WriteString("# Memory Map\n\n## Counts\n")
-	for _, typ := range []string{"entity", "episode", "rollup", "belief"} {
-		short, long := counts[typ+"/short"], counts[typ+"/long"]
-		fmt.Fprintf(&b, "- %s: %d (short %d, long %d)\n", typ, short+long, short, long)
-	}
-	writeMapSection(&b, "People", people)
-	writeMapSection(&b, "Channels", channels)
-	writeMapSection(&b, "Projects & other", other)
-	b.WriteString("\n## Recent open episodes\n")
-	if len(open) == 0 {
-		b.WriteString("(none)\n")
-	}
-	for _, row := range open {
-		fmt.Fprintf(&b, "- [[%s|%s]]\n", row.ID, linkLabel(row.Title))
-	}
-
-	msg := CommitMsg{Op: "map", Summary: "render world map", Cause: fmt.Sprintf("run:%d", runID)}
-	_, err = p.vault.WriteFile(mapFileName, []byte(b.String()), msg)
-	return err
-}
-
-func writeMapSection(b *strings.Builder, heading string, entries []mapEntry) {
-	fmt.Fprintf(b, "\n## %s\n", heading)
-	if len(entries) == 0 {
-		b.WriteString("(none)\n")
-		return
-	}
-	for _, e := range entries {
-		fmt.Fprintf(b, "- [[%s|%s]]", e.id, linkLabel(e.title))
-		if e.what != "" {
-			b.WriteString(" — " + e.what)
-		}
-		b.WriteString("\n")
-	}
-}
-
-// classifyEntity buckets an entity page for the map by its natural-key
-// aliases: Slack user IDs / emails / people-card refs → people, Slack
-// channel-ish IDs or a "#name" title → channels, everything else (Jira
-// project keys, hand-made pages) → other.
-func classifyEntity(n Node) string {
-	if n.Refs.PeopleCard != 0 {
-		return "people"
-	}
-	for _, a := range n.Aliases {
-		if slackUserAliasRe.MatchString(a) || strings.Contains(a, "@") {
-			return "people"
-		}
-	}
-	if strings.HasPrefix(n.Title, "#") {
-		return "channels"
-	}
-	for _, a := range n.Aliases {
-		if slackChannelAliasRe.MatchString(a) {
-			return "channels"
-		}
-	}
-	return "other"
-}
-
-// whatExcerpt returns the first non-empty line of the "## What" section,
-// truncated for the one-line map render.
-func whatExcerpt(body string) string {
-	inWhat := false
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			inWhat = trimmed == "## What"
-			continue
-		}
-		if inWhat && trimmed != "" {
-			if r := []rune(trimmed); len(r) > 120 {
-				return string(r[:120]) + "…"
-			}
-			return trimmed
-		}
-	}
-	return ""
 }

@@ -92,7 +92,7 @@ func memoryUnavailable(vaultPath string) *mcpsdk.CallToolResult {
 func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_map",
-		Description: "Read the memory world map (map.md) plus node counts by type and tier.",
+		Description: "Read the hot memory world map (map.md — a compact at-a-glance summary; use memory_recall or memory_open for anything not shown) plus node counts by type and tier.",
 	}, memoryMapHandler(database, vaultPath))
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -63,6 +64,12 @@ var memorySeedCmd = &cobra.Command{
 	RunE:  runMemorySeed,
 }
 
+var memoryIndexCmd = &cobra.Command{
+	Use:   "index",
+	Short: "Print the full mechanical memory index (index.md)",
+	RunE:  runMemoryIndex,
+}
+
 // newMemoryPipelineFactory is the seam tests override to inject a fake
 // pipeline (same pattern as newDayPlanPipelineFactory). The default wires
 // the standard CLI generator, the prompt store, the digest language for
@@ -88,7 +95,7 @@ func memoryStderrLogf(cmd *cobra.Command) func(string, ...any) {
 func init() {
 	rootCmd.AddCommand(memoryCmd)
 	memoryCmd.AddCommand(memoryStatusCmd, memoryReindexCmd, memoryOpenCmd,
-		memoryRecallCmd, memoryConsolidateCmd, memorySeedCmd)
+		memoryRecallCmd, memoryConsolidateCmd, memorySeedCmd, memoryIndexCmd)
 
 	memoryRecallCmd.Flags().Int("limit", 10, "max results to print")
 	memoryConsolidateCmd.Flags().Bool("once", false, "run a single consolidation pass and exit")
@@ -293,6 +300,28 @@ func runMemoryOpen(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  aliases: %s", strings.Join(n.Aliases, ", "))
 	}
 	fmt.Fprintf(out, "\n\n%s", n.Body)
+	return nil
+}
+
+// runMemoryIndex prints the mechanical full listing (index.md — the browsing
+// surface the two-tier world map split created; map.md stays the hot summary).
+func runMemoryIndex(cmd *cobra.Command, _ []string) error {
+	cfg, database, err := memoryConfigAndDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	out := cmd.OutOrStdout()
+
+	content, err := os.ReadFile(filepath.Join(memoryVaultPath(cfg), "index.md"))
+	if os.IsNotExist(err) {
+		fmt.Fprintln(out, "Memory index not generated yet (run consolidation first).")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading memory index: %w", err)
+	}
+	fmt.Fprint(out, string(content))
 	return nil
 }
 
