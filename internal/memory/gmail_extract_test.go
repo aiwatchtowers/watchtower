@@ -24,8 +24,12 @@ func gmailPipelineConfig() config.MemoryConfig {
 
 // gmailMsgTime renders an RFC3339 internal_date offsetSeconds after an hour ago
 // and returns it alongside its whole-second unix value (what strftime yields).
+// gmailTestBase is captured once so two gmailMsgTime calls in one test can
+// never straddle a wall-clock second (a 1s watermark delta flaked under load).
+var gmailTestBase = time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+
 func gmailMsgTime(offsetSeconds int) (iso string, unix int64) {
-	t := time.Now().Add(-time.Hour).Add(time.Duration(offsetSeconds) * time.Second).UTC().Truncate(time.Second)
+	t := gmailTestBase.Add(time.Duration(offsetSeconds) * time.Second)
 	return t.Format(time.RFC3339), t.Unix()
 }
 

@@ -153,7 +153,7 @@ func upsertIndexNode(database *db.DB, n Node, indexedAt string) error {
 		Subject:     n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
 		Confidence:  n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
 	}
-	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases); err != nil {
+	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, nil)...); err != nil {
 		return fmt.Errorf("memory: index %s: %w", n.ID, err)
 	}
 	return nil

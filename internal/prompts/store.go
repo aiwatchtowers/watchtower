@@ -49,6 +49,7 @@ const (
 	MemoryReviseBeliefs        = "memory.revise_beliefs"
 	MemoryRenderMap            = "memory.render_map"
 	MemoryReflect              = "memory.reflect"
+	MemoryRenderChannelDigest  = "memory.render_channel_digest"
 )
 
 // Store loads, caches, and persists prompt templates.

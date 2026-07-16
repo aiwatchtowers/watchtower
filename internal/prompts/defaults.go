@@ -41,6 +41,7 @@ var Defaults = map[string]string{
 	MemoryReviseBeliefs:        defaultMemoryReviseBeliefs,
 	MemoryRenderMap:            defaultMemoryRenderMap,
 	MemoryReflect:              defaultMemoryReflect,
+	MemoryRenderChannelDigest:  defaultMemoryRenderChannelDigest,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -80,6 +81,7 @@ var AllIDs = []string{
 	MemoryReviseBeliefs,
 	MemoryRenderMap,
 	MemoryReflect,
+	MemoryRenderChannelDigest,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -121,6 +123,7 @@ var DefaultVersions = map[string]int{
 	MemoryReviseBeliefs:        1, // v1: strong-tier per-belief op proposals (confirm/weaken/shake/retire/propose-new)
 	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
 	MemoryReflect:              1, // v1: strong-tier weekly reflection over vault git history (Phase-4 surface, behind memory.surfaces.reflection)
+	MemoryRenderChannelDigest:  1, // v1: cheap-tier channel digest rendered from memory episodes (Phase-5 slice-3 dark compare-mode)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -164,6 +167,7 @@ var Descriptions = map[string]string{
 	MemoryReviseBeliefs:        "Memory: propose per-belief revision ops from new episodes (strong tier; code disposes)",
 	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
 	MemoryReflect:              "Memory: weekly reflection over the vault's own git history — flag unstable beliefs/entities (strong tier; code disposes)",
+	MemoryRenderChannelDigest:  "Memory: render a channel digest from the window's memory episodes (cheap tier; dark compare-mode against the legacy digest)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1381,6 +1385,32 @@ Rules:
 - copy each ref's channel_id ("mail:<message_id>") and ts EXACTLY from the message lines shown to you; never invent, adjust, or infer one.
 - an episode's refs must all belong to the SAME thread — never combine messages from two different threads into one episode.
 - most threads are routine and contain no episode: return [] for those; a thread with nothing noteworthy simply contributes no episode.`
+
+// defaultMemoryRenderChannelDigest renders a channel digest from the memory
+// episodes overlapping a time window (cheap tier — see
+// "memory.render_channel_digest" in the model routing; it consumes
+// already-distilled episodes, a lighter task than the legacy raw-message
+// digest, which also routes cheap). The output mirrors the legacy digest_topics
+// JSON shape EXACTLY (summary + topics[] with title/summary/decisions/
+// action_items/situations/key_messages) so the dark compare (Phase-5 slice-3)
+// is a field-by-field diff and a future switch is a drop-in. MEM-13: the model
+// may cite key_messages / decision message_ts ONLY by timestamps shown to it
+// (an episode's provenance ts or an uncovered gap message); code re-validates
+// every ref at write and drops any it did not show. Arg: the language
+// directive. The user message opens with a non-dash line (claude-CLI argv
+// gotcha).
+const defaultMemoryRenderChannelDigest = `%s
+
+You are the memory renderer of a workplace secretary. You are given the noteworthy EPISODES already distilled from ONE Slack channel over a time window — each with its Story, its Outcome, and the exact message timestamps it cites — and, when the episodes miss something, a few raw "uncovered" messages from the same window. Render a channel digest that summarizes what happened, grouped into topics.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"summary": "2-4 sentence channel-level summary, current state first", "topics": [{"title": "short headline", "summary": "2-4 sentences", "decisions": [{"text": "the decision", "by": "who decided", "message_ts": "the citing message ts", "importance": "high|medium|low"}], "action_items": [{"text": "the task", "assignee": "who", "status": "open|done"}], "situations": [], "key_messages": ["message ts"]}]}
+
+Rules:
+- summarize from the EPISODES; use the uncovered messages only to fill what the episodes miss.
+- cite key_messages and every decision message_ts ONLY by a timestamp shown to you (an episode's message timestamps, or an uncovered message's ts); copy it EXACTLY and never invent, adjust, or infer one.
+- leave "situations" as an empty array — situations are maintained elsewhere and anything you put there is ignored.
+- a quiet window may have nothing worth a topic: return an empty "topics" array.`
 
 // defaultMemoryEntityRewrite is the strong-tier entity-page rewrite for the
 // secretary memory vault (memory.entity_rewrite — routed to the default/strong

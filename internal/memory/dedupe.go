@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -207,4 +208,47 @@ func parseProvenance(body string) []episodeRef {
 		refs = append(refs, episodeRef{ChannelID: fields[0], TS: fields[1]})
 	}
 	return refs
+}
+
+// provenanceRows builds the db-layer memory_provenance index rows for a node
+// from its ## Provenance section — the single parse site the derived
+// provenance index flows through (parseProvenance → classify scheme →
+// decode ts), keeping the db layer a dumb store (one parse site in memory,
+// one write site in db.UpsertMemoryNode, one transaction). Each ref is
+// classified by schemeOf (a bare Slack channel_id is scheme "", mail:/cal:/
+// chat:/act: carry their prefix) and its ts decoded to a unix float for
+// windowed lookup; a ref whose ts is not numeric cannot be windowed and is
+// skipped (logged when logf is non-nil). Refs are deduped by
+// (channel_id, ts_raw) so the wholesale insert cannot collide on the
+// memory_provenance primary key. A node with no ## Provenance section (every
+// non-episode/rollup type) yields nil.
+func provenanceRows(n Node, logf func(string, ...any)) []db.ProvenanceRow {
+	refs := parseProvenance(n.Body)
+	if len(refs) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(refs))
+	var rows []db.ProvenanceRow
+	for _, r := range refs {
+		key := r.ChannelID + "\x00" + r.TS
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		tsUnix, err := strconv.ParseFloat(strings.TrimSpace(r.TS), 64)
+		if err != nil {
+			if logf != nil {
+				logf("memory: provenance ref %s %s on %s skipped (non-numeric ts, not windowable)", r.ChannelID, r.TS, n.ID)
+			}
+			continue
+		}
+		rows = append(rows, db.ProvenanceRow{
+			NodeID:    n.ID,
+			Scheme:    schemeOf(r.ChannelID),
+			ChannelID: r.ChannelID,
+			TSRaw:     r.TS,
+			TSUnix:    tsUnix,
+		})
+	}
+	return rows
 }

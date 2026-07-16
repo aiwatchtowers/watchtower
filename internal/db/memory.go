@@ -39,10 +39,29 @@ type MemoryHit struct {
 	Snippet string
 }
 
-// UpsertMemoryNode writes a node row, replaces its aliases, and replaces its
-// FTS row in a single transaction, so a reindex interrupted mid-node never
-// leaves the index half-updated for that node.
-func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string) error {
+// ProvenanceRow is one derived memory_provenance index row: a single
+// `## Provenance` ref of a node (episode/rollup), classified by scheme and with
+// its ts decoded to a unix float for windowed lookup. The memory package owns
+// the ref grammar (parsing the markdown + classifying the scheme + decoding the
+// ts); the db layer is a dumb store that just writes what it is handed —
+// mirroring how aliases are parsed in memory and written here (one parse site
+// in memory, one write site in db, one transaction).
+type ProvenanceRow struct {
+	NodeID    string
+	Scheme    string // "" (Slack), "mail", "cal", "chat", "act"
+	ChannelID string // the raw ref channel_id, e.g. "C0AAA" or "mail:<id>"
+	TSRaw     string // the ref ts verbatim as rendered in ## Provenance
+	TSUnix    float64
+}
+
+// UpsertMemoryNode writes a node row, replaces its aliases, replaces its FTS
+// row, and replaces its provenance index rows in a single transaction, so a
+// reindex interrupted mid-node never leaves the index half-updated for that
+// node. provenance carries the node's `## Provenance` refs (nil for node types
+// that carry none); like aliases, they are parsed in the memory layer and
+// replaced wholesale here (delete-then-insert keyed on node_id) so a re-upsert
+// with an edited body never leaves stale window rows behind.
+func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string, provenance ...ProvenanceRow) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("beginning memory node tx: %w", err)
@@ -89,6 +108,22 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string)
 		return fmt.Errorf("inserting fts row for %s: %w", row.ID, err)
 	}
 
+	// Replace this node's provenance index rows wholesale (the alias/FTS
+	// precedent) — memory_provenance is derived from the body's ## Provenance
+	// section, so a re-upsert with an edited body must not leave stale window
+	// rows. The memory layer dedupes by (channel_id, ts_raw) before handing them
+	// over, so a plain INSERT cannot hit the (node_id, channel_id, ts_raw) PK.
+	if _, err := tx.Exec(`DELETE FROM memory_provenance WHERE node_id = ?`, row.ID); err != nil {
+		return fmt.Errorf("clearing provenance for %s: %w", row.ID, err)
+	}
+	for _, p := range provenance {
+		if _, err := tx.Exec(`INSERT INTO memory_provenance
+			(node_id, scheme, channel_id, ts_raw, ts_unix) VALUES (?, ?, ?, ?, ?)`,
+			row.ID, p.Scheme, p.ChannelID, p.TSRaw, p.TSUnix); err != nil {
+			return fmt.Errorf("inserting provenance %s/%s for %s: %w", p.ChannelID, p.TSRaw, row.ID, err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing memory node tx for %s: %w", row.ID, err)
 	}
@@ -104,10 +139,12 @@ func (db *DB) DeleteMemoryNode(id string) error {
 	}
 	defer tx.Rollback()
 
-	// Children first: memory_aliases and memory_node_stats reference memory_nodes.
+	// Children first: memory_aliases, memory_node_stats, and memory_provenance
+	// reference memory_nodes.
 	for _, stmt := range []string{
 		`DELETE FROM memory_aliases WHERE node_id = ?`,
 		`DELETE FROM memory_node_stats WHERE node_id = ?`,
+		`DELETE FROM memory_provenance WHERE node_id = ?`,
 		`DELETE FROM memory_fts WHERE id = ?`,
 		`DELETE FROM memory_nodes WHERE id = ?`,
 	} {
@@ -120,6 +157,38 @@ func (db *DB) DeleteMemoryNode(id string) error {
 		return fmt.Errorf("committing memory delete tx for %s: %w", id, err)
 	}
 	return nil
+}
+
+// ListEpisodesForChannelWindow returns the distinct node ids whose
+// `## Provenance` refs for channelID fall in the half-open window (fromUnix,
+// toUnix] — the episode-window substrate the digest render (Phase-5 5B) queries
+// to ask "which episodes cover Slack channel C in [t0,t1]?". Tombstones are
+// excluded (a redirected/merged node is not a real episode). Because a Slack
+// channel_id carries scheme "" while mail:/cal:/chat:/act: refs carry their
+// prefix in channel_id, passing a bare Slack channel_id naturally excludes the
+// prefixed-scheme refs. The bound is exclusive-low / inclusive-high so adjacent
+// windows tile without double-counting the boundary second.
+func (db *DB) ListEpisodesForChannelWindow(channelID string, fromUnix, toUnix float64) ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT p.node_id
+		FROM memory_provenance p
+		JOIN memory_nodes n ON n.id = p.node_id
+		WHERE p.channel_id = ? AND p.ts_unix > ? AND p.ts_unix <= ?
+		  AND n.status != 'tombstone'
+		ORDER BY p.node_id`, channelID, fromUnix, toUnix)
+	if err != nil {
+		return nil, fmt.Errorf("listing episodes for channel %s window (%v,%v]: %w", channelID, fromUnix, toUnix, err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning episode window row: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // LookupMemoryAlias resolves an alias (case-insensitive — the column is
@@ -1306,8 +1375,9 @@ func (db *DB) LinkedEntityEngagement(id string) (engaged, dismissed int, err err
 	return engaged, dismissed, nil
 }
 
-// DropMemoryIndex empties all four memory index tables in one transaction so
-// a full reindex can rebuild them from the vault (MEM-02).
+// DropMemoryIndex empties the vault-derived memory index tables (nodes,
+// aliases, provenance, fts) in one transaction so a full reindex can rebuild
+// them from the vault (MEM-02).
 //
 // memory_engagement and memory_dispute_flags carry a REFERENCES
 // memory_nodes(id) FK but are deliberately NOT cleared here — they are
@@ -1348,10 +1418,14 @@ func (db *DB) DropMemoryIndex() (err error) {
 	}
 	defer tx.Rollback()
 
-	// Children first: aliases and stats reference memory_nodes.
+	// Children first: aliases, stats, and provenance reference memory_nodes.
+	// memory_provenance IS vault-derived (rebuilt by Reconcile from each node's
+	// ## Provenance section), so — unlike memory_node_stats/engagement/hints — it
+	// is cleared here and rebuilt on reindex (inside MEM-02).
 	for _, stmt := range []string{
 		`DELETE FROM memory_aliases`,
 		`DELETE FROM memory_node_stats`,
+		`DELETE FROM memory_provenance`,
 		`DELETE FROM memory_fts`,
 		`DELETE FROM memory_nodes`,
 	} {

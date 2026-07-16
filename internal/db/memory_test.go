@@ -441,6 +441,150 @@ func TestDropMemoryIndex(t *testing.T) {
 	}
 }
 
+// epNode returns an episode node row for provenance tests.
+func epNode(id string) MemoryNodeRow {
+	return memTestNode(id, func(r *MemoryNodeRow) {
+		r.Type = "episode"
+		r.Tier = "short"
+		r.Path = "episodes/" + id + ".md"
+	})
+}
+
+// provRows reads memory_provenance for a node, ordered deterministically.
+func provRows(t *testing.T, db *DB, nodeID string) []ProvenanceRow {
+	t.Helper()
+	rows, err := db.Query(`SELECT node_id, scheme, channel_id, ts_raw, ts_unix
+		FROM memory_provenance WHERE node_id = ? ORDER BY channel_id, ts_raw`, nodeID)
+	if err != nil {
+		t.Fatalf("query provenance: %v", err)
+	}
+	defer rows.Close()
+	var out []ProvenanceRow
+	for rows.Next() {
+		var p ProvenanceRow
+		if err := rows.Scan(&p.NodeID, &p.Scheme, &p.ChannelID, &p.TSRaw, &p.TSUnix); err != nil {
+			t.Fatalf("scan provenance: %v", err)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// TestUpsertMemoryNodeWritesProvenance: provenance rows ride the same upsert
+// tx as aliases/FTS (delete-then-insert wholesale), and a re-upsert with a
+// changed provenance set replaces the node's rows entirely.
+func TestUpsertMemoryNodeWritesProvenance(t *testing.T) {
+	db := openTestDB(t)
+
+	prov := []ProvenanceRow{
+		{NodeID: "ep_prov1", Scheme: "", ChannelID: "C0AAA", TSRaw: "1700000000.000100", TSUnix: 1700000000.0001},
+		{NodeID: "ep_prov1", Scheme: "mail", ChannelID: "mail:abc", TSRaw: "1700000500", TSUnix: 1700000500},
+	}
+	if err := db.UpsertMemoryNode(epNode("ep_prov1"), "body", nil, prov...); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got := provRows(t, db, "ep_prov1")
+	if len(got) != 2 {
+		t.Fatalf("got %d provenance rows, want 2: %+v", len(got), got)
+	}
+	// mail: ref keeps its scheme; the bare Slack ref is scheme "".
+	if got[0].ChannelID != "C0AAA" || got[0].Scheme != "" {
+		t.Errorf("row0 = %+v, want C0AAA scheme ''", got[0])
+	}
+	if got[1].ChannelID != "mail:abc" || got[1].Scheme != "mail" {
+		t.Errorf("row1 = %+v, want mail:abc scheme 'mail'", got[1])
+	}
+
+	// Re-upsert with a wholly different provenance set replaces the old rows.
+	if err := db.UpsertMemoryNode(epNode("ep_prov1"), "body2", nil,
+		ProvenanceRow{NodeID: "ep_prov1", ChannelID: "C0BBB", TSRaw: "1700009999.000000", TSUnix: 1700009999}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	got = provRows(t, db, "ep_prov1")
+	if len(got) != 1 || got[0].ChannelID != "C0BBB" {
+		t.Fatalf("after re-upsert got %+v, want a single C0BBB row", got)
+	}
+}
+
+// TestDeleteMemoryNodeClearsProvenance: DeleteMemoryNode removes the node's
+// provenance rows in the same delete tx (the alias/FTS precedent).
+func TestDeleteMemoryNodeClearsProvenance(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.UpsertMemoryNode(epNode("ep_del"), "body", nil,
+		ProvenanceRow{NodeID: "ep_del", ChannelID: "C0AAA", TSRaw: "1700000000.000000", TSUnix: 1700000000}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := db.DeleteMemoryNode("ep_del"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if got := provRows(t, db, "ep_del"); len(got) != 0 {
+		t.Errorf("provenance survived delete: %+v", got)
+	}
+}
+
+// TestDropMemoryIndexClearsProvenance: memory_provenance is vault-derived, so
+// DropMemoryIndex empties it (unlike the runtime engagement/hint side tables).
+func TestDropMemoryIndexClearsProvenance(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.UpsertMemoryNode(epNode("ep_drop"), "body", nil,
+		ProvenanceRow{NodeID: "ep_drop", ChannelID: "C0AAA", TSRaw: "1700000000.000000", TSUnix: 1700000000}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := db.DropMemoryIndex(); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_provenance`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("memory_provenance has %d rows after drop, want 0", n)
+	}
+}
+
+// TestListEpisodesForChannelWindow: the window query returns episodes whose
+// bare-channel provenance falls in (from,to], is boundary-correct (excludes
+// from, includes to), and never returns prefixed-scheme (mail:/cal:) refs for
+// a bare Slack channel id or tombstoned nodes.
+func TestListEpisodesForChannelWindow(t *testing.T) {
+	db := openTestDB(t)
+
+	mk := func(id string, prov ...ProvenanceRow) {
+		if err := db.UpsertMemoryNode(epNode(id), "body", nil, prov...); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+	// ep_in: inside the window. ep_before: at the exclusive lower bound.
+	// ep_at_to: at the inclusive upper bound. ep_after: past it. ep_other:
+	// another channel. ep_mail: a mail: ref that must not match a bare id.
+	mk("ep_in", ProvenanceRow{NodeID: "ep_in", ChannelID: "C0AAA", TSRaw: "150", TSUnix: 150})
+	mk("ep_before", ProvenanceRow{NodeID: "ep_before", ChannelID: "C0AAA", TSRaw: "100", TSUnix: 100})
+	mk("ep_at_to", ProvenanceRow{NodeID: "ep_at_to", ChannelID: "C0AAA", TSRaw: "200", TSUnix: 200})
+	mk("ep_after", ProvenanceRow{NodeID: "ep_after", ChannelID: "C0AAA", TSRaw: "201", TSUnix: 201})
+	mk("ep_other", ProvenanceRow{NodeID: "ep_other", ChannelID: "C0BBB", TSRaw: "150", TSUnix: 150})
+	mk("ep_mail", ProvenanceRow{NodeID: "ep_mail", Scheme: "mail", ChannelID: "mail:C0AAA", TSRaw: "150", TSUnix: 150})
+
+	// Tombstoned node with an in-window ref must be excluded.
+	tomb := epNode("ep_tomb")
+	tomb.Status = "tombstone"
+	tomb.RedirectTo = "ep_in"
+	if err := db.UpsertMemoryNode(tomb, "body", nil,
+		ProvenanceRow{NodeID: "ep_tomb", ChannelID: "C0AAA", TSRaw: "150", TSUnix: 150}); err != nil {
+		t.Fatalf("upsert tomb: %v", err)
+	}
+
+	ids, err := db.ListEpisodesForChannelWindow("C0AAA", 100, 200)
+	if err != nil {
+		t.Fatalf("window query: %v", err)
+	}
+	// (100,200]: excludes ep_before (==100), includes ep_in and ep_at_to,
+	// excludes ep_after/ep_other/ep_mail/ep_tomb.
+	want := []string{"ep_at_to", "ep_in"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Errorf("window ids = %v, want %v", ids, want)
+	}
+}
+
 func TestRecordEntityHintsDedupesByPair(t *testing.T) {
 	db := openTestDB(t)
 

@@ -29,12 +29,15 @@ func writeNodes(t *testing.T, v *Vault, nodes ...Node) {
 
 // indexDump is a comparable snapshot of the file-derived index tables:
 // memory_nodes (indexed_at zeroed — it is a wall-clock stamp), memory_aliases,
-// and memory_fts. memory_node_stats is deliberately absent: access stats are
-// runtime state, not derivable from vault files.
+// memory_fts, and memory_provenance. memory_node_stats is deliberately absent:
+// access stats are runtime state, not derivable from vault files. Provenance,
+// by contrast, IS derived from each node's ## Provenance section, so it belongs
+// inside the MEM-02 reindex-equivalence set (Phase-5 slice-3 extension).
 type indexDump struct {
-	Nodes   []db.MemoryNodeRow
-	Aliases [][2]string
-	FTS     [][3]string
+	Nodes      []db.MemoryNodeRow
+	Aliases    [][2]string
+	FTS        [][3]string
+	Provenance []db.ProvenanceRow
 }
 
 func dumpIndex(t *testing.T, d *db.DB) indexDump {
@@ -67,6 +70,17 @@ func dumpIndex(t *testing.T, d *db.DB) indexDump {
 		dump.FTS = append(dump.FTS, f)
 	}
 	require.NoError(t, frows.Err())
+
+	prows, err := d.Query(`SELECT node_id, scheme, channel_id, ts_raw, ts_unix
+		FROM memory_provenance ORDER BY node_id, channel_id, ts_raw`)
+	require.NoError(t, err)
+	defer prows.Close()
+	for prows.Next() {
+		var p db.ProvenanceRow
+		require.NoError(t, prows.Scan(&p.NodeID, &p.Scheme, &p.ChannelID, &p.TSRaw, &p.TSUnix))
+		dump.Provenance = append(dump.Provenance, p)
+	}
+	require.NoError(t, prows.Err())
 
 	return dump
 }
@@ -338,10 +352,14 @@ func TestReconcileQuarantinesDuplicateAlias(t *testing.T) {
 func TestMemory02_ReindexEquivalence(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 
-	// Pass 1: two fresh nodes.
+	// Pass 1: two fresh nodes. Episode B carries a ## Provenance section so the
+	// derived memory_provenance index is exercised by the reindex-equivalence
+	// comparison (MEM-02 extension, Phase-5 slice-3).
 	a := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5IXA", "entity", "Alpha")
 	a.Aliases = []string{"alpha", "C0AAAAAAA"}
 	b := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5IXB", "episode", "Beta")
+	b.Body = "# Beta\n\n## Story\nA thing happened.\n\n## Provenance\n" +
+		"- C0AAAAAAA 1700000000.000100\n- mail:abc123 1700000500\n"
 	writeNodes(t, v, a, b)
 	_, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
@@ -355,9 +373,11 @@ func TestMemory02_ReindexEquivalence(t *testing.T) {
 	_, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
-	// Pass 3: delete B, edit C.
+	// Pass 3: delete B (its provenance rows must vanish with it), edit C and give
+	// it a surviving ## Provenance section so a live node's provenance is compared.
 	require.NoError(t, os.Remove(filepath.Join(v.path, "episodes", b.ID+".md")))
-	c.Body = "# Q3 rollup\n\nCollapsed episodes live here.\n"
+	c.Body = "# Q3 rollup\n\nCollapsed episodes live here.\n\n## Provenance\n" +
+		"- C0AAAAAAA 1700100000.000200\n"
 	writeNodes(t, v, c)
 	_, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)

@@ -299,3 +299,32 @@ func TestMemory12_UnregisteredSchemeRejectedAtWrite(t *testing.T) {
 	assert.Empty(t, kept2, "an all-unregistered episode leaves no provenance and is discarded")
 	assert.Equal(t, 1, dropped2)
 }
+
+// TestProvenanceRows builds the db-layer index rows from a node's ## Provenance
+// section: each ref is classified by scheme and its ts decoded to a unix float;
+// a ref whose ts is not numeric is skipped (it cannot be windowed), and a node
+// with no ## Provenance section yields nil.
+func TestProvenanceRows(t *testing.T) {
+	body := "# Ep\n\n## Story\nstuff\n\n## Provenance\n" +
+		"- C0AAA 1700000000.000100\n" +
+		"- mail:abc 1700000500\n" +
+		"- notanumber whoops\n"
+	n := Node{ID: "ep_1", Type: "episode", Body: body}
+
+	rows := provenanceRows(n, nil)
+	require.Len(t, rows, 2, "the non-numeric ts ref is skipped")
+
+	assert.Equal(t, "ep_1", rows[0].NodeID)
+	assert.Equal(t, "", rows[0].Scheme)
+	assert.Equal(t, "C0AAA", rows[0].ChannelID)
+	assert.Equal(t, "1700000000.000100", rows[0].TSRaw)
+	assert.InDelta(t, 1700000000.0001, rows[0].TSUnix, 1e-6)
+
+	assert.Equal(t, "mail", rows[1].Scheme)
+	assert.Equal(t, "mail:abc", rows[1].ChannelID)
+	assert.InDelta(t, 1700000500.0, rows[1].TSUnix, 1e-6)
+
+	// A node with no provenance section yields nil.
+	plain := Node{ID: "ent_1", Type: "entity", Body: "# Entity\n\n## What\nA thing.\n"}
+	assert.Nil(t, provenanceRows(plain, nil))
+}

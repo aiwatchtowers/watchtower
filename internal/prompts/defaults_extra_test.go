@@ -58,3 +58,28 @@ func TestMemorySemanticPromptsRegistered(t *testing.T) {
 		})
 	}
 }
+
+// TestMemoryRenderPromptRegistered pins the Phase-5 slice-3 channel-digest
+// render prompt into all four registration surfaces (Defaults, AllIDs,
+// DefaultVersions v1, Descriptions), carrying the language directive and never
+// beginning with a dash.
+func TestMemoryRenderPromptRegistered(t *testing.T) {
+	id := MemoryRenderChannelDigest
+
+	allIDs := make(map[string]bool, len(AllIDs))
+	for _, x := range AllIDs {
+		allIDs[x] = true
+	}
+
+	tmpl, ok := Defaults[id]
+	assert.True(t, ok, "Defaults must contain %q", id)
+	assert.NotEmpty(t, tmpl)
+	assert.True(t, allIDs[id], "AllIDs must contain %q", id)
+	assert.Equal(t, 1, DefaultVersions[id], "%q must be registered at v1", id)
+	assert.NotEmpty(t, Descriptions[id], "Descriptions must contain %q", id)
+
+	rendered := DefaultFor(id)
+	assert.True(t, HasDirective(fmt.Sprintf(rendered, Directive(""))),
+		"%q must carry the language directive placeholder", id)
+	assert.False(t, strings.HasPrefix(rendered, "-"), "%q must not begin with a dash", id)
+}
