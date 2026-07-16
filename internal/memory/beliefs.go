@@ -289,17 +289,19 @@ func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]No
 	cause := op.Op
 	if decision == opDowngraded {
 		cause += " (downgraded)"
-		// Design §4 case (a): MEM-06 fresh-owner protection just blocked a
-		// retire/flip (the belief lands shaken, not retired). Raise a dispute in
-		// memory's OWN side table so the inbox watchtower detector surfaces the
-		// owner-vs-observation conflict promptly — the belief pass, not only the
-		// weekly reflection, can flag a dispute. MEM-05 holds: memory_dispute_flags
-		// is memory-owned, never an inbox table. Implicitly capped by beliefs_max
-		// (this runs inside the per-op loop). A flag-write failure is logged, not
-		// fatal — the downgrade itself still applies (mirrors reflection's isolated
-		// SetDisputePending).
-		if serr := p.db.SetDisputePending(op.BeliefID, "owner-rank belief challenged"); serr != nil {
-			p.logf("memory: beliefs: set dispute pending %s: %v", op.BeliefID, serr)
+		// Design §4 case (a): raise a dispute ONLY when the downgrade came from
+		// MEM-06 fresh-owner protection — the secretary's evidence collided with
+		// the owner's word. decideOp also downgrades a retire that merely lacks
+		// preponderance on a belief with NO owner rank; that is routine hysteresis,
+		// not a disagreement with the boss, and must not spam the inbox.
+		// MEM-05 holds: memory_dispute_flags is memory-owned, never an inbox
+		// table. Implicitly capped by beliefs_max (per-op loop). A flag-write
+		// failure is logged, not fatal — the downgrade itself still applies
+		// (mirrors reflection's isolated SetDisputePending).
+		if hasFreshOwnerSupport(combined) {
+			if serr := p.db.SetDisputePending(op.BeliefID, "owner-rank belief challenged"); serr != nil {
+				p.logf("memory: beliefs: set dispute pending %s: %v", op.BeliefID, serr)
+			}
 		}
 	}
 	node.Body = appendHistory(node.Body, historyLine(now, cause, op.Rationale))

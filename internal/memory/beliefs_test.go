@@ -421,3 +421,42 @@ func TestMemory08_BeliefOpsGatedByRankMath(t *testing.T) {
 		assert.NotContains(t, page.Body, "CFAKE", "invented marker never reaches the vault (MEM-08)")
 	})
 }
+
+// TestReviseBeliefsNonOwnerDowngradeNoDispute pins the M4 scope: a retire that
+// decideOp downgrades merely for lacking preponderance — on a belief with NO
+// owner-rank evidence — is routine hysteresis, not "the secretary disagrees
+// with the boss": the belief lands shaken but no dispute flag is raised.
+func TestReviseBeliefsNonOwnerDowngradeNoDispute(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	subjectID := "ent_00000000000000000000000002"
+	epID := "ep_00000000000000000000000002"
+	tsAgainst := fmt.Sprintf("%d.000100", beliefNow.AddDate(0, 0, -5).Unix())
+	writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C2CHAN", tsAgainst))
+	writeAndIndex(t, v, d, beliefSubjectEntity(subjectID, epID))
+
+	observedTS := fmt.Sprintf("%d", beliefNow.AddDate(0, 0, -20).Unix())
+	bel := beliefTestNode("bel_00000000000000000000000002", "Deploys are stable", subjectID, 0.7, 4, "active",
+		beliefEvidence{Rank: rankObserved, Support: true, ChannelID: "C2CHAN", TS: observedTS})
+	writeAndIndex(t, v, d, bel)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return opsJSON(t, beliefOpJSON{BeliefID: bel.ID, Op: "retire",
+			Evidence: []episodeRef{{ChannelID: "C2CHAN", TS: tsAgainst}}, Rationale: "one bad deploy"}), nil
+	}}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
+	require.NoError(t, err)
+	require.Equal(t, 1, touched)
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "shaken", got.Status, "insufficient preponderance downgrades to shaken")
+
+	row, err := d.GetMemoryNode(bel.ID)
+	require.NoError(t, err)
+	assert.False(t, row.DisputePending, "no owner rank involved — no dispute flag")
+	disputed, err := d.ListDisputePendingBeliefs(memoryDisputeCapForTest)
+	require.NoError(t, err)
+	assert.Empty(t, disputed)
+}
