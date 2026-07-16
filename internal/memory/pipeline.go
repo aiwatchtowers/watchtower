@@ -465,8 +465,16 @@ func batchPeriod(windows []runWindow, idxs []int) (from, to float64) {
 }
 
 // buildWindows groups the (globally ts-ordered) messages into per-channel
-// windows, then orders the windows by their last message ts so the watermark
-// can trail completed windows (see safeWatermark).
+// windows, then orders the windows by their FIRST message ts so the watermark
+// can trail completed windows (see safeWatermark): the bound that caps every
+// advance is the earliest first-ts among still-pending windows, so processing
+// windows in ascending first-ts order lifts that bound as early-starting
+// windows complete. Ordering by last ts instead parks a long-spanning window
+// (early first message, late last message) at the END of the run, and its
+// early first-ts clamps the bound at the run's start — no per-batch advance
+// ever fires and an interrupted run loses every committed batch's progress
+// together (the 2026-07 E2E watermark-loss incident, see
+// docs/specs/memory-e2e-report.md "Second issue found").
 //
 // maxPerWindow bounds one window's message count (memory.max_window_messages)
 // so a single busy channel cannot form one giant prompt that blows the model
@@ -493,9 +501,9 @@ func buildWindows(msgs []db.MemoryExtractMessage, maxPerWindow int) []runWindow 
 		windows[i].tsUnix = append(windows[i].tsUnix, m.TSUnix)
 	}
 	// Stable: same-channel windows keep their chronological order even when
-	// last-ts ties (e.g. a same-second split).
+	// first-ts ties (e.g. a same-second split).
 	sort.SliceStable(windows, func(a, b int) bool {
-		return windows[a].tsUnix[len(windows[a].tsUnix)-1] < windows[b].tsUnix[len(windows[b].tsUnix)-1]
+		return windows[a].tsUnix[0] < windows[b].tsUnix[0]
 	})
 	return windows
 }
