@@ -2,19 +2,19 @@
 
 ## Overview
 
-Интеграция Google Calendar позволяет Watchtower учитывать расписание пользователя при генерации брифингов, расстановке приоритетов в inbox и coaching-рекомендациях. Календарь дополняет Slack-данные контекстом: "у тебя 1:1 с Петром через час — подготовь пункты из tracks".
+Google Calendar integration lets Watchtower account for the user's schedule when generating briefings, prioritizing the inbox, and producing coaching recommendations. The calendar complements Slack data with context: "you have a 1:1 with Peter in an hour — prepare points from tracks".
 
-Ключевые принципы:
-- **Read-only** — Watchtower только читает события, не создаёт/изменяет
-- **Privacy-first** — хранятся только title, time, attendees, response status (не body/attachments/conference links)
-- **Offline-first** — события кешируются в SQLite, AI работает с локальными данными
-- **Graceful degradation** — без Calendar всё работает как раньше, Calendar лишь обогащает
+Key principles:
+- **Read-only** — Watchtower only reads events, never creates/modifies them
+- **Privacy-first** — only title, time, attendees, response status are stored (not body/attachments/conference links)
+- **Offline-first** — events are cached in SQLite, AI works with local data
+- **Graceful degradation** — everything works as before without Calendar, Calendar only enriches
 
 ---
 
 ## Go Backend
 
-### 1. Новый пакет `internal/calendar/`
+### 1. New package `internal/calendar/`
 
 #### `auth.go` — Google OAuth2:
 ```go
@@ -46,10 +46,10 @@ func Prepare(cfg GoogleOAuthConfig, customRedirectURI string) (*PrepareResult, e
 func Complete(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI string) (*oauth2.Token, error)
 ```
 
-Ключевое:
-- Те же паттерны что `internal/auth/oauth.go` — browser open, self-signed TLS, state validation
+Key points:
+- Same patterns as `internal/auth/oauth.go` — browser open, self-signed TLS, state validation
 - Separate port range: 18501-18510 (Slack uses 18491-18500)
-- Token хранится в `{workspaceDir}/google_token.json` (per-workspace)
+- Token is stored in `{workspaceDir}/google_token.json` (per-workspace)
 - `DefaultGoogleClientID` / `DefaultGoogleClientSecret` injected via `-ldflags`
 - Scope: `calendar.readonly` (events.list + calendars.list)
 
@@ -119,7 +119,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error)
 func (s *Syncer) ResolveAttendees(events []CalendarEvent) []CalendarEvent
 ```
 
-Ключевое:
+Key points:
 - Window: yesterday → +7 days (configurable via `calendar.lookahead_days`)
 - Upsert by Google event ID (idempotent)
 - Attendee resolution: `SELECT id FROM users WHERE email = ?` — best effort, no API call
@@ -211,7 +211,7 @@ type CalendarEvent struct {
 
 ### 3. Config
 
-`internal/config/config.go` — добавить:
+`internal/config/config.go` — add:
 ```go
 // CalendarConfig holds Google Calendar integration settings.
 type CalendarConfig struct {
@@ -220,7 +220,7 @@ type CalendarConfig struct {
     CalendarIDs   []string `mapstructure:"calendar_ids"`  // specific calendar IDs (default: ["primary"])
 }
 
-// В Config:
+// In Config:
 Calendar CalendarConfig `mapstructure:"calendar"`
 ```
 
@@ -232,7 +232,7 @@ const (
 )
 ```
 
-YAML формат:
+YAML format:
 ```yaml
 calendar:
   enabled: true
@@ -263,7 +263,7 @@ if d.calendarSyncer != nil {
 
 ### 5. Briefing Integration
 
-`internal/briefing/pipeline.go` — новый gather:
+`internal/briefing/pipeline.go` — new gather:
 ```go
 func (p *Pipeline) gatherCalendar() string {
     events, err := p.db.GetTodayCalendarEvents()
@@ -290,7 +290,7 @@ func formatCalendarEvent(e db.CalendarEvent, database *db.DB) string {
 }
 ```
 
-Prompt injection (в `briefing.daily`):
+Prompt injection (in `briefing.daily`):
 ```
 === CALENDAR (today's meetings) ===
 - 10:00-11:00 "Sprint Planning" — @john (has 2 open tracks), @alice, @bob
@@ -364,7 +364,7 @@ Flags: `--days N` (override lookahead), `--json` (JSON output).
 
 ### 8. Meeting Prep Pipeline
 
-Новый пакет `internal/meeting/` + промпт `meeting.prep` + CLI + Swift view.
+New package `internal/meeting/` + prompt `meeting.prep` + CLI + Swift view.
 
 #### `internal/meeting/pipeline.go`:
 ```go
@@ -584,9 +584,9 @@ systemPrompt := fmt.Sprintf(promptTmpl,
 
 Prompt version bump: `BriefingDaily: 4` (v4: calendar integration).
 
-### 10. Go файлы (scope для Go Dev):
+### 10. Go files (scope for Go Dev):
 
-**Новые:**
+**New:**
 1. `internal/calendar/auth.go` — Google OAuth2 flow (browser + token store)
 2. `internal/calendar/client.go` — Google Calendar API client
 3. `internal/calendar/models.go` — CalendarEvent, Attendee, CalendarInfo
@@ -597,17 +597,17 @@ Prompt version bump: `BriefingDaily: 4` (v4: calendar integration).
 8. `cmd/calendar.go` — CLI commands (calendar, login, logout, sync)
 9. `cmd/meeting.go` — CLI command (meeting-prep)
 
-**Изменяемые:**
+**Changed:**
 10. `internal/db/db.go` — migration v55 (calendar_calendars + calendar_events tables)
-11. `internal/db/models.go` — добавить CalendarEvent, CalendarCalendar structs
-12. `internal/db/schema.sql` — добавить calendar_calendars + calendar_events tables
-13. `internal/config/config.go` — добавить CalendarConfig
-14. `internal/config/defaults.go` — добавить default constants
-15. `internal/daemon/daemon.go` — добавить calendarSyncer, sync integration
+11. `internal/db/models.go` — add CalendarEvent, CalendarCalendar structs
+12. `internal/db/schema.sql` — add calendar_calendars + calendar_events tables
+13. `internal/config/config.go` — add CalendarConfig
+14. `internal/config/defaults.go` — add default constants
+15. `internal/daemon/daemon.go` — add calendarSyncer, sync integration
 16. `internal/briefing/pipeline.go` — gatherCalendar(), inject in prompt (13th %s verb)
 17. `internal/briefing/prompt.go` — update format verb documentation
-18. `internal/prompts/defaults.go` — добавить MeetingPrep prompt + update defaultBriefingDaily (v4: calendar)
-19. `internal/prompts/store.go` — добавить MeetingPrep const
+18. `internal/prompts/defaults.go` — add MeetingPrep prompt + update defaultBriefingDaily (v4: calendar)
+19. `internal/prompts/store.go` — add MeetingPrep const
 20. `internal/ai/context_builder.go` — buildCalendarContext()
 21. `cmd/watch.go` — wire calendar syncer in daemon setup
 22. `go.mod` / `go.sum` — add `google.golang.org/api` + `golang.org/x/oauth2`
@@ -616,7 +616,7 @@ Prompt version bump: `BriefingDaily: 4` (v4: calendar integration).
 
 ## Swift Desktop
 
-### 1. CalendarService.swift — новый сервис
+### 1. CalendarService.swift — new service
 
 ```swift
 @MainActor
@@ -710,7 +710,7 @@ struct CalendarQueries {
 
 ### 4. BriefingDetailView integration:
 
-В `BriefingDetailView.swift` — добавить секцию "Today's Schedule" перед Attention:
+In `BriefingDetailView.swift` — add a "Today's Schedule" section before Attention:
 ```swift
 if !calendarEvents.isEmpty {
     Section("Today's Schedule") {
@@ -825,7 +825,7 @@ Entry points:
 
 ### 6. Settings UI — Calendar section:
 
-`SettingsView.swift` — добавить `calendarSection`:
+`SettingsView.swift` — add `calendarSection`:
 ```swift
 private var calendarSection: some View {
     Section("Google Calendar") {
@@ -875,7 +875,7 @@ private var calendarSection: some View {
 
 ### 6. Sidebar — Calendar widget (optional):
 
-В `SidebarView.swift` — внизу под sync status:
+In `SidebarView.swift` — below the sync status:
 ```swift
 if calendarService.isConnected, let nextEvent = calendarService.nextEvent {
     HStack(spacing: 4) {
@@ -909,9 +909,9 @@ calendarDict["enabled"] = calendarEnabled
 calendarDict["lookahead_days"] = calendarLookaheadDays
 ```
 
-### 8. Swift файлы (scope для Swift Dev):
+### 8. Swift files (scope for Swift Dev):
 
-**Новые:**
+**New:**
 1. `WatchtowerDesktop/Sources/Services/CalendarService.swift` — sync/auth service
 2. `WatchtowerDesktop/Sources/Models/CalendarEventItem.swift` — CalendarEventItem + CalendarAttendee
 3. `WatchtowerDesktop/Sources/Models/CalendarCalendarItem.swift` — CalendarCalendarItem
@@ -921,7 +921,7 @@ calendarDict["lookahead_days"] = calendarLookaheadDays
 7. `WatchtowerDesktop/Sources/Views/Calendar/MeetingPrepView.swift` — AI meeting prep view
 8. `WatchtowerDesktop/Sources/Models/MeetingPrepResult.swift` — MeetingPrepResult + sub-models
 
-**Изменяемые:**
+**Changed:**
 9. `WatchtowerDesktop/Sources/Views/Settings/SettingsView.swift` — calendar section + calendar picker
 10. `WatchtowerDesktop/Sources/Services/ConfigService.swift` — calendarEnabled, calendarLookaheadDays
 11. `WatchtowerDesktop/Sources/Views/Briefings/BriefingDetailView.swift` — calendar section + "Prep" button
@@ -931,7 +931,7 @@ calendarDict["lookahead_days"] = calendarLookaheadDays
 
 ---
 
-## Config YAML формат (Go <-> Swift контракт)
+## Config YAML format (Go <-> Swift contract)
 
 ```yaml
 calendar:

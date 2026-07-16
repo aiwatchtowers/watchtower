@@ -2,27 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Дать каждому таску (`targets`) агентский AI-чат, который стартует от интента, читает Slack-базу и предлагает изменения таска карточками Approve/Reject; запись в БД делает Swift, не AI.
+**Goal:** Give every task (`targets`) an agentic AI chat that starts from the intent, reads the Slack database, and proposes changes to the task via Approve/Reject cards; the DB write is done by Swift, not the AI.
 
-**Architecture:** Всё в Desktop (Swift) + новый prompt-фрагмент. Go (`internal/ai`, CLI, `internal/db`) не меняется. Чат построен по образцу существующего `TrackChatViewModel`/`TrackChatView` с контекстом беседы `type:"target"`. AI выводит fenced-блок ```` ```watchtower-action ```` с JSON; Swift парсит, прячет из текста, рисует карточку; по Approve вызывает методы `TargetsViewModel`, затем отправляет follow-up-turn, и AI продолжает. MCP остаётся read-only (`read_query`).
+**Architecture:** Everything lives in Desktop (Swift) + a new prompt fragment. Go (`internal/ai`, CLI, `internal/db`) is not changed. The chat is built on the pattern of the existing `TrackChatViewModel`/`TrackChatView` with conversation context `type:"target"`. The AI emits a fenced ```` ```watchtower-action ```` block with JSON; Swift parses it, strips it from the text, renders a card; on Approve it calls `TargetsViewModel` methods, then sends a follow-up turn, and the AI continues. MCP stays read-only (`read_query`).
 
 **Tech Stack:** Swift 5.10, SwiftUI, GRDB.swift, XCTest. macOS 14+. SPM (`cd WatchtowerDesktop && swift build` / `swift test`).
 
 ## Global Constraints
 
-- Go-бэкенд НЕ трогаем: `internal/ai`, CLI `ai query`, `internal/db` остаются как есть. Стрим-протокол (`type:"text"|"session_id"|"done"`) не меняется.
-- AI не получает write-доступа к БД: `--allowed-tools` остаётся read-only; модель только ПРЕДЛАГАЕТ действия.
-- Все записи в `targets` идут через существующий `TargetsViewModel` (он сам делает `load()` и пишет `updated_at`).
-- `Target.progress` — `Double` в диапазоне `0.0...1.0` (НЕ 0–100). AI отдаёт проценты 0–100; Swift делит на 100 и клампит.
-- Контекст беседы хранится в `chat_conversations` через `ChatConversationQueries` с `contextType:"target"`, `contextID:String(target.id)`.
-- Follow-up после действия отправляется как очередной turn (prompt в `aiService.stream`), отображается как `.system`-сообщение.
-- Action types v1 ровно пять: `update_status`, `update_notes`, `update_progress`, `add_sub_item`, `create_child_target`.
-- Тесты — XCTest в `WatchtowerDesktop/Tests/`, in-memory БД через `TestDatabase.create()` (возвращает `DatabaseQueue` с полной схемой).
-- Не относить ни один guard-тест к ослаблению; новые тесты — отдельные.
+- Do NOT touch the Go backend: `internal/ai`, CLI `ai query`, `internal/db` stay as-is. The stream protocol (`type:"text"|"session_id"|"done"`) does not change.
+- The AI does not get write access to the DB: `--allowed-tools` stays read-only; the model only PROPOSES actions.
+- All writes to `targets` go through the existing `TargetsViewModel` (it handles `load()` and writes `updated_at` itself).
+- `Target.progress` is a `Double` in the range `0.0...1.0` (NOT 0–100). The AI returns percentages 0–100; Swift divides by 100 and clamps.
+- Conversation context is stored in `chat_conversations` via `ChatConversationQueries` with `contextType:"target"`, `contextID:String(target.id)`.
+- The follow-up after an action is sent as the next turn (prompt in `aiService.stream`), displayed as a `.system` message.
+- There are exactly five action types in v1: `update_status`, `update_notes`, `update_progress`, `add_sub_item`, `create_child_target`.
+- Tests are XCTest in `WatchtowerDesktop/Tests/`, using an in-memory DB via `TestDatabase.create()` (returns a `DatabaseQueue` with the full schema).
+- Do not treat any guard test as something to weaken; new tests are separate.
 
 ---
 
-### Task 1: Модель `ProposedAction`
+### Task 1: `ProposedAction` model
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Models/ProposedAction.swift`
@@ -30,13 +30,13 @@
 
 **Interfaces:**
 - Produces:
-  - `enum TaskActionKind: String, Codable` со значениями `updateStatus="update_status"`, `updateNotes="update_notes"`, `updateProgress="update_progress"`, `addSubItem="add_sub_item"`, `createChildTarget="create_child_target"`.
-  - `struct ProposedAction: Codable, Identifiable, Equatable` с полями: `id: UUID` (не декодируется), `type: TaskActionKind`, `reason: String`, опц. `status: String?`, `note: String?`, `progress: Int?`, `text: String?`, `intent: String?`, `priority: String?`.
-  - `func validate() throws` — бросает `ProposedActionError.invalid(String)` при нарушении.
-  - `var cardDescription: String` — человекочитаемое описание для карточки.
+  - `enum TaskActionKind: String, Codable` with values `updateStatus="update_status"`, `updateNotes="update_notes"`, `updateProgress="update_progress"`, `addSubItem="add_sub_item"`, `createChildTarget="create_child_target"`.
+  - `struct ProposedAction: Codable, Identifiable, Equatable` with fields: `id: UUID` (not decoded), `type: TaskActionKind`, `reason: String`, optional `status: String?`, `note: String?`, `progress: Int?`, `text: String?`, `intent: String?`, `priority: String?`.
+  - `func validate() throws` — throws `ProposedActionError.invalid(String)` on violation.
+  - `var cardDescription: String` — a human-readable description for the card.
   - `enum ProposedActionError: Error, Equatable { case invalid(String) }`.
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 Create `WatchtowerDesktop/Tests/ProposedActionTests.swift`:
 
@@ -97,12 +97,12 @@ final class ProposedActionTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Запустить тест — убедиться, что не компилируется/падает**
+- [ ] **Step 2: Run the test — confirm it doesn't compile/fails**
 
 Run: `cd WatchtowerDesktop && swift test --filter ProposedActionTests`
-Expected: FAIL (нет типа `ProposedAction`).
+Expected: FAIL (no `ProposedAction` type).
 
-- [ ] **Step 3: Реализовать модель**
+- [ ] **Step 3: Implement the model**
 
 Create `WatchtowerDesktop/Sources/Models/ProposedAction.swift`:
 
@@ -192,10 +192,10 @@ struct ProposedAction: Codable, Identifiable, Equatable {
 }
 ```
 
-- [ ] **Step 4: Запустить тест — зелёный**
+- [ ] **Step 4: Run the test — green**
 
 Run: `cd WatchtowerDesktop && swift test --filter ProposedActionTests`
-Expected: PASS (8 тестов).
+Expected: PASS (8 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -206,7 +206,7 @@ git commit -m "feat(targets): ProposedAction model for task AI agent"
 
 ---
 
-### Task 2: Парсер fenced-блоков `TaskActionParser`
+### Task 2: Fenced-block parser `TaskActionParser`
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Services/TaskActionParser.swift`
@@ -215,10 +215,10 @@ git commit -m "feat(targets): ProposedAction model for task AI agent"
 **Interfaces:**
 - Consumes: `ProposedAction` (Task 1).
 - Produces:
-  - `enum TaskActionParser` со `static func parse(_ raw: String) -> (text: String, actions: [ProposedAction], errors: [String])`.
-  - `text` — исходный текст с ВЫРЕЗАННЫМИ блоками (trimmed). `actions` — провалидированные действия. `errors` — сообщения для невалидных/битых блоков.
+  - `enum TaskActionParser` with `static func parse(_ raw: String) -> (text: String, actions: [ProposedAction], errors: [String])`.
+  - `text` — the source text with blocks REMOVED (trimmed). `actions` — validated actions. `errors` — messages for invalid/malformed blocks.
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 Create `WatchtowerDesktop/Tests/TaskActionParserTests.swift`:
 
@@ -289,12 +289,12 @@ final class TaskActionParserTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Запустить — падает**
+- [ ] **Step 2: Run — fails**
 
 Run: `cd WatchtowerDesktop && swift test --filter TaskActionParserTests`
-Expected: FAIL (нет `TaskActionParser`).
+Expected: FAIL (no `TaskActionParser`).
 
-- [ ] **Step 3: Реализовать парсер**
+- [ ] **Step 3: Implement the parser**
 
 Create `WatchtowerDesktop/Sources/Services/TaskActionParser.swift`:
 
@@ -341,10 +341,10 @@ enum TaskActionParser {
 }
 ```
 
-- [ ] **Step 4: Запустить — зелёный**
+- [ ] **Step 4: Run — green**
 
 Run: `cd WatchtowerDesktop && swift test --filter TaskActionParserTests`
-Expected: PASS (5 тестов).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -355,11 +355,11 @@ git commit -m "feat(targets): parse watchtower-action blocks from AI output"
 
 ---
 
-### Task 3: DB-мутаторы `updateProgress` и `createChild`
+### Task 3: DB mutators `updateProgress` and `createChild`
 
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/Database/Queries/TargetQueries.swift` (добавить `updateProgress`)
-- Modify: `WatchtowerDesktop/Sources/ViewModels/TargetsViewModel.swift` (добавить `updateProgress`, `createChild`)
+- Modify: `WatchtowerDesktop/Sources/Database/Queries/TargetQueries.swift` (add `updateProgress`)
+- Modify: `WatchtowerDesktop/Sources/ViewModels/TargetsViewModel.swift` (add `updateProgress`, `createChild`)
 - Test: `WatchtowerDesktop/Tests/TargetAgentMutatorsTests.swift`
 
 **Interfaces:**
@@ -367,9 +367,9 @@ git commit -m "feat(targets): parse watchtower-action blocks from AI output"
 - Produces:
   - `static func TargetQueries.updateProgress(_ db: Database, id: Int, progress: Double) throws`
   - `@MainActor func TargetsViewModel.updateProgress(_ target: Target, to progress: Double)`
-  - `@MainActor func TargetsViewModel.createChild(_ parent: Target, text: String, intent: String, priority: String) -> Int?` — возвращает id нового таска или nil при ошибке.
+  - `@MainActor func TargetsViewModel.createChild(_ parent: Target, text: String, intent: String, priority: String) -> Int?` — returns the id of the new task, or nil on error.
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 Create `WatchtowerDesktop/Tests/TargetAgentMutatorsTests.swift`:
 
@@ -414,16 +414,16 @@ final class TargetAgentMutatorsTests: XCTestCase {
 }
 ```
 
-> Примечание: проверь точную сигнатуру `TargetsViewModel.init` — выше предполагается `init(dbManager:)`. Если init требует доп. аргументы со значениями по умолчанию, вызов не меняется; если обязателен ещё один параметр — передай его (см. `ViewModels/TargetsViewModel.swift:27`).
+> Note: verify the exact signature of `TargetsViewModel.init` — the above assumes `init(dbManager:)`. If the init requires additional arguments with default values, the call doesn't change; if another parameter is required, pass it (see `ViewModels/TargetsViewModel.swift:27`).
 
-- [ ] **Step 2: Запустить — падает**
+- [ ] **Step 2: Run — fails**
 
 Run: `cd WatchtowerDesktop && swift test --filter TargetAgentMutatorsTests`
-Expected: FAIL (нет `updateProgress`/`createChild`).
+Expected: FAIL (no `updateProgress`/`createChild`).
 
-- [ ] **Step 3a: Добавить `TargetQueries.updateProgress`**
+- [ ] **Step 3a: Add `TargetQueries.updateProgress`**
 
-В `WatchtowerDesktop/Sources/Database/Queries/TargetQueries.swift` после `updatePriority` (около строки 236) добавь:
+In `WatchtowerDesktop/Sources/Database/Queries/TargetQueries.swift`, after `updatePriority` (around line 236), add:
 
 ```swift
     static func updateProgress(_ db: Database, id: Int, progress: Double) throws {
@@ -438,9 +438,9 @@ Expected: FAIL (нет `updateProgress`/`createChild`).
     }
 ```
 
-- [ ] **Step 3b: Добавить методы в `TargetsViewModel`**
+- [ ] **Step 3b: Add methods to `TargetsViewModel`**
 
-В `WatchtowerDesktop/Sources/ViewModels/TargetsViewModel.swift` после `updateStatus` (около строки 323) добавь:
+In `WatchtowerDesktop/Sources/ViewModels/TargetsViewModel.swift`, after `updateStatus` (around line 323), add:
 
 ```swift
     func updateProgress(_ target: Target, to progress: Double) {
@@ -482,10 +482,10 @@ Expected: FAIL (нет `updateProgress`/`createChild`).
     }
 ```
 
-- [ ] **Step 4: Запустить — зелёный**
+- [ ] **Step 4: Run — green**
 
 Run: `cd WatchtowerDesktop && swift test --filter TargetAgentMutatorsTests`
-Expected: PASS (2 теста).
+Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -496,19 +496,19 @@ git commit -m "feat(targets): updateProgress + createChild mutators for AI agent
 
 ---
 
-### Task 4: Исполнитель действий `TaskActionExecutor`
+### Task 4: Action executor `TaskActionExecutor`
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Services/TaskActionExecutor.swift`
 - Test: `WatchtowerDesktop/Tests/TaskActionExecutorTests.swift`
 
 **Interfaces:**
-- Consumes: `ProposedAction` (T1); `TargetsViewModel` методы `updateStatus`, `addNote`, `updateProgress`, `addSubItem`, `createChild` (T3 + существующие).
+- Consumes: `ProposedAction` (T1); `TargetsViewModel` methods `updateStatus`, `addNote`, `updateProgress`, `addSubItem`, `createChild` (T3 + existing).
 - Produces:
-  - `enum TaskActionExecutor` со `@MainActor static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) -> String`.
-  - Возвращает короткое summary (для follow-up в беседу), напр. `"set status to done"`. Маппинг по `type`. Делит `progress`/100 для `updateProgress`.
+  - `enum TaskActionExecutor` with `@MainActor static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) -> String`.
+  - Returns a short summary (for the follow-up in the conversation), e.g. `"set status to done"`. Mapping by `type`. Divides `progress` by 100 for `updateProgress`.
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 Create `WatchtowerDesktop/Tests/TaskActionExecutorTests.swift`:
 
@@ -598,14 +598,14 @@ final class TaskActionExecutorTests: XCTestCase {
 }
 ```
 
-> Примечание: `Target.decodedNotes` / `decodedSubItems` — существующие computed-свойства модели `Target` (см. `Models/Target.swift`). Если имена отличаются — сверь и поправь обращения в тесте.
+> Note: `Target.decodedNotes` / `decodedSubItems` are existing computed properties on the `Target` model (see `Models/Target.swift`). If the names differ, check and fix the references in the test.
 
-- [ ] **Step 2: Запустить — падает**
+- [ ] **Step 2: Run — fails**
 
 Run: `cd WatchtowerDesktop && swift test --filter TaskActionExecutorTests`
-Expected: FAIL (нет `TaskActionExecutor`).
+Expected: FAIL (no `TaskActionExecutor`).
 
-- [ ] **Step 3: Реализовать исполнитель**
+- [ ] **Step 3: Implement the executor**
 
 Create `WatchtowerDesktop/Sources/Services/TaskActionExecutor.swift`:
 
@@ -649,10 +649,10 @@ enum TaskActionExecutor {
 }
 ```
 
-- [ ] **Step 4: Запустить — зелёный**
+- [ ] **Step 4: Run — green**
 
 Run: `cd WatchtowerDesktop && swift test --filter TaskActionExecutorTests`
-Expected: PASS (5 тестов).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -663,7 +663,7 @@ git commit -m "feat(targets): TaskActionExecutor applies approved actions"
 
 ---
 
-### Task 5: `TargetChatViewModel` (агентский цикл)
+### Task 5: `TargetChatViewModel` (agentic loop)
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/ViewModels/TargetChatViewModel.swift`
@@ -672,11 +672,11 @@ git commit -m "feat(targets): TaskActionExecutor applies approved actions"
 **Interfaces:**
 - Consumes: `TaskActionParser` (T2), `TaskActionExecutor` (T4), `ProposedAction` (T1), `ChatConversationQueries`, `ChatMessageQueries`, `ChatViewModel.fetchSchema`, `WorkspaceQueries`, `WatchtowerAIService`, `AIServiceProtocol`, `ChatMessage`.
 - Produces:
-  - `@MainActor @Observable final class TargetChatViewModel` с публичными: `var messages: [ChatMessage]`, `var actionCards: [TargetActionCard]`, `var isStreaming`, `var inputText`, `var errorMessage`, `func send()`, `func cancelStream()`, `func approve(_ card: TargetActionCard)`, `func reject(_ card: TargetActionCard)`, `init(target:viewModel:dbManager:aiService:)`.
-  - `struct TargetActionCard: Identifiable, Equatable` с `id: UUID`, `messageID: UUID`, `action: ProposedAction`, `var state: State`; `enum State: Equatable { case pending, applied(String), rejected, failed(String) }`.
-  - `static func buildSystemPrompt(target:dbPool:) -> String` — включает `intent`, описание таска, схему БД и КОНТРАКТ ДЕЙСТВИЙ (см. ниже).
+  - `@MainActor @Observable final class TargetChatViewModel` with public: `var messages: [ChatMessage]`, `var actionCards: [TargetActionCard]`, `var isStreaming`, `var inputText`, `var errorMessage`, `func send()`, `func cancelStream()`, `func approve(_ card: TargetActionCard)`, `func reject(_ card: TargetActionCard)`, `init(target:viewModel:dbManager:aiService:)`.
+  - `struct TargetActionCard: Identifiable, Equatable` with `id: UUID`, `messageID: UUID`, `action: ProposedAction`, `var state: State`; `enum State: Equatable { case pending, applied(String), rejected, failed(String) }`.
+  - `static func buildSystemPrompt(target:dbPool:) -> String` — includes `intent`, the task description, the DB schema, and the ACTION CONTRACT (see below).
 
-**Контракт действий в system-prompt (точный текст для блока):**
+**Action contract in the system prompt (exact text for the block):**
 
 ```
 === TASK ACTIONS ===
@@ -696,7 +696,7 @@ Supported actions and required fields:
 Every block must also include "reason".
 ```
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 Create `WatchtowerDesktop/Tests/TargetChatViewModelTests.swift`:
 
@@ -767,19 +767,19 @@ final class TargetChatViewModelTests: XCTestCase {
 }
 ```
 
-> `MockClaudeService` — существующий helper (`Tests/Helpers/MockClaudeService.swift`), реализует `AIServiceProtocol`. Approve/Reject в тесте вызывают follow-up-стрим; mock должен корректно завершаться (вернуть пустой/готовый стрим). Если у mock нет настраиваемого ответа по умолчанию — он всё равно должен завершать стрим без ошибки. Сверь сигнатуру init mock'а.
+> `MockClaudeService` is an existing helper (`Tests/Helpers/MockClaudeService.swift`) that implements `AIServiceProtocol`. Approve/Reject in the test trigger a follow-up stream; the mock must terminate correctly (return an empty/ready stream). If the mock has no configurable default response, it must still finish the stream without error. Check the mock's init signature.
 
-- [ ] **Step 2: Запустить — падает**
+- [ ] **Step 2: Run — fails**
 
 Run: `cd WatchtowerDesktop && swift test --filter TargetChatViewModelTests`
-Expected: FAIL (нет `TargetChatViewModel`).
+Expected: FAIL (no `TargetChatViewModel`).
 
-- [ ] **Step 3: Реализовать ViewModel**
+- [ ] **Step 3: Implement the ViewModel**
 
-Create `WatchtowerDesktop/Sources/ViewModels/TargetChatViewModel.swift`. Скопируй структуру из `Views/Tracks/TrackChatView.swift` (класс `TrackChatViewModel`, строки 6–294) и адаптируй:
+Create `WatchtowerDesktop/Sources/ViewModels/TargetChatViewModel.swift`. Copy the structure from `Views/Tracks/TrackChatView.swift` (the `TrackChatViewModel` class, lines 6–294) and adapt it:
 
-1. Замени `track: Track` → `target: Target`, `viewModel: TracksViewModel?` → `viewModel: TargetsViewModel`, контекст беседы `"track"`/`track.id` → `"target"`/`String(target.id)`, заголовок `"Track: ..."` → `"Task: \(String(target.text.prefix(60)))"`, `reloadTrack`/`TrackQueries.fetchByID` → `reloadTarget`/`TargetQueries.fetchByID`.
-2. Добавь модель карточки и состояние:
+1. Replace `track: Track` → `target: Target`, `viewModel: TracksViewModel?` → `viewModel: TargetsViewModel`, conversation context `"track"`/`track.id` → `"target"`/`String(target.id)`, title `"Track: ..."` → `"Task: \(String(target.text.prefix(60)))"`, `reloadTrack`/`TrackQueries.fetchByID` → `reloadTarget`/`TargetQueries.fetchByID`.
+2. Add the card model and state:
 
 ```swift
 struct TargetActionCard: Identifiable, Equatable {
@@ -797,9 +797,9 @@ struct TargetActionCard: Identifiable, Equatable {
 }
 ```
 
-В классе добавь `var actionCards: [TargetActionCard] = []`.
+In the class, add `var actionCards: [TargetActionCard] = []`.
 
-3. После завершения turn'а (в `executeStream`, там где сейчас сохраняется ответ) распарси действия и преврати ответ в видимый текст. Замени блок сохранения ответа на:
+3. After the turn finishes (in `executeStream`, where the response is currently saved), parse out the actions and turn the response into visible text. Replace the response-saving block with:
 
 ```swift
         // Parse watchtower-action blocks out of the final text.
@@ -822,9 +822,9 @@ struct TargetActionCard: Identifiable, Equatable {
         }
 ```
 
-(Остальная часть `executeStream` — session persist + `finishStream()` — без изменений.)
+(The rest of `executeStream` — session persist + `finishStream()` — is unchanged.)
 
-4. Добавь helpers:
+4. Add helpers:
 
 ```swift
     private func appendSystemMessage(_ text: String) {
@@ -855,7 +855,7 @@ struct TargetActionCard: Identifiable, Equatable {
     }
 ```
 
-5. Добавь `sendFollowUp` — как `send()`, но prompt задан явно и пользовательское сообщение пишется как `.system` (не `.user`):
+5. Add `sendFollowUp` — like `send()`, but with an explicit prompt, and the user-facing message is written as `.system` (not `.user`):
 
 ```swift
     private func sendFollowUp(_ text: String) {
@@ -885,12 +885,12 @@ struct TargetActionCard: Identifiable, Equatable {
     }
 ```
 
-6. В `buildSystemPrompt(target:dbPool:)` — за основу возьми `TrackChatViewModel.buildSystemPrompt` (схема, workspace, linking rules — без изменений), но секцию `=== CURRENT TRACK ===` замени на `=== CURRENT TASK ===` с полями `target` (id, text, **intent**, status, priority, ownership, blocking, progress, notes, sub_items) и добавь дословно секцию `=== TASK ACTIONS ===` из контракта выше. Без `channelIDs`-специфики трека; в QUERY TIPS оставь общий пример поиска сообщений по тексту/людям.
+6. For `buildSystemPrompt(target:dbPool:)`, base it on `TrackChatViewModel.buildSystemPrompt` (schema, workspace, linking rules — unchanged), but replace the `=== CURRENT TRACK ===` section with `=== CURRENT TASK ===` with `target` fields (id, text, **intent**, status, priority, ownership, blocking, progress, notes, sub_items), and add the `=== TASK ACTIONS ===` section from the contract above verbatim. Without the track's `channelIDs` specifics; in QUERY TIPS keep the generic example of searching messages by text/people.
 
-- [ ] **Step 4: Запустить — зелёный**
+- [ ] **Step 4: Run — green**
 
 Run: `cd WatchtowerDesktop && swift test --filter TargetChatViewModelTests`
-Expected: PASS (3 теста).
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -901,18 +901,18 @@ git commit -m "feat(targets): TargetChatViewModel agentic loop with action cards
 
 ---
 
-### Task 6: View — `TargetChatSection` + карточка + вкладка в `TargetDetailView`
+### Task 6: View — `TargetChatSection` + card + tab in `TargetDetailView`
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Views/Targets/TargetChatView.swift`
-- Modify: `WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift` (новая вкладка `.assistant`)
+- Modify: `WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift` (new `.assistant` tab)
 - Test: `WatchtowerDesktop/Tests/TargetChatViewTests.swift`
 
 **Interfaces:**
 - Consumes: `TargetChatViewModel`, `TargetActionCard`, `ChatMessage`, `MarkdownText`, `AppState.databaseManager`.
-- Produces: `struct TargetChatSection: View { @Bindable var chatVM: TargetChatViewModel }` и `struct TargetActionCardView: View`.
+- Produces: `struct TargetChatSection: View { @Bindable var chatVM: TargetChatViewModel }` and `struct TargetActionCardView: View`.
 
-- [ ] **Step 1: Написать падающий тест (smoke)**
+- [ ] **Step 1: Write a failing test (smoke)**
 
 Create `WatchtowerDesktop/Tests/TargetChatViewTests.swift`:
 
@@ -935,14 +935,14 @@ final class TargetChatViewTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Запустить — падает**
+- [ ] **Step 2: Run — fails**
 
 Run: `cd WatchtowerDesktop && swift test --filter TargetChatViewTests`
-Expected: FAIL (нет `TargetActionCardView`).
+Expected: FAIL (no `TargetActionCardView`).
 
-- [ ] **Step 3: Реализовать View**
+- [ ] **Step 3: Implement the View**
 
-Create `WatchtowerDesktop/Sources/Views/Targets/TargetChatView.swift`. Возьми `TrackChatSection` (`Views/Tracks/TrackChatView.swift:384–499`) за основу для `TargetChatSection`, переименовав тип VM на `TargetChatViewModel` и тексты-плейсхолдеры на «Ask AI to work on this task…». В `ScrollView`, внутри `ForEach(chatVM.messages)`, после `chatBubble(msg)` добавь карточки этого сообщения:
+Create `WatchtowerDesktop/Sources/Views/Targets/TargetChatView.swift`. Use `TrackChatSection` (`Views/Tracks/TrackChatView.swift:384–499`) as the base for `TargetChatSection`, renaming the VM type to `TargetChatViewModel` and the placeholder text to "Ask AI to work on this task…". In the `ScrollView`, inside `ForEach(chatVM.messages)`, after `chatBubble(msg)`, add this message's cards:
 
 ```swift
                     ForEach(chatVM.messages) { msg in
@@ -957,7 +957,7 @@ Create `WatchtowerDesktop/Sources/Views/Targets/TargetChatView.swift`. Возь�
                     }
 ```
 
-И добавь сам тип карточки в этот же файл:
+And add the card type itself to the same file:
 
 ```swift
 struct TargetActionCardView: View {
@@ -1000,23 +1000,23 @@ struct TargetActionCardView: View {
 }
 ```
 
-- [ ] **Step 4: Запустить — зелёный**
+- [ ] **Step 4: Run — green**
 
 Run: `cd WatchtowerDesktop && swift test --filter TargetChatViewTests`
-Expected: PASS (1 тест).
+Expected: PASS (1 test).
 
-- [ ] **Step 5: Встроить вкладку в `TargetDetailView`**
+- [ ] **Step 5: Wire up the tab in `TargetDetailView`**
 
-В `WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift`:
+In `WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift`:
 
-1. В `enum Tab` добавь кейс: `case assistant = "Assistant"`.
-2. Добавь стейт под чат-VM рядом с остальными `@State`:
+1. In `enum Tab`, add a case: `case assistant = "Assistant"`.
+2. Add state for the chat VM next to the other `@State` properties:
 
 ```swift
     @State private var chatVM: TargetChatViewModel?
 ```
 
-3. В теле, где рендерится контент выбранной вкладки, добавь ветку для `.assistant`, создающую VM лениво (как `TrackDetailView`, `TrackDetailView.swift:52–56`):
+3. In the body, where the selected tab's content is rendered, add a branch for `.assistant` that lazily creates the VM (like `TrackDetailView`, `TrackDetailView.swift:52–56`):
 
 ```swift
             case .assistant:
@@ -1033,12 +1033,12 @@ Expected: PASS (1 тест).
                 }
 ```
 
-> Сверь точное место `switch selectedTab` в теле `TargetDetailView` и встрой кейс согласованно с существующими `.details`/`.links`/`.activity`.
+> Check the exact location of `switch selectedTab` in the body of `TargetDetailView` and insert the case consistently with the existing `.details`/`.links`/`.activity`.
 
-- [ ] **Step 6: Собрать весь таргет и прогнать тесты**
+- [ ] **Step 6: Build the whole target and run the tests**
 
 Run: `cd WatchtowerDesktop && swift build && swift test`
-Expected: BUILD OK; все тесты зелёные (включая новые из задач 1–6).
+Expected: BUILD OK; all tests green (including the new ones from tasks 1–6).
 
 - [ ] **Step 7: Commit**
 
@@ -1052,18 +1052,18 @@ git commit -m "feat(targets): Assistant tab with action-card chat UI"
 ## Self-Review
 
 **Spec coverage:**
-- Кнопка/вход от интента → Task 6 (вкладка Assistant) + Task 5 (`buildSystemPrompt` инжектит intent). ✓
-- Одна постоянная беседа на таск → Task 5 (контекст `"target"` через `ChatConversationQueries`). ✓
-- AI читает Slack-базу (read-only) → наследуется из паттерна `TrackChatViewModel` (MCP `read_query`), Go не трогаем. ✓
-- AI предлагает действие fenced-блоком → Task 5 контракт + Task 2 парсер. ✓
-- Карточка Approve/Reject, запись делает Swift → Task 6 (`TargetActionCardView`) + Task 4 (`TaskActionExecutor`) + Task 3 (мутаторы). ✓
-- 5 action types → Task 1 (`TaskActionKind`), покрыты в T1/T2/T4 тестами. ✓
-- Невалидный action → видимая ошибка (не тихий no-op) → Task 2 (`errors`) + Task 5 (`appendSystemMessage`). ✓
-- Reject → follow-up → Task 5 (`reject` + `sendFollowUp`). ✓ (degenerate clean-exit ветка протестирована — `testRejectMarksCardRejected`).
-- Беседа выживает между сессиями (resume по session_id) → наследуется из паттерна (persistSession). ✓
-- `progress` 0–100 → 0.0–1.0 → Task 4 (`/100`) + Task 3 (кламп). ✓
-- Go-тесты не затронуты → ни одна задача не меняет Go. ✓
+- Button/entry from the intent → Task 6 (Assistant tab) + Task 5 (`buildSystemPrompt` injects the intent). ✓
+- One persistent conversation per task → Task 5 (context `"target"` via `ChatConversationQueries`). ✓
+- AI reads the Slack database (read-only) → inherited from the `TrackChatViewModel` pattern (MCP `read_query`), Go untouched. ✓
+- AI proposes an action via a fenced block → Task 5 contract + Task 2 parser. ✓
+- Approve/Reject card, the write is done by Swift → Task 6 (`TargetActionCardView`) + Task 4 (`TaskActionExecutor`) + Task 3 (mutators). ✓
+- 5 action types → Task 1 (`TaskActionKind`), covered by tests in T1/T2/T4. ✓
+- Invalid action → visible error (not a silent no-op) → Task 2 (`errors`) + Task 5 (`appendSystemMessage`). ✓
+- Reject → follow-up → Task 5 (`reject` + `sendFollowUp`). ✓ (the degenerate clean-exit branch is tested — `testRejectMarksCardRejected`).
+- Conversation survives across sessions (resume by session_id) → inherited from the pattern (persistSession). ✓
+- `progress` 0–100 → 0.0–1.0 → Task 4 (`/100`) + Task 3 (clamp). ✓
+- Go tests untouched → no task changes Go. ✓
 
-**Placeholder scan:** код приведён целиком в каждом шаге; «сверь сигнатуру» — это явные verify-замечания к существующему коду, а не пропуски в новом. ✓
+**Placeholder scan:** code is given in full at every step; "check the signature" notes are explicit verify-remarks about existing code, not gaps in the new code. ✓
 
-**Type consistency:** `ProposedAction`/`TaskActionKind` (T1) → парсер (T2) → исполнитель (T4) → VM `approve/reject` (T5) → View (T6); `TargetActionCard.State` одинаков в T5 и T6; `TaskActionExecutor.apply` сигнатура совпадает в T4-тесте и T5-вызове; `createChild`/`updateProgress` сигнатуры совпадают в T3 и T4. ✓
+**Type consistency:** `ProposedAction`/`TaskActionKind` (T1) → parser (T2) → executor (T4) → VM `approve/reject` (T5) → View (T6); `TargetActionCard.State` is identical in T5 and T6; the `TaskActionExecutor.apply` signature matches between the T4 test and the T5 call site; `createChild`/`updateProgress` signatures match between T3 and T4. ✓

@@ -22,9 +22,9 @@ A briefing contains five sections:
 The list panel shows briefings by date with unread indicator (blue dot), attention count, and task count. Selecting a briefing marks it as read. Briefings are generated once per day after the configured hour (default: 8:00 AM, configurable in Settings via `briefing.hour`).
 
 ### Inbox
-Your AI secretary for Slack, Jira, and Calendar — everything that's waiting on you, clustered into situations and ranked so you can act without digging through threads. Inbox is the app's start screen (the sidebar's first item). The pipeline detects new signals after each sync, triages the whole stream (not just @mentions/DMs), composes them into situations alongside target/track updates, and prepares a context packet for anything worth surfacing.
+Your AI secretary for Slack, Jira, Calendar, and Gmail — everything that's waiting on you, clustered into situations and ranked so you can act without digging through threads. Inbox is the app's start screen (the sidebar's first item). The pipeline detects new signals after each sync, triages the whole stream (not just @mentions/DMs), composes them into situations alongside target/track updates, and prepares a context packet for anything worth surfacing.
 
-**How it works:** After each sync, the pipeline detects new items across Slack (@mentions, DMs, thread replies, reactions), Jira (assignments, comments, status/priority changes), and Calendar (invites, time changes), then runs a triage pass over every new trigger item *plus* a scan of ordinary channel traffic — so a message that never mentioned you but reads as signal in context can still surface. Triage assigns a class (action/ambient) and priority; it may only **downgrade** a trigger item's class, never upgrade one. The composer then folds triaged signals, track events, and target updates into **situations** — merging into an existing open situation when one already covers the story, rather than creating a duplicate — and a situation-card stage writes each situation's summary, why-it-matters, and chronology.
+**How it works:** After each sync, the pipeline detects new items across Slack (@mentions, DMs, thread replies, reactions), Jira (assignments, comments, status/priority changes), Calendar (invites, time changes), and Gmail (new messages in your inbox), then runs a triage pass over every new trigger item *plus* a scan of ordinary channel traffic — so a message that never mentioned you but reads as signal in context can still surface. Triage assigns a class (action/ambient) and priority; it may only **downgrade** a trigger item's class, never upgrade one. The composer then folds triaged signals, track events, and target updates into **situations** — merging into an existing open situation when one already covers the story, rather than creating a duplicate — and a situation-card stage writes each situation's summary, why-it-matters, and chronology.
 
 **The Feed — a chronological wall:** The Inbox tab is a single scrolling wall mixing situation cards with upcoming meetings (published a configurable number of minutes before start, default 30), daily briefings, meeting recaps, and day plans, newest first — so everything waiting on you shows up in one place instead of a separate tab per pipeline. A filter bar above the list offers type chips (Situations / Meetings / Briefings / Recaps / Plans, toggle any combination), an "Important only" switch (hides items below a priority threshold), and a "Show hidden" switch. Right-click any row for Hide/Unhide — hiding never deletes the item, it just drops out of the default view until "Show hidden" is on. Selecting a row marks it seen (shown unbolded on future visits) and opens the matching detail pane on the right; past items stay in the feed as history rather than disappearing once handled.
 
@@ -116,6 +116,19 @@ Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] 
 - **Chat** — discuss this meeting with the secretary ("what exactly did we decide about X?", "draft a follow-up") — the conversation persists per recording, and the secretary can pull the full transcript via the `get_transcript` tool.
 
 The detail header has "Link to event…" for ad-hoc recordings and a **Delete** button: after confirmation it removes the recording with everything it owns — transcript, meeting notes, its chat, and the audio file. An event's recap is NOT deleted with the recording (it belongs to the event). Deleting cannot be undone.
+
+### Gmail
+Optional integration that syncs your Gmail Inbox so emails are triaged into the AI secretary alongside Slack and Jira.
+
+**Connecting:** Go to Settings > Gmail and click "Connect Gmail". This opens the Google OAuth flow via the CLI (`watchtower gmail login`). Once connected, new Gmail Inbox messages sync automatically after each Slack sync and flow through the same secretary pipeline (triage → situations → situation cards) as Slack.
+
+**In the Inbox tab** — Gmail messages surface as member signals and situations exactly like Slack ones, and Discuss can draft a reply in your voice — but Watchtower never sends email for you; copy the draft and send it from Gmail.
+
+**CLI commands:**
+- `watchtower gmail login` — connect Gmail (OAuth flow)
+- `watchtower gmail logout` — disconnect and remove token + synced messages
+- `watchtower gmail sync` — manually sync inbox messages
+- `watchtower gmail status` — show connection status
 
 ### Tasks
 Personal action items — what you need to do, follow up on, or react to. Unlike Tracks (which are informational narratives about ongoing initiatives), Tasks are concrete, personal to-do items with ownership and deadlines.
@@ -242,6 +255,7 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 
 **General:** Sync interval, workers, history depth, AI provider (Claude or Codex), digest model/language, briefing hour, Claude CLI path, Codex CLI path (shown when Codex provider is selected, with auto-detection indicator).
 **Google Calendar:** Connect/disconnect Google Calendar, sync days ahead picker (3/5/7/14 days). Connection status indicator (green checkmark when connected).
+**Gmail:** Connect/disconnect Gmail via OAuth. Connection status indicator (green checkmark when connected).
 **Jira:** Connect/disconnect Jira Cloud via OAuth. Boards selection with toggle switches. Board Profiles — workflow visualization (stage chain), stale threshold sliders, Re-analyze button, health signals, iteration info. User Mapping — matched/unmatched table with manual mapping dropdown. Sync status (last sync time, manual sync button). Jira Features — toggle switches organized by category (Your Work, Team Visibility, Product & Strategy, Automation). Defaults are set by user role on first connection; any toggle can be changed at any time. Jira key patterns (PROJ-123) in Slack messages are automatically detected and linked to issues.
 **Profile:** Your role, team, manager, reports, peers, starred channels/people.
 **Notifications:** Decision alerts, daily summaries, quiet hours.
@@ -274,4 +288,5 @@ Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Sl
 - **Muted channels** — Channels excluded from AI processing (digests, tracks, briefings). Use the Statistics tab to mute noisy or bot-heavy channels and reduce token costs
 - **Multi-provider AI** — Watchtower supports multiple AI providers: Claude (Anthropic) and Codex (OpenAI). Switch providers in chat toolbar or Settings. All pipelines (digests, tracks, people, briefings, dashboard) respect the configured provider. CLI flag `--provider claude|codex` overrides per-command. Config field `ai.provider` sets the default
 - **Google Calendar** — Optional integration that syncs Google Calendar events to the local database. Enables meeting prep (AI-generated talking points, people notes, open items) and injects schedule context into briefings and AI chat. Connect via Settings or `watchtower calendar login`
+- **Gmail** — Optional integration that syncs your Gmail Inbox to the local database and feeds new messages into the same secretary pipeline as Slack (triage → situations → situation cards). Discuss can draft a reply in your voice, but sending is always manual in Gmail — this release has no digests, tracks, or write-back for email. Connect via Settings or `watchtower gmail login`
 - **Jira Cloud** — Optional integration that connects Jira Cloud via OAuth. Select boards to sync, LLM analyzes each board's workflow and generates a profile (stages, stale thresholds, health signals). Issues sync incrementally every 15 minutes. Jira key patterns (PROJ-123) in Slack messages are auto-detected and linked. Feature toggles control which Jira-powered features are active, with role-based defaults. Connect via Settings or `watchtower jira login`. CLI: `watchtower jira login/logout/status`, `watchtower jira boards`, `watchtower jira boards select/deselect`, `watchtower jira boards analyze`, `watchtower jira boards override`, `watchtower jira users`, `watchtower jira users map`, `watchtower jira sync`, `watchtower jira features`, `watchtower jira features enable/disable`, `watchtower jira features reset`

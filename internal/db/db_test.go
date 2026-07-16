@@ -102,6 +102,7 @@ func TestAllTablesExist(t *testing.T) {
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
 		"feed_items", "feed_state", "meeting_transcripts",
+		"gmail_messages", "gmail_auth_state",
 	}
 
 	for _, table := range expectedTables {

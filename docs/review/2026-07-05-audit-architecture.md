@@ -1,51 +1,51 @@
-# Архитектурные проблемы — аудит 2026-07-05
+# Architectural Issues — 2026-07-05 Audit
 
-Аудит охватывает архитектурный срез проекта Watchtower: связность и границы пакетов Go-бэкенда (`internal/*`, `cmd/*`), дублирование сквозных механизмов (AI-подсистема, парсинг ответов LLM, учёт токенов) и структуру macOS-приложения (`WatchtowerDesktop/`, MVVM-слой Models→Queries→ViewModel→View, дублирование бизнес-логики между Go и Swift). Метод: несколько специализированных агентов-искателей (`arch-go`, `arch-swift`) независимо собирали находки, после чего каждая находка прошла отдельную состязательную верификацию с трассировкой по коду; ниже приведены только подтверждённые находки (опровергнутые удалены). Итог: 16 подтверждённых находок — 0 critical, 3 high, 6 medium, 7 low.
+The audit covers an architectural slice of the Watchtower project: cohesion and boundaries of the Go backend packages (`internal/*`, `cmd/*`), duplication of cross-cutting mechanisms (the AI subsystem, LLM response parsing, token accounting), and the structure of the macOS app (`WatchtowerDesktop/`, the MVVM Models→Queries→ViewModel→View layer, duplication of business logic between Go and Swift). Method: several specialized finder agents (`arch-go`, `arch-swift`) independently gathered findings, after which each finding went through separate adversarial verification with code tracing; only confirmed findings are listed below (refuted ones were removed). Result: 16 confirmed findings — 0 critical, 3 high, 6 medium, 7 low.
 
 ## High
 
-### Кастомизация промптов — молчаливый no-op для digest, tracks, inbox, briefing, guide, catchup
+### Prompt customization is a silent no-op for digest, tracks, inbox, briefing, guide, catchup
 
-- **Где:** `cmd/sync.go:294`
-- **Статус верификации:** ✅ подтверждено
-- Каждый пайплайн предоставляет `SetPromptStore`, и его `getPrompt()` обращается к БД-хранилищу промптов только если store не nil (например, `internal/digest/pipeline.go:222-247`, `internal/inbox/pipeline.go:805-813`, `internal/briefing/pipeline.go:274-292`). Однако единственный продакшн-вызов `SetPromptStore` во всём репозитории — это `cmd/sync.go:294` для пайплайна dayplan. Ни обвязка демона (`cmd/sync.go:277-291`), ни CLI-команды `generate` (`cmd/digest.go:338`, `cmd/inbox.go:389`, `cmd/briefing.go:139`, `cmd/tracks.go:617`, `cmd/people.go:352`, `cmd/catchup.go:97`, `cmd/meeting.go:88`), ни `runPostSyncPipelines` (`cmd/sync.go:485-508`) не передают store. В результате вся пользовательская фича `watchtower prompts show/reset/rollback` + `watchtower tune --apply` (`cmd/prompts.go`) пишет версии промптов в БД, которые не читает ни один пайплайн, кроме dayplan: пользователь тюнит `digest.channel`, получает подтверждение и новую версию в истории, а демон продолжает вечно использовать встроенный дефолт — без единого предупреждения.
+- **Where:** `cmd/sync.go:294`
+- **Verification status:** ✅ confirmed
+- Every pipeline exposes `SetPromptStore`, and its `getPrompt()` only reaches into the DB-backed prompt store if the store is non-nil (e.g. `internal/digest/pipeline.go:222-247`, `internal/inbox/pipeline.go:805-813`, `internal/briefing/pipeline.go:274-292`). However, the only production call to `SetPromptStore` in the entire repo is `cmd/sync.go:294`, for the dayplan pipeline. Neither the daemon wiring (`cmd/sync.go:277-291`), nor the `generate` CLI commands (`cmd/digest.go:338`, `cmd/inbox.go:389`, `cmd/briefing.go:139`, `cmd/tracks.go:617`, `cmd/people.go:352`, `cmd/catchup.go:97`, `cmd/meeting.go:88`), nor `runPostSyncPipelines` (`cmd/sync.go:485-508`) pass a store. As a result, the entire user-facing feature `watchtower prompts show/reset/rollback` + `watchtower tune --apply` (`cmd/prompts.go`) writes prompt versions to the DB that no pipeline except dayplan ever reads: a user tunes `digest.channel`, gets a confirmation and a new version in the history, and the daemon just keeps using the built-in default forever — with no warning whatsoever.
 
 ```go
-// cmd/sync.go:293-295 — единственный вызов SetPromptStore в продакшене
+// cmd/sync.go:293-295 — the only SetPromptStore call in production
 dayPlanPipe := dayplan.New(...)
 dayPlanPipe.SetPromptStore(prompts.New(database, nil))
 
-// digest getPrompt (pipeline.go:228-246): при nil store — тихий fallback на дефолт
+// digest getPrompt (pipeline.go:228-246): silent fallback to default when store is nil
 if p.promptStore != nil { ... } // Fallback to default
 ```
 
-- **Рекомендация:** Вынести инъекцию prompt store в общий конструктор/обвязку, через которую строятся все пайплайны (и в обвязке демона, и в CLI-командах `generate`, и в `runPostSyncPipelines`), либо сделать store обязательным параметром фабрики пайплайна, чтобы «забыть» его было невозможно. Как минимум — логировать warning, если пайплайн запущен без store, а в БД для его промпта есть кастомная версия.
+- **Recommendation:** Move prompt-store injection into a shared constructor/wiring path used to build every pipeline (both in the daemon wiring and in the `generate` CLI commands, and in `runPostSyncPipelines`), or make the store a required parameter of the pipeline factory so it can't be forgotten. At minimum, log a warning when a pipeline runs without a store while its prompt has a custom version stored in the DB.
 
-### Watermark inbox сдвигается по стенным часам даже при сбое Slack-sync или детекторов — упоминания/DM теряются навсегда
+### The inbox watermark advances by wall-clock time even when Slack sync or detectors fail — mentions/DMs are lost forever
 
-- **Где:** `internal/inbox/pipeline.go:329`
-- **Статус верификации:** ✅ подтверждено
-- `inbox.Pipeline.Run` безусловно сдвигает watermark обработки на `now-30min` в конце каждого прогона (строки 321-331), независимо от того, успешно ли отработала детекция. Два конкретных сценария потери: (1) демон намеренно запускает пайплайны при сбое Slack-sync (`internal/daemon/daemon.go:218-220`: «sync had errors, but running pipelines on existing data»). Если sync сломан дольше 30-минутного буфера (истёкший/отозванный токен, сетевой сбой при бодрствующей машине), каждый цикл всё равно двигает `inbox_last_processed_ts` на `now-30m`; когда sync восстановится и вставит пропущенные сообщения, их `ts_unix` окажется ниже watermark, и `FindPendingMentions`/`FindPendingDMs` (вызываемые с `lastTS` как нижней границей, строки 435/440) их никогда не увидят — упоминание тихо не попадёт в inbox и не будет повторено. (2) `detectAll` проглатывает ошибки детекторов (строки 407-421, log-and-continue), поэтому транзиентная ошибка SQLite при детекции тоже приводит к сдвигу watermark за эти сообщения. Это нарушает документированный контракт INBOX-03 (`docs/inventory/inbox-pulse.md`): «If 200 messages flow past me in a day and one needed a reaction, Inbox surfaces it». Watermark должен выводиться из прогресса sync (как `search_last_date`), а не из стенных часов.
+- **Where:** `internal/inbox/pipeline.go:329`
+- **Verification status:** ✅ confirmed
+- `inbox.Pipeline.Run` unconditionally advances the processing watermark to `now-30min` at the end of every run (lines 321-331), regardless of whether detection succeeded. Two concrete loss scenarios: (1) the daemon deliberately keeps running pipelines when Slack sync fails (`internal/daemon/daemon.go:218-220`: "sync had errors, but running pipelines on existing data"). If sync stays broken longer than the 30-minute buffer (expired/revoked token, network failure on an awake machine), every cycle still moves `inbox_last_processed_ts` to `now-30m`; once sync recovers and inserts the missed messages, their `ts_unix` will fall below the watermark, and `FindPendingMentions`/`FindPendingDMs` (called with `lastTS` as the lower bound, lines 435/440) will never see them — the mention silently never reaches the inbox and is never retried. (2) `detectAll` swallows detector errors (lines 407-421, log-and-continue), so a transient SQLite error during detection likewise causes the watermark to advance past those messages. This violates the documented INBOX-03 contract (`docs/inventory/inbox-pulse.md`): "If 200 messages flow past me in a day and one needed a reaction, Inbox surfaces it." The watermark should be derived from sync progress (like `search_last_date`), not from wall-clock time.
 
 ```go
-// pipeline.go:325-331 — безусловный сдвиг watermark после detectAll
+// pipeline.go:325-331 — unconditional watermark advance after detectAll
 bufferTS := float64(time.Now().Add(-30 * time.Minute).Unix())
 if bufferTS < lastTS { bufferTS = lastTS }
 if err := p.db.SetInboxLastProcessedTS(bufferTS); ...
-// detectAll: ошибки только логируются
+// detectAll: errors are only logged
 if n, err := p.detectSlackTriggers(...); err != nil { p.logger.Printf(...) }
 ```
 
-- **Рекомендация:** Привязать watermark inbox к фактически обработанному прогрессу sync (аналогично `search_last_date`), а не к `time.Now()`, и сдвигать его только при отсутствии ошибок детекции. При сбое sync или ошибке детектора watermark двигать нельзя — иначе сообщения, попавшие в БД после восстановления с исходным (прошлым) `ts_unix`, будут пропущены. Добавить guard-тест на сценарий «sync упал > 30 мин, затем восстановился».
+- **Recommendation:** Tie the inbox watermark to actually-processed sync progress (analogous to `search_last_date`) rather than to `time.Now()`, and only advance it when detection has no errors. When sync or a detector fails, the watermark must not move — otherwise messages that land in the DB after recovery with their original (past) `ts_unix` will be skipped. Add a guard test for the "sync down > 30 min, then recovers" scenario.
 
-### Схема БД, вручную скопированная в `TestDatabase.swift`, разошлась с реальной — тесты зеленеют на SQL к удалённым таблицам
+### The DB schema hand-copied into `TestDatabase.swift` has drifted from reality — tests stay green on SQL against dropped tables
 
-- **Где:** `WatchtowerDesktop/Tests/Helpers/TestDatabase.swift:469`
-- **Статус верификации:** ✅ подтверждено
-- Swift-фикстура тестов держит собственную копию схемы на 39 таблиц вместо того, чтобы выводить её из `internal/db/schema.sql` или прогонять Go-миграции CLI, которые использует продакшн (`DatabaseManager.runCLIMigrations`). Фикстура всё ещё содержит удалённую таблицу `tasks` (со старым, до-`targets`, набором колонок) — именно поэтому `DayPlanQueriesTests` и `ChannelStatsTests` проходят, тогда как тот же SQL падает на любой реальной БД. Это и есть механизм, стоящий за рантайм-багами `ChannelStatsQueries.fetchValueSignals` (FROM tasks) и `DayPlanQueries.cascadeTaskStatus` (UPDATE tasks). Структурно это подрывает любую будущую Go-миграцию: любое переименование таблицы/колонки (флоу skill `add-migration`) молча оставляет тестовую схему Desktop — и, значит, Desktop-SQL — невалидированной против реальности.
+- **Where:** `WatchtowerDesktop/Tests/Helpers/TestDatabase.swift:469`
+- **Verification status:** ✅ confirmed
+- The Swift test fixture keeps its own copy of the schema across 39 tables instead of deriving it from `internal/db/schema.sql` or running the Go migration CLI that production uses (`DatabaseManager.runCLIMigrations`). The fixture still contains the dropped `tasks` table (with the old, pre-`targets` column set) — which is exactly why `DayPlanQueriesTests` and `ChannelStatsTests` pass, while the same SQL fails against any real DB. This is the mechanism behind the runtime bugs in `ChannelStatsQueries.fetchValueSignals` (FROM tasks) and `DayPlanQueries.cascadeTaskStatus` (UPDATE tasks). Structurally, this undermines any future Go migration: any table/column rename (the `add-migration` skill flow) silently leaves the Desktop test schema — and therefore the Desktop SQL — unvalidated against reality.
 
 ```sql
--- TestDatabase.swift:469 — таблицы больше нет в schema.sql / migrations
+-- TestDatabase.swift:469 — table no longer exists in schema.sql / migrations
 CREATE TABLE IF NOT EXISTS tasks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     ...
@@ -53,15 +53,15 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 ```
 
-- **Рекомендация:** Заменить руками поддерживаемую схему на единый источник истины — прогонять реальные Go-миграции (или встраивать `internal/db/schema.sql`) при создании тестовой БД, чтобы Desktop-SQL валидировался против той же схемы, что и продакшн. Как немедленный шаг — удалить `tasks` и все ссылки на неё, чтобы соответствующие запросы начали падать в тестах так же, как в проде.
+- **Recommendation:** Replace the hand-maintained schema with a single source of truth — run the real Go migrations (or embed `internal/db/schema.sql`) when creating the test DB, so Desktop SQL is validated against the same schema as production. As an immediate step, remove `tasks` and all references to it, so the affected queries start failing in tests the same way they do in production.
 
 ## Medium
 
-### Роутинг моделей Codex — мёртвый код: несовпадение типов ключа контекста между пакетами digest и codex
+### Codex model routing is dead code: context-key type mismatch between the digest and codex packages
 
-- **Где:** `internal/codex/generator.go:20`
-- **Статус верификации:** ✅ подтверждено
-- Все пайплайны помечают AI-вызовы через `digest.WithSource(ctx, "inbox.prioritize")`, который кладёт source под неэкспортируемый тип `digest.sessionSourceKey` (`internal/digest/pooled.go:69-73`). `CodexGenerator.Generate` не может сослаться на этот неэкспортируемый ключ, поэтому переобъявляет собственный `type sessionSourceKey struct{}` и читает `ctx.Value(codex.sessionSourceKey{})`. Ключи контекста сравниваются по динамическому типу, а `codex.sessionSourceKey` — другой тип, нежели `digest.sessionSourceKey`, поэтому lookup ВСЕГДА возвращает nil. Итог: при `ai.provider=codex` `ModelForSource` (`internal/codex/models.go:13`, роутящий `inbox.prioritize` / `digest.channel_batch` / `people.batch` / `catchup.peel` / `customtrack.*` на `gpt-5.4-mini`) никогда не срабатывает — каждый вызов в каждом пайплайне идёт на дефолтную модель `gpt-5.4`. Комментарий у codex-`ModelForSource` даже утверждает, что он «Honors digest.SourceLight as the cross-harness contract» — а увидеть его он не может. Claude-роутинг работает лишь потому, что `digest/generator.go` — в том же пакете, что и ключ. Дефект деградирует стоимость/латентность, а не корректность вывода, отсюда medium.
+- **Where:** `internal/codex/generator.go:20`
+- **Verification status:** ✅ confirmed
+- Every pipeline tags AI calls via `digest.WithSource(ctx, "inbox.prioritize")`, which stores the source under the unexported type `digest.sessionSourceKey` (`internal/digest/pooled.go:69-73`). `CodexGenerator.Generate` can't reference that unexported key, so it redeclares its own `type sessionSourceKey struct{}` and reads `ctx.Value(codex.sessionSourceKey{})`. Context keys compare by dynamic type, and `codex.sessionSourceKey` is a different type than `digest.sessionSourceKey`, so the lookup ALWAYS returns nil. The result: when `ai.provider=codex`, `ModelForSource` (`internal/codex/models.go:13`, which routes `inbox.prioritize` / `digest.channel_batch` / `people.batch` / `catchup.peel` / `customtrack.*` to `gpt-5.4-mini`) never fires — every call in every pipeline goes to the default `gpt-5.4` model instead. The comment on codex's `ModelForSource` even claims it "Honors digest.SourceLight as the cross-harness contract" — but it can never see it. Claude routing works only because `digest/generator.go` is in the same package as the key. The defect degrades cost/latency, not output correctness, hence medium.
 
 ```go
 // codex/generator.go:17-20
@@ -70,73 +70,73 @@ type sessionSourceKey struct{}
 // :38
 if s, ok := ctx.Value(sessionSourceKey{}).(string); ok { ... }
 
-// vs digest/pooled.go:69,73 — другой пакет → другой тип → Value() промахивается
+// vs digest/pooled.go:69,73 — different package → different type → Value() misses
 type sessionSourceKey struct{}
 context.WithValue(ctx, sessionSourceKey{}, source)
 ```
 
-- **Рекомендация:** Экспортировать из пакета `digest` типизированный аксессор (например `digest.SourceFromContext(ctx) (string, bool)`) и заставить codex использовать именно его вместо переобъявленного локального ключа. Это устранит мёртвый роутинг и убьёт вторую расходящуюся таблицу маршрутизации моделей.
+- **Recommendation:** Export a typed accessor from the `digest` package (e.g. `digest.SourceFromContext(ctx) (string, bool)`) and make codex use it instead of its redeclared local key. This eliminates the dead routing and kills the second, diverging model-routing table.
 
-### `internal/digest` — де-факто хаб AI-абстракции: Generator/Usage/WithSource/роутинг живут внутри конкретного пайплайна, связывая 10+ пакетов
+### `internal/digest` is a de-facto AI-abstraction hub: Generator/Usage/WithSource/routing live inside a specific pipeline, coupling 10+ packages
 
-- **Где:** `internal/digest/pipeline.go:38`
-- **Статус верификации:** ✅ подтверждено
-- Сквозной AI-шов (интерфейс `Generator`, структура `Usage`, тегирование контекста `WithSource`/`SourceLight` в `pooled.go`, роутинг `ModelForSource` в `models.go`, `LearnedPreferencesBlock` в `preferences.go`) определён внутри `internal/digest` — конкретного пайплайна на ~2000 строк. Каждый другой пайплайн (guide, dayplan, inbox, customtracks, tracks, targets, briefing, meeting, catchup) плюс `internal/codex` импортируют digest только ради этих типов. Уже проявившиеся конкретные издержки: (1) tracks не может быть импортирован в digest (цикл), поэтому зависимость залатана дважды — через интерфейс `TrackLinker` (`pipeline.go:93-98`) для CLI-пути И через мутацию демоном экспортированного поля `digestPipe.TrackContext` (`daemon.go:447-452`), два расходящихся механизма для одних данных; (2) codex вынужден был продублировать неэкспортируемый ключ контекста и сломал его (см. находку выше); (3) таблицы роутинга `digest/models.go` и `codex/models.go` нужно вести параллельно руками. Добавление метода в `Generator` (стриминг, отмена, override модели на вызов) затрагивает 11 пакетов; переименование/выделение пакета digest фактически заморожено. Демон аналогично держит конкретные поля `*digest.Pipeline`/`*tracks.Pipeline`/…; интерфейс получил только dayplan (`DayPlanRunner`, `daemon.go:34`), поэтому тесты демона вынуждены конструировать полные реальные пайплайны для всех прочих фаз (`daemon_test.go:406-455`).
+- **Where:** `internal/digest/pipeline.go:38`
+- **Verification status:** ✅ confirmed
+- The cross-cutting AI seam (the `Generator` interface, the `Usage` struct, context tagging via `WithSource`/`SourceLight` in `pooled.go`, `ModelForSource` routing in `models.go`, `LearnedPreferencesBlock` in `preferences.go`) is defined inside `internal/digest` — a specific ~2000-line pipeline. Every other pipeline (guide, dayplan, inbox, customtracks, tracks, targets, briefing, meeting, catchup) plus `internal/codex` import digest purely for these types. Concrete costs already visible: (1) tracks can't be imported into digest (a cycle), so the dependency is patched twice — via the `TrackLinker` interface (`pipeline.go:93-98`) for the CLI path AND via the daemon mutating the exported field `digestPipe.TrackContext` (`daemon.go:447-452`), two diverging mechanisms for the same data; (2) codex was forced to duplicate the unexported context key and broke it (see the finding above); (3) the routing tables `digest/models.go` and `codex/models.go` have to be maintained by hand in parallel. Adding a method to `Generator` (streaming, cancellation, a per-call model override) touches 11 packages; renaming or extracting the digest package is effectively frozen. The daemon likewise holds concrete `*digest.Pipeline`/`*tracks.Pipeline`/… fields; only dayplan got an interface (`DayPlanRunner`, `daemon.go:34`), so daemon tests are forced to construct full real pipelines for every other phase (`daemon_test.go:406-455`).
 
 ```go
 // digest/pipeline.go:38
 type Generator interface { Generate(...) }
 // pipeline.go:95
 // Defined as an interface to avoid import cycles (tracks imports digest)
-// daemon.go:448-451 — второй, дублирующий механизм передачи того же контекста
+// daemon.go:448-451 — a second, duplicate mechanism for passing the same context
 if trackCtx, err := d.tracksPipe.FormatActiveTracksForPrompt(); ... {
     d.digestPipe.TrackContext = trackCtx
 }
 ```
 
-- **Рекомендация:** Выделить AI-шов (`Generator`, `Usage`, `WithSource`/`SourceLight`, `ModelForSource`, `LearnedPreferencesBlock`) в отдельный нейтральный пакет (например `internal/aiseam` или `internal/llm`), от которого зависят все пайплайны и оба провайдера, а `internal/digest` оставить только конкретной реализацией. Это разорвёт цикл tracks↔digest (убрав двойной механизм `TrackLinker`/`TrackContext`) и позволит codex переиспользовать ключ контекста и таблицу роутинга без дублирования.
+- **Recommendation:** Extract the AI seam (`Generator`, `Usage`, `WithSource`/`SourceLight`, `ModelForSource`, `LearnedPreferencesBlock`) into a separate neutral package (e.g. `internal/aiseam` or `internal/llm`) that every pipeline and both providers depend on, leaving `internal/digest` as just one concrete implementation. This breaks the tracks↔digest cycle (removing the dual `TrackLinker`/`TrackContext` mechanism) and lets codex reuse the context key and routing table without duplication.
 
-### Стек Claude-CLI-подпроцесса продублирован в `internal/ai` и `internal/digest` с поведенческим дрейфом: обработка CLAUDECODE и cwd различаются
+### The Claude CLI subprocess stack is duplicated in `internal/ai` and `internal/digest` with behavioral drift: CLAUDECODE handling and cwd differ
 
-- **Где:** `internal/ai/client.go:173`
-- **Статус верификации:** ✅ подтверждено
-- `internal/ai/client.go` и `internal/digest/generator.go` содержат каждый свою копию `cliResponse`, `cliUsage`, `parseCLIOutput`, `limitedWriter`, `classifyError` и настройки exec-окружения/TCC (а `internal/codex` — третью копию `limitedWriter`/`classifyError`). Они уже разошлись: `digest/generator.go:211-219` вырезает переменную окружения `CLAUDECODE` («avoid nested-session detection when launched from a parent process that is itself a Claude Code session») и запускается из `~/.config/watchtower`, тогда как `ai.Client.Query`/`QuerySync` (строки 173-175, 253-255) сохраняет `CLAUDECODE` и запускается из `os.TempDir()`. Значит вызовы `watchtower ask`/chat/REPL/jira-board-analyzer (использующие `ai.Client`), запущенные из демона, порождённого сессией Claude Code, натыкаются ровно на тот сбой вложенной сессии, от которого была пропатчена сторона digest. Учитывая, что в истории проекта фиксы TCC responsibility-chain — это P0, каждый такой фикс приходится находить и применять в 2-3 местах, и один (CLAUDECODE) на стороне `ai.Client` уже пропущен.
+- **Where:** `internal/ai/client.go:173`
+- **Verification status:** ✅ confirmed
+- `internal/ai/client.go` and `internal/digest/generator.go` each contain their own copy of `cliResponse`, `cliUsage`, `parseCLIOutput`, `limitedWriter`, `classifyError`, and exec-environment/TCC setup (and `internal/codex` holds a third copy of `limitedWriter`/`classifyError`). They have already diverged: `digest/generator.go:211-219` strips the `CLAUDECODE` environment variable ("avoid nested-session detection when launched from a parent process that is itself a Claude Code session") and runs from `~/.config/watchtower`, whereas `ai.Client.Query`/`QuerySync` (lines 173-175, 253-255) keeps `CLAUDECODE` and runs from `os.TempDir()`. That means `watchtower ask`/chat/REPL/jira-board-analyzer calls (which use `ai.Client`), launched from a daemon spawned by a Claude Code session, hit exactly the nested-session failure that the digest side was patched to avoid. Given that TCC responsibility-chain fixes are P0 in this project's history, every such fix now has to be found and applied in 2-3 places, and one (CLAUDECODE) on the `ai.Client` side has already been missed.
 
 ```go
 // digest/generator.go:203-213
 // - Remove CLAUDECODE to avoid "nested session" detection...
 if strings.HasPrefix(e, "CLAUDECODE=") { continue }
 
-// ai/client.go:173-175 — аналога нет, только PATH
+// ai/client.go:173-175 — no equivalent, only PATH
 cmd.Env = append(os.Environ(), "PATH="+claude.RichPATH())
 ```
 
-- **Рекомендация:** Вынести конструирование Claude-CLI-подпроцесса (env-setup, cwd, `parseCLIOutput`, `limitedWriter`, `classifyError`) в один общий хелпер, используемый и `ai.Client`, и `digest.ClaudeGenerator`, чтобы TCC/env-фиксы (включая вырезание `CLAUDECODE`) применялись в одном месте. Немедленно — продублировать вырезание `CLAUDECODE` и корректный cwd на сторону `ai.Client`.
+- **Recommendation:** Extract Claude CLI subprocess construction (env setup, cwd, `parseCLIOutput`, `limitedWriter`, `classifyError`) into a single shared helper used by both `ai.Client` and `digest.ClaudeGenerator`, so TCC/env fixes (including stripping `CLAUDECODE`) are applied in one place. Immediately, replicate the `CLAUDECODE` strip and correct cwd on the `ai.Client` side.
 
-### Снятие markdown-«забора» с JSON-ответов AI переизобретено ≥7 раз с расходящимся поведением на краях
+### Stripping the markdown "fence" from AI JSON responses has been reinvented ≥7 times with diverging edge-case behavior
 
-- **Где:** `internal/inbox/pipeline.go:962`
-- **Статус верификации:** ✅ подтверждено
-- Каждый пайплайн вручную вычленяет JSON из markdown-fence: `inbox.parseAIResult` (`pipeline.go:962-978`, отбрасывает первую И последнюю строки всякий раз, когда ответ начинается с ```` ``` ```` — портит ответ, у которого закрывающий забор не на последней строке), `briefing.parseBriefingResult` (`pipeline.go:635-653`, использует `LastIndex("```")`), `tracks.cleanJSON` (`pipeline.go:1755`), `meeting.cleanJSON` (`pipeline.go:507`), `guide.extractJSON` (`pipeline.go:1068`), `jira.extractJSON` (`board_analyzer.go:746`), `dayplan.parseResponse` (`prompt.go:171`), плюс `inbox/pinned_selector.parsePinnedResponse` (`pinned_selector.go:113`) и `targets.parseExtractResponse`/`parseLinkResponse`. Все реализуют один контракт («модель может обернуть JSON в забор / добавить прозу») с разной толерантностью к прозе до/после забора, поэтому один и тот же вывод модели парсится в одном пайплайне и падает в другом. Показательно: канонический толерантный хелпер `prompts.ExtractJSONObject` (`internal/prompts/json.go`) уже существует, но принят лишь ОДНИМ call-site (`targets/nextstep.go`) — намерение консолидации доказано, но не завершено. Когда провайдер начнёт предварять ответ фразой перед забором (известный сдвиг поведения Codex/Claude), фикс придётся искать и править в 7+ копиях; применённый лишь к одной, он оставит остальные молча дропать результаты AI — а в inbox/briefing это значит, что прогон логируется как parse error и его токены тратятся впустую каждый цикл.
+- **Where:** `internal/inbox/pipeline.go:962`
+- **Verification status:** ✅ confirmed
+- Every pipeline manually extracts JSON from a markdown fence: `inbox.parseAIResult` (`pipeline.go:962-978`, drops both the first AND last line whenever the response starts with ```` ``` ````  — corrupts a response whose closing fence isn't on the last line), `briefing.parseBriefingResult` (`pipeline.go:635-653`, uses `LastIndex("```")`), `tracks.cleanJSON` (`pipeline.go:1755`), `meeting.cleanJSON` (`pipeline.go:507`), `guide.extractJSON` (`pipeline.go:1068`), `jira.extractJSON` (`board_analyzer.go:746`), `dayplan.parseResponse` (`prompt.go:171`), plus `inbox/pinned_selector.parsePinnedResponse` (`pinned_selector.go:113`) and `targets.parseExtractResponse`/`parseLinkResponse`. All of them implement the same contract ("the model may wrap JSON in a fence / add prose"), with differing tolerance for prose before/after the fence, so the same model output parses successfully in one pipeline and fails in another. Tellingly, the canonical tolerant helper `prompts.ExtractJSONObject` (`internal/prompts/json.go`) already exists but is adopted at only ONE call site (`targets/nextstep.go`) — the intent to consolidate is proven but unfinished. When a provider starts prefacing its response with a phrase before the fence (a known Codex/Claude behavior shift), the fix will have to be found and applied across 7+ copies; applied to just one, it will leave the rest silently dropping AI results — and for inbox/briefing that means the run gets logged as a parse error and its tokens are wasted every cycle.
 
 ```go
-// inbox/pipeline.go:964-971 — отбрасывает первую И последнюю строку
+// inbox/pipeline.go:964-971 — drops both the first AND last line
 if strings.HasPrefix(response, "```") {
     lines := strings.Split(response, "\n")
     if len(lines) > 2 { lines = lines[1 : len(lines)-1] ... }
 }
-// vs briefing/pipeline.go:637-645 — SplitN + LastIndex, иной алгоритм для той же задачи
+// vs briefing/pipeline.go:637-645 — SplitN + LastIndex, a different algorithm for the same job
 lines := strings.SplitN(response, "\n", 2) ...
 if idx := strings.LastIndex(response, "```"); idx >= 0 { response = response[:idx] }
 ```
 
-- **Рекомендация:** Перевести все call-sites на существующий `prompts.ExtractJSONObject` и удалить локальные копии, оставив один толерантный алгоритм (забор с любым языком + fallback по крайним фигурным скобкам). Добавить общий тест на «прозе до и после забора».
+- **Recommendation:** Move all call sites onto the existing `prompts.ExtractJSONObject` and delete the local copies, leaving a single tolerant algorithm (fence with any language tag + fallback on outermost braces). Add a shared test for "prose before and after the fence."
 
-### Поведенческие контракты реализованы дважды (Go + Swift) без общего энфорсмента — одно зеркало уже разошлось и сломалось
+### Behavioral contracts are implemented twice (Go + Swift) with no shared enforcement — one mirror has already drifted and broken
 
-- **Где:** `WatchtowerDesktop/Sources/Database/Queries/TargetQueries.swift:228`
-- **Статус верификации:** ✅ подтверждено
-- Существует минимум 8 самообъявленных «Mirrors Go» дублирований бизнес-логики в Swift: каскад INBOX-02 target-close→inbox-resolve (`TargetQueries.updateStatus` vs `internal/db/targets.go UpdateTargetStatus`), каскад catch-up acknowledge (`CatchUpQueries.acknowledge:76` vs `internal/catchup/pipeline.go:443`), деривация правил из inbox-фидбэка (`InboxFeedbackQueries.record:11` vs `internal/inbox/feedback.go:14`), channel value signals (`ChannelStatsQueries:169` — уже разошлось), SHA256 `ComputeConfigHash` Jira-доски (`JiraBoard.swift:100`), allowlist внешних ссылок (`TargetQueries:200`), thread context (`MessageQueries:65`). Ни у одного нет кросс-языкового теста на эквивалентность. Верификация вскрыла две реальные расходимости: (1) Go `GetChannelValueSignals` (`internal/db/channel_stats.go:137,145`) читает `FROM targets`, а Swift-зеркало `ChannelStatsQueries.fetchValueSignals` — `FROM tasks` (таблицы нет → рантайм-сбой); (2) Swift `TargetQueries.updateStatus` (строка 217) опускает пересчёт progress листа/родителя, который Go `UpdateTargetStatus` (`targets.go:261`) выполняет — поэтому Desktop-путь «Done» оставляет progress устаревшим. Файлы инвентаря (`docs/inventory/`) каталогизируют эти контракты как load-bearing, удваивая радиус поражения каждого изменения.
+- **Where:** `WatchtowerDesktop/Sources/Database/Queries/TargetQueries.swift:228`
+- **Verification status:** ✅ confirmed
+- There are at least 8 self-declared "Mirrors Go" business-logic duplications in Swift: the INBOX-02 target-close→inbox-resolve cascade (`TargetQueries.updateStatus` vs `internal/db/targets.go UpdateTargetStatus`), the catch-up acknowledge cascade (`CatchUpQueries.acknowledge:76` vs `internal/catchup/pipeline.go:443`), rule derivation from inbox feedback (`InboxFeedbackQueries.record:11` vs `internal/inbox/feedback.go:14`), channel value signals (`ChannelStatsQueries:169` — already drifted), the Jira board's SHA256 `ComputeConfigHash` (`JiraBoard.swift:100`), the external-link allowlist (`TargetQueries:200`), thread context (`MessageQueries:65`). None of them has a cross-language equivalence test. Verification uncovered two real discrepancies: (1) Go's `GetChannelValueSignals` (`internal/db/channel_stats.go:137,145`) reads `FROM targets`, while the Swift mirror `ChannelStatsQueries.fetchValueSignals` reads `FROM tasks` (the table doesn't exist → runtime failure); (2) Swift's `TargetQueries.updateStatus` (line 217) omits the sheet/parent progress recalculation that Go's `UpdateTargetStatus` (`targets.go:261`) performs — so the Desktop "Done" path leaves progress stale. The inventory files (`docs/inventory/`) catalogue these contracts as load-bearing, doubling the blast radius of every change.
 
 ```swift
 // Mirrors the Go-side cascade in `UpdateTargetStatus`
@@ -145,31 +145,31 @@ if idx := strings.LastIndex(response, "```"); idx >= 0 { response = response[:id
 // `CatchUpQueries.acknowledge`).
 ```
 
-- **Рекомендация:** Для каждого «Mirrors Go» контракта добавить кросс-языковой золотой тест: фиксированный вход → сериализованный результат, проверяемый одинаково в `go test` и `swift test` (общий JSON-фикстур). Немедленно исправить расхождения `FROM tasks`→`FROM targets` и добавить недостающий пересчёт progress в Swift `updateStatus`.
+- **Recommendation:** For each "Mirrors Go" contract, add a cross-language golden test: a fixed input → serialized result, checked identically in `go test` and `swift test` (a shared JSON fixture). Fix the `FROM tasks`→`FROM targets` discrepancy immediately, and add the missing progress recalculation to Swift's `updateStatus`.
 
-### Стек AI-чата дублирован пятикратно: цикл dedup стрима скопирован 5×, блок LINKING RULES системного промпта — 4× (3 Swift + 1 Go)
+### The AI chat stack is duplicated five times: the stream-dedup loop is copied 5×, the LINKING RULES system-prompt block 4× (3 Swift + 1 Go)
 
-- **Где:** `WatchtowerDesktop/Sources/Views/Tracks/TrackChatView.swift:8`
-- **Статус верификации:** ✅ подтверждено
-- Идентичный конечный автомат дедупликации стрима `sawTurnComplete`/`turnComplete` скопирован в `ChatViewModel` (дважды: строки 167 и 561), `OnboardingChatViewModel:277`, `TargetChatViewModel:223` и `TrackChatViewModel:166` — последний представляет собой полноценную ViewModel на ~380 строк, определённую внутри файла из `Views/` с собственными хелперами персистентности, дублирующими обработку `ChatMessageQueries`/`ChatConversationQueries`. Блок промпта `=== LINKING RULES ===` (формат slack://-ссылок) отдельно поддерживается в `ChatViewModel:454`, `TargetChatViewModel:564`, `TrackChatView.swift:351` и `internal/ai/prompt.go`. Дрейф, о котором предупреждает находка, уже реален: LINKING RULES в `ChatViewModel` («ALWAYS include Slack links as descriptive markdown», плоский формат сообщений) существенно отличается от `TrackChatView` («ALWAYS use markdown links with descriptive text», с отдельными правилами `thread_ts` и web-permalink), так что рекомендации по рендеру ссылок уже расходятся между вкладками. Фикс известного edge-case «chunk после turnComplete», добавление нового `AIStreamEvent`-кейса или смена формата deep-link требуют 4-5 синхронных правок в двух языках.
+- **Where:** `WatchtowerDesktop/Sources/Views/Tracks/TrackChatView.swift:8`
+- **Verification status:** ✅ confirmed
+- The identical `sawTurnComplete`/`turnComplete` stream-deduplication state machine is copied into `ChatViewModel` (twice: lines 167 and 561), `OnboardingChatViewModel:277`, `TargetChatViewModel:223`, and `TrackChatViewModel:166` — the last one being a full ~380-line ViewModel defined inside a file under `Views/`, with its own persistence helpers duplicating `ChatMessageQueries`/`ChatConversationQueries` handling. The `=== LINKING RULES ===` prompt block (the format of slack:// links) is separately maintained in `ChatViewModel:454`, `TargetChatViewModel:564`, `TrackChatView.swift:351`, and `internal/ai/prompt.go`. The drift this finding warns about is already real: the LINKING RULES in `ChatViewModel` ("ALWAYS include Slack links as descriptive markdown," flat message format) differ materially from `TrackChatView` ("ALWAYS use markdown links with descriptive text," with separate `thread_ts` and web-permalink rules), so link-rendering guidance already diverges between tabs. Fixing the known "chunk after turnComplete" edge case, adding a new `AIStreamEvent` case, or changing the deep-link format all require 4-5 synchronized edits across two languages.
 
 ```swift
-// TrackChatView.swift:166 — байт-в-байт совпадает с ChatViewModel:167 и :561,
+// TrackChatView.swift:166 — byte-for-byte identical to ChatViewModel:167 and :561,
 // OnboardingChatViewModel:277, TargetChatViewModel:223
 var sawTurnComplete = false
 ...
 case .turnComplete(let text): fullText = text; sawTurnComplete = true
 ```
 
-- **Рекомендация:** Вынести автомат дедупликации стрима в один общий тип (например `ChatStreamAccumulator`), а блок LINKING RULES — в единый источник (общий Swift-конструктор системного промпта + один Go-источник), из которого генерируются все чат-вкладки. `TrackChatViewModel` вынести из `Views/` в слой ViewModels и переиспользовать общие query-хелперы.
+- **Recommendation:** Extract the stream-dedup state machine into a single shared type (e.g. `ChatStreamAccumulator`), and the LINKING RULES block into a single source (a shared Swift system-prompt builder + one Go source) from which every chat tab is generated. Move `TrackChatViewModel` out of `Views/` into the ViewModels layer and reuse the shared query helpers.
 
 ## Low
 
-### Системное нарушение MVVM: множество прямых `dbPool.write` в файлах View; целые фичи реализованы внутри Views
+### Systemic MVVM violation: numerous direct `dbPool.write` calls in View files; whole features implemented inside Views
 
-- **Где:** `WatchtowerDesktop/Sources/Views/Calendar/MeetingNotesView.swift:457`
-- **Статус верификации:** ✅ подтверждено
-- Документированная архитектура проекта (`.claude/skills/add-desktop-feature`: Model → Queries → ViewModel → View, «writes via await dbPool.write» в ViewModel) нарушается повсеместно: grep показывает 90 упоминаний `dbPool` в `Sources/Views` по 30 файлам, включая синхронные `try db.dbPool.write` call-sites, исполняемые на main actor (UI подвисает, когда Go-демон держит write-lock, `busy_timeout=5000ms`). `MeetingNotesView` вообще не имеет ViewModel — CRUD заметок, toggle, delete и кросс-фичевое создание target (`TargetQueries.create` + `MeetingNoteQueries.setTaskID`) живут во View. Верификация уточнила: фактически 23 write-site (19 синхронных), а не 24, и два флагманских кейса «вся фича во View» частично мисхарактеризованы (`createTargetAndPromote` асинхронна и делегирует batch-promote канонической `TargetsViewModel`) — поэтому severity понижен до low. Тем не менее синхронная main-thread-запись до 5 с при удержании write-lock демоном реально достижима и обходит документированный паттерн.
+- **Where:** `WatchtowerDesktop/Sources/Views/Calendar/MeetingNotesView.swift:457`
+- **Verification status:** ✅ confirmed
+- The project's documented architecture (`.claude/skills/add-desktop-feature`: Model → Queries → ViewModel → View, "writes via await dbPool.write" in the ViewModel) is violated pervasively: a grep shows 90 mentions of `dbPool` in `Sources/Views` across 30 files, including synchronous `try db.dbPool.write` call sites executed on the main actor (the UI hangs whenever the Go daemon holds the write lock, `busy_timeout=5000ms`). `MeetingNotesView` has no ViewModel at all — note CRUD, toggling, deletion, and cross-feature target creation (`TargetQueries.create` + `MeetingNoteQueries.setTaskID`) all live in the View. Verification refined this: there are actually 23 write sites (19 synchronous), not 24, and two flagship "whole feature in the View" cases were partly mischaracterized (`createTargetAndPromote` is async and delegates batch-promote to the canonical `TargetsViewModel`) — so severity was downgraded to low. Still, a synchronous main-thread write blocking for up to 5s while the daemon holds the write lock is genuinely reachable and bypasses the documented pattern.
 
 ```swift
 private func createTask(from note: MeetingNote) {
@@ -178,103 +178,103 @@ private func createTask(from note: MeetingNote) {
         let id = try TargetQueries.create(dbConn, text: note.text, ...)
         try MeetingNoteQueries.setTaskID(dbConn, noteID: noteID, taskID: Int64(id))
         return id
-    }  // бизнес-флоу + синхронная main-thread запись внутри SwiftUI View, без ViewModel
+    }  // business flow + synchronous main-thread write inside a SwiftUI View, no ViewModel
 }
 ```
 
-- **Рекомендация:** Перевести записи в Views на `await dbPool.write` (off-main) внутри соответствующих ViewModel; для `MeetingNotesView` создать `MeetingNotesViewModel`, инкапсулирующий CRUD и создание target. Как минимум — сделать все `dbPool.write` в Views асинхронными, чтобы убрать блокировку main actor.
+- **Recommendation:** Move Views' writes to `await dbPool.write` (off-main) inside the appropriate ViewModels; for `MeetingNotesView`, create a `MeetingNotesViewModel` encapsulating CRUD and target creation. At minimum, make every `dbPool.write` in Views asynchronous to remove the main-actor block.
 
-### Фазы пайплайнов демона не изолированы от паник; паникующая горутина пайплайна убивает весь демон
+### Daemon pipeline phases aren't isolated from panics; a panicking pipeline goroutine kills the whole daemon
 
-- **Где:** `internal/daemon/daemon.go:233`
-- **Статус верификации:** ✅ подтверждено
-- `runSync` запускает `phaseTracksAndRollups` и `phasePeopleCards` в «голых» горутинах (`daemon.go:233-240`), а у `trackedPipelineRun` нет `recover()`; единственные `recover` в непроверочном бэкенде — вокруг вызова `TrackLinker` внутри `digest.Pipeline` (`pipeline.go:386`) и в CLI-горутине sync (`cmd/sync.go:391`), что доказывает: авторы знают о возможности паник, но собственные фазы демона не защищены. Паника в любой из этих горутин обрушит весь процесс (паники горутин в Go неперехватываемы родителем), необратимо остановив цикл sync (`Run`, строки 176/187/190) до ручного рестарта. Верификация опровергла конкретный «уже существующий триггер» (`usage.Model` — оба продакшн-генератора и оба mock всегда возвращают non-nil `*Usage`), поэтому это профилактическое усиление, а не живой краш — отсюда low.
+- **Where:** `internal/daemon/daemon.go:233`
+- **Verification status:** ✅ confirmed
+- `runSync` launches `phaseTracksAndRollups` and `phasePeopleCards` in "bare" goroutines (`daemon.go:233-240`), and `trackedPipelineRun` has no `recover()`; the only `recover` calls in the non-test backend are around the `TrackLinker` call inside `digest.Pipeline` (`pipeline.go:386`) and in the sync CLI goroutine (`cmd/sync.go:391`), which proves the authors are aware panics can happen — yet the daemon's own phases aren't protected. A panic in either goroutine takes down the whole process (goroutine panics in Go can't be caught by the parent), irrecoverably halting the sync cycle (`Run`, lines 176/187/190) until a manual restart. Verification refuted the specific "already-live trigger" claim (`usage.Model` — both production generators and both mocks always return a non-nil `*Usage`), so this is a preventive hardening item rather than a live crash — hence low.
 
 ```go
-// daemon.go:233-240 — нет recover нигде в daemon.go
+// daemon.go:233-240 — no recover anywhere in daemon.go
 go func() { defer phasesWg.Done(); d.phaseTracksAndRollups(ctx) }()
 ```
 
-- **Рекомендация:** Обернуть каждую фазу пайплайна (включая горутины) в `trackedPipelineRun` с `defer recover()`, логирующим стек и помечающим фазу как failed, чтобы паника одного пайплайна не валила цикл sync целиком.
+- **Recommendation:** Wrap each pipeline phase (including the goroutines) in `trackedPipelineRun` with a `defer recover()` that logs the stack trace and marks the phase as failed, so one pipeline's panic doesn't take down the entire sync cycle.
 
-### Токены дневного rollup нигде не учитываются: аккумулируются после закрытия строки прогона «digests», затем сбрасываются в следующем цикле
+### Daily rollup tokens are never accounted for anywhere: they accumulate after the "digests" pipeline-run row has already closed, then get reset on the next cycle
 
-- **Где:** `internal/daemon/daemon.go:457`
-- **Статус верификации:** ✅ подтверждено
-- Демон записывает строку `pipeline_runs` «digests» из `Usage`, возвращённого `RunChannelDigestsOnly` (`phaseChannelDigests`, `daemon.go:378-395`). Позже в том же цикле `RunRollups` выполняет LLM-вызов дневного rollup, который аккумулируется во внутренние атомарные счётчики пайплайна digest (`accumulateUsage` через `runDailyRollupForDate`), но не возвращает usage демону и не атрибутируется ни к одной строке `pipeline_runs`. В следующем цикле `RunChannelDigestsOnly` сбрасывает счётчики (`pipeline.go:336-338`), стирая usage rollup целиком. Пользователь, аудирующий AI-расходы через `pipeline_runs` (ради чего эти строки и существуют — items/input_tokens/output_tokens/cost на прогон), видит потребление токенов дневного rollup как вечный ноль, хотя Sonnet-класс-вызов идёт каждый цикл со свежими дайджестами; учёт токенов систематически занижен.
+- **Where:** `internal/daemon/daemon.go:457`
+- **Verification status:** ✅ confirmed
+- The daemon writes the "digests" `pipeline_runs` row from the `Usage` returned by `RunChannelDigestsOnly` (`phaseChannelDigests`, `daemon.go:378-395`). Later in the same cycle, `RunRollups` performs the daily-rollup LLM call, which accumulates into the digest pipeline's internal atomic counters (`accumulateUsage` via `runDailyRollupForDate`), but doesn't return usage to the daemon or get attributed to any `pipeline_runs` row. On the next cycle, `RunChannelDigestsOnly` resets the counters (`pipeline.go:336-338`), wiping the rollup usage entirely. A user auditing AI spend via `pipeline_runs` (which is exactly what those items/input_tokens/output_tokens/cost-per-run columns exist for) sees daily-rollup token consumption as a permanent zero, even though a Sonnet-class call runs every cycle against fresh digests; token accounting is systematically understated.
 
 ```go
-// daemon.go:456-460 — не обёрнуто в trackedPipelineRun, AccumulatedUsage не читается
+// daemon.go:456-460 — not wrapped in trackedPipelineRun, AccumulatedUsage never read
 if d.digestPipe != nil {
     if err := d.digestPipe.RunRollups(ctx); err != nil { d.logger.Printf("rollup error: %v", err) }
 }
-// digest/pipeline.go:335-338 — сброс аккумулятора в начале следующего прогона
+// digest/pipeline.go:335-338 — accumulator reset at the start of the next run
 // Reset accumulated usage from previous run ...
 p.totalInputTokens.Store(0)
 ```
 
-- **Рекомендация:** Обернуть `RunRollups` в `trackedPipelineRun` с собственной строкой `pipeline_runs` (например «daily-rollup») и читать её usage до сброса счётчиков — либо возвращать usage rollup из `RunRollups` и аккумулировать его в строку «digests» до её закрытия.
+- **Recommendation:** Wrap `RunRollups` in `trackedPipelineRun` with its own `pipeline_runs` row (e.g. "daily-rollup") and read its usage before the counters reset — or have `RunRollups` return the rollup usage and accumulate it into the "digests" row before that row closes.
 
-### Boilerplate учёта usage дублирован 6× с несогласованной семантикой (accumulated vs last-run, atomic vs plain int)
+### Usage-accounting boilerplate is duplicated 6× with inconsistent semantics (accumulated vs. last-run, atomic vs. plain int)
 
-- **Где:** `internal/inbox/pipeline.go:180`
-- **Статус верификации:** ✅ подтверждено
-- Шесть пайплайнов реализуют собственный `AccumulatedUsage() (int,int,float64,int)` плюс сброс-при-Run и поля прогресса `LastStep*`: digest, tracks, guide используют `atomic.Int64`; inbox использует plain int, мутируемые в `aiPrioritizeNewItems` (безопасно лишь пока однопоточно — при этом его doc-комментарий всё ещё говорит «accumulated across all Generate calls», хотя он сбрасывается на каждый Run); briefing и dayplan молча возвращают usage только ПОСЛЕДНЕГО прогона под тем же именем метода. `float64` в сигнатуре — мёртвый вечно-0 `CostUSD`, копируемый в каждой реализации. Демон потребляет все шесть одинаково через `trackedPipelineRun`. Добавление отчётности по стоимости или cache-токенам (структура `Usage` уже несёт `TotalAPITokens`/`Model`) означает правку шести почти идентичных копий и их точек сброса; частичная правка даст смешанные метрики в `pipeline_runs` — ровно тот класс дрейфа, что уже есть между семантиками «accumulated» и «last-run».
+- **Where:** `internal/inbox/pipeline.go:180`
+- **Verification status:** ✅ confirmed
+- Six pipelines each implement their own `AccumulatedUsage() (int,int,float64,int)` plus reset-on-Run and `LastStep*` progress fields: digest, tracks, and guide use `atomic.Int64`; inbox uses plain ints, mutated in `aiPrioritizeNewItems` (safe only as long as it stays single-threaded — meanwhile its doc comment still claims "accumulated across all Generate calls," even though it resets on every Run); briefing and dayplan silently return only the LAST run's usage under the same method name. The `float64` in the signature is a permanently-0 dead `CostUSD`, copy-pasted into every implementation. The daemon consumes all six identically through `trackedPipelineRun`. Adding cost or cache-token reporting (the `Usage` struct already carries `TotalAPITokens`/`Model`) means editing six near-identical copies and their reset points; a partial edit produces mixed metrics in `pipeline_runs` — exactly the class of drift that already exists between the "accumulated" and "last-run" semantics.
 
 ```go
-// inbox/pipeline.go:179-182 — контракт "accumulated", plain int
+// inbox/pipeline.go:179-182 — "accumulated" contract, plain int
 // AccumulatedUsage returns the total token usage accumulated across all Generate calls.
-// briefing/pipeline.go:87-91 — то же имя, другой контракт
+// briefing/pipeline.go:87-91 — same name, different contract
 // AccumulatedUsage returns the token usage from the last Run call.
-// digest/pipeline.go:184-186 — atomic-вариант
+// digest/pipeline.go:184-186 — atomic variant
 ```
 
-- **Рекомендация:** Вынести аккумуляцию usage в общий тип (usage-recorder) или в `PooledGenerator`, который уже видит каждый вызов и его source-тег, и переиспользовать его во всех пайплайнах — тогда семантика и тип станут едиными, а добавление cost/cache-метрик потребует одной правки.
+- **Recommendation:** Move usage accumulation into a shared type (a usage recorder) or into `PooledGenerator`, which already sees every call and its source tag, and reuse it across all pipelines — then semantics and type become uniform, and adding cost/cache metrics requires a single edit.
 
-### Инвариант каскада digest-read→decisions-read энфорсится в call-site в Swift, но инкапсулирован в Go — батч-`markRead` уже без него
+### The digest-read→decisions-read cascade invariant is enforced at the call site in Swift but encapsulated in Go — the batch `markRead` already lacks it
 
-- **Где:** `WatchtowerDesktop/Sources/Database/Queries/DigestQueries.swift:88`
-- **Статус верификации:** ✅ подтверждено
-- Go-функция `MarkDigestRead` (`internal/db/digests.go:232`) внутренне каскадит `markDigestDecisionsRead`, так что ни один Go-вызывающий не может его забыть. Swift же расщепляет инвариант на две функции, которые каждый call-site обязан спаривать вручную — `TrackQueries.swift:113-114`, `CatchUpQueries.swift:80+85` (в комментарии которого признано «Mirrors the other markDigestRead call sites»), `DigestViewModel.swift:296+298` и `341+343`. Батч-`markRead(_:ids:)` на строке 88 уже опускает каскад; сейчас он не вызывается, но первый же будущий вызывающий (например тулбар-действие «mark all read», которое `DigestViewModel` сегодня реализует поштучным циклом) оставит decisions в непрочитанном счётчике Decisions-ленты — ровно тот баг, ради предотвращения которого существует Go-каскад (CATCHUP-01).
+- **Where:** `WatchtowerDesktop/Sources/Database/Queries/DigestQueries.swift:88`
+- **Verification status:** ✅ confirmed
+- The Go function `MarkDigestRead` (`internal/db/digests.go:232`) internally cascades into `markDigestDecisionsRead`, so no Go caller can forget it. Swift, however, splits the invariant into two functions that every call site must pair manually — `TrackQueries.swift:113-114`, `CatchUpQueries.swift:80+85` (whose comment admits "Mirrors the other markDigestRead call sites"), `DigestViewModel.swift:296+298` and `341+343`. The batch `markRead(_:ids:)` at line 88 already omits the cascade; it isn't called anywhere today, but the very next future caller (e.g. a toolbar "mark all read" action, which `DigestViewModel` currently implements as a per-item loop) will leave decisions stuck in the unread count on the Decisions feed — exactly the bug the Go-side cascade exists to prevent (CATCHUP-01).
 
 ```swift
 /// Marks multiple digests read in one write. No-op on empty input.
 static func markRead(_ db: Database, ids: [Int]) throws {
-    ... // UPDATE digests SET read_at = ... — нет каскада markAllDecisionsRead,
-        // в отличие от Go MarkDigestRead, вызывающего db.markDigestDecisionsRead(id) внутри
+    ... // UPDATE digests SET read_at = ... — no markAllDecisionsRead cascade,
+        // unlike Go's MarkDigestRead, which calls db.markDigestDecisionsRead(id) internally
 }
 ```
 
-- **Рекомендация:** Встроить каскад decisions-read внутрь `markRead(_:ids:)` (и любой другой Swift-функции пометки digest прочитанным), чтобы инвариант был инкапсулирован так же, как в Go, а не полагался на дисциплину call-site.
+- **Recommendation:** Build the decisions-read cascade into `markRead(_:ids:)` (and any other Swift function that marks a digest read), so the invariant is encapsulated the same way it is in Go, instead of relying on call-site discipline.
 
-### Бейдж рекомендаций в сайдбаре считается с иными входами, чем экран Channels, на который он ведёт
+### The sidebar recommendations badge is computed from different inputs than the Channels screen it links to
 
-- **Где:** `WatchtowerDesktop/Sources/ViewModels/SidebarCountsViewModel.swift:140`
-- **Статус верификации:** ✅ подтверждено
-- `SidebarCountsViewModel` считает бейдж рекомендаций через `computeRecommendations(from: allStats)` с дефолтными `signals: [:]`, тогда как `ChannelStatsViewModel.load` считает список экрана через `computeRecommendations(from: allStats, signals: fetchValueSignals(db))`. Параметр `signals` добавляет рекомендации «high-value channel» (ветка `decisionCount >= 5 || activeTrackCount >= 2` в `ChannelStatsQueries.swift:153`), поэтому — как только починят баг с таблицей `fetchValueSignals` — число на бейдже перестанет совпадать с числом рекомендаций на экране. К тому же он заново прогоняет полную агрегацию `fetchAll` при каждом наблюдаемом изменении 7 таблиц ради вывода одного целого числа для бейджа.
+- **Where:** `WatchtowerDesktop/Sources/ViewModels/SidebarCountsViewModel.swift:140`
+- **Verification status:** ✅ confirmed
+- `SidebarCountsViewModel` computes the recommendations badge via `computeRecommendations(from: allStats)` with default `signals: [:]`, while `ChannelStatsViewModel.load` computes the on-screen list via `computeRecommendations(from: allStats, signals: fetchValueSignals(db))`. The `signals` parameter adds "high-value channel" recommendations (the `decisionCount >= 5 || activeTrackCount >= 2` branch in `ChannelStatsQueries.swift:153`), so once the `fetchValueSignals` table bug is fixed, the badge count will stop matching the on-screen recommendation count. On top of that, it re-runs the full `fetchAll` aggregation on every observed change across 7 tables just to output a single integer for the badge.
 
 ```swift
 let allStats = try ChannelStatsQueries.fetchAll(db, currentUserID: uid)
 recCount = ChannelStatsQueries.computeRecommendations(from: allStats).count
-// vs ChannelStatsViewModel.swift:68-69 — передаёт signals: fetchValueSignals(db)
+// vs ChannelStatsViewModel.swift:68-69 — passes signals: fetchValueSignals(db)
 ```
 
-- **Рекомендация:** Считать бейдж тем же вызовом с тем же `signals`, что и экран (вынести расчёт в общий метод/ViewModel), чтобы число бейджа и список экрана не расходились и порог рекомендаций тюнился в одном месте.
+- **Recommendation:** Compute the badge with the same call and the same `signals` as the screen (extract the computation into a shared method/ViewModel), so the badge count and the on-screen list never diverge and the recommendation threshold is tuned in one place.
 
-### `DatabaseManager` смешивает инфраструктуру с доменной логикой: CRUD starred channels/people продублирован 4× внутри менеджера соединений
+### `DatabaseManager` mixes infrastructure with domain logic: starred-channels/people CRUD is duplicated 4× inside the connection manager
 
-- **Где:** `WatchtowerDesktop/Sources/Database/DatabaseManager.swift:168`
-- **Статус верификации:** ✅ подтверждено
-- `DatabaseManager` (настройка пула, валидация схемы, subprocess CLI-миграций) содержит также четыре почти идентичных доменных метода — `addStarredChannel`/`removeStarredChannel`/`addStarredPerson`/`removeStarredPerson` — каждый вручную повторяет один и тот же round-trip fetch-JSON → decode → mutate → encode → UPDATE `user_profile`, вместо того чтобы жить в `ProfileQueries` рядом с остальным доступом к `user_profile`. `ProfileQueries` уже владеет теми же колонками `starred_channels`/`starred_people` и использует стандарт кодовой базы `strftime('%Y-%m-%dT%H:%M:%SZ','now')`, тогда как `DatabaseManager` использует `ISO8601DateFormatter` — методы и не на месте, и несогласованны с конвенцией слоя. Добавление «starred people» TTL или третьего starred-списка означало бы пятую копию в неправильном слое.
+- **Where:** `WatchtowerDesktop/Sources/Database/DatabaseManager.swift:168`
+- **Verification status:** ✅ confirmed
+- `DatabaseManager` (pool setup, schema validation, CLI-migration subprocess) also contains four nearly identical domain methods — `addStarredChannel`/`removeStarredChannel`/`addStarredPerson`/`removeStarredPerson` — each manually repeating the same fetch-JSON → decode → mutate → encode → UPDATE `user_profile` round trip, instead of living in `ProfileQueries` next to the rest of the `user_profile` access. `ProfileQueries` already owns the same `starred_channels`/`starred_people` columns and uses the codebase's standard `strftime('%Y-%m-%dT%H:%M:%SZ','now')`, while `DatabaseManager` uses `ISO8601DateFormatter` — the methods are both in the wrong layer and inconsistent with that layer's convention. Adding a "starred people" TTL or a third starred list would mean a fifth copy in the wrong layer.
 
 ```swift
 func addStarredChannel(_ channelID: String, for userID: String) throws {
     try dbPool.write { db in
         let sql = "SELECT starred_channels FROM user_profile WHERE slack_user_id = ?"
         ... channels = (try? JSONDecoder().decode([String].self, from: data)) ?? [] ...
-        // тот же блок повторён 4× внутри менеджера соединений
+        // the same block repeated 4× inside the connection manager
     }
 }
 ```
 
-- **Рекомендация:** Перенести четыре starred-метода в `ProfileQueries`, унифицировать формат `updated_at` на `strftime('%Y-%m-%dT%H:%M:%SZ','now')` и оставить `DatabaseManager` только инфраструктурным (пул, схема, миграции).
+- **Recommendation:** Move the four starred-item methods into `ProfileQueries`, unify the `updated_at` format on `strftime('%Y-%m-%dT%H:%M:%SZ','now')`, and leave `DatabaseManager` purely infrastructural (pool, schema, migrations).

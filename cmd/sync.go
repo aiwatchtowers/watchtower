@@ -26,6 +26,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/feed"
+	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
@@ -202,8 +203,19 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return runSyncStop(cfg)
 	}
 
-	if err := cfg.Validate(); err != nil {
+	// Slack is optional: without a token the daemon still runs (Calendar,
+	// Gmail, Jira keep syncing) and only the Slack phase is skipped.
+	if err := cfg.ValidateWorkspace(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+	ws, err := cfg.GetActiveWorkspace()
+	if err != nil {
+		return err
+	}
+	if ws.SlackToken != "" {
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
 	}
 
 	// --detach re-execs the process in the background.
@@ -230,19 +242,17 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
 
-	ws, err := cfg.GetActiveWorkspace()
-	if err != nil {
-		return err
-	}
-
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
-	slackClient := watchtowerslack.NewClient(ws.SlackToken)
-	orch := sync.NewOrchestrator(database, slackClient, cfg)
+	var orch *sync.Orchestrator
+	if ws.SlackToken != "" {
+		slackClient := watchtowerslack.NewClient(ws.SlackToken)
+		orch = sync.NewOrchestrator(database, slackClient, cfg)
+	}
 
 	// Always write logs to watchtower.log; also to stderr when verbose or detached.
 	syncLog := syncLogFilePath(cfg)
@@ -261,7 +271,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 		logWriter = io.MultiWriter(logFile, os.Stderr)
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
-	orch.SetLogger(logger)
+	if orch != nil {
+		orch.SetLogger(logger)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -302,58 +314,17 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 		}
 		// Wire Jira syncer if configured and token exists.
-		if cfg.Jira.Enabled && cfg.Jira.CloudID != "" {
-			jiraStore := jira.NewTokenStore(cfg.WorkspaceDir())
-			if jiraStore.Exists() {
-				jiraCfg := resolveJiraOAuthConfig()
-				jiraClient := jira.NewClient(cfg.Jira.CloudID, jiraCfg, jiraStore)
-				jiraMapper := jira.NewUserMapper(jiraClient, database)
-				boards, bErr := database.GetJiraSelectedBoards()
-				if bErr != nil {
-					logger.Printf("jira: failed to load selected boards: %v", bErr)
-				} else {
-					boardIDs := make([]int, len(boards))
-					for i, b := range boards {
-						boardIDs[i] = b.ID
-					}
-					jiraSyncer := jira.NewSyncer(jiraClient, database, jiraMapper, boardIDs)
-					jiraSyncer.SetLogger(logger)
-					// Wire board analyzer for auto-refresh of changed configs.
-					if cfg.Digest.Enabled {
-						aiProvider := newAIClient(cfg, cfg.DBPath())
-						analyzer := jira.NewBoardAnalyzer(jiraClient, database, aiProvider)
-						analyzer.SetLanguage(cfg.Digest.Language)
-						jiraSyncer.SetBoardAnalyzer(analyzer)
-						jiraSyncer.SetAutoRefresh(true)
-					}
-					d.SetJiraSyncer(jiraSyncer)
-				}
-			}
-		}
+		wireJiraSyncer(d, cfg, database, logger)
 		// Wire calendar syncer if token exists.
-		calendarStore := calendar.NewTokenStore(cfg.WorkspaceDir())
-		if calendarStore.Exists() {
-			googleCfg := resolveGoogleOAuthConfig()
-			calToken, err := calendarStore.Load()
-			if err != nil {
-				logger.Printf("calendar: failed to load token: %v", err)
-			} else {
-				calClient, err := calendar.NewClient(ctx, calToken.RefreshToken, googleCfg)
-				if err != nil {
-					logger.Printf("calendar: failed to create client: %v", err)
-					status := "error"
-					if errors.Is(err, calendar.ErrAuthRevoked) {
-						status = "revoked"
-					}
-					if dbErr := database.SetCalendarAuthState(status, err.Error()); dbErr != nil {
-						logger.Printf("calendar: failed to record auth state: %v", dbErr)
-					}
-				} else {
-					d.SetCalendarSyncer(calendar.NewSyncer(calClient, database, cfg, logger))
-				}
-			}
-		}
+		wireCalendarSyncer(ctx, d, cfg, database, logger)
+		// Wire gmail syncer if token exists.
+		wireGmailSyncer(ctx, d, cfg, database, logger)
 		return d.Run(ctx)
+	}
+
+	// One-shot sync is a Slack sync — nothing to do without a token.
+	if orch == nil {
+		return fmt.Errorf("slack is not connected for workspace %q; run 'watchtower auth login' first", cfg.ActiveWorkspace)
 	}
 
 	// Override initial_history_days if --days specified
@@ -434,6 +405,98 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+}
+
+// wireJiraSyncer wires the Jira syncer onto the daemon if Jira is configured
+// and a token exists, logging failures instead of failing sync startup.
+func wireJiraSyncer(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	if !cfg.Jira.Enabled || cfg.Jira.CloudID == "" {
+		return
+	}
+	jiraStore := jira.NewTokenStore(cfg.WorkspaceDir())
+	if !jiraStore.Exists() {
+		return
+	}
+	jiraCfg := resolveJiraOAuthConfig()
+	jiraClient := jira.NewClient(cfg.Jira.CloudID, jiraCfg, jiraStore)
+	jiraMapper := jira.NewUserMapper(jiraClient, database)
+	boards, err := database.GetJiraSelectedBoards()
+	if err != nil {
+		logger.Printf("jira: failed to load selected boards: %v", err)
+		return
+	}
+	boardIDs := make([]int, len(boards))
+	for i, b := range boards {
+		boardIDs[i] = b.ID
+	}
+	jiraSyncer := jira.NewSyncer(jiraClient, database, jiraMapper, boardIDs)
+	jiraSyncer.SetLogger(logger)
+	// Wire board analyzer for auto-refresh of changed configs.
+	if cfg.Digest.Enabled {
+		aiProvider := newAIClient(cfg, cfg.DBPath())
+		analyzer := jira.NewBoardAnalyzer(jiraClient, database, aiProvider)
+		analyzer.SetLanguage(cfg.Digest.Language)
+		jiraSyncer.SetBoardAnalyzer(analyzer)
+		jiraSyncer.SetAutoRefresh(true)
+	}
+	d.SetJiraSyncer(jiraSyncer)
+}
+
+// wireCalendarSyncer wires the Calendar syncer onto the daemon if a token exists,
+// recording auth-state errors (e.g. revoked grants) instead of failing sync startup.
+func wireCalendarSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	calendarStore := calendar.NewTokenStore(cfg.WorkspaceDir())
+	if !calendarStore.Exists() {
+		return
+	}
+	googleCfg := resolveGoogleOAuthConfig()
+	calToken, err := calendarStore.Load()
+	if err != nil {
+		logger.Printf("calendar: failed to load token: %v", err)
+		return
+	}
+	calClient, err := calendar.NewClient(ctx, calToken.RefreshToken, googleCfg)
+	if err != nil {
+		logger.Printf("calendar: failed to create client: %v", err)
+		status := "error"
+		if errors.Is(err, calendar.ErrAuthRevoked) {
+			status = "revoked"
+		}
+		if dbErr := database.SetCalendarAuthState(status, err.Error()); dbErr != nil {
+			logger.Printf("calendar: failed to record auth state: %v", dbErr)
+		}
+		return
+	}
+	d.SetCalendarSyncer(calendar.NewSyncer(calClient, database, cfg, logger))
+}
+
+// wireGmailSyncer wires the Gmail syncer onto the daemon if a token exists,
+// recording auth-state errors (e.g. revoked grants) instead of failing sync startup.
+func wireGmailSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	gmailStore := gmail.NewTokenStore(cfg.WorkspaceDir())
+	if !gmailStore.Exists() {
+		return
+	}
+	gc := resolveGoogleOAuthConfig() // calendar.GoogleOAuthConfig
+	gmailToken, err := gmailStore.Load()
+	if err != nil {
+		logger.Printf("gmail: failed to load token: %v", err)
+		return
+	}
+	gmClient, err := gmail.NewClient(ctx, gmailToken.RefreshToken,
+		gmail.GoogleOAuthConfig{ClientID: gc.ClientID, ClientSecret: gc.ClientSecret})
+	if err != nil {
+		logger.Printf("gmail: failed to create client: %v", err)
+		status := "error"
+		if errors.Is(err, gmail.ErrAuthRevoked) {
+			status = "revoked"
+		}
+		if dbErr := database.SetGmailAuthState(status, err.Error()); dbErr != nil {
+			logger.Printf("gmail: failed to record auth state: %v", dbErr)
+		}
+		return
+	}
+	d.SetGmailSyncer(gmail.NewSyncer(gmClient, database, cfg, logger))
 }
 
 var progressLines atomic.Int32

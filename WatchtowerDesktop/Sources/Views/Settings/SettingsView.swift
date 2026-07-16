@@ -43,7 +43,13 @@ struct GeneralSettings: View {
     @State private var slackReconnectResult: String?
     @State private var slackReconnectSuccess = false
     @State private var slackAuthProcess: Process?
-    @State private var googleAuth = GoogleAuthService()
+    @State private var slackAuth = SlackAuthService()
+    @State private var slackDisconnecting = false
+    @State private var showSlackDisconnectConfirm = false
+    // Shared with the Calendar tab / Inbox banner connect flow, so a connect
+    // made anywhere in the app is reflected here immediately.
+    private var googleAuth: GoogleAuthService { GoogleConnectFlow.shared.calendar }
+    private var gmailAuth: GmailAuthService { GoogleConnectFlow.shared.gmail }
     @State private var jiraAuth = JiraAuthService()
 
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
@@ -65,6 +71,7 @@ struct GeneralSettings: View {
             dayPlanSection
             aiSection
             calendarSettingsSection
+            gmailSettingsSection
             transcriptionSection
             jiraSettingsSection
 
@@ -89,6 +96,13 @@ struct GeneralSettings: View {
         .safeAreaInset(edge: .bottom) {
             bottomBar
         }
+        .onAppear {
+            // Re-stat tokens/config: a connect or disconnect may have happened
+            // outside this window (Calendar tab, Inbox banner, CLI).
+            GoogleConnectFlow.shared.refresh()
+            jiraAuth.checkStatus()
+            slackAuth.checkStatus()
+        }
     }
 
     private var workspaceSection: some View {
@@ -99,6 +113,11 @@ struct GeneralSettings: View {
             }
 
             HStack {
+                Image(systemName: slackAuth.isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle")
+                    .foregroundStyle(slackAuth.isConnected ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                Text(slackAuth.isConnected ? "Slack connected" : "Slack not connected")
+                Spacer()
+
                 Button {
                     reconnectSlack()
                 } label: {
@@ -107,10 +126,12 @@ struct GeneralSettings: View {
                             ProgressView()
                                 .controlSize(.small)
                         }
-                        Text(slackReconnecting ? "Connecting..." : "Reconnect Slack")
+                        Text(slackReconnecting
+                            ? "Connecting..."
+                            : (slackAuth.isConnected ? "Reconnect Slack" : "Connect Slack"))
                     }
                 }
-                .disabled(slackReconnecting)
+                .disabled(slackReconnecting || slackDisconnecting)
 
                 if slackReconnecting {
                     Button("Cancel") {
@@ -118,7 +139,24 @@ struct GeneralSettings: View {
                     }
                 }
 
-                if let result = slackReconnectResult {
+                if slackAuth.isConnected {
+                    Button(role: .destructive) {
+                        showSlackDisconnectConfirm = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            if slackDisconnecting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(slackDisconnecting ? "Disconnecting..." : "Disconnect")
+                        }
+                    }
+                    .disabled(slackReconnecting || slackDisconnecting)
+                }
+            }
+
+            if let result = slackReconnectResult {
+                HStack {
                     Image(systemName: slackReconnectSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundStyle(slackReconnectSuccess ? .green : .red)
                     Text(result)
@@ -128,6 +166,44 @@ struct GeneralSettings: View {
                         .textSelection(.enabled)
                 }
             }
+
+            if let err = slackAuth.error {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .confirmationDialog(
+            "Disconnect Slack?",
+            isPresented: $showSlackDisconnectConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Disconnect & Delete Slack Data", role: .destructive) {
+                disconnectSlack()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Removes the Slack connection and deletes all synced Slack messages plus the AI products "
+                    + "built on them (digests, tracks, people cards, inbox items, situations). "
+                    + "Gmail, Calendar, and Jira data are kept."
+            )
+        }
+    }
+
+    private func disconnectSlack() {
+        slackDisconnecting = true
+        Task {
+            // Stop the daemon first so it doesn't rewrite Slack data mid-purge,
+            // then restart it — without a token it skips the Slack phase.
+            await daemonManager.stopDaemon()
+            await slackAuth.disconnect()
+            if slackAuth.error == nil {
+                config.reload()
+                slackReconnectResult = nil
+            }
+            await daemonManager.startDaemon()
+            slackDisconnecting = false
         }
     }
 
@@ -434,6 +510,56 @@ struct GeneralSettings: View {
         .onChange(of: googleAuth.isConnected) { _, connected in
             if connected && !config.calendarEnabled {
                 config.calendarEnabled = true
+                saveConfig()
+            }
+        }
+    }
+
+    private var gmailSettingsSection: some View {
+        Section("Gmail") {
+            if gmailAuth.isConnected {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Connected")
+                    Spacer()
+                    Button("Disconnect") {
+                        gmailAuth.disconnect()
+                        config.gmailEnabled = false
+                        saveConfig()
+                    }
+                }
+
+                Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
+                    .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
+            } else {
+                HStack {
+                    Image(systemName: "envelope.badge")
+                        .foregroundStyle(.secondary)
+                    Text("Not connected")
+                    Spacer()
+
+                    if gmailAuth.isAuthenticating {
+                        ProgressView().controlSize(.small)
+                        Button("Cancel") { gmailAuth.cancelConnect() }
+                    } else {
+                        Button("Connect") {
+                            gmailAuth.connect()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+
+            if let err = gmailAuth.error {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .onChange(of: gmailAuth.isConnected) { _, connected in
+            if connected && !config.gmailEnabled {
+                config.gmailEnabled = true
                 saveConfig()
             }
         }
@@ -821,6 +947,7 @@ struct GeneralSettings: View {
                     slackReconnectSuccess = true
                     slackReconnectResult = "Connected"
                     config.reload()
+                    slackAuth.checkStatus()
                 } else if exitCode == 15 || exitCode == 9 {
                     // SIGTERM / SIGKILL — user cancelled
                     slackReconnectResult = nil

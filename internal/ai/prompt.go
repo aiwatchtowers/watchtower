@@ -82,12 +82,12 @@ ALWAYS include Slack links as descriptive markdown — never bare URLs.
 Channel link: [#channel-name](slack://channel?team=%s&id={channel_id})
   Example: [#engineering](slack://channel?team=%s&id=C0123EXAMPLE)
 
-Message link: [описательный текст](slack://channel?team=%s&id={channel_id}&message={ts})
+Message link: [descriptive text](slack://channel?team=%s&id={channel_id}&message={ts})
   Use the raw ts value (with dot). Example: "1740577800.000100" → message=1740577800.000100
   Examples:
-    [сообщение про деплой](slack://channel?team=%s&id=C123&message=1740577800.000100)
-    [тред про отмену вывода](slack://channel?team=%s&id=C456&message=1700000001.000000)
-    [обсуждение в #general](slack://channel?team=%s&id=C789&message=1740577800.000100)
+    [message about the deploy](slack://channel?team=%s&id=C123&message=1740577800.000100)
+    [thread about cancelling the payout](slack://channel?team=%s&id=C456&message=1700000001.000000)
+    [discussion in #general](slack://channel?team=%s&id=C789&message=1740577800.000100)
 
 Rules:
 - Every channel mention (#name) MUST be a link to that channel

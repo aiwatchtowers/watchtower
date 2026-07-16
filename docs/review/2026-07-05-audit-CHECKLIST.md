@@ -1,222 +1,222 @@
-# Чеклист исправлений по аудиту 2026-07-05 (High-severity)
+# Fix checklist for the 2026-07-05 audit (High-severity)
 
-Сводный actionable-список из шести отчётов аудита (`docs/review/2026-07-05-audit-*.md`).
-Все 23 пункта — severity **high**, каждый ✅ подтверждён независимым верификатором (Opus 4.8).
-Critical нет. Medium/Low вынесены в конец как ссылки на детальные отчёты.
+A consolidated actionable list from six audit reports (`docs/review/2026-07-05-audit-*.md`).
+All 23 items are severity **high**, each ✅ confirmed by an independent verifier (Opus 4.8).
+No criticals. Medium/Low are listed at the end as links to the detailed reports.
 
-Сгруппировано по **первопричинам**, а не по направлениям — так их удобнее чинить пачками.
-Порядок батчей = рекомендованный порядок работы (сверху вниз: дёшево+разблокирует → дороже).
+Grouped by **root cause**, not by area — this makes them easier to fix in batches.
+Batch order = recommended work order (top to bottom: cheap+unblocking → expensive).
 
-### Рекомендованный роутинг по моделям
+### Recommended model routing
 
-Критерий — не «сложность», а **цена ошибки / обратимость**. Паттерн: реализация на дешёвой модели, верификация всего критичного на Opus (через скилл `local-review` / `debate-review`).
+The criterion isn't "complexity" but **cost of error / reversibility**. Pattern: implementation on a cheap model, verification of everything critical on Opus (via the `local-review` / `debate-review` skill).
 
-| Батч | Тема | Модель-исполнитель |
+| Batch | Topic | Executing model |
 |---|---|---|
-| 1 | `tasks`→`targets` rename | **Sonnet 5** — механика, ловится тестами |
-| 5 | фильтры/дедуп | **Sonnet 5** — локально, покрывается тестом |
-| 3 | таймзоны day-plan | **Sonnet 5** + verify на **Opus** — TZ легко «почти правильно» |
-| 8 | устойчивость даемона | **Sonnet 5** + verify на **Opus** |
-| 2 | watermark (5 мест) | **Opus** — тихая потеря данных, нужен инвариант |
-| 4 | разрушение данных/конфига | **Opus** — 4.1 требует компенсирующей миграции, необратимо |
-| 6 | UI cross-process | **Opus** дизайн refresh-механизма → **Sonnet** разводка по 3 VM |
-| 7 | безопасность | сначала решение владельца по модели угроз, потом любая |
+| 1 | `tasks`→`targets` rename | **Sonnet 5** — mechanical, caught by tests |
+| 5 | filters/dedup | **Sonnet 5** — local, covered by tests |
+| 3 | day-plan timezones | **Sonnet 5** + verify on **Opus** — TZ is easily "almost correct" |
+| 8 | daemon resilience | **Sonnet 5** + verify on **Opus** |
+| 2 | watermark (5 spots) | **Opus** — silent data loss, needs an invariant |
+| 4 | data/config destruction | **Opus** — 4.1 requires a compensating migration, irreversible |
+| 6 | UI cross-process | **Opus** designs the refresh mechanism → **Sonnet** wires it across 3 VMs |
+| 7 | security | first an owner decision on the threat model, then anyone |
 
-Fable не ставить ведущим исполнителем длинного чеклиста — в этой сессии упиралась в лимит.
-Батч 1 начинать первым (пункт 1.4 → разблокирует тесты для остальных).
+Do not put Fable in as the lead executor for a long checklist — it hit the limit in this session.
+Start with Batch 1 first (item 1.4 → unblocks tests for the rest).
 
 ---
 
-## Батч 1 — Незавершённое переименование `tasks` → `targets` (4 пункта)
+## Batch 1 — Incomplete `tasks` → `targets` rename (4 items)
 
-> Таблица `tasks` переименована в `targets`, но часть Swift-кода и тестовая схема не мигрировали.
-> Механическая правка, чинит 3 High и разблокирует тесты, которые сейчас зеленеют вслепую.
-> **Начинать отсюда** — пункт 1.4 надо сделать первым, иначе остальные три не ловятся тестами.
+> The `tasks` table was renamed to `targets`, but some of the Swift code and the test schema weren't migrated.
+> A mechanical fix that resolves 3 Highs and unblocks tests that are currently passing blind.
+> **Start here** — item 1.4 needs to be done first, otherwise the other three aren't caught by tests.
 
-> ✅ **БАТЧ ВЫПОЛНЕН (2026-07-05, Sonnet 5).** Production-фикс + миграция тестовых фикстур на `targets`. `swift build` OK, `swift test` 1006/1006 (независимо перепроверено, exit 0). Открыт вопрос по `wipeLLMData` (см. 1.3). Не закоммичено.
+> ✅ **BATCH COMPLETED (2026-07-05, Sonnet 5).** Production fix + migration of test fixtures to `targets`. `swift build` OK, `swift test` 1006/1006 (independently re-verified, exit 0). Open question on `wipeLLMData` (see 1.3). Not committed.
 
-- [x] **1.1 — Экран Channels полностью сломан**
+- [x] **1.1 — Channels screen is completely broken**
   `WatchtowerDesktop/Sources/Database/Queries/ChannelStatsQueries.swift:190`
-  `fetchValueSignals` (и primary, и fallback SQL) обращается к удалённой таблице `tasks` → экран не грузится.
-  *Фикс:* заменить `tasks` → `targets` в обоих запросах, сверить имена колонок со схемой `targets`.
+  `fetchValueSignals` (both the primary and fallback SQL) references the removed `tasks` table → the screen fails to load.
+  *Fix:* replace `tasks` → `targets` in both queries, cross-check column names against the `targets` schema.
 
-- [x] **1.2 — Отметка done/pending для задачных пунктов Day Plan всегда падает**
+- [x] **1.2 — Marking task items done/pending in Day Plan always fails**
   `WatchtowerDesktop/Sources/Database/Queries/DayPlanQueries.swift:182`
-  Каскад пишет в удалённую `tasks` → исключение, статус не меняется.
-  *Фикс:* переписать каскад на `targets`.
+  The cascade writes to the removed `tasks` table → exception, status doesn't change.
+  *Fix:* rewrite the cascade to use `targets`.
 
-- [x] **1.3 — «Wipe LLM data» полностью неработоспособна**
+- [x] **1.3 — "Wipe LLM data" is completely non-functional**
   `WatchtowerDesktop/Sources/Database/DatabaseManager.swift:116`
-  `DELETE FROM tasks` откатывает всю транзакцию → ничего не чистится.
-  *Фикс:* `tasks` → `targets`; проверить, что список удаляемых таблиц соответствует актуальной схеме.
+  `DELETE FROM tasks` rolls back the entire transaction → nothing gets cleared.
+  *Fix:* `tasks` → `targets`; verify the list of tables to delete matches the current schema.
 
-- [x] **1.4 — Тестовая схема разошлась с реальной (делать ПЕРВЫМ)**
+- [x] **1.4 — Test schema has diverged from the real one (DO THIS FIRST)**
   `WatchtowerDesktop/Tests/Helpers/TestDatabase.swift:469`
-  Рукописная схема в тестах всё ещё содержит `tasks` → тесты зеленеют на SQL к несуществующим в проде таблицам. Именно поэтому 1.1–1.3 не отловились.
-  *Фикс:* заменить хардкод-схему на загрузку реального `internal/db/schema.sql` (или сгенерировать из миграций), затем гнать `swift test` — он должен покраснеть на 1.1–1.3 до их починки.
+  The hand-written schema in tests still contains `tasks` → tests pass blind on SQL against tables that don't exist in production. This is exactly why 1.1–1.3 weren't caught.
+  *Fix:* replace the hardcoded schema with a load of the real `internal/db/schema.sql` (or generate it from the migrations), then run `swift test` — it should go red on 1.1–1.3 until they're fixed.
 
-**Проверка батча:** `cd WatchtowerDesktop && swift test` — после 1.4 падает на 1.1–1.3, после их фикса зелёный. Плюс `grep -rn '\btasks\b' WatchtowerDesktop/Sources` не должен давать ссылок на таблицу.
+**Batch check:** `cd WatchtowerDesktop && swift test` — after 1.4 it fails on 1.1–1.3, after fixing those it's green. Also `grep -rn '\btasks\b' WatchtowerDesktop/Sources` should return no references to the table.
 
 ---
 
-## Батч 2 — Watermark двигается независимо от факта выгрузки данных (5 пунктов)
+## Batch 2 — Watermark moves independently of whether data was actually fetched (5 items)
 
-> Сквозной антипаттерн: указатель «досюда обработано» продвигается по времени/успеху вызова,
-> а не по факту, что данные реально выгружены. Всегда молчит. Самая опасная группа — тихая потеря данных.
+> A cross-cutting antipattern: the "processed up to here" pointer advances based on time/call success,
+> rather than on the fact that data was actually fetched. Always silent. The most dangerous group — silent data loss.
 
-> ✅ **БАТЧ ВЫПОЛНЕН (2026-07-05, Opus, TDD).** Все 5 пунктов исправлены с падающим-тестом-сначала. `go test ./internal/sync/... ./internal/inbox/... ./internal/jira/...` — pass, gofmt/vet чисто (независимо перепроверено в изолированном worktree). Для 2.3 формализован новый контракт **INBOX-09** («Detection failure never advances the watermark») в `docs/inventory/inbox-pulse.md` + guard-тест `TestInbox09_WatermarkFrozenOnDetectorError` (правка контракта санкционирована владельцем). Примечание по 2.4: фикс перешёл на TZ-независимое относительное окно `updated >= -Nm` + 2-мин overlap — если нужен абсолютный вариант с конвертацией в TZ инстанса, потребует доп. запрос `/myself`. Не закоммичено.
+> ✅ **BATCH COMPLETED (2026-07-05, Opus, TDD).** All 5 items fixed with a failing-test-first approach. `go test ./internal/sync/... ./internal/inbox/... ./internal/jira/...` — pass, gofmt/vet clean (independently re-verified in an isolated worktree). For 2.3, formalized a new contract **INBOX-09** ("Detection failure never advances the watermark") in `docs/inventory/inbox-pulse.md` + guard test `TestInbox09_WatermarkFrozenOnDetectorError` (contract change authorized by the owner). Note on 2.4: the fix moved to a TZ-independent relative window `updated >= -Nm` + a 2-minute overlap — if an absolute variant with conversion to the instance's TZ is needed, it will require an additional `/myself` request. Not committed.
 
-- [x] **2.1 — `search_last_date` продвигается при раннем прерывании пагинации**
+- [x] **2.1 — `search_last_date` advances on early pagination interruption**
   `internal/sync/search_sync.go:181`
-  Watermark ставится на «сегодня» даже когда пагинация поиска остановилась рано (ошибка/лимит) → невыгруженные сообщения пропускаются навсегда.
-  *Фикс:* двигать watermark только на самый старый успешно выгруженный ts, либо не двигать вовсе при незавершённой пагинации.
+  The watermark is set to "today" even when search pagination stopped early (error/limit) → un-fetched messages are permanently skipped.
+  *Fix:* only advance the watermark to the oldest successfully fetched ts, or don't advance it at all when pagination is incomplete.
 
-- [x] **2.2 — Токен без scope `search:read` тихо синкает ноль сообщений**
+- [x] **2.2 — A token without the `search:read` scope silently syncs zero messages**
   `internal/sync/orchestrator.go:167`
-  После первого синка каждый инкрементальный синк на таком токене выгружает ноль сообщений, но отчитывается об успехе.
-  *Фикс:* детектить отсутствие scope/`search.messages`-ошибку и возвращать явную ошибку (или фолбэк на full-sync путь), а не «успех, 0 сообщений».
+  After the first sync, every incremental sync on such a token fetches zero messages but reports success.
+  *Fix:* detect the missing scope/`search.messages` error and return an explicit error (or fall back to the full-sync path), rather than "success, 0 messages".
 
-- [x] **2.3 — Watermark inbox сдвигается по стенным часам при сбое sync**
+- [x] **2.3 — Inbox watermark shifts by wall-clock time on sync failure**
   `internal/inbox/pipeline.go:329`
-  `inbox_last_processed_ts` двигается по времени даже когда Slack-sync или детекторы упали → упоминания/DM в пропущенном окне теряются навсегда.
-  *Фикс:* продвигать watermark только после успешного прохода детекторов; при ошибке — оставлять прежний.
+  `inbox_last_processed_ts` advances based on time even when the Slack sync or detectors fail → mentions/DMs in the missed window are permanently lost.
+  *Fix:* only advance the watermark after a successful detector pass; leave it unchanged on error.
 
-- [x] **2.4 — Jira: UTC-таймстамп против JQL в таймзоне юзера**
+- [x] **2.4 — Jira: UTC timestamp compared against JQL in the user's timezone**
   `internal/jira/sync.go:107`
-  Инкрементальный синк сравнивает UTC-watermark с JQL, который интерпретируется в TZ пользователя → для юзеров западнее UTC issue, обновлённые после watermark, пропускаются.
-  *Фикс:* приводить watermark к TZ инстанса Jira (или формировать JQL в UTC явно).
+  The incremental sync compares a UTC watermark against JQL, which is interpreted in the user's TZ → for users west of UTC, issues updated after the watermark are skipped.
+  *Fix:* convert the watermark to the Jira instance's TZ (or build the JQL explicitly in UTC).
 
-- [x] **2.5 — Jira `SyncBoard` не докачивает закрытые issue**
+- [x] **2.5 — Jira `SyncBoard` doesn't backfill closed issues**
   `internal/jira/sync.go:190`
-  Watermark проекта двигается после синка только не-терминальных issue → closed никогда не бэкфиллятся, вопреки собственной документированной логике.
-  *Фикс:* двигать watermark только после полного прохода (включая терминальные статусы), либо вести отдельный watermark для терминальных.
+  The project watermark advances after syncing only non-terminal issues → closed ones are never backfilled, contrary to its own documented logic.
+  *Fix:* only advance the watermark after a full pass (including terminal statuses), or maintain a separate watermark for terminal ones.
 
-**Проверка батча:** unit-тесты на каждый watermark с кейсом «частичный/упавший проход не двигает указатель» (см. память: [Test degenerate clean-exit branches]).
+**Batch check:** unit tests for each watermark with a "partial/failed pass doesn't advance the pointer" case (see memory: [Test degenerate clean-exit branches]).
 
 ---
 
-## Батч 3 — Таймзоны в Day Plan ломают всех не-UTC пользователей (2 пункта)
+## Batch 3 — Timezones in Day Plan break all non-UTC users (2 items)
 
-> ✅ **БАТЧ ВЫПОЛНЕН (2026-07-05, Sonnet, TDD; верифицировано на Opus).** `go test ./internal/dayplan/...` exit 0, gofmt/vet чисто (в изолированном worktree). 3.1 — `shortTime` `t.UTC()`→`t.Local()`. 3.2 — `if ev.IsAllDay { continue }` в `aiToTimeblock` по образцу `meeting/pipeline.go:115`.
-> ⚠️ **Аудит недосчитал:** тот же all-day баг найден ещё в 2 местах, аудитом не отмеченных — `conflicts.go` (`DetectConflicts` помечал конфликтным каждый блок) и `calendar_sync.go` (вставлял all-day как timeblock на 1440 мин). Оба подтверждены чтением кода и исправлены тем же паттерном (TDD). UX-вопрос: показывать ли all-day события в timeline дня отдельным баннером — отложен как follow-up (сейчас они просто не создают timeblock).
+> ✅ **BATCH COMPLETED (2026-07-05, Sonnet, TDD; verified on Opus).** `go test ./internal/dayplan/...` exit 0, gofmt/vet clean (in an isolated worktree). 3.1 — `shortTime` `t.UTC()`→`t.Local()`. 3.2 — `if ev.IsAllDay { continue }` in `aiToTimeblock`, following the pattern in `meeting/pipeline.go:115`.
+> ⚠️ **Audit undercounted:** the same all-day bug was found in 2 more places not flagged by the audit — `conflicts.go` (`DetectConflicts` marked every block as conflicting) and `calendar_sync.go` (inserted all-day events as a 1440-minute timeblock). Both confirmed by reading the code and fixed with the same pattern (TDD). UX question: whether to show all-day events in the day timeline as a separate banner — deferred as a follow-up (currently they simply don't create a timeblock).
 
-- [x] **3.1 — События календаря в промпте рендерятся в UTC**
+- [x] **3.1 — Calendar events are rendered in UTC in the prompt**
   `internal/dayplan/prompt.go:213`
-  Промпт печатает события в UTC, а валидация и «сейчас» — в локали → AI-таймблоки, пересекающиеся по видимости с событиями, выкидываются у любого не-UTC юзера.
-  *Фикс:* рендерить события в той же локальной TZ, что используется для валидации и `now`.
+  The prompt prints events in UTC, while validation and "now" are in local time → AI timeblocks that visually overlap with events get discarded for any non-UTC user.
+  *Fix:* render events in the same local TZ used for validation and `now`.
 
-- [x] **3.2 — All-day события не исключаются из проверки пересечений**
+- [x] **3.2 — All-day events aren't excluded from overlap checking**
   `internal/dayplan/merge.go:69`
-  Одно событие «на весь день» перекрывает 00:00–24:00 → все AI-таймблоки помечаются конфликтующими и вырезаются.
-  *Фикс:* исключать all-day события из overlap-валидации (или трактовать их как фоновые, не блокирующие).
+  A single "all day" event covers 00:00–24:00 → all AI timeblocks get flagged as conflicting and are cut.
+  *Fix:* exclude all-day events from overlap validation (or treat them as background, non-blocking).
 
-**Проверка батча:** тест day-plan merge с TZ = `America/Los_Angeles` + один all-day event → таймблоки сохраняются.
+**Batch check:** a day-plan merge test with TZ = `America/Los_Angeles` + one all-day event → timeblocks are preserved.
 
 ---
 
-## Батч 4 — Разрушение пользовательских данных/конфига (2 пункта)
+## Batch 4 — Destruction of user data/config (2 items)
 
-- [x] **4.1 — Миграция 00002 стирает всю `inbox_feedback`**
+- [x] **4.1 — Migration 00002 wipes all of `inbox_feedback`**
   `internal/db/migrations/00002_target_due_inbox.sql:48`
-  Каскад `DROP TABLE` (table-recreation dance) сносит `inbox_feedback` → теряются обученные правила пользователя.
-  *Фикс:* сохранять/восстанавливать `inbox_feedback` внутри миграции, либо не трогать её в рамках этой миграции. **Осторожно:** миграция уже могла примениться у пользователей — нужна компенсирующая миграция, а не правка старой.
+  The `DROP TABLE` cascade (table-recreation dance) wipes out `inbox_feedback` → the user's learned rules are lost.
+  *Fix:* preserve/restore `inbox_feedback` inside the migration, or don't touch it as part of this migration. **Caution:** the migration may have already been applied for users — a compensating migration is needed, not an edit to the old one.
 
-- [x] **4.2 — `ConfigService.save()` затирает конфиг от CLI-логинов**
+- [x] **4.2 — `ConfigService.save()` overwrites config from CLI logins**
   `WatchtowerDesktop/Sources/Services/ConfigService.swift:122`
-  Пишет устаревший in-memory снимок YAML → секции, записанные CLI-флоу логина (напр. Jira), стираются.
-  *Фикс:* перечитывать config.yaml непосредственно перед записью и мержить, а не писать хранимый снимок. Свериться с памятью про [CLAUDE_CONFIG_DIR ломает keychain auth] и dual-path записи.
+  Writes a stale in-memory YAML snapshot → sections written by the CLI login flow (e.g., Jira) get erased.
+  *Fix:* re-read config.yaml immediately before writing and merge, instead of writing the stored snapshot. Cross-check against the memory on [CLAUDE_CONFIG_DIR breaks keychain auth] and dual-path writes.
 
 ---
 
-## Батч 5 — Логика фильтров/дедупликации (2 пункта)
+## Batch 5 — Filter/deduplication logic (2 items)
 
-- [x] **5.1 — Inbox-дедуп сливает несвязанные элементы разных trigger-типов**
+- [x] **5.1 — Inbox dedup merges unrelated items of different trigger types**
   `internal/db/inbox.go:328`
-  Дедупликация схлопывает элементы через границу trigger_type → pending-упоминание и DM молча резолвятся как «дубль».
-  *Фикс:* включить `trigger_type` (и/или `thread_ts`) в ключ дедупликации.
+  Deduplication collapses items across the trigger_type boundary → a pending mention and a DM get silently resolved as a "duplicate".
+  *Fix:* include `trigger_type` (and/or `thread_ts`) in the dedup key.
 
-- [x] **5.2 — `targets --status done/dismissed` всегда возвращает пусто**
+- [x] **5.2 — `targets --status done/dismissed` always returns empty**
   `cmd/targets.go:342`
-  Исключение done/dismissed склеено через AND с пользовательским фильтром статуса → взаимоисключающее условие.
-  *Фикс:* применять дефолтное исключение done/dismissed только когда `--status` не задан явно.
+  The done/dismissed exclusion is ANDed together with the user-provided status filter → a mutually exclusive condition.
+  *Fix:* apply the default done/dismissed exclusion only when `--status` isn't explicitly set.
 
 ---
 
-## Батч 6 — UI: состояние не отражается в интерфейсе (4 пункта)
+## Batch 6 — UI: state isn't reflected in the interface (4 items)
 
-> Общая первопричина 6.1–6.2: CLI пишет в БД из другого процесса, а `ValueObservation`
-> реагирует только на записи своего процесса. Стоит завести единый механизм пуш-обновления
-> после CLI-скана (файловый триггер / notification / poll-refresh).
+> Common root cause for 6.1–6.2: the CLI writes to the DB from another process, while `ValueObservation`
+> only reacts to writes from its own process. It's worth building a single push-update mechanism
+> after a CLI scan (file trigger / notification / poll-refresh).
 
-- [x] **6.1 — Результаты скана Watch-таба не появляются в ленте**
+- [x] **6.1 — Watch tab scan results don't show up in the feed**
   `WatchtowerDesktop/Sources/ViewModels/TargetWatchesViewModel.swift:96`
-  Скан выполняется CLI-подпроцессом → запись в БД невидима для `ValueObservation` → лента не обновляется.
-  *Фикс:* после завершения CLI-скана форсировать перезагрузку запроса (или общий cross-process-refresh, см. врезку).
+  The scan runs as a CLI subprocess → the DB write is invisible to `ValueObservation` → the feed doesn't update.
+  *Fix:* force a reload of the query after the CLI scan completes (or a shared cross-process refresh, see the note above).
 
-- [x] **6.2 — Таймлайн кастомного трека не показывает найденное ручным сканом**
+- [x] **6.2 — Custom track timeline doesn't show results found by a manual scan**
   `WatchtowerDesktop/Sources/ViewModels/CustomTrackTimelineViewModel.swift:101`
-  Тот же cross-process-корень. Плюс комментарий в коде утверждает, что ValueObservation это ловит — врёт.
-  *Фикс:* как 6.1; заодно исправить/удалить вводящий в заблуждение комментарий.
+  Same cross-process root cause. Plus a comment in the code claims ValueObservation catches this — it's wrong.
+  *Fix:* same as 6.1; also fix/remove the misleading comment.
 
-- [x] **6.3 — Переключатель провайдера в чате не меняет провайдера**
+- [x] **6.3 — Provider switcher in chat doesn't change the provider**
   `WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift:109`
-  Пикер шлёт модель выбранного провайдера, но в фактически сконфигурированный (другой) провайдер → несовместимая модель.
-  *Фикс:* переключать и провайдера, и модель согласованно; валидировать, что модель принадлежит активному провайдеру.
+  The picker sends the selected provider's model, but to the actually configured (different) provider → incompatible model.
+  *Fix:* switch both the provider and the model consistently; validate that the model belongs to the active provider.
 
-- [x] **6.4 — Остановка стриминга дублирует ответ ассистента**
-  `WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift` (Stop-кнопка, см. отчёт ui-bugs)
-  Частичный ответ сохраняется дважды → дубликат сообщения в БД и UI.
-  *Фикс:* делать сохранение частичного ответа идемпотентным (один путь записи при остановке).
+- [x] **6.4 — Stopping streaming duplicates the assistant's response**
+  `WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift` (Stop button, see the ui-bugs report)
+  The partial response gets saved twice → duplicate message in the DB and UI.
+  *Fix:* make saving the partial response idempotent (a single write path on stop).
 
 ---
 
-## Батч 7 — Безопасность (4 пункта)
+## Batch 7 — Security (4 items)
 
-> Требуют явного решения владельца по модели угроз — не механические правки.
+> Requires an explicit owner decision on the threat model — not mechanical fixes.
 
-- [x] **7.1 — Prompt-injection → произвольное выполнение команд**
+- [x] **7.1 — Prompt injection → arbitrary command execution**
   `internal/ai/client.go:103`
-  AI-чату выдан несандбоксированный `Bash(sqlite3*)`. Вредоносный Slack/Jira-контент, попавший в промпт, может заставить AI выполнить команду.
-  *Фикс:* убрать raw-`Bash` из разрешённых инструментов чата; доступ к данным — только через ограниченный read-only MCP.
+  The AI chat is given an unsandboxed `Bash(sqlite3*)`. Malicious Slack/Jira content that ends up in the prompt could make the AI execute a command.
+  *Fix:* remove raw `Bash` from the chat's allowed tools; access to data only via a restricted read-only MCP.
 
-- [x] **7.2 — AI-чат имеет read/write SQLite через `mcp__sqlite__*`**
+- [x] **7.2 — The AI chat has read/write SQLite access via `mcp__sqlite__*`**
   `internal/ai/client.go:132`
-  Полный доступ на запись минует заявленный read-only-контракт MCP.
-  *Фикс:* переключить MCP на строго read-only (whitelisting запросов / отдельное соединение в режиме query-only).
+  Full write access bypasses the claimed read-only MCP contract.
+  *Fix:* switch the MCP to strictly read-only (query whitelisting / a separate connection in query-only mode).
 
-- [x] **7.3 — Slack OAuth ставит доверенный CA-корень на 10 лет**
+- [x] **7.3 — Slack OAuth installs a trusted CA root for 10 years**
   `internal/auth/cert.go:176`
-  Логин устанавливает 10-летний CA-сертификат доверенным SSL-root, приватный ключ лежит на диске (класс Superfish).
-  *Фикс:* пересмотреть необходимость перехвата TLS; если нужен локальный редирект — не ставить системный доверенный CA, использовать loopback без MITM. Сверить с памятью про TCC responsibility chain.
+  Login installs a 10-year CA certificate as a trusted SSL root, with the private key stored on disk (Superfish-class).
+  *Fix:* reconsider whether TLS interception is needed; if a local redirect is required — don't install a system-trusted CA, use loopback without MITM. Cross-check against the memory on the TCC responsibility chain.
 
-- [x] **7.4 — Проверка подписи авто-обновления принимает ad-hoc подписи**
+- [x] **7.4 — Auto-update signature check accepts ad-hoc signatures**
   `WatchtowerDesktop/Sources/Services/UpdateService.swift:219`
-  Принимает ad-hoc-подписи (без Team ID / designated requirement) и затем снимает quarantine → гарантии подлинности нет.
-  *Фикс:* требовать конкретный Team ID + designated requirement перед снятием quarantine.
+  Accepts ad-hoc signatures (without a Team ID / designated requirement) and then removes quarantine → no guarantee of authenticity.
+  *Fix:* require a specific Team ID + designated requirement before removing quarantine.
 
 ---
 
-## Батч 8 — Устойчивость даемона (1 пункт)
+## Batch 8 — Daemon resilience (1 item)
 
-- [x] **8.1 — Сбой digests навсегда блокирует запуск даемона на сессию**
+- [x] **8.1 — A digests failure permanently blocks the daemon from starting for the session**
   `WatchtowerDesktop/Sources/Services/BackgroundTaskManager.swift:207`
-  Ошибка пайплайна digests оставляет tracks/people в «Waiting…» и не даёт даемону стартовать до перезапуска приложения.
-  *Фикс:* изолировать сбой одной фазы, не блокируя запуск даемона и последующие фазы; сбросить/пометить зависшие статусы.
-  *Связано (functional-отчёт):* даемон подключает inbox/briefing/day-plan/custom-track только внутри `if cfg.Digest.Enabled` — отключение digests молча вырубает четыре независимые фичи (`cmd/sync.go`, см. functional).
+  A digests pipeline error leaves tracks/people in "Waiting…" and prevents the daemon from starting until the app is restarted.
+  *Fix:* isolate a single phase's failure without blocking daemon startup or subsequent phases; reset/flag stuck statuses.
+  *Related (functional report):* the daemon only wires up inbox/briefing/day-plan/custom-track inside `if cfg.Digest.Enabled` — disabling digests silently kills off four independent features (`cmd/sync.go`, see functional).
 
 ---
 
 ## Medium / Low
 
-Не вошли в этот чеклист, но задокументированы с `file:line`, evidence и рекомендациями в отчётах:
+Not included in this checklist, but documented with `file:line`, evidence, and recommendations in the reports:
 
-| Направление | Medium | Low | Файл |
+| Area | Medium | Low | File |
 |---|---|---|---|
-| Go-баги | 23 | 23 | `2026-07-05-audit-go-bugs.md` |
-| Swift-баги | 9 | 9 | `2026-07-05-audit-swift-bugs.md` |
-| UI-баги | 12 | 6 | `2026-07-05-audit-ui-bugs.md` |
-| Функциональные | 7 | 5 | `2026-07-05-audit-functional.md` |
-| Архитектура | 6 | 7 | `2026-07-05-audit-architecture.md` |
-| Безопасность | 1 | 3 | `2026-07-05-audit-security.md` |
+| Go bugs | 23 | 23 | `2026-07-05-audit-go-bugs.md` |
+| Swift bugs | 9 | 9 | `2026-07-05-audit-swift-bugs.md` |
+| UI bugs | 12 | 6 | `2026-07-05-audit-ui-bugs.md` |
+| Functional | 7 | 5 | `2026-07-05-audit-functional.md` |
+| Architecture | 6 | 7 | `2026-07-05-audit-architecture.md` |
+| Security | 1 | 3 | `2026-07-05-audit-security.md` |
 
-Заметные medium-темы, которые стоит поднять при работе над High: кастомизация промптов — no-op для 6 пайплайнов (`cmd/sync.go`); `digest.model` пишется Desktop, но не читается Go; каскад «track прочитан» расходится между Go и Swift (Go оставляет decisions непрочитанными); `FindTracksByFingerprint` не исключает dismissed-треки (нарушение TRACKS-07); смена статуса target из Desktop не пересчитывает progress.
+Notable medium-priority topics worth raising while working on the High items: prompt customization is a no-op for 6 pipelines (`cmd/sync.go`); `digest.model` is written by Desktop but not read by Go; the "track read" cascade diverges between Go and Swift (Go leaves decisions unread); `FindTracksByFingerprint` doesn't exclude dismissed tracks (violation of TRACKS-07); changing a target's status from Desktop doesn't recalculate progress.

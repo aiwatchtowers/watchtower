@@ -38,8 +38,16 @@ func FindBinary(override string) string {
 			cachedBinary = p
 			return
 		}
-		// Login shell: loads .zshrc/.bash_profile → NVM/fnm/volta init → full PATH.
+		// Login shell: NVM/fnm/volta init → full PATH. Non-interactive, so it
+		// reads .zprofile/.zshenv but NOT .zshrc — PATH exports living there
+		// (a common setup) are invisible here.
 		if p := loginShellWhich("claude"); p != "" {
+			cachedBinary = p
+			return
+		}
+		// Well-known install locations — covers the .zshrc-only PATH case above,
+		// which hits every GUI-app launch (Finder apps get a minimal PATH).
+		if p := wellKnownBinary("claude"); p != "" {
 			cachedBinary = p
 			return
 		}
@@ -55,16 +63,51 @@ func FindBinary(override string) string {
 // The result is cached after the first call.
 func RichPATH() string {
 	cachedPATHMu.Do(func() {
-		// Ask a login shell for its full PATH — covers nvm, fnm, volta, etc.
-		if shellPATH := loginShellPATH(); shellPATH != "" {
-			cachedPATH = shellPATH
-			return
-		}
-		// Fallback: manually add well-known dirs.
-		cachedPATH = fallbackPATH()
+		// Merge the login-shell PATH (nvm, fnm, volta init) with the well-known
+		// dirs rather than trusting either source alone: a non-interactive
+		// login shell skips .zshrc, where PATH exports often live.
+		cachedPATH = mergePATH(loginShellPATH(), fallbackPATH())
 	})
 
 	return cachedPATH
+}
+
+// wellKnownBinary checks common install locations for a binary — the places
+// installers use, mirrored from fallbackPATH's extra dirs.
+func wellKnownBinary(name string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	for _, dir := range []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".claude", "bin"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		filepath.Join(home, ".volta", "bin"),
+	} {
+		p := filepath.Join(dir, name)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+// mergePATH joins PATH strings, deduplicating entries and dropping empties.
+func mergePATH(paths ...string) string {
+	seen := make(map[string]bool)
+	var parts []string
+	for _, ps := range paths {
+		for _, p := range strings.Split(ps, ":") {
+			if p == "" || seen[p] {
+				continue
+			}
+			seen[p] = true
+			parts = append(parts, p)
+		}
+	}
+	return strings.Join(parts, ":")
 }
 
 func fallbackPATH() string {
