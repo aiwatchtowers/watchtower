@@ -59,12 +59,24 @@ func (p *Pipeline) ingestChatStatements(floor int64) (staged *stagedChat, newFlo
 	newFloor = floor
 	sc := &stagedChat{refs: map[string]bool{}, subjects: map[string]bool{}}
 	for _, t := range turns {
+		// Resolve the turn's situation BEFORE advancing the floor: a genuine DB
+		// error mapping the situation must NOT consume the turn (freeze the whole
+		// ingest and re-scan next run — the ingest-floor "advance only past
+		// fully-processed" discipline). Turns are id-ascending, so returning here
+		// leaves every turn at/above this one to be re-scanned.
+		subjects, serr := p.situationSubjects(t.SituationID)
+		if serr != nil {
+			return nil, floor, fmt.Errorf("memory: chat ingest: situation %s: %w", t.SituationID, serr)
+		}
 		if t.ID > newFloor {
 			newFloor = t.ID // consumed: advance past it whether or not it maps to an entity
 		}
-		subjects := p.situationSubjects(t.SituationID)
 		if len(subjects) == 0 {
-			continue // an owner turn about a situation memory has no entity for — nothing to bear on
+			// An owner turn about a situation memory has no entity for: consumed
+			// (the floor advances) but nothing to stage. Logged rather than silent
+			// so a systemically unmappable owner is visible.
+			p.logf("memory: chat ingest: turn %d (situation %s) maps to no memory entity — consumed, not staged", t.ID, t.SituationID)
+			continue
 		}
 		text := strings.Join(strings.Fields(t.Text), " ")
 		if text == "" {
@@ -90,15 +102,23 @@ func (p *Pipeline) ingestChatStatements(floor int64) (staged *stagedChat, newFlo
 // the belief subjects an owner statement in that situation can bear on. Reading
 // situations/situation_signals is MEM-05-clean: memory only READS inbox tables
 // (as IngestSituations already does), it never writes them.
-func (p *Pipeline) situationSubjects(situationID string) []string {
-	sid, err := strconv.Atoi(strings.TrimSpace(situationID))
-	if err != nil {
-		return nil // context_id is not a situation id — nothing to resolve
+//
+// It distinguishes a genuine no-entity mapping (an owner turn about a situation
+// memory holds no entity for — empty slice with no error, so the caller consumes
+// the turn) from a real DB read failure (returns an error, the caller holds the
+// floor so the turn is re-scanned rather than silently dropped). A non-situation
+// context_id (Atoi failure) is a normal no-entity case, not an error. Per-signal
+// Resolve misses (a channel/user with no memory alias) are ordinary skips.
+func (p *Pipeline) situationSubjects(situationID string) ([]string, error) {
+	sid, convErr := strconv.Atoi(strings.TrimSpace(situationID))
+	if convErr != nil {
+		// A non-numeric context_id is not a situation id — a normal no-entity
+		// case, deliberately not an error (the turn is consumed, nothing staged).
+		return nil, nil //nolint:nilerr
 	}
 	signals, err := p.db.ListSituationSignals(sid)
 	if err != nil {
-		p.logf("memory: chat ingest: situation %s signals: %v", situationID, err)
-		return nil
+		return nil, fmt.Errorf("listing signals: %w", err)
 	}
 	seen := map[string]bool{}
 	var out []string
@@ -119,5 +139,5 @@ func (p *Pipeline) situationSubjects(situationID string) []string {
 		add(sig.ChannelID)
 		add(sig.SenderUserID)
 	}
-	return out
+	return out, nil
 }

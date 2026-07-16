@@ -55,10 +55,10 @@ The load-bearing round-trip. Pick an existing active belief with a clear subject
 
 ### 2b — The reverse: a dispute situation on the dashboard (MEM-05/10)
 
-Now force the *arguing secretary*. Take a belief the owner asserted (owner-rank support, still fresh) and let observation contradict it — either hand-add a contradicting episode/owner-note and run passes until the belief sits `shaken`, or let reflection flag it (2d). With `memory.surfaces.disputes true`, run one inbox cycle (`./watchtower inbox run` or the daemon):
+Now force the *arguing secretary*. Take a belief the owner asserted (owner-rank support, still fresh) and let observation contradict it. The dispute now fires **promptly from the belief pass itself** (M4): hand-add a contradicting episode/owner-note so the model proposes a retire/flip, run one `./watchtower memory consolidate` — MEM-06 owner-rank protection downgrades the op to `shaken` AND `applyExistingOp` sets a `memory_dispute_flags` row in the same pass (no need to wait a week for reflection; reflection at 2d remains a second, slower path for *flapping* beliefs). Then with `memory.surfaces.disputes true`, run one inbox cycle (`./watchtower inbox run` or the daemon):
 
 - A `decision_made` inbox item appears with `channel_id="memory"`, `message_ts="dispute:<belief_id>"`, snippet = the belief statement + " — evidence conflicts [[<belief_id>]]".
-- The `memory_dispute_flags` row for that belief is **cleared in the same cycle** (a second inbox cycle mints no duplicate — dedup + one-shot clear).
+- The `memory_dispute_flags` row for that belief is **cleared in the same cycle** (a second inbox cycle mints no duplicate — dedup + one-shot clear). Dedup keys on LIVE items only (M2): once you archive or resolve the dispute item and the belief is re-flagged, the next inbox cycle surfaces the dispute again (the dead row is revived in place); a still-open dispute item blocks a duplicate.
 - Triage/compose fold it into a dashboard **situation** (DASH-01), shown with the secretary card; the `[[<belief_id>]]` vault link resolves via `memory_open`. Confirm INBOX-01 held (the item was never dropped, only possibly downgraded) and the inbox watermark advanced normally (INBOX-09) — this is an ordinary detector item.
 - **MEM-10 spot check:** the memory pipeline itself wrote no `inbox_items`/`situations` row — only the flag; the inbox detector minted the item. (`grep -rn "inbox_\|situations" internal/memory/` shows reads only.)
 

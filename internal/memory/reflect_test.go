@@ -87,7 +87,7 @@ func TestReflectFlapsBeliefToDispute(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, reflectConfig(), t.Logf)
 
-	n, flagged, _, err := p.Reflect(context.Background(), day)
+	n, flagged, _, _, err := p.Reflect(context.Background(), day)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Equal(t, 1, flagged)
@@ -131,7 +131,7 @@ func TestReflectEntityNoteAppendsCurrent(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, reflectConfig(), t.Logf)
 
-	n, flagged, _, err := p.Reflect(context.Background(), day)
+	n, flagged, _, _, err := p.Reflect(context.Background(), day)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Zero(t, flagged, "an entity note is not a dispute")
@@ -165,7 +165,7 @@ func TestReflectStaggerSkipsNonDueDay(t *testing.T) {
 	gen := &fakeGen{reply: func(string) (string, error) { return reflectObsJSON(), nil }}
 	p := NewPipeline(d, v, gen, reflectConfig(), t.Logf)
 
-	n, flagged, _, err := p.Reflect(context.Background(), notDue)
+	n, flagged, _, _, err := p.Reflect(context.Background(), notDue)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	assert.Zero(t, flagged)
@@ -189,7 +189,7 @@ func TestReflectModelFailureIsolated(t *testing.T) {
 	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("model down") }}
 	p := NewPipeline(d, v, gen, reflectConfig(), t.Logf)
 
-	n, flagged, _, err := p.Reflect(context.Background(), day)
+	n, flagged, _, _, err := p.Reflect(context.Background(), day)
 	require.Error(t, err)
 	assert.Zero(t, n)
 	assert.Zero(t, flagged)
@@ -230,10 +230,11 @@ func TestReflectDropsInventedAndCalmObservations(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, reflectConfig(), t.Logf)
 
-	n, flagged, _, err := p.Reflect(context.Background(), day)
+	n, flagged, dropped, _, err := p.Reflect(context.Background(), day)
 	require.NoError(t, err)
 	assert.Zero(t, n, "invented id and sub-threshold belief both dropped")
 	assert.Zero(t, flagged)
+	assert.Equal(t, 2, dropped, "P6: both refused observations are counted (invented + sub-threshold)")
 
 	row, err := d.GetMemoryNode(calmID)
 	require.NoError(t, err)
@@ -259,7 +260,7 @@ func TestReflectCapsObservations(t *testing.T) {
 	gen := &fakeGen{reply: func(string) (string, error) { return reflectObsJSON(obs...), nil }}
 	p := NewPipeline(d, v, gen, reflectConfig(), t.Logf)
 
-	n, _, _, err := p.Reflect(context.Background(), day)
+	n, _, _, _, err := p.Reflect(context.Background(), day)
 	require.NoError(t, err)
 	assert.Equal(t, reflectMaxObservations, n, "observations capped per run")
 }
@@ -416,7 +417,7 @@ func TestMemory11_SurfacesDontMutateBeliefs(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, reflectConfig(), t.Logf)
 
-	n, flagged, _, err := p.Reflect(context.Background(), day)
+	n, flagged, _, _, err := p.Reflect(context.Background(), day)
 	require.NoError(t, err)
 	assert.Equal(t, 2, n)
 	assert.Equal(t, 1, flagged)

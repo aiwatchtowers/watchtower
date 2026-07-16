@@ -71,15 +71,19 @@ func (e beliefEvidence) weigh(now time.Time) evidence {
 // Applied/downgraded ops mutate the belief frontmatter through the node fields,
 // append a ## History line, and commit as one vault batch ("memory(beliefs)")
 // mirrored into the index. maxBeliefs caps applied ops per run (<= 0 =
-// unbounded). The pipeline gates the call behind memory.semantic.enabled
+// unbounded); capHit reports whether that cap cut the op loop short, so the
+// caller can hold the chat-turn floor (staged owner refs may be uncited — M3).
+// staged carries this run's owner Discuss turns (nil unless the chat surface
+// staged some): they widen the candidate scope and admit their chat: refs into
+// the input set. The pipeline gates the call behind memory.semantic.enabled
 // (Task 11); this function is unconditional so it can be unit-tested directly.
-func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string, maxBeliefs int, now time.Time) (touched, rejected int, usage *digest.Usage, err error) {
+func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string, staged *stagedChat, maxBeliefs int, now time.Time) (touched, rejected int, capHit bool, usage *digest.Usage, err error) {
 	if p.generator == nil {
-		return 0, 0, nil, nil
+		return 0, 0, false, nil, nil
 	}
 	rows, err := p.db.ListMemoryNodes()
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, false, nil, err
 	}
 
 	subjectSet := make(map[string]bool, len(rewrittenSubjects))
@@ -89,8 +93,8 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	// Phase-4 chat surface: owner Discuss turns staged this run widen the
 	// candidate scope to the entities they bear on, so a belief the owner
 	// contradicts in chat is revised even when its subject was not rewritten.
-	if p.chat != nil {
-		for s := range p.chat.subjects {
+	if staged != nil {
+		for s := range staged.subjects {
 			subjectSet[s] = true
 		}
 	}
@@ -122,22 +126,22 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	// one validates (Task 3) instead of being dropped as invented (MEM-08); the
 	// verbatim statements render into the prompt's OWNER SAID block.
 	var statements []ownerStatement
-	if p.chat != nil {
-		for ref := range p.chat.refs {
+	if staged != nil {
+		for ref := range staged.refs {
 			inputSet[ref] = true
 		}
-		statements = p.chat.statements
+		statements = staged.statements
 	}
 
 	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, episodes, statements)
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reviseSource), system, user, "")
 	usage = u // single call — the reply's usage is the step's usage
 	if gerr != nil {
-		return 0, 0, usage, fmt.Errorf("memory: revise beliefs: generate: %w", gerr)
+		return 0, 0, false, usage, fmt.Errorf("memory: revise beliefs: generate: %w", gerr)
 	}
 	ops, perr := parseBeliefOps(raw)
 	if perr != nil {
-		return 0, 0, usage, perr
+		return 0, 0, false, usage, perr
 	}
 
 	var (
@@ -146,6 +150,10 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	)
 	for _, op := range ops.Ops {
 		if maxBeliefs > 0 && touched >= maxBeliefs {
+			// The cap cut the loop short with ops still unprocessed: staged owner
+			// chat refs among them may be uncited this run, so the caller holds the
+			// chat-turn floor for a re-scan (M3).
+			capHit = true
 			break
 		}
 		node, applied, mathRejected := p.applyBeliefOp(op, candidatesByID, inputSet, now)
@@ -161,10 +169,10 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	}
 	// Observability: an aggregate so a run that proposed many ops but applied few
 	// (systemic rank-math rejection) is visible, not silent.
-	p.logf("memory: beliefs: proposed=%d applied=%d rejected=%d", len(ops.Ops), touched, rejected)
+	p.logf("memory: beliefs: proposed=%d applied=%d rejected=%d cap_hit=%t", len(ops.Ops), touched, rejected, capHit)
 
 	if len(nodes) == 0 {
-		return 0, rejected, usage, nil
+		return 0, rejected, capHit, usage, nil
 	}
 	msg := CommitMsg{
 		Op:      "beliefs",
@@ -173,17 +181,17 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 		NodeIDs: ids,
 	}
 	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
-		return 0, rejected, usage, err
+		return 0, rejected, capHit, usage, err
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
 		if err := upsertIndexNode(p.db, n, nowStr); err != nil {
 			// Index-mirror consistency: return the error so the step is recorded
 			// as error; reconcile self-heals the missed mirror next run.
-			return touched, rejected, usage, err
+			return touched, rejected, capHit, usage, err
 		}
 	}
-	return touched, rejected, usage, nil
+	return touched, rejected, capHit, usage, nil
 }
 
 // applyBeliefOp disposes of one proposed op through the rank math and returns
@@ -281,6 +289,18 @@ func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]No
 	cause := op.Op
 	if decision == opDowngraded {
 		cause += " (downgraded)"
+		// Design §4 case (a): MEM-06 fresh-owner protection just blocked a
+		// retire/flip (the belief lands shaken, not retired). Raise a dispute in
+		// memory's OWN side table so the inbox watchtower detector surfaces the
+		// owner-vs-observation conflict promptly — the belief pass, not only the
+		// weekly reflection, can flag a dispute. MEM-05 holds: memory_dispute_flags
+		// is memory-owned, never an inbox table. Implicitly capped by beliefs_max
+		// (this runs inside the per-op loop). A flag-write failure is logged, not
+		// fatal — the downgrade itself still applies (mirrors reflection's isolated
+		// SetDisputePending).
+		if serr := p.db.SetDisputePending(op.BeliefID, "owner-rank belief challenged"); serr != nil {
+			p.logf("memory: beliefs: set dispute pending %s: %v", op.BeliefID, serr)
+		}
 	}
 	node.Body = appendHistory(node.Body, historyLine(now, cause, op.Rationale))
 	return node, true, false
@@ -352,9 +372,9 @@ func (p *Pipeline) validateChatRefs(refs []episodeRef) (kept []episodeRef, dropp
 		return refs, 0
 	}
 
-	present, err := p.db.ChatTablesPresent()
-	if err != nil {
-		p.logf("memory: beliefs: chat tables presence check: %v", err)
+	present, presenceErr := p.db.ChatTablesPresent()
+	if presenceErr != nil {
+		p.logf("memory: beliefs: chat tables presence check failed: %v — chat refs dropped this run", presenceErr)
 	}
 	for _, r := range refs {
 		if !isChatRef(r.ChannelID) {
@@ -362,9 +382,22 @@ func (p *Pipeline) validateChatRefs(refs []episodeRef) (kept []episodeRef, dropp
 			continue
 		}
 		convID, ts, ok := parseChatRef(r.ChannelID, r.TS)
-		if !ok || !present {
+		if !ok {
 			dropped++
-			p.logf("memory: beliefs: chat ref %s %s dropped (unparseable or chat tables absent, MEM-09)", r.ChannelID, r.TS)
+			p.logf("memory: beliefs: chat ref %s %s dropped (unparseable ref, MEM-09)", r.ChannelID, r.TS)
+			continue
+		}
+		// Distinguish a presence-check DB error from genuine table absence: the
+		// former is a transient failure, not evidence the tables do not exist, so
+		// it must never be logged as "tables absent" (P5/style-m3).
+		if presenceErr != nil {
+			dropped++
+			p.logf("memory: beliefs: chat ref %s %s dropped (presence check errored: %v, MEM-09)", r.ChannelID, r.TS, presenceErr)
+			continue
+		}
+		if !present {
+			dropped++
+			p.logf("memory: beliefs: chat ref %s %s dropped (chat tables absent — headless daemon, MEM-09)", r.ChannelID, r.TS)
 			continue
 		}
 		owner, cerr := p.db.OwnerChatTurnExists(convID, ts)
@@ -522,6 +555,62 @@ func parseBeliefOps(raw string) (beliefOpsReply, error) {
 		return beliefOpsReply{}, fmt.Errorf("memory: parse revise-beliefs response: %w", err)
 	}
 	return r, nil
+}
+
+// HistoryBullet is one parsed "## History" line — the inverse of historyLine.
+// Cause has any trailing " (downgraded)" suffix stripped so a downgraded op is
+// classified by its base op; Rationale is the free text after the em dash ("" if
+// absent).
+type HistoryBullet struct {
+	Date      string // "YYYY-MM-DD"
+	Cause     string
+	Rationale string
+}
+
+// ParseHistory parses a node body's "## History" section into its bullets in
+// file order (oldest first) — the single reader shared by the briefing revision
+// journal (historyEntriesSince) and the reflection churn counter
+// (historyChurnSince). Only canonical bullets ("- YYYY-MM-DD: cause[ —
+// rationale]", as historyLine writes them) are returned; anything else in the
+// section is skipped.
+func ParseHistory(body string) []HistoryBullet {
+	var out []HistoryBullet
+	inHistory := false
+	for _, raw := range strings.Split(body, "\n") {
+		if strings.HasPrefix(raw, "## ") {
+			inHistory = strings.TrimSpace(raw) == "## History"
+			continue
+		}
+		if !inHistory {
+			continue
+		}
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		rest := strings.TrimPrefix(line, "- ")
+		colon := strings.Index(rest, ": ")
+		if colon != len("2006-01-02") {
+			continue
+		}
+		cause, rationale := splitCauseRationale(strings.TrimSpace(rest[colon+2:]))
+		out = append(out, HistoryBullet{Date: rest[:colon], Cause: cause, Rationale: rationale})
+	}
+	return out
+}
+
+// splitCauseRationale splits "cause — rationale" (em dash) into the op cause and
+// its digest, stripping a trailing " (downgraded)" so a downgraded op is still
+// classified by its base op. A cause without a dash has an empty rationale.
+func splitCauseRationale(rest string) (cause, rationale string) {
+	if idx := strings.Index(rest, " — "); idx >= 0 {
+		cause = strings.TrimSpace(rest[:idx])
+		rationale = strings.TrimSpace(rest[idx+len(" — "):])
+	} else {
+		cause = strings.TrimSpace(rest)
+	}
+	cause = strings.TrimSuffix(cause, " (downgraded)")
+	return cause, rationale
 }
 
 // historyLine renders a dated ## History bullet with the op cause and a

@@ -1,6 +1,8 @@
 package briefing
 
 import (
+	"errors"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -40,8 +42,13 @@ func (p *Pipeline) gatherMemoryRevisions(userID, date string) string {
 
 	vault, err := memory.OpenExistingVault(filepath.Join(p.cfg.WorkspaceDir(), "memory"))
 	if err != nil {
-		// No vault initialized yet (headless daemon, memory never run): degrade
-		// to the empty block rather than fail the briefing.
+		// ErrVaultNotInitialized is the benign "headless daemon, memory never
+		// run" case — degrade silently. Any OTHER open failure (a corrupt git
+		// dir, unreadable path) is logged before degrading, so a real problem is
+		// not swallowed as if the vault simply did not exist (P3).
+		if !errors.Is(err, memory.ErrVaultNotInitialized) {
+			p.logger.Printf("briefing: opening memory vault for revisions: %v", err)
+		}
 		return noNotableRevisions
 	}
 
@@ -115,7 +122,7 @@ func notableRevision(node memory.Node, since time.Time) (string, bool) {
 	statusNotable := false
 	confDelta := 0.0
 	for _, e := range entries {
-		switch e.cause {
+		switch e.Cause {
 		case "shake", "retire", "created", "propose-new":
 			statusNotable = true
 		case "confirm":
@@ -125,7 +132,7 @@ func notableRevision(node memory.Node, since time.Time) (string, bool) {
 		}
 	}
 
-	if !statusNotable && absFloat(confDelta) < confidenceNotableDelta {
+	if !statusNotable && math.Abs(confDelta) < confidenceNotableDelta {
 		return "", false
 	}
 
@@ -134,77 +141,27 @@ func notableRevision(node memory.Node, since time.Time) (string, bool) {
 	if title == "" {
 		title = node.ID
 	}
-	digest := tail.rationale
+	digest := tail.Rationale
 	if digest == "" {
 		digest = "recent evidence"
 	}
-	return title + " — " + describeChange(tail.cause, confDelta) + " — because " + digest, true
+	return title + " — " + describeChange(tail.Cause, confDelta) + " — because " + digest, true
 }
 
-// historyEntry is one parsed "## History" bullet.
-type historyEntry struct {
-	cause     string // op cause word, e.g. "shake", "confirm" (downgrade suffix stripped)
-	rationale string // free-text digest after the em dash, "" when absent
-}
-
-// historyEntriesSince parses the "## History" section of a node body and returns,
-// in file order (oldest first), the entries dated on or after since. History
-// bullets are "- YYYY-MM-DD: cause — rationale" (see memory.historyLine). Date
-// comparison is day-granular via lexical YYYY-MM-DD ordering.
-func historyEntriesSince(body string, since time.Time) []historyEntry {
+// historyEntriesSince returns the belief ## History bullets dated on or after
+// since, in file order (oldest first). It delegates parsing to the single
+// memory.ParseHistory reader (the counterpart of memory.historyLine) and only
+// filters by date; date comparison is day-granular via lexical YYYY-MM-DD
+// ordering.
+func historyEntriesSince(body string, since time.Time) []memory.HistoryBullet {
 	sinceDate := since.Format("2006-01-02")
-
-	lines := strings.Split(body, "\n")
-	inHistory := false
-	var entries []historyEntry
-	for _, raw := range lines {
-		if strings.HasPrefix(raw, "## ") {
-			inHistory = strings.TrimSpace(raw) == "## History"
-			continue
+	var entries []memory.HistoryBullet
+	for _, b := range memory.ParseHistory(body) {
+		if b.Date >= sinceDate {
+			entries = append(entries, b)
 		}
-		if !inHistory {
-			continue
-		}
-		line := strings.TrimSpace(raw)
-		if !strings.HasPrefix(line, "- ") {
-			continue
-		}
-		date, rest, ok := parseHistoryBullet(line)
-		if !ok || date < sinceDate {
-			continue
-		}
-		cause, rationale := splitCauseRationale(rest)
-		entries = append(entries, historyEntry{cause: cause, rationale: rationale})
 	}
 	return entries
-}
-
-// parseHistoryBullet splits "- YYYY-MM-DD: rest" into ("YYYY-MM-DD", "rest").
-func parseHistoryBullet(line string) (date, rest string, ok bool) {
-	body := strings.TrimPrefix(line, "- ")
-	colon := strings.Index(body, ": ")
-	if colon < 0 {
-		return "", "", false
-	}
-	date = strings.TrimSpace(body[:colon])
-	if len(date) != len("2006-01-02") {
-		return "", "", false
-	}
-	return date, strings.TrimSpace(body[colon+2:]), true
-}
-
-// splitCauseRationale splits "cause — rationale" (em dash) into the op cause and
-// its digest, stripping a trailing " (downgraded)" so a downgraded op is still
-// classified by its base op. A cause without a dash has an empty rationale.
-func splitCauseRationale(rest string) (cause, rationale string) {
-	if idx := strings.Index(rest, " — "); idx >= 0 {
-		cause = strings.TrimSpace(rest[:idx])
-		rationale = strings.TrimSpace(rest[idx+len(" — "):])
-	} else {
-		cause = strings.TrimSpace(rest)
-	}
-	cause = strings.TrimSuffix(cause, " (downgraded)")
-	return cause, rationale
 }
 
 // describeChange renders the human "what changed" clause for a journal line.
@@ -229,11 +186,4 @@ func describeChange(cause string, confDelta float64) string {
 		}
 		return "belief revised"
 	}
-}
-
-func absFloat(f float64) float64 {
-	if f < 0 {
-		return -f
-	}
-	return f
 }

@@ -51,7 +51,7 @@ func TestReviseBeliefsProposeNew(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched)
 
@@ -94,7 +94,7 @@ func TestReviseBeliefsFreshOwnerRetireDowngraded(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched)
 
@@ -106,7 +106,20 @@ func TestReviseBeliefsFreshOwnerRetireDowngraded(t *testing.T) {
 	row, err := d.GetMemoryNode(bel.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "shaken", row.Status, "status lands in the index")
+
+	// M4 / design §4 case (a): the downgrade also raises a dispute flag in the
+	// memory-owned side table so the inbox detector surfaces the conflict.
+	assert.True(t, row.DisputePending, "an owner-rank downgrade flags the belief dispute_pending")
+	disputed, err := d.ListDisputePendingBeliefs(memoryDisputeCapForTest)
+	require.NoError(t, err)
+	require.Len(t, disputed, 1, "the flagged belief is visible to the inbox dispute reader")
+	assert.Equal(t, bel.ID, disputed[0].ID)
 }
+
+// memoryDisputeCapForTest mirrors the inbox detector's per-cycle cap for the
+// integration-ish assertion above (kept local so this package needs no import
+// of internal/inbox).
+const memoryDisputeCapForTest = 2
 
 func TestReviseBeliefsRetireAppliedWhenOwnerDecayed(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
@@ -127,7 +140,7 @@ func TestReviseBeliefsRetireAppliedWhenOwnerDecayed(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched)
 
@@ -152,7 +165,7 @@ func TestReviseBeliefsInventedEvidenceRejected(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 	require.NoError(t, err)
 	assert.Zero(t, touched, "an op citing only invented refs is a no-op")
 
@@ -175,7 +188,7 @@ func TestReviseBeliefsProposeNewUnknownSubjectRejected(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 	require.NoError(t, err)
 	assert.Zero(t, touched)
 
@@ -202,7 +215,7 @@ func TestReviseBeliefsShakeAppendsHistory(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched)
 
@@ -233,7 +246,7 @@ func TestReviseBeliefsCapRespected(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 1, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 1, beliefNow)
 	require.NoError(t, err)
 	assert.Equal(t, 1, touched, "cap respected")
 }
@@ -304,7 +317,7 @@ func TestMemory06_OwnerRankBeliefNeverAutoFlipped(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	_, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+	_, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 	require.NoError(t, err)
 
 	got, err := v.ReadNode(bel.ID)
@@ -340,7 +353,7 @@ func TestMemory08_BeliefOpsGatedByRankMath(t *testing.T) {
 		gen := &fakeGen{reply: func(string) (string, error) { return raw, nil }}
 		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-		touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+		touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 		require.NoError(t, err)
 		require.Equal(t, 1, touched)
 
@@ -374,7 +387,7 @@ func TestMemory08_BeliefOpsGatedByRankMath(t *testing.T) {
 		}}
 		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-		touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, 20, beliefNow)
+		touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 		require.NoError(t, err)
 		assert.Zero(t, touched, "an op citing only invented refs never reaches applyOp")
 

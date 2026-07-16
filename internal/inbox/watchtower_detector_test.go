@@ -325,6 +325,97 @@ func TestWatchtowerDetector_DisputeGateOff(t *testing.T) {
 	}
 }
 
+// liveMemoryDisputeCount returns how many dispute items are still LIVE (not
+// archived, not resolved/dismissed) — the liveness predicate the dedup keys on.
+func liveMemoryDisputeCount(t *testing.T, d *db.DB) int {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM inbox_items
+		WHERE channel_id='memory' AND trigger_type='decision_made'
+		  AND archived_at IS NULL AND status NOT IN ('resolved','dismissed')`).Scan(&n); err != nil {
+		t.Fatalf("liveMemoryDisputeCount: %v", err)
+	}
+	return n
+}
+
+// TestWatchtowerDetector_DisputeRemintAfterArchive proves the dedup keys only on
+// LIVE items: once the first dispute item has been archived, a re-flagged belief
+// surfaces the dispute again (M2 — an archived item must never suppress a
+// re-dispute forever).
+func TestWatchtowerDetector_DisputeRemintAfterArchive(t *testing.T) {
+	d := newTestDB(t)
+	seedDisputeBelief(t, d, "bel_release", "The release is on track")
+
+	// First cycle mints one item and clears the flag.
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 1 {
+		t.Fatalf("first mint: want 1, got %d (err=%v)", n, err)
+	}
+
+	// The owner (or the archive sweep) archives the dispute item.
+	if _, err := d.Exec(`UPDATE inbox_items SET archived_at='2026-07-16T00:00:00Z', archive_reason='seen_expired'
+		WHERE channel_id='memory' AND message_ts='dispute:bel_release'`); err != nil {
+		t.Fatalf("archiving dispute item: %v", err)
+	}
+	if got := liveMemoryDisputeCount(t, d); got != 0 {
+		t.Fatalf("after archive: want 0 live items, got %d", got)
+	}
+
+	// The belief flaps again — reflection re-flags it.
+	if err := d.SetDisputePending("bel_release", "evidence conflicts again"); err != nil {
+		t.Fatalf("re-flag: %v", err)
+	}
+
+	// The re-dispute surfaces: the dead row is revived to a fresh live item.
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 1 {
+		t.Fatalf("re-mint after archive: want 1, got %d (err=%v)", n, err)
+	}
+	if got := liveMemoryDisputeCount(t, d); got != 1 {
+		t.Errorf("re-dispute must be live again, got %d live", got)
+	}
+	if got := countDisputeFlags(t, d); got != 0 {
+		t.Errorf("flag should be cleared after re-mint, %d remain", got)
+	}
+	// Still a single row (UNIQUE identity preserved — revived, not duplicated).
+	if got := countMemoryDisputeItems(t, d); got != 1 {
+		t.Errorf("want exactly 1 dispute row (revived in place), got %d", got)
+	}
+	// The revived row is pending again, not archived.
+	var status string
+	var archivedAt *string
+	if err := d.QueryRow(`SELECT status, archived_at FROM inbox_items
+		WHERE channel_id='memory' AND message_ts='dispute:bel_release'`).Scan(&status, &archivedAt); err != nil {
+		t.Fatalf("loading revived item: %v", err)
+	}
+	if status != "pending" || archivedAt != nil {
+		t.Errorf("revived item should be pending+unarchived, got status=%q archived=%v", status, archivedAt)
+	}
+}
+
+// TestWatchtowerDetector_DisputeLiveItemReflagNoDuplicate proves a re-flag while
+// the prior dispute item is still LIVE produces no duplicate — the flag is
+// cleared and the single open item is left untouched (M2).
+func TestWatchtowerDetector_DisputeLiveItemReflagNoDuplicate(t *testing.T) {
+	d := newTestDB(t)
+	seedDisputeBelief(t, d, "bel_release", "The release is on track")
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 1 {
+		t.Fatalf("first mint: want 1, got %d (err=%v)", n, err)
+	}
+
+	// Re-flag WITHOUT archiving — the item is still open on the dashboard.
+	if err := d.SetDisputePending("bel_release", "evidence conflicts again"); err != nil {
+		t.Fatalf("re-flag: %v", err)
+	}
+	if n, err := detectMemoryDisputes(d, true); err != nil || n != 0 {
+		t.Fatalf("re-flag with live item: want 0 (no dup), got %d (err=%v)", n, err)
+	}
+	if got := countMemoryDisputeItems(t, d); got != 1 {
+		t.Errorf("want exactly 1 dispute item (no duplicate), got %d", got)
+	}
+	if got := countDisputeFlags(t, d); got != 0 {
+		t.Errorf("flag should be cleared even when no dup is minted, %d remain", got)
+	}
+}
+
 // TestWatchtowerDetector_DisputeMintErrorLeavesFlag proves mint+clear are one
 // transaction: a colliding inbox item makes the dispute INSERT fail on the
 // UNIQUE(channel_id, message_ts) constraint, so the flag must NOT be cleared —

@@ -213,7 +213,7 @@ func TestRunSemanticChatGateOffNoop(t *testing.T) {
 
 // TestReviseBeliefsModelCannotMintUnstagedOwnerRank: even when a role='user'
 // turn exists in the DB, a model op citing it is a no-op unless the turn was
-// STAGED into the belief pass input (p.chat) — DB existence alone never mints
+// STAGED into the belief pass input (the staged param) — DB existence alone never mints
 // owner rank (MEM-09 defense in depth).
 func TestReviseBeliefsModelCannotMintUnstagedOwnerRank(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
@@ -234,9 +234,9 @@ func TestReviseBeliefsModelCannotMintUnstagedOwnerRank(t *testing.T) {
 			Evidence: []episodeRef{{ChannelID: chatRef, TS: "1720000000"}}, Rationale: "unstaged"}), nil
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
-	// p.chat is nil — nothing was staged, so the cited ref is invented input.
+	// Nothing is staged (staged param nil), so the cited ref is invented input.
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), []string{entID}, 20, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{entID}, nil, 20, beliefNow)
 	require.NoError(t, err)
 	assert.Zero(t, touched, "an unstaged chat ref never mints owner rank — the op is dropped")
 
@@ -244,6 +244,100 @@ func TestReviseBeliefsModelCannotMintUnstagedOwnerRank(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "active", got.Status)
 	assert.NotContains(t, got.Body, "owner", "no owner evidence line was written")
+}
+
+// TestIngestChatStatementsMappingErrorHoldsFloor: a genuine DB error mapping a
+// turn's situation (M3a) is returned distinctly, and the erroring turn is NOT
+// consumed — the floor holds so the turn is re-scanned next run rather than
+// silently dropped.
+func TestIngestChatStatementsMappingErrorHoldsFloor(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	entID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
+	sitID := seedSituationForChannel(t, d, "C1GEN", "U2BOB")
+	conv := seedChatConversation(t, d, "situation", fmt.Sprintf("%d", sitID))
+	seedChatMessage(t, d, conv, "user", "alice keeps missing deadlines", 1720000000.0)
+
+	// Force a DB read failure mapping the situation's signals.
+	_, err := d.Exec(`DROP TABLE situation_signals`)
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	staged, newFloor, err := p.ingestChatStatements(0)
+	require.Error(t, err, "a DB error mapping a turn's situation is returned, not swallowed")
+	assert.Nil(t, staged)
+	assert.Equal(t, int64(0), newFloor, "the erroring turn is not consumed — the floor holds")
+}
+
+// TestRunSemanticChatFloorHeldOnCapBreak: when the belief pass hits beliefs_max
+// with ops still unprocessed (staged owner refs may be uncited), the chat-turn
+// floor is held for a re-scan and the turns are not counted as ingested (M3b/n8).
+func TestRunSemanticChatFloorHeldOnCapBreak(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	entID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
+	bel1 := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", entID, 0.5, 0, "active")
+	bel2 := beliefTestNode("bel_00000000000000000000000002", "Bob is reliable", entID, 0.5, 0, "active")
+	writeAndIndex(t, v, d, bel1)
+	writeAndIndex(t, v, d, bel2)
+	sitID := seedSituationForChannel(t, d, "C1GEN", "U2BOB")
+	conv := seedChatConversation(t, d, "situation", fmt.Sprintf("%d", sitID))
+	seedChatMessage(t, d, conv, "user", "alice keeps missing deadlines", 1720000000.0)
+
+	chatRef := fmt.Sprintf("chat:%d", conv)
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return opsJSON(t,
+			beliefOpJSON{BeliefID: bel1.ID, Op: "shake", Evidence: []episodeRef{{ChannelID: chatRef, TS: "1720000000"}}, Rationale: "x"},
+			beliefOpJSON{BeliefID: bel2.ID, Op: "shake", Evidence: []episodeRef{{ChannelID: chatRef, TS: "1720000000"}}, Rationale: "y"},
+		), nil
+	}}
+	cfg := chatIngestConfig()
+	cfg.Semantic.BeliefsMax = 1 // the second op is truncated → capHit
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	var stats RunStats
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+
+	floor, err := d.MemoryChatTurnFloor()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), floor, "a belief-pass cap-break holds the chat-turn floor for re-scan")
+	assert.Zero(t, stats.ChatTurnsIngested, "turns not consumed on a cap-break are not counted (n8)")
+}
+
+// TestRunSemanticChatFloorAdvancesWhenModelDeclinesToCite: a pass that completes
+// WITHOUT a cap-break advances the floor even when the model cited no staged ref
+// (by-design — the turns had their chance), and the consumed turns are counted.
+func TestRunSemanticChatFloorAdvancesWhenModelDeclinesToCite(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	entID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
+	bel := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", entID, 0.5, 0, "active")
+	writeAndIndex(t, v, d, bel)
+	sitID := seedSituationForChannel(t, d, "C1GEN", "U2BOB")
+	conv := seedChatConversation(t, d, "situation", fmt.Sprintf("%d", sitID))
+	turnID := seedChatMessage(t, d, conv, "user", "alice keeps missing deadlines", 1720000000.0)
+
+	// The model declines to cite anything (empty ops) — a clean completed pass.
+	gen := &fakeGen{reply: func(string) (string, error) { return `{"ops":[]}`, nil }}
+	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
+
+	var stats RunStats
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+
+	floor, err := d.MemoryChatTurnFloor()
+	require.NoError(t, err)
+	assert.Equal(t, turnID, floor, "a completed pass advances the floor even with no citation (by-design)")
+	assert.Equal(t, 1, stats.ChatTurnsIngested, "the consumed staged turn is counted")
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", got.Status, "the belief is untouched when the model cited nothing")
 }
 
 // dumpInboxSituationState snapshots the inbox_items + situations +

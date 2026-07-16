@@ -142,6 +142,44 @@ func TestReconcileIndexesBeliefSubjectConfidence(t *testing.T) {
 	assert.Equal(t, 0.0, entityRow.Confidence)
 }
 
+// TestReconcileReparsesHashClearedBelief proves the migration-00019 remedy (M1)
+// at the index layer: a belief already indexed whose content_hash is emptied —
+// exactly what the migration does to every pre-existing belief — is re-parsed on
+// the next Reconcile even though its file did not change, repopulating the new
+// subject/confidence columns a hash-match skip would otherwise leave at ”/0.
+func TestReconcileReparsesHashClearedBelief(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	belief := Node{
+		ID:         "bel_01ARZ3NDEKTSV4RRFFQ69G5IY1",
+		Type:       "belief",
+		Tier:       "long",
+		Status:     "active",
+		Confidence: 0.6,
+		Stability:  2,
+		Subject:    "ent_alpha",
+		Body:       "# Alpha ships weekly\n\nBelief body.\n",
+	}
+	writeNodes(t, v, belief)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	// Simulate the pre-00019 state: the row exists but subject/confidence are the
+	// column defaults, and (as the migration does) content_hash is emptied.
+	_, err = d.Exec(`UPDATE memory_nodes SET subject='', confidence=0, content_hash='' WHERE id=?`, belief.ID)
+	require.NoError(t, err)
+
+	// The file did NOT change, yet the emptied hash forces a re-parse.
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Updated, "the hash-cleared belief is re-parsed")
+
+	row, err := d.GetMemoryNode(belief.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "ent_alpha", row.Subject)
+	assert.Equal(t, 0.6, row.Confidence)
+	assert.NotEmpty(t, row.ContentHash, "content_hash repopulated from the file")
+}
+
 func TestReconcileUpdatesEditedFile(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5IX3", "entity", "Old Title")

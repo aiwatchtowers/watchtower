@@ -279,8 +279,9 @@ final class SituationChatViewModel {
     /// `memoryChatEnabled` / `memoryVaultDir` default to the config-derived
     /// values in production; tests inject them explicitly. When the memory
     /// surface is off, the returned prompt is byte-identical to the pre-Phase-4
-    /// output (the MEMORY section and memory-tool bullet are spliced in only on
-    /// the enabled path, never touching the base template).
+    /// output — the MEMORY section and memory-tool bullet are interpolated as
+    /// empty-string slots on the disabled path, so no memory read runs and the
+    /// base template is unchanged.
     nonisolated static func buildSystemPrompt(
         situation: Situation,
         memberSignals: [InboxItem],
@@ -297,6 +298,20 @@ final class SituationChatViewModel {
         let styleBlock = style.isEmpty
             ? "No stored style profile — mirror the owner's own messages in the register sample below."
             : "=== OWNER'S COMMUNICATION STYLE ===\n\(style)"
+
+        // Phase-4 memory surface: the MEMORY block and the memory-tools bullet are
+        // interpolated as neighbor-style slots — each an empty string when the
+        // surface is off, so the disabled path is byte-identical to the pre-Phase-4
+        // output (no splicing, no memory reads on the off path). See
+        // SituationChatMemoryPromptTests.testDisabledPathByteIdenticalRegardlessOfMemoryData.
+        let memoryBlock = memoryChatEnabled
+            ? memorySection(memberSignals: memberSignals, vaultDir: memoryVaultDir, dbPool: dbPool) + "\n\n"
+            : ""
+        let memoryToolsBullet = memoryChatEnabled
+            ? "- memory_recall / memory_open / memory_map — the secretary's built-up memory of "
+                + "people, topics, and what it currently believes; check what the secretary already knows before "
+                + "asking the user.\n"
+            : ""
 
         let base = """
         You are the user's AI secretary, discussing ONE situation from their work dashboard. \
@@ -319,13 +334,13 @@ final class SituationChatViewModel {
 
         \(counterpartyBlock(memberSignals: memberSignals, ownerID: ownerID, dbPool: dbPool))
         \(registerSampleBlock(memberSignals: memberSignals, ownerID: ownerID, dbPool: dbPool))
-        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+        \(memoryBlock)=== TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
         You have read-only tools over the user's OWN local Watchtower database. \
         Use them to look things up instead of asking the user:
         - list_messages — search/list the user's Slack messages by person, channel, and/or keyword. \
         This is how you find what someone said (e.g. the open questions a colleague handed over). \
         Pass the person's name in `person` and optional keywords in `query`.
-        - get_person / list_people — people cards; get_target / list_tracks / list_digests / list_jira_issues — work context.
+        \(memoryToolsBullet)- get_person / list_people — people cards; get_target / list_tracks / list_digests / list_jira_issues — work context.
         Never ask for a database path, never ask the user to authorize Slack, and never use claude.ai connectors \
         (the Slack connector or any other) — the data is already local and these tools are already connected. \
         If a lookup returns nothing, say so plainly rather than blaming access.
@@ -335,24 +350,7 @@ final class SituationChatViewModel {
         - Be concise; this is a working discussion, not a report.
         """
 
-        guard memoryChatEnabled else { return base }
-
-        // Splice the MEMORY section in ahead of the TOOLS block and advertise
-        // the three memory tools alongside the existing local tools. Both edits
-        // happen only here, so the disabled path above stays byte-identical.
-        var prompt = base
-        let section = memorySection(
-            memberSignals: memberSignals, vaultDir: memoryVaultDir, dbPool: dbPool)
-        if let toolsRange = prompt.range(of: "=== TOOLS (") {
-            prompt.replaceSubrange(toolsRange.lowerBound..<toolsRange.lowerBound, with: section + "\n\n")
-        }
-        let memoryBullet = "- memory_recall / memory_open / memory_map — the secretary's built-up memory of "
-            + "people, topics, and what it currently believes; check what the secretary already knows before "
-            + "asking the user.\n"
-        if let peopleRange = prompt.range(of: "- get_person / list_people") {
-            prompt.replaceSubrange(peopleRange.lowerBound..<peopleRange.lowerBound, with: memoryBullet)
-        }
-        return prompt
+        return base
     }
 
     // MARK: - Memory surface (Phase 4, behind memory.surfaces.chat)
@@ -429,35 +427,44 @@ final class SituationChatViewModel {
         }
         guard !aliasKeys.isEmpty else { return ([], []) }
 
-        let result: (entities: [String], beliefs: [MemoryBelief])? = try? dbPool.read { db in
-            let aliasList = Array(aliasKeys)
-            let aliasPlaceholders = aliasList.map { _ in "?" }.joined(separator: ",")
-            let entityRows = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT n.id AS id, n.title AS title
-                FROM memory_nodes n
-                JOIN memory_aliases a ON a.node_id = n.id
-                WHERE n.type = 'entity' AND a.alias IN (\(aliasPlaceholders))
-                ORDER BY n.title
-                LIMIT 5
-                """, arguments: StatementArguments(aliasList))
-            let entityIDs = entityRows.map { $0["id"] as String }
-            let entityTitles = entityRows.map { $0["title"] as String }
-            guard !entityIDs.isEmpty else { return (entityTitles, []) }
+        do {
+            return try dbPool.read { db in
+                let aliasList = Array(aliasKeys)
+                let aliasPlaceholders = aliasList.map { _ in "?" }.joined(separator: ",")
+                let entityRows = try Row.fetchAll(db, sql: """
+                    SELECT DISTINCT n.id AS id, n.title AS title
+                    FROM memory_nodes n
+                    JOIN memory_aliases a ON a.node_id = n.id
+                    WHERE n.type = 'entity' AND a.alias IN (\(aliasPlaceholders))
+                    ORDER BY n.title
+                    LIMIT 5
+                    """, arguments: StatementArguments(aliasList))
+                let entityIDs = entityRows.map { $0["id"] as String }
+                let entityTitles = entityRows.map { $0["title"] as String }
+                guard !entityIDs.isEmpty else { return (entityTitles, []) }
 
-            let subjectPlaceholders = entityIDs.map { _ in "?" }.joined(separator: ",")
-            let beliefRows = try Row.fetchAll(db, sql: """
-                SELECT title, confidence, status
-                FROM memory_nodes
-                WHERE type = 'belief' AND status IN ('active','shaken') AND subject IN (\(subjectPlaceholders))
-                ORDER BY confidence DESC
-                LIMIT 5
-                """, arguments: StatementArguments(entityIDs))
-            let beliefs = beliefRows.map {
-                MemoryBelief(title: $0["title"], confidence: $0["confidence"], status: $0["status"])
+                let subjectPlaceholders = entityIDs.map { _ in "?" }.joined(separator: ",")
+                let beliefRows = try Row.fetchAll(db, sql: """
+                    SELECT title, confidence, status
+                    FROM memory_nodes
+                    WHERE type = 'belief' AND status IN ('active','shaken') AND subject IN (\(subjectPlaceholders))
+                    ORDER BY confidence DESC
+                    LIMIT 5
+                    """, arguments: StatementArguments(entityIDs))
+                let beliefs = beliefRows.map {
+                    MemoryBelief(title: $0["title"], confidence: $0["confidence"], status: $0["status"])
+                }
+                return (entityTitles, beliefs)
             }
-            return (entityTitles, beliefs)
+        } catch {
+            // A failed memory read (e.g. the memory tables absent on a DB that has
+            // not run the memory migrations, or a query error) degrades to no
+            // relevant notes. Logged once per prompt build via the app's print
+            // convention — never per row — so a systemic read failure is visible
+            // rather than silently swallowed (P4).
+            print("SituationChat: memory read for MEMORY block failed: \(error)")
+            return ([], [])
         }
-        return result ?? ([], [])
     }
 
     /// Truncate `text` to at most 4 KB (UTF-8), on a line boundary so a partial

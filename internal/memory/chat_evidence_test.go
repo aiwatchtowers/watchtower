@@ -200,7 +200,7 @@ func TestMemory09_OwnerRankOnlyFromAuthoredTurns(t *testing.T) {
 		p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
 
 		// The model cites the real owner turn, but it was NOT staged into the
-		// belief pass input (p.chat is nil), so validateMarkers drops it before
+		// belief pass input (staged param nil), so validateMarkers drops it before
 		// any owner minting can happen — DB existence alone never mints owner rank.
 		candidates := map[string]Node{bel.ID: bel}
 		inputSet := map[string]bool{} // nothing staged
@@ -254,13 +254,13 @@ func TestReviseBeliefsOwnerChatRetires(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 	// Stage the owner turn exactly as ingestChatStatements would.
-	p.chat = &stagedChat{
+	staged := &stagedChat{
 		statements: []ownerStatement{{conversationID: conv, turnTS: 1720000000, text: "alice keeps missing deadlines", subjects: []string{subjectID}}},
 		refs:       map[string]bool{chatRef + " 1720000000": true},
 		subjects:   map[string]bool{subjectID: true},
 	}
 
-	touched, _, _, err := p.ReviseBeliefs(context.Background(), nil, 20, beliefNow)
+	touched, _, _, _, err := p.ReviseBeliefs(context.Background(), nil, staged, 20, beliefNow)
 	require.NoError(t, err)
 	require.Equal(t, 1, touched, "the owner chat op applied")
 

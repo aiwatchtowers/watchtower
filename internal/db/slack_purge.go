@@ -28,9 +28,13 @@ func (db *DB) ClearSlackData() error {
 			('digest','track','decision','user_analysis','briefing','inbox','catchup_theme')`,
 
 		// Slack inbox signals (jira_*/calendar_*/email_*/target_due survive).
-		// inbox_feedback and situation_signals rows cascade via FK.
+		// inbox_feedback and situation_signals rows cascade via FK. Memory dispute
+		// items (channel_id='memory', trigger_type='decision_made') are NOT
+		// Slack-derived — they surface belief conflicts from the memory vault — so
+		// they are excluded and survive a Slack disconnect.
 		`DELETE FROM inbox_items WHERE trigger_type IN
-			('mention','dm','thread_reply','reaction','stream','decision_made','briefing_ready')`,
+			('mention','dm','thread_reply','reaction','stream','decision_made','briefing_ready')
+			AND channel_id != 'memory'`,
 
 		// Situations left with no signals, then feed rows whose source is gone.
 		`DELETE FROM situations WHERE id NOT IN

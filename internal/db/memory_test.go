@@ -699,11 +699,12 @@ func TestMemoryChatTurnFloorRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDisputePendingSetListClear covers the memory_dispute_flags side table
-// helpers (Task 1): SetDisputePending flags a belief, ListDisputePendingBeliefs
-// returns only flagged belief nodes (oldest first) capped to limit, and
-// ClearDisputePending removes the flag so a second list call returns nothing.
-func TestDisputePendingSetListClear(t *testing.T) {
+// TestDisputePendingSetList covers the memory_dispute_flags side table helpers
+// (Task 1): SetDisputePending flags a belief, ListDisputePendingBeliefs returns
+// only flagged belief nodes (oldest first) capped to limit, and clearing the
+// side-table row (the inbox detector's same-tx DELETE path) flips the derived
+// DisputePending back to false.
+func TestDisputePendingSetList(t *testing.T) {
 	db := openTestDB(t)
 
 	belief1 := memTestNode("bel_one", func(r *MemoryNodeRow) { r.Type = "belief" })
@@ -758,15 +759,17 @@ func TestDisputePendingSetListClear(t *testing.T) {
 		t.Errorf("ListDisputePendingBeliefs(1) = %+v, want [bel_one]", capped)
 	}
 
-	if err := db.ClearDisputePending([]string{"bel_one"}); err != nil {
-		t.Fatalf("ClearDisputePending: %v", err)
+	// Clearing the side-table row (the inbox detector's same-tx DELETE path)
+	// flips the derived DisputePending back to false.
+	if _, err := db.Exec(`DELETE FROM memory_dispute_flags WHERE node_id = 'bel_one'`); err != nil {
+		t.Fatalf("clearing dispute flag: %v", err)
 	}
 	got, err = db.GetMemoryNode("bel_one")
 	if err != nil {
 		t.Fatalf("GetMemoryNode after clear: %v", err)
 	}
 	if got.DisputePending {
-		t.Error("DisputePending still true after ClearDisputePending")
+		t.Error("DisputePending still true after clearing the side-table row")
 	}
 	remaining, err := db.ListDisputePendingBeliefs(10)
 	if err != nil {
@@ -966,15 +969,6 @@ func TestListOwnerChatTurnsAbsentTables(t *testing.T) {
 	}
 	if turns != nil {
 		t.Fatalf("absent chat tables must yield nil turns, got %+v", turns)
-	}
-}
-
-// TestClearDisputePendingEmpty: clearing an empty id list is a no-op, not an
-// error (callers may run the detector with nothing to clear).
-func TestClearDisputePendingEmpty(t *testing.T) {
-	db := openTestDB(t)
-	if err := db.ClearDisputePending(nil); err != nil {
-		t.Errorf("ClearDisputePending(nil) = %v, want nil", err)
 	}
 }
 

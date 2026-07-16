@@ -24,7 +24,9 @@ type MemoryNodeRow struct {
 	Confidence  float64 // belief confidence 0..1, 0 for non-beliefs; file-derived (Node.Confidence, see 00019)
 	// DisputePending mirrors presence in the memory_dispute_flags SIDE TABLE
 	// (see 00019) — runtime state, never written by UpsertMemoryNode. Read-only
-	// here; set/cleared via SetDisputePending/ClearDisputePending.
+	// here; set via SetDisputePending and cleared by the inbox watchtower
+	// detector's same-transaction DELETE when it mints a dispute item
+	// (mintDisputeItem) — the only clear path, so a dispute surfaces exactly once.
 	DisputePending bool
 }
 
@@ -186,12 +188,13 @@ func (db *DB) ListMemoryNodes() ([]MemoryNodeRow, error) {
 
 // ListDisputePendingBeliefs returns belief nodes currently flagged in
 // memory_dispute_flags, oldest flag first (ties broken by node id), capped to
-// limit (<=0 defaults to 2 — the inbox watchtower detector's per-cycle cap,
-// Task 6). Used by the detector to mint dispute trigger items; every
+// limit. A non-positive limit means NO limit (SQLite LIMIT -1) — the per-cycle
+// cap policy lives solely at the inbox watchtower detector (memoryDisputeCap),
+// never here. Used by the detector to mint dispute trigger items; every
 // returned row has DisputePending == true.
 func (db *DB) ListDisputePendingBeliefs(limit int) ([]MemoryNodeRow, error) {
 	if limit <= 0 {
-		limit = 2
+		limit = -1 // SQLite: LIMIT -1 is unbounded
 	}
 	rows, err := db.Query(`SELECT `+memoryNodeSelectCols+`
 		FROM memory_nodes
@@ -230,27 +233,6 @@ func (db *DB) SetDisputePending(id, reason string) error {
 		id, reason)
 	if err != nil {
 		return fmt.Errorf("setting dispute pending for %s: %w", id, err)
-	}
-	return nil
-}
-
-// ClearDisputePending removes the memory_dispute_flags row for each id — the
-// inbox watchtower detector calls this in the same transaction it mints a
-// dispute trigger item, so a dispute surfaces exactly once. A nil/empty slice
-// is a no-op, not an error.
-func (db *DB) ClearDisputePending(ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	q := `DELETE FROM memory_dispute_flags WHERE node_id IN (` + strings.Join(placeholders, ",") + `)`
-	if _, err := db.Exec(q, args...); err != nil {
-		return fmt.Errorf("clearing dispute pending: %w", err)
 	}
 	return nil
 }

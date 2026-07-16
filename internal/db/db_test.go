@@ -341,6 +341,50 @@ func TestMigration00019MemorySurfaces(t *testing.T) {
 	}
 }
 
+// TestMigration00019ClearsBeliefContentHash proves the migration empties every
+// pre-existing belief's content_hash (M1) so the next Reconcile re-parses it and
+// fills the new subject/confidence columns — a belief indexed before 00019 has
+// an unchanged file, so a hash-match skip would leave it at ”/0 forever.
+// Non-belief nodes keep their hash (their columns are always the ”/0 default).
+func TestMigration00019ClearsBeliefContentHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "belief-hash.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	// Roll back to just before 00019: memory_nodes exists (from 00017) but has no
+	// subject/confidence columns yet.
+	if err := goose.DownTo(d.DB, "migrations", 18); err != nil {
+		t.Fatalf("goose down to 18: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		VALUES ('bel_seed', 'belief', 'long', 'beliefs/seed.md', 'beliefhash', '2026-07-16T00:00:00Z'),
+		       ('ent_seed', 'entity', 'long', 'entities/seed.md', 'enthash', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("seeding pre-00019 nodes: %v", err)
+	}
+
+	// Apply 00019 (adds columns + clears belief content_hash).
+	if err := goose.UpTo(d.DB, "migrations", 19); err != nil {
+		t.Fatalf("goose up to 19: %v", err)
+	}
+
+	var belHash, entHash string
+	if err := d.QueryRow(`SELECT content_hash FROM memory_nodes WHERE id='bel_seed'`).Scan(&belHash); err != nil {
+		t.Fatalf("reading belief hash: %v", err)
+	}
+	if err := d.QueryRow(`SELECT content_hash FROM memory_nodes WHERE id='ent_seed'`).Scan(&entHash); err != nil {
+		t.Fatalf("reading entity hash: %v", err)
+	}
+	if belHash != "" {
+		t.Errorf("belief content_hash = %q, want empty (forces re-parse for subject/confidence)", belHash)
+	}
+	if entHash != "enthash" {
+		t.Errorf("non-belief content_hash = %q, want untouched", entHash)
+	}
+}
+
 // TestMemorySurfacesMigrationDownUpCycle: 00019's Down drops its
 // ALTER-added columns and the dispute-flags table (precedent: 00017/00018's
 // Down), so a down;up cycle is clean.

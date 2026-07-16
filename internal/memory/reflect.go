@@ -89,29 +89,32 @@ type nodeChurn struct {
 //
 // Isolation: a generate/parse failure returns an error but never mutates a
 // belief or entity (the caller logs it and the run continues). n is the number
-// of observations applied; flagged is the subset that set a dispute flag. When
-// not due, or when the generator is nil, it is a clean no-op.
-func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged int, usage *digest.Usage, err error) {
+// of observations applied; flagged is the subset that set a dispute flag;
+// dropped counts observations the code refused (invented/calm node,
+// sub-threshold churn, wrong kind for the node type, unknown kind) — surfaced in
+// the run-done log so systematic model misbehaviour is visible (P6). When not
+// due, or when the generator is nil, it is a clean no-op.
+func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged, dropped int, usage *digest.Usage, err error) {
 	if p.generator == nil {
-		return 0, 0, nil, nil
+		return 0, 0, 0, nil, nil
 	}
 	if !dueForReflect(p.workspaceStaggerKey(), now) {
-		return 0, 0, nil, nil // not this workspace's weekly slot
+		return 0, 0, 0, nil, nil // not this workspace's weekly slot
 	}
 
 	rows, err := p.db.ListMemoryNodes()
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, nil, err
 	}
 	since := now.AddDate(0, 0, -reflectWindowDays)
 	commits, err := p.vault.LogMemoryCommits(since)
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, nil, err
 	}
 
 	churn := p.reflectChurn(rows, commits, since)
 	if len(churn) == 0 {
-		return 0, 0, nil, nil // a calm week — no AI call at all
+		return 0, 0, 0, nil, nil // a calm week — no AI call at all
 	}
 
 	typeByID := make(map[string]string, len(rows))
@@ -123,11 +126,11 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged int, 
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reflectSource), system, user, "")
 	usage = u
 	if gerr != nil {
-		return 0, 0, usage, fmt.Errorf("memory: reflect: generate: %w", gerr)
+		return 0, 0, 0, usage, fmt.Errorf("memory: reflect: generate: %w", gerr)
 	}
 	reply, perr := parseReflect(raw)
 	if perr != nil {
-		return 0, 0, usage, perr
+		return 0, 0, 0, usage, perr
 	}
 
 	var (
@@ -141,12 +144,14 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged int, 
 		nodeType, ok := typeByID[obs.NodeID]
 		if !ok || churn[obs.NodeID].commits < reflectChurnThreshold {
 			p.logf("memory: reflect: observation %q dropped (id not in churn set or below threshold)", obs.NodeID)
+			dropped++
 			continue // invented/calm node — copy-don't-invent, code-side flapping guard
 		}
 		switch obs.Kind {
 		case "dispute":
 			if nodeType != "belief" {
 				p.logf("memory: reflect: dispute observation on non-belief %s dropped", obs.NodeID)
+				dropped++
 				continue
 			}
 			if serr := p.db.SetDisputePending(obs.NodeID, reflectDisputeReason(obs.Rationale)); serr != nil {
@@ -158,6 +163,7 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged int, 
 		case "note":
 			if nodeType != "entity" {
 				p.logf("memory: reflect: note observation on non-entity %s dropped", obs.NodeID)
+				dropped++
 				continue
 			}
 			node, nerr := p.applyReflectNote(obs, now)
@@ -170,22 +176,23 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged int, 
 			n++
 		default:
 			p.logf("memory: reflect: unknown observation kind %q dropped", obs.Kind)
+			dropped++
 		}
 	}
 
 	if len(noteNodes) > 0 {
 		msg := CommitMsg{Op: "reflect", Summary: fmt.Sprintf("%d entity notes", len(noteNodes)), Cause: "reflect", NodeIDs: noteIDs}
 		if _, werr := p.vault.WriteNodes(noteNodes, msg); werr != nil {
-			return n, flagged, usage, werr
+			return n, flagged, dropped, usage, werr
 		}
 		nowStr := time.Now().UTC().Format(time.RFC3339)
 		for _, nd := range noteNodes {
 			if ierr := upsertIndexNode(p.db, nd, nowStr); ierr != nil {
-				return n, flagged, usage, ierr // reconcile self-heals next run
+				return n, flagged, dropped, usage, ierr // reconcile self-heals next run
 			}
 		}
 	}
-	return n, flagged, usage, nil
+	return n, flagged, dropped, usage, nil
 }
 
 // applyReflectNote appends a dated "## Current" bullet to an entity page,
@@ -255,30 +262,13 @@ func (p *Pipeline) reflectChurn(rows []db.MemoryNodeRow, commits []MemoryCommit,
 }
 
 // historyChurnSince counts a belief's "## History" bullets dated on or after
-// since (bullets are "- YYYY-MM-DD: ..."; date comparison is day-granular via
-// lexical YYYY-MM-DD ordering, matching the briefing journal reader).
+// since (date comparison is day-granular via lexical YYYY-MM-DD ordering). It
+// shares the one ParseHistory reader with the briefing journal.
 func historyChurnSince(body string, since time.Time) int {
 	sinceDate := since.UTC().Format("2006-01-02")
-	inHistory := false
 	n := 0
-	for _, raw := range strings.Split(body, "\n") {
-		if strings.HasPrefix(raw, "## ") {
-			inHistory = strings.TrimSpace(raw) == "## History"
-			continue
-		}
-		if !inHistory {
-			continue
-		}
-		line := strings.TrimSpace(raw)
-		if !strings.HasPrefix(line, "- ") {
-			continue
-		}
-		rest := strings.TrimPrefix(line, "- ")
-		colon := strings.Index(rest, ": ")
-		if colon != len("2006-01-02") {
-			continue
-		}
-		if date := rest[:colon]; date >= sinceDate {
+	for _, b := range ParseHistory(body) {
+		if b.Date >= sinceDate {
 			n++
 		}
 	}

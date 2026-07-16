@@ -17,6 +17,16 @@
 ALTER TABLE memory_nodes ADD COLUMN subject TEXT NOT NULL DEFAULT '';
 ALTER TABLE memory_nodes ADD COLUMN confidence REAL NOT NULL DEFAULT 0;
 
+-- Force the next Reconcile to re-parse every existing belief so the new
+-- subject/confidence columns actually get populated. Reconcile skips a node
+-- whose on-disk content_hash matches the index (an unchanged file), so beliefs
+-- indexed BEFORE this migration would keep their default ''/0 forever — their
+-- files did not change, only the schema did. Emptying content_hash makes the
+-- hash mismatch on the next pass, forcing a re-parse that fills the columns
+-- from the belief frontmatter. Safe: content_hash is derived index state
+-- (MEM-02), re-populated from the file on the very next Reconcile.
+UPDATE memory_nodes SET content_hash = '' WHERE type = 'belief';
+
 -- Dispute flags: a SIDE TABLE (per the plan's patched design), not a
 -- memory_nodes column — the same memory_node_stats precedent (runtime
 -- state, not derivable from vault files). Set by the belief pass / weekly
