@@ -293,15 +293,19 @@ watchtower config set memory.surfaces.reflection true  # a weekly self-review of
 
 Turn on only what you want; the four switches have independent effects, and with all of them off the memory quietly builds itself without ever changing how triage, situations, or briefings look.
 
-**Sources — what the memory learns from (both off by default):** by default the memory is built from Slack/Jira. Two more independent switches let it learn from more of your world:
+**Sources — what the memory learns from (all off by default):** by default the memory is built from Slack/Jira. A few more independent switches let it learn from more of your world:
 
 ```
 watchtower config set memory.sources.gmail true     # build memory from Gmail threads too
 watchtower config set memory.sources.actions true   # learn from your own dashboard actions
+watchtower config set memory.sources.calendar true  # build memory from your past meetings
+watchtower config set memory.sources.chats true     # pin facts from any Discuss chat with "remember this:"
 ```
 
 - **Gmail (`gmail`)** — once your Gmail is connected and synced, the secretary reads your mail the same way it reads Slack: each email **thread** becomes one episode (its participants, the question, how it resolved), linked back to the real messages, and each sender becomes a person page. A sender whose email already belongs to a known Slack colleague is recognized as the same person, not a duplicate. Gmail memory builds on its own schedule, independent of the Slack side.
 - **Learning from your actions (`actions`)** — the secretary watches how *you* handle the dashboard and quietly learns from it. When you dismiss a situation, convert one into a Target, or thumbs-up/down a signal, that verdict is recorded on the relevant memory note and counts toward how much the people and projects involved matter to you — so things you actively engage with are kept, and things you repeatedly wave away fade sooner. It records the fact that you acted; it does **not** yet turn your actions into stated preferences (that comes later), and an action never carries the weight of something you said in your own words.
+- **Calendar (`calendar`)** — once Google Calendar is connected, the secretary turns your **past meetings** into memory: each ended event becomes one episode (who attended, when, where, and what it was about), with the attendees resolved to their people pages and recurring meetings grouped under a series. Where the meeting already produced AI notes (a recap), those decisions and action items are folded into the episode — the secretary reuses what it already wrote, it does not invent a summary. Because the calendar only keeps about a day of past events on hand, memory captures a meeting shortly after it ends; a recap that lands a little later still gets folded in. No AI cost is added for this — it is a mechanical fold of what you already have.
+- **Pin a fact with "remember this:" (`chats`)** — normally the Discuss chat on a **situation** treats everything you type as your own high-trust statement (see the chat surface above). This switch extends that to the Discuss chat on a **Target** or **Track** — but there, because most of what you type is drafting instructions ("reword this", "make it firmer"), the secretary only records a fact when you explicitly say so: start a line with **`remember this:`** (or just `remember:`) and the rest becomes your own recorded statement about that target/track's people and projects, exactly like a correction typed in a situation chat. Without the prefix, a target/track Discuss turn is treated as drafting and never becomes memory. Situation chats are unchanged — they still record every turn you type.
 
 **CLI commands:**
 - `watchtower memory status` — node counts, extraction progress, remaining backlog, and the last run

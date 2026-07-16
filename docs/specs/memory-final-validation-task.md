@@ -12,6 +12,7 @@ make build
 ./watchtower config set memory.semantic.enabled true      # phase 3 (dark by default)
 # phase 4 flags: memory.surfaces.{chat,briefing,disputes,reflection} — all default false, enabled per-drill in Section 2
 # phase 5 slice-1 flags: memory.sources.{gmail,actions} — both default false, enabled per-drill in Section 3
+# phase 5 slice-2 flags: memory.sources.{calendar,chats} — both default false, enabled per-drill in Section 4
 ```
 
 The vault at `~/.local/share/watchtower/whitebit/memory/` already contains the phases 0–2 E2E data (447+ entities, ~384+ episodes incl. 8 known duplicate episodes from the killed-run incident, one manually-set watermark) — this is deliberately the starting state: phase 3 must cope with a lived-in vault, not a fresh one.
@@ -103,6 +104,39 @@ Prereq: Gmail sync must have populated `gmail_messages` (`./watchtower gmail syn
 - **MEM-12:** inject a provenance ref of a bogus scheme (e.g. hand-edit a test extractor reply, or reason from the guard test) and confirm it is **rejected at write, counted, never written** — only the four registered schemes (`""`/`chat`/`mail`/`act`) resolve.
 
 Abort criteria (in addition to Sections 0–2): any memory-side write to an inbox table from the Gmail or interaction step, an `owner-action` line minted from anything but a validated whitelisted interaction row, an `owner-action` line conferring MEM-06 protection, or either source doing work while its gate is off — stop and report (these break MEM-05/12/15).
+
+## Section 4 — Phase 5 slice 2: universal substrate (Calendar source + internal-dialogs generalization + "remember this")
+
+Both sources default false. First confirm the **dark-default invariant**: with `memory.sources.calendar` and `memory.sources.chats` both false, one `consolidate` is byte-identical to post-Slice-1 behavior — no calendar work, no target/track chat ingest, the calendar watermark (`memory_calendar_last_extracted_ts`) unmoved, and the chat-turn floor advancing exactly as Phase-4 did (only `situation` turns scanned). Then run the drills.
+
+Prereq: the calendar sync must have populated `calendar_events` (`./watchtower calendar sync` on a Calendar-connected workspace), and for the recap-enrichment check the meeting pipeline must have written a `meeting_recaps` row for at least one past event. The chat drills need the Desktop app to have created the Swift-owned chat tables (open any Discuss chat once) — on a headless daemon they are absent and the chat surface is a clean no-op.
+
+### 4a — Calendar past events → episodes (`memory.sources.calendar`)
+
+The load-bearing calendar check — the builder is **mechanical** (no AI call; the recap is reused, never re-synthesized). Because `calendar_events` retains only ~24 h of past events, run this **shortly after a real meeting window ends** so the event is still present.
+
+1. Attend (or let end) a real calendar meeting, then `./watchtower config set memory.sources.calendar true` and `./watchtower memory consolidate`. Expect the run-done log's calendar counters to move (`CalendarEpisodes` > 0, `CalendarEventsFailed` low) and `memory_calendar_last_extracted_ts` to advance to the event's end unix — **without** touching the Slack/Gmail extraction watermarks or the Gmail *sync* watermark (a fourth, independent watermark).
+2. Hand-review the new episode (`./watchtower memory open` via its `calevent:<event_id>` alias, or `memory recall <meeting title>`): one ended event became **one** episode; the Story carries the mechanical metadata line (date/time, organizer, participants, location, description); its single provenance ref is `cal:<event_id>` and it **resolves** — the `cal:` resolver confirms a real `calendar_events` row (a fabricated `cal:` id would have been dropped at write, MEM-01/MEM-12).
+3. **Recap enrichment.** For an event that has a `meeting_recaps` row, confirm the recap's `summary` folded into Story and its `key_decisions`/`action_items`/`open_questions` into Outcome (`- Decision:` / `- Action:` / `- Open question:` bullets). An event with **no** recap must still be a real metadata-only episode. Grade whether the recap enrichment reads honestly (reused, not paraphrased/invented).
+4. **Participants as person entities + series links.** Confirm each attendee resolved to a **person entity** (by Slack user id when the sync resolved one, else email alias) carrying a back-link `[[<ep-id>|…]]`. For a **recurring** meeting, confirm a `calseries:<recurringEventId>` series entity exists (`seedCalendarSeries`) and the instance episode links to it. A non-recurring event links no series.
+5. **Idempotency + late recap.** Re-run `consolidate` with nothing changed: the episode is **not** rebuilt and **no empty git commit** lands (`git -C …/memory log --oneline` count unchanged). Then, if a recap lands *after* the first build but the event is still within the 2-day lookback, a re-run **refreshes the same episode node in place** (same id, Outcome now carries the recap) — the `calevent:` alias update-path.
+
+### 4b — "remember this" in a target/track Discuss chat (`memory.sources.chats`)
+
+The opt-in owner-rank pin. Pick a **track** with a clear channel/member subject entity (`./watchtower memory recall …`).
+
+1. `./watchtower config set memory.sources.chats true`. Open the Desktop app, open that track's **Discuss** chat, and type an ordinary drafting turn (e.g. *"reword my last reply to be firmer"*), then `./watchtower memory consolidate`. Expect: the drafting turn is **consumed by the chat-turn floor but NOT staged** — no owner evidence, no belief change (an ordinary target/track turn is a drafting instruction, not a world statement).
+2. In the same track Discuss chat, type `remember this: <a real fact about the track>` (e.g. *"remember this: this track is blocked on legal until Q4"*), then `./watchtower memory consolidate` (with `memory.semantic.enabled true`). Expect: the turn stages (run-done log `surfaces: N chat-turns`); the belief pass mints a canonical `- owner <for|against> chat:<conversation_id> <ts>` line (weight owner) on a belief about the track's subject entity — the prefix stripped for the statement. Verify the elevation is **authored, not claimed** (the model op carried no rank; only the `chat:` ref resolving to a `role='user'` turn in an **allowed context type** made it owner rank).
+3. **Situation chats unchanged.** In a **situation** Discuss chat, type an ordinary owner turn (no command) and `consolidate`: it still stages every owner turn (Phase-4 behavior, unchanged) — the command is only required for target/track chats.
+4. **Gate-off invariant.** `./watchtower config set memory.sources.chats false`, re-open the same track chat, type another `remember this: …`, and `consolidate`: the track turn is **never scanned** (the context-type set is `{"situation"}` exactly), no owner evidence is minted, the chat-turn floor for that turn is unmoved. Confirm the Discuss prompt and every `TestMemory09_*` situation guard remain byte-identical to Phase-4.
+
+### 4c — Substrate invariants (MEM-05 + MEM-09 + MEM-12)
+
+- **MEM-05:** with both sources on, the calendar builder and the generalized-chat ingest wrote **no** `inbox_items`/`situations`/`situation_signals`/`tracks`/`targets` row and never moved `inbox_last_processed_ts` (`grep -rn "inbox_\|situations\|tracks\|targets" internal/memory/` shows reads only; dump the tables before/after a `consolidate` and diff).
+- **MEM-09:** owner rank is minted **only** from a `role='user'` turn resolved through the flag-derived context-type set — an assistant target/track turn, or any target/track turn with `memory.sources.chats` off, mints nothing.
+- **MEM-12:** a provenance ref of a bogus scheme is **rejected at write, counted, never written**; the calendar episode carries only its single `cal:` ref (validated through the cal-only scoped registry); a `cal:` id swept from the DB drops-and-counts, the episode discarded ref-less.
+
+Abort criteria (in addition to Sections 0–3): **any** inbox write from the calendar or chat step; **any** owner-rank line minted from a non-`role='user'` source; **any** target/track drafting turn staged without the "remember this" command; a calendar episode written with an unresolved or non-`cal:` provenance ref; or either source doing work while its gate is off — stop and report (these break MEM-05/09/12).
 
 ## Deliverable
 
