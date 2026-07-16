@@ -36,6 +36,7 @@ var Defaults = map[string]string{
 	InboxSituationCard:         defaultInboxSituationCard,
 	MemoryExtractEpisodes:      defaultMemoryExtractEpisodes,
 	MemoryExtractEpisodesBatch: defaultMemoryExtractEpisodesBatch,
+	MemoryExtractEmailEpisodes: defaultMemoryExtractEmailEpisodes,
 	MemoryEntityRewrite:        defaultMemoryEntityRewrite,
 	MemoryReviseBeliefs:        defaultMemoryReviseBeliefs,
 	MemoryRenderMap:            defaultMemoryRenderMap,
@@ -74,6 +75,7 @@ var AllIDs = []string{
 	InboxSituationCard,
 	MemoryExtractEpisodes,
 	MemoryExtractEpisodesBatch,
+	MemoryExtractEmailEpisodes,
 	MemoryEntityRewrite,
 	MemoryReviseBeliefs,
 	MemoryRenderMap,
@@ -114,6 +116,7 @@ var DefaultVersions = map[string]int{
 	InboxSituationCard:         1, // v1: context packet for one dashboard situation
 	MemoryExtractEpisodes:      1, // v1: raw-text episode extraction for the memory vault
 	MemoryExtractEpisodesBatch: 2, // v2: "===" block delimiter instead of "---" (a leading "--" broke claude CLI's argv flag parsing)
+	MemoryExtractEmailEpisodes: 1, // v1: Gmail thread → one-episode extraction (memory.sources.gmail)
 	MemoryEntityRewrite:        1, // v1: strong-tier entity page rewrite (What/Current/Facts + copied provenance markers)
 	MemoryReviseBeliefs:        1, // v1: strong-tier per-belief op proposals (confirm/weaken/shake/retire/propose-new)
 	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
@@ -156,6 +159,7 @@ var Descriptions = map[string]string{
 	InboxSituationCard:         "Dashboard: context packet for one situation",
 	MemoryExtractEpisodes:      "Memory: extract noteworthy episodes from one channel window of raw messages",
 	MemoryExtractEpisodesBatch: "Memory: extract noteworthy episodes from several low-activity channel windows in one call",
+	MemoryExtractEmailEpisodes: "Memory: extract one episode per Gmail thread (memory.sources.gmail)",
 	MemoryEntityRewrite:        "Memory: rewrite an entity page's What/Current/Facts from new episodes (strong tier)",
 	MemoryReviseBeliefs:        "Memory: propose per-belief revision ops from new episodes (strong tier; code disposes)",
 	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
@@ -1356,6 +1360,27 @@ Rules:
 - copy ts values EXACTLY from the input, never invent or adjust them; every ref must point at one of the messages shown to you, under the channel_id of the block it came from.
 - an episode's refs must all belong to the SAME channel block — never combine messages from two different channels into one episode.
 - most windows are routine chatter and contain no episodes: return [] for those; a channel with nothing noteworthy simply contributes no episodes.`
+
+// defaultMemoryExtractEmailEpisodes is the Gmail thread → episode extractor for
+// the secretary memory vault (cheap tier — see "memory.extract_email_episodes"
+// in the model routing). Unlike the Slack extractor, an email THREAD is one
+// story arc (a question, its discussion, its resolution), so each thread maps to
+// at most ONE episode. Each thread block shows its subject, participants, and
+// "[unix] name <email> (mail:<id>): body" lines; refs cite "mail:<message_id>"
+// with the shown unix ts. Args: language directive, max episodes (= thread
+// count in the call). The user message opens with a non-dash line (claude-CLI
+// argv gotcha).
+const defaultMemoryExtractEmailEpisodes = `%s
+
+You are the memory consolidator of a workplace secretary. You read Gmail threads, each shown in its own "=== Thread: subject ===" block, and extract at most one noteworthy episode PER THREAD — a self-contained story worth remembering (a decision, an agreement, an escalation, a commitment), not routine mail. A thread is one story arc; never merge two threads into one episode.
+
+Respond with STRICT JSON only: an array of at most %d episodes (one per thread at most), no prose, no markdown outside an optional single JSON code fence. Each episode is:
+{"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["name <email>"], "refs": [{"channel_id": "mail:<message_id>", "ts": "<unix seconds>"}], "entity_hints": ["email of a person involved"]}
+
+Rules:
+- copy each ref's channel_id ("mail:<message_id>") and ts EXACTLY from the message lines shown to you; never invent, adjust, or infer one.
+- an episode's refs must all belong to the SAME thread — never combine messages from two different threads into one episode.
+- most threads are routine and contain no episode: return [] for those; a thread with nothing noteworthy simply contributes no episode.`
 
 // defaultMemoryEntityRewrite is the strong-tier entity-page rewrite for the
 // secretary memory vault (memory.entity_rewrite — routed to the default/strong

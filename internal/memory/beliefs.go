@@ -330,51 +330,61 @@ func isChatRef(channelID string) bool {
 	return strings.HasPrefix(channelID, chatRefPrefix)
 }
 
+// isActRef reports whether an evidence ref points at a mechanical owner
+// interaction ("act:<table>:<row_id>", Phase-5 5D) — the seam that carries an
+// owner-action-rank data point into the belief math.
+func isActRef(channelID string) bool {
+	return strings.HasPrefix(channelID, actRefPrefix)
+}
+
 // newEvidenceLines turns validated model refs into stored evidence lines.
 // Support direction follows the op (confirm/propose-new support the belief, the
-// rest weigh against). Rank is minted by CODE, never the model (MEM-08/09): an
-// episode ref is observed rank; a chat: ref is owner rank — but a chat: ref only
-// reaches here after validateChatRefs confirmed it resolves to a role='user'
-// Discuss turn, so the elevation is authored by the code path, not the model.
+// rest weigh against). Rank is minted by CODE, never the model (MEM-08/09/15):
+// an episode ref (bare channel or mail:) is observed rank; a chat: ref is owner
+// rank; an act: ref is owner-action rank — but a chat:/act: ref only reaches
+// here after validateChatRefs confirmed it resolves (a role='user' Discuss turn
+// / a real whitelisted interaction row), so the elevation is authored by the
+// code path keyed on the ref scheme, never named by the model (the op JSON
+// carries no rank field).
 func newEvidenceLines(refs []episodeRef, op beliefOp) []beliefEvidence {
 	support := op == opConfirm || op == opProposeNew
 	out := make([]beliefEvidence, len(refs))
 	for i, r := range refs {
 		rank := rankObserved
-		if isChatRef(r.ChannelID) {
+		switch {
+		case isChatRef(r.ChannelID):
 			rank = rankOwner // MEM-09: validated owner Discuss turn
+		case isActRef(r.ChannelID):
+			rank = rankOwnerAction // MEM-15: validated owner interaction row
 		}
 		out[i] = beliefEvidence{Rank: rank, Support: support, ChannelID: r.ChannelID, TS: r.TS}
 	}
 	return out
 }
 
-// validateChatRefs enforces the MEM-09 owner-authenticity check on chat:
-// evidence refs. Episode refs pass through untouched. A chat: ref
-// ("chat:<conversation_id>") is kept only if it resolves to a role='user'
-// Discuss turn in a situation conversation (OwnerChatTurnExists) — otherwise it
-// is dropped and counted exactly like an invented episode ref (MEM-01
-// discipline). A chat ref never resolves when the Swift-owned chat tables are
-// absent (headless daemon), when the conversation/ts does not match, when the
-// turn was an assistant reply, or when the conversation is not a situation. The
-// check is non-fatal: a lookup error drops that ref and keeps the pass alive,
-// never freezing the run (the chat surface is a soft owner-writeback, re-scanned
-// next run — unlike the episode extractor's fatal MEM-01 lookup freeze).
+// validateChatRefs enforces the write-time authenticity check on the belief
+// pass's SURFACE refs — chat: (MEM-09 owner-authenticity) and act: (MEM-15
+// owner-interaction existence). Episode refs (bare channel / mail:) pass through
+// untouched — they were already validated against the model's input set
+// (validateMarkers, MEM-08) and carry no authenticity claim. A chat: ref is kept
+// only if it resolves to a role='user' situation Discuss turn; an act: ref only
+// if it points at a real whitelisted interaction row — otherwise each is dropped
+// and counted exactly like an invented episode ref (MEM-01 discipline), so
+// newEvidenceLines can only ever mint owner/owner-action rank for a
+// resolver-confirmed ref. The check is non-fatal: a lookup error drops that ref
+// and keeps the pass alive, never freezing the run (these surfaces are soft
+// owner-writebacks re-scanned next run — unlike the episode extractor's fatal
+// MEM-01 lookup freeze).
 func (p *Pipeline) validateChatRefs(refs []episodeRef) (kept []episodeRef, dropped int) {
 	for _, r := range refs {
-		// Non-chat (episode) refs pass through untouched — they were already
-		// validated against the model's input set (validateMarkers, MEM-08) and
-		// carry no owner-authenticity claim. Only chat: refs consult the registry,
-		// so the episode-only belief pass and its tests never touch the chat
-		// tables (the registry's chat resolver is the sole DB work here).
-		if !isChatRef(r.ChannelID) {
+		if !isChatRef(r.ChannelID) && !isActRef(r.ChannelID) {
 			kept = append(kept, r)
 			continue
 		}
-		// The chat resolver's existence check IS the MEM-09 owner-authenticity
-		// check; a lookup error is a soft drop (the chat surface is a soft
-		// owner-writeback, re-scanned next run — never a run-freezing MEM-01
-		// error). registered is always true here (chat: is a registered scheme).
+		// The resolver's existence check IS the authenticity check; a lookup error
+		// is a soft drop (a soft owner-writeback, re-scanned next run — never a
+		// run-freezing MEM-01 error). registered is always true here (chat:/act:
+		// are registered schemes).
 		ok, _, err := p.registry.Validate(r)
 		if err != nil || !ok {
 			dropped++
@@ -597,6 +607,8 @@ func rankName(r evidenceRank) string {
 	switch r {
 	case rankOwner:
 		return "owner"
+	case rankOwnerAction:
+		return "owner-action"
 	case rankObserved:
 		return "observed"
 	default:

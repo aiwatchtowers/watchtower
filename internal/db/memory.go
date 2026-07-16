@@ -303,6 +303,28 @@ func (db *DB) MessageExists(channelID, ts string) (bool, error) {
 	return true, nil
 }
 
+// GmailMessageExists reports whether a synced gmail_messages row with the given
+// Gmail message id exists — the write-time existence check behind the mail:
+// provenance scheme (resolved ambiguity #5: mail's identity is the message id,
+// not channel+ts). The gmail_messages table is a base table (migration 00016),
+// but its absence is tolerated as a clean miss (false, nil) rather than an
+// error, mirroring the chat resolver's tolerance of the Swift-owned chat tables
+// being absent on a headless deployment.
+func (db *DB) GmailMessageExists(id string) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM gmail_messages WHERE id = ?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return false, nil // gmail_messages absent — a clean miss, not a lookup error
+		}
+		return false, fmt.Errorf("checking gmail message %s: %w", id, err)
+	}
+	return true, nil
+}
+
 // MemoryWatermark returns the unix ts of the last raw message fully processed
 // by the episode extractor (MEM-04 freeze discipline, same shape as the inbox
 // watermark accessors). A fresh workspace without its singleton row yet reads
@@ -729,6 +751,125 @@ func (db *DB) SetMemoryGmailWatermark(ts float64) error {
 		return fmt.Errorf("setting memory gmail watermark: %w", err)
 	}
 	return nil
+}
+
+// GmailExtractMessage is one gmail_messages row fed to the Gmail thread→episode
+// extractor. TSUnix is internal_date decoded to whole unix seconds (the Gmail
+// sync stores internal_date as an RFC3339 string, NOT the raw ms-epoch API
+// value, so strftime('%s', ...) yields second granularity — the boundary-drain
+// tie-safety below is at that granularity).
+type GmailExtractMessage struct {
+	MessageID string
+	ThreadID  string
+	Subject   string
+	FromEmail string
+	FromName  string
+	BodyText  string
+	TSUnix    float64
+}
+
+// gmailTSUnixExpr decodes gmail_messages.internal_date (an RFC3339 string) to
+// whole unix seconds. SQLite's strftime parses the 'T'/'Z' RFC3339 shape and
+// normalizes any timezone offset to UTC.
+const gmailTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
+
+// ListGmailThreadsForExtract returns gmail_messages with internal_date strictly
+// above sinceTS (unix seconds), oldest first, capped at limit — the raw input
+// the Gmail extractor groups into per-thread episodes. It mirrors
+// ListMemoryExtractMessages: a message cap bounds work per run, and a
+// boundary-drain keeps same-second ties safe. internal_date is second-granular
+// (RFC3339), so a LIMIT cut can land inside a same-second group; the caller's
+// watermark advances to a whole-second internal_date and reloads with a strict
+// >, which would permanently skip the unloaded rows of that second — so when the
+// limit cuts inside a second this query extends past the limit to include ALL
+// rows sharing the last loaded second (overshoot at most one second of mail).
+//
+// An absent gmail_messages table is tolerated as an empty read (nil, nil) — the
+// gated Gmail extractor is then a clean no-op, mirroring GmailMessageExists.
+func (db *DB) ListGmailThreadsForExtract(sinceTS float64, limit int) ([]GmailExtractMessage, error) {
+	if limit <= 0 {
+		limit = 2000
+	}
+	out, err := db.queryGmailExtractMessages(">", sinceTS, limit)
+	if err != nil || len(out) < limit {
+		return out, err
+	}
+	boundary := out[len(out)-1].TSUnix
+	full, err := db.queryGmailExtractMessages("=", boundary, -1) // LIMIT -1: unbounded
+	if err != nil {
+		return nil, err
+	}
+	i := len(out)
+	for i > 0 && out[i-1].TSUnix == boundary {
+		i--
+	}
+	return append(out[:i], full...), nil
+}
+
+// queryGmailExtractMessages runs the gmail-extract select with the given
+// comparison operator (">" or "="; never user input) against the decoded
+// internal_date. The ORDER BY ends in id (the gmail_messages primary key) so the
+// ordering is fully deterministic within a same-second group, which the
+// boundary-drain above relies on. An absent gmail_messages table is a clean
+// empty read.
+func (db *DB) queryGmailExtractMessages(op string, tsArg float64, limit int) ([]GmailExtractMessage, error) {
+	rows, err := db.Query(`
+		SELECT id, thread_id, subject, from_email, from_name, body_text, `+gmailTSUnixExpr+`
+		FROM gmail_messages
+		WHERE internal_date != '' AND `+gmailTSUnixExpr+` `+op+` ?
+		ORDER BY `+gmailTSUnixExpr+`, id
+		LIMIT ?`, tsArg, limit)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing gmail threads for extract: %w", err)
+	}
+	defer rows.Close()
+
+	var out []GmailExtractMessage
+	for rows.Next() {
+		var m GmailExtractMessage
+		if err := rows.Scan(&m.MessageID, &m.ThreadID, &m.Subject, &m.FromEmail, &m.FromName, &m.BodyText, &m.TSUnix); err != nil {
+			return nil, fmt.Errorf("scanning gmail extract message: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// interactionTables is the whitelist of owner-interaction source tables an act:
+// provenance ref may point at (resolved ambiguity #6). A table outside this set
+// is a clean drop in InteractionExists, never an error — and, being a fixed set
+// of literals, it is the only thing interpolated into the existence query, so no
+// injection is possible.
+var interactionTables = map[string]bool{
+	"inbox_feedback":    true,
+	"user_interactions": true,
+	"decision_reads":    true,
+	"situations":        true,
+}
+
+// InteractionExists reports whether row id exists in a WHITELISTED
+// owner-interaction table — the write-time existence check behind the act:
+// scheme (MEM-15). A non-whitelisted table is a clean (false, nil) drop, never
+// an error. Existence keys on rowid: inbox_feedback and situations declare an
+// INTEGER PRIMARY KEY (which aliases rowid), while user_interactions and
+// decision_reads have composite/no integer PK, so rowid is the one uniform
+// integer identity across all four whitelisted tables.
+func (db *DB) InteractionExists(table string, id int64) (bool, error) {
+	if !interactionTables[table] {
+		return false, nil
+	}
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM `+table+` WHERE rowid = ?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking interaction %s/%d: %w", table, id, err)
+	}
+	return true, nil
 }
 
 // MemoryInteractionFloor returns the 5D interaction-ingest floor: the highest

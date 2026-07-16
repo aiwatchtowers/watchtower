@@ -211,6 +211,7 @@ func TestDecideOpMatrix(t *testing.T) {
 func TestParseEvidenceRank(t *testing.T) {
 	for s, want := range map[string]evidenceRank{
 		"owner": rankOwner, "observed": rankObserved, "inferred": rankInferred,
+		"owner-action": rankOwnerAction,
 	} {
 		got, ok := parseEvidenceRank(s)
 		assert.True(t, ok, s)
@@ -218,4 +219,50 @@ func TestParseEvidenceRank(t *testing.T) {
 	}
 	_, ok := parseEvidenceRank("guessed")
 	assert.False(t, ok)
+}
+
+// TestRankNameRoundTrip: rankName is the inverse of parseEvidenceRank for every
+// rank, including owner-action (the Slice-1 addition).
+func TestRankNameRoundTrip(t *testing.T) {
+	for _, r := range []evidenceRank{rankInferred, rankObserved, rankOwnerAction, rankOwner} {
+		got, ok := parseEvidenceRank(rankName(r))
+		assert.True(t, ok, rankName(r))
+		assert.Equal(t, r, got, rankName(r))
+	}
+}
+
+// TestOwnerActionWeightOrder: owner-action sits strictly between observed (0.6)
+// and fresh owner (1.0) at a fixed 0.8 with NO age decay in Slice 1 (resolved
+// ambiguity #4).
+func TestOwnerActionWeightOrder(t *testing.T) {
+	observed := evidenceWeight(rankObserved, 0)
+	ownerAction := evidenceWeight(rankOwnerAction, 0)
+	ownerFresh := evidenceWeight(rankOwner, 0)
+	assert.Greater(t, ownerAction, observed, "owner-action outweighs observed")
+	assert.Greater(t, ownerFresh, ownerAction, "fresh owner outweighs owner-action")
+	assert.InDelta(t, 0.8, ownerAction, 1e-9)
+	assert.Equal(t, ownerAction, evidenceWeight(rankOwnerAction, 365), "owner-action weight is age-invariant (no decay)")
+}
+
+// TestApplyOpOwnerActionDoesNotProtectRetire is the MEM-06 non-protection
+// guard (resolved ambiguity #4): owner-action support carries real weight but
+// does NOT confer fresh-owner retire-protection — a well-supported retire
+// against it is ALLOWED, whereas the identical shape with owner rank is
+// downgraded to shaken. hasFreshOwnerSupport keys on rankOwner exactly.
+func TestApplyOpOwnerActionDoesNotProtectRetire(t *testing.T) {
+	against := []evidence{
+		{Rank: rankObserved, AgeDays: 1, Support: false},
+		{Rank: rankObserved, AgeDays: 1, Support: false},
+		{Rank: rankObserved, AgeDays: 1, Support: false},
+	}
+
+	ownerAction := append([]evidence{{Rank: rankOwnerAction, AgeDays: 1, Support: true}}, against...)
+	got, dec := applyOp(beliefState{Confidence: 0.6, Stability: 0, Status: statusActive}, opRetire, ownerAction)
+	assert.Equal(t, opAllowed, dec, "owner-action confers no MEM-06 protection")
+	assert.Equal(t, statusRetired, got.Status)
+
+	owner := append([]evidence{{Rank: rankOwner, AgeDays: 1, Support: true}}, against...)
+	got, dec = applyOp(beliefState{Confidence: 0.6, Stability: 0, Status: statusActive}, opRetire, owner)
+	assert.Equal(t, opDowngraded, dec, "owner rank still protects (MEM-06)")
+	assert.Equal(t, statusShaken, got.Status)
 }

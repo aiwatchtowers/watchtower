@@ -1,6 +1,9 @@
 package memory
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // This file is the MEM-12 provenance-resolver registry: the single write-time
 // seam that answers "does this provenance ref resolve against a raw source of
@@ -133,6 +136,80 @@ func (c chatResolver) Validate(ref episodeRef) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// mailChecker is the write-time gmail-message existence lookup behind the mail:
+// scheme. *db.DB satisfies it; tests inject an erroring fake to exercise the
+// lookup-error propagation path without a live gmail_messages table.
+type mailChecker interface {
+	GmailMessageExists(id string) (bool, error)
+}
+
+// mailResolver is the scheme-"mail" resolver: a mail:<message_id> ref resolves
+// iff a gmail_messages row with that id exists (resolved ambiguity #5 — identity
+// is the message id; the ref's ts carries the internal_date for age math but is
+// not re-validated here). Registered even when memory.sources.gmail is dark —
+// gmail_messages is a base table, and a mail: ref can only ever reach the vault
+// through the (independently gated) Gmail extractor.
+type mailResolver struct{ db mailChecker }
+
+// mailRefPrefix marks an evidence/episode channel_id as a Gmail message
+// reference ("mail:<message_id>").
+const mailRefPrefix = "mail:"
+
+func (mailResolver) Scheme() string { return strings.TrimSuffix(mailRefPrefix, ":") }
+
+func (m mailResolver) Validate(ref episodeRef) (bool, error) {
+	return m.db.GmailMessageExists(strings.TrimPrefix(ref.ChannelID, mailRefPrefix))
+}
+
+// interactionChecker is the write-time owner-interaction existence lookup behind
+// the act: scheme (MEM-15). *db.DB satisfies it; the whitelist of source tables
+// lives in InteractionExists.
+type interactionChecker interface {
+	InteractionExists(table string, id int64) (bool, error)
+}
+
+// actResolver is the scheme-"act" resolver: an act:<table>:<row_id> ref resolves
+// iff row_id exists in a whitelisted owner-interaction table (resolved ambiguity
+// #6 — inbox_feedback / user_interactions / decision_reads / situations). A
+// malformed ref or a non-whitelisted table is a clean non-resolution (ok=false,
+// no error), so it drops like an invented ref. This existence check is what lets
+// newEvidenceLines mint owner-action rank for an act: ref (MEM-15) — the model
+// can propose the ref, but only a real interaction row makes it count.
+type actResolver struct{ db interactionChecker }
+
+// actRefPrefix marks an evidence channel_id as an owner-interaction reference
+// ("act:<table>:<row_id>"). It classifies as scheme "act" on its first colon
+// segment despite carrying two colons (schemeOf).
+const actRefPrefix = "act:"
+
+func (actResolver) Scheme() string { return strings.TrimSuffix(actRefPrefix, ":") }
+
+func (a actResolver) Validate(ref episodeRef) (bool, error) {
+	table, id, ok := parseActRef(ref.ChannelID)
+	if !ok {
+		return false, nil
+	}
+	return a.db.InteractionExists(table, id)
+}
+
+// parseActRef splits an "act:<table>:<row_id>" channel id into its table and
+// integer row id. The row id is the final colon segment (a table name never
+// contains a colon, but LastIndex is robust either way); a malformed shape or a
+// non-integer row id yields ok=false.
+func parseActRef(channelID string) (table string, id int64, ok bool) {
+	rest := strings.TrimPrefix(channelID, actRefPrefix)
+	i := strings.LastIndexByte(rest, ':')
+	if i <= 0 {
+		return "", 0, false
+	}
+	table = rest[:i]
+	id, err := strconv.ParseInt(rest[i+1:], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return table, id, true
 }
 
 // extractorRegistry is the registry the Slack episode extractor validates

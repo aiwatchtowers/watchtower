@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
 )
 
 // TestSchemeOf pins the ref-grammar classifier: a bare Slack channel id (no
@@ -93,6 +95,108 @@ func TestProvenanceRegistryPropagatesLookupError(t *testing.T) {
 	require.Error(t, err, "a resolver lookup error propagates unchanged")
 	assert.True(t, registered, "the scheme was registered — only the lookup failed")
 	assert.Contains(t, err.Error(), "disk I/O error")
+}
+
+// TestProvenanceRegistryDispatchesMail: a mail: ref routes to the mail
+// resolver, which keys existence on the gmail_messages id only (resolved
+// ambiguity #5); a missing id is a clean non-resolution, never an error.
+func TestProvenanceRegistryDispatchesMail(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedGmailMessage(t, d, "msg-1", "thr-1", "a@example.com", "A", "Subj", "body", recentISO(0))
+	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+
+	ok, registered, err := p.registry.Validate(episodeRef{ChannelID: "mail:msg-1", TS: "1720000000"})
+	require.NoError(t, err)
+	assert.True(t, registered, "mail is a registered scheme")
+	assert.True(t, ok, "an existing gmail message resolves by id")
+
+	ok, registered, err = p.registry.Validate(episodeRef{ChannelID: "mail:missing", TS: "1720000000"})
+	require.NoError(t, err)
+	assert.True(t, registered)
+	assert.False(t, ok, "a missing message id does not resolve")
+}
+
+// TestGmailMessageExistsAbsentTable: GmailMessageExists tolerates an absent
+// gmail_messages table as a clean miss (the chat-resolver precedent), never an
+// error.
+func TestGmailMessageExistsAbsentTable(t *testing.T) {
+	d := newTestDB(t)
+	_, err := d.Exec(`DROP TABLE gmail_messages`)
+	require.NoError(t, err)
+
+	ok, err := d.GmailMessageExists("anything")
+	require.NoError(t, err, "an absent gmail_messages table is a clean miss, not an error")
+	assert.False(t, ok)
+}
+
+// errMailChecker fails GmailMessageExists with a lookup error — the mail analog
+// of errCheckerAfter, for the resolver error-propagation path.
+type errMailChecker struct{}
+
+func (errMailChecker) GmailMessageExists(string) (bool, error) {
+	return false, fmt.Errorf("disk I/O error")
+}
+
+// TestMailResolverPropagatesLookupError: a gmail lookup error propagates as err
+// (registered=true) so the caller keeps its freeze-vs-drop disposition.
+func TestMailResolverPropagatesLookupError(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+	p.registry = newProvenanceRegistry(mailResolver{errMailChecker{}})
+
+	_, registered, err := p.registry.Validate(episodeRef{ChannelID: "mail:x", TS: "1"})
+	require.Error(t, err, "a resolver lookup error propagates unchanged")
+	assert.True(t, registered, "the scheme was registered — only the lookup failed")
+	assert.Contains(t, err.Error(), "disk I/O error")
+}
+
+// seedInboxFeedback inserts an inbox_items row and an inbox_feedback row
+// referencing it, returning the feedback rowid (== inbox_feedback.id).
+func seedInboxFeedback(t *testing.T, d *db.DB, rating int) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, status)
+		VALUES ('C1', '1700000001.000100', 'U2', 'mention', 'pending')`)
+	require.NoError(t, err)
+	itemID, err := res.LastInsertId()
+	require.NoError(t, err)
+	res, err = d.Exec(`INSERT INTO inbox_feedback (inbox_item_id, rating, created_at)
+		VALUES (?, ?, '2026-07-16T00:00:00Z')`, itemID, rating)
+	require.NoError(t, err)
+	fbID, err := res.LastInsertId()
+	require.NoError(t, err)
+	return fbID
+}
+
+// TestProvenanceRegistryDispatchesAct: an act:<table>:<row_id> ref routes to the
+// act resolver, resolving iff the row exists in a WHITELISTED table; a missing
+// row and a non-whitelisted table are both clean non-resolutions (registered),
+// never errors (resolved ambiguity #6).
+func TestProvenanceRegistryDispatchesAct(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	fbID := seedInboxFeedback(t, d, -1)
+	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+
+	ok, registered, err := p.registry.Validate(episodeRef{ChannelID: fmt.Sprintf("act:inbox_feedback:%d", fbID), TS: "1720000000"})
+	require.NoError(t, err)
+	assert.True(t, registered, "act is a registered scheme")
+	assert.True(t, ok, "an existing whitelisted interaction row resolves")
+
+	ok, registered, err = p.registry.Validate(episodeRef{ChannelID: "act:inbox_feedback:999999", TS: "1"})
+	require.NoError(t, err)
+	assert.True(t, registered)
+	assert.False(t, ok, "a missing row does not resolve")
+
+	ok, registered, err = p.registry.Validate(episodeRef{ChannelID: "act:secret_table:1", TS: "1"})
+	require.NoError(t, err, "a non-whitelisted table is a clean drop, not an error")
+	assert.True(t, registered, "act scheme is registered even for an unknown table")
+	assert.False(t, ok, "a non-whitelisted table never resolves")
+
+	// A situation row (also whitelisted) resolves.
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "s", Summary: "s", Chronology: "c"})
+	require.NoError(t, err)
+	ok, _, err = p.registry.Validate(episodeRef{ChannelID: fmt.Sprintf("act:situations:%d", sitID), TS: "1"})
+	require.NoError(t, err)
+	assert.True(t, ok, "an existing situation resolves through the act resolver")
 }
 
 // TestMemory12_UnregisteredSchemeRejectedAtWrite is the MEM-12 formal guard: a

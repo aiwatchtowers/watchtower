@@ -39,6 +39,10 @@ type RunStats struct {
 	RefsRejected        int         // provenance refs dropped by MEM-01 validation
 	Malformed           int         // shape-degenerate extractor episodes (parsed but zero refs)
 
+	// Gmail source (Phase-5 slice-1, zero unless memory.sources.gmail).
+	GmailEpisodes      int // episode nodes written by the Gmail thread→episode extractor
+	GmailThreadsFailed int // Gmail thread batches whose extraction failed (watermark frozen for them)
+
 	// Semantic tier (Phase 3, all zero unless memory.semantic.enabled).
 	Deduped           int // episodes merged into their older twin (DedupeEpisodes)
 	Promoted          int // concept entities created from recurring hints (PromoteConcepts)
@@ -112,12 +116,15 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 	}
 	p := &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, checkMsg: database, Source: "cli"}
 	// MEM-12: build the provenance-resolver registry once. message (scheme "")
-	// and chat (scheme "chat") are the Phase-0–4 schemes; mail/act join in
-	// Tasks 4/6. gmail_messages/interaction tables are base tables, so a
-	// resolver is registered even when its source flag is dark.
+	// and chat (scheme "chat") are the Phase-0–4 schemes; mail (scheme "mail")
+	// and act (scheme "act") join in Tasks 4/6. gmail_messages and the
+	// owner-interaction tables are base tables, so a resolver is registered even
+	// when its source flag is dark.
 	p.registry = newProvenanceRegistry(
 		messageResolver{database},
 		chatResolver{db: database, logf: logf},
+		mailResolver{database},
+		actResolver{database},
 	)
 	return p
 }
@@ -196,6 +203,20 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	batchSteps, err := p.runExtract(ctx, runID, acc, &stats)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
+	}
+
+	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
+	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
+	// isolation contract as Slack extraction: a per-batch failure freezes only
+	// that batch's threads and never fails the run — so a Gmail-step error is
+	// logged, not fatal, leaving the Slack extraction watermark and committed work
+	// untouched.
+	if p.cfg.Sources.Gmail {
+		gmailSteps, gerr := p.runGmailExtract(ctx, runID, batchSteps, acc, &stats)
+		if gerr != nil {
+			p.logf("memory: gmail extract: %v", gerr)
+		}
+		batchSteps += gmailSteps
 	}
 
 	// (5) Semantic tier (Phase 3) — dark behind memory.semantic.enabled. Each

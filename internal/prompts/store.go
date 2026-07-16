@@ -44,6 +44,7 @@ const (
 	InboxSituationCard         = "inbox.situation_card"
 	MemoryExtractEpisodes      = "memory.extract_episodes"
 	MemoryExtractEpisodesBatch = "memory.extract_episodes_batch"
+	MemoryExtractEmailEpisodes = "memory.extract_email_episodes"
 	MemoryEntityRewrite        = "memory.entity_rewrite"
 	MemoryReviseBeliefs        = "memory.revise_beliefs"
 	MemoryRenderMap            = "memory.render_map"

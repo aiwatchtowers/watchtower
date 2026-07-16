@@ -8,13 +8,16 @@ import "math"
 // in this file is side-effect free and exhaustively unit-tested — constants
 // live in code (not config) so the math is one auditable place (spec §Beliefs).
 
-// evidenceRank orders belief evidence by trust: an owner statement outranks a
-// direct observation, which outranks an inference.
+// evidenceRank orders belief evidence by trust: an owner statement outranks an
+// owner action (a mechanical interaction — authentically the owner but
+// non-propositional and ambiguous), which outranks a direct observation, which
+// outranks an inference.
 type evidenceRank int
 
 const (
 	rankInferred evidenceRank = iota
 	rankObserved
+	rankOwnerAction // Phase-5 5D: a mechanical owner interaction (act: ref)
 	rankOwner
 )
 
@@ -68,8 +71,15 @@ const (
 	ownerDecayDays   = 180.0 // owner weight decays linearly to the floor over this span
 	ownerWeightFresh = 1.0
 	ownerWeightFloor = 0.4
-	weightObserved   = 0.6 // observed/inferred do not decay in Phase 3
-	weightInferred   = 0.3
+	// weightOwnerAction is the fixed weight of a mechanical owner interaction
+	// (Phase-5 5D, resolved ambiguity #4): it sits above weightObserved (0.6) and
+	// below fresh owner (1.0) — an owner acting on something outweighs a
+	// third-party observation but never the owner's own words. NO age decay in
+	// Slice 1 (a dismissal's staleness is unmodeled; revisit with preference
+	// beliefs).
+	weightOwnerAction = 0.8
+	weightObserved    = 0.6 // observed/inferred do not decay in Phase 3
+	weightInferred    = 0.3
 
 	confidenceStep     = 0.1 // beliefs move in coarse 0.1 steps
 	confidenceFloor    = 0.0
@@ -98,6 +108,8 @@ func evidenceWeight(rank evidenceRank, ageDays float64) float64 {
 	switch rank {
 	case rankOwner:
 		return ownerRankWeight(ageDays)
+	case rankOwnerAction:
+		return weightOwnerAction // fixed, no age decay in Slice 1
 	case rankObserved:
 		return weightObserved
 	case rankInferred:
@@ -238,6 +250,8 @@ func parseEvidenceRank(s string) (evidenceRank, bool) {
 	switch s {
 	case "owner":
 		return rankOwner, true
+	case "owner-action":
+		return rankOwnerAction, true
 	case "observed":
 		return rankObserved, true
 	case "inferred":

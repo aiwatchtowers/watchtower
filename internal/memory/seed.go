@@ -37,7 +37,7 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 
 	var candidates []seedCandidate
 	for _, load := range []func(*db.DB, SeedConfig, float64) ([]seedCandidate, error){
-		seedPeople, seedChannels, seedJiraProjects,
+		seedPeople, seedChannels, seedJiraProjects, seedGmailSenders,
 	} {
 		batch, err := load(database, cfg, since)
 		if err != nil {
@@ -46,9 +46,21 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 		candidates = append(candidates, batch...)
 	}
 
+	// claimed tracks the aliases already taken by nodes accepted THIS run
+	// (lower-cased for the COLLATE NOCASE alias grammar). The DB idempotency
+	// check (LookupMemoryAlias) only sees committed nodes — this run's new nodes
+	// are not mirrored into the index until the commit loop below — so without
+	// this set two candidates that share an alias (a Gmail sender whose email is
+	// also a Slack person's email, seeded together on a fresh workspace's first
+	// run) would both be created and collide on the UNIQUE alias constraint. The
+	// set makes identity stitching hold WITHIN a run, not only across runs.
+	claimed := make(map[string]bool)
 	var nodes []Node
 	var ids []string
 	for _, c := range candidates {
+		if claimed[strings.ToLower(c.aliases[0])] {
+			continue // stitched to an entity already accepted this run
+		}
 		_, err := database.LookupMemoryAlias(c.aliases[0])
 		if err == nil {
 			continue // already seeded (or manually created) — idempotency
@@ -66,6 +78,9 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 			Body:    entitySkeletonBody(c.title, c.what),
 		}
 		n.Refs.PeopleCard = c.peopleCard
+		for _, a := range c.aliases {
+			claimed[strings.ToLower(a)] = true
+		}
 		nodes = append(nodes, n)
 		ids = append(ids, n.ID)
 	}
@@ -195,6 +210,61 @@ func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate
 		out = append(out, seedCandidate{title: key, aliases: []string{key}})
 	}
 	return out, rows.Err()
+}
+
+// seedGmailSenders returns one candidate per distinct from_email that sent a
+// gmail message inside the window (internal_date unix > since), titled from
+// from_name (falling back to the email's local-part), aliased by the lower-cased
+// email address. There is no message-count threshold beyond "sent >=1 in the
+// window": external senders are sparse and the seed_min_messages floor is
+// Slack-specific.
+//
+// Identity stitching is free (resolved ambiguity, §5A): SeedEntities's
+// LookupMemoryAlias(aliases[0]) idempotency check unifies a sender whose email
+// already aliases a seeded Slack person (seedPeople carries the users.email as
+// an alias, and memory_aliases is COLLATE NOCASE), so no duplicate entity is
+// minted — a genuinely external sender becomes a new person.
+//
+// internal_date is stored as an RFC3339 string by the Gmail sync (not the raw
+// ms-epoch API value), so strftime('%s', internal_date) yields its whole-second
+// unix time for the window comparison.
+func seedGmailSenders(database *db.DB, _ SeedConfig, since float64) ([]seedCandidate, error) {
+	rows, err := database.Query(`
+		SELECT lower(from_email) AS email, MAX(from_name) AS name
+		FROM gmail_messages
+		WHERE from_email != '' AND internal_date != ''
+		  AND CAST(strftime('%s', internal_date) AS INTEGER) > ?
+		GROUP BY lower(from_email)
+		ORDER BY email`, since)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, nil // gmail_messages absent — no senders to seed (a clean no-op)
+		}
+		return nil, fmt.Errorf("memory: seed gmail senders query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []seedCandidate
+	for rows.Next() {
+		var email, name string
+		if err := rows.Scan(&email, &name); err != nil {
+			return nil, fmt.Errorf("memory: seed gmail senders scan: %w", err)
+		}
+		out = append(out, seedCandidate{
+			title:   firstNonEmpty(name, emailLocalPart(email)),
+			aliases: []string{email},
+		})
+	}
+	return out, rows.Err()
+}
+
+// emailLocalPart returns the part of an email address before the first '@',
+// the display fallback for a sender with no from_name.
+func emailLocalPart(email string) string {
+	if i := strings.IndexByte(email, '@'); i >= 0 {
+		return email[:i]
+	}
+	return email
 }
 
 // firstNonEmpty returns the first non-empty string.

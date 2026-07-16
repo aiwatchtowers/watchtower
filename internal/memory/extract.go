@@ -178,7 +178,17 @@ func refsSameChannel(refs []episodeRef) bool {
 // — including the refs of fully-discarded episodes; the number of discarded
 // episodes itself is len(eps) - len(kept).
 func validateRefs(checker messageChecker, eps []extractedEpisode) (kept []extractedEpisode, dropped int, err error) {
-	reg := extractorRegistry(checker)
+	return validateRefsVia(extractorRegistry(checker), eps)
+}
+
+// validateRefsVia is the scheme-agnostic core of validateRefs: it validates
+// every episode ref through the given registry, dropping refs that positively do
+// not resolve or whose scheme is unregistered (MEM-01/MEM-12), discarding an
+// episode left with no surviving provenance, and returning a lookup ERROR
+// unchanged so the caller keeps its freeze-vs-drop disposition. The Slack
+// extractor passes a message-only registry; the Gmail extractor passes a
+// mail-only one — the disposition (batch freeze on error) is identical.
+func validateRefsVia(reg *ProvenanceRegistry, eps []extractedEpisode) (kept []extractedEpisode, dropped int, err error) {
 	for _, ep := range eps {
 		var surviving []episodeRef
 		for _, ref := range ep.Refs {
