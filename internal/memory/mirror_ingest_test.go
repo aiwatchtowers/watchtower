@@ -317,3 +317,85 @@ func TestMemory14_MirrorNeverWritesOperationalTables(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT inbox_last_processed_ts FROM workspace WHERE id = 'T1'`).Scan(&wm))
 	assert.Equal(t, float64(4242), wm, "inbox watermark unmoved")
 }
+
+// fullSlice4Config turns on every slice-4 gate (operational mirrors, the
+// day_plan/meeting_prep read-surface gates, preference beliefs) PLUS the
+// earlier-slice sources (gmail/actions/calendar/chats) and the whole semantic
+// tier, so a single Run exercises them all together.
+func fullSlice4Config() config.MemoryConfig {
+	cfg := semanticTestConfig() // Semantic.Enabled + the documented caps + budget
+	cfg.Semantic.Preferences = true
+	cfg.Sources.Operational = true
+	cfg.Sources.Gmail = true
+	cfg.Sources.Actions = true
+	cfg.Sources.Calendar = true
+	cfg.Sources.Chats = true
+	cfg.Surfaces.DayPlan = true
+	cfg.Surfaces.MeetingPrep = true
+	return cfg
+}
+
+// TestMemory14_FullRunNeverWritesOperationalTables strengthens MEM-14 from the
+// isolated mirror step (TestMemory14_MirrorNeverWritesOperationalTables) to a
+// FULL consolidation Run with every slice-4 gate on plus the earlier-slice
+// sources and the semantic tier: targets/tracks/day_plans/day_plan_items/
+// inbox_items/situations/situation_signals stay byte-identical across the run
+// and inbox_last_processed_ts is unmoved — only memory's own vault/index and its
+// own watermarks/floors may move.
+func TestMemory14_FullRunNeverWritesOperationalTables(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	// Targets (incl. one converted-from-situation), a track, a converted
+	// situation with its already-ingested episode, and a situation signal.
+	tid, err := d.CreateTarget(db.Target{Text: "Converted goal", Status: "in_progress", Priority: "high", Ownership: "mine", SourceType: "manual",
+		SubItems: `[{"text":"do the thing","done":false}]`})
+	require.NoError(t, err)
+	_, err = d.CreateTarget(db.Target{Text: "Plain goal", Status: "todo", Priority: "low", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	_, err = d.UpsertTrack(db.Track{Text: "A track", Category: "task", Ownership: "mine", Priority: "medium",
+		SubItems: `[{"text":"step one","status":"open"}]`})
+	require.NoError(t, err)
+	sid, err := d.CreateSituation(db.DashboardSituation{Title: "Origin story", Status: "open"})
+	require.NoError(t, err)
+	require.NoError(t, d.MarkSituationConverted(int(sid), int(tid), 0))
+	writeAndIndex(t, v, d, Node{
+		ID: "ep_00000000000000000000000099", Type: "episode", Tier: "long", Status: "closed",
+		Title: "Origin story", Aliases: []string{fmt.Sprintf("situation:%d", sid)},
+		Body: "# Origin story\n\n## Story\ns\n",
+	})
+	item := seedInboxItem(t, d, "C1", "111.1")
+	require.NoError(t, d.AddSituationSignals(int(sid), []int{item}))
+
+	// A day plan + item — never read by the memory pipeline; it must stay identical.
+	_, err = d.Exec(`INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-07-17', '2026-07-17T00:00:00Z')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO day_plan_items (day_plan_id, kind, source_type, title) VALUES (1, 'timeblock', 'task', 'block')`)
+	require.NoError(t, err)
+
+	// inbox_last_processed_ts to a nonzero sentinel.
+	_, err = d.Exec(`UPDATE workspace SET inbox_last_processed_ts = 4242 WHERE id = 'T1'`)
+	require.NoError(t, err)
+
+	tables := []string{"targets", "tracks", "day_plans", "day_plan_items", "inbox_items", "situations", "situation_signals"}
+	before := map[string]string{}
+	for _, tb := range tables {
+		before[tb] = dumpTable(t, d, tb)
+	}
+
+	gen := &fakeGen{reply: semanticReply}
+	p := NewPipeline(d, v, gen, fullSlice4Config(), t.Logf)
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	require.Positive(t, stats.Mirrored, "the full gates-on run actually mirrored the operational rows")
+
+	_, status, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
+	assert.Equal(t, "done", status, "the full slice-4 Run completed")
+
+	for _, tb := range tables {
+		assert.Equal(t, before[tb], dumpTable(t, d, tb), "MEM-14: %s unchanged by a full slice-4 Run", tb)
+	}
+	var wm float64
+	require.NoError(t, d.QueryRow(`SELECT inbox_last_processed_ts FROM workspace WHERE id = 'T1'`).Scan(&wm))
+	assert.Equal(t, float64(4242), wm, "inbox watermark unmoved by a full slice-4 Run")
+}
