@@ -703,9 +703,124 @@ func (db *DB) CountMemoryLinksInBulk(ids []string) (map[string]int, error) {
 	return counts, nil
 }
 
+// MemoryGmailWatermark returns the unix ts of the last gmail thread message
+// fully folded into an episode by the Gmail thread->episode extractor
+// (memory.sources.gmail), mirroring MemoryWatermark. Deliberately a THIRD,
+// independent watermark alongside gmail_last_internal_date (Gmail sync) and
+// memory_last_extracted_ts (Slack episode extraction) — see 00020, resolved
+// ambiguity #7. A fresh workspace without its singleton row reads as 0.
+func (db *DB) MemoryGmailWatermark() (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT COALESCE(memory_gmail_last_extracted_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting memory gmail watermark: %w", err)
+	}
+	return ts, nil
+}
+
+// SetMemoryGmailWatermark advances the Gmail episode-extraction watermark
+// (see MemoryGmailWatermark). The Gmail extractor advances this only behind
+// fully-committed thread batches (MEM-04), never past an unextracted thread.
+func (db *DB) SetMemoryGmailWatermark(ts float64) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_gmail_last_extracted_ts = ?`, ts); err != nil {
+		return fmt.Errorf("setting memory gmail watermark: %w", err)
+	}
+	return nil
+}
+
+// MemoryInteractionFloor returns the 5D interaction-ingest floor: the highest
+// owner-interaction row id already folded into episode-mirror outcome
+// annotations and memory_engagement aggregates by the mechanical
+// interaction-ingest step (memory.sources.actions), mirroring
+// MemoryChatTurnFloor. A fresh workspace without its singleton row reads as 0.
+func (db *DB) MemoryInteractionFloor() (int64, error) {
+	var id int64
+	err := db.QueryRow(`SELECT COALESCE(memory_last_interaction_id, 0) FROM workspace LIMIT 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting memory interaction floor: %w", err)
+	}
+	return id, nil
+}
+
+// SetMemoryInteractionFloor advances the interaction-ingest floor (see
+// MemoryInteractionFloor). The ingest step advances this only after its
+// vault commit and aggregate writes succeed.
+func (db *DB) SetMemoryInteractionFloor(id int64) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_last_interaction_id = ?`, id); err != nil {
+		return fmt.Errorf("setting memory interaction floor: %w", err)
+	}
+	return nil
+}
+
+// BumpEngagement records one owner interaction against a node's engagement
+// aggregates (the mechanical interaction-ingest step's per-entity write),
+// incrementing engaged_count when engaged is true, else dismissed_count, and
+// stamping last_interaction_at — the memory_node_stats upsert precedent.
+// Runtime state: MEM-02-exempt like memory_entity_hints, survives
+// DropMemoryIndex (see 00020, resolved ambiguity #3).
+func (db *DB) BumpEngagement(nodeID string, engaged bool, at string) error {
+	stmt := `INSERT INTO memory_engagement (node_id, dismissed_count, last_interaction_at)
+		VALUES (?, 1, ?)
+		ON CONFLICT(node_id) DO UPDATE SET
+			dismissed_count = dismissed_count + 1,
+			last_interaction_at = excluded.last_interaction_at`
+	if engaged {
+		stmt = `INSERT INTO memory_engagement (node_id, engaged_count, last_interaction_at)
+		VALUES (?, 1, ?)
+		ON CONFLICT(node_id) DO UPDATE SET
+			engaged_count = engaged_count + 1,
+			last_interaction_at = excluded.last_interaction_at`
+	}
+	if _, err := db.Exec(stmt, nodeID, at); err != nil {
+		return fmt.Errorf("bumping engagement for %s: %w", nodeID, err)
+	}
+	return nil
+}
+
+// GetEngagement returns a node's accumulated engagement aggregates — the
+// retention-importance input eviction scoring reads (Task 8). A node with no
+// memory_engagement row (never interacted with) reads as (0, 0, nil) rather
+// than an error.
+func (db *DB) GetEngagement(nodeID string) (engaged, dismissed int, err error) {
+	err = db.QueryRow(`SELECT engaged_count, dismissed_count FROM memory_engagement WHERE node_id = ?`, nodeID).
+		Scan(&engaged, &dismissed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("getting engagement for %s: %w", nodeID, err)
+	}
+	return engaged, dismissed, nil
+}
+
 // DropMemoryIndex empties all four memory index tables in one transaction so
 // a full reindex can rebuild them from the vault (MEM-02).
+//
+// memory_engagement and memory_dispute_flags carry a REFERENCES
+// memory_nodes(id) FK but are deliberately NOT cleared here — they are
+// runtime state that must survive a reindex (MEM-02-exempt, the
+// memory_entity_hints precedent). Emptying memory_nodes while those rows
+// still reference it would otherwise violate the FK the instant DELETE FROM
+// memory_nodes runs, so foreign_keys is disabled for the duration of the
+// drop, leaving those rows briefly orphaned; Reconcile's subsequent walk
+// (Rebuild's caller) reinserts the same deterministic node ids, re-satisfying
+// the reference. Toggled via PRAGMA foreign_keys — never defer_foreign_keys,
+// which only postpones the check to commit and would not help here since
+// nothing re-inserts the parent row within this transaction (see
+// TestMigration_TableRecreationPreservesCascadeChildren) — and only outside
+// an open transaction, since SQLite refuses to change it mid-BEGIN.
 func (db *DB) DropMemoryIndex() error {
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disabling foreign keys for memory index drop: %w", err)
+	}
+	defer func() { _, _ = db.Exec(`PRAGMA foreign_keys = ON`) }()
+
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("beginning memory drop tx: %w", err)

@@ -1000,3 +1000,140 @@ func TestMemoryMigrationDownUpCycle(t *testing.T) {
 		t.Errorf("cache token columns missing after cycle: %v", err)
 	}
 }
+
+// TestMemoryGmailWatermarkRoundTrip: the Gmail episode-extraction watermark
+// (Task 3, migration 00020) defaults to 0 on a fresh workspace and persists
+// after SetMemoryGmailWatermark, mirroring MemoryWatermark/SetMemoryWatermark
+// — a THIRD, independent watermark alongside gmail_last_internal_date (Gmail
+// sync) and memory_last_extracted_ts (Slack episode extraction), resolved
+// ambiguity #7.
+func TestMemoryGmailWatermarkRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	ts, err := db.MemoryGmailWatermark()
+	if err != nil {
+		t.Fatalf("MemoryGmailWatermark on fresh workspace: %v", err)
+	}
+	if ts != 0 {
+		t.Errorf("initial watermark = %v, want 0", ts)
+	}
+
+	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	if err := db.SetMemoryGmailWatermark(1700000000); err != nil {
+		t.Fatalf("SetMemoryGmailWatermark: %v", err)
+	}
+	ts, err = db.MemoryGmailWatermark()
+	if err != nil {
+		t.Fatalf("MemoryGmailWatermark after set: %v", err)
+	}
+	if ts != 1700000000 {
+		t.Errorf("watermark after set = %v, want 1700000000", ts)
+	}
+}
+
+// TestMemoryInteractionFloorRoundTrip: the 5D interaction-ingest floor (Task
+// 3, migration 00020) defaults to 0 on a fresh workspace and persists after
+// SetMemoryInteractionFloor, mirroring MemoryChatTurnFloor/
+// SetMemoryChatTurnFloor.
+func TestMemoryInteractionFloorRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	floor, err := db.MemoryInteractionFloor()
+	if err != nil {
+		t.Fatalf("MemoryInteractionFloor on fresh workspace: %v", err)
+	}
+	if floor != 0 {
+		t.Errorf("initial floor = %d, want 0", floor)
+	}
+
+	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	if err := db.SetMemoryInteractionFloor(7); err != nil {
+		t.Fatalf("SetMemoryInteractionFloor: %v", err)
+	}
+	floor, err = db.MemoryInteractionFloor()
+	if err != nil {
+		t.Fatalf("MemoryInteractionFloor after set: %v", err)
+	}
+	if floor != 7 {
+		t.Errorf("floor after set = %d, want 7", floor)
+	}
+}
+
+// TestBumpEngagementAccumulatesEngagedAndDismissed covers the memory_engagement
+// side table helpers (Task 3): BumpEngagement upserts and increments the right
+// counter per call, stamping last_interaction_at each time, and GetEngagement
+// on an unseen node reads as (0, 0, nil) rather than an error (the
+// memory_node_stats upsert precedent, sql.ErrNoRows folded to a zero value).
+func TestBumpEngagementAccumulatesEngagedAndDismissed(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.UpsertMemoryNode(memTestNode("ent_x", nil), "body x", nil); err != nil {
+		t.Fatalf("upsert ent_x: %v", err)
+	}
+
+	engaged, dismissed, err := db.GetEngagement("ent_x")
+	if err != nil {
+		t.Fatalf("GetEngagement on unseen node: %v", err)
+	}
+	if engaged != 0 || dismissed != 0 {
+		t.Errorf("initial engagement = (%d, %d), want (0, 0)", engaged, dismissed)
+	}
+
+	if err := db.BumpEngagement("ent_x", true, "2026-07-16T00:00:00Z"); err != nil {
+		t.Fatalf("BumpEngagement(engaged): %v", err)
+	}
+	if err := db.BumpEngagement("ent_x", true, "2026-07-16T00:01:00Z"); err != nil {
+		t.Fatalf("BumpEngagement(engaged) again: %v", err)
+	}
+	if err := db.BumpEngagement("ent_x", false, "2026-07-16T00:02:00Z"); err != nil {
+		t.Fatalf("BumpEngagement(dismissed): %v", err)
+	}
+
+	engaged, dismissed, err = db.GetEngagement("ent_x")
+	if err != nil {
+		t.Fatalf("GetEngagement after bumps: %v", err)
+	}
+	if engaged != 2 || dismissed != 1 {
+		t.Errorf("engagement after bumps = (%d, %d), want (2, 1)", engaged, dismissed)
+	}
+
+	var lastAt string
+	if err := db.QueryRow(`SELECT last_interaction_at FROM memory_engagement WHERE node_id = 'ent_x'`).Scan(&lastAt); err != nil {
+		t.Fatalf("reading last_interaction_at: %v", err)
+	}
+	if lastAt != "2026-07-16T00:02:00Z" {
+		t.Errorf("last_interaction_at = %q, want the most recent bump's timestamp", lastAt)
+	}
+}
+
+// TestEngagementSurvivesDropIndex: memory_engagement is runtime state derived
+// from interaction rows, MEM-02-exempt like memory_entity_hints (NOT like
+// memory_node_stats) — the interaction floor may already have stepped past
+// the rows that produced these aggregates, so DropMemoryIndex (a MEM-02
+// reindex) must not clear it (resolved ambiguity #3).
+func TestEngagementSurvivesDropIndex(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := db.UpsertMemoryNode(memTestNode("ent_x", nil), "body x", nil); err != nil {
+		t.Fatalf("upsert ent_x: %v", err)
+	}
+	if err := db.BumpEngagement("ent_x", true, "2026-07-16T00:00:00Z"); err != nil {
+		t.Fatalf("BumpEngagement: %v", err)
+	}
+
+	if err := db.DropMemoryIndex(); err != nil {
+		t.Fatalf("DropMemoryIndex: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_engagement`).Scan(&count); err != nil {
+		t.Fatalf("count after drop: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("engagement rows after DropMemoryIndex = %d, want 1 (must survive reindex)", count)
+	}
+}

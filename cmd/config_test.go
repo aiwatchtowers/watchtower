@@ -78,6 +78,33 @@ func TestConfigSet(t *testing.T) {
 	assert.Contains(t, string(data), "claude-opus-4-6")
 }
 
+func TestConfigSet_MemorySourcesGmail_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	err := configSetCmd.RunE(configSetCmd, []string{"memory.sources.gmail", "true"})
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "Set memory.sources.gmail = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "gmail: true")
+}
+
 func TestConfigShow(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")

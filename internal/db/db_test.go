@@ -105,7 +105,7 @@ func TestAllTablesExist(t *testing.T) {
 		"feed_items", "feed_state",
 		"gmail_messages", "gmail_auth_state",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
-		"memory_entity_hints", "memory_dispute_flags",
+		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",
 	}
 
 	for _, table := range expectedTables {
@@ -416,6 +416,88 @@ func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
 		`INSERT INTO memory_dispute_flags (node_id, flagged_at) VALUES ('bel_cycle', '2026-07-16T00:00:00Z')`,
 	); err != nil {
 		t.Errorf("memory_dispute_flags missing after cycle: %v", err)
+	}
+}
+
+// TestMigration00020MemoryPhase5Slice1 covers Task 3's three additive
+// changes: the Gmail episode-extraction watermark and interaction-ingest
+// floor on workspace (both default 0), and the memory_engagement side table
+// (defaults ” / 0 / 0, keyed on memory_nodes.id).
+func TestMigration00020MemoryPhase5Slice1(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	for _, col := range []string{"memory_gmail_last_extracted_ts", "memory_last_interaction_id"} {
+		var n int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = ?`, col).Scan(&n)
+		if err != nil || n != 1 {
+			t.Fatalf("workspace.%s missing (count=%d err=%v)", col, n, err)
+		}
+	}
+	if _, err := database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	var gmailTS float64
+	var interactionFloor int64
+	if err := database.QueryRow(
+		`SELECT memory_gmail_last_extracted_ts, memory_last_interaction_id FROM workspace WHERE id = 'T1'`,
+	).Scan(&gmailTS, &interactionFloor); err != nil {
+		t.Fatalf("reading watermark/floor defaults: %v", err)
+	}
+	if gmailTS != 0 || interactionFloor != 0 {
+		t.Fatalf("watermark/floor defaults = (%v, %v), want (0, 0)", gmailTS, interactionFloor)
+	}
+
+	assertTableExists(t, database, "memory_engagement")
+	if err := database.UpsertMemoryNode(memTestNode("ent_engage", nil), "body", nil); err != nil {
+		t.Fatalf("upsert node for engagement fk: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_engagement (node_id) VALUES ('ent_engage')`,
+	); err != nil {
+		t.Fatalf("inserting engagement row with only node_id: %v", err)
+	}
+	var engaged, dismissed int
+	var lastAt string
+	if err := database.QueryRow(
+		`SELECT engaged_count, dismissed_count, last_interaction_at FROM memory_engagement WHERE node_id = 'ent_engage'`,
+	).Scan(&engaged, &dismissed, &lastAt); err != nil {
+		t.Fatalf("reading engagement defaults: %v", err)
+	}
+	if engaged != 0 || dismissed != 0 || lastAt != "" {
+		t.Fatalf("engagement defaults = (%d, %d, %q), want (0, 0, \"\")", engaged, dismissed, lastAt)
+	}
+}
+
+// TestMemoryPhase5Slice1MigrationDownUpCycle: 00020's Down drops its
+// ALTER-added columns and the memory_engagement table (precedent: 00017-19's
+// Down), so a down;up cycle is clean.
+func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "phase5-slice1-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	if _, err := d.Exec(`UPDATE workspace SET memory_gmail_last_extracted_ts = 0, memory_last_interaction_id = 0`); err != nil {
+		t.Errorf("workspace columns missing after cycle: %v", err)
+	}
+	if err := d.UpsertMemoryNode(memTestNode("ent_cycle", nil), "body", nil); err != nil {
+		t.Fatalf("upsert node for engagement fk: %v", err)
+	}
+	if _, err := d.Exec(
+		`INSERT INTO memory_engagement (node_id) VALUES ('ent_cycle')`,
+	); err != nil {
+		t.Errorf("memory_engagement missing after cycle: %v", err)
 	}
 }
 

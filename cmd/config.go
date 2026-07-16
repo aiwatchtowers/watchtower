@@ -214,6 +214,8 @@ var knownConfigKeys = map[string]bool{
 	"memory.surfaces.briefing":             true,
 	"memory.surfaces.disputes":             true,
 	"memory.surfaces.reflection":           true,
+	"memory.sources.gmail":                 true,
+	"memory.sources.actions":               true,
 	"claude_path":                          true,
 }
 

@@ -183,6 +183,7 @@ type MemoryConfig struct {
 	BatchMaxMessages     int                  `mapstructure:"batch_max_messages"`      // max total messages grouped into one extraction call (default: 1500)
 	Semantic             MemorySemanticConfig `mapstructure:"semantic"`                // Phase-3 semantic tier (belief/rewrite/dedupe/evict/concept steps), dark by default
 	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/disputes/reflection), each dark by default
+	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // Phase-5 slice-1 sources (gmail/actions), each dark by default
 }
 
 // MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
@@ -211,6 +212,15 @@ type MemorySurfacesConfig struct {
 	Briefing   bool `mapstructure:"briefing"`   // daily briefing "Memory revisions" journal block (default: false)
 	Disputes   bool `mapstructure:"disputes"`   // inbox watchtower detector surfaces dispute_pending beliefs as dashboard situations (default: false)
 	Reflection bool `mapstructure:"reflection"` // weekly strong-tier reflection pass over vault git history (default: false)
+}
+
+// MemorySourcesConfig gates the two Phase-5 slice-1 memory sources
+// independently — each gated path is a byte-identical no-op when its flag is
+// off, and the two flags have independent blast radii from each other and
+// from Semantic.Enabled/Surfaces.*. All default false (dark by default).
+type MemorySourcesConfig struct {
+	Gmail   bool `mapstructure:"gmail"`   // Gmail thread->episode extractor + sender->person seeding (default: false)
+	Actions bool `mapstructure:"actions"` // mechanical interaction ingest (owner-action evidence, engagement aggregates) (default: false)
 }
 
 type Config struct {
@@ -321,6 +331,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.surfaces.briefing", false)
 	v.SetDefault("memory.surfaces.disputes", false)
 	v.SetDefault("memory.surfaces.reflection", false)
+	v.SetDefault("memory.sources.gmail", false) // Phase-5 slice-1 sources dark by default
+	v.SetDefault("memory.sources.actions", false)
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)
