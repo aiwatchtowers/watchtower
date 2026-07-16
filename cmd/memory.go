@@ -70,6 +70,17 @@ var memoryIndexCmd = &cobra.Command{
 	RunE:  runMemoryIndex,
 }
 
+var memoryDigestCompareCmd = &cobra.Command{
+	Use:   "digest-compare",
+	Short: "Render recent channel digests from memory episodes and diff against the legacy pipeline (dark compare-mode)",
+	Long: "Owner-facing diagnostic for the Phase-5 render-inversion. Renders each recently legacy-digested\n" +
+		"Slack channel window from the memory episodes overlapping it, writes each render to the\n" +
+		"memory_digest_shadow side table, and emits a per-channel legacy-vs-memory diff report. The legacy\n" +
+		"digest pipeline is a pure read here — no digests/digest_topics row is ever written. Nothing is\n" +
+		"user-visible; the report exists for the go/no-go hand-review before any switch off legacy.",
+	RunE: runMemoryDigestCompare,
+}
+
 // newMemoryPipelineFactory is the seam tests override to inject a fake
 // pipeline (same pattern as newDayPlanPipelineFactory). The default wires
 // the standard CLI generator, the prompt store, the digest language for
@@ -95,10 +106,13 @@ func memoryStderrLogf(cmd *cobra.Command) func(string, ...any) {
 func init() {
 	rootCmd.AddCommand(memoryCmd)
 	memoryCmd.AddCommand(memoryStatusCmd, memoryReindexCmd, memoryOpenCmd,
-		memoryRecallCmd, memoryConsolidateCmd, memorySeedCmd, memoryIndexCmd)
+		memoryRecallCmd, memoryConsolidateCmd, memorySeedCmd, memoryIndexCmd,
+		memoryDigestCompareCmd)
 
 	memoryRecallCmd.Flags().Int("limit", 10, "max results to print")
 	memorySeedCmd.Flags().Bool("dry-run", false, "print what would be created without writing")
+	memoryDigestCompareCmd.Flags().Duration("since", 7*24*time.Hour, "compare legacy channel digests written within this lookback")
+	memoryDigestCompareCmd.Flags().String("out", "docs/specs/memory-digest-compare-report.md", "path to write the markdown compare report")
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -384,6 +398,50 @@ func runMemoryConsolidate(cmd *cobra.Command, _ []string) error {
 	if q := stats.Reconciled.Quarantined; q > 0 {
 		fmt.Fprintf(out, "Warning: %d vault file(s) quarantined during reconcile (parse/index failure — see warnings above).\n", q)
 	}
+	return nil
+}
+
+func runMemoryDigestCompare(cmd *cobra.Command, _ []string) error {
+	since, _ := cmd.Flags().GetDuration("since")
+	outPath, _ := cmd.Flags().GetString("out")
+	cfg, database, err := memoryConfigAndDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	out := cmd.OutOrStdout()
+
+	if !cfg.Memory.Enabled {
+		fmt.Fprintln(out, "Memory is disabled (memory.enabled = false in config); nothing to compare.")
+		return nil
+	}
+
+	vault, err := memory.OpenVault(memoryVaultPath(cfg))
+	if err != nil {
+		return err
+	}
+	pipe := newMemoryPipelineFactory(database, vault, cfg, memoryStderrLogf(cmd))
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stats, err := pipe.CompareDigests(ctx, time.Now().Add(-since))
+	if err != nil {
+		return fmt.Errorf("digest compare: %w", err)
+	}
+
+	report := memory.RenderCompareReport(stats, time.Now())
+	if err := os.WriteFile(outPath, []byte(report), 0o644); err != nil {
+		return fmt.Errorf("writing compare report to %s: %w", outPath, err)
+	}
+
+	fmt.Fprintf(out, "Digest compare done: %d channel(s) shadowed (%d failed, %d invented refs dropped).\n",
+		stats.ShadowsWritten, stats.Failed, stats.RefsRejected)
+	if stats.ShadowsWritten == 0 {
+		fmt.Fprintf(out, "No legacy channel digests found in the last %s — nothing to render.\n", since)
+	}
+	fmt.Fprintf(out, "Report written to %s\n", outPath)
 	return nil
 }
 

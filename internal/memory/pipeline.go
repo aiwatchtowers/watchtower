@@ -80,6 +80,11 @@ type RunStats struct {
 	// Phase-5 5D interaction ingest (zero unless memory.sources.actions).
 	InteractionsIngested int // owner interactions folded (feedback + situation verdicts) into episode-mirror annotations
 	EngagementUpdated    int // per-entity engagement aggregates bumped (memory_engagement)
+
+	// Phase-5 slice-3 dark digest-compare (zero unless memory.renders.digest_compare).
+	DigestsCompared     int // shadow rows written by the compare runner (covered + coverage-0 windows)
+	CompareFailed       int // channels whose render/read failed and were isolated
+	CompareRefsRejected int // invented render refs dropped across all compared channels (MEM-13)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -300,16 +305,28 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	}
 	acc.add(mapUsage)
 
+	// (7) Dark digest compare-mode (behind memory.renders.digest_compare): render
+	// each recently legacy-digested channel window from the memory episodes that
+	// now exist (extraction already ran this cycle) and shadow-store the diff. A
+	// pure reader of digests/digest_topics/messages; it writes only
+	// memory_digest_shadow and never moves any watermark or digest bound. Placed
+	// after extraction (resolved ambiguity #5) so the current window's episodes
+	// exist; source-isolated, never fatal.
+	if p.cfg.Renders.DigestCompare {
+		p.runDigestCompare(ctx, runID, &stats)
+	}
+
 	wmAfter, err := p.db.MemoryWatermark()
 	if err != nil {
 		p.logf("memory: read watermark after run: %v", err)
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped)",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
 		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.InteractionsIngested, stats.EngagementUpdated,
-		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped)
+		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
+		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected)
 	return stats, nil
 }
 

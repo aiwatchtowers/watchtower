@@ -13,6 +13,7 @@ make build
 # phase 4 flags: memory.surfaces.{chat,briefing,disputes,reflection} — all default false, enabled per-drill in Section 2
 # phase 5 slice-1 flags: memory.sources.{gmail,actions} — both default false, enabled per-drill in Section 3
 # phase 5 slice-2 flags: memory.sources.{calendar,chats} — both default false, enabled per-drill in Section 4
+# phase 5 slice-3 flag: memory.renders.digest_compare — default false, enabled per-drill in Section 5
 ```
 
 The vault at `~/.local/share/watchtower/whitebit/memory/` already contains the phases 0–2 E2E data (447+ entities, ~384+ episodes incl. 8 known duplicate episodes from the killed-run incident, one manually-set watermark) — this is deliberately the starting state: phase 3 must cope with a lived-in vault, not a fresh one.
@@ -137,6 +138,34 @@ The opt-in owner-rank pin. Pick a **track** with a clear channel/member subject 
 - **MEM-12:** a provenance ref of a bogus scheme is **rejected at write, counted, never written**; the calendar episode carries only its single `cal:` ref (validated through the cal-only scoped registry); a `cal:` id swept from the DB drops-and-counts, the episode discarded ref-less.
 
 Abort criteria (in addition to Sections 0–3): **any** inbox write from the calendar or chat step; **any** owner-rank line minted from a non-`role='user'` source; **any** target/track drafting turn staged without the "remember this" command; a calendar episode written with an unresolved or non-`cal:` provenance ref; or either source doing work while its gate is off — stop and report (these break MEM-05/09/12).
+
+## Section 5 — Phase 5 slice 3: digest render-inversion (dark compare-mode)
+
+`memory.renders.digest_compare` defaults false. First confirm the **dark-default invariant**: with it false, one `consolidate` is byte-identical to post-Slice-2 behavior — no render call, no `memory_digest_shadow` row written, no report, the run-done log's `compare: 0 shadowed`. This is a **diagnostic-only** slice: nothing user-visible changes, the legacy digest pipeline stays authoritative, and the compare only reads `digests`/`digest_topics`/`messages` and writes the memory-owned `memory_digest_shadow` side table + a branch report. The gate is the go/no-go for the future switch off legacy (a later slice).
+
+Prereq: the legacy channel-digest pipeline must have written recent `channel` digests (`./watchtower sync` on a Slack workspace with traffic, or wait for a daemon cycle), and the memory extractor must have built episodes over roughly the same windows (`memory.enabled` on, one or more `consolidate` passes) — otherwise the compare has no episodes to render from and every window reads coverage 0.
+
+### 5a — Run the compare + read the report
+
+1. `./watchtower config set memory.renders.digest_compare true`, then either let a daemon cycle run or invoke the diagnostic directly: `./watchtower memory digest-compare --since 168h --out docs/specs/memory-digest-compare-report.md`. Expect the CLI to print `N channel(s) shadowed` and write the markdown report. (In the daemon, the compare runs as a tail sub-step of `phaseMemory` after extraction — the run-done log shows `compare: N shadowed (M failed, K refs rejected)`.)
+2. Open the branch report. Confirm the **aggregate ref-validity** table shows the legacy `key_messages` ref-validity around the audit's **~0.6% valid** (the vast majority of legacy `key_messages` ts do NOT resolve against `messages` — the hallucination the render-inversion exists to kill) versus the **memory render at 100%** (valid by construction, MEM-13). Confirm per-channel coverage is plausible (a channel whose window the extractor fully processed should read high; a channel with extraction lag reads lower — a coverage gap, not a fabricated miss), topic counts are comparable, and the length ratio shows the memory render is not wildly longer than legacy.
+
+### 5b — Hand-review protocol (the switch gate)
+
+For **N random channels** in the report (N ≥ 5, or every channel if fewer), read the legacy digest and the memory render **side by side**:
+
+1. Pull the legacy digest: `./watchtower digest show <channel>` (or query `digests`/`digest_topics` for the `legacy_digest_id` in the shadow row). Pull the memory render from the shadow row (`SELECT rendered_json FROM memory_digest_shadow WHERE channel_id=? ORDER BY period_to DESC LIMIT 1`).
+2. **Grade the render's quality ≥ legacy:** does the memory render capture the same stories, decisions, and action items the legacy digest did, without inventing content the episodes don't support? A render that drops a real topic the legacy digest caught (because the extractor never built an episode for it) is an **extraction-coverage** finding, recorded against the `coverage` metric — not a render-quality failure.
+3. **Verify every memory `key_messages` ts resolves:** spot-check that each ts in the render opens a real message in Slack (or resolves via `MessageExists`). By MEM-13 this must be 100% — a single unresolvable render ts is an abort-level finding (the write-time validation leaked).
+
+### 5c — Slice invariants (MEM-13 + legacy-untouched)
+
+- **Legacy-untouched:** dump `digests` + `digest_topics` before and after a compare run and confirm they are **byte-identical**; confirm no digest bound/watermark moved and no `digests`/`digest_topics` row was written (`grep -rn "digests\|digest_topics" internal/memory/digest_compare.go` shows reads only). The compare writes **only** `memory_digest_shadow`.
+- **MEM-13 (inject a bogus render ref):** temporarily point the render prompt at a fixture (or hand-craft a shadow input) whose model reply cites a `key_messages` ts absent from every input episode and not a resolving gap message; confirm it is **dropped and counted** in `render_refs_rejected`, never written to the shadow row. `TestMemory13_RenderCitesOnlyEpisodeProvenance` guards this mechanically; the drill confirms it end-to-end on live data.
+
+**Go/no-go for the switch (a later slice):** the compare is a GO for planning the switch off legacy only when, across the hand-reviewed channels, the memory render's quality grades **≥ legacy** on stories/decisions/actions, ref-validity is 100% (MEM-13 holds on live data), and coverage is high enough that the render is not systematically missing real topics (extraction lag understood and acceptable). Any of: a render-quality regression the coverage metric does not explain, a leaked unresolvable render ref, or a legacy-table mutation — is a **no-go**, stop and report.
+
+Abort criteria (in addition to Sections 0–4): **any** `digests`/`digest_topics` mutation or digest-bound move from the compare; **any** memory render `key_messages` ts that does not resolve (MEM-13 leak); or the compare doing work with `memory.renders.digest_compare` off — stop and report.
 
 ## Deliverable
 

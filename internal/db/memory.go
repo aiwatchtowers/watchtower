@@ -714,6 +714,41 @@ func (db *DB) ListMemoryExtractMessages(sinceTS float64, limit int) ([]MemoryExt
 	return append(out[:i], full...), nil
 }
 
+// ListChannelMessagesInWindow returns one channel's extractable messages in the
+// half-open window (fromUnix, toUnix], oldest first — the read-only input the
+// dark digest-compare runner (Phase-5 5B) uses to compute a channel window's
+// coverage (which messages an episode's provenance covers) and to feed the
+// uncovered "coverage gap" messages raw into the render. It applies the SAME
+// bot/muted author filter as the extractor's message load, so the coverage
+// denominator is exactly the set episodes are built from. Read-only.
+func (db *DB) ListChannelMessagesInWindow(channelID string, fromUnix, toUnix float64) ([]MemoryExtractMessage, error) {
+	rows, err := db.Query(`
+		SELECT m.channel_id, c.name, m.ts, m.ts_unix,
+		       COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), NULLIF(u.name, ''), m.user_id),
+		       m.text
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		LEFT JOIN users u ON u.id = m.user_id
+		WHERE m.channel_id = ? AND m.text != '' AND m.is_deleted = 0
+		  AND ((u.id IS NULL AND m.user_id != '') OR (COALESCE(u.is_bot_override, u.is_bot) = 0 AND u.is_muted_for_llm = 0))
+		  AND m.ts_unix > ? AND m.ts_unix <= ?
+		ORDER BY m.ts_unix, m.ts`, channelID, fromUnix, toUnix)
+	if err != nil {
+		return nil, fmt.Errorf("listing channel %s messages in window (%v,%v]: %w", channelID, fromUnix, toUnix, err)
+	}
+	defer rows.Close()
+
+	var out []MemoryExtractMessage
+	for rows.Next() {
+		var m MemoryExtractMessage
+		if err := rows.Scan(&m.ChannelID, &m.ChannelName, &m.TS, &m.TSUnix, &m.Author, &m.Text); err != nil {
+			return nil, fmt.Errorf("scanning channel window message: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // queryMemoryExtractMessages runs the extract-message select with the given
 // ts_unix condition. The ORDER BY ends in (channel_id, ts) — the messages
 // primary key — so the ordering is fully deterministic within a same-second
