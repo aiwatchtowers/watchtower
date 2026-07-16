@@ -94,7 +94,7 @@ var DefaultVersions = map[string]int{
 	GuidePeriod:                1,
 	PeopleReduce:               1,
 	PeopleTeam:                 1,
-	BriefingDaily:              5, // v5: jira integration
+	BriefingDaily:              6, // v6: memory revisions journal section (Phase-4 surface, behind memory.surfaces.briefing)
 	InboxTriage:                1, // v1: initial triage template
 	DigestChannelBatch:         2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
 	PeopleBatch:                1, // v1: batch people cards for low-data users
@@ -675,6 +675,7 @@ Rules:
   - In "team_pulse": mention team workload signals if sprint progress data is available.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
+- MEMORY REVISIONS: the MEMORY REVISIONS section lists belief revisions the secretary's memory made recently — notes derived from Slack/Jira, model-mediated, NOT the user's own words. Weave a revision into "attention" or "team_pulse" only when it genuinely bears on today's work; frame it as something the memory noticed, never as fact. If the section reads "(no notable revisions)", do NOT mention memory, beliefs, or revisions at all.
 - Be specific: name people, channels, decisions — not vague generalities.
 - If user has reports, prioritize their signals in team_pulse.
 - %s
@@ -708,6 +709,9 @@ Rules:
 %s
 
 === JIRA CONTEXT ===
+%s
+
+=== MEMORY REVISIONS ===
 %s`
 
 const defaultDigestChannelBatch = `You are analyzing Slack messages from multiple channels for the period %s to %s.
