@@ -291,9 +291,11 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 	}
 
 	// Mechanical: age raw non-situation episodes past their prime to closed+long
-	// (they are otherwise never closed) so eviction can later roll them up. Runs
-	// BEFORE eviction: newly-aged episodes are not yet old enough to evict this
-	// run, but the aging makes them candidates once the 45-day window passes.
+	// (they are otherwise never closed) so eviction can roll them up. Runs
+	// BEFORE eviction deliberately: an episode whose newest event already
+	// exceeds the eviction window (e.g. first run over an old backlog) is aged
+	// and then evicted in the SAME run — cold content goes straight to its
+	// rollup with provenance preserved (MEM-07), no one-run grace period.
 	start = time.Now()
 	aged, err := AgeEpisodes(p.vault, p.db, orDefault(p.cfg.Semantic.AgeAfterDays, 14), time.Now(), p.logf)
 	stats.Aged += aged
