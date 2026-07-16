@@ -1,7 +1,7 @@
 # Secretary Memory — Roadmap
 
 > Single source of truth for the feature's trajectory. Statuses updated as phases land on `feature/secretary-memory` (PR #36, draft until the whole feature ships). Execution protocol: `docs/specs/memory-autonomy-protocol.md` (autonomous; owner touchpoints marked ⚑).
-> Last updated: 2026-07-16.
+> Last updated: 2026-07-16 (phase 4 merged — feature is CODE-COMPLETE; awaiting the owner's final validation run).
 
 ## Phase 0–2 — Substrate: vault, index, consolidation v1, read surfaces — ✅ DONE, live-validated
 
@@ -11,11 +11,11 @@ Markdown vault under go-git (owner-editable, MEM-03), rebuildable SQLite index +
 
 Beliefs with ranked evidence and asymmetric hysteresis (owner rank decays 180d, model proposes / code disposes — MEM-06/08), strong-tier entity-page rewrites with marker validation, provenance-keyed episode dedupe (with union), concept-entity promotion from recurring hints, episode aging + eviction into rollups with verbatim provenance (MEM-07), two-tier map (2 KB hot `map.md` + full `index.md`), output-token budget, all dark behind `memory.semantic.enabled`. Review panel converged in 2 rounds; merged into the integration branch.
 
-## Phase 4 — Surfaces — 🔄 IN FLIGHT (spec done, plan being drafted)
+## Phase 4 — Surfaces — ✅ DONE (implemented + reviewed; live validation in the final run)
 
 Spec: `2026-07-16-memory-phase4-surfaces-design.md`. Discuss-chat MEMORY injection + memory tools (Swift), owner-rank write-back from chat turns (`chat:` evidence grammar, code-minted rank only — MEM-09), briefing revision journal, the arguing secretary (dispute_pending flags consumed by the inbox watchtower detector — MEM-05 preserved, MEM-10), weekly reflection over vault history (MEM-11). Four independent flags, all default off. Includes the first Swift work of the feature (add-desktop-feature flow).
 
-Remaining steps: plan → implementation waves → review panel to convergence → merge into integration branch → final-validation-task Section 2.
+Landed 2026-07-16: 10 plan tasks + 16 review fixes; panel converged in 2 rounds + one surgical scope fix (dispute flag gated to owner-rank downgrades). Contracts MEM-09..11 guarded; final-validation Section 2 written. Merged into the integration branch.
 
 ## Final validation — ⚑ OWNER (one run, work machine)
 
