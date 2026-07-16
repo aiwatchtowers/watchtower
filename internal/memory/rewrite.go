@@ -52,15 +52,17 @@ type rewriteResult struct {
 // logged and skipped, leaving that page byte-identical (no commit), the run
 // continues with the next entity — the same spirit as a compose failure leaving
 // situations untouched. maxEntities caps rewrites per run (<= 0 = unbounded).
-// The pipeline gates the call behind memory.semantic.enabled (Task 11); this
-// function itself is unconditional so it can be unit-tested directly.
-func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now time.Time) (rewritten int, usage *digest.Usage, err error) {
+// Returns the ids of the entities actually rewritten — the belief pass consumes
+// them as its rewritten-subject scope. The pipeline gates the call behind
+// memory.semantic.enabled (Task 11); this function itself is unconditional so it
+// can be unit-tested directly.
+func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now time.Time) (rewritten []string, usage *digest.Usage, err error) {
 	if p.generator == nil {
-		return 0, nil, nil
+		return nil, nil, nil
 	}
 	rows, err := p.db.ListMemoryNodes()
 	if err != nil {
-		return 0, nil, err
+		return nil, nil, err
 	}
 
 	var (
@@ -71,7 +73,7 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 	)
 	tmpl := p.getPrompt(prompts.MemoryEntityRewrite)
 	for _, row := range rows {
-		if maxEntities > 0 && rewritten >= maxEntities {
+		if maxEntities > 0 && len(rewritten) >= maxEntities {
 			break
 		}
 		if row.Type != "entity" || row.Status != "active" {
@@ -114,14 +116,14 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		page.Body = rebuildEntityBody(page, res.What, res.Current, facts, markers)
 		nodes = append(nodes, page)
 		ids = append(ids, page.ID)
-		rewritten++
+		rewritten = append(rewritten, page.ID)
 	}
 
 	if calls > 0 {
 		usage = &acc
 	}
 	if len(nodes) == 0 {
-		return 0, usage, nil
+		return nil, usage, nil
 	}
 
 	msg := CommitMsg{
@@ -131,7 +133,7 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		NodeIDs: ids,
 	}
 	if _, err := p.vault.WriteNodes(nodes, msg); err != nil {
-		return 0, usage, err
+		return nil, usage, err
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {

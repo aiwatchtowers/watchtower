@@ -198,17 +198,18 @@ func TestPipelineHappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, person.Body, "|Postmortem scheduled]]")
 
-	// map.md rendered mechanically at the end of the run.
-	mapContent, err := os.ReadFile(filepath.Join(v.path, "map.md"))
+	// index.md rendered mechanically at the end of the run (the strong-tier
+	// map.md is wired separately behind memory.semantic.enabled).
+	indexContent, err := os.ReadFile(filepath.Join(v.path, "index.md"))
 	require.NoError(t, err)
-	assert.Contains(t, string(mapContent), "# Memory Map")
-	assert.Contains(t, string(mapContent), "- entity: 4 (short 0, long 4)")
-	assert.Contains(t, string(mapContent), "- episode: 2 (short 2, long 0)")
-	assert.Contains(t, string(mapContent), "## People")
-	assert.Contains(t, string(mapContent), "[[ent_")
-	assert.Contains(t, string(mapContent), "#general")
-	assert.Contains(t, string(mapContent), "## Recent open episodes")
-	assert.Contains(t, string(mapContent), "Prod deploy failed")
+	assert.Contains(t, string(indexContent), "# Memory Index")
+	assert.Contains(t, string(indexContent), "- entity: 4 (short 0, long 4)")
+	assert.Contains(t, string(indexContent), "- episode: 2 (short 2, long 0)")
+	assert.Contains(t, string(indexContent), "## People")
+	assert.Contains(t, string(indexContent), "[[ent_")
+	assert.Contains(t, string(indexContent), "#general")
+	assert.Contains(t, string(indexContent), "## Recent open episodes")
+	assert.Contains(t, string(indexContent), "Prod deploy failed")
 
 	// pipeline_runs row with accumulated token accounting incl. the split
 	// cache columns (cache-side residual recorded under cache_read_tokens).
@@ -1022,4 +1023,193 @@ func TestBatchOneDegenerateChannelFailsWholeBatch(t *testing.T) {
 	for _, n := range nodes {
 		assert.NotEqual(t, "episode", n.Type, "no episode written when any sibling in the batch is malformed")
 	}
+}
+
+// ── Phase-3 semantic-tier wiring (Task 11) ──────────────────────────────────
+
+// semanticTestConfig enables the semantic tier on top of pipelineTestConfig,
+// with the documented per-run caps and a generous output budget.
+func semanticTestConfig() config.MemoryConfig {
+	cfg := pipelineTestConfig()
+	cfg.Semantic = config.MemorySemanticConfig{
+		Enabled:            true,
+		RewriteMaxEntities: 10,
+		BeliefsMax:         20,
+		DedupeMaxMerges:    20,
+		EvictAfterDays:     45,
+		EvictMax:           50,
+		ConceptMinEpisodes: 5,
+		ConceptMaxCreate:   10,
+		OutputBudget:       200000,
+	}
+	return cfg
+}
+
+// semanticReply is a fake generator reply that answers each semantic prompt
+// type with a valid, empty-effect response and extraction with "[]".
+func semanticReply(user string) (string, error) {
+	switch {
+	case strings.Contains(user, "Existing beliefs:"):
+		return `{"ops": []}`, nil
+	case strings.Contains(user, "Entity page:"):
+		return `{"what": "w", "current": "c", "facts": [], "markers": []}`, nil
+	case strings.Contains(user, "Top entities:"):
+		return "# Hot map\n\nsummary\n", nil
+	default:
+		return "[]", nil // extraction
+	}
+}
+
+// dupEpisode builds an active short episode in one channel with a single shared
+// provenance ref, for exercising the dedupe step.
+func dupEpisode(id, channel, ts string) Node {
+	body := fmt.Sprintf("# %s\n\n## Story\ns\n\n## Provenance\n- %s %s\n", id, channel, ts)
+	return Node{ID: id, Type: "episode", Tier: "short", Status: "active", Title: id, Body: body}
+}
+
+func semanticStepNames(t *testing.T, d *db.DB, runID int64) []string {
+	t.Helper()
+	steps, err := d.GetPipelineSteps(runID)
+	require.NoError(t, err)
+	var names []string
+	for _, s := range steps {
+		if s.ChannelName == "dedupe" || s.ChannelName == "promote" || s.ChannelName == "rewrite" ||
+			s.ChannelName == "beliefs" || s.ChannelName == "evict" {
+			names = append(names, s.ChannelName)
+		}
+	}
+	return names
+}
+
+// TestMemorySemanticDisabledByteIdentical guards that a semantic-off run behaves
+// exactly as before Phase 3: no semantic pipeline_steps rows, the generator is
+// called only for extraction, and RunStats' semantic counters stay zero.
+func TestMemorySemanticDisabledByteIdentical(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+
+	gen := &fakeGen{reply: semanticReply}                     // semantic disabled → only extraction hits it
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf) // Semantic.Enabled == false
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, stats.Deduped)
+	assert.Zero(t, stats.Promoted)
+	assert.Zero(t, stats.Rewritten)
+	assert.Zero(t, stats.BeliefOps)
+	assert.Zero(t, stats.Evicted)
+
+	// The generator saw only extraction calls (each carries a channel marker).
+	require.Len(t, gen.calls, 2)
+	for _, c := range gen.calls {
+		assert.True(t, strings.Contains(c, "(C1GEN)") || strings.Contains(c, "(C2OPS)"),
+			"only extraction calls when semantic is off, got: %s", c)
+	}
+
+	runID, _, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
+	assert.Empty(t, semanticStepNames(t, d, runID), "no semantic pipeline_steps rows when disabled")
+}
+
+// TestMemorySemanticEnabledRunsInOrder verifies the semantic sub-steps run in
+// the spec order (dedupe → promote → rewrite → beliefs → evict), each emitting a
+// pipeline_steps row after the extraction rows, and that RunStats counters are
+// populated (a pre-seeded duplicate pair is merged).
+func TestMemorySemanticEnabledRunsInOrder(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+
+	// A duplicate episode pair in an isolated channel, merged by the dedupe step.
+	writeAndIndex(t, v, d, dupEpisode("ep_01ARZ3NDEKTSV4RRFFQ69G5DA1", "C9DUP", "1000.000100"))
+	writeAndIndex(t, v, d, dupEpisode("ep_01ARZ3NDEKTSV4RRFFQ69G5DB2", "C9DUP", "1000.000100"))
+
+	gen := &fakeGen{
+		usage: digest.Usage{InputTokens: 10, OutputTokens: 2, TotalAPITokens: 10},
+		reply: semanticReply,
+	}
+	p := NewPipeline(d, v, gen, semanticTestConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Deduped, "the duplicate pair was merged")
+
+	runID, status, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
+	assert.Equal(t, "done", status)
+	assert.Equal(t, []string{"dedupe", "promote", "rewrite", "beliefs", "evict"},
+		semanticStepNames(t, d, runID), "semantic steps run and record in the spec order")
+
+	// The newer episode now redirects to the older one (dedupe via Merge).
+	resolved, err := Resolve(v, d, "ep_01ARZ3NDEKTSV4RRFFQ69G5DB2")
+	require.NoError(t, err)
+	assert.Equal(t, "ep_01ARZ3NDEKTSV4RRFFQ69G5DA1", resolved.ID)
+}
+
+// TestMemorySemanticStepFailureIsolated: one semantic step failing (here the
+// belief pass' AI call) is logged and skipped, and the remaining steps still run
+// — the run completes and eviction still records its row.
+func TestMemorySemanticStepFailureIsolated(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "Existing beliefs:") {
+			return "", fmt.Errorf("belief model exploded")
+		}
+		return semanticReply(user)
+	}}
+	p := NewPipeline(d, v, gen, semanticTestConfig(), t.Logf)
+
+	_, err := p.Run(context.Background())
+	require.NoError(t, err, "a semantic step failure never fails the run")
+
+	runID, status, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
+	assert.Equal(t, "done", status)
+
+	steps, err := d.GetPipelineSteps(runID)
+	require.NoError(t, err)
+	byName := map[string]string{}
+	for _, s := range steps {
+		byName[s.ChannelName] = s.Status
+	}
+	assert.Equal(t, "error", byName["beliefs"], "the failed step is recorded as error")
+	assert.Equal(t, "done", byName["evict"], "eviction still ran after the belief failure")
+	assert.Equal(t, "done", byName["dedupe"])
+	assert.Equal(t, "done", byName["promote"])
+}
+
+// TestMemorySemanticBudgetStopsAISteps: once the run's accumulated output tokens
+// exceed memory.semantic.output_budget, no further strong-tier AI step launches
+// — rewrite and belief pass are skipped (no rows, no AI calls), while the
+// mechanical steps still run.
+func TestMemorySemanticBudgetStopsAISteps(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+
+	cfg := semanticTestConfig()
+	cfg.Semantic.OutputBudget = 5 // tiny budget
+
+	// Each extraction call reports a large output, blowing the budget before the
+	// semantic AI steps.
+	gen := &fakeGen{
+		usage: digest.Usage{InputTokens: 10, OutputTokens: 500, TotalAPITokens: 20},
+		reply: semanticReply,
+	}
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	_, err := p.Run(context.Background())
+	require.NoError(t, err)
+
+	// Only the two extraction calls happened — no beliefs/rewrite/map AI calls.
+	require.Len(t, gen.calls, 2)
+	for _, c := range gen.calls {
+		assert.False(t, strings.Contains(c, "Existing beliefs:"), "belief pass skipped over budget")
+		assert.False(t, strings.Contains(c, "Top entities:"), "strong map render skipped over budget")
+	}
+
+	runID, _, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
+	names := semanticStepNames(t, d, runID)
+	assert.NotContains(t, names, "rewrite", "rewrite skipped over budget (no step row)")
+	assert.NotContains(t, names, "beliefs", "belief pass skipped over budget (no step row)")
+	assert.Contains(t, names, "dedupe", "mechanical steps still run")
+	assert.Contains(t, names, "promote")
+	assert.Contains(t, names, "evict")
 }

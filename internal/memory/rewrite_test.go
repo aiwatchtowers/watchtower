@@ -70,9 +70,9 @@ func TestRewriteEntityPagesHappyPath(t *testing.T) {
 	}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	n, usage, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	rewritten, usage, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n)
+	assert.Equal(t, []string{entID}, rewritten)
 	require.NotNil(t, usage)
 	assert.Equal(t, 30, usage.OutputTokens)
 	require.Len(t, gen.calls, 1)
@@ -104,9 +104,9 @@ func TestRewriteEntityPagesDropsInventedMarker(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	n, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	rewritten, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n, "page still written with the valid marker")
+	assert.Len(t, rewritten, 1, "page still written with the valid marker")
 
 	page, err := v.ReadNode(entID)
 	require.NoError(t, err)
@@ -128,9 +128,9 @@ func TestRewriteEntityPagesGarbageJSONSkips(t *testing.T) {
 	gen := &fakeGen{reply: func(string) (string, error) { return "not json at all", nil }}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	n, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	rewritten, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
 	require.NoError(t, err)
-	assert.Zero(t, n)
+	assert.Empty(t, rewritten)
 
 	after, err := v.ReadNode(entID)
 	require.NoError(t, err)
@@ -157,9 +157,9 @@ func TestRewriteEntityPagesStaggerGate(t *testing.T) {
 	gen := &fakeGen{reply: func(string) (string, error) { return "{}", nil }}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	n, _, err := p.RewriteEntityPages(context.Background(), 10, notDue)
+	rewritten, _, err := p.RewriteEntityPages(context.Background(), 10, notDue)
 	require.NoError(t, err)
-	assert.Zero(t, n)
+	assert.Empty(t, rewritten)
 	assert.Empty(t, gen.calls, "an entity not in its stagger slot is skipped without an AI call")
 }
 
@@ -177,8 +177,8 @@ func TestRewriteEntityPagesCapRespected(t *testing.T) {
 	}}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	n, _, err := p.RewriteEntityPages(context.Background(), 1, rewriteNow)
+	rewritten, _, err := p.RewriteEntityPages(context.Background(), 1, rewriteNow)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n, "cap respected")
+	assert.Len(t, rewritten, 1, "cap respected")
 	assert.Len(t, gen.calls, 1)
 }

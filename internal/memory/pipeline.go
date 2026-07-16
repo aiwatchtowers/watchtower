@@ -38,6 +38,13 @@ type RunStats struct {
 	Episodes            int         // episode nodes written by the extractor
 	RefsRejected        int         // provenance refs dropped by MEM-01 validation
 	Malformed           int         // shape-degenerate extractor episodes (parsed but zero refs)
+
+	// Semantic tier (Phase 3, all zero unless memory.semantic.enabled).
+	Deduped   int // episodes merged into their older twin (DedupeEpisodes)
+	Promoted  int // concept entities created from recurring hints (PromoteConcepts)
+	Rewritten int // entity pages rewritten by the strong tier (RewriteEntityPages)
+	BeliefOps int // belief ops applied by the belief pass (ReviseBeliefs)
+	Evicted   int // closed long episodes rolled up and tombstoned (EvictEpisodes)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -99,14 +106,19 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 //  3. Situations → episode nodes.
 //  4. Episode extraction from raw text, chunked per channel window; the
 //     watermark advances only behind fully committed windows (MEM-04).
-//  5. Mechanical index.md render.
-//  6. pipeline_runs finalization.
+//  5. Semantic tier (dedupe → concept promotion → page rewrite → belief pass →
+//     eviction), gated by memory.semantic.enabled and isolated per step.
+//  6. Mechanical index.md render + map.md render (strong when the semantic tier
+//     is on and within budget, mechanical fallback otherwise).
+//  7. pipeline_runs finalization.
 //
 // Failure semantics: errors in steps 1–3 are fatal (the run stops, already
 // committed work stays); a per-window AI failure in step 4 freezes the
 // watermark for that window but never fails the run (window isolation,
-// catchup-style) — it is recorded in the window's pipeline_steps row. A
-// disabled config is a full no-op: nothing written, no pipeline_runs row.
+// catchup-style) — it is recorded in the window's pipeline_steps row; a
+// semantic step failure in step 5 is logged and skipped and never fails the run
+// or moves a watermark. A disabled config is a full no-op: nothing written, no
+// pipeline_runs row.
 func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	var stats RunStats
 	if !p.cfg.Enabled {
@@ -161,12 +173,28 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
 
-	// (5) Mechanical index.md render — non-fatal: the index is derived state
-	// and is re-rendered on the next run. The strong-tier map.md render is
-	// wired separately behind memory.semantic.enabled (Task 11).
+	// (5) Semantic tier (Phase 3) — dark behind memory.semantic.enabled. Each
+	// step is isolated (a failure is logged and never fails the run) and never
+	// advances any watermark (compose/card precedent); the strong-tier AI steps
+	// stop launching once the run's accumulated output tokens exceed the budget.
+	semanticEnabled := p.cfg.Semantic.Enabled
+	if semanticEnabled {
+		p.runSemantic(ctx, runID, acc, &stats)
+	}
+
+	// (6) Renders. index.md is the mechanical full listing (always, when memory
+	// is enabled); map.md is the strong-tier hot summary when the semantic tier
+	// is on and within budget, else a mechanical fallback so MCP always has a
+	// map.md to read. Both are derived state — non-fatal and re-rendered next run.
 	if err := p.renderIndex(runID); err != nil {
 		p.logf("memory: render index: %v", err)
 	}
+	strongMap := semanticEnabled && !p.outputBudgetExceeded(acc)
+	mapUsage, err := p.renderMap(ctx, runID, strongMap)
+	if err != nil {
+		p.logf("memory: render map: %v", err)
+	}
+	acc.add(mapUsage)
 
 	wmAfter, err := p.db.MemoryWatermark()
 	if err != nil {
@@ -174,9 +202,139 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined)",
-		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined)
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); semantic: %d deduped, %d promoted, %d rewritten, %d belief-ops, %d evicted",
+		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
+		stats.Deduped, stats.Promoted, stats.Rewritten, stats.BeliefOps, stats.Evicted)
 	return stats, nil
+}
+
+// semanticEvictScoreThreshold is the retention-score cutoff below which a cold
+// closed long episode is evicted into a rollup. Like the retention constants
+// (evict.go) it lives in code, not config — one auditable place for the math.
+const semanticEvictScoreThreshold = 0.5
+
+// runSemantic executes the Phase-3 semantic tier in the spec order:
+// dedupe → concept promotion → page rewrite → belief pass → eviction. The three
+// mechanical steps (dedupe/promote/evict) always run; the two strong-tier AI
+// steps (rewrite/beliefs) are skipped once the run's output-token budget is
+// spent. Every step records its own pipeline_steps row and is failure-isolated:
+// a step error is logged and the next step still runs. No step advances a
+// watermark.
+func (p *Pipeline) runSemantic(ctx context.Context, runID int64, acc *usageAccumulator, stats *RunStats) {
+	step := p.nextSemanticStep(runID)
+
+	// Mechanical: episode dedupe.
+	start := time.Now()
+	deduped, err := DedupeEpisodes(p.vault, p.db, p.cfg.Semantic.DedupeMaxMerges)
+	stats.Deduped += deduped
+	p.recordSemanticStep(runID, &step, "dedupe", stepStatus(err), nil, start)
+	if err != nil {
+		p.logf("memory: dedupe: %v", err)
+	}
+
+	// Mechanical: concept-entity promotion from recurring hints.
+	start = time.Now()
+	promoted, err := PromoteConcepts(p.vault, p.db, p.cfg.Semantic.ConceptMinEpisodes, p.cfg.Semantic.ConceptMaxCreate)
+	stats.Promoted += promoted
+	p.recordSemanticStep(runID, &step, "promote", stepStatus(err), nil, start)
+	if err != nil {
+		p.logf("memory: promote concepts: %v", err)
+	}
+
+	// Strong tier: entity page rewrites (budget-gated). The rewritten subjects
+	// scope the belief pass.
+	now := time.Now()
+	var rewritten []string
+	if p.outputBudgetExceeded(acc) {
+		p.logf("memory: rewrite skipped: output budget (%d) exceeded", p.cfg.Semantic.OutputBudget)
+	} else {
+		start = time.Now()
+		var usage *digest.Usage
+		rewritten, usage, err = p.RewriteEntityPages(ctx, p.cfg.Semantic.RewriteMaxEntities, now)
+		acc.add(usage)
+		stats.Rewritten += len(rewritten)
+		p.recordSemanticStep(runID, &step, "rewrite", stepStatus(err), usage, start)
+		if err != nil {
+			p.logf("memory: rewrite entity pages: %v", err)
+		}
+	}
+
+	// Strong tier: belief revision over the rewritten subjects + shaken beliefs
+	// (budget-gated).
+	if p.outputBudgetExceeded(acc) {
+		p.logf("memory: belief pass skipped: output budget (%d) exceeded", p.cfg.Semantic.OutputBudget)
+	} else {
+		start = time.Now()
+		touched, usage, berr := p.ReviseBeliefs(ctx, rewritten, p.cfg.Semantic.BeliefsMax, now)
+		acc.add(usage)
+		stats.BeliefOps += touched
+		p.recordSemanticStep(runID, &step, "beliefs", stepStatus(berr), usage, start)
+		if berr != nil {
+			p.logf("memory: revise beliefs: %v", berr)
+		}
+	}
+
+	// Mechanical: retention scoring + eviction into rollups.
+	start = time.Now()
+	evicted, err := EvictEpisodes(p.vault, p.db, p.cfg.Semantic.EvictAfterDays, semanticEvictScoreThreshold, p.cfg.Semantic.EvictMax)
+	stats.Evicted += evicted
+	p.recordSemanticStep(runID, &step, "evict", stepStatus(err), nil, start)
+	if err != nil {
+		p.logf("memory: evict episodes: %v", err)
+	}
+}
+
+// outputBudgetExceeded reports whether the run's accumulated output tokens have
+// passed the semantic output budget, after which no further strong-tier AI step
+// is launched this run (output tokens dominate strong-tier cost). A non-positive
+// budget means unbounded.
+func (p *Pipeline) outputBudgetExceeded(acc *usageAccumulator) bool {
+	budget := p.cfg.Semantic.OutputBudget
+	return budget > 0 && acc.output > budget
+}
+
+// nextSemanticStep returns the pipeline_steps step number the semantic phase
+// should start at — one past the extraction batch rows already recorded — so the
+// semantic rows sort after extraction under GetPipelineSteps' ORDER BY step.
+func (p *Pipeline) nextSemanticStep(runID int64) int {
+	if runID == 0 {
+		return 1
+	}
+	steps, err := p.db.GetPipelineSteps(runID)
+	if err != nil {
+		p.logf("memory: read pipeline steps for semantic numbering: %v", err)
+		return 1
+	}
+	return len(steps) + 1
+}
+
+// stepStatus maps a step error to its pipeline_steps status column.
+func stepStatus(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "done"
+}
+
+// recordSemanticStep writes one pipeline_steps row for a semantic step, labeling
+// it by name in channel_name (semantic steps have no channel). *step is bumped
+// so the next row sorts after this one.
+func (p *Pipeline) recordSemanticStep(runID int64, step *int, name, status string, usage *digest.Usage, start time.Time) {
+	if runID == 0 {
+		return
+	}
+	var u digest.Usage
+	if usage != nil {
+		u = *usage
+	}
+	if err := p.db.InsertPipelineStep(db.PipelineStep{
+		RunID: runID, Step: *step, Status: status, ChannelName: name,
+		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalAPITokens: u.TotalAPITokens,
+		DurationSeconds: time.Since(start).Seconds(),
+	}); err != nil {
+		p.logf("memory: record semantic step %s: %v", name, err)
+	}
+	*step++
 }
 
 // fatal finalizes the pipeline_runs row for a run-stopping error and returns
