@@ -84,9 +84,7 @@ struct MemoryBeliefRow: FetchableRecord, Identifiable, Equatable {
 /// Aggregate header for the beliefs dashboard.
 struct MemoryBeliefStats: Equatable {
     var total = 0
-    var active = 0
     var shaken = 0
-    var retired = 0
     var disputed = 0
     var averageConfidence = 0.0
 }

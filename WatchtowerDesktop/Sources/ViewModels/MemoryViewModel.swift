@@ -81,12 +81,7 @@ final class MemoryViewModel {
         var stats = MemoryBeliefStats()
         stats.total = beliefs.count
         for b in beliefs {
-            switch b.status {
-            case "active": stats.active += 1
-            case "shaken": stats.shaken += 1
-            case "retired": stats.retired += 1
-            default: break
-            }
+            if b.status == "shaken" { stats.shaken += 1 }
             if b.isDisputed { stats.disputed += 1 }
         }
         if !beliefs.isEmpty {
@@ -197,16 +192,9 @@ final class MemoryViewModel {
                 }
                 let aliases = try MemoryQueries.fetchAliases(db, nodeID: node.id)
                 var backlinkItems: [MemoryBacklink] = []
-                let sources = backlinkGraph[node.id] ?? []
-                let titles = try MemoryQueries.fetchTitles(db, ids: Array(sources))
-                for source in sources.sorted() {
+                for source in (backlinkGraph[node.id] ?? []).sorted() {
                     guard let item = try MemoryQueries.fetchNode(db, id: source) else { continue }
-                    let title = titles[source] ?? ""
-                    backlinkItems.append(MemoryBacklink(
-                        id: source,
-                        title: title.isEmpty ? source : title,
-                        type: item.type
-                    ))
+                    backlinkItems.append(MemoryBacklink(id: source, title: item.displayTitle, type: item.type))
                 }
                 var subjectTitle = ""
                 if let subjectID {
