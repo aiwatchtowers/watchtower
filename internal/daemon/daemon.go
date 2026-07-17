@@ -252,6 +252,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseFastInbox(ctx)
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
+	d.phaseTranscriptAudioCleanup()
 
 	d.phaseCustomTrackScan(ctx) // before auto extraction so folds land
 
@@ -466,6 +467,90 @@ func (d *Daemon) phaseUnsnooze() {
 		d.logger.Printf("notify due targets error: %v", err)
 	} else if n > 0 {
 		d.logger.Printf("surfaced %d due target(s) to inbox", n)
+	}
+}
+
+// phaseTranscriptAudioCleanup deletes meeting-recording audio files past the
+// retention window and NULLs audio_path. Transcript text is never touched.
+// Missing files are fine (idempotent re-runs). It then sweeps the recordings
+// directory for orphaned rec_* files no transcript row references.
+func (d *Daemon) phaseTranscriptAudioCleanup() {
+	if d.db == nil {
+		return
+	}
+	days := d.config.Transcripts.AudioRetentionDays
+	if days <= 0 {
+		return // retention disabled
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days)
+	rows, err := d.db.ExpiredTranscriptAudio(cutoff.Format(time.RFC3339))
+	if err != nil {
+		d.logger.Printf("transcript cleanup query error: %v", err)
+		return
+	}
+	for _, tr := range rows {
+		if err := os.Remove(tr.AudioPath.String); err != nil && !os.IsNotExist(err) {
+			d.logger.Printf("transcript cleanup: removing %s: %v", tr.AudioPath.String, err)
+			continue // keep audio_path so a later run retries
+		}
+		if err := d.db.ClearMeetingTranscriptAudio(tr.ID); err != nil {
+			d.logger.Printf("transcript cleanup: clearing row %d: %v", tr.ID, err)
+		}
+	}
+	if len(rows) > 0 {
+		d.logger.Printf("transcript cleanup: processed %d expired recording(s)", len(rows))
+	}
+
+	d.cleanupOrphanRecordings(cutoff)
+}
+
+// cleanupOrphanRecordings deletes rec_* files in the recordings directory that
+// are older than the retention window (by modification time) and not
+// referenced by any meeting_transcripts.audio_path. Recordings whose Center
+// run failed never get a DB row, so the row-driven pass above would leave them
+// on disk forever.
+func (d *Daemon) cleanupOrphanRecordings(cutoff time.Time) {
+	dir := d.config.RecordingsDir()
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			d.logger.Printf("transcript cleanup: reading recordings dir %s: %v", dir, err)
+		}
+		return
+	}
+	referenced, err := d.db.TranscriptAudioPaths()
+	if err != nil {
+		d.logger.Printf("transcript cleanup: listing referenced audio paths: %v", err)
+		return
+	}
+	refSet := make(map[string]bool, len(referenced))
+	for _, p := range referenced {
+		refSet[p] = true
+	}
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "rec_") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if refSet[path] {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue // young orphans get a full retention window before deletion
+		}
+		if err := os.Remove(path); err != nil {
+			d.logger.Printf("transcript cleanup: removing orphan %s: %v", path, err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		d.logger.Printf("transcript cleanup: removed %d orphaned recording(s)", removed)
 	}
 }
 

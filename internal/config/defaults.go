@@ -77,6 +77,10 @@ const (
 	// Dashboard (situation composer) defaults
 	DefaultDashboardStaleAfterDays    = 7
 	DefaultDashboardMaxComposeSignals = 200
+
+	// Meeting transcripts: delete recording audio after N days (transcript
+	// text is kept forever). <= 0 disables the retention phase.
+	DefaultTranscriptAudioRetentionDays = 30
 )
 
 // RoleDisplayNames maps role keys to human-readable display names.
