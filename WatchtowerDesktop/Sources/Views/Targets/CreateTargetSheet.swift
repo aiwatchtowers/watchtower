@@ -90,25 +90,20 @@ struct CreateTargetSheet: View {
             }
         }
         .onChange(of: appState.targetExtractCenter.phase) { _, phase in
-            // NOTE: this is a minimal compile-compatibility shim against the
-            // new phase-driven TargetExtractCenter (task 3). The full rewire
-            // onto the capsule/dismiss flow is task 5.
-            guard awaitingOwnExtraction, phase != .extracting else { return }
-            awaitingOwnExtraction = false
-            let center = appState.targetExtractCenter
+            guard awaitingOwnExtraction else { return }
             switch phase {
             case .ready:
-                if let result = center.result {
+                awaitingOwnExtraction = false
+                if let result = appState.targetExtractCenter.result {
                     extractedResult = result
                     showExtractSheet = true
+                    // The sheet now owns a copy; clear the Center so the global
+                    // capsule doesn't also offer the same result.
+                    appState.targetExtractCenter.dismiss()
                 }
-                center.dismiss()
-            case .empty:
-                errorMessage = "No targets found in this text"
-                center.dismiss()
-            case .failed(let message, _):
-                errorMessage = message
-                center.dismiss()
+            case .empty, .failed:
+                // Hand off to the global capsule (friendly message + retry).
+                awaitingOwnExtraction = false
             case .idle, .extracting:
                 break
             }
@@ -167,11 +162,12 @@ struct CreateTargetSheet: View {
 
     private var extractButton: some View {
         let center = appState.targetExtractCenter
+        let isExtracting = center.phase == .extracting
         return HStack {
             Button {
                 Task { await runExtract() }
             } label: {
-                if center.phase == .extracting && awaitingOwnExtraction {
+                if isExtracting && awaitingOwnExtraction {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
                         Text("Extracting…")
@@ -181,9 +177,9 @@ struct CreateTargetSheet: View {
                 }
             }
             .buttonStyle(.bordered)
-            .disabled(center.phase == .extracting || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(isExtracting || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .help(
-                center.phase == .extracting && !awaitingOwnExtraction
+                isExtracting && !awaitingOwnExtraction
                     ? "An extraction is already running — wait for it to finish"
                     : "Run the entered text through the LLM to propose structured targets"
             )
