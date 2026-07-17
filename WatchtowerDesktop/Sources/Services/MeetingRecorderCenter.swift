@@ -368,6 +368,17 @@ final class MeetingRecorderCenter {
         phase = .idle
     }
 
+    /// Forgets a recovered recording the user chose not to transcribe: clears the
+    /// pending pointer and its mirrored `UserDefaults` so the "recovered" pill
+    /// goes away for good — this session and on relaunch. The audio file is left
+    /// on disk; the Go orphan sweep reclaims it like any other `rec_*` file. Only
+    /// acts on the idle recovered state, never mid-run — otherwise an in-flight
+    /// recording would lose the pointer that lets it recover from a crash.
+    func dismissRecovered() {
+        guard case .idle = phase, pendingAudioURL != nil else { return }
+        clearPending()
+    }
+
     /// Restores a recording captured before a crash. If the mirrored path still
     /// exists on disk, exposes it as `pendingAudioURL` (the UI offers to
     /// transcribe it); if the file is gone, clears the stale key.
