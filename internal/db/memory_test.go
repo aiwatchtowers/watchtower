@@ -138,6 +138,40 @@ func TestLookupMemoryAliasCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestMirrorAliasNodeIDsNumericAnchor: the mirror alias set is anchored on a
+// numeric id (GLOB 'target:[0-9]*'), so a model-minted concept alias like
+// target:notanumber is excluded while target:12 / track:7 are returned.
+func TestMirrorAliasNodeIDsNumericAnchor(t *testing.T) {
+	db := openTestDB(t)
+
+	seed := []struct {
+		nodeID, alias string
+	}{
+		{"ent_t12", "target:12"},
+		{"ent_tfoo", "target:notanumber"},
+		{"ent_k7", "track:7"},
+	}
+	for _, s := range seed {
+		if err := db.UpsertMemoryNode(memTestNode(s.nodeID, nil), "body", []string{s.alias}); err != nil {
+			t.Fatalf("UpsertMemoryNode(%s): %v", s.nodeID, err)
+		}
+	}
+
+	got, err := db.MirrorAliasNodeIDs()
+	if err != nil {
+		t.Fatalf("MirrorAliasNodeIDs: %v", err)
+	}
+	if _, ok := got["target:notanumber"]; ok {
+		t.Errorf("non-numeric alias target:notanumber leaked into the mirror set")
+	}
+	if got["target:12"] != "ent_t12" {
+		t.Errorf("target:12 = %q, want ent_t12", got["target:12"])
+	}
+	if got["track:7"] != "ent_k7" {
+		t.Errorf("track:7 = %q, want ent_k7", got["track:7"])
+	}
+}
+
 func TestGetMemoryNodeNotFound(t *testing.T) {
 	db := openTestDB(t)
 	if _, err := db.GetMemoryNode("ent_missing"); !errors.Is(err, sql.ErrNoRows) {

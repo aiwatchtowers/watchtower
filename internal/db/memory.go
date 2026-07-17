@@ -206,14 +206,16 @@ func (db *DB) LookupMemoryAlias(ref string) (string, error) {
 }
 
 // MirrorAliasNodeIDs returns the operational-mirror alias set as an alias→node_id
-// map: every memory_aliases row whose alias has the target:/track: prefix (the
-// alias scheme the Phase-5 slice-4 mirror step owns). One SELECT, loaded once per
+// map: every memory_aliases row aliased target:<n>/track:<n> with a NUMERIC id (the
+// alias scheme the Phase-5 slice-4 mirror step owns). The id is anchored with GLOB
+// '[0-9]*' (GLOB is case-sensitive, no escaping) so a model-minted concept alias
+// like target:foo can never land in the mirror set. One SELECT, loaded once per
 // run. Two callers read it: the mirror step (does a target:<id>/track:<id> mirror
 // already exist, so a terminal row still refreshes vs. is skipped) and the entity
 // rewrite tier (which node ids are mirrors, so they are excluded from the
 // strong-tier rewrite — mirrors are maintained mechanically). READ-ONLY.
 func (db *DB) MirrorAliasNodeIDs() (map[string]string, error) {
-	rows, err := db.Query(`SELECT alias, node_id FROM memory_aliases WHERE alias LIKE 'target:%' OR alias LIKE 'track:%'`)
+	rows, err := db.Query(`SELECT alias, node_id FROM memory_aliases WHERE alias GLOB 'target:[0-9]*' OR alias GLOB 'track:[0-9]*'`)
 	if err != nil {
 		return nil, fmt.Errorf("listing mirror aliases: %w", err)
 	}

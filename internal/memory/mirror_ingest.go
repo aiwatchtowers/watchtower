@@ -12,7 +12,8 @@ package memory
 //   - ## Current   — its operational state (status/priority/ball-on/due/next step
 //     or track sub-item progress), replaced WHOLESALE each refresh (it mirrors
 //     relational state, it is not an append journal);
-//   - ## Facts     — left UNTOUCHED (the semantic rewrite tier owns it);
+//   - ## Facts     — preserved verbatim; with mirrors excluded from the rewrite
+//     tier its only writer is the owner's own vault edits (MEM-03);
 //   - ## Links     — conversion cross-links to the originating situation:<id>
 //     episode (DASH-03 closed inside the vault), accreted via appendToLinks;
 //   - ## Open loops — the open sub-items + a ball-on/due line while the row is
@@ -23,14 +24,17 @@ package memory
 // makes an unchanged re-scan a no-op (no empty git commit). There is NO watermark
 // and NO time window — targets/tracks are small mutable tables, so the step
 // re-scans EVERY row each run and decides per row against the existing-mirror
-// alias set (db.MirrorAliasNodeIDs, loaded once): a terminal row (target
-// done/dismissed; track dismissed) with NO mirror is skipped immediately, before
-// any body work — that preserves "terminal before the source was ever enabled is
-// never mirrored"; every other row (active, or terminal WITH an existing mirror)
-// is built/refreshed, the byte-equality check keeping an unchanged refresh free.
-// A terminal row's mirror therefore always tracks the terminal transition (its
-// ## Open loops clear) no matter how long ago the row settled — the old
-// updated_at window stranded stale-dismissed mirrors forever. It is a pure READER
+// alias set (db.MirrorAliasNodeIDs, loaded once): the implemented skip predicate
+// is that a terminal row (target done/dismissed; track dismissed) with NO existing
+// mirror is never mirrored — it is skipped immediately, before any body work;
+// every other row (active, or terminal WITH an existing mirror) is built/refreshed
+// against its preloaded node id, the byte-equality check keeping an unchanged
+// refresh free. A terminal row's mirror therefore always tracks the terminal
+// transition (its ## Open loops clear) no matter how long ago the row settled —
+// the old updated_at window stranded stale-dismissed mirrors forever. Known
+// limitation: a target/track created AND driven terminal between two pipeline runs
+// never gets a mirror (no existing alias at scan time); its story still reaches
+// memory via the situation episodes — a conservative default, no counter. It is a pure READER
 // of targets/tracks/situations (MEM-14): every write lands in the vault or the
 // memory index.
 
@@ -87,14 +91,15 @@ func (p *Pipeline) runOperationalMirrors(runID int64, stepOffset int, stats *Run
 
 // buildOperationalMirrors rebuilds every candidate target/track mirror and
 // commits the changed ones as ONE vault commit + index mirror. It loads the
-// existing-mirror alias set ONCE and skips a terminal row that has no mirror
-// (before conversionLinks, before any body work — terminal-before-the-source is
-// never mirrored); every other row is built/refreshed. Mirrors never share nodes
-// (each row has its own alias), so a plain append suffices — no dedup. It returns
-// the number of mirrors created-or-refreshed (built) and an error that freezes
-// the whole step (an alias-set/LookupMemoryAlias/read/resolve/commit failure — the
-// alias is the idempotency key, so guessing on a lookup error could mint the very
-// duplicate it prevents). An all-unchanged run commits nothing.
+// existing-mirror alias set ONCE and skips a terminal row that has NO existing
+// mirror (before conversionLinks, before any body work — never mirrored); every
+// other row is built/refreshed against its preloaded node id. Mirrors never share
+// nodes (each row has its own alias), so a plain append suffices — no dedup. It
+// returns the number of mirrors created-or-refreshed (built) and an error that
+// freezes the whole step (an alias-set/read/resolve/commit failure — the alias set
+// is the idempotency key, loaded once up front, so a load failure returns before
+// any row is built rather than risk minting the very duplicate it prevents). An
+// all-unchanged run commits nothing.
 func (p *Pipeline) buildOperationalMirrors(runID int64, targets []db.MirrorTarget, tracks []db.MirrorTrack) (built int, err error) {
 	mirrors, err := p.db.MirrorAliasNodeIDs()
 	if err != nil {
@@ -103,12 +108,11 @@ func (p *Pipeline) buildOperationalMirrors(runID int64, targets []db.MirrorTarge
 
 	var nodes []Node
 	for _, t := range targets {
-		if t.Terminal {
-			if _, ok := mirrors[targetMirrorAlias(t.ID)]; !ok {
-				continue // terminal before the source was enabled — never mirrored
-			}
+		existingID, ok := mirrors[targetMirrorAlias(t.ID)]
+		if t.Terminal && !ok {
+			continue // terminal with no existing mirror — never mirrored
 		}
-		n, changed, merr := p.targetMirrorNode(t)
+		n, changed, merr := p.targetMirrorNode(t, existingID, ok)
 		if merr != nil {
 			return 0, merr
 		}
@@ -118,12 +122,11 @@ func (p *Pipeline) buildOperationalMirrors(runID int64, targets []db.MirrorTarge
 		}
 	}
 	for _, t := range tracks {
-		if t.Terminal {
-			if _, ok := mirrors[trackMirrorAlias(t.ID)]; !ok {
-				continue
-			}
+		existingID, ok := mirrors[trackMirrorAlias(t.ID)]
+		if t.Terminal && !ok {
+			continue // terminal with no existing mirror — never mirrored
 		}
-		n, changed, merr := p.trackMirrorNode(t)
+		n, changed, merr := p.trackMirrorNode(t, existingID, ok)
 		if merr != nil {
 			return 0, merr
 		}
@@ -171,8 +174,10 @@ func (p *Pipeline) commitMirrorNodes(runID int64, nodes []Node) error {
 
 // targetMirrorNode returns the entity node for one target's mirror plus whether
 // it is new-or-changed. The caller has already skipped a terminal target with no
-// mirror, so this always builds/refreshes. It stamps Refs.Targets with the id.
-func (p *Pipeline) targetMirrorNode(t db.MirrorTarget) (*Node, bool, error) {
+// mirror, so this always builds/refreshes; it passes the preloaded existing
+// node id (exists=false → create) so no per-row alias lookup is needed. It stamps
+// Refs.Targets with the id.
+func (p *Pipeline) targetMirrorNode(t db.MirrorTarget, existingID string, exists bool) (*Node, bool, error) {
 	links, err := p.conversionLinks(t.ID, 0)
 	if err != nil {
 		return nil, false, err
@@ -183,6 +188,8 @@ func (p *Pipeline) targetMirrorNode(t db.MirrorTarget) (*Node, bool, error) {
 	}
 	return p.mirrorNode(mirrorSpec{
 		alias:      targetMirrorAlias(t.ID),
+		existingID: existingID,
+		exists:     exists,
 		title:      targetMirrorTitle(t),
 		what:       targetWhat(t),
 		current:    targetCurrent(t),
@@ -194,8 +201,9 @@ func (p *Pipeline) targetMirrorNode(t db.MirrorTarget) (*Node, bool, error) {
 
 // trackMirrorNode returns the entity node for one track's mirror plus whether it
 // is new-or-changed (the caller has already skipped a terminal track with no
-// mirror). Tracks carry no Refs.Targets.
-func (p *Pipeline) trackMirrorNode(t db.MirrorTrack) (*Node, bool, error) {
+// mirror and passes the preloaded existing node id, so no per-row alias lookup is
+// needed). Tracks carry no Refs.Targets.
+func (p *Pipeline) trackMirrorNode(t db.MirrorTrack, existingID string, exists bool) (*Node, bool, error) {
 	links, err := p.conversionLinks(0, t.ID)
 	if err != nil {
 		return nil, false, err
@@ -206,6 +214,8 @@ func (p *Pipeline) trackMirrorNode(t db.MirrorTrack) (*Node, bool, error) {
 	}
 	return p.mirrorNode(mirrorSpec{
 		alias:      trackMirrorAlias(t.ID),
+		existingID: existingID,
+		exists:     exists,
 		title:      trackMirrorTitle(t),
 		what:       trackWhat(t),
 		current:    trackCurrent(t),
@@ -221,9 +231,15 @@ type crossLink struct {
 	line string
 }
 
-// mirrorSpec bundles the deterministic mirror render inputs.
+// mirrorSpec bundles the deterministic mirror render inputs. existingID/exists is
+// the preloaded alias→node_id lookup from buildOperationalMirrors' one-shot
+// MirrorAliasNodeIDs map (exists=false → create a fresh entity); the mirror step
+// is the only writer of these aliases and commits after the loop, so the map stays
+// authoritative for the whole scan and no per-row lookup is needed.
 type mirrorSpec struct {
 	alias      string
+	existingID string
+	exists     bool
 	title      string
 	what       string
 	current    string
@@ -232,20 +248,19 @@ type mirrorSpec struct {
 	targetRefs []int64
 }
 
-// mirrorNode is the alias-keyed idempotency + rebuild core: a LookupMemoryAlias
-// miss creates a fresh entity; a hit reads the node, preserves its ## Facts /
-// ## Links, regenerates ## What / ## Current / ## Open loops, accretes the
-// conversion cross-links (deduped by episode id, appendCrossLink), and reports
-// changed=false on a byte-identical rebuild (no commit). The caller has already
-// skipped a terminal row with no mirror, so the create branch is only ever reached
-// by a live (non-terminal) row. A LookupMemoryAlias/read error fails the step.
+// mirrorNode is the alias-keyed idempotency + rebuild core: with no existing mirror
+// (spec.exists=false) it creates a fresh entity; with one it reads the node,
+// preserves its ## Facts / ## Links, regenerates ## What / ## Current /
+// ## Open loops, accretes the conversion cross-links (deduped by episode id,
+// appendCrossLink), and reports changed=false on a byte-identical rebuild (no
+// commit). The caller has already skipped a terminal row with no mirror, so the
+// create branch is only ever reached by a live (non-terminal) row. A read error
+// fails the step.
 func (p *Pipeline) mirrorNode(spec mirrorSpec) (*Node, bool, error) {
-	existingID, lerr := p.db.LookupMemoryAlias(spec.alias)
-	switch {
-	case lerr == nil:
-		existing, rerr := p.vault.ReadNode(existingID)
+	if spec.exists {
+		existing, rerr := p.vault.ReadNode(spec.existingID)
 		if rerr != nil {
-			return nil, false, fmt.Errorf("memory: operational mirror: read %s for %q: %w", existingID, spec.alias, rerr)
+			return nil, false, fmt.Errorf("memory: operational mirror: read %s for %q: %w", spec.existingID, spec.alias, rerr)
 		}
 		facts := mirrorSectionContent(existing.Body, "## Facts")
 		links := mirrorSectionContent(existing.Body, "## Links")
@@ -263,27 +278,24 @@ func (p *Pipeline) mirrorNode(spec mirrorSpec) (*Node, bool, error) {
 			existing.Refs.Targets = spec.targetRefs
 		}
 		return &existing, true, nil
-	case errors.Is(lerr, sql.ErrNoRows):
-		body := mirrorBody(spec.title, spec.what, spec.current, "", "", spec.loops)
-		for _, cl := range spec.crossLinks {
-			body = appendCrossLink(body, cl.epID, cl.line)
-		}
-		n := Node{
-			ID:      NewID("entity"),
-			Type:    "entity",
-			Tier:    "long",
-			Status:  "active",
-			Title:   spec.title,
-			Aliases: []string{spec.alias},
-			Body:    body,
-		}
-		if len(spec.targetRefs) > 0 {
-			n.Refs.Targets = spec.targetRefs
-		}
-		return &n, true, nil
-	default:
-		return nil, false, fmt.Errorf("memory: operational mirror: alias lookup %q: %w", spec.alias, lerr)
 	}
+	body := mirrorBody(spec.title, spec.what, spec.current, "", "", spec.loops)
+	for _, cl := range spec.crossLinks {
+		body = appendCrossLink(body, cl.epID, cl.line)
+	}
+	n := Node{
+		ID:      NewID("entity"),
+		Type:    "entity",
+		Tier:    "long",
+		Status:  "active",
+		Title:   spec.title,
+		Aliases: []string{spec.alias},
+		Body:    body,
+	}
+	if len(spec.targetRefs) > 0 {
+		n.Refs.Targets = spec.targetRefs
+	}
+	return &n, true, nil
 }
 
 // conversionLinks resolves the DASH-03 conversion cross-links for one mirror:
@@ -315,9 +327,13 @@ func (p *Pipeline) conversionLinks(targetID, trackID int) ([]crossLink, error) {
 }
 
 // appendCrossLink appends a conversion cross-link to ## Links UNLESS a link to the
-// same episode id is already present. It dedupes by node id (an "[[<epID>" prefix
-// match), not by the fully rendered line, so a later change to the linked
-// episode's title never accretes a second link line for the same episode.
+// same episode id is already present ANYWHERE in the body (a "[[<epID>" substring
+// match over the whole node, not scoped to ## Links). It dedupes by node id, not by
+// the fully rendered line, so a later change to the linked episode's title never
+// accretes a second link line for the same episode. The body-wide scope is
+// acceptable because a mirror only ever renders an "[[<epID>" token as a conversion
+// cross-link in ## Links — no other section emits that token — so a body-wide hit
+// is always the ## Links line we would re-append.
 func appendCrossLink(body, epID, line string) string {
 	if strings.Contains(body, "[["+epID) {
 		return body
@@ -445,7 +461,7 @@ func targetCurrent(t db.MirrorTarget) string {
 // could resurface deliberately-deferred work as if it were live.
 func targetOpenLoops(t db.MirrorTarget) string {
 	suffix := ""
-	if strings.EqualFold(strings.TrimSpace(t.Status), "snoozed") {
+	if t.Status == "snoozed" { // DB CHECK constrains status to exact lowercase
 		suffix = " (target snoozed)"
 	}
 	var lines []string
