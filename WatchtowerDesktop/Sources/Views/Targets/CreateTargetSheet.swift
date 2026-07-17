@@ -22,7 +22,7 @@ struct CreateTargetSheet: View {
     @State private var showExtractSheet = false
     @State private var extractedResult: TargetExtractResult?
     /// True only while THIS sheet instance is the one that started the
-    /// in-flight extraction — gates the `isRunning` transition handler below
+    /// in-flight extraction — gates the `phase` transition handler below
     /// so a sheet never reacts to a result/error started by a different
     /// CreateTargetSheet instance elsewhere in the app.
     @State private var awaitingOwnExtraction = false
