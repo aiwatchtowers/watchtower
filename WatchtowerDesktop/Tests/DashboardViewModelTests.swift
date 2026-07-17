@@ -155,6 +155,38 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertNil(vm.errorMessage)
     }
 
+    func testSubmitFeedbackPersistsSituationRatingRow() async throws {
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        await vm.submitFeedback(situation, rating: 1)
+
+        let row = try await dbManager.dbPool.read { db in
+            try Row.fetchOne(db, sql: "SELECT entity_type, entity_id, rating FROM feedback", arguments: [])
+        }
+        let unwrapped = try XCTUnwrap(row, "bare 👍 must persist a rating row so the control reflects it")
+        XCTAssertEqual(unwrapped["entity_type"] as String, "situation")
+        XCTAssertEqual(unwrapped["entity_id"] as String, String(situation.id))
+        XCTAssertEqual(unwrapped["rating"] as Int, 1)
+        XCTAssertEqual(vm.feedbackRating(for: situation.id), 1)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testFeedbackRatingReturnsLatestRating() async throws {
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+        XCTAssertNil(vm.feedbackRating(for: situation.id), "unrated situation has no rating")
+
+        await vm.submitFeedback(situation, rating: -1)
+        await vm.submitFeedback(situation, rating: 1)
+
+        XCTAssertEqual(vm.feedbackRating(for: situation.id), 1, "the newest rating wins")
+    }
+
     // MARK: - submitFeedback comment routing
 
     func testSubmitFeedbackWithoutCommentDoesNotInvokeCLI() async throws {
@@ -181,6 +213,10 @@ final class DashboardViewModelTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [[
             "inbox", "feedback", String(id), "--rating", "up", "--comment", "always show me Jane"
         ]])
+        let localRows = try await dbManager.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM feedback") ?? 0
+        }
+        XCTAssertEqual(localRows, 0, "comment feedback leaves the rating row to the CLI — a local write would duplicate it")
         XCTAssertNil(vm.errorMessage)
     }
 

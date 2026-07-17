@@ -34,7 +34,7 @@ enum FeedbackQueries {
             sql: """
                 SELECT * FROM feedback
                 WHERE entity_type = ? AND entity_id = ?
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY created_at DESC, id DESC LIMIT 1
                 """,
             arguments: [entityType, entityID]
         )

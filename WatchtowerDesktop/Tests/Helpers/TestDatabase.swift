@@ -620,7 +620,7 @@ enum TestDatabase {
     CREATE TABLE IF NOT EXISTS feedback (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         entity_type TEXT NOT NULL CHECK(entity_type IN
-            ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox', 'catchup_theme')),
+            ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox', 'catchup_theme', 'situation')),
         entity_id   TEXT NOT NULL,
         rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
         comment     TEXT NOT NULL DEFAULT '',
