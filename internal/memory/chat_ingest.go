@@ -229,7 +229,7 @@ func (p *Pipeline) situationSubjects(situationID string) ([]string, error) {
 	return p.resolveSubjectRefs(refs), nil
 }
 
-// trackSubjects resolves a track's OWN entity mirror (target:<id> — 5C, present
+// trackSubjects resolves a track's OWN entity mirror (track:<id> — 5C, present
 // only behind memory.sources.operational) plus its channel_ids + participant/
 // assignee/requester/owner user ids to memory entity ids (deduped, mirror
 // first). A non-numeric context id is a normal no-entity case; a DB read error

@@ -41,10 +41,7 @@ const (
 // secretary derived from Slack/mail/calendar — model-mediated, not the attendee's
 // own words"), never as the attendee's own words.
 func (p *Pipeline) gatherMemoryContext(attendees []attendeeEntry) string {
-	if !p.cfg.Memory.Surfaces.MeetingPrep {
-		return noMemoryContext
-	}
-	if len(attendees) == 0 {
+	if !p.cfg.Memory.Surfaces.MeetingPrep || len(attendees) == 0 {
 		return noMemoryContext
 	}
 
@@ -53,7 +50,8 @@ func (p *Pipeline) gatherMemoryContext(attendees []attendeeEntry) string {
 		// ErrVaultNotInitialized is the benign "memory never run" case — degrade
 		// silently. Any OTHER open failure is logged before degrading, so a real
 		// problem is not swallowed as if the vault simply did not exist (P3).
-		if !errors.Is(err, memory.ErrVaultNotInitialized) && p.logger != nil {
+		// meeting.New normalizes a nil logger, so p.logger is always non-nil here.
+		if !errors.Is(err, memory.ErrVaultNotInitialized) {
 			p.logger.Printf("meeting: opening memory vault for attendee context: %v", err)
 		}
 		return noMemoryContext
@@ -61,9 +59,7 @@ func (p *Pipeline) gatherMemoryContext(attendees []attendeeEntry) string {
 
 	nodes, err := p.db.ListMemoryNodes()
 	if err != nil {
-		if p.logger != nil {
-			p.logger.Printf("meeting: error listing memory nodes: %v", err)
-		}
+		p.logger.Printf("meeting: error listing memory nodes: %v", err)
 		return noMemoryContext
 	}
 
@@ -98,7 +94,7 @@ func (p *Pipeline) gatherMemoryContext(attendees []attendeeEntry) string {
 		if cur := firstSectionLine(node.Body, "Current"); cur != "" {
 			add("Current: " + cur)
 		}
-		facts := sectionBullets(node.Body, "Facts")
+		facts := memory.SectionBullets(node.Body, "Facts")
 		if len(facts) > maxAttendeeFacts {
 			facts = facts[:maxAttendeeFacts]
 		}
@@ -114,9 +110,8 @@ func (p *Pipeline) gatherMemoryContext(attendees []attendeeEntry) string {
 		}
 	}
 
-	if sb.Len() == 0 {
-		return noMemoryContext
-	}
+	// len(attendees) > 0 (checked above) and the per-attendee "### name" header
+	// always fits the 4 KB cap, so sb is never empty here.
 	return strings.TrimRight(sb.String(), "\n")
 }
 
@@ -138,7 +133,7 @@ func (p *Pipeline) resolveAttendeeEntity(vault *memory.Vault, a attendeeEntry) (
 		if err == nil {
 			return node, true
 		}
-		if !errors.Is(err, memory.ErrNotFound) && p.logger != nil {
+		if !errors.Is(err, memory.ErrNotFound) {
 			p.logger.Printf("meeting: resolving attendee %q in memory: %v", ref, err)
 		}
 	}
@@ -186,28 +181,4 @@ func firstSectionLine(body, heading string) string {
 		return strings.TrimPrefix(trimmed, "- ")
 	}
 	return ""
-}
-
-// sectionBullets returns the "- …" bullet texts (marker stripped) under the
-// given "## <heading>" section, in file order.
-func sectionBullets(body, heading string) []string {
-	want := "## " + heading
-	var out []string
-	in := false
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			in = trimmed == want
-			continue
-		}
-		if !in {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "- ") {
-			if b := strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")); b != "" {
-				out = append(out, b)
-			}
-		}
-	}
-	return out
 }

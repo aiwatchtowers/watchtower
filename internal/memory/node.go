@@ -265,6 +265,34 @@ func appendToSection(body string, headingRe *regexp.Regexp, heading, line string
 	return seg + line + body[end:]
 }
 
+// SectionBullets returns the "- …" bullet texts (the "- " marker stripped, blank
+// bullets skipped) under the given "## <heading>" section of a node body, in file
+// order. It is the single reader for the read surfaces that scan a section's
+// bullets (the day plan's open loops, the meeting prep's attendee facts); the
+// internal mirrorSectionContent, which returns the whole section content verbatim
+// rather than parsed bullets, stays separate.
+func SectionBullets(body, heading string) []string {
+	want := "## " + heading
+	var out []string
+	in := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			in = trimmed == want
+			continue
+		}
+		if !in {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			if b := strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")); b != "" {
+				out = append(out, b)
+			}
+		}
+	}
+	return out
+}
+
 // NewID mints a node ID for the given kind ("entity", "episode", "rollup",
 // "belief"): type prefix + 26-char ULID, lexicographically sortable by
 // creation time. Panics on an unknown kind (programmer error).

@@ -64,14 +64,19 @@ func (p *Pipeline) gatherMemoryOpenLoops() string {
 		}
 		node, err := vault.ReadNode(n.ID)
 		if err != nil {
-			// Index/vault drift (a file removed since indexing): skip, don't fail.
+			// Index/vault drift (a file removed since indexing): skip this node,
+			// don't fail the gather — but log it (guarded; dayplan.New does not
+			// normalize a nil logger) so real drift is not swallowed silently.
+			if p.logger != nil {
+				p.logger.Printf("dayplan: reading memory node %s for open loops: %v", n.ID, err)
+			}
 			continue
 		}
 		title := strings.TrimSpace(node.Title)
 		if title == "" {
 			title = node.ID
 		}
-		for _, bullet := range openLoopBullets(node.Body) {
+		for _, bullet := range memory.SectionBullets(node.Body, "Open loops") {
 			lines = append(lines, "- "+title+": "+bullet)
 			if len(lines) >= maxMemoryOpenLoops {
 				break
@@ -86,30 +91,6 @@ func (p *Pipeline) gatherMemoryOpenLoops() string {
 		return noMemoryOpenLoops
 	}
 	return strings.Join(lines, "\n")
-}
-
-// openLoopBullets returns the bullet texts under a node's "## Open loops" section
-// (each "- …" line, with the "- " marker stripped), in file order. Empty when the
-// section is absent or carries no bullets.
-func openLoopBullets(body string) []string {
-	var bullets []string
-	in := false
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
-			in = trimmed == "## Open loops"
-			continue
-		}
-		if !in {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "- ") {
-			if b := strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")); b != "" {
-				bullets = append(bullets, b)
-			}
-		}
-	}
-	return bullets
 }
 
 // gatherTargets returns active targets (todo, in_progress, blocked), ordered by priority.

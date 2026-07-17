@@ -578,7 +578,7 @@ func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, knownSubjects, episode
 	// than the owner's own words — so the code mints owner-action rank for a cited
 	// `act:<table>:<id> <ts>` ref; the model only chooses the direction. A nil
 	// block renders nothing, keeping gate-off output byte-identical.
-	if ownerActions != nil && len(ownerActions.lines) > 0 {
+	if ownerActions != nil {
 		b.WriteString("\nOWNER ACTIONS (this run's mechanical owner interactions, ranked owner-action — weaker than the owner's words; cite as `act:<table>:<id> <ts>` to weigh a belief):\n\n")
 		for _, l := range ownerActions.lines {
 			b.WriteString(l + "\n")

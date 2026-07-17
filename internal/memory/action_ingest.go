@@ -32,7 +32,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -146,7 +145,7 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 	// engagement bumps (stamp in RFC3339). verdictText is "" for the feedback path
 	// (which always folds, keyed by the floor); a non-empty verdictText gates the
 	// situation path on the verdict being genuinely new (idempotent re-scan).
-	fold := func(sitID int, ref, tsUnix, stamp, date, bullet, verdictText string, engaged bool) (folded bool, ferr error) {
+	fold := func(sitID int, ref string, tsUnix int64, stamp, date, bullet, verdictText string, engaged bool) (folded bool, ferr error) {
 		subjects, serr := p.situationSubjects(fmt.Sprintf("%d", sitID))
 		if serr != nil {
 			return false, fmt.Errorf("memory: interactions: situation %d: %w", sitID, serr)
@@ -171,18 +170,16 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 		} else if ok && annotateOutcome(n, date, bullet) {
 			markDirty(alias) // best-effort trace; the floor is the feedback dedupe key
 		}
-		sc.refs[ref+" "+tsUnix] = true
+		sc.refs[fmt.Sprintf("%s %d", ref, tsUnix)] = true
 		for _, s := range subjects {
 			sc.subjects[s] = true
 			bumps[ref+"\x00"+s] = db.EngagementBump{NodeID: s, Engaged: engaged, At: stamp}
 		}
 		// Stage the action description for the OWNER ACTIONS belief-pass block
 		// (rendered only behind memory.semantic.preferences). tsUnix is whole unix
-		// seconds, so parsing it back to int64 for the render matches the ref key
-		// exactly. A parse failure (never expected — the callers format it with
-		// strconv.FormatInt) leaves ts 0, harmless.
-		ts, _ := strconv.ParseInt(tsUnix, 10, 64)
-		sc.actions = append(sc.actions, stagedAction{ref: ref, tsUnix: ts, text: bullet, subjects: subjects})
+		// seconds, threaded straight from the producer row so the staged ts matches
+		// the ref key exactly.
+		sc.actions = append(sc.actions, stagedAction{ref: ref, tsUnix: tsUnix, text: bullet, subjects: subjects})
 		return true, nil
 	}
 
@@ -200,7 +197,7 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 			if fb.Rating < 0 {
 				bullet = "owner dismissed"
 			}
-			folded, fErr := fold(fb.SituationID, ref, strconv.FormatInt(fb.TSUnix, 10), fb.At, fb.Date, bullet, "", fb.Rating > 0)
+			folded, fErr := fold(fb.SituationID, ref, fb.TSUnix, fb.At, fb.Date, bullet, "", fb.Rating > 0)
 			if fErr != nil {
 				return nil, 0, 0, floor, fErr
 			}
@@ -225,7 +222,7 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 	for _, s := range sits {
 		ref := fmt.Sprintf("act:situations:%d", s.ID)
 		bullet, engaged := verdictBullet(s)
-		folded, fErr := fold(s.ID, ref, strconv.FormatInt(s.TSUnix, 10), s.At, s.Date, bullet, bullet, engaged)
+		folded, fErr := fold(s.ID, ref, s.TSUnix, s.At, s.Date, bullet, bullet, engaged)
 		if fErr != nil {
 			return nil, 0, 0, floor, fErr
 		}
