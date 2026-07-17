@@ -16,7 +16,7 @@ struct MemoryView: View {
             }
             .environment(\.openURL, OpenURLAction { url in
                 guard url.scheme == MemoryMarkdown.linkScheme else { return .systemAction }
-                vm.open(url: url)
+                vm.openWikiLink(url: url)
                 return .handled
             })
             .sheet(isPresented: $vm.isEditing) {

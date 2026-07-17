@@ -178,7 +178,7 @@ final class MemoryViewModelTests: XCTestCase {
         await vm.refresh()
 
         let urlString = try XCTUnwrap(MemoryMarkdown.linkURL(for: "situation:23"))
-        vm.open(url: try XCTUnwrap(URL(string: urlString)))
+        vm.openWikiLink(url: try XCTUnwrap(URL(string: urlString)))
         // open() resolves + selects in a fire-and-forget Task; poll briefly.
         for _ in 0..<50 where vm.detail == nil {
             try await Task.sleep(for: .milliseconds(20))
