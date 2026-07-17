@@ -163,8 +163,8 @@ final class DashboardViewModelTests: XCTestCase {
 
         await vm.submitFeedback(situation, rating: 1)
 
-        let row = try await dbManager.dbPool.read { db in
-            try Row.fetchOne(db, sql: "SELECT entity_type, entity_id, rating FROM feedback", arguments: [])
+        let row = try await dbManager.dbPool.read { db -> Row? in
+            try Row.fetchOne(db, sql: "SELECT entity_type, entity_id, rating FROM feedback")
         }
         let unwrapped = try XCTUnwrap(row, "bare 👍 must persist a rating row so the control reflects it")
         XCTAssertEqual(unwrapped["entity_type"] as String, "situation")
