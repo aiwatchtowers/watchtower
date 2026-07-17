@@ -61,7 +61,7 @@ struct TargetsListView: View {
                 appState.pendingTargetID = nil
             }
         }
-        .onChange(of: appState.targetExtractCenter.isRunning) { _, _ in
+        .onChange(of: appState.targetExtractCenter.phase) { _, _ in
             consumePendingExtraction()
         }
         .sheet(isPresented: $showCreateSheet) {
@@ -136,16 +136,26 @@ struct TargetsListView: View {
     /// consumer for its own extraction while it's still on screen, so this
     /// catch-all only engages once the sheet the user is looking at is gone.
     private func consumePendingExtraction() {
+        // NOTE: this is a minimal compile-compatibility shim against the new
+        // phase-driven TargetExtractCenter (task 3). The full rewire onto the
+        // capsule/dismiss flow is task 5.
         guard !showCreateSheet else { return }
         let center = appState.targetExtractCenter
-        guard !center.isRunning else { return }
-        if let result = center.pendingResult {
-            extractPreviewResult = result
-            showExtractPreview = true
-            center.clearPending()
-        } else if let error = center.pendingError {
-            extractErrorMessage = error
-            center.clearPending()
+        switch center.phase {
+        case .ready:
+            if let result = center.result {
+                extractPreviewResult = result
+                showExtractPreview = true
+            }
+            center.dismiss()
+        case .empty:
+            extractErrorMessage = "No targets found in this text"
+            center.dismiss()
+        case .failed(let message, _):
+            extractErrorMessage = message
+            center.dismiss()
+        case .idle, .extracting:
+            break
         }
     }
 

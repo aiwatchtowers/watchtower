@@ -89,16 +89,28 @@ struct CreateTargetSheet: View {
                 )
             }
         }
-        .onChange(of: appState.targetExtractCenter.isRunning) { _, running in
-            guard awaitingOwnExtraction, !running else { return }
+        .onChange(of: appState.targetExtractCenter.phase) { _, phase in
+            // NOTE: this is a minimal compile-compatibility shim against the
+            // new phase-driven TargetExtractCenter (task 3). The full rewire
+            // onto the capsule/dismiss flow is task 5.
+            guard awaitingOwnExtraction, phase != .extracting else { return }
             awaitingOwnExtraction = false
-            if let result = appState.targetExtractCenter.pendingResult {
-                extractedResult = result
-                showExtractSheet = true
-                appState.targetExtractCenter.clearPending()
-            } else if let error = appState.targetExtractCenter.pendingError {
-                errorMessage = error
-                appState.targetExtractCenter.clearPending()
+            let center = appState.targetExtractCenter
+            switch phase {
+            case .ready:
+                if let result = center.result {
+                    extractedResult = result
+                    showExtractSheet = true
+                }
+                center.dismiss()
+            case .empty:
+                errorMessage = "No targets found in this text"
+                center.dismiss()
+            case .failed(let message, _):
+                errorMessage = message
+                center.dismiss()
+            case .idle, .extracting:
+                break
             }
         }
     }
@@ -159,7 +171,7 @@ struct CreateTargetSheet: View {
             Button {
                 Task { await runExtract() }
             } label: {
-                if center.isRunning && awaitingOwnExtraction {
+                if center.phase == .extracting && awaitingOwnExtraction {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
                         Text("Extracting…")
@@ -169,9 +181,9 @@ struct CreateTargetSheet: View {
                 }
             }
             .buttonStyle(.bordered)
-            .disabled(center.isRunning || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(center.phase == .extracting || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .help(
-                center.isRunning && !awaitingOwnExtraction
+                center.phase == .extracting && !awaitingOwnExtraction
                     ? "An extraction is already running — wait for it to finish"
                     : "Run the entered text through the LLM to propose structured targets"
             )
@@ -551,6 +563,6 @@ struct CreateTargetSheet: View {
         }
         errorMessage = nil
         awaitingOwnExtraction = true
-        await appState.targetExtractCenter.start(text: text, runner: runner)
+        appState.targetExtractCenter.start(text: text, runner: runner)
     }
 }

@@ -12,33 +12,38 @@ protocol TargetExtractNotifying {
 extension NotificationService: TargetExtractNotifying {}
 
 /// App-wide, single-slot registry for the "Extract with AI" target-extraction
-/// call. `start()` is a plain `async` method with no internal `Task` of its
-/// own — it is awaited directly from the button action's `Task { }` in
-/// `CreateTargetSheet`. That caller-side `Task` is NOT tied to the sheet's
-/// lifecycle (only the `.task { }` SwiftUI modifier is auto-cancelled on
-/// view teardown; an imperatively-created `Task { }` inside a button action
-/// is not), so it keeps running and mutating this AppState-held center's
-/// state even after the presenting sheet is dismissed — that is what lets
-/// the result survive the sheet being closed mid-extraction.
+/// call. It owns its own cancellable `Task`, so the extraction — and its result
+/// — survives the presenting `CreateTargetSheet` being dismissed and any
+/// navigation away (the "начал → ушёл → вернулся" contract shared with
+/// `MeetingRecorderCenter`). The global `ExtractIndicatorView` capsule reflects
+/// `phase` from every screen; there is no wall-clock timeout — the only early
+/// stop is `cancel()`, which terminates the CLI subprocess.
 @MainActor
 @Observable
 final class TargetExtractCenter {
-    /// True while a `start()` call is in flight. Only one extraction can run
-    /// at a time app-wide; a second `start()` call while this is true is a
-    /// no-op (single-slot guard).
-    var isRunning = false
-    /// The text of the in-flight (or most recently started) extraction.
-    /// Not read by any production consumer today — `CreateTargetSheet` uses
-    /// its own local ownership flag instead — but exercised by
-    /// `TargetExtractCenterTests` to assert the single-slot guard leaves it
-    /// untouched when a call is blocked.
-    var draftText = ""
-    /// Set on successful, non-empty extraction. Cleared by `clearPending()`
-    /// once a consumer has presented it.
-    var pendingResult: TargetExtractResult?
-    /// Set on CLI failure or an empty extraction result. Cleared by
-    /// `clearPending()` once a consumer has surfaced it.
-    var pendingError: String?
+    enum Phase: Equatable {
+        case idle
+        case extracting
+        case ready(count: Int)
+        case empty
+        case failed(message: String, canRetry: Bool)
+    }
+
+    private(set) var phase: Phase = .idle
+    /// The extracted proposal, set alongside `.ready`. Read by the capsule /
+    /// sheet to present `ExtractPreviewSheet`; cleared by `dismiss()`.
+    private(set) var result: TargetExtractResult?
+    /// Raw CLI stderr behind the friendly `.failed` message, surfaced under the
+    /// capsule's "Show details" disclosure. Nil unless the last run failed.
+    private(set) var lastRawError: String?
+
+    /// The in-flight extraction. Internal (not private) so tests can await it.
+    var task: Task<Void, Never>?
+
+    // Remembered inputs so `retry()` can re-run the same call.
+    private var lastText = ""
+    private var lastSourceRef = ""
+    private var lastRunner: CLIRunnerProtocol?
 
     private let notificationService: TargetExtractNotifying
 
@@ -46,39 +51,93 @@ final class TargetExtractCenter {
         self.notificationService = notificationService
     }
 
-    /// Runs the extraction. Guards against overlapping calls (single-slot);
-    /// a call made while one is already running returns immediately without
-    /// touching `draftText`/`pendingResult`/`pendingError`.
-    func start(text: String, sourceRef: String = "", runner: CLIRunnerProtocol) async {
-        guard !isRunning else { return }
-        isRunning = true
-        draftText = text
-        pendingResult = nil
-        pendingError = nil
-
-        do {
-            let result = try await TargetExtractService(runner: runner)
-                .extract(text: text, sourceRef: sourceRef)
-            if result.extracted.isEmpty {
-                let message = "AI returned no extracted targets"
-                pendingError = message
-                notificationService.sendTargetExtractFailedNotification(reason: message)
-            } else {
-                pendingResult = result
-                notificationService.sendTargetExtractReadyNotification(count: result.extracted.count)
-            }
-        } catch {
-            let message = "Extract failed: \(error.localizedDescription)"
-            pendingError = message
-            notificationService.sendTargetExtractFailedNotification(reason: message)
+    /// Starts an extraction in the background. No-op while one is already
+    /// running (single-slot guard) — the runner is not even invoked.
+    func start(text: String, sourceRef: String = "", runner: CLIRunnerProtocol) {
+        guard phase != .extracting else { return }
+        lastText = text
+        lastSourceRef = sourceRef
+        lastRunner = runner
+        result = nil
+        lastRawError = nil
+        phase = .extracting
+        task = Task { [weak self] in
+            await self?.run(text: text, sourceRef: sourceRef, runner: runner)
         }
-
-        isRunning = false
     }
 
-    /// Clears any pending result/error once a consumer has presented it.
-    func clearPending() {
-        pendingResult = nil
-        pendingError = nil
+    /// Cancels the in-flight extraction (terminating the CLI subprocess via
+    /// `ProcessCLIRunner`'s cancellation handler) and returns to idle.
+    func cancel() {
+        task?.cancel()
+        task = nil
+        phase = .idle
+        result = nil
+    }
+
+    /// Re-runs the last failed extraction with the remembered text + runner.
+    func retry() {
+        guard case .failed = phase, let runner = lastRunner else { return }
+        start(text: lastText, sourceRef: lastSourceRef, runner: runner)
+    }
+
+    /// Clears a terminal state (`.ready`/`.empty`/`.failed`) back to idle —
+    /// called once a consumer has presented the result or the user dismisses
+    /// the capsule.
+    func dismiss() {
+        task = nil
+        phase = .idle
+        result = nil
+    }
+
+    private func run(text: String, sourceRef: String, runner: CLIRunnerProtocol) async {
+        do {
+            let extracted = try await TargetExtractService(runner: runner)
+                .extract(text: text, sourceRef: sourceRef)
+            if Task.isCancelled { return }
+            if extracted.extracted.isEmpty {
+                phase = .empty
+                notificationService.sendTargetExtractFailedNotification(reason: "No targets found in this text")
+            } else {
+                result = extracted
+                phase = .ready(count: extracted.extracted.count)
+                notificationService.sendTargetExtractReadyNotification(count: extracted.extracted.count)
+            }
+        } catch is CancellationError {
+            // Cancelled by the user: `cancel()` already reset phase to .idle.
+            return
+        } catch {
+            if Task.isCancelled { return }
+            let raw = Self.rawText(for: error)
+            lastRawError = raw
+            let friendly = Self.friendlyMessage(for: raw)
+            phase = .failed(message: friendly.text, canRetry: friendly.canRetry)
+            notificationService.sendTargetExtractFailedNotification(reason: friendly.text)
+        }
+    }
+
+    private static func rawText(for error: Error) -> String {
+        if let cliError = error as? CLIRunnerError { return cliError.errorDescription ?? "\(error)" }
+        return error.localizedDescription
+    }
+
+    /// Maps a raw CLI failure into a human-readable message + whether Retry
+    /// makes sense. Never surfaces the raw Go error chain directly (that lives
+    /// behind the capsule's "Show details").
+    static func friendlyMessage(for raw: String) -> (text: String, canRetry: Bool) {
+        let lower = raw.lowercased()
+        if lower.contains("deadline exceeded") || lower.contains("timed out") || lower.contains("timeout") {
+            return ("Extraction took too long. Try again.", true)
+        }
+        if lower.contains("not found") {
+            return ("Watchtower CLI not found in PATH.", false)
+        }
+        if lower.contains("network") || lower.contains("connection") || lower.contains("unreachable") {
+            return ("Network issue — check your connection and retry.", true)
+        }
+        if lower.contains("overloaded") || lower.contains("rate limit") {
+            return ("AI is busy right now. Try again in a moment.", true)
+        }
+        return ("Couldn't extract targets. Try again.", true)
     }
 }
