@@ -115,4 +115,35 @@ final class TargetExtractCenterTests: XCTestCase {
         XCTAssertEqual(center.phase, .idle)
         XCTAssertNil(center.result)
     }
+
+    func testFriendlyMessageClaudeNotFound() {
+        let r = TargetExtractCenter.friendlyMessage(for: "claude CLI not found — install Claude Code first")
+        XCTAssertEqual(r.text, "Claude Code isn't installed. Install it and try again.")
+        XCTAssertFalse(r.canRetry)
+    }
+
+    func testFriendlyMessageWatchtowerNotFound() {
+        let r = TargetExtractCenter.friendlyMessage(for: "watchtower binary not found in PATH")
+        XCTAssertEqual(r.text, "Watchtower CLI not found in PATH.")
+        XCTAssertFalse(r.canRetry)
+    }
+
+    func testFriendlyMessageNetworkAndOverloadedAndDefault() {
+        XCTAssertEqual(TargetExtractCenter.friendlyMessage(for: "connection reset by peer").text, "Network issue — check your connection and retry.")
+        XCTAssertTrue(TargetExtractCenter.friendlyMessage(for: "connection reset by peer").canRetry)
+        XCTAssertEqual(TargetExtractCenter.friendlyMessage(for: "API overloaded").text, "AI is busy right now. Try again in a moment.")
+        XCTAssertEqual(TargetExtractCenter.friendlyMessage(for: "some unexpected explosion").text, "Couldn't extract targets. Try again.")
+    }
+
+    func testDismissWhileExtractingIsSafe() async {
+        let center = TargetExtractCenter(notificationService: FakeTargetExtractNotifier())
+        let runner = FakeCLIRunner()
+        runner.blockUntilCancelled = true
+        center.start(text: "long one", runner: runner)
+        XCTAssertEqual(center.phase, .extracting)
+        center.dismiss()
+        await center.task?.value
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertNil(center.result)
+    }
 }

@@ -83,8 +83,13 @@ final class TargetExtractCenter {
 
     /// Clears a terminal state (`.ready`/`.empty`/`.failed`) back to idle —
     /// called once a consumer has presented the result or the user dismisses
-    /// the capsule.
+    /// the capsule. Also cancels defensively: if ever called while a run is
+    /// still in flight, an un-cancelled task could later overwrite a newer
+    /// phase.
     func dismiss() {
+        // Also cancel defensively: if ever called while a run is still in
+        // flight, an un-cancelled task could later overwrite a newer phase.
+        task?.cancel()
         task = nil
         phase = .idle
         result = nil
@@ -128,6 +133,9 @@ final class TargetExtractCenter {
         let lower = raw.lowercased()
         if lower.contains("deadline exceeded") || lower.contains("timed out") || lower.contains("timeout") {
             return ("Extraction took too long. Try again.", true)
+        }
+        if lower.contains("install claude code") || (lower.contains("claude") && lower.contains("not found")) {
+            return ("Claude Code isn't installed. Install it and try again.", false)
         }
         if lower.contains("not found") {
             return ("Watchtower CLI not found in PATH.", false)
