@@ -1387,11 +1387,18 @@ type InteractionSituation struct {
 	TSUnix            int64  // updated_at unix seconds — the act:situations:<id> ref ts
 }
 
-// ListInteractionSituations returns situations the owner has terminally acted on
+// ListInteractionSituations returns situations the OWNER has terminally acted on
 // (converted / dismissed / done) whose updated_at is at/after sinceRFC3339,
 // oldest id first — the situation-lifecycle half of the mechanical interaction
-// ingest. READ-ONLY (MEM-05): situations are read exactly as IngestSituations
-// reads them, never written. The re-scan has no id floor (verdicts are not
+// ingest. Owner authorship is decided by resolved_reason: the Desktop's done and
+// dismiss buttons stamp 'user_done'/'user_dismissed' (SituationQueries.swift),
+// while conversion is owner-only by construction (only the Desktop convert flow
+// sets status='converted'). The inbox pipeline's auto-resolve stamps
+// 'signals_resolved' — a SYSTEM action that must never fold as an owner verdict
+// (M7, 2026-07-17 final validation): it would mint false owner-engagement and,
+// with memory.semantic.preferences on, preference beliefs from system behavior.
+// READ-ONLY (MEM-05): situations are read exactly as IngestSituations reads
+// them, never written. The re-scan has no id floor (verdicts are not
 // id-monotonic; the mirror's verdict text is the novelty key), so the updated_at
 // window bounds it: a situation terminal for longer than the window has already
 // had every re-scan chance and is skipped, keeping the unbounded terminal
@@ -1402,7 +1409,9 @@ func (db *DB) ListInteractionSituations(sinceRFC3339 string) ([]InteractionSitua
 		SELECT id, status, COALESCE(converted_target_id, 0), COALESCE(converted_track_id, 0),
 		       strftime('%Y-%m-%d', updated_at), updated_at, CAST(strftime('%s', updated_at) AS INTEGER)
 		FROM situations
-		WHERE status IN ('converted', 'dismissed', 'done') AND updated_at >= ?
+		WHERE (status = 'converted'
+		       OR (status IN ('dismissed', 'done') AND resolved_reason IN ('user_dismissed', 'user_done')))
+		  AND updated_at >= ?
 		ORDER BY id`, sinceRFC3339)
 	if err != nil {
 		return nil, fmt.Errorf("listing interaction situations: %w", err)

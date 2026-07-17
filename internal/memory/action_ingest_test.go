@@ -149,6 +149,66 @@ func TestIngestInteractionsConversionAnnotatesEngaged(t *testing.T) {
 	assert.Contains(t, n.Body, "converted to target #12", "conversion outcome annotation")
 }
 
+// TestIngestInteractionsOwnerDoneFolds: a situation the OWNER closed from the
+// Desktop (status='done', resolved_reason='user_done' — SituationQueries.done's
+// exact write) folds: "owner resolved" bullet + engaged_count.
+func TestIngestInteractionsOwnerDoneFolds(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	sitID, _, entID := seedActSituation(t, v, d, "C1GEN")
+	_, err := d.Exec(`UPDATE situations SET status='done', resolved_reason='user_done',
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, sitID)
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
+	_, folded, bumped, _, err := p.ingestInteractions(0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, folded, "an owner-closed situation folds")
+	assert.Equal(t, 1, bumped)
+
+	engaged, _, err := d.GetEngagement(entID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, engaged, "owner done → engaged_count")
+
+	n, err := Resolve(v, d, fmt.Sprintf("situation:%d", sitID))
+	require.NoError(t, err)
+	assert.Contains(t, n.Body, "owner resolved", "owner-resolved bullet appended")
+}
+
+// TestIngestInteractionsSystemAutoResolveNeverFolds guards the M7 finding from
+// the 2026-07-17 final validation: the inbox pipeline's auto-resolve
+// (AutoResolveSituations — status='done', resolved_reason='signals_resolved')
+// is a SYSTEM action, not an owner verdict. It must not annotate the mirror,
+// must not bump engagement, and must not stage an act: ref — otherwise system
+// behavior masquerades as owner behavior and (with memory.semantic.preferences
+// on) feeds preference beliefs about the owner (MEM-15's whole point).
+func TestIngestInteractionsSystemAutoResolveNeverFolds(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	sitID, _, entID := seedActSituation(t, v, d, "C1GEN")
+	_, err := d.Exec(`UPDATE situations SET status='done', resolved_reason='signals_resolved',
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, sitID)
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
+	staged, folded, bumped, _, err := p.ingestInteractions(0)
+	require.NoError(t, err)
+	assert.Zero(t, folded, "a system auto-resolve is not an owner verdict")
+	assert.Zero(t, bumped, "no engagement from system actions")
+	if staged != nil {
+		assert.Empty(t, staged.refs, "no act: ref staged for a system action")
+	}
+
+	engaged, dismissed, err := d.GetEngagement(entID)
+	require.NoError(t, err)
+	assert.Zero(t, engaged)
+	assert.Zero(t, dismissed)
+
+	n, err := Resolve(v, d, fmt.Sprintf("situation:%d", sitID))
+	require.NoError(t, err)
+	assert.NotContains(t, n.Body, "owner resolved", "no owner bullet from a system auto-resolve")
+}
+
 // TestIngestInteractionsConversionIdempotent: a second re-scan of the same
 // converted situation is a no-op — the mirror bullet is already present, so the
 // engagement aggregate does not double-count (the novelty-gated re-scan).
