@@ -139,8 +139,9 @@ func TestLookupMemoryAliasCaseInsensitive(t *testing.T) {
 }
 
 // TestMirrorAliasNodeIDsNumericAnchor: the mirror alias set is anchored on a
-// numeric id (GLOB 'target:[0-9]*'), so a model-minted concept alias like
-// target:notanumber is excluded while target:12 / track:7 are returned.
+// fully-numeric id (LIKE prefix + NOT GLOB non-digit rejection), so model-minted
+// concept aliases like target:notanumber, digit-leading target:1abc, and a bare
+// target: are excluded while target:12 / track:7 are returned.
 func TestMirrorAliasNodeIDsNumericAnchor(t *testing.T) {
 	db := openTestDB(t)
 
@@ -149,6 +150,8 @@ func TestMirrorAliasNodeIDsNumericAnchor(t *testing.T) {
 	}{
 		{"ent_t12", "target:12"},
 		{"ent_tfoo", "target:notanumber"},
+		{"ent_t1abc", "target:1abc"},
+		{"ent_tbare", "target:"},
 		{"ent_k7", "track:7"},
 	}
 	for _, s := range seed {
@@ -163,6 +166,12 @@ func TestMirrorAliasNodeIDsNumericAnchor(t *testing.T) {
 	}
 	if _, ok := got["target:notanumber"]; ok {
 		t.Errorf("non-numeric alias target:notanumber leaked into the mirror set")
+	}
+	if _, ok := got["target:1abc"]; ok {
+		t.Errorf("digit-leading alias target:1abc leaked into the mirror set")
+	}
+	if _, ok := got["target:"]; ok {
+		t.Errorf("bare alias target: leaked into the mirror set")
 	}
 	if got["target:12"] != "ent_t12" {
 		t.Errorf("target:12 = %q, want ent_t12", got["target:12"])
