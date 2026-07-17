@@ -10,24 +10,22 @@ enum MemoryQueries {
 
     // MARK: - Fetch
 
-    /// Browser list: non-tombstone nodes of one type (or all), newest-indexed
-    /// first, joined with the dispute side table. Redirect tombstones and the
-    /// mechanical map/index pages never appear (they are not nodes).
-    static func fetchNodes(_ db: Database, type: String? = nil) throws -> [MemoryNodeListItem] {
-        var sql = """
-            SELECT n.id, n.type, n.tier, n.status, n.title, n.path, n.indexed_at,
-                   n.subject, n.confidence, d.reason AS dispute_reason
-            FROM memory_nodes n
-            LEFT JOIN memory_dispute_flags d ON d.node_id = n.id
-            WHERE n.status != 'tombstone'
-            """
-        var args: [any DatabaseValueConvertible] = []
-        if let type {
-            sql += " AND n.type = ?"
-            args.append(type)
-        }
-        sql += " ORDER BY n.indexed_at DESC, n.id"
-        return try MemoryNodeListItem.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+    /// Browser list: all non-tombstone nodes, newest-indexed first, joined
+    /// with the dispute side table. Type filtering happens in-memory (the
+    /// vault is a few hundred nodes); redirect tombstones and the mechanical
+    /// map/index pages never appear (they are not nodes).
+    static func fetchNodes(_ db: Database) throws -> [MemoryNodeListItem] {
+        try MemoryNodeListItem.fetchAll(
+            db,
+            sql: """
+                SELECT n.id, n.type, n.tier, n.status, n.title, n.path, n.indexed_at,
+                       n.subject, n.confidence, d.reason AS dispute_reason
+                FROM memory_nodes n
+                LEFT JOIN memory_dispute_flags d ON d.node_id = n.id
+                WHERE n.status != 'tombstone'
+                ORDER BY n.indexed_at DESC, n.id
+                """
+        )
     }
 
     static func fetchNode(_ db: Database, id: String) throws -> MemoryNodeListItem? {
@@ -145,8 +143,17 @@ enum MemoryQueries {
     }
 
     /// Pending dispute flags — the sidebar badge (a dispute needs the owner).
+    /// Joined to live nodes so a stale flag on a tombstoned node — invisible
+    /// in the browser — can't inflate the badge.
     static func fetchDisputedCount(_ db: Database) throws -> Int {
-        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM memory_dispute_flags") ?? 0
+        try Int.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*) FROM memory_dispute_flags d
+                JOIN memory_nodes n ON n.id = d.node_id
+                WHERE n.status != 'tombstone'
+                """
+        ) ?? 0
     }
 
 }

@@ -69,7 +69,7 @@ final class MemoryViewModelTests: XCTestCase {
 
         let detail = try XCTUnwrap(vm.detail)
         XCTAssertEqual(detail.node.id, "ent_A")
-        XCTAssertTrue(detail.file.body.contains("# Alice"))
+        XCTAssertTrue(detail.raw.contains("# Alice"))
         XCTAssertTrue(detail.renderedBody.contains("[Bob](watchtower-memory://open/ent_B)"))
 
         // ent_B is linked from ent_A → backlink shows on ent_B.

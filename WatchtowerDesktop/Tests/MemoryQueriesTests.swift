@@ -6,7 +6,7 @@ final class MemoryQueriesTests: XCTestCase {
 
     // MARK: - fetchNodes
 
-    func testFetchNodesExcludesTombstonesAndFiltersByType() throws {
+    func testFetchNodesExcludesTombstonesNewestFirst() throws {
         let dbQueue = try TestDatabase.create()
         try dbQueue.write { db in
             try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T10:00:00Z")
@@ -16,8 +16,6 @@ final class MemoryQueriesTests: XCTestCase {
         try dbQueue.read { db in
             let all = try MemoryQueries.fetchNodes(db)
             XCTAssertEqual(all.map(\.id), ["ep_B", "ent_A"]) // newest indexed first
-            let entities = try MemoryQueries.fetchNodes(db, type: "entity")
-            XCTAssertEqual(entities.map(\.id), ["ent_A"])
         }
     }
 
@@ -113,6 +111,8 @@ final class MemoryQueriesTests: XCTestCase {
             try TestDatabase.insertMemoryNode(db, id: "bel_C", type: "belief")
             try TestDatabase.insertMemoryNode(db, id: "ent_dead", type: "entity", status: "tombstone")
             try TestDatabase.insertMemoryDispute(db, nodeID: "bel_C")
+            // A stale flag on a tombstoned node must not inflate the badge.
+            try TestDatabase.insertMemoryDispute(db, nodeID: "ent_dead")
         }
         try dbQueue.read { db in
             let counts = try MemoryQueries.fetchTypeCounts(db)

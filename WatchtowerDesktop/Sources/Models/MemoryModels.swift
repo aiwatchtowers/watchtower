@@ -104,13 +104,6 @@ struct MemoryCommit: Identifiable, Equatable {
     var day: String { String(date.prefix(10)) }
 }
 
-/// A node file loaded from the vault: raw contents plus the body below the
-/// frontmatter fences.
-struct MemoryNodeFile: Equatable {
-    let raw: String
-    let body: String // markdown below the closing fence
-}
-
 /// One `[[id]]` / `[[id|label]]` occurrence in a node body (mirrors Go
 /// `memory.Link`).
 struct MemoryWikiLink: Equatable {

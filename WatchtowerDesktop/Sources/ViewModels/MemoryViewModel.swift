@@ -12,7 +12,8 @@ import GRDB
 /// Everything the detail pane shows for the selected node.
 struct MemoryNodeDetail: Equatable {
     let node: MemoryNodeListItem
-    let file: MemoryNodeFile
+    /// Raw vault file contents (frontmatter included) — what the editor edits.
+    let raw: String
     /// Non-nil when the vault file could not be read. The body area shows it
     /// and editing is disabled — a failed read must never round-trip into an
     /// empty overwrite of the real file.
@@ -163,6 +164,7 @@ final class MemoryViewModel {
             guard let node = try await dbPool.read({ db in
                 try MemoryQueries.fetchNode(db, id: id)
             }) else {
+                guard selectedID == id else { return }
                 detail = nil
                 error = "Node \(id) is not in the index (run `watchtower memory reindex`?)"
                 return
@@ -224,7 +226,7 @@ final class MemoryViewModel {
             }
             detail = MemoryNodeDetail(
                 node: node,
-                file: MemoryNodeFile(raw: raw, body: body),
+                raw: raw,
                 fileReadError: fileReadError,
                 renderedBody: rendered,
                 aliases: aliases,
@@ -235,6 +237,7 @@ final class MemoryViewModel {
             error = nil
             loadHistory(for: node)
         } catch {
+            guard selectedID == id else { return }
             self.error = "Failed to open node: \(error.localizedDescription)"
         }
     }
@@ -367,7 +370,7 @@ final class MemoryViewModel {
 
     func startEditing() {
         guard let detail, detail.isEditable else { return }
-        editorText = detail.file.raw
+        editorText = detail.raw
         editorError = nil
         isEditing = true
     }
