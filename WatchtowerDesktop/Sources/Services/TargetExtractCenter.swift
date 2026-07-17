@@ -87,8 +87,6 @@ final class TargetExtractCenter {
     /// still in flight, an un-cancelled task could later overwrite a newer
     /// phase.
     func dismiss() {
-        // Also cancel defensively: if ever called while a run is still in
-        // flight, an un-cancelled task could later overwrite a newer phase.
         task?.cancel()
         task = nil
         phase = .idle

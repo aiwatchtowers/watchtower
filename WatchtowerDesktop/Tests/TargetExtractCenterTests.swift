@@ -141,8 +141,13 @@ final class TargetExtractCenterTests: XCTestCase {
         runner.blockUntilCancelled = true
         center.start(text: "long one", runner: runner)
         XCTAssertEqual(center.phase, .extracting)
+        // Capture the in-flight task BEFORE dismiss() nils it, so we await the
+        // real run unwinding. If dismiss() did NOT cancel the task, the
+        // blockUntilCancelled runner would sleep forever and this await would
+        // hang — so this genuinely proves dismiss() cancels the running task.
+        let inFlight = center.task
         center.dismiss()
-        await center.task?.value
+        await inFlight?.value
         XCTAssertEqual(center.phase, .idle)
         XCTAssertNil(center.result)
     }
