@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +113,48 @@ func TestMirrorConversionCrossLink(t *testing.T) {
 	assert.Contains(t, n.Body, "[["+epID+"|", "mirror links its originating situation episode")
 }
 
+// TestMirrorConversionLinkNoDuplicateOnTitleChange (FIX-G): the conversion
+// cross-link dedupes by episode id, not by the rendered line — after the linked
+// episode's title changes and the mirror re-runs, ## Links still holds exactly one
+// link to that episode (no accreting duplicate line).
+func TestMirrorConversionLinkNoDuplicateOnTitleChange(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	tid, err := d.CreateTarget(db.Target{Text: "Roll out SSO", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	sid, err := d.CreateSituation(db.DashboardSituation{Title: "SSO outage thread", Status: "open"})
+	require.NoError(t, err)
+	require.NoError(t, d.MarkSituationConverted(int(sid), int(tid), 0))
+
+	epID := "ep_00000000000000000000000042"
+	writeAndIndex(t, v, d, Node{
+		ID: epID, Type: "episode", Tier: "long", Status: "closed",
+		Title: "SSO outage thread", Aliases: []string{fmt.Sprintf("situation:%d", sid)},
+		Body: "# SSO outage thread\n\n## Story\nlong story\n",
+	})
+
+	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
+	var s1 RunStats
+	_, err = p.runOperationalMirrors(1, 0, &s1)
+	require.NoError(t, err)
+
+	// The episode is re-titled (a later extraction refined its title).
+	writeAndIndex(t, v, d, Node{
+		ID: epID, Type: "episode", Tier: "long", Status: "closed",
+		Title: "SSO rollout — resolved", Aliases: []string{fmt.Sprintf("situation:%d", sid)},
+		Body: "# SSO rollout — resolved\n\n## Story\nlong story\n",
+	})
+
+	var s2 RunStats
+	_, err = p.runOperationalMirrors(2, 0, &s2)
+	require.NoError(t, err)
+
+	n, err := Resolve(v, d, targetMirrorAlias(int(tid)))
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(n.Body, "[["+epID), "exactly one link to the episode despite the title change")
+}
+
 // TestMirrorCurrentRefreshAndTerminalClearsLoops: a status change refreshes
 // ## Current; a terminal transition clears ## Open loops (heading kept, empty).
 func TestMirrorCurrentRefreshAndTerminalClearsLoops(t *testing.T) {
@@ -211,8 +254,9 @@ func TestMirrorTrackSymmetry(t *testing.T) {
 	assert.NotContains(t, n.Body, "- delete old code", "done sub-item is not an open loop")
 }
 
-// TestMirrorDismissedLongAgoSkip: a target dismissed outside the terminal window
-// is never mirrored.
+// TestMirrorDismissedLongAgoSkip: a target that went terminal before the source
+// was enabled — terminal with NO existing mirror — is never mirrored (the skip is
+// keyed on the missing mirror alias, not on any updated_at window).
 func TestMirrorDismissedLongAgoSkip(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
@@ -227,10 +271,134 @@ func TestMirrorDismissedLongAgoSkip(t *testing.T) {
 	var stats RunStats
 	_, err = p.runOperationalMirrors(1, 0, &stats)
 	require.NoError(t, err)
-	assert.Zero(t, stats.Mirrored, "a long-dismissed target is not mirrored")
+	assert.Zero(t, stats.Mirrored, "a long-dismissed target with no mirror is not mirrored")
 
 	_, err = Resolve(v, d, targetMirrorAlias(int(id)))
 	require.Error(t, err, "no mirror node for a long-dismissed target")
+}
+
+// TestMirrorAncientTerminalTrackNeverMirrored: a track dismissed before the
+// source was enabled — terminal with NO mirror — is never mirrored (the track
+// side of TestMirrorDismissedLongAgoSkip; the alias-set skip fires before any
+// conversion-link / body work).
+func TestMirrorAncientTerminalTrackNeverMirrored(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	id, err := d.UpsertTrack(db.Track{Text: "Ancient track", Category: "task", Ownership: "mine", Priority: "low"})
+	require.NoError(t, err)
+	require.NoError(t, d.DismissTrack(int(id)))
+	setUpdatedAt(t, d, "tracks", int(id), time.Now().AddDate(0, 0, -90).UTC().Format(time.RFC3339))
+
+	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
+	var stats RunStats
+	_, err = p.runOperationalMirrors(1, 0, &stats)
+	require.NoError(t, err)
+	assert.Zero(t, stats.Mirrored, "a long-dismissed track with no mirror is not mirrored")
+
+	_, err = Resolve(v, d, trackMirrorAlias(int(id)))
+	require.Error(t, err, "no mirror node for a long-dismissed track")
+}
+
+// TestMirrorStaleDismissedTrackRefreshes (FIX-A/B): a track mirrored while active,
+// then dismissed with an updated_at far older than the old 14-day window, is still
+// refreshed on the next run — the mirror now shows dismissed and its ## Open loops
+// are cleared. Under the deleted updated_at window the stale-dismissed track kept
+// Status: active + populated ## Open loops forever.
+func TestMirrorStaleDismissedTrackRefreshes(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	id, err := d.UpsertTrack(db.Track{
+		Text: "Migrate to the new API", Category: "task", Ownership: "mine", Priority: "high",
+		SubItems: `[{"text":"update the client","status":"open"}]`,
+	})
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
+	var s1 RunStats
+	_, err = p.runOperationalMirrors(1, 0, &s1)
+	require.NoError(t, err)
+	require.Equal(t, 1, s1.Mirrored)
+	n1, err := Resolve(v, d, trackMirrorAlias(int(id)))
+	require.NoError(t, err)
+	assert.Contains(t, n1.Body, "Status: active")
+	assert.Contains(t, n1.Body, "- update the client", "open loop populated while active")
+
+	// Dismiss (dismissed_at set, updated_at unmoved by DismissTrack), then force a
+	// far-past updated_at — the old window would exclude this row from the scan.
+	require.NoError(t, d.DismissTrack(int(id)))
+	setUpdatedAt(t, d, "tracks", int(id), time.Now().AddDate(0, 0, -120).UTC().Format(time.RFC3339))
+
+	var s2 RunStats
+	_, err = p.runOperationalMirrors(2, 0, &s2)
+	require.NoError(t, err)
+	assert.Equal(t, 1, s2.Mirrored, "the stale-dismissed track's mirror is refreshed")
+	n2, err := Resolve(v, d, trackMirrorAlias(int(id)))
+	require.NoError(t, err)
+	assert.Contains(t, n2.Body, "Status: dismissed", "Current reflects the dismissal")
+	assert.NotContains(t, n2.Body, "- update the client", "## Open loops cleared when terminal")
+}
+
+// TestMirrorStaleDoneTargetRefreshes (FIX-A/B): a target mirrored while active,
+// then marked done long ago, is refreshed on the next run — Status: done and the
+// ## Open loops cleared — regardless of how stale its updated_at is.
+func TestMirrorStaleDoneTargetRefreshes(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	id, err := d.CreateTarget(db.Target{
+		Text: "Ship the launch", Status: "in_progress", Priority: "high", Ownership: "mine", SourceType: "manual",
+		SubItems: `[{"text":"write the post","done":false}]`,
+	})
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
+	var s1 RunStats
+	_, err = p.runOperationalMirrors(1, 0, &s1)
+	require.NoError(t, err)
+	require.Equal(t, 1, s1.Mirrored)
+	n1, err := Resolve(v, d, targetMirrorAlias(int(id)))
+	require.NoError(t, err)
+	assert.Contains(t, n1.Body, "- write the post", "open loop populated while active")
+
+	require.NoError(t, d.UpdateTargetStatus(int(id), "done"))
+	setUpdatedAt(t, d, "targets", int(id), time.Now().AddDate(0, 0, -200).UTC().Format(time.RFC3339))
+
+	var s2 RunStats
+	_, err = p.runOperationalMirrors(2, 0, &s2)
+	require.NoError(t, err)
+	assert.Equal(t, 1, s2.Mirrored, "the long-done target's mirror is refreshed")
+	n2, err := Resolve(v, d, targetMirrorAlias(int(id)))
+	require.NoError(t, err)
+	assert.Contains(t, n2.Body, "Status: done", "Current reflects done")
+	assert.NotContains(t, n2.Body, "- write the post", "## Open loops cleared when terminal")
+}
+
+// TestMirrorSnoozedTargetOpenLoopsTagged (FIX-D): a snoozed target's open-loop
+// bullets carry a "(target snoozed)" tag so the day-plan surface has status
+// context and does not resurface deliberately-deferred work.
+func TestMirrorSnoozedTargetOpenLoopsTagged(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	id, err := d.CreateTarget(db.Target{
+		Text: "Later goal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual",
+		DueDate:  "2026-09-01",
+		SubItems: `[{"text":"do the deferred thing","done":false}]`,
+	})
+	require.NoError(t, err)
+	require.NoError(t, d.UpdateTargetStatus(int(id), "snoozed"))
+
+	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
+	var stats RunStats
+	_, err = p.runOperationalMirrors(1, 0, &stats)
+	require.NoError(t, err)
+
+	n, err := Resolve(v, d, targetMirrorAlias(int(id)))
+	require.NoError(t, err)
+	assert.Contains(t, n.Body, "- do the deferred thing (target snoozed)", "sub-item loop tagged snoozed")
+	assert.Contains(t, n.Body, "due 2026-09-01 (target snoozed)", "ball/due loop tagged snoozed")
 }
 
 // TestMirrorGateOffNoWork: with memory.sources.operational off, a full Run does
