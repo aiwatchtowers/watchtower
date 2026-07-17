@@ -1048,6 +1048,24 @@ enum TestDatabase {
         UNIQUE(item_type, source_id)
     );
     CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_nodes (
+        id            TEXT PRIMARY KEY,
+        type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),
+        tier          TEXT NOT NULL DEFAULT 'long' CHECK (tier IN ('short','long')),
+        status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed','tombstone','shaken','retired')),
+        redirect_to   TEXT,
+        title         TEXT NOT NULL DEFAULT '',
+        path          TEXT NOT NULL DEFAULT '',
+        content_hash  TEXT NOT NULL DEFAULT '',
+        indexed_at    TEXT NOT NULL DEFAULT '',
+        subject       TEXT NOT NULL DEFAULT '',
+        confidence    REAL NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS memory_aliases (
+        alias    TEXT PRIMARY KEY COLLATE NOCASE,
+        node_id  TEXT NOT NULL REFERENCES memory_nodes(id)
+    );
     """
 
     // MARK: - Briefing Fixtures
@@ -1554,5 +1572,33 @@ enum TestDatabase {
             INSERT INTO situation_signals (situation_id, inbox_item_id)
             VALUES (?, ?)
             """, arguments: [situationID, inboxItemID])
+    }
+
+    // MARK: - Memory Fixtures
+
+    static func insertMemoryNode(
+        _ db: Database,
+        id: String,
+        type: String = "entity",
+        title: String = "",
+        subject: String = "",
+        confidence: Double = 0,
+        status: String = "active",
+        tier: String = "long"
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_nodes (id, type, tier, status, title, path, content_hash, indexed_at, subject, confidence)
+            VALUES (?, ?, ?, ?, ?, '', '', '', ?, ?)
+            """, arguments: [id, type, tier, status, title, subject, confidence])
+    }
+
+    static func insertMemoryAlias(
+        _ db: Database,
+        alias: String,
+        nodeID: String
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_aliases (alias, node_id) VALUES (?, ?)
+            """, arguments: [alias, nodeID])
     }
 }

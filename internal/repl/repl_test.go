@@ -30,6 +30,13 @@ func testDeps(t *testing.T) Deps {
 
 	cfg := &config.Config{
 		ActiveWorkspace: "test-workspace",
+		// Any existing non-claude binary: tests exercising the AI error path must
+		// fail instantly instead of finding the real claude CLI on a dev machine.
+		// A real CLI here launches an actual API conversation whose --mcp-config
+		// points back at this test binary, which re-runs the suite — a fork bomb
+		// of orphaned claude processes (FindBinary falls back to PATH search, so
+		// a nonexistent path would not be enough).
+		ClaudePath: "/usr/bin/false",
 		Workspaces: map[string]*config.WorkspaceConfig{
 			"test-workspace": {SlackToken: "xoxp-test"},
 		},

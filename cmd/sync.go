@@ -301,6 +301,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				inboxPipe.SetPromptStore(prompts.New(database, nil))
 				d.SetInboxPipeline(inboxPipe)
 			}
+			wireMemoryPipeline(d, database, cfg, logger)
 			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
 			customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
 			d.SetCustomTracksPipeline(customTracksPipe)

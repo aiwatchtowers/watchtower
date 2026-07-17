@@ -14,7 +14,10 @@ CREATE TABLE IF NOT EXISTS workspace (
     style_profile TEXT NOT NULL DEFAULT '',  -- AI-distilled, user-editable communication style (see 00013)
     style_profile_updated_at TEXT NOT NULL DEFAULT '',
     compose_last_run_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last situation composer run
-    gmail_last_internal_date REAL NOT NULL DEFAULT 0  -- Unix timestamp watermark for Gmail sync (see 00016)
+    gmail_last_internal_date REAL NOT NULL DEFAULT 0,  -- Unix timestamp watermark for Gmail sync (see 00016)
+    memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
+    memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
+    memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
 );
 
 -- Users
@@ -794,7 +797,9 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     period_to        REAL,
     started_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     finished_at      TEXT,
-    duration_seconds REAL NOT NULL DEFAULT 0
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,  -- prompt-cache read tokens (billed cheaper, recorded separately)
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0   -- prompt-cache creation tokens
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC);
@@ -1192,4 +1197,64 @@ CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
 CREATE TABLE IF NOT EXISTS feed_state (
     id               INTEGER PRIMARY KEY CHECK (id = 1),
     bootstrap_cutoff TEXT NOT NULL
+);
+
+-- Secretary memory index — rebuildable SQLite mirror of the markdown vault
+-- (files + git are the source of truth; MEM-02: drop all memory_* tables and
+-- reindex reproduces this index).
+CREATE TABLE IF NOT EXISTS memory_nodes (
+    id            TEXT PRIMARY KEY,             -- ent_*/ep_*/sum_*/bel_*
+    type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),
+    tier          TEXT NOT NULL CHECK (tier IN ('short','long')),
+    status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed','tombstone','shaken','retired')),  -- shaken/retired are belief-only (see 00018)
+    redirect_to   TEXT,
+    title         TEXT NOT NULL DEFAULT '',
+    path          TEXT NOT NULL,                -- vault-relative file path
+    content_hash  TEXT NOT NULL,                -- sha256 of file bytes at last index
+    indexed_at    TEXT NOT NULL,
+    subject       TEXT NOT NULL DEFAULT '',     -- belief subject entity id, '' for non-beliefs; file-derived (see 00019)
+    confidence    REAL NOT NULL DEFAULT 0       -- belief confidence 0..1, 0 for non-beliefs; file-derived (see 00019)
+);
+
+-- Alias → node lookup (natural keys like slack IDs, 'situation:<id>', names).
+CREATE TABLE IF NOT EXISTS memory_aliases (
+    alias    TEXT PRIMARY KEY COLLATE NOCASE,
+    node_id  TEXT NOT NULL REFERENCES memory_nodes(id)
+);
+
+-- Access accounting bumped by memory_open (not by memory_recall).
+CREATE TABLE IF NOT EXISTS memory_node_stats (
+    node_id          TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+    access_count     INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at TEXT
+);
+
+-- FTS5 index over node titles/bodies for memory_recall.
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    id UNINDEXED, title, body
+);
+
+-- Unresolved extractor entity hints, persisted for concept-entity promotion
+-- once a hint recurs across enough distinct episodes (see 00018). Runtime
+-- accumulation like memory_node_stats — excluded from the MEM-02 reindex-
+-- equivalence comparison and NOT cleared by a reindex.
+CREATE TABLE IF NOT EXISTS memory_entity_hints (
+    hint        TEXT NOT NULL,          -- normalized (lowercased, trimmed) hint text
+    episode_id  TEXT NOT NULL,          -- the ep_* node that emitted it (distinct-episode counting)
+    first_seen  TEXT NOT NULL,
+    promoted_to TEXT NOT NULL DEFAULT '', -- ent_* once a concept entity was created; '' until then
+    PRIMARY KEY (hint, episode_id)
+);
+
+-- Phase-4 dispute flags (see 00019): a SIDE TABLE, not a memory_nodes
+-- column — runtime state set by the belief pass / weekly reflection when a
+-- belief's evidence looks contested, read and cleared by the inbox
+-- watchtower detector in the same transaction it mints the dispute item
+-- (MEM-05). Same memory_node_stats precedent: excluded from the MEM-02
+-- reindex-equivalence comparison by construction (it lives outside
+-- memory_nodes and Reconcile/Rebuild never touch it).
+CREATE TABLE IF NOT EXISTS memory_dispute_flags (
+    node_id     TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+    flagged_at  TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT ''
 );

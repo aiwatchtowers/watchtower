@@ -177,6 +177,48 @@ type DayPlanConfig struct {
 	MaxBacklog        int    `yaml:"max_backlog" mapstructure:"max_backlog"`
 }
 
+// MemoryConfig holds settings for the secretary memory consolidation
+// pipeline (internal/memory).
+type MemoryConfig struct {
+	Enabled              bool                 `mapstructure:"enabled"`                 // enable memory consolidation (default: false — off until the feature settles)
+	MaxChunkMessages     int                  `mapstructure:"max_chunk_messages"`      // max raw messages consumed per consolidation run (default: 2000)
+	SeedMinMessages      int                  `mapstructure:"seed_min_messages"`       // messages in the last 30 days before a person is seeded as an entity (default: 20)
+	MaxEpisodesPerWindow int                  `mapstructure:"max_episodes_per_window"` // episode cap per channel window in the extractor (default: 5)
+	MaxWindowMessages    int                  `mapstructure:"max_window_messages"`     // max messages per extraction window; a busier channel forms multiple sequential windows (default: 200)
+	BatchMaxChannels     int                  `mapstructure:"batch_max_channels"`      // max channel windows grouped into one extraction call (default: 20, digest-pipeline precedent)
+	BatchMaxMessages     int                  `mapstructure:"batch_max_messages"`      // max total messages grouped into one extraction call (default: 1500)
+	Semantic             MemorySemanticConfig `mapstructure:"semantic"`                // Phase-3 semantic tier (belief/rewrite/dedupe/evict/concept steps), dark by default
+	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/disputes/reflection), each dark by default
+}
+
+// MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
+// strong-tier entity rewrites, belief revision, and strong world-map render,
+// plus the mechanical dedupe/concept-promotion/eviction steps. Every step is a
+// no-op unless Enabled is true, so phases 0–2 keep running alone by default.
+// All caps are per consolidation run.
+type MemorySemanticConfig struct {
+	Enabled            bool `mapstructure:"enabled"`              // enable the semantic tier (default: false)
+	RewriteMaxEntities int  `mapstructure:"rewrite_max_entities"` // max entity pages rewritten per run (default: 10)
+	BeliefsMax         int  `mapstructure:"beliefs_max"`          // max belief ops applied per run (default: 20)
+	DedupeMaxMerges    int  `mapstructure:"dedupe_max_merges"`    // max episode merges per run (default: 20)
+	AgeAfterDays       int  `mapstructure:"age_after_days"`       // active short non-situation episodes whose newest event is older than this age to closed+long (default: 14)
+	EvictAfterDays     int  `mapstructure:"evict_after_days"`     // closed long episodes older than this are eviction candidates (default: 45)
+	EvictMax           int  `mapstructure:"evict_max"`            // max episodes evicted per run (default: 50)
+	ConceptMinEpisodes int  `mapstructure:"concept_min_episodes"` // distinct-episode recurrence before a hint is promoted (default: 5)
+	ConceptMaxCreate   int  `mapstructure:"concept_max_create"`   // max concept entities created per run (default: 10)
+	OutputBudget       int  `mapstructure:"output_budget"`        // stop launching further strong-tier AI steps once the run's output tokens exceed this (default: 200000)
+}
+
+// MemorySurfacesConfig gates the four Phase-4 memory surfaces independently —
+// each is a no-op when its flag is off, so the four have independent blast
+// radii. All default false (dark by default).
+type MemorySurfacesConfig struct {
+	Chat       bool `mapstructure:"chat"`       // Discuss chat MEMORY block + ingestChatStatements owner-evidence minting (default: false)
+	Briefing   bool `mapstructure:"briefing"`   // daily briefing "Memory revisions" journal block (default: false)
+	Disputes   bool `mapstructure:"disputes"`   // inbox watchtower detector surfaces dispute_pending beliefs as dashboard situations (default: false)
+	Reflection bool `mapstructure:"reflection"` // weekly strong-tier reflection pass over vault git history (default: false)
+}
+
 type Config struct {
 	ActiveWorkspace string                      `mapstructure:"active_workspace"`
 	Workspaces      map[string]*WorkspaceConfig `mapstructure:"workspaces"`
@@ -193,6 +235,7 @@ type Config struct {
 	Jira            JiraConfig                  `mapstructure:"jira"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
+	Memory          MemoryConfig                `mapstructure:"memory"`
 	Targets         TargetsConfig               `mapstructure:"targets"`
 	Transcripts     TranscriptsConfig           `mapstructure:"transcripts"`
 	Catchup         CatchupConfig               `mapstructure:"catchup"`
@@ -264,6 +307,27 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
 	v.SetDefault("day_plan.min_backlog", DefaultDayPlanMinBacklog)
 	v.SetDefault("day_plan.max_backlog", DefaultDayPlanMaxBacklog)
+	v.SetDefault("memory.enabled", false) // off by default until the feature settles
+	v.SetDefault("memory.max_chunk_messages", 2000)
+	v.SetDefault("memory.seed_min_messages", 20)
+	v.SetDefault("memory.max_episodes_per_window", 5)
+	v.SetDefault("memory.max_window_messages", 200)
+	v.SetDefault("memory.batch_max_channels", DefaultBatchMaxChannels)
+	v.SetDefault("memory.batch_max_messages", DefaultBatchMaxMessages)
+	v.SetDefault("memory.semantic.enabled", false) // semantic tier dark by default
+	v.SetDefault("memory.semantic.rewrite_max_entities", 10)
+	v.SetDefault("memory.semantic.beliefs_max", 20)
+	v.SetDefault("memory.semantic.dedupe_max_merges", 20)
+	v.SetDefault("memory.semantic.age_after_days", 14)
+	v.SetDefault("memory.semantic.evict_after_days", 45)
+	v.SetDefault("memory.semantic.evict_max", 50)
+	v.SetDefault("memory.semantic.concept_min_episodes", 5)
+	v.SetDefault("memory.semantic.concept_max_create", 10)
+	v.SetDefault("memory.semantic.output_budget", 200000)
+	v.SetDefault("memory.surfaces.chat", false) // Phase-4 surfaces dark by default
+	v.SetDefault("memory.surfaces.briefing", false)
+	v.SetDefault("memory.surfaces.disputes", false)
+	v.SetDefault("memory.surfaces.reflection", false)
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

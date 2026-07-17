@@ -52,6 +52,11 @@ func TestClearSlackData(t *testing.T) {
 	exec(`INSERT INTO gmail_messages (id, thread_id, subject) VALUES ('g1', 'th1', 'mail')`)
 	exec(`INSERT INTO targets (text, period_start, period_end) VALUES ('my target', '2026-07-01', '2026-07-31')`)
 
+	// A memory dispute item (channel_id='memory', trigger_type='decision_made')
+	// is NOT Slack-derived and must survive a Slack disconnect.
+	exec(`INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type)
+		VALUES (3, 'memory', 'dispute:bel_x', 'watchtower', 'decision_made')`)
+
 	require.NoError(t, db.ClearSlackData())
 
 	count := func(query string) int {
@@ -81,6 +86,7 @@ func TestClearSlackData(t *testing.T) {
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = 'channel:JIRA-1'`))
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM gmail_messages`))
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM targets`))
+	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM inbox_items WHERE channel_id='memory' AND trigger_type='decision_made'`))
 
 	// Slack watermarks reset; the Gmail watermark stays.
 	var syncedAt *string

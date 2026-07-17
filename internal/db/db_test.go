@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,6 +104,8 @@ func TestAllTablesExist(t *testing.T) {
 		"track_events", "situations", "situation_signals",
 		"feed_items", "feed_state", "meeting_transcripts",
 		"gmail_messages", "gmail_auth_state",
+		"memory_nodes", "memory_aliases", "memory_node_stats",
+		"memory_entity_hints", "memory_dispute_flags",
 	}
 
 	for _, table := range expectedTables {
@@ -151,6 +154,268 @@ func assertTableGone(t *testing.T, d *DB, name string) {
 	var n int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("table %s expected to be dropped (n=%d err=%v)", name, n, err)
+	}
+}
+
+func TestMigration00017MemoryIndex(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	// Consolidation watermark on workspace.
+	var count int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = 'memory_last_extracted_ts'`,
+	).Scan(&count)
+	if err != nil || count != 1 {
+		t.Fatalf("workspace.memory_last_extracted_ts missing (count=%d err=%v)", count, err)
+	}
+
+	// Split cache token accounting on pipeline_runs.
+	for _, col := range []string{"cache_read_tokens", "cache_creation_tokens"} {
+		var n int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('pipeline_runs') WHERE name = ?`, col).Scan(&n)
+		if err != nil || n != 1 {
+			t.Fatalf("pipeline_runs.%s missing (count=%d err=%v)", col, n, err)
+		}
+	}
+
+	// FTS index over memory node bodies.
+	assertTableExists(t, database, "memory_fts")
+
+	// Enum CHECKs reject bad values.
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ent_x', 'bogus', 'long', 'entities/x.md', 'h', '2026-07-15T00:00:00Z')`); err == nil {
+		t.Fatal("expected CHECK violation for type='bogus'")
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ent_x', 'entity', 'medium', 'entities/x.md', 'h', '2026-07-15T00:00:00Z')`); err == nil {
+		t.Fatal("expected CHECK violation for tier='medium'")
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('ent_x', 'entity', 'long', 'gone', 'entities/x.md', 'h', '2026-07-15T00:00:00Z')`); err == nil {
+		t.Fatal("expected CHECK violation for status='gone'")
+	}
+
+	// Aliases are case-insensitive (COLLATE NOCASE primary key).
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ent_x', 'entity', 'long', 'entities/x.md', 'h', '2026-07-15T00:00:00Z')`); err != nil {
+		t.Fatalf("inserting memory node: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_aliases (alias, node_id) VALUES ('Alice', 'ent_x')`); err != nil {
+		t.Fatalf("inserting alias: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_aliases (alias, node_id) VALUES ('alice', 'ent_x')`); err == nil {
+		t.Fatal("expected NOCASE PK violation for duplicate alias with different case")
+	}
+}
+
+func TestMigration00018MemorySemantic(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	// Ingest floor scalar on workspace (Task 13 reads/advances this).
+	var count int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = 'memory_last_ingested_situation_id'`,
+	).Scan(&count)
+	if err != nil || count != 1 {
+		t.Fatalf("workspace.memory_last_ingested_situation_id missing (count=%d err=%v)", count, err)
+	}
+
+	// Expanded memory_nodes.status CHECK accepts the new belief statuses.
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('bel_x', 'belief', 'long', 'shaken', 'beliefs/x.md', 'h', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("expected status='shaken' to be accepted post-migration: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('bel_y', 'belief', 'long', 'retired', 'beliefs/y.md', 'h', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("expected status='retired' to be accepted post-migration: %v", err)
+	}
+	// The CHECK still rejects values outside the (now five-member) enum.
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('ent_z', 'entity', 'long', 'gone', 'entities/z.md', 'h', '2026-07-16T00:00:00Z')`); err == nil {
+		t.Fatal("expected CHECK violation for status='gone'")
+	}
+	// Existing statuses are still accepted (table-recreation preserved the
+	// original enum members).
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, status, path, content_hash, indexed_at)
+		 VALUES ('ep_a', 'episode', 'short', 'active', 'episodes/a.md', 'h', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("expected status='active' to still be accepted: %v", err)
+	}
+
+	// memory_entity_hints: persists unresolved extractor hints for concept
+	// promotion; distinct-episode recurrence keyed on (hint, episode_id).
+	assertTableExists(t, database, "memory_entity_hints")
+	for _, col := range []string{"hint", "episode_id", "first_seen", "promoted_to"} {
+		var n int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('memory_entity_hints') WHERE name = ?`, col).Scan(&n)
+		if err != nil || n != 1 {
+			t.Fatalf("memory_entity_hints.%s missing (count=%d err=%v)", col, n, err)
+		}
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_entity_hints (hint, episode_id, first_seen) VALUES ('hsm', 'ep_1', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("inserting entity hint: %v", err)
+	}
+	// Same (hint, episode_id) is rejected — re-extracting the same episode
+	// must never double-count recurrence.
+	if _, err := database.Exec(
+		`INSERT INTO memory_entity_hints (hint, episode_id, first_seen) VALUES ('hsm', 'ep_1', '2026-07-16T00:00:01Z')`,
+	); err == nil {
+		t.Fatal("expected PK violation for duplicate (hint, episode_id)")
+	}
+	// A different episode contributing the same hint is a distinct row
+	// (recurrence counting is COUNT(*) per hint).
+	if _, err := database.Exec(
+		`INSERT INTO memory_entity_hints (hint, episode_id, first_seen) VALUES ('hsm', 'ep_2', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("inserting entity hint for second episode: %v", err)
+	}
+}
+
+func TestMigration00019MemorySurfaces(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	// Belief index columns on memory_nodes: file-derived, default '' / 0.
+	for _, col := range []string{"subject", "confidence"} {
+		var n int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('memory_nodes') WHERE name = ?`, col).Scan(&n)
+		if err != nil || n != 1 {
+			t.Fatalf("memory_nodes.%s missing (count=%d err=%v)", col, n, err)
+		}
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('bel_x', 'belief', 'long', 'beliefs/x.md', 'h', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("inserting memory node without subject/confidence: %v", err)
+	}
+	var subject string
+	var confidence float64
+	if err := database.QueryRow(
+		`SELECT subject, confidence FROM memory_nodes WHERE id = 'bel_x'`).Scan(&subject, &confidence); err != nil {
+		t.Fatalf("reading subject/confidence defaults: %v", err)
+	}
+	if subject != "" || confidence != 0 {
+		t.Fatalf("subject/confidence defaults = (%q, %v), want (\"\", 0)", subject, confidence)
+	}
+
+	// Owner-chat ingest floor on workspace.
+	var count int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = 'memory_chat_turn_floor'`,
+	).Scan(&count)
+	if err != nil || count != 1 {
+		t.Fatalf("workspace.memory_chat_turn_floor missing (count=%d err=%v)", count, err)
+	}
+
+	// memory_dispute_flags: a side table (not a memory_nodes column) keyed on
+	// node_id, referencing memory_nodes.
+	assertTableExists(t, database, "memory_dispute_flags")
+	if _, err := database.Exec(
+		`INSERT INTO memory_dispute_flags (node_id, flagged_at) VALUES ('bel_x', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("inserting dispute flag: %v", err)
+	}
+	var reason string
+	if err := database.QueryRow(
+		`SELECT reason FROM memory_dispute_flags WHERE node_id = 'bel_x'`).Scan(&reason); err != nil {
+		t.Fatalf("reading dispute flag reason default: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason default = %q, want \"\"", reason)
+	}
+}
+
+// TestMigration00019ClearsBeliefContentHash proves the migration empties every
+// pre-existing belief's content_hash (M1) so the next Reconcile re-parses it and
+// fills the new subject/confidence columns — a belief indexed before 00019 has
+// an unchanged file, so a hash-match skip would leave it at ”/0 forever.
+// Non-belief nodes keep their hash (their columns are always the ”/0 default).
+func TestMigration00019ClearsBeliefContentHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "belief-hash.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	// Roll back to just before 00019: memory_nodes exists (from 00017) but has no
+	// subject/confidence columns yet.
+	if err := goose.DownTo(d.DB, "migrations", 18); err != nil {
+		t.Fatalf("goose down to 18: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		VALUES ('bel_seed', 'belief', 'long', 'beliefs/seed.md', 'beliefhash', '2026-07-16T00:00:00Z'),
+		       ('ent_seed', 'entity', 'long', 'entities/seed.md', 'enthash', '2026-07-16T00:00:00Z')`); err != nil {
+		t.Fatalf("seeding pre-00019 nodes: %v", err)
+	}
+
+	// Apply 00019 (adds columns + clears belief content_hash).
+	if err := goose.UpTo(d.DB, "migrations", 19); err != nil {
+		t.Fatalf("goose up to 19: %v", err)
+	}
+
+	var belHash, entHash string
+	if err := d.QueryRow(`SELECT content_hash FROM memory_nodes WHERE id='bel_seed'`).Scan(&belHash); err != nil {
+		t.Fatalf("reading belief hash: %v", err)
+	}
+	if err := d.QueryRow(`SELECT content_hash FROM memory_nodes WHERE id='ent_seed'`).Scan(&entHash); err != nil {
+		t.Fatalf("reading entity hash: %v", err)
+	}
+	if belHash != "" {
+		t.Errorf("belief content_hash = %q, want empty (forces re-parse for subject/confidence)", belHash)
+	}
+	if entHash != "enthash" {
+		t.Errorf("non-belief content_hash = %q, want untouched", entHash)
+	}
+}
+
+// TestMemorySurfacesMigrationDownUpCycle: 00019's Down drops its
+// ALTER-added columns and the dispute-flags table (precedent: 00017/00018's
+// Down), so a down;up cycle is clean.
+func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "surfaces-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	if _, err := d.Exec(`UPDATE workspace SET memory_chat_turn_floor = 0`); err != nil {
+		t.Errorf("memory_chat_turn_floor missing after cycle: %v", err)
+	}
+	if _, err := d.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at, subject, confidence)
+		 VALUES ('bel_cycle', 'belief', 'long', 'beliefs/cycle.md', 'h', '2026-07-16T00:00:00Z', 'ent_x', 0.5)`,
+	); err != nil {
+		t.Errorf("subject/confidence columns missing after cycle: %v", err)
+	}
+	if _, err := d.Exec(
+		`INSERT INTO memory_dispute_flags (node_id, flagged_at) VALUES ('bel_cycle', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Errorf("memory_dispute_flags missing after cycle: %v", err)
 	}
 }
 
