@@ -67,8 +67,7 @@ struct ExtractIndicatorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(message).font(.callout.weight(.medium))
                 if showDetails, let raw = center.lastRawError {
-                    Text(raw).font(.caption).foregroundStyle(.secondary)
-                        .textSelection(.enabled).lineLimit(4)
+                    Text(raw).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(4)
                 } else if center.lastRawError != nil {
                     Button("Show details") { showDetails = true }
                         .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
