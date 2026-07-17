@@ -10,8 +10,8 @@
 -- past-event->episode builder (memory.sources.calendar). Deliberately a
 -- FOURTH independent watermark, distinct from memory_last_extracted_ts
 -- (Slack episode extraction, see 00017), memory_gmail_last_extracted_ts
--- (Gmail episode extraction, see 00020), and memory_last_interaction_id (5D
--- interaction-ingest floor, see 00020). It advances only behind
+-- (Gmail episode extraction, see 00022), and memory_last_interaction_id (5D
+-- interaction-ingest floor, see 00022). It advances only behind
 -- fully-committed event episodes and never past an un-built event (MEM-04,
 -- adapted); the builder additionally re-scans a bounded lookback overlap so
 -- a recap/edit landing after the watermark passed a still-present event
@@ -20,6 +20,6 @@
 ALTER TABLE workspace ADD COLUMN memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0;
 
 -- +goose Down
--- Precedent: 00017-00020's Down drops their ALTER-added columns so a
+-- Precedent: 00017-00019, 00022's Down drops their ALTER-added columns so a
 -- down;up cycle is clean.
 ALTER TABLE workspace DROP COLUMN memory_calendar_last_extracted_ts;

@@ -39,7 +39,7 @@ All Phase-0–4 code is merged on `feature/memory-phase5` (the worktree contains
 
 ## File Structure
 
-- `internal/db/migrations/00020_memory_phase5_slice1.sql` (+ mirror in `internal/db/schema.sql`, golden snapshot, `TestAllTablesExist`) — `workspace.memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0`; `workspace.memory_last_interaction_id INTEGER NOT NULL DEFAULT 0`; new table `memory_engagement(node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id), engaged_count INTEGER NOT NULL DEFAULT 0, dismissed_count INTEGER NOT NULL DEFAULT 0, last_interaction_at TEXT NOT NULL DEFAULT '')`. All additive `ALTER TABLE ADD COLUMN` + one `CREATE TABLE` — no CHECK change, no table recreation.
+- `internal/db/migrations/00022_memory_phase5_slice1.sql` (+ mirror in `internal/db/schema.sql`, golden snapshot, `TestAllTablesExist`) — `workspace.memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0`; `workspace.memory_last_interaction_id INTEGER NOT NULL DEFAULT 0`; new table `memory_engagement(node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id), engaged_count INTEGER NOT NULL DEFAULT 0, dismissed_count INTEGER NOT NULL DEFAULT 0, last_interaction_at TEXT NOT NULL DEFAULT '')`. All additive `ALTER TABLE ADD COLUMN` + one `CREATE TABLE` — no CHECK change, no table recreation.
 - `internal/memory/provenance.go` (+`provenance_test.go`) — `ProvenanceResolver` interface, `ProvenanceRegistry`, scheme classifier, and the four resolvers (`message`/`chat`/`mail`/`act`). Migrates the bodies of today's `MessageExists` and `validateChatRefs` checks in.
 - `internal/memory/beliefs.go` — `validateMarkers`/`validateChatRefs` re-expressed over the registry (`p.registry`); `newEvidenceLines` mints `rankOwnerAction` for `act:` refs.
 - `internal/memory/belief_math.go` (+`belief_math_test.go`) — `rankOwnerAction` const between `rankObserved`/`rankOwner`; `evidenceWeight`/`parseEvidenceRank`/`rankName` cases; `hasFreshOwnerSupport` **unchanged**.
@@ -91,11 +91,11 @@ Add `type MemorySourcesConfig struct { Gmail, Actions bool }` (mapstructure `gma
 - [ ] **Step 1: failing tests** — config test: the two `memory.sources.*` defaults are present and false; cmd test: `watchtower config set memory.sources.gmail true` is accepted (not warned as unknown).
 - [ ] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** `go test ./internal/config/ ./cmd/ -run 'Config|Memory'` green; commit `feat(config): memory.sources.{gmail,actions} gates (default false)`.
 
-## Task 3: Migration 00020 — Gmail extract watermark + interaction floor + engagement side table
+## Task 3: Migration 00022 — Gmail extract watermark + interaction floor + engagement side table
 
 **Depends on:** nothing (parallel with Tasks 1, 2). **Blocks:** Tasks 4, 5, 7, 8. Follow `.claude/skills/add-migration`.
 
-**Files:** new `internal/db/migrations/00020_memory_phase5_slice1.sql`; modify `internal/db/schema.sql`, the golden snapshot, `internal/db/db_test.go` (`TestAllTablesExist`), `internal/db/memory.go` (+`_test.go`).
+**Files:** new `internal/db/migrations/00022_memory_phase5_slice1.sql`; modify `internal/db/schema.sql`, the golden snapshot, `internal/db/db_test.go` (`TestAllTablesExist`), `internal/db/memory.go` (+`_test.go`).
 
 Three additive changes (no CHECK change, no table recreation → no `foreign_keys=OFF` dance):
 1. `workspace.memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0` — the Gmail episode-extraction watermark (unix seconds of the newest thread message fully extracted). **Distinct** from `gmail_last_internal_date` (sync watermark) and `memory_last_extracted_ts` (Slack extraction watermark).
@@ -107,7 +107,7 @@ Down: drop the two columns (SQLite ≥3.35 `DROP COLUMN`, precedent 00019 Down) 
 DB helpers (in `internal/db/memory.go`): `MemoryGmailWatermark()`/`SetMemoryGmailWatermark(ts)` (mirror `MemoryWatermark`); `MemoryInteractionFloor()`/`SetMemoryInteractionFloor(id)` (mirror `MemoryChatTurnFloor`); `BumpEngagement(nodeID string, engaged bool, at string)` (upsert incrementing `engaged_count` or `dismissed_count`, `memory_node_stats` upsert precedent) + `GetEngagement(nodeID) (engaged, dismissed int, err error)`.
 
 - [ ] **Step 1: failing tests** (`internal/db/memory_test.go` + `db_test.go`) — the two workspace scalars default 0 and round-trip via the setters; `memory_engagement` exists (add to `TestAllTablesExist`), `BumpEngagement`/`GetEngagement` accumulate engaged/dismissed and stamp `last_interaction_at`; `DropMemoryIndex` leaves `memory_engagement` rows intact (survives reindex).
-- [ ] **Step 2:** `go test ./internal/db/ -run 'Migration|AllTables|MemoryGmail|Interaction|Engagement|SchemaGolden'` → FAIL. **Step 3:** implement goose Up/Down, schema.sql mirror, helpers. **Step 4:** regenerate `go test ./internal/db/ -run TestSchemaGolden -update`; full `go test ./internal/db/` green. Commit `feat(db): gmail-extract watermark + interaction floor + memory_engagement side table (00020)`.
+- [ ] **Step 2:** `go test ./internal/db/ -run 'Migration|AllTables|MemoryGmail|Interaction|Engagement|SchemaGolden'` → FAIL. **Step 3:** implement goose Up/Down, schema.sql mirror, helpers. **Step 4:** regenerate `go test ./internal/db/ -run TestSchemaGolden -update`; full `go test ./internal/db/` green. Commit `feat(db): gmail-extract watermark + interaction floor + memory_engagement side table (00022)`.
 
 ## Task 4: `mail:` resolver + Gmail sender → person seeding
 

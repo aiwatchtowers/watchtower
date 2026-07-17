@@ -420,11 +420,11 @@ func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-// TestMigration00020MemoryPhase5Slice1 covers Task 3's three additive
+// TestMigration00022MemoryPhase5Slice1 covers Task 3's three additive
 // changes: the Gmail episode-extraction watermark and interaction-ingest
 // floor on workspace (both default 0), and the memory_engagement side table
 // (defaults ” / 0 / 0, keyed on memory_nodes.id).
-func TestMigration00020MemoryPhase5Slice1(t *testing.T) {
+func TestMigration00022MemoryPhase5Slice1(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -471,7 +471,7 @@ func TestMigration00020MemoryPhase5Slice1(t *testing.T) {
 	}
 }
 
-// TestMemoryPhase5Slice1MigrationDownUpCycle: 00020's Down drops its
+// TestMemoryPhase5Slice1MigrationDownUpCycle: 00022's Down drops its
 // ALTER-added columns and the memory_engagement table (precedent: 00017-19's
 // Down), so a down;up cycle is clean.
 func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
@@ -502,13 +502,13 @@ func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-// TestMigration00021MemoryPhase5Slice2 covers the Slice-2 Task 2 change: the
+// TestMigration00023MemoryPhase5Slice2 covers the Slice-2 Task 2 change: the
 // calendar episode-build watermark on workspace (defaults 0), a FOURTH
 // independent memory watermark alongside memory_last_extracted_ts (Slack),
 // memory_gmail_last_extracted_ts (Gmail), and memory_last_interaction_id (5D
 // floor). Additive ALTER TABLE ADD COLUMN only — no new table, no CHECK
 // change.
-func TestMigration00021MemoryPhase5Slice2(t *testing.T) {
+func TestMigration00023MemoryPhase5Slice2(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -533,8 +533,8 @@ func TestMigration00021MemoryPhase5Slice2(t *testing.T) {
 	}
 }
 
-// TestMemoryPhase5Slice2MigrationDownUpCycle: 00021's Down drops its
-// ALTER-added column (precedent: 00017-20's Down), so a down;up cycle is
+// TestMemoryPhase5Slice2MigrationDownUpCycle: 00023's Down drops its
+// ALTER-added column (precedent: 00017-19, 00022's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "phase5-slice2-cycle.db")
@@ -556,7 +556,7 @@ func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-func TestMigration00022MemoryDigestCompare(t *testing.T) {
+func TestMigration00024MemoryDigestCompare(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -607,8 +607,8 @@ func TestMigration00022MemoryDigestCompare(t *testing.T) {
 	}
 }
 
-// TestMemoryPhase5Slice3MigrationDownUpCycle: 00022's Down drops both
-// additive CREATE TABLEs (precedent: 00017-21's Down), so a down;up cycle is
+// TestMemoryPhase5Slice3MigrationDownUpCycle: 00024's Down drops both
+// additive CREATE TABLEs (precedent: 00017-19, 00022-23's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice3MigrationDownUpCycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "phase5-slice3-cycle.db")

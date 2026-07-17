@@ -31,7 +31,7 @@ Slices 1–2 are merged on `feature/memory-phase5` (this worktree). Confirm `go 
 
 ## File Structure
 
-- `internal/db/migrations/00022_memory_digest_compare.sql` (+ mirror in `internal/db/schema.sql`, golden snapshot, `TestAllTablesExist`) — two additive `CREATE TABLE`s (`memory_provenance`, `memory_digest_shadow`); no CHECK change, no table recreation. Down: `DROP TABLE` both.
+- `internal/db/migrations/00024_memory_digest_compare.sql` (+ mirror in `internal/db/schema.sql`, golden snapshot, `TestAllTablesExist`) — two additive `CREATE TABLE`s (`memory_provenance`, `memory_digest_shadow`); no CHECK change, no table recreation. Down: `DROP TABLE` both.
 - `internal/db/memory.go` (+`memory_test.go`) — provenance-index write folded into `UpsertMemoryNode`/`DeleteMemoryNode`/`DropMemoryIndex`; new `ListEpisodesForChannelWindow(channelID string, fromUnix, toUnix float64) ([]string, error)`; shadow accessors `UpsertDigestShadow(row)` / `ListDigestShadow(...)`.
 - `internal/memory/provenance.go` — a small exported-within-package `parseProvenanceRefs(body string) []episodeRef` (the `## Provenance` line parser reused by the index writer; the render's ref-validation reuses the existing registry).
 - `internal/memory/digest_render.go` (+`digest_render_test.go`) — `renderChannelDigest` + the MEM-13 write-time ref validation.
@@ -55,11 +55,11 @@ Add `type MemoryRendersConfig struct { DigestCompare bool \`mapstructure:"digest
 - [ ] **Step 1: failing tests** — config test: the `memory.renders.digest_compare` default is present and false; cmd test: `watchtower config set memory.renders.digest_compare true` is accepted (not warned as unknown).
 - [ ] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** `go test ./internal/config/ ./cmd/ -run 'Config|Memory'` green; commit `feat(config): memory.renders.digest_compare gate (default false)`.
 
-## Task 2: Migration 00022 — `memory_provenance` index + `memory_digest_shadow`
+## Task 2: Migration 00024 — `memory_provenance` index + `memory_digest_shadow`
 
 **Depends on:** nothing (parallel with Task 1). **Blocks:** Tasks 3, 4, 5. Follow `.claude/skills/add-migration`.
 
-**Files:** new `internal/db/migrations/00022_memory_digest_compare.sql`; modify `internal/db/schema.sql`, the golden snapshot, `internal/db/db_test.go` (`TestAllTablesExist`), `internal/db/memory.go` (+`_test.go`).
+**Files:** new `internal/db/migrations/00024_memory_digest_compare.sql`; modify `internal/db/schema.sql`, the golden snapshot, `internal/db/db_test.go` (`TestAllTablesExist`), `internal/db/memory.go` (+`_test.go`).
 
 Two additive `CREATE TABLE`s (no CHECK change, no table recreation):
 1. `memory_provenance(node_id TEXT NOT NULL REFERENCES memory_nodes(id), scheme TEXT NOT NULL DEFAULT '', channel_id TEXT NOT NULL, ts_raw TEXT NOT NULL, ts_unix REAL NOT NULL, PRIMARY KEY (node_id, channel_id, ts_raw))` + `CREATE INDEX idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix)`. Derived index of each episode's `## Provenance` refs — **rebuildable from vault files**, so it is added to MEM-02 (Task 3) and **cleared by `DropMemoryIndex`** (unlike the interaction side tables).
@@ -72,7 +72,7 @@ DB helpers (in `internal/db/memory.go`): `UpsertDigestShadow(row DigestShadowRow
 Down: `DROP TABLE memory_digest_shadow; DROP TABLE memory_provenance;`.
 
 - [ ] **Step 1: failing tests** (`internal/db/memory_test.go` + `db_test.go`) — both tables exist (`TestAllTablesExist`); `UpsertDigestShadow`/`ListDigestShadow` round-trip and upsert-replace on the period key; `SchemaGolden` regenerates cleanly.
-- [ ] **Step 2:** `go test ./internal/db/ -run 'Migration|AllTables|DigestShadow|SchemaGolden'` → FAIL. **Step 3:** implement goose Up/Down, schema.sql mirror, helpers. **Step 4:** regenerate `go test ./internal/db/ -run TestSchemaGolden -update`; full `go test ./internal/db/` green. Commit `feat(db): memory_provenance index + memory_digest_shadow tables (00022)`.
+- [ ] **Step 2:** `go test ./internal/db/ -run 'Migration|AllTables|DigestShadow|SchemaGolden'` → FAIL. **Step 3:** implement goose Up/Down, schema.sql mirror, helpers. **Step 4:** regenerate `go test ./internal/db/ -run TestSchemaGolden -update`; full `go test ./internal/db/` green. Commit `feat(db): memory_provenance index + memory_digest_shadow tables (00024)`.
 
 ## Task 3: Provenance index population + episode-window query + MEM-02 extension
 
