@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
@@ -513,5 +514,55 @@ func TestPipeline_CreateFromExtraction_TxRollbackOnFailure(t *testing.T) {
 	}
 	if len(targets) != 0 {
 		t.Errorf("want 0 targets after rollback, got %d", len(targets))
+	}
+}
+
+// ctxDeadlineGenerator records whether the context passed to Generate had a
+// deadline, so the timeout-wiring can be asserted without wall-clock waits.
+type ctxDeadlineGenerator struct {
+	response    string
+	sawDeadline bool
+}
+
+func (g *ctxDeadlineGenerator) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+	_, g.sawDeadline = ctx.Deadline()
+	return g.response, &digest.Usage{InputTokens: 1, OutputTokens: 1}, "", nil
+}
+
+func TestPipeline_Extract_NonPositiveTimeoutHasNoDeadline(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	gen := &ctxDeadlineGenerator{response: `{"extracted":[],"omitted_count":0,"notes":""}`}
+	cfg := &config.TargetsConfig{Extract: config.TargetsExtractConfig{Enabled: true, TimeoutSeconds: 0}}
+	p := New(d, cfg, gen, nil, "", nil)
+
+	if _, err := p.Extract(context.Background(), ExtractRequest{RawText: "anything", EntryPoint: "cli"}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if gen.sawDeadline {
+		t.Fatalf("expected no deadline on the AI context when TimeoutSeconds <= 0")
+	}
+}
+
+func TestPipeline_Extract_PositiveTimeoutStillHasDeadline(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	gen := &ctxDeadlineGenerator{response: `{"extracted":[],"omitted_count":0,"notes":""}`}
+	cfg := &config.TargetsConfig{Extract: config.TargetsExtractConfig{Enabled: true, TimeoutSeconds: 30}}
+	p := New(d, cfg, gen, nil, "", nil)
+
+	if _, err := p.Extract(context.Background(), ExtractRequest{RawText: "anything", EntryPoint: "cli"}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if !gen.sawDeadline {
+		t.Fatalf("expected a deadline on the AI context when TimeoutSeconds > 0")
 	}
 }

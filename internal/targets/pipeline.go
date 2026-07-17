@@ -49,12 +49,21 @@ func (p *Pipeline) Extract(ctx context.Context, req ExtractRequest) (*ExtractRes
 		return nil, fmt.Errorf("extraction disabled")
 	}
 
-	// Apply timeout from config.
-	timeout := time.Duration(config.DefaultTargetsExtractTimeoutSeconds) * time.Second
-	if p.cfg != nil && p.cfg.Extract.TimeoutSeconds > 0 {
-		timeout = time.Duration(p.cfg.Extract.TimeoutSeconds) * time.Second
+	// Apply timeout from config. A non-positive value disables the deadline
+	// entirely: extraction is a user-cancellable background op (Desktop
+	// capsule), not a wall-clock-bounded call — see the 2026-07-16 spec.
+	// cfg == nil keeps the built-in default (also 0 → no deadline).
+	timeoutSec := config.DefaultTargetsExtractTimeoutSeconds
+	if p.cfg != nil {
+		timeoutSec = p.cfg.Extract.TimeoutSeconds
 	}
-	aiCtx, cancel := context.WithTimeout(ctx, timeout)
+	var aiCtx context.Context
+	var cancel context.CancelFunc
+	if timeoutSec > 0 {
+		aiCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	} else {
+		aiCtx, cancel = context.WithCancel(ctx)
+	}
 	defer cancel()
 
 	// Detect and resolve URLs in the raw text.
