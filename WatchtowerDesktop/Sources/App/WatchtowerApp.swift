@@ -67,9 +67,16 @@ struct WatchtowerApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationRoot()
-                .environment(appState)
                 .frame(minWidth: 800, minHeight: 600)
+                .overlay(alignment: .bottomTrailing) {
+                    RecordingIndicatorView()
+                }
                 .background(OpaqueWindowBackground())
+                // `.environment` must wrap the overlay too: the overlay attaches as a
+                // sibling outside any environment applied deeper on NavigationRoot, so
+                // injecting here (outermost) is what lets RecordingIndicatorView's
+                // @Environment(AppState.self) resolve instead of trapping on launch.
+                .environment(appState)
                 .onAppear {
                     // H5 fix: connect the live SwiftUI-managed appState to the notification delegate
                     NotificationDelegate.sharedAppState = appState

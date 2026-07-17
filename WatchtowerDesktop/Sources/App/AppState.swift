@@ -32,6 +32,35 @@ final class AppState {
     /// closed mid-extraction.
     let targetExtractCenter = TargetExtractCenter()
 
+    /// App-wide, single-slot registry for meeting recording + transcription, so
+    /// an in-flight recording and its transcription survive navigating away from
+    /// the calendar event that started it.
+    let meetingRecorderCenter = MeetingRecorderCenter()
+
+    /// App-wide, single-slot registry for meeting-recording audio playback, so
+    /// only one recording's audio plays at a time regardless of how many
+    /// transcript rows are expanded across the app.
+    let audioPlaybackCenter = AudioPlaybackCenter()
+
+    /// App-wide, single-slot-per-transcript registry for "generate meeting
+    /// notes" runs, so the "generating…" flag survives navigating away from
+    /// and back to a recording's detail (feedback: async ops need
+    /// navigation-surviving state).
+    let transcriptNotesCenter = TranscriptNotesCenter()
+
+    /// Diarizer models are prefetched only while speaker roles are on; a
+    /// failure is fine — the post-pass retries the download and degrades to a
+    /// role-less transcript.
+    @Sendable private static func prefetchDiarizerModels() async {
+        guard TranscriptionConfig.fromDefaults().diarization else { return }
+        try? await FluidAudioDiarizer.prefetchModels()
+    }
+
+    /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,
+    /// so download progress is visible (and retryable) from anywhere,
+    /// independent of whether a recording is in progress.
+    let transcriptionModelProvisioner = TranscriptionModelProvisioner(prefetchExtras: AppState.prefetchDiarizerModels)
+
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?
@@ -177,6 +206,9 @@ final class AppState {
         guard !isInitializing else { return }
         isInitializing = true
         isLoading = true
+        // Surface a recording captured before a crash/relaunch so the global
+        // indicator can offer to (re-)transcribe it. No DB needed.
+        meetingRecorderCenter.restorePendingOnLaunch()
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,

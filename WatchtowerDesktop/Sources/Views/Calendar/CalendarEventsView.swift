@@ -1,40 +1,78 @@
 import SwiftUI
 
+enum CalendarMode: String, CaseIterable {
+    case events, recordings
+
+    var title: String {
+        switch self {
+        case .events: return "Events"
+        case .recordings: return "Recordings"
+        }
+    }
+}
+
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
+    @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     @State private var meetingPrepVM = MeetingPrepViewModel()
     @State private var selectedEventID: String?
     private let google = GoogleConnectFlow.shared
     @State private var expandedAllDayDates: Set<Date> = []
     @State private var expandedEventID: String?
     @State private var userNotes: String = ""
+    @State private var mode: CalendarMode = .events
 
     var body: some View {
         Group {
             if google.calendar.isConnected, !google.isRunning, let calVM = appState.calendarViewModel {
-                HStack(spacing: 0) {
-                    eventsList(calVM)
-                        .frame(minWidth: 300, idealWidth: 350)
+                VStack(spacing: 0) {
+                    Picker("", selection: $mode) {
+                        ForEach(CalendarMode.allCases, id: \.self) { m in
+                            Text(m.title).tag(m)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: 260)
+                    .padding(.top, 10)
 
-                    if let eventID = selectedEventID {
-                        Divider()
-                        MeetingPrepDetailView(
-                            eventID: eventID,
-                            viewModel: meetingPrepVM,
-                            userNotes: $userNotes
-                        )                            { selectedEventID = nil }
-                        .id(eventID)
-                        .frame(minWidth: 400, idealWidth: 500)
-                        .transition(
-                            .move(edge: .trailing).combined(with: .opacity)
-                        )
+                    switch mode {
+                    case .events:
+                        eventsSplitView(calVM)
+                    case .recordings:
+                        RecordingsView()
                     }
                 }
-                .animation(.easeInOut(duration: 0.25), value: selectedEventID)
-                .onAppear { calVM.loadEvents() }
             } else {
                 notConnectedView
             }
+        }
+    }
+
+    private func eventsSplitView(_ vm: CalendarViewModel) -> some View {
+        HStack(spacing: 0) {
+            eventsList(vm)
+                .frame(minWidth: 300, idealWidth: 350)
+
+            if let eventID = selectedEventID {
+                Divider()
+                MeetingPrepDetailView(
+                    eventID: eventID,
+                    viewModel: meetingPrepVM,
+                    userNotes: $userNotes
+                ) { selectedEventID = nil }
+                .id(eventID)
+                .frame(minWidth: 400, idealWidth: 500)
+                .transition(
+                    .move(edge: .trailing).combined(with: .opacity)
+                )
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: selectedEventID)
+        .onAppear {
+            vm.loadEvents()
+            appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: transcriptionModel)
         }
     }
 
@@ -64,6 +102,47 @@ struct CalendarEventsView: View {
             Text("Calendar")
                 .font(.title2)
                 .fontWeight(.bold)
+            Spacer()
+            recordButton(eventID: nil, title: nil)
+        }
+    }
+
+    // MARK: - Record Button
+
+    /// Record/Stop control for a calendar event (or ad-hoc when `eventID` is nil).
+    /// Shows "Stop" only while THIS target is the one being recorded; disabled
+    /// when another run is in flight or system-audio capture is unsupported.
+    @ViewBuilder
+    private func recordButton(eventID: String?, title: String?) -> some View {
+        let center = appState.meetingRecorderCenter
+        let isRecordingThis: Bool = {
+            if case .recording = center.phase { return center.currentEventID == eventID }
+            return false
+        }()
+        Button {
+            if isRecordingThis {
+                stopRecording()
+            } else {
+                Task { await center.startRecording(eventID: eventID, title: title, config: .fromDefaults()) }
+            }
+        } label: {
+            Label(isRecordingThis ? "Stop" : "Record",
+                  systemImage: isRecordingThis ? "stop.circle" : "record.circle")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(isRecordingThis ? .red : nil)
+        .disabled((center.isBusy && !isRecordingThis) || !SystemAudioRecorder.isSupported)
+        .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
+    }
+
+    private func stopRecording() {
+        // No CLI-runner guard here: stopping capture must never depend on the
+        // watchtower binary resolving — the Center fails visibly at the save
+        // step instead, with the audio kept.
+        Task {
+            await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
         }
     }
 
@@ -192,6 +271,8 @@ struct CalendarEventsView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(selectedEventID == event.id ? Color.accentColor : .blue)
+
+                recordButton(eventID: event.id, title: event.title)
             }
 
             if expandedEventID == event.id {

@@ -26,6 +26,7 @@ var Defaults = map[string]string{
 	MeetingPrep:                defaultMeetingPrep,
 	MeetingExtractTopics:       defaultMeetingExtractTopics,
 	MeetingRecap:               defaultMeetingRecap,
+	MeetingNotes:               defaultMeetingNotes,
 	DayPlanGenerate:            defaultDayPlanGenerate,
 	TargetsExtract:             defaultTargetsExtract,
 	TargetsLink:                defaultTargetsLink,
@@ -64,6 +65,7 @@ var AllIDs = []string{
 	MeetingPrep,
 	MeetingExtractTopics,
 	MeetingRecap,
+	MeetingNotes,
 	DayPlanGenerate,
 	TargetsExtract,
 	TargetsLink,
@@ -104,6 +106,7 @@ var DefaultVersions = map[string]int{
 	TasksUpdate:                1, // v1: AI task update from user instruction
 	MeetingPrep:                3, // v3: Jira context for attendees (workload, shared issues)
 	MeetingRecap:               1, // v1: initial meeting recap template
+	MeetingNotes:               1, // v1: publishable markdown meeting notes from a transcript
 	DayPlanGenerate:            2, // v2: mandatory language directive at top
 	TargetsExtract:             1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:                1, // v1: single-target link proposal against active snapshot
@@ -146,6 +149,7 @@ var Descriptions = map[string]string{
 	MeetingPrep:                "Meeting prep — AI-powered meeting brief with attendee analysis, talking points, recommendations, and context gaps",
 	MeetingExtractTopics:       "Meeting extract topics — split pasted text into atomic discussion topics for a meeting's Discussion Topics list",
 	MeetingRecap:               "Meeting recap — AI-structured post-meeting summary with decisions, action items, and open questions",
+	MeetingNotes:               "Meeting notes — publishable markdown notes from transcript for people who weren't at the meeting",
 	DayPlanGenerate:            "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
 	TargetsExtract:             "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
 	TargetsLink:                "Target linking — single-target parent and secondary link proposal against active snapshot",
@@ -1061,7 +1065,7 @@ Rules:
 - priority is optional. Use "" when unclear. Use "high" only for explicit blockers or urgency signals.
 - Return an empty topics array if the text has no actionable content.`
 
-const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted.
+const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted, or on an automatic single-track audio transcript (speakers are not labeled; the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions).
 
 === EVENT ===
 Title: %s
@@ -1096,6 +1100,43 @@ Rules:
 - Open questions: things flagged as unresolved or "to discuss later".
 - Use empty arrays if a category has nothing.
 - Strip markdown (**bold**, numbered lists, emojis) from output strings.`
+
+const defaultMeetingNotes = `You write publishable meeting notes from an automatic single-track audio transcript (speakers are not labeled; the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). The notes will be pasted into Slack or Confluence for people who were NOT at the meeting.
+
+=== EVENT ===
+Title: %s
+Time:  %s — %s
+Attendees: %s
+Description: %s
+
+=== EXISTING AI RECAP (may be empty) ===
+%s
+
+%s
+
+Return ONLY a markdown document (no code fences, no commentary before or after) with this structure:
+
+# <meeting title>
+
+**Date:** <date if known, else omit the line>
+**Participants:** <names if identifiable from the event attendees, else omit the line>
+
+## Summary
+1-3 sentences: what the meeting was about and its outcome.
+
+## Decisions
+- bullet per explicitly resolved item (omit the section if none)
+
+## Action items
+- bullet per commitment, imperative, with the owner when named (omit the section if none)
+
+## Next steps / open questions
+- bullet per unresolved item (omit the section if none)
+
+Rules:
+- Neutral, publication-ready tone; no first person, no meta-commentary.
+- Be faithful to the transcript; never invent facts, owners, or dates.
+- Merge near-duplicates; keep it scannable.`
 
 const defaultTargetsExtract = `You are a goal-extraction assistant. Given raw text (a Slack message, email paste, or form input), extract actionable targets (goals, tasks, deliverables) and return them as structured JSON.
 

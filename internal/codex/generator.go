@@ -41,21 +41,12 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	codexBin := FindBinary(g.codexPath)
 
-	args := []string{
-		"exec",
-		"--model", model,
-		"--json",
-		"--ephemeral",
-		"--skip-git-repo-check",
-		"-c", "approval_policy=never",
-		"-c", "sandbox_mode=read-only",
-	}
-	if systemPrompt != "" {
-		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
-	}
-	args = append(args, userMessage)
+	args, stdin := buildArgs(model, systemPrompt, userMessage)
 
 	cmd := exec.CommandContext(ctx, codexBin, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}
@@ -97,6 +88,33 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	}
 
 	return result, digestUsage, "", nil
+}
+
+// buildArgs builds the `codex exec` CLI args; when userMessage exceeds
+// digest.StdinThreshold the final positional arg is "-" (codex reads the
+// prompt from stdin) and the message is returned as stdin content instead,
+// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
+func buildArgs(model, systemPrompt, userMessage string) ([]string, string) {
+	args := []string{
+		"exec",
+		"--model", model,
+		"--json",
+		"--ephemeral",
+		"--skip-git-repo-check",
+		"-c", "approval_policy=never",
+		"-c", "sandbox_mode=read-only",
+	}
+	if systemPrompt != "" {
+		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
+	}
+	stdin := ""
+	if len(userMessage) > digest.StdinThreshold {
+		stdin = userMessage
+		args = append(args, "-")
+	} else {
+		args = append(args, userMessage)
+	}
+	return args, stdin
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message

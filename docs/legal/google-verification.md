@@ -63,6 +63,19 @@ from `wt-lending`.
   Calendar verification pass; re-check it's still valid before submitting if it's
   been a while.
 
+> **History / gotchas:**
+> - The original minimal pages (`docs/legal/index.html`,
+>   `docs/legal/privacy-policy.html`) were served via GitHub Pages from an orphan
+>   `gh-pages` branch of `aiwatchtowers/watchtower`. They are **superseded** by
+>   the `lending` site; keep them only as reference copy.
+> - That legacy GitHub Pages site must stay **disabled** (`gh api -X DELETE
+>   repos/aiwatchtowers/watchtower/pages`) — its `gh-pages` branch contains a
+>   `CNAME` for `aiwatchtowers.com`, so a legacy Pages rebuild re-claims the
+>   apex domain and fights Cloudflare for it.
+> - The old privacy URL `https://aiwatchtowers.com/privacy-policy.html` is a
+>   **404** on the new site. Anything still pointing at it (consent screen,
+>   docs, email templates) must use `https://aiwatchtowers.com/privacy/`.
+
 To ship a change: edit inside `wt-lending`, commit, push to `main` — Cloudflare
 Pages auto-deploys from there. `git pull` that repo first if it's been a while
 (it tracks `origin/main`, independent of this repo's git history).

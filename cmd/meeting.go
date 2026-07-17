@@ -8,6 +8,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/meeting"
+	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -220,6 +221,7 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 
 	gen := cliGenerator(cfg)
 	pipe := meeting.New(database, cfg, gen, nil)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	result, err := pipe.GenerateRecap(cmd.Context(), meetingRecapFlagEventID, meetingRecapFlagText)
 	if err != nil {
