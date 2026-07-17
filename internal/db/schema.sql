@@ -1279,7 +1279,7 @@ CREATE TABLE IF NOT EXISTS memory_engagement (
     last_interaction_at TEXT NOT NULL DEFAULT ''
 );
 
--- Phase-5 slice-3 (see 00022): derived index of each episode/rollup node's
+-- Phase-5 slice-3 (see 00024): derived index of each episode/rollup node's
 -- `## Provenance` refs, so a channel+window lookup does not require a full
 -- vault body re-scan. Rebuildable from vault files — INSIDE the MEM-02
 -- reindex-equivalence set (an extension, not a weakening; owner-review
@@ -1296,7 +1296,7 @@ CREATE TABLE IF NOT EXISTS memory_provenance (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix);
 
--- Phase-5 slice-3 (see 00022): dark compare-mode telemetry
+-- Phase-5 slice-3 (see 00024): dark compare-mode telemetry
 -- (memory.renders.digest_compare) — memory-owned, never the legacy
 -- digests/digest_topics tables (MEM-05/MEM-14). Not a memory_nodes child;
 -- not vault-derived, so DropMemoryIndex leaves it alone. Never read by any
