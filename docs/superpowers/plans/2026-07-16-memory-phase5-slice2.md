@@ -37,7 +37,7 @@ Phase-5 **slice 1** is fully merged on `feature/memory-phase5` (the worktree alr
 
 ## File Structure
 
-- `internal/db/migrations/00021_memory_phase5_slice2.sql` (+ mirror in `internal/db/schema.sql`, regenerate the golden snapshot) — `workspace.memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0`. Additive `ALTER TABLE ADD COLUMN`, no CHECK change, no new table (so `TestAllTablesExist` is unchanged), no table recreation. Down: `DROP COLUMN` (SQLite ≥3.35, precedent 00019/00020 Down).
+- `internal/db/migrations/00023_memory_phase5_slice2.sql` (+ mirror in `internal/db/schema.sql`, regenerate the golden snapshot) — `workspace.memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0`. Additive `ALTER TABLE ADD COLUMN`, no CHECK change, no new table (so `TestAllTablesExist` is unchanged), no table recreation. Down: `DROP COLUMN` (SQLite ≥3.35, precedent 00019/00020 Down).
 - `internal/memory/provenance.go` — add `calResolver` (+ `calChecker` interface), `calRefPrefix = "cal:"`; register it in the pipeline registry (`NewPipeline`).
 - `internal/db/memory.go` (+`memory_test.go`) — `CalendarEventExists(id)`; `ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit int)`; `MemoryCalendarWatermark()`/`SetMemoryCalendarWatermark(ts)`; **generalize** `ListOwnerChatTurns(floor int64, contextTypes []string)` and `OwnerChatTurnExists(conversationID, ts int64, contextTypes []string)` (default `{"situation"}` at the one call site when the flag is off).
 - `internal/memory/calendar_ingest.go` (+`calendar_ingest_test.go`) — the mechanical builder: event grouping, participant resolution, recap enrichment, `calevent:` alias idempotency, series linking, watermark advance, `pipeline_steps` row, `runCalendarIngest`.
@@ -64,7 +64,7 @@ Extend `MemorySourcesConfig` with `Calendar bool \`mapstructure:"calendar"\`` an
 
 **Depends on:** nothing (parallel with Task 1). **Blocks:** Tasks 3, 4. Follow `.claude/skills/add-migration`.
 
-**Files:** new `internal/db/migrations/00021_memory_phase5_slice2.sql`; modify `internal/db/schema.sql`, the golden snapshot, `internal/db/memory.go` (+`_test.go`).
+**Files:** new `internal/db/migrations/00023_memory_phase5_slice2.sql`; modify `internal/db/schema.sql`, the golden snapshot, `internal/db/memory.go` (+`_test.go`).
 
 One additive change (no CHECK change, no new table, no table recreation → no `foreign_keys=OFF` dance):
 1. `workspace.memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0` — the Calendar episode-build watermark (unix seconds of the newest ended event fully built). **Distinct** from every other watermark; it is a **fourth** independent memory watermark (Slack `memory_last_extracted_ts`, Gmail `memory_gmail_last_extracted_ts`, the `memory_last_interaction_id` floor, and now this). No `TestAllTablesExist` change (no new table).

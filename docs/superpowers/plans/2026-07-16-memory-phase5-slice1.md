@@ -39,7 +39,7 @@ All Phase-0–4 code is merged on `feature/memory-phase5` (the worktree contains
 
 ## File Structure
 
-- `internal/db/migrations/00020_memory_phase5_slice1.sql` (+ mirror in `internal/db/schema.sql`, golden snapshot, `TestAllTablesExist`) — `workspace.memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0`; `workspace.memory_last_interaction_id INTEGER NOT NULL DEFAULT 0`; new table `memory_engagement(node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id), engaged_count INTEGER NOT NULL DEFAULT 0, dismissed_count INTEGER NOT NULL DEFAULT 0, last_interaction_at TEXT NOT NULL DEFAULT '')`. All additive `ALTER TABLE ADD COLUMN` + one `CREATE TABLE` — no CHECK change, no table recreation.
+- `internal/db/migrations/00022_memory_phase5_slice1.sql` (+ mirror in `internal/db/schema.sql`, golden snapshot, `TestAllTablesExist`) — `workspace.memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0`; `workspace.memory_last_interaction_id INTEGER NOT NULL DEFAULT 0`; new table `memory_engagement(node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id), engaged_count INTEGER NOT NULL DEFAULT 0, dismissed_count INTEGER NOT NULL DEFAULT 0, last_interaction_at TEXT NOT NULL DEFAULT '')`. All additive `ALTER TABLE ADD COLUMN` + one `CREATE TABLE` — no CHECK change, no table recreation.
 - `internal/memory/provenance.go` (+`provenance_test.go`) — `ProvenanceResolver` interface, `ProvenanceRegistry`, scheme classifier, and the four resolvers (`message`/`chat`/`mail`/`act`). Migrates the bodies of today's `MessageExists` and `validateChatRefs` checks in.
 - `internal/memory/beliefs.go` — `validateMarkers`/`validateChatRefs` re-expressed over the registry (`p.registry`); `newEvidenceLines` mints `rankOwnerAction` for `act:` refs.
 - `internal/memory/belief_math.go` (+`belief_math_test.go`) — `rankOwnerAction` const between `rankObserved`/`rankOwner`; `evidenceWeight`/`parseEvidenceRank`/`rankName` cases; `hasFreshOwnerSupport` **unchanged**.
@@ -95,7 +95,7 @@ Add `type MemorySourcesConfig struct { Gmail, Actions bool }` (mapstructure `gma
 
 **Depends on:** nothing (parallel with Tasks 1, 2). **Blocks:** Tasks 4, 5, 7, 8. Follow `.claude/skills/add-migration`.
 
-**Files:** new `internal/db/migrations/00020_memory_phase5_slice1.sql`; modify `internal/db/schema.sql`, the golden snapshot, `internal/db/db_test.go` (`TestAllTablesExist`), `internal/db/memory.go` (+`_test.go`).
+**Files:** new `internal/db/migrations/00022_memory_phase5_slice1.sql`; modify `internal/db/schema.sql`, the golden snapshot, `internal/db/db_test.go` (`TestAllTablesExist`), `internal/db/memory.go` (+`_test.go`).
 
 Three additive changes (no CHECK change, no table recreation → no `foreign_keys=OFF` dance):
 1. `workspace.memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0` — the Gmail episode-extraction watermark (unix seconds of the newest thread message fully extracted). **Distinct** from `gmail_last_internal_date` (sync watermark) and `memory_last_extracted_ts` (Slack extraction watermark).

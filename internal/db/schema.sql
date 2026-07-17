@@ -18,9 +18,9 @@ CREATE TABLE IF NOT EXISTS workspace (
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
     memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
     memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0,  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
-    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00020)
-    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00020)
-    memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00021)
+    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00022)
+    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00022)
+    memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00023)
 );
 
 -- Users
@@ -1013,6 +1013,28 @@ CREATE TABLE IF NOT EXISTS meeting_recaps (
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+-- Meeting transcripts: locally-transcribed meeting audio (WhisperKit in the
+-- Desktop app). One row per recording. event_id is NULL for ad-hoc recordings
+-- and survives event deletion (SET NULL) — a transcript must outlive its
+-- calendar event. audio_path is NULLed by the daemon retention phase once the
+-- audio file is deleted; transcript_text is kept forever. summary_json holds
+-- the recap for ad-hoc recordings only (event-linked recaps live in
+-- meeting_recaps).
+CREATE TABLE IF NOT EXISTS meeting_transcripts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id        TEXT REFERENCES calendar_events(id) ON DELETE SET NULL,
+    title           TEXT NOT NULL,
+    audio_path      TEXT,
+    duration_sec    INTEGER NOT NULL DEFAULT 0,
+    lang_stats      TEXT NOT NULL DEFAULT '',
+    transcript_text TEXT NOT NULL,
+    summary_json    TEXT,
+    notes_md        TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
+
 -- Calendar auth state (tracks whether the Google refresh token is still valid)
 CREATE TABLE IF NOT EXISTS calendar_auth_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1240,7 +1262,7 @@ CREATE TABLE IF NOT EXISTS memory_dispute_flags (
     reason      TEXT NOT NULL DEFAULT ''
 );
 
--- Phase-5 slice-1 per-entity engagement aggregates (see 00020): the
+-- Phase-5 slice-1 per-entity engagement aggregates (see 00022): the
 -- retention-importance input Phase-3's RetentionInputs/RetentionScore
 -- stubbed out, fed by the mechanical interaction-ingest step
 -- (memory.sources.actions) from inbox_feedback/situation transitions/
@@ -1257,7 +1279,7 @@ CREATE TABLE IF NOT EXISTS memory_engagement (
     last_interaction_at TEXT NOT NULL DEFAULT ''
 );
 
--- Phase-5 slice-3 (see 00022): derived index of each episode/rollup node's
+-- Phase-5 slice-3 (see 00024): derived index of each episode/rollup node's
 -- `## Provenance` refs, so a channel+window lookup does not require a full
 -- vault body re-scan. Rebuildable from vault files — INSIDE the MEM-02
 -- reindex-equivalence set (an extension, not a weakening; owner-review
@@ -1274,7 +1296,7 @@ CREATE TABLE IF NOT EXISTS memory_provenance (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix);
 
--- Phase-5 slice-3 (see 00022): dark compare-mode telemetry
+-- Phase-5 slice-3 (see 00024): dark compare-mode telemetry
 -- (memory.renders.digest_compare) — memory-owned, never the legacy
 -- digests/digest_topics tables (MEM-05/MEM-14). Not a memory_nodes child;
 -- not vault-derived, so DropMemoryIndex leaves it alone. Never read by any

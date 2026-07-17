@@ -116,6 +116,10 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Watchtower records your side of meetings to transcribe them locally.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Watchtower records meeting audio (other participants) to transcribe it locally. Audio never leaves this Mac.</string>
     <key>LSUIElement</key>
     <false/>
     <key>NSAppTransportSecurity</key>

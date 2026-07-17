@@ -32,6 +32,7 @@ final class ConfigService {
     var maxTimeblocks: Int = 3
     var minBacklog: Int = 3
     var maxBacklog: Int = 8
+    var transcriptAudioRetentionDays: Int = 30
     var parseError: String?
 
     private let configPath: String
@@ -106,6 +107,10 @@ final class ConfigService {
                 jiraFeatures = features
             } else {
                 jiraFeatures = [:]
+            }
+
+            if let transcripts = yaml["transcripts"] as? [String: Any] {
+                transcriptAudioRetentionDays = (transcripts["audio_retention_days"] as? Int) ?? 30
             }
 
             if let dayPlan = yaml["day_plan"] as? [String: Any] {
@@ -185,6 +190,11 @@ final class ConfigService {
         dayPlan["min_backlog"] = minBacklog
         dayPlan["max_backlog"] = maxBacklog
         yaml["day_plan"] = dayPlan
+
+        // Transcripts section
+        var transcripts = (yaml["transcripts"] as? [String: Any]) ?? [:]
+        transcripts["audio_retention_days"] = transcriptAudioRetentionDays
+        yaml["transcripts"] = transcripts
 
         // Claude path override
         if let val = claudePath, !val.isEmpty { yaml["claude_path"] = val } else { yaml.removeValue(forKey: "claude_path") }

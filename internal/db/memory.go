@@ -973,7 +973,7 @@ func (db *DB) CountMemoryLinksInBulk(ids []string) (map[string]int, error) {
 // fully folded into an episode by the Gmail thread->episode extractor
 // (memory.sources.gmail), mirroring MemoryWatermark. Deliberately a THIRD,
 // independent watermark alongside gmail_last_internal_date (Gmail sync) and
-// memory_last_extracted_ts (Slack episode extraction) — see 00020, resolved
+// memory_last_extracted_ts (Slack episode extraction) — see 00022, resolved
 // ambiguity #7. A fresh workspace without its singleton row reads as 0.
 func (db *DB) MemoryGmailWatermark() (float64, error) {
 	var ts float64
@@ -1003,7 +1003,7 @@ func (db *DB) SetMemoryGmailWatermark(ts float64) error {
 // MemoryGmailWatermark. Deliberately a FOURTH, independent watermark
 // alongside memory_last_extracted_ts (Slack extraction),
 // memory_gmail_last_extracted_ts (Gmail extraction), and
-// memory_last_interaction_id (5D interaction-ingest floor) — see 00021. A
+// memory_last_interaction_id (5D interaction-ingest floor) — see 00023. A
 // fresh workspace without its singleton row reads as 0.
 func (db *DB) MemoryCalendarWatermark() (float64, error) {
 	var ts float64
@@ -1240,7 +1240,7 @@ func (db *DB) SetMemoryInteractionFloor(id int64) error {
 // upsert precedent. The interaction-ingest step applies its per-run bumps
 // atomically through BumpEngagements (all-or-nothing); this single-bump variant
 // is the direct seam tests exercise. Runtime state: MEM-02-exempt like
-// memory_entity_hints, survives DropMemoryIndex (see 00020, resolved ambiguity #3).
+// memory_entity_hints, survives DropMemoryIndex (see 00022, resolved ambiguity #3).
 func (db *DB) BumpEngagement(nodeID string, engaged bool, at string) error {
 	stmt := `INSERT INTO memory_engagement (node_id, dismissed_count, last_interaction_at)
 		VALUES (?, 1, ?)
@@ -1641,7 +1641,7 @@ func (db *DB) DropMemoryIndex() (err error) {
 	return nil
 }
 
-// DigestShadowRow mirrors one row of memory_digest_shadow (see 00022) — the
+// DigestShadowRow mirrors one row of memory_digest_shadow (see 00024) — the
 // dark digest_compare render's telemetry, keyed by (channel_id, period_from,
 // period_to). Memory-owned compare telemetry, never the legacy
 // digests/digest_topics tables (MEM-05/MEM-14); never read by any UI.

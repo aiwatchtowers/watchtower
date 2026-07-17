@@ -52,6 +52,16 @@ struct GeneralSettings: View {
     private var gmailAuth: GmailAuthService { GoogleConnectFlow.shared.gmail }
     @State private var jiraAuth = JiraAuthService()
 
+    @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
+    @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
+    @AppStorage("transcription.langset") private var transcriptionLangset = "ru,uk,en"
+    @AppStorage("transcription.windowSec") private var transcriptionWindowSec = 20.0
+    @AppStorage("transcription.langThreshold") private var transcriptionLangThreshold = 0.6
+    @AppStorage("transcription.margin") private var transcriptionMargin = 0.2
+    @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
+    @AppStorage("transcription.diarization") private var transcriptionDiarization = true
+    @State private var showAdvancedTranscription = false
+
     var body: some View {
         Form {
             workspaceSection
@@ -62,6 +72,7 @@ struct GeneralSettings: View {
             aiSection
             calendarSettingsSection
             gmailSettingsSection
+            transcriptionSection
             jiraSettingsSection
 
             if let error = config.parseError {
@@ -550,6 +561,86 @@ struct GeneralSettings: View {
             if connected && !config.gmailEnabled {
                 config.gmailEnabled = true
                 saveConfig()
+            }
+        }
+    }
+
+    private var transcriptionSection: some View {
+        Section("Transcription") {
+            Picker("Engine", selection: $transcriptionProvider) {
+                ForEach(TranscriptionProviderRegistry.availableProviders(), id: \.displayName) { p in
+                    Text(p.displayName).tag(type(of: p).id)
+                }
+            }
+            .help("On-device transcription engine")
+            .onChange(of: transcriptionProvider) { _, id in
+                // Reset the model to the new provider's default, then prefetch.
+                let provider = TranscriptionProviderRegistry.resolve(providerID: id)
+                transcriptionModel = provider.models.first?.id ?? transcriptionModel
+                appState.transcriptionModelProvisioner.ensureDownloaded(providerID: id, model: transcriptionModel)
+            }
+
+            Picker("Model", selection: $transcriptionModel) {
+                ForEach(TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider).models) { m in
+                    Text(m.label).tag(m.id)
+                }
+            }
+            .help("Model used for on-device transcription")
+            .onChange(of: transcriptionModel) { _, newValue in
+                appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: newValue)
+            }
+
+            if let supported = TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider)
+                .supportedLanguages(model: transcriptionModel) {
+                let missing = transcriptionLangset.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && !supported.contains($0) }
+                if !missing.isEmpty {
+                    Label("This engine does not support: \(missing.joined(separator: ", "))",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+
+            TextField(
+                "Languages",
+                text: $transcriptionLangset,
+                prompt: Text("ru,uk,en")
+            )
+            .help("Comma-separated language codes to detect per window")
+
+            Toggle("Speaker roles", isOn: $transcriptionDiarization)
+                .help("Label transcript lines with who was speaking ([Я] / [Speaker N]) using on-device diarization")
+
+            Stepper(
+                "Delete audio after \(config.transcriptAudioRetentionDays) days",
+                value: $config.transcriptAudioRetentionDays,
+                in: 0...365
+            )
+            .help("Recording audio is deleted after this many days; transcript text is kept forever. 0 disables cleanup.")
+
+            DisclosureGroup("Advanced", isExpanded: $showAdvancedTranscription) {
+                LabeledContent("Window (seconds)") {
+                    TextField("", value: $transcriptionWindowSec, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Language threshold") {
+                    TextField("", value: $transcriptionLangThreshold, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Runner-up margin") {
+                    TextField("", value: $transcriptionMargin, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                TextField(
+                    "Force language",
+                    text: $transcriptionForceLang,
+                    prompt: Text("auto-detect")
+                )
+                .help("Set a language code (e.g. ru) to skip detection entirely")
             }
         }
     }

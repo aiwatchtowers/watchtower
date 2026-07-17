@@ -2,7 +2,7 @@ package db
 
 import "testing"
 
-func TestMigration00016GmailSource(t *testing.T) {
+func TestMigration00018GmailSource(t *testing.T) {
 	database := openTestDB(t) // existing helper that runs migrations on a fresh DB
 
 	// gmail tables exist
