@@ -64,6 +64,19 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 	if err != nil {
 		return nil, 0, nil, err
 	}
+	// Operational mirrors (entities aliased target:<id>/track:<id>) are maintained
+	// mechanically by the mirror step — the strong-tier rewrite must NOT touch them
+	// (a rewrite of ## What / ## Current would be reverted, and its Provenance marker
+	// deleted, by the next mechanical re-scan: a permanent churn loop). Load the
+	// mirror alias set once and exclude those node ids from selection.
+	mirrorAliases, err := p.db.MirrorAliasNodeIDs()
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	mirrorNodeIDs := make(map[string]bool, len(mirrorAliases))
+	for _, nodeID := range mirrorAliases {
+		mirrorNodeIDs[nodeID] = true
+	}
 
 	var (
 		nodes []Node
@@ -78,6 +91,9 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		}
 		if row.Type != "entity" || row.Status != "active" {
 			continue
+		}
+		if mirrorNodeIDs[row.ID] {
+			continue // operational mirror — mechanically maintained, never rewritten
 		}
 		if !dueForRewrite(row.ID, now) {
 			continue
