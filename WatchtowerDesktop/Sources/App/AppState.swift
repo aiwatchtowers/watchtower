@@ -74,6 +74,9 @@ final class AppState {
     /// Catch-Up ViewModel — persists across tab switches.
     private(set) var catchUpViewModel: CatchUpViewModel?
 
+    /// Memory browser ViewModel — persists across tab switches.
+    private(set) var memoryViewModel: MemoryViewModel?
+
     /// Dashboard ViewModel — persists across tab switches so an in-flight
     /// "Generate" run (and its `isGenerating` flag) survives navigating away
     /// from and back to the Dashboard tab, instead of being orphaned when a
@@ -255,6 +258,7 @@ final class AppState {
                 initCalendar(dbPool: manager.dbPool)
                 initDayPlan(dbPool: manager.dbPool)
                 initCatchUp(dbPool: manager.dbPool)
+                initMemory(dbPool: manager.dbPool)
                 initDashboard(dbManager: manager)
                 initSecretaryProfile(dbManager: manager)
                 startDigestWatcher(dbPool: manager.dbPool)
@@ -377,6 +381,10 @@ final class AppState {
 
     private func initCatchUp(dbPool: DatabasePool) {
         catchUpViewModel = CatchUpViewModel(dbPool: dbPool)
+    }
+
+    private func initMemory(dbPool: DatabasePool) {
+        memoryViewModel = MemoryViewModel(dbPool: dbPool)
     }
 
     /// Not marked `private` (unlike its siblings above) so XCTest can call it directly via

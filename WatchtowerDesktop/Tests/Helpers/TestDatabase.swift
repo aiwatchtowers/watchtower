@@ -1066,6 +1066,14 @@ enum TestDatabase {
         alias    TEXT PRIMARY KEY COLLATE NOCASE,
         node_id  TEXT NOT NULL REFERENCES memory_nodes(id)
     );
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+        id UNINDEXED, title, body
+    );
+    CREATE TABLE IF NOT EXISTS memory_dispute_flags (
+        node_id     TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+        flagged_at  TEXT NOT NULL,
+        reason      TEXT NOT NULL DEFAULT ''
+    );
     """
 
     // MARK: - Briefing Fixtures
@@ -1584,12 +1592,15 @@ enum TestDatabase {
         subject: String = "",
         confidence: Double = 0,
         status: String = "active",
-        tier: String = "long"
+        tier: String = "long",
+        path: String = "",
+        redirectTo: String? = nil,
+        indexedAt: String = ""
     ) throws {
         try db.execute(sql: """
-            INSERT INTO memory_nodes (id, type, tier, status, title, path, content_hash, indexed_at, subject, confidence)
-            VALUES (?, ?, ?, ?, ?, '', '', '', ?, ?)
-            """, arguments: [id, type, tier, status, title, subject, confidence])
+            INSERT INTO memory_nodes (id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+            """, arguments: [id, type, tier, status, redirectTo, title, path, indexedAt, subject, confidence])
     }
 
     static func insertMemoryAlias(
@@ -1600,5 +1611,27 @@ enum TestDatabase {
         try db.execute(sql: """
             INSERT INTO memory_aliases (alias, node_id) VALUES (?, ?)
             """, arguments: [alias, nodeID])
+    }
+
+    static func insertMemoryFTS(
+        _ db: Database,
+        id: String,
+        title: String = "",
+        body: String = ""
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_fts (id, title, body) VALUES (?, ?, ?)
+            """, arguments: [id, title, body])
+    }
+
+    static func insertMemoryDispute(
+        _ db: Database,
+        nodeID: String,
+        reason: String = "contested"
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_dispute_flags (node_id, flagged_at, reason)
+            VALUES (?, '2026-07-17T00:00:00Z', ?)
+            """, arguments: [nodeID, reason])
     }
 }
