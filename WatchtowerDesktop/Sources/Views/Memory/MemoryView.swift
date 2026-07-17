@@ -12,7 +12,6 @@ struct MemoryView: View {
     var body: some View {
         content
             .onAppear {
-                vm.startObserving()
                 Task { await vm.refresh() }
             }
             .environment(\.openURL, OpenURLAction { url in

@@ -131,4 +131,82 @@ final class MemoryViewModelTests: XCTestCase {
         let vm = try makeVM()
         XCTAssertFalse(vm.vaultExists)
     }
+
+    func testAliasLinkFoldsIntoBacklink() async throws {
+        let vm = try makeVM()
+        try writeVaultFile("episodes/ep_S.md", """
+        ---
+        id: ep_S
+        type: episode
+        tier: short
+        status: active
+        aliases: ["situation:23"]
+        ---
+        # The situation
+        """)
+        try writeVaultFile("entities/ent_A.md", """
+        ---
+        id: ent_A
+        type: entity
+        tier: long
+        status: active
+        ---
+        # Alice
+
+        Came out of [[situation:23|that mess]].
+        """)
+        try await pool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ep_S", type: "episode", title: "The situation", path: "episodes/ep_S.md")
+            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", path: "entities/ent_A.md")
+            try TestDatabase.insertMemoryAlias(db, alias: "situation:23", nodeID: "ep_S")
+        }
+
+        await vm.refresh()
+        await vm.select(id: "ep_S")
+
+        let detail = try XCTUnwrap(vm.detail)
+        XCTAssertEqual(detail.backlinks.map(\.id), ["ent_A"])
+    }
+
+    func testOpenURLNavigatesThroughAlias() async throws {
+        let vm = try makeVM()
+        try writeVaultFile("episodes/ep_S.md", "---\nid: ep_S\ntype: episode\ntier: short\nstatus: active\n---\n# The situation\n")
+        try await pool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ep_S", type: "episode", title: "The situation", path: "episodes/ep_S.md")
+            try TestDatabase.insertMemoryAlias(db, alias: "situation:23", nodeID: "ep_S")
+        }
+        await vm.refresh()
+
+        let urlString = try XCTUnwrap(MemoryMarkdown.linkURL(for: "situation:23"))
+        vm.open(url: try XCTUnwrap(URL(string: urlString)))
+        // open() resolves + selects in a fire-and-forget Task; poll briefly.
+        for _ in 0..<50 where vm.detail == nil {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        XCTAssertEqual(vm.detail?.node.id, "ep_S")
+    }
+
+    func testUnreadableFileDisablesEditingAndNeverOverwrites() async throws {
+        let vm = try makeVM()
+        // Index row points at a file that does not exist on disk.
+        try FileManager.default.createDirectory(atPath: vaultDir, withIntermediateDirectories: true)
+        try await pool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ent_gone", type: "entity", title: "Ghost", path: "entities/ent_gone.md")
+        }
+        await vm.refresh()
+        await vm.select(id: "ent_gone")
+
+        let detail = try XCTUnwrap(vm.detail)
+        XCTAssertNotNil(detail.fileReadError)
+        XCTAssertFalse(detail.isEditable)
+
+        vm.startEditing()
+        XCTAssertFalse(vm.isEditing) // editing refused — nothing to overwrite with
+        await vm.saveEdit()
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: vaultDir + "/entities/ent_gone.md"),
+            "a failed read must never be persisted as an empty file"
+        )
+    }
 }

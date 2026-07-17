@@ -13,10 +13,19 @@ import GRDB
 struct MemoryNodeDetail: Equatable {
     let node: MemoryNodeListItem
     let file: MemoryNodeFile
+    /// Non-nil when the vault file could not be read. The body area shows it
+    /// and editing is disabled — a failed read must never round-trip into an
+    /// empty overwrite of the real file.
+    let fileReadError: String?
     let renderedBody: String // body with [[links]] converted to tappable URLs
     let aliases: [String]
     let backlinks: [MemoryBacklink]
+    /// Belief subject entity, resolved for the header link ("" / nil otherwise).
+    let subjectID: String?
+    let subjectTitle: String
     var history: [MemoryCommit] = [] // filled asynchronously
+
+    var isEditable: Bool { fileReadError == nil }
 }
 
 @MainActor
@@ -38,7 +47,6 @@ final class MemoryViewModel {
     var editorError: String?
 
     private let dbPool: DatabasePool
-    private var observationTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
     private var historyTask: Task<Void, Never>?
     /// Reverse wiki-link graph: target node id → source node ids, rebuilt by
@@ -98,24 +106,9 @@ final class MemoryViewModel {
 
     // MARK: - Loading
 
-    /// Observation catches same-process changes (our own saves); the daemon
-    /// writes cross-process, so `refresh()` also runs on every tab appear.
-    func startObserving() {
-        guard observationTask == nil else { return }
-        let observation = MemoryQueries.observeNodes()
-        let pool = dbPool
-        observationTask = Task { [weak self] in
-            do {
-                for try await nodes in observation.values(in: pool) {
-                    guard let self else { return }
-                    self.nodes = nodes
-                }
-            } catch {
-                // Observation dying is non-fatal; refresh() still works.
-            }
-        }
-    }
-
+    // No ValueObservation here on purpose: the app never writes memory_*
+    // tables (MEM-02) and GRDB can't see the daemon's cross-process writes,
+    // so refresh-on-appear is the whole story.
     func refresh() async {
         do {
             let (nodes, counts, beliefs) = try await dbPool.read { db in
@@ -175,14 +168,24 @@ final class MemoryViewModel {
                 return
             }
             let fileURL = vaultURL.appendingPathComponent(node.path)
-            let raw = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
-            let (frontmatter, body) = MemoryMarkdown.splitFrontmatter(raw)
+            var fileReadError: String?
+            var raw = ""
+            do {
+                raw = try String(contentsOf: fileURL, encoding: .utf8)
+            } catch {
+                // A missing/unreadable file is NOT an empty node — flag it so
+                // the pane explains and editing is disabled (an empty editor
+                // must never overwrite the real file).
+                fileReadError = "Cannot read \(node.path): \(error.localizedDescription)"
+            }
+            let body = MemoryMarkdown.splitFrontmatter(raw).body
             let links = MemoryMarkdown.parseWikiLinks(body)
-            let file = MemoryNodeFile(raw: raw, frontmatter: frontmatter, body: body, links: links)
 
             // Resolve link targets to titles so label-less [[id]] links render readably.
             let targets = Set(links.map(\.target))
-            let (resolved, aliases, backlinkItems) = try await dbPool.read { [backlinkGraph] db -> ([String: String], [String], [MemoryBacklink]) in
+            let subjectID = node.isBelief && !node.subject.isEmpty ? node.subject : nil
+            typealias DetailReads = ([String: String], [String], [MemoryBacklink], String)
+            let (resolved, aliases, backlinkItems, subjectTitle) = try await dbPool.read { [backlinkGraph] db -> DetailReads in
                 var resolved: [String: String] = [:] // target -> display title
                 for target in targets {
                     if let nodeID = try MemoryQueries.resolveNodeID(db, target: target) {
@@ -203,8 +206,17 @@ final class MemoryViewModel {
                         type: item.type
                     ))
                 }
-                return (resolved, aliases, backlinkItems)
+                var subjectTitle = ""
+                if let subjectID {
+                    let title = try MemoryQueries.fetchTitles(db, ids: [subjectID])[subjectID] ?? ""
+                    subjectTitle = title.isEmpty ? subjectID : title
+                }
+                return (resolved, aliases, backlinkItems, subjectTitle)
             }
+
+            // A newer selection may have landed while we awaited — don't
+            // clobber it with this stale node.
+            guard selectedID == id else { return }
 
             let rendered = MemoryMarkdown.convertWikiLinks(in: body) { link in
                 guard let title = resolved[link.target] else { return nil }
@@ -212,10 +224,13 @@ final class MemoryViewModel {
             }
             detail = MemoryNodeDetail(
                 node: node,
-                file: file,
+                file: MemoryNodeFile(raw: raw, body: body),
+                fileReadError: fileReadError,
                 renderedBody: rendered,
                 aliases: aliases,
-                backlinks: backlinkItems
+                backlinks: backlinkItems,
+                subjectID: subjectID,
+                subjectTitle: subjectTitle
             )
             error = nil
             loadHistory(for: node)
@@ -231,7 +246,7 @@ final class MemoryViewModel {
             let resolved = try? await dbPool.read { db in
                 try MemoryQueries.resolveNodeID(db, target: target)
             }
-            if let id = resolved.flatMap({ $0 }) {
+            if let id = resolved {
                 await select(id: id)
             }
         }
@@ -331,7 +346,9 @@ final class MemoryViewModel {
                 process.arguments = arguments
                 let stdoutPipe = Pipe()
                 process.standardOutput = stdoutPipe
-                process.standardError = Pipe() // drained by deallocation; git log noise is irrelevant
+                // Discard stderr outright: an unread Pipe that fills its buffer
+                // would block git and deadlock waitUntilExit.
+                process.standardError = FileHandle.nullDevice
                 do {
                     try process.run()
                 } catch {
@@ -349,7 +366,7 @@ final class MemoryViewModel {
     // MARK: - Editing (MEM-03 owner edits)
 
     func startEditing() {
-        guard let detail else { return }
+        guard let detail, detail.isEditable else { return }
         editorText = detail.file.raw
         editorError = nil
         isEditing = true
@@ -366,7 +383,7 @@ final class MemoryViewModel {
     /// never deleted), so a bad edit can cost the node's index row but not the
     /// text.
     func saveEdit() async {
-        guard let detail else { return }
+        guard let detail, detail.isEditable else { return }
         let fileURL = vaultURL.appendingPathComponent(detail.node.path)
         let text = editorText
         let lockPath = lockURL.path

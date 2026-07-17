@@ -65,7 +65,6 @@ struct MemoryBeliefRow: FetchableRecord, Identifiable, Equatable {
     let title: String
     let status: String // active | shaken | retired
     let confidence: Double
-    let subject: String // subject entity id, may be ""
     let subjectTitle: String // resolved entity title, "" when unresolvable
     let disputeReason: String?
 
@@ -74,7 +73,6 @@ struct MemoryBeliefRow: FetchableRecord, Identifiable, Equatable {
         title = row["title"] ?? ""
         status = row["status"] ?? ""
         confidence = row["confidence"] ?? 0
-        subject = row["subject"] ?? ""
         subjectTitle = row["subject_title"] ?? ""
         disputeReason = row["dispute_reason"]
     }
@@ -106,18 +104,16 @@ struct MemoryCommit: Identifiable, Equatable {
     var day: String { String(date.prefix(10)) }
 }
 
-/// A node file loaded from the vault: raw contents split into frontmatter and
-/// body, plus the wiki-links parsed out of the body.
+/// A node file loaded from the vault: raw contents plus the body below the
+/// frontmatter fences.
 struct MemoryNodeFile: Equatable {
     let raw: String
-    let frontmatter: String // YAML between the --- fences, without fences
     let body: String // markdown below the closing fence
-    let links: [MemoryWikiLink]
 }
 
 /// One `[[id]]` / `[[id|label]]` occurrence in a node body (mirrors Go
 /// `memory.Link`).
-struct MemoryWikiLink: Equatable, Hashable {
+struct MemoryWikiLink: Equatable {
     let target: String
     let label: String // empty for label-less links
 }

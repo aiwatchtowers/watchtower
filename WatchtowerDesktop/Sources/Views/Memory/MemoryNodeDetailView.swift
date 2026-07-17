@@ -14,7 +14,13 @@ struct MemoryNodeDetailView: View {
                     disputeBanner
                 }
                 Divider()
-                MarkdownText(text: detail.renderedBody)
+                if let readError = detail.fileReadError {
+                    Label(readError, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                } else {
+                    MarkdownText(text: detail.renderedBody)
+                }
                 if !detail.backlinks.isEmpty {
                     backlinksSection
                 }
@@ -51,8 +57,19 @@ struct MemoryNodeDetailView: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
+                if let subjectID = detail.subjectID {
+                    Button {
+                        Task { await vm.select(id: subjectID) }
+                    } label: {
+                        Label(detail.subjectTitle, systemImage: "person.text.rectangle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.link)
+                    .help("Open the entity this belief is about")
+                }
                 Spacer(minLength: 0)
                 Button("Edit") { vm.startEditing() }
+                    .disabled(!detail.isEditable)
                     .help("Edit the vault file (committed as owner-edit by the next memory run)")
             }
             Text(detail.node.id)

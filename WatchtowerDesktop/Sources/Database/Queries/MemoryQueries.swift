@@ -117,7 +117,7 @@ enum MemoryQueries {
         try MemoryBeliefRow.fetchAll(
             db,
             sql: """
-                SELECT b.id, b.title, b.status, b.confidence, b.subject,
+                SELECT b.id, b.title, b.status, b.confidence,
                        COALESCE(s.title, '') AS subject_title,
                        d.reason AS dispute_reason
                 FROM memory_nodes b
@@ -149,13 +149,4 @@ enum MemoryQueries {
         try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM memory_dispute_flags") ?? 0
     }
 
-    // MARK: - Observation
-
-    /// Reactive list for the browser. Fires on same-process changes only; the
-    /// daemon writes cross-process, so the tab also refreshes on appear.
-    static func observeNodes() -> ValueObservation<ValueReducers.Fetch<[MemoryNodeListItem]>> {
-        ValueObservation.tracking { db in
-            try fetchNodes(db)
-        }
-    }
 }
