@@ -124,15 +124,14 @@ final class MemoryQueriesTests: XCTestCase {
 
     // MARK: - Titles
 
-    func testFetchTitles() throws {
+    func testFetchTitle() throws {
         let dbQueue = try TestDatabase.create()
         try dbQueue.write { db in
             try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice")
         }
         try dbQueue.read { db in
-            let titles = try MemoryQueries.fetchTitles(db, ids: ["ent_A", "missing"])
-            XCTAssertEqual(titles, ["ent_A": "Alice"])
-            XCTAssertEqual(try MemoryQueries.fetchTitles(db, ids: []), [:])
+            XCTAssertEqual(try MemoryQueries.fetchTitle(db, id: "ent_A"), "Alice")
+            XCTAssertNil(try MemoryQueries.fetchTitle(db, id: "missing"))
         }
     }
 }

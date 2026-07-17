@@ -186,7 +186,7 @@ final class MemoryViewModel {
                 var resolved: [String: String] = [:] // target -> display title
                 for target in targets {
                     if let nodeID = try MemoryQueries.resolveNodeID(db, target: target) {
-                        let title = try MemoryQueries.fetchTitles(db, ids: [nodeID])[nodeID] ?? ""
+                        let title = try MemoryQueries.fetchTitle(db, id: nodeID) ?? ""
                         resolved[target] = title.isEmpty ? nodeID : title
                     }
                 }
@@ -198,7 +198,7 @@ final class MemoryViewModel {
                 }
                 var subjectTitle = ""
                 if let subjectID {
-                    let title = try MemoryQueries.fetchTitles(db, ids: [subjectID])[subjectID] ?? ""
+                    let title = try MemoryQueries.fetchTitle(db, id: subjectID) ?? ""
                     subjectTitle = title.isEmpty ? subjectID : title
                 }
                 return (resolved, aliases, backlinkItems, subjectTitle)

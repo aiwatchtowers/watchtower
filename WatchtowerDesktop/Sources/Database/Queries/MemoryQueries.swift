@@ -91,20 +91,14 @@ enum MemoryQueries {
         )
     }
 
-    /// Titles for a set of node ids (wiki-link labels fall back to these).
-    static func fetchTitles(_ db: Database, ids: [String]) throws -> [String: String] {
-        guard !ids.isEmpty else { return [:] }
-        let marks = databaseQuestionMarks(count: ids.count)
-        let rows = try Row.fetchAll(
+    /// Title for one node id: nil when the node is absent, "" when it has no
+    /// H1 yet (wiki-link labels fall back to the id in both cases).
+    static func fetchTitle(_ db: Database, id: String) throws -> String? {
+        try String.fetchOne(
             db,
-            sql: "SELECT id, title FROM memory_nodes WHERE id IN (\(marks))",
-            arguments: StatementArguments(ids)
+            sql: "SELECT title FROM memory_nodes WHERE id = ?",
+            arguments: [id]
         )
-        var titles: [String: String] = [:]
-        for row in rows {
-            titles[row["id"]] = row["title"] ?? ""
-        }
-        return titles
     }
 
     // MARK: - Beliefs dashboard
