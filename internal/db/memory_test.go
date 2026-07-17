@@ -152,6 +152,8 @@ func TestMirrorAliasNodeIDsNumericAnchor(t *testing.T) {
 		{"ent_tfoo", "target:notanumber"},
 		{"ent_t1abc", "target:1abc"},
 		{"ent_tbare", "target:"},
+		{"ent_tcase", "Target:foo"},
+		{"ent_tupper", "TARGET:34"},
 		{"ent_k7", "track:7"},
 	}
 	for _, s := range seed {
@@ -172,6 +174,11 @@ func TestMirrorAliasNodeIDsNumericAnchor(t *testing.T) {
 	}
 	if _, ok := got["target:"]; ok {
 		t.Errorf("bare alias target: leaked into the mirror set")
+	}
+	for _, a := range []string{"Target:foo", "TARGET:34"} {
+		if _, ok := got[a]; ok {
+			t.Errorf("case-variant alias %s leaked into the mirror set", a)
+		}
 	}
 	if got["target:12"] != "ent_t12" {
 		t.Errorf("target:12 = %q, want ent_t12", got["target:12"])
