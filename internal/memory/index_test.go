@@ -696,18 +696,37 @@ func TestMemory02_ReindexEquivalence(t *testing.T) {
 	_, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
-	// Pass 3: delete B (its provenance rows must vanish with it), edit C —
-	// keep its link to A alongside a surviving ## Provenance section — and
-	// touch A once more (a trivial body edit) so A gets reparsed NOW THAT C's
-	// link to it is already committed (pass 2): this is what makes A's
-	// persisted importance_score reflect LinksIn=1 by the end of the
-	// incremental history, matching what a fresh Rebuild computes from the
-	// FINAL vault state.
+	// Pass 3: delete B (its provenance rows must vanish with it) and edit C —
+	// keep its link to A alongside a surviving ## Provenance section. A is
+	// deliberately NOT re-touched here: 5d-iii's delta-refine already brought
+	// A to LinksIn=1 in pass 2, the moment C's link to A first landed —
+	// re-touching A here would be redundant AND would mask whether pass 4's
+	// removal below actually works (the second whole-branch review's exact
+	// finding about this fixture, 2026-07-19).
 	require.NoError(t, os.Remove(filepath.Join(v.path, "episodes", b.ID+".md")))
 	c.Body = "# Q3 rollup\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5IXA]] for background.\n\n## Provenance\n" +
 		"- C0AAAAAAA 1700100000.000200\n"
-	a.Body = "# Alpha Prime\n\nRewritten body, revision two.\n"
-	writeNodes(t, v, c, a)
+	writeNodes(t, v, c)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	midpoint := dumpIndex(t, d)
+	for _, row := range midpoint.Nodes {
+		if row.ID == a.ID {
+			require.Equal(t, 1.0, row.ImportanceScore,
+				"sanity: A already reflects C's link-in without ever being re-touched itself")
+		}
+	}
+
+	// Pass 4: edit C to REMOVE its link to A entirely — a link REMOVAL, not
+	// just an addition. Without closing the link-removal asymmetry (5e-i),
+	// A's importance_score would stay stuck at 1.0 here even though its only
+	// linker no longer links to it at all — a stale-too-HIGH score, and one
+	// that this guard's PRE-5e-ii fixture could never have caught (second
+	// whole-branch review follow-up, MEM-16 addendum).
+	c.Body = "# Q3 rollup\n\nNo more link to Alpha.\n\n## Provenance\n" +
+		"- C0AAAAAAA 1700100000.000200\n"
+	writeNodes(t, v, c)
 	_, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
@@ -715,8 +734,8 @@ func TestMemory02_ReindexEquivalence(t *testing.T) {
 	require.Len(t, incremental.Nodes, 2, "sanity: A and C survive")
 	for _, row := range incremental.Nodes {
 		if row.ID == a.ID {
-			require.Equal(t, 1.0, row.ImportanceScore,
-				"sanity: A's persisted importance reflects C's link-in, not a trivial zero")
+			require.Zero(t, row.ImportanceScore,
+				"A's importance must drop back to 0 once C's link to it is removed — the closed link-removal asymmetry")
 		}
 	}
 
