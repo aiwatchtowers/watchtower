@@ -299,6 +299,38 @@ func TestMemoryNodeImportanceScoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUpdateMemoryNodeImportanceScore: a narrow single-column update that
+// changes only importance_score, leaving every other field (content_hash,
+// title, etc.) untouched — the primitive Reconcile's phase-B refinement
+// pass uses to correct a node's importance after the whole vaultSubdirs
+// walk completes (Slice A follow-up, added 2026-07-18, MEM-16).
+func TestUpdateMemoryNodeImportanceScore(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_importance_narrow", func(r *MemoryNodeRow) {
+		r.ImportanceScore = 1.0
+		r.Title = "Original Title"
+	})
+	if err := db.UpsertMemoryNode(row, "body", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	if err := db.UpdateMemoryNodeImportanceScore("ent_importance_narrow", 7.0); err != nil {
+		t.Fatalf("UpdateMemoryNodeImportanceScore: %v", err)
+	}
+
+	got, err := db.GetMemoryNode("ent_importance_narrow")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got.ImportanceScore != 7.0 {
+		t.Errorf("ImportanceScore = %v, want 7.0", got.ImportanceScore)
+	}
+	if got.Title != "Original Title" {
+		t.Errorf("Title = %q, want unchanged %q — this must be a NARROW update", got.Title, "Original Title")
+	}
+}
+
 // TestMemoryNodeSubjectConfidenceDefaults: non-belief nodes (and the memTestNode
 // helper's zero-value Subject/Confidence) persist as ""/0.
 func TestMemoryNodeSubjectConfidenceDefaults(t *testing.T) {

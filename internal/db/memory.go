@@ -375,6 +375,22 @@ func (db *DB) SetDisputePending(id, reason string) error {
 	return nil
 }
 
+// UpdateMemoryNodeImportanceScore narrows-updates just the importance_score
+// column for an already-indexed node, without touching its content hash,
+// body/FTS, aliases, or provenance rows. Used by Reconcile's phase-B
+// refinement pass (internal/memory/index.go, MEM-16) to correct a node's
+// importance_score once the whole vaultSubdirs walk has completed, so a
+// link from a later-scanned directory (e.g. rollups) to an earlier-scanned
+// one (e.g. entities) is reflected even within a single Reconcile/Rebuild
+// call.
+func (db *DB) UpdateMemoryNodeImportanceScore(id string, score float64) error {
+	_, err := db.Exec(`UPDATE memory_nodes SET importance_score = ? WHERE id = ?`, score, id)
+	if err != nil {
+		return fmt.Errorf("updating importance_score for %s: %w", id, err)
+	}
+	return nil
+}
+
 // SearchMemoryFTS runs a full-text search over node titles and bodies,
 // excluding tombstones. The query is sanitized the same way as message search
 // (each term double-quoted) so user input cannot inject FTS5 operators.

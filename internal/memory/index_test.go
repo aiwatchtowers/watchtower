@@ -393,6 +393,45 @@ func TestReconcileQuarantinesDuplicateAlias(t *testing.T) {
 	assert.ErrorIs(t, err, sql.ErrNoRows, "quarantined file gets no partial row")
 }
 
+// TestReconcileImportanceOrderIndependent: a rollup and the entity it links
+// to are BOTH touched within the SAME Reconcile call (the rollup is newly
+// created, the entity's body is edited) — entities is scanned before
+// rollups (vaultSubdirs order), so a single-pass computation would compute
+// the entity's LinksIn before the rollup's link is indexed, understating its
+// importance_score. The phase-B refinement pass must correct this within
+// the same call, without requiring a later, separate Reconcile call to
+// re-touch the entity (Slice A follow-up, added 2026-07-18, MEM-16 — the
+// bug Task 6's implementer found while strengthening the MEM-02 fixture).
+func TestReconcileImportanceOrderIndependent(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5OI1", "entity", "Target")
+	writeNodes(t, v, target)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Zero(t, baseline.ImportanceScore, "sanity: no links yet")
+
+	// Edit target's body (so it gets reparsed THIS call) and, in the SAME
+	// Reconcile call, add a rollup linking to it. entities is scanned before
+	// rollups, so a single-pass computation would see LinksIn=0 for target;
+	// the refinement pass must correct it to 1 before Reconcile returns.
+	target.Body = "# Target\n\nRevision one.\n"
+	rollup := vaultTestNode("sum_01ARZ3NDEKTSV4RRFFQ69G5OI2", "rollup", "Summary")
+	rollup.Body = "# Summary\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5OI1]] for background.\n"
+	writeNodes(t, v, target, rollup)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	want := ComputeImportance(ImportanceInputs{LinksIn: 1})
+	assert.Equal(t, want, row.ImportanceScore,
+		"target's importance must reflect rollup's link within the SAME Reconcile call, not just after a later separate call")
+}
+
 // TestMemory02_ReindexEquivalence guards MEM-02: dropping all memory_* tables
 // and rebuilding from the vault reproduces the incrementally-maintained index.
 // memory_node_stats is excluded by design — access stats are runtime state,

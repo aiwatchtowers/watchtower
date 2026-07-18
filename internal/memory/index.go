@@ -26,6 +26,17 @@ type Stats struct {
 	QuarantinedPaths []string
 }
 
+// touchedNode records one successfully-indexed file from the current
+// Reconcile pass so its importance can be refined in phase B, once the
+// whole vaultSubdirs walk completes — see refineImportance. A link from a
+// later-scanned directory to an earlier one is otherwise invisible to
+// CountMemoryLinksIn during phase A's processing of the earlier node
+// (Slice A follow-up, added 2026-07-18, MEM-16).
+type touchedNode struct {
+	n   Node
+	rel string
+}
+
 // Reconcile diffs the vault working tree against the SQLite index: node files
 // whose sha256 content hash differs from memory_nodes.content_hash (or that
 // are missing from the index) are re-parsed and upserted (row + aliases +
@@ -76,6 +87,10 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 		}
 	}
 
+	if err := pass.refineImportance(); err != nil {
+		return stats, err
+	}
+
 	for _, row := range existing {
 		if pass.onDisk[row.ID] {
 			continue
@@ -99,6 +114,7 @@ type reconcilePass struct {
 	onDisk   map[string]bool
 	now      string
 	stats    *Stats
+	touched  []touchedNode
 }
 
 func (p *reconcilePass) quarantine(rel string, reason error) {
@@ -172,10 +188,34 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 		p.quarantine(rel, err)
 		return nil
 	}
+	p.touched = append(p.touched, touchedNode{n: n, rel: rel})
 	if wasIndexed {
 		p.stats.Updated++
 	} else {
 		p.stats.Added++
+	}
+	return nil
+}
+
+// refineImportance is Reconcile's phase B: after the whole vaultSubdirs walk
+// completes, recompute importance for every file this pass successfully
+// indexed, now that the run's full link graph is populated — correcting
+// phase A's scan-order-dependent initial value. A recompute error is logged
+// and that node's phase-A value is kept (not escalated to an abort or a
+// quarantine — the file's content was already successfully indexed in phase
+// A; only its importance may be transiently stale, which is an accepted
+// characteristic elsewhere in this design). Slice A follow-up, added
+// 2026-07-18, MEM-16.
+func (p *reconcilePass) refineImportance() error {
+	for _, tn := range p.touched {
+		importance, err := computeNodeImportance(p.database, p.v, tn.n, tn.rel)
+		if err != nil {
+			p.logf("memory: reconcile: refining importance for %s failed (keeping first-pass value): %v", tn.n.ID, err)
+			continue
+		}
+		if err := p.database.UpdateMemoryNodeImportanceScore(tn.n.ID, importance); err != nil {
+			return fmt.Errorf("memory: reconcile: refining importance for %s: %w", tn.n.ID, err)
+		}
 	}
 	return nil
 }
