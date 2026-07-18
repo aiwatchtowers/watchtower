@@ -1576,9 +1576,302 @@ evict.go-only patch or a documented staleness limitation)."
 
 ---
 
-## Task 6: Strengthen the MEM-02 guard + add override/quarantine regression tests
+## Task 5c: Two-phase Reconcile — importance refinement pass for scan-order independence
 
-**Depends on:** Task 5b (needs `TestEvictReindexEquivalence` passing again before this task's own "full package, expect green" step; also needs Task 5's behavior under test to already exist). **Blocks:** Task 7.
+**Added mid-execution, 2026-07-18.** Task 6's implementer found (correctly did not fix or paper over) a second real gap, this time in `Reconcile`/`Rebuild`'s core wiring from Task 5 itself: `Reconcile` walks `vaultSubdirs` (`{"entities", "episodes", "rollups", "beliefs"}`) in a fixed order, and `computeNodeImportance`'s `CountMemoryLinksIn` reads live DB state **at the moment each file is processed** — so within a single Reconcile/Rebuild call, a link from a later-scanned directory (e.g. a rollup) to an earlier-scanned one (e.g. an entity) is invisible when the earlier node is processed, even though it becomes visible moments later once the later directory is walked. A full `Rebuild` — which processes the entire vault in one `Reconcile` call — therefore does NOT reliably reproduce the same `importance_score` an accumulated history of separate incremental `Reconcile` calls converges to, for any link pointing "backward" in scan order (rollup→entity and episode→entity are the common real cases, since rollups/episodes routinely reference the entities they're about). This is a genuine MEM-02 violation for `importance_score` specifically — not an edge case, and not something Task 6's test-only scope may fix. Owner decision (2026-07-18): fix `Reconcile`/`Rebuild` properly (a second, order-independent refinement pass), not accept it as a documented limitation.
+
+**Depends on:** Task 5b (needs `computeNodeImportance` to exist as the shared function this task calls a second time). **Blocks:** Task 6 (whose `TestMemory02_ReindexEquivalence` fixture strengthening — already written, currently stashed uncommitted at `git stash list` entry `task-6-wip-strengthened-mem02-fixture` — fails against today's code and is expected to pass once this task lands; do not modify that stashed diff, just `git stash pop` after this task's fix is committed and re-verify).
+
+**The fix:** split `Reconcile`'s importance handling into two phases within one call. Phase A (unchanged): `file()` computes and writes an initial `importance_score` exactly as Task 5 built it — this preserves the already-approved `TestReconcileImportanceQuarantineOnSignalError` behavior (a signal-lookup error still quarantines the file in phase A, exactly as before). Phase B (new): after the entire `vaultSubdirs` walk completes — so every file touched this run has been fully upserted, and the link graph for this run is complete — recompute `computeNodeImportance` a second time for every successfully-indexed file from this run, and write the corrected value with a narrow single-column UPDATE. This makes the final `importance_score` order-independent within one Reconcile/Rebuild call: it no longer matters whether a node's linkers were scanned before or after it, because phase B always sees the fully-populated graph from phase A. Cost is bounded: phase B only re-touches files that phase A itself already decided to reparse (unchanged files are skipped in phase A and never enter phase B), so it adds work proportional to the size of the current sync/reindex batch, not the whole vault — for an ordinary incremental `Reconcile` this is typically small; for a full `Rebuild` it doubles the importance-signal-read cost for the whole vault, on top of the already-documented "Known risk" perf note in the design spec.
+
+**Files:**
+- Modify: `internal/db/memory.go` (new method `UpdateMemoryNodeImportanceScore`)
+- Modify: `internal/memory/index.go` (`reconcilePass` struct, `file()`, `Reconcile`)
+- Test: `internal/memory/index_test.go` (new test proving the fix — this is a SEPARATE addition from Task 6's stashed MEM-02 fixture work; do not touch or unstash Task 6's changes as part of this task)
+- Test: `internal/db/memory_test.go` (new test for `UpdateMemoryNodeImportanceScore`)
+
+**Interfaces:**
+- Consumes: `computeNodeImportance(database *db.DB, v *Vault, n Node, rel string) (float64, error)` (Task 5b, unchanged signature).
+- Produces: `func (db *DB) UpdateMemoryNodeImportanceScore(id string, score float64) error` (new DB method) and a new unexported `touchedNode` type in `internal/memory/index.go` — both are internal to this fix, no other task depends on their exact shape, only on the corrected end-to-end behavior (verified by this task's own test and consumed implicitly by Task 6 once resumed).
+
+- [ ] **Step 1: write the failing test** — add to `internal/db/memory_test.go` (after the existing `TestMemoryNodeImportanceScoreRoundTrip`, matching its `openTestDB`/`memTestNode` idiom):
+
+```go
+// TestUpdateMemoryNodeImportanceScore: a narrow single-column update that
+// changes only importance_score, leaving every other field (content_hash,
+// title, etc.) untouched — the primitive Reconcile's phase-B refinement
+// pass uses to correct a node's importance after the whole vaultSubdirs
+// walk completes (Slice A follow-up, added 2026-07-18, MEM-16).
+func TestUpdateMemoryNodeImportanceScore(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_importance_narrow", func(r *MemoryNodeRow) {
+		r.ImportanceScore = 1.0
+		r.Title = "Original Title"
+	})
+	if err := db.UpsertMemoryNode(row, "body", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	if err := db.UpdateMemoryNodeImportanceScore("ent_importance_narrow", 7.0); err != nil {
+		t.Fatalf("UpdateMemoryNodeImportanceScore: %v", err)
+	}
+
+	got, err := db.GetMemoryNode("ent_importance_narrow")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got.ImportanceScore != 7.0 {
+		t.Errorf("ImportanceScore = %v, want 7.0", got.ImportanceScore)
+	}
+	if got.Title != "Original Title" {
+		t.Errorf("Title = %q, want unchanged %q — this must be a NARROW update", got.Title, "Original Title")
+	}
+}
+```
+
+- [ ] **Step 2: run it — expect a build failure** (the method doesn't exist yet):
+
+```
+$ go test ./internal/db/ -run TestUpdateMemoryNodeImportanceScore -v
+# watchtower/internal/db [watchtower/internal/db.test]
+./memory_test.go:XXX: db.UpdateMemoryNodeImportanceScore undefined (type *DB has no field or method UpdateMemoryNodeImportanceScore)
+FAIL	watchtower/internal/db [build failed]
+```
+
+- [ ] **Step 3: implement `UpdateMemoryNodeImportanceScore`** — add to `internal/db/memory.go` immediately after `SetDisputePending` (matching its exact error-wrapping style):
+
+```go
+// UpdateMemoryNodeImportanceScore narrows-updates just the importance_score
+// column for an already-indexed node, without touching its content hash,
+// body/FTS, aliases, or provenance rows. Used by Reconcile's phase-B
+// refinement pass (internal/memory/index.go, MEM-16) to correct a node's
+// importance_score once the whole vaultSubdirs walk has completed, so a
+// link from a later-scanned directory (e.g. rollups) to an earlier-scanned
+// one (e.g. entities) is reflected even within a single Reconcile/Rebuild
+// call.
+func (db *DB) UpdateMemoryNodeImportanceScore(id string, score float64) error {
+	_, err := db.Exec(`UPDATE memory_nodes SET importance_score = ? WHERE id = ?`, score, id)
+	if err != nil {
+		return fmt.Errorf("updating importance_score for %s: %w", id, err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: run it — expect green:**
+
+```
+$ go test ./internal/db/ -run TestUpdateMemoryNodeImportanceScore -v
+=== RUN   TestUpdateMemoryNodeImportanceScore
+--- PASS: TestUpdateMemoryNodeImportanceScore (0.01s)
+PASS
+ok  	watchtower/internal/db	0.2s
+```
+
+- [ ] **Step 5: write the failing regression test for the actual bug** — add to `internal/memory/index_test.go` (after `TestReconcileImportanceQuarantineOnSignalError`, which Task 6 already added — read the file first to find its actual current end, since Task 6's stashed changes are NOT present in the working tree right now; insert after whatever is currently the last `TestReconcile*` test before `TestMemory02_ReindexEquivalence`):
+
+```go
+// TestReconcileImportanceOrderIndependent: a rollup and the entity it links
+// to are BOTH touched within the SAME Reconcile call (the rollup is newly
+// created, the entity's body is edited) — entities is scanned before
+// rollups (vaultSubdirs order), so a single-pass computation would compute
+// the entity's LinksIn before the rollup's link is indexed, understating its
+// importance_score. The phase-B refinement pass must correct this within
+// the same call, without requiring a later, separate Reconcile call to
+// re-touch the entity (Slice A follow-up, added 2026-07-18, MEM-16 — the
+// bug Task 6's implementer found while strengthening the MEM-02 fixture).
+func TestReconcileImportanceOrderIndependent(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5OI1", "entity", "Target")
+	writeNodes(t, v, target)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Zero(t, baseline.ImportanceScore, "sanity: no links yet")
+
+	// Edit target's body (so it gets reparsed THIS call) and, in the SAME
+	// Reconcile call, add a rollup linking to it. entities is scanned before
+	// rollups, so a single-pass computation would see LinksIn=0 for target;
+	// the refinement pass must correct it to 1 before Reconcile returns.
+	target.Body = "# Target\n\nRevision one.\n"
+	rollup := vaultTestNode("sum_01ARZ3NDEKTSV4RRFFQ69G5OI2", "rollup", "Summary")
+	rollup.Body = "# Summary\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5OI1]] for background.\n"
+	writeNodes(t, v, target, rollup)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	want := ComputeImportance(ImportanceInputs{LinksIn: 1})
+	assert.Equal(t, want, row.ImportanceScore,
+		"target's importance must reflect rollup's link within the SAME Reconcile call, not just after a later separate call")
+}
+```
+
+- [ ] **Step 6: run it — expect the assertion failure that proves the bug** (before implementing phase B):
+
+```
+$ go test ./internal/memory/ -run TestReconcileImportanceOrderIndependent -v
+=== RUN   TestReconcileImportanceOrderIndependent
+    index_test.go:XXX:
+        	Error Trace:	.../index_test.go:XXX
+        	Error:      	Not equal:
+        	            	expected: 1
+        	            	actual  : 0
+        	Test:       	TestReconcileImportanceOrderIndependent
+--- FAIL: TestReconcileImportanceOrderIndependent (0.02s)
+FAIL
+```
+
+- [ ] **Step 7: implement the two-phase fix in `internal/memory/index.go`.** Add a `touchedNode` type and a `touched` field to `reconcilePass` (near the top of the file, after the `Stats` struct):
+
+```go
+// touchedNode records one successfully-indexed file from the current
+// Reconcile pass so its importance can be refined in phase B, once the
+// whole vaultSubdirs walk completes — see refineImportance. A link from a
+// later-scanned directory to an earlier one is otherwise invisible to
+// CountMemoryLinksIn during phase A's processing of the earlier node
+// (Slice A follow-up, added 2026-07-18, MEM-16).
+type touchedNode struct {
+	n   Node
+	rel string
+}
+```
+
+Add `touched []touchedNode` to the `reconcilePass` struct:
+
+```go
+type reconcilePass struct {
+	v        *Vault
+	database *db.DB
+	logf     func(string, ...any)
+	indexed  map[string]db.MemoryNodeRow
+	onDisk   map[string]bool
+	now      string
+	stats    *Stats
+	touched  []touchedNode
+}
+```
+
+In `file()`, immediately after the successful `UpsertMemoryNode` call (right before the `if wasIndexed { ... } else { ... }` stats block), append to `p.touched`:
+
+```go
+	if err := p.database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, p.logf)...); err != nil {
+		p.quarantine(rel, err)
+		return nil
+	}
+	p.touched = append(p.touched, touchedNode{n: n, rel: rel})
+	if wasIndexed {
+		p.stats.Updated++
+	} else {
+		p.stats.Added++
+	}
+	return nil
+}
+```
+
+Add a new `refineImportance` method right after `file()`:
+
+```go
+// refineImportance is Reconcile's phase B: after the whole vaultSubdirs walk
+// completes, recompute importance for every file this pass successfully
+// indexed, now that the run's full link graph is populated — correcting
+// phase A's scan-order-dependent initial value. A recompute error is logged
+// and that node's phase-A value is kept (not escalated to an abort or a
+// quarantine — the file's content was already successfully indexed in phase
+// A; only its importance may be transiently stale, which is an accepted
+// characteristic elsewhere in this design). Slice A follow-up, added
+// 2026-07-18, MEM-16.
+func (p *reconcilePass) refineImportance() error {
+	for _, tn := range p.touched {
+		importance, err := computeNodeImportance(p.database, p.v, tn.n, tn.rel)
+		if err != nil {
+			p.logf("memory: reconcile: refining importance for %s failed (keeping first-pass value): %v", tn.n.ID, err)
+			continue
+		}
+		if err := p.database.UpdateMemoryNodeImportanceScore(tn.n.ID, importance); err != nil {
+			return fmt.Errorf("memory: reconcile: refining importance for %s: %w", tn.n.ID, err)
+		}
+	}
+	return nil
+}
+```
+
+In `Reconcile`, call it right after the per-file loop, before the deletion loop:
+
+```go
+	for _, sub := range vaultSubdirs {
+		entries, err := os.ReadDir(filepath.Join(v.path, sub))
+		if err != nil {
+			return stats, fmt.Errorf("memory: reconcile: read %s: %w", sub, err)
+		}
+		for _, entry := range entries {
+			if err := pass.file(sub, entry); err != nil {
+				return stats, err
+			}
+		}
+	}
+
+	if err := pass.refineImportance(); err != nil {
+		return stats, err
+	}
+
+	for _, row := range existing {
+```
+
+(The rest of `Reconcile` — the deletion loop and its return — is unchanged.)
+
+- [ ] **Step 8: run it — expect green:**
+
+```
+$ go test ./internal/memory/ -run TestReconcileImportanceOrderIndependent -v
+=== RUN   TestReconcileImportanceOrderIndependent
+--- PASS: TestReconcileImportanceOrderIndependent (0.03s)
+PASS
+ok  	watchtower/internal/memory	0.2s
+```
+
+- [ ] **Step 9: run the full `internal/memory` and `internal/db` suites — confirm zero regressions**, including the three already-approved Task 5/6a/6b tests (`TestReconcileComputesImportanceScore`, `TestReconcileImportanceOverrideWins`, `TestReconcileImportanceQuarantineOnSignalError`) and `TestEvictReindexEquivalence`:
+
+```
+$ go build ./... && go test -count=1 ./internal/memory/... ./internal/db/... -v 2>&1 | tail -40
+```
+
+Expected: every test passes, including all of the above by name.
+
+- [ ] **Step 10: commit — this task's commit touches ONLY `internal/db/memory.go`, `internal/db/memory_test.go`, and `internal/memory/index.go`, plus the ONE new test this task adds to `internal/memory/index_test.go`. Task 6's separately-stashed changes to the same test file must NOT be part of this commit** (they are not in the working tree right now — you stashed them before this task began; leave them stashed):
+
+```
+$ git status --short
+```
+
+Confirm the status shows only this task's files before committing (no unexpected `index_test.go` hunks beyond the one new test you just added).
+
+```
+$ git add internal/db/memory.go internal/db/memory_test.go internal/memory/index.go internal/memory/index_test.go
+$ git commit -m "fix(memory): two-phase Reconcile — importance refinement pass for scan-order independence (Slice A follow-up, MEM-16)
+
+Reconcile walked vaultSubdirs in a fixed order and computed importance
+per-file inline, so a link from a later-scanned directory (rollups) to an
+earlier one (entities) was invisible within a single Reconcile/Rebuild call
+— a real MEM-02 violation Task 6's implementer found while strengthening
+the reindex-equivalence guard. Phase A (file()) is unchanged; a new phase B
+(refineImportance) recomputes importance for every file touched this run
+once the whole walk completes, via a narrow UpdateMemoryNodeImportanceScore
+column update, making the result order-independent within one call."
+```
+
+---
+
+## Task 6 (resume): Strengthen the MEM-02 guard + add override/quarantine regression tests
+
+**This task's implementer already wrote all three test changes and reported BLOCKED** because `TestMemory02_ReindexEquivalence`'s strengthened fixture correctly caught the scan-order bug Task 5c just fixed. The changes are stashed (`git stash list` should show `task-6-wip-strengthened-mem02-fixture`). Resume by restoring the stash and re-verifying, not by re-writing the tests from scratch.
+
+**Depends on:** Task 5c (the scan-order fix must be committed first). **Blocks:** Task 7.
 
 **Files:**
 - Test only: `internal/memory/index_test.go` — modify `TestMemory02_ReindexEquivalence` (lines 352–393); add two new tests after `TestReconcileQuarantinesDuplicateAlias` (ends line 346), before `TestMemory02_ReindexEquivalence` (line 348)
