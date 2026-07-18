@@ -23,6 +23,13 @@ type MemoryNodeRow struct {
 	IndexedAt   string
 	Subject     string  // belief subject entity id, "" for non-beliefs; file-derived (Node.Subject, see 00019)
 	Confidence  float64 // belief confidence 0..1, 0 for non-beliefs; file-derived (Node.Confidence, see 00019)
+	// ImportanceScore is the merged (owner-override-or-computed) importance
+	// snapshot Reconcile/Rebuild refresh per node — override when the node's
+	// frontmatter carries one, else ComputeImportance(...)'s live signal read
+	// (internal/memory/index.go). A periodic snapshot for future retrieval
+	// ranking, distinct from evict.go's always-live RetentionScore (Slice A of
+	// the memory-importance-score redesign, MEM-16; migration 00027).
+	ImportanceScore float64
 	// DisputePending mirrors presence in the memory_dispute_flags SIDE TABLE
 	// (see 00019) — runtime state, never written by UpsertMemoryNode. Read-only
 	// here; set via SetDisputePending and cleared by the inbox watchtower
@@ -69,8 +76,8 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string,
 	defer tx.Rollback()
 
 	_, err = tx.Exec(`INSERT INTO memory_nodes
-		(id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence)
-		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?)
+		(id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence, importance_score)
+		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			type = excluded.type,
 			tier = excluded.tier,
@@ -81,9 +88,10 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string,
 			content_hash = excluded.content_hash,
 			indexed_at = excluded.indexed_at,
 			subject = excluded.subject,
-			confidence = excluded.confidence`,
+			confidence = excluded.confidence,
+			importance_score = excluded.importance_score`,
 		row.ID, row.Type, row.Tier, row.Status, row.RedirectTo,
-		row.Title, row.Path, row.ContentHash, row.IndexedAt, row.Subject, row.Confidence)
+		row.Title, row.Path, row.ContentHash, row.IndexedAt, row.Subject, row.Confidence, row.ImportanceScore)
 	if err != nil {
 		return fmt.Errorf("upserting memory node %s: %w", row.ID, err)
 	}
@@ -270,14 +278,14 @@ func (db *DB) SituationMirrorNodeIDs() (map[string]bool, error) {
 // plus DisputePending, derived via EXISTS over the memory_dispute_flags side
 // table (see 00019) rather than stored on memory_nodes itself.
 const memoryNodeSelectCols = `id, type, tier, status, COALESCE(redirect_to, ''),
-		title, path, content_hash, indexed_at, subject, confidence,
+		title, path, content_hash, indexed_at, subject, confidence, importance_score,
 		EXISTS(SELECT 1 FROM memory_dispute_flags f WHERE f.node_id = memory_nodes.id)`
 
 func scanMemoryNodeRow(scan func(...any) error) (MemoryNodeRow, error) {
 	var row MemoryNodeRow
 	err := scan(&row.ID, &row.Type, &row.Tier, &row.Status, &row.RedirectTo,
 		&row.Title, &row.Path, &row.ContentHash, &row.IndexedAt,
-		&row.Subject, &row.Confidence, &row.DisputePending)
+		&row.Subject, &row.Confidence, &row.ImportanceScore, &row.DisputePending)
 	return row, err
 }
 

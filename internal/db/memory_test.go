@@ -255,6 +255,50 @@ func TestMemoryNodeSubjectConfidenceRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMemoryNodeImportanceScoreRoundTrip: memory_nodes.importance_score
+// (Slice A, migration 00027, MEM-16) round-trips through
+// UpsertMemoryNode/GetMemoryNode/ListMemoryNodes.
+func TestMemoryNodeImportanceScoreRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_importance", func(r *MemoryNodeRow) {
+		r.ImportanceScore = 6.5
+	})
+	if err := db.UpsertMemoryNode(row, "importance body", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	got, err := db.GetMemoryNode("ent_importance")
+	if err != nil {
+		t.Fatalf("GetMemoryNode: %v", err)
+	}
+	if got.ImportanceScore != 6.5 {
+		t.Errorf("GetMemoryNode.ImportanceScore = %v, want 6.5", got.ImportanceScore)
+	}
+
+	rows, err := db.ListMemoryNodes()
+	if err != nil {
+		t.Fatalf("ListMemoryNodes: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ImportanceScore != 6.5 {
+		t.Fatalf("ListMemoryNodes = %+v, want one row with importance_score 6.5", rows)
+	}
+
+	// A re-upsert with a different score replaces it (not additive).
+	row.ImportanceScore = 1.0
+	row.ContentHash = "hash-2"
+	if err := db.UpsertMemoryNode(row, "importance body v2", nil); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	got, err = db.GetMemoryNode("ent_importance")
+	if err != nil {
+		t.Fatalf("GetMemoryNode after re-upsert: %v", err)
+	}
+	if got.ImportanceScore != 1.0 {
+		t.Errorf("GetMemoryNode.ImportanceScore after re-upsert = %v, want 1.0", got.ImportanceScore)
+	}
+}
+
 // TestMemoryNodeSubjectConfidenceDefaults: non-belief nodes (and the memTestNode
 // helper's zero-value Subject/Confidence) persist as ""/0.
 func TestMemoryNodeSubjectConfidenceDefaults(t *testing.T) {
