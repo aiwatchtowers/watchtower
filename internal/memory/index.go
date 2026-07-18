@@ -87,10 +87,6 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 		}
 	}
 
-	if err := pass.refineImportance(); err != nil {
-		return stats, err
-	}
-
 	for _, row := range existing {
 		if pass.onDisk[row.ID] {
 			continue
@@ -99,6 +95,10 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 			return stats, fmt.Errorf("memory: reconcile: %w", err)
 		}
 		stats.Deleted++
+	}
+
+	if err := pass.refineImportance(); err != nil {
+		return stats, err
 	}
 
 	return stats, nil

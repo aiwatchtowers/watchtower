@@ -518,6 +518,43 @@ func TestReconcileImportanceQuarantineOnSignalError(t *testing.T) {
 	assert.Equal(t, 3.0, freshRow.ImportanceScore)
 }
 
+// TestReconcileImportanceRefinesAfterDeletion: a same-pass file deletion of a
+// node's only linker must be reflected in the linked node's refined
+// importance_score — refineImportance must run AFTER the deletion loop, not
+// before, or it recomputes CountMemoryLinksIn while the about-to-be-deleted
+// linker's row/FTS entry is still present, diverging from what a fresh
+// Rebuild (which never sees the deleted file at all) would compute (whole-
+// branch review follow-up, added 2026-07-18, MEM-16).
+func TestReconcileImportanceRefinesAfterDeletion(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5DE1", "entity", "Target")
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5DE2", "Linker", target.ID)
+	writeNodes(t, v, target, linker)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, baseline.ImportanceScore, "sanity: linker gives target a link-in")
+
+	// In the SAME Reconcile call: delete the linker's file AND touch target
+	// (so it gets reparsed this pass, entering phase B's refinement).
+	require.NoError(t, os.Remove(filepath.Join(v.path, "entities", linker.ID+".md")))
+	target.Body = "# Target\n\nRevision one.\n"
+	writeNodes(t, v, target)
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Deleted, "the linker's file is gone")
+	assert.Equal(t, 1, stats.Updated, "target is reparsed this same pass")
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	assert.Zero(t, row.ImportanceScore,
+		"the deleted linker must not be counted — refineImportance must run AFTER the deletion loop, matching a fresh Rebuild")
+}
+
 // TestMemory02_ReindexEquivalence guards MEM-02: dropping all memory_* tables
 // and rebuilding from the vault reproduces the incrementally-maintained index.
 // memory_node_stats is excluded by design — access stats are runtime state,
