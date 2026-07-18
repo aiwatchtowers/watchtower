@@ -23,38 +23,31 @@ type RetentionInputs struct {
 	// (engaged_count − dismissed_count summed over its linking entities, Phase-5
 	// 5D memory_engagement). Only a positive net raises importance — a dismissed
 	// or never-touched episode gets no bonus and never scores below the
-	// un-engaged baseline. The net is CLAMPED to [-engagementNetClamp,
-	// +engagementNetClamp] before scoring so one heavily-engaged entity cannot
+	// un-engaged baseline. The net is CLAMPED (see importance.go's
+	// engagementNetClamp) before scoring so one heavily-engaged entity cannot
 	// pin an episode in memory forever (a runaway counter is bounded).
 	Engagement int
 }
 
-// engagementNetClamp bounds the net-engagement contribution to importance: a
-// net beyond ±3 is clamped, so no single entity's counter can dominate the
-// retention score. A code const like the other retention weights.
-const engagementNetClamp = 3
-
 // Retention constants live in code, not config (mirrors belief_math.go): one
-// auditable place for the eviction math.
+// auditable place for the eviction math. The importance-half constants
+// (situation/owner/engagement bonuses, the engagement clamp) moved into
+// importance.go/ComputeImportance (Slice A of the memory-importance-score
+// redesign, MEM-16) — only the recency constants stay here.
 const (
 	retentionRecencyHorizonDays = 180.0 // recency decays to the floor over this span
 	retentionRecencyFloor       = 0.25  // ancient nodes keep a little recency so links-in still protect them
-	retentionSituationBonus     = 1.0
-	retentionOwnerBonus         = 2.0 // owner-touched outweighs the situation bonus
-	// retentionEngagementWeight scales net owner-engagement into importance: an
-	// entity the owner actively engages with (👍, converts, resolves — Phase-5 5D)
-	// resists eviction on par with an owner-touched file. This is the first LIVE,
-	// writable feed for Phase-3's stubbed retention-importance input — NOT the
-	// write-dead memory_node_stats access counters (still dead this slice).
-	retentionEngagementWeight = 2.0
 )
 
 // RetentionScore is the pure retention formula: recency(last event) ×
-// importance, where importance = links-in + situation-origin bonus +
-// owner-touch bonus + engagement bonus. A cold, unreferenced, un-touched,
-// un-engaged episode scores 0 (importance 0) and is always evictable; links-in,
-// an owner edit, or positive owner-engagement lift it above a positive
-// threshold. Side-effect free and exhaustively unit-tested.
+// importance, where importance = ComputeImportance's links-in + situation-
+// origin bonus + owner-touch bonus + engagement bonus (importance.go). A cold,
+// unreferenced, un-touched, un-engaged episode scores 0 (importance 0) and is
+// always evictable; links-in, an owner edit, or positive owner-engagement lift
+// it above a positive threshold. Side-effect free and exhaustively unit-tested.
+// This is a pure refactor (Slice A extracted the importance arm into
+// ComputeImportance) — the formula and every pre-existing assertion below are
+// byte-identical to before the extraction.
 func RetentionScore(in RetentionInputs) float64 {
 	recency := 1.0 - in.LastEventAgeDays/retentionRecencyHorizonDays
 	if recency < retentionRecencyFloor {
@@ -63,22 +56,12 @@ func RetentionScore(in RetentionInputs) float64 {
 	if recency > 1.0 {
 		recency = 1.0
 	}
-	importance := float64(in.LinksIn)
-	if in.SituationOrigin {
-		importance += retentionSituationBonus
-	}
-	if in.OwnerTouched {
-		importance += retentionOwnerBonus
-	}
-	net := in.Engagement
-	if net > engagementNetClamp {
-		net = engagementNetClamp
-	} else if net < -engagementNetClamp {
-		net = -engagementNetClamp
-	}
-	if net > 0 { // only positive net raises importance (a dismissed entity never scores below baseline)
-		importance += retentionEngagementWeight * float64(net)
-	}
+	importance := ComputeImportance(ImportanceInputs{
+		LinksIn:         in.LinksIn,
+		SituationOrigin: in.SituationOrigin,
+		OwnerTouched:    in.OwnerTouched,
+		Engagement:      in.Engagement,
+	})
 	return recency * importance
 }
 
