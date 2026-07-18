@@ -227,15 +227,6 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 	return nil
 }
 
-// refineImportance is Reconcile's phase B: after the whole vaultSubdirs walk
-// completes, recompute importance for every file this pass successfully
-// indexed, now that the run's full link graph is populated — correcting
-// phase A's scan-order-dependent initial value. A recompute error is logged
-// and that node's phase-A value is kept (not escalated to an abort or a
-// quarantine — the file's content was already successfully indexed in phase
-// A; only its importance may be transiently stale, which is an accepted
-// characteristic elsewhere in this design). Slice A follow-up, added
-// 2026-07-18, MEM-16.
 // refineImportance is Reconcile's phase B, run after the deletion loop (see
 // 5d-i): recompute importance for every file this pass successfully indexed
 // (phase A), now that the run's full link graph is populated and this run's
