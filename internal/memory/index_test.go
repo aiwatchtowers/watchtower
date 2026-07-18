@@ -432,6 +432,92 @@ func TestReconcileImportanceOrderIndependent(t *testing.T) {
 		"target's importance must reflect rollup's link within the SAME Reconcile call, not just after a later separate call")
 }
 
+// TestReconcileImportanceOverrideWins: a node whose frontmatter carries
+// importance_override persists exactly that value through Reconcile, even
+// though every organic signal (links-in, situation-origin, owner-touch,
+// engagement) is zero — proving the override short-circuits
+// computeImportance rather than being blended with the computed value
+// (Slice A, MEM-16).
+func TestReconcileImportanceOverrideWins(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	override := 7.5
+	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5OV1", "entity", "Manually Important")
+	n.ImportanceOverride = &override
+	writeNodes(t, v, n)
+
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	row, err := d.GetMemoryNode(n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 7.5, row.ImportanceScore, "the override wins over the (zero) computed signals")
+}
+
+// TestReconcileImportanceQuarantineOnSignalError: when a node's importance
+// signal lookup fails (LinkedEntityEngagement here, via a dropped
+// memory_engagement table), that ONE file is quarantined — its prior
+// importance_score (and the rest of its row) stays untouched — while the
+// rest of the pass completes normally. A brand-new node carrying its own
+// importance_override never calls the broken lookup at all, proving the
+// failure is isolated rather than pass-wide (Slice A, design §6, MEM-16).
+func TestReconcileImportanceQuarantineOnSignalError(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	// A linking entity gives A a nonzero baseline importance BEFORE anything
+	// breaks, so "prior importance_score untouched" below is a real
+	// assertion, not a vacuous 0 == 0.
+	a := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5QI1", "entity", "Linked Target")
+	writeNodes(t, v, a)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5QI2", "Linker", a.ID)
+	writeNodes(t, v, linker)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	// Touch A again so it gets reparsed now that the link is already
+	// committed (CountMemoryLinksIn only sees a link once its source file is
+	// indexed).
+	a.Body = "# Linked Target\n\nRevision one.\n"
+	writeNodes(t, v, a)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(a.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, baseline.ImportanceScore, "sanity: A already reflects the link-in bonus")
+
+	// Break LinkedEntityEngagement's lookup for every node that has no
+	// override.
+	_, err = d.Exec(`DROP TABLE memory_engagement`)
+	require.NoError(t, err)
+
+	// Touch A once more (forces a reparse into the now-broken lookup) and add
+	// a brand-new node carrying an importance_override, which never calls the
+	// broken signal lookups at all.
+	a.Body = "# Linked Target\n\nRevision two.\n"
+	overrideVal := 3.0
+	fresh := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5QI3", "entity", "Fresh Override")
+	fresh.ImportanceOverride = &overrideVal
+	writeNodes(t, v, a, fresh)
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err, "a signal-lookup failure must not abort the pass")
+	assert.Equal(t, 1, stats.Added, "the override-carrying node is still indexed")
+	assert.Equal(t, 1, stats.Quarantined)
+	assert.Equal(t, []string{"entities/" + a.ID + ".md"}, stats.QuarantinedPaths)
+
+	after, err := d.GetMemoryNode(a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, baseline.ImportanceScore, after.ImportanceScore, "prior importance_score untouched")
+	assert.Equal(t, baseline.ContentHash, after.ContentHash, "quarantine keeps the whole prior row, not just the score")
+
+	freshRow, err := d.GetMemoryNode(fresh.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 3.0, freshRow.ImportanceScore)
+}
+
 // TestMemory02_ReindexEquivalence guards MEM-02: dropping all memory_* tables
 // and rebuilding from the vault reproduces the incrementally-maintained index.
 // memory_node_stats is excluded by design — access stats are runtime state,
@@ -451,26 +537,41 @@ func TestMemory02_ReindexEquivalence(t *testing.T) {
 	_, err := Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
-	// Pass 2: edit A (title + aliases), add C.
+	// Pass 2: edit A (title + aliases), add C — C links to A so LinksIn (and
+	// therefore importance_score) actually differs between fixtures instead of
+	// comparing two zeros (Slice A, MEM-16 extension of this guard).
 	a.Title = "Alpha Prime"
 	a.Aliases = []string{"alpha-prime"}
 	a.Body = "# Alpha Prime\n\nRewritten body.\n"
 	c := vaultTestNode("sum_01ARZ3NDEKTSV4RRFFQ69G5IXC", "rollup", "Q3 rollup")
+	c.Body = "# Q3 rollup\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5IXA]] for background.\n"
 	writeNodes(t, v, a, c)
 	_, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
-	// Pass 3: delete B (its provenance rows must vanish with it), edit C and give
-	// it a surviving ## Provenance section so a live node's provenance is compared.
+	// Pass 3: delete B (its provenance rows must vanish with it), edit C —
+	// keep its link to A alongside a surviving ## Provenance section — and
+	// touch A once more (a trivial body edit) so A gets reparsed NOW THAT C's
+	// link to it is already committed (pass 2): this is what makes A's
+	// persisted importance_score reflect LinksIn=1 by the end of the
+	// incremental history, matching what a fresh Rebuild computes from the
+	// FINAL vault state.
 	require.NoError(t, os.Remove(filepath.Join(v.path, "episodes", b.ID+".md")))
-	c.Body = "# Q3 rollup\n\nCollapsed episodes live here.\n\n## Provenance\n" +
+	c.Body = "# Q3 rollup\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5IXA]] for background.\n\n## Provenance\n" +
 		"- C0AAAAAAA 1700100000.000200\n"
-	writeNodes(t, v, c)
+	a.Body = "# Alpha Prime\n\nRewritten body, revision two.\n"
+	writeNodes(t, v, c, a)
 	_, err = Reconcile(v, d, t.Logf)
 	require.NoError(t, err)
 
 	incremental := dumpIndex(t, d)
 	require.Len(t, incremental.Nodes, 2, "sanity: A and C survive")
+	for _, row := range incremental.Nodes {
+		if row.ID == a.ID {
+			require.Equal(t, 1.0, row.ImportanceScore,
+				"sanity: A's persisted importance reflects C's link-in, not a trivial zero")
+		}
+	}
 
 	_, err = Rebuild(v, d, t.Logf)
 	require.NoError(t, err)
