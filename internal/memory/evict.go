@@ -198,12 +198,12 @@ func EvictEpisodes(v *Vault, database *db.DB, olderThanDays int, scoreThreshold 
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	for _, t := range tombstones {
-		if err := upsertIndexNode(database, t, nowStr); err != nil {
+		if err := upsertIndexNode(database, v, t, nowStr); err != nil {
 			return evicted, err
 		}
 	}
 	for _, key := range order {
-		if err := upsertIndexNode(database, *rollups[key], nowStr); err != nil {
+		if err := upsertIndexNode(database, v, *rollups[key], nowStr); err != nil {
 			return evicted, err
 		}
 	}

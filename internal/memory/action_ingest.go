@@ -300,7 +300,7 @@ func (p *Pipeline) ingestInteractions(floor, sfFloor int64) (staged *stagedChat,
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		for _, n := range nodes {
-			if ierr := upsertIndexNode(p.db, n, now); ierr != nil {
+			if ierr := upsertIndexNode(p.db, p.vault, n, now); ierr != nil {
 				p.logf("memory: interactions: index %s: %v", n.ID, ierr)
 			}
 		}

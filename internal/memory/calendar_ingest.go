@@ -265,7 +265,7 @@ func (p *Pipeline) commitCalendarNodes(runID int64, byID map[string]*Node, order
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
-		if err := upsertIndexNode(p.db, n, now); err != nil {
+		if err := upsertIndexNode(p.db, p.vault, n, now); err != nil {
 			p.logf("memory: index %s after calendar ingest: %v", n.ID, err)
 		}
 	}

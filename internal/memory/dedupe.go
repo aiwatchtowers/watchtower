@@ -160,7 +160,7 @@ func unionProvenance(v *Vault, database *db.DB, winnerID, loserID string) error 
 	if _, err := v.WriteNodes([]Node{winner}, msg); err != nil {
 		return err
 	}
-	return upsertIndexNode(database, winner, time.Now().UTC().Format(time.RFC3339))
+	return upsertIndexNode(database, v, winner, time.Now().UTC().Format(time.RFC3339))
 }
 
 // epCandidate is one episode's dedupe key: its provenance ref set within a

@@ -165,7 +165,7 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
-		if err := upsertIndexNode(p.db, n, nowStr); err != nil {
+		if err := upsertIndexNode(p.db, p.vault, n, nowStr); err != nil {
 			// Index-mirror consistency: return the error so the step is recorded
 			// as error; reconcile self-heals the missed mirror next run.
 			return rewritten, failed, usage, err

@@ -163,7 +163,7 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		for _, n := range toWrite {
-			if err := upsertIndexNode(database, n, now); err != nil {
+			if err := upsertIndexNode(database, v, n, now); err != nil {
 				return stats, err
 			}
 		}

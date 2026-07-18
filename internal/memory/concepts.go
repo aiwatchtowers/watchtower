@@ -88,7 +88,7 @@ func PromoteConcepts(v *Vault, database *db.DB, minEpisodes, maxCreate int) (int
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		for _, n := range nodes {
-			if err := upsertIndexNode(database, n, now); err != nil {
+			if err := upsertIndexNode(database, v, n, now); err != nil {
 				return 0, err
 			}
 		}

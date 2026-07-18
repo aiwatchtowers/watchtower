@@ -1,5 +1,9 @@
 package memory
 
+import (
+	"watchtower/internal/db"
+)
+
 // ImportanceInputs are the file-derived signals behind a node's importance:
 // how many live nodes reference it, whether it originated from a dashboard
 // situation, whether the owner ever touched its file, and its linked
@@ -66,4 +70,36 @@ func ComputeImportance(in ImportanceInputs) float64 {
 		importance += importanceEngagementWeight * float64(net)
 	}
 	return importance
+}
+
+// computeNodeImportance is the merged (owner-override-or-computed)
+// importance value for node n at vault-relative path rel: n's
+// ImportanceOverride if set, else ComputeImportance fed by live
+// links-in/situation-origin/owner-touch/engagement reads. Shared by
+// index.go's Reconcile/Rebuild path and merge.go's upsertIndexNode (every
+// non-Reconcile write path) so both persist a mutually consistent value for
+// the same file — MEM-16, Slice A follow-up (added 2026-07-18: upsertIndexNode
+// previously never set this field).
+func computeNodeImportance(database *db.DB, v *Vault, n Node, rel string) (float64, error) {
+	if n.ImportanceOverride != nil {
+		return *n.ImportanceOverride, nil
+	}
+	linksIn, err := database.CountMemoryLinksIn(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	ownerTouched, err := v.OwnerEdited(rel)
+	if err != nil {
+		return 0, err
+	}
+	engaged, dismissed, err := database.LinkedEntityEngagement(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	return ComputeImportance(ImportanceInputs{
+		LinksIn:         linksIn,
+		SituationOrigin: hasSituationAlias(n.Aliases),
+		OwnerTouched:    ownerTouched,
+		Engagement:      engaged - dismissed,
+	}), nil
 }

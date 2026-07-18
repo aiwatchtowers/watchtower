@@ -74,7 +74,7 @@ func AgeEpisodes(v *Vault, database *db.DB, ageAfterDays int, now time.Time, log
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
-		if err := upsertIndexNode(database, n, nowStr); err != nil {
+		if err := upsertIndexNode(database, v, n, nowStr); err != nil {
 			return aged, err
 		}
 	}

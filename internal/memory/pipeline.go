@@ -1018,7 +1018,7 @@ func (p *Pipeline) extractBatch(ctx context.Context, runID int64, windows []runW
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, n := range nodes {
-		if err := upsertIndexNode(p.db, n, now); err != nil {
+		if err := upsertIndexNode(p.db, p.vault, n, now); err != nil {
 			// The vault commit stands; the index is derived and the next
 			// Reconcile repairs it, so this does not fail the batch.
 			p.logf("memory: index %s after extract: %v", n.ID, err)

@@ -187,7 +187,7 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged, drop
 		}
 		nowStr := time.Now().UTC().Format(time.RFC3339)
 		for _, nd := range noteNodes {
-			if ierr := upsertIndexNode(p.db, nd, nowStr); ierr != nil {
+			if ierr := upsertIndexNode(p.db, p.vault, nd, nowStr); ierr != nil {
 				return n, flagged, dropped, usage, ierr // reconcile self-heals next run
 			}
 		}
