@@ -342,6 +342,35 @@ func TestMigration00019MemorySurfaces(t *testing.T) {
 	}
 }
 
+// TestMigration00027MemoryImportanceScore: memory_nodes.importance_score
+// (Slice A of the memory-importance-score redesign, MEM-16) is additive,
+// defaults 0, and a plain insert that omits it still succeeds.
+func TestMigration00027MemoryImportanceScore(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('memory_nodes') WHERE name = 'importance_score'`).Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("memory_nodes.importance_score missing (count=%d err=%v)", n, err)
+	}
+
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ent_importance_x', 'entity', 'long', 'entities/x.md', 'h', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("inserting memory node without importance_score: %v", err)
+	}
+	var score float64
+	if err := database.QueryRow(
+		`SELECT importance_score FROM memory_nodes WHERE id = 'ent_importance_x'`).Scan(&score); err != nil {
+		t.Fatalf("reading importance_score default: %v", err)
+	}
+	if score != 0 {
+		t.Fatalf("importance_score default = %v, want 0", score)
+	}
+}
+
 // TestMigration00019ClearsBeliefContentHash proves the migration empties every
 // pre-existing belief's content_hash (M1) so the next Reconcile re-parses it and
 // fills the new subject/confidence columns — a belief indexed before 00019 has

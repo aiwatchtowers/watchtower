@@ -954,7 +954,7 @@ title TEXT NOT NULL DEFAULT '',
 path TEXT NOT NULL, -- vault-relative file path
 content_hash TEXT NOT NULL, -- sha256 of file bytes at last index
 indexed_at TEXT NOT NULL
-, subject TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0)
+, subject TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0, importance_score REAL NOT NULL DEFAULT 0)
 
 table	memory_provenance
 CREATE TABLE memory_provenance (
@@ -2044,6 +2044,7 @@ END
 8	indexed_at	TEXT	notnull=1	dflt=NULL	pk=0
 9	subject	TEXT	notnull=1	dflt=''	pk=0
 10	confidence	REAL	notnull=1	dflt=0	pk=0
+11	importance_score	REAL	notnull=1	dflt=0	pk=0
 
 ## memory_provenance
 0	node_id	TEXT	notnull=1	dflt=NULL	pk=1

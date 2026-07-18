@@ -1217,7 +1217,8 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     content_hash  TEXT NOT NULL,                -- sha256 of file bytes at last index
     indexed_at    TEXT NOT NULL,
     subject       TEXT NOT NULL DEFAULT '',     -- belief subject entity id, '' for non-beliefs; file-derived (see 00019)
-    confidence    REAL NOT NULL DEFAULT 0       -- belief confidence 0..1, 0 for non-beliefs; file-derived (see 00019)
+    confidence    REAL NOT NULL DEFAULT 0,      -- belief confidence 0..1, 0 for non-beliefs; file-derived (see 00019)
+    importance_score REAL NOT NULL DEFAULT 0    -- merged override-or-computed importance snapshot, refreshed by Reconcile/Rebuild (see 00027, MEM-16)
 );
 
 -- Alias → node lookup (natural keys like slack IDs, 'situation:<id>', names).
