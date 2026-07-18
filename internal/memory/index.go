@@ -115,12 +115,42 @@ type reconcilePass struct {
 	now      string
 	stats    *Stats
 	touched  []touchedNode
+
+	// ownerEditedFiles/ownerEditedErr/ownerEditedLoaded memoize
+	// v.OwnerEditedFiles() lazily: computed at most ONCE per Reconcile call,
+	// on the first node that actually needs the owner-touch signal (a fully
+	// unchanged pass — the common case — never pays for it at all), and
+	// reused by every subsequent computeNodeImportance call this pass
+	// instead of each paying its own full-history git-log walk (whole-branch
+	// review follow-up, added 2026-07-18, MEM-16).
+	ownerEditedFiles  map[string]bool
+	ownerEditedErr    error
+	ownerEditedLoaded bool
 }
 
 func (p *reconcilePass) quarantine(rel string, reason error) {
 	p.logf("memory: reconcile: quarantined %s: %v (file kept, existing index row preserved)", rel, reason)
 	p.stats.Quarantined++
 	p.stats.QuarantinedPaths = append(p.stats.QuarantinedPaths, rel)
+}
+
+// ownerEdited is reconcilePass's owner-touch signal, passed to
+// computeNodeImportance as its ownerEdited func(rel string) (bool, error)
+// parameter: a lazily-loaded memoization of v.OwnerEditedFiles(), computed
+// at most once per Reconcile call. A load failure is cached too, so a
+// broken repo fails every subsequent lookup the same way instead of
+// re-walking (each caller already handles the error via the existing
+// quarantine/log-and-continue paths — this only avoids repeating a failing
+// walk pointlessly).
+func (p *reconcilePass) ownerEdited(rel string) (bool, error) {
+	if !p.ownerEditedLoaded {
+		p.ownerEditedFiles, p.ownerEditedErr = p.v.OwnerEditedFiles()
+		p.ownerEditedLoaded = true
+	}
+	if p.ownerEditedErr != nil {
+		return false, p.ownerEditedErr
+	}
+	return p.ownerEditedFiles[rel], nil
 }
 
 // file processes one directory entry: skip non-node files, hash, parse, and
@@ -164,7 +194,7 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 		return nil
 	}
 
-	importance, err := computeNodeImportance(p.database, p.v, n, rel)
+	importance, err := computeNodeImportance(p.database, p.ownerEdited, n, rel)
 	if err != nil {
 		p.quarantine(rel, fmt.Errorf("computing importance: %w", err))
 		return nil
@@ -208,7 +238,7 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 // 2026-07-18, MEM-16.
 func (p *reconcilePass) refineImportance() error {
 	for _, tn := range p.touched {
-		importance, err := computeNodeImportance(p.database, p.v, tn.n, tn.rel)
+		importance, err := computeNodeImportance(p.database, p.ownerEdited, tn.n, tn.rel)
 		if err != nil {
 			p.logf("memory: reconcile: refining importance for %s failed (keeping first-pass value): %v", tn.n.ID, err)
 			continue

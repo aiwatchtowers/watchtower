@@ -242,6 +242,45 @@ func (v *Vault) OwnerEdited(rel string) (bool, error) {
 	return found, nil
 }
 
+// OwnerEditedFiles returns the set of vault-relative paths ever touched by a
+// memory(owner-edit) commit, across the FULL history — ONE walk, computing
+// the exact same "was this file ever owner-edited" fact OwnerEdited answers
+// per-call, but for every file at once. Reconcile's bulk pass memoizes
+// against this set (see index.go's reconcilePass.ownerEdited) instead of
+// paying OwnerEdited's per-file FileName-filtered log walk once per node,
+// now that computeNodeImportance runs on every write through ~16+ call
+// sites (Task 5b), not just the small bounded eviction-candidate set
+// OwnerEdited itself stays scoped for (whole-branch review follow-up, added
+// 2026-07-18, MEM-16). The vault history is linear (single author, no
+// merges — same invariant LogMemoryCommits relies on), so commit.Stats()'s
+// first-parent tree diff is exact, not an approximation.
+func (v *Vault) OwnerEditedFiles() (map[string]bool, error) {
+	iter, err := v.repo.Log(&git.LogOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("memory: owner-edited files log: %w", err)
+	}
+	defer iter.Close()
+
+	files := make(map[string]bool)
+	err = iter.ForEach(func(c *object.Commit) error {
+		if !strings.HasPrefix(c.Message, "memory(owner-edit)") {
+			return nil
+		}
+		stats, serr := c.Stats()
+		if serr != nil {
+			return serr
+		}
+		for _, fs := range stats {
+			files[fs.Name] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: owner-edited files walk: %w", err)
+	}
+	return files, nil
+}
+
 // MemoryCommit is one machine memory commit summarized for the weekly
 // reflection pass: the op parsed from its "memory(<op>)" subject, the summary
 // text, the node ids it touched (from the Nodes: line), and its author time.

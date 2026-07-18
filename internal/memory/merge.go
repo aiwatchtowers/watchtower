@@ -139,7 +139,7 @@ func upsertIndexNode(database *db.DB, v *Vault, n Node, indexedAt string) error 
 	if err != nil {
 		return err
 	}
-	importance, err := computeNodeImportance(database, v, n, rel)
+	importance, err := computeNodeImportance(database, v.OwnerEdited, n, rel)
 	if err != nil {
 		return fmt.Errorf("memory: computing importance for %s: %w", n.ID, err)
 	}

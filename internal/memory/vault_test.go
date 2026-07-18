@@ -389,3 +389,45 @@ func TestMemory03_OwnerEditsSeparateCommit(t *testing.T) {
 	assert.Equal(t, []string{"episodes/" + b.ID + ".md"}, commitFiles(t, machineCommit))
 	assert.NotEqual(t, ownerCommit.Hash, machineCommit.Hash)
 }
+
+// TestVaultOwnerEditedFilesAggregatesAcrossHistory: OwnerEditedFiles returns
+// every vault-relative path ever touched by a memory(owner-edit) commit,
+// across the WHOLE history in one walk — the set computeNodeImportance's
+// Reconcile-side callers memoize against instead of paying OwnerEdited's
+// per-file FileName-filtered log walk once per node on every write
+// (whole-branch review follow-up, added 2026-07-18, MEM-16). Machine
+// commits (seed/extract) never contribute; a second, later owner-edit of a
+// DIFFERENT file adds to the set rather than replacing it.
+func TestVaultOwnerEditedFilesAggregatesAcrossHistory(t *testing.T) {
+	v := newTestVault(t)
+
+	a := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5OF1", "entity", "Alpha")
+	b := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5OF2", "episode", "Beta")
+	_, err := v.WriteNodes([]Node{a, b}, CommitMsg{Op: "seed", Summary: "seed", Cause: "seed", NodeIDs: []string{a.ID, b.ID}})
+	require.NoError(t, err)
+
+	// Owner edits A only.
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "entities", a.ID+".md"),
+		append(a.Render(), []byte("\nhand edit one\n")...), 0o644))
+	made, err := v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	// A machine write in between — must not contribute to the set.
+	c := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5OF3", "episode", "Gamma")
+	_, err = v.WriteNodes([]Node{c}, CommitMsg{Op: "extract", Summary: "extract", Cause: "run:1", NodeIDs: []string{c.ID}})
+	require.NoError(t, err)
+
+	// A second, later owner edit of a DIFFERENT file (B).
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "episodes", b.ID+".md"),
+		append(b.Render(), []byte("\nhand edit two\n")...), 0o644))
+	made, err = v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	files, err := v.OwnerEditedFiles()
+	require.NoError(t, err)
+	assert.True(t, files["entities/"+a.ID+".md"], "A's owner edit is in the set")
+	assert.True(t, files["episodes/"+b.ID+".md"], "B's LATER owner edit is also in the set, not just the most recent one")
+	assert.False(t, files["episodes/"+c.ID+".md"], "a machine write must not appear in the owner-edited set")
+}
