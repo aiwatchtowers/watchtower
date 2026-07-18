@@ -1307,9 +1307,278 @@ EvictEpisodes is untouched and never reads the column."
 
 ---
 
+## Task 5b: Extend importance computation to `upsertIndexNode` (all non-Reconcile write paths)
+
+**Added mid-execution, 2026-07-18.** Task 5's implementer discovered (and correctly did not silently fix) a real gap: `internal/memory/merge.go`'s `upsertIndexNode` — a second, separate index-write helper called from ~15 places across the package (`aging.go`, `action_ingest.go`, `beliefs.go`, `calendar_ingest.go`, `dedupe.go`, `concepts.go`, `evict.go` ×2, `gmail_extract.go`, `ingest.go`, `merge.go` itself, `mirror_ingest.go`, `pipeline.go`, `reflect.go`, `rewrite.go`) whenever a node is written directly to the vault outside the batch `Reconcile`/`Rebuild` pass — never sets `ImportanceScore`, so it silently defaults to 0 and (via `UpsertMemoryNode`'s `ON CONFLICT DO UPDATE SET importance_score = excluded.importance_score`, added in Task 4) clobbers any previously-computed value. Owner decision (2026-07-18): fix this for real by extending importance computation to `upsertIndexNode` itself, rather than accepting staleness as a documented limitation or narrowly patching only `evict.go`'s two call sites.
+
+**Depends on:** Task 5 (needs `ComputeImportance`, `Node.ImportanceOverride`, `db.MemoryNodeRow.ImportanceScore`, and the reference logic in `index.go`'s `computeImportance`). **Blocks:** Task 6 (Task 6's final "full package, expect green" step depends on `TestEvictReindexEquivalence` passing again).
+
+**Files:**
+- Modify: `internal/memory/importance.go` (new shared function `computeNodeImportance`)
+- Modify: `internal/memory/index.go` — remove `(p *reconcilePass) computeImportance`, change `file()`'s call site to use the shared function
+- Modify: `internal/memory/merge.go` — `upsertIndexNode`'s signature gains a `*Vault` parameter, computes and sets `ImportanceScore`
+- Modify (one-line call-site update each, adding the already-in-scope vault variable as an argument): `internal/memory/aging.go:77`, `internal/memory/action_ingest.go:303`, `internal/memory/beliefs.go:210`, `internal/memory/calendar_ingest.go:268`, `internal/memory/dedupe.go:163`, `internal/memory/concepts.go:91`, `internal/memory/evict.go:201` and `:206`, `internal/memory/gmail_extract.go:331`, `internal/memory/ingest.go:166`, `internal/memory/merge.go:77` (inside `Merge`), `internal/memory/mirror_ingest.go:168`, `internal/memory/pipeline.go:1021`, `internal/memory/seed.go:135`, `internal/memory/reflect.go:190`, `internal/memory/rewrite.go:168`
+- Test: `internal/memory/merge_test.go` (new test for `upsertIndexNode` computing/preserving importance), `internal/memory/evict_test.go` (no code change — `TestEvictReindexEquivalence` must pass again as-is, this is the regression proof)
+
+**Interfaces:**
+- Consumes: `ComputeImportance`/`ImportanceInputs` (Task 1), `Node.ImportanceOverride` (Task 3), `db.MemoryNodeRow.ImportanceScore` (Task 4), `nodeRelPath(id string) (string, error)` (existing, `vault.go:320`), `database.CountMemoryLinksIn`/`v.OwnerEdited`/`database.LinkedEntityEngagement`/`hasSituationAlias` (existing, already used by Task 5's `reconcilePass.computeImportance`).
+- Produces: `func computeNodeImportance(database *db.DB, v *Vault, n Node, rel string) (float64, error)` — a package-level function consumed by both `index.go`'s `file()` and `merge.go`'s `upsertIndexNode`. `upsertIndexNode`'s new signature `func upsertIndexNode(database *db.DB, v *Vault, n Node, indexedAt string) error` is consumed by all 15 call sites listed above (this is the one breaking signature change in this task — every call site must be updated in the same commit or the package will not build).
+
+Current `upsertIndexNode` (`internal/memory/merge.go:137-151`):
+
+```go
+func upsertIndexNode(database *db.DB, n Node, indexedAt string) error {
+	rel, err := nodeRelPath(n.ID)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(n.Render())
+	row := db.MemoryNodeRow{
+		ID: n.ID, Type: n.Type, Tier: n.Tier, Status: n.Status, RedirectTo: n.RedirectTo,
+		Title: n.Title, Path: rel, ContentHash: hex.EncodeToString(sum[:]), IndexedAt: indexedAt,
+		Subject: n.Subject, Confidence: n.Confidence,
+	}
+	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, nil)...); err != nil {
+		return fmt.Errorf("memory: index %s: %w", n.ID, err)
+	}
+	return nil
+}
+```
+
+Current `reconcilePass.computeImportance` (`internal/memory/index.go:193-215`, the reference logic to extract):
+
+```go
+func (p *reconcilePass) computeImportance(n Node, rel string) (float64, error) {
+	if n.ImportanceOverride != nil {
+		return *n.ImportanceOverride, nil
+	}
+	linksIn, err := p.database.CountMemoryLinksIn(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	ownerTouched, err := p.v.OwnerEdited(rel)
+	if err != nil {
+		return 0, err
+	}
+	engaged, dismissed, err := p.database.LinkedEntityEngagement(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	return ComputeImportance(ImportanceInputs{
+		LinksIn:         linksIn,
+		SituationOrigin: hasSituationAlias(n.Aliases),
+		OwnerTouched:    ownerTouched,
+		Engagement:      engaged - dismissed,
+	}), nil
+}
+```
+
+- [ ] **Step 1: write the failing test** — add to `internal/memory/merge_test.go` (after the existing tests, matching the file's `package memory` / `newTestVault`/`newTestDB`/`writeNodes` idiom):
+
+```go
+// TestUpsertIndexNodeComputesImportance: upsertIndexNode (the non-Reconcile
+// index-write path used by eviction/dedupe/concepts/beliefs/aging/mirrors/
+// ingest/reflect/seed) must compute a real importance_score via the same
+// ComputeImportance logic Reconcile uses, not silently persist 0 (Slice A
+// follow-up, added 2026-07-18: upsertIndexNode previously clobbered any
+// prior importance_score to 0 via UpsertMemoryNode's unconditional
+// ON CONFLICT SET).
+func TestUpsertIndexNodeComputesImportance(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	linker := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5UI1", "entity", "Linker")
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5UI2", "entity", "Target")
+	linker.Body = "# Linker\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5UI2]] for background.\n"
+	writeNodes(t, v, linker, target)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	// target now has LinksIn == 1 in the index. Re-write it via
+	// upsertIndexNode directly (the non-Reconcile path) and confirm the
+	// persisted importance_score reflects that link, not a reset to 0.
+	require.NoError(t, upsertIndexNode(d, v, target, "2026-07-18T00:00:00Z"))
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	want := ComputeImportance(ImportanceInputs{LinksIn: 1})
+	assert.Equal(t, want, row.ImportanceScore, "upsertIndexNode must compute importance like Reconcile, not persist 0")
+}
+
+// TestUpsertIndexNodeImportanceOverrideWins: an ImportanceOverride short-
+// circuits upsertIndexNode's computation exactly as it does in Reconcile.
+func TestUpsertIndexNodeImportanceOverrideWins(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	override := 9.0
+	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5UI3", "entity", "Overridden")
+	n.ImportanceOverride = &override
+
+	require.NoError(t, upsertIndexNode(d, v, n, "2026-07-18T00:00:00Z"))
+
+	row, err := d.GetMemoryNode(n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 9.0, row.ImportanceScore)
+}
+```
+
+- [ ] **Step 2: run it — expect a build failure** (the two-argument `upsertIndexNode(d, v, target, ...)` call doesn't match the current three-argument signature):
+
+```
+$ go test ./internal/memory/ -run TestUpsertIndexNodeComputesImportance -v
+# watchtower/internal/memory [watchtower/internal/memory.test]
+./merge_test.go:XXX: too many arguments in call to upsertIndexNode
+FAIL	watchtower/internal/memory [build failed]
+```
+
+- [ ] **Step 3: add the shared function to `internal/memory/importance.go`** (append after `ComputeImportance`):
+
+```go
+// computeNodeImportance is the merged (owner-override-or-computed)
+// importance value for node n at vault-relative path rel: n's
+// ImportanceOverride if set, else ComputeImportance fed by live
+// links-in/situation-origin/owner-touch/engagement reads. Shared by
+// index.go's Reconcile/Rebuild path and merge.go's upsertIndexNode (every
+// non-Reconcile write path) so both persist a mutually consistent value for
+// the same file — MEM-16, Slice A follow-up (added 2026-07-18: upsertIndexNode
+// previously never set this field).
+func computeNodeImportance(database *db.DB, v *Vault, n Node, rel string) (float64, error) {
+	if n.ImportanceOverride != nil {
+		return *n.ImportanceOverride, nil
+	}
+	linksIn, err := database.CountMemoryLinksIn(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	ownerTouched, err := v.OwnerEdited(rel)
+	if err != nil {
+		return 0, err
+	}
+	engaged, dismissed, err := database.LinkedEntityEngagement(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	return ComputeImportance(ImportanceInputs{
+		LinksIn:         linksIn,
+		SituationOrigin: hasSituationAlias(n.Aliases),
+		OwnerTouched:    ownerTouched,
+		Engagement:      engaged - dismissed,
+	}), nil
+}
+```
+
+`importance.go` does not currently import `internal/db` — add `"watchtower/internal/db"` to its import block (check the existing import block first; `index.go` already imports it under the same path, use the identical import string).
+
+- [ ] **Step 4: remove `reconcilePass.computeImportance` from `index.go` and call the shared function instead.** Delete the method (`index.go:193-215` per the quoted block above). Change `file()`'s call site from:
+
+```go
+	importance, err := p.computeImportance(n, rel)
+```
+
+to:
+
+```go
+	importance, err := computeNodeImportance(p.database, p.v, n, rel)
+```
+
+(No other change to `file()` — the quarantine-on-error handling immediately below is untouched.)
+
+- [ ] **Step 5: update `upsertIndexNode` in `merge.go`:**
+
+```go
+func upsertIndexNode(database *db.DB, v *Vault, n Node, indexedAt string) error {
+	rel, err := nodeRelPath(n.ID)
+	if err != nil {
+		return err
+	}
+	importance, err := computeNodeImportance(database, v, n, rel)
+	if err != nil {
+		return fmt.Errorf("memory: computing importance for %s: %w", n.ID, err)
+	}
+	sum := sha256.Sum256(n.Render())
+	row := db.MemoryNodeRow{
+		ID: n.ID, Type: n.Type, Tier: n.Tier, Status: n.Status, RedirectTo: n.RedirectTo,
+		Title: n.Title, Path: rel, ContentHash: hex.EncodeToString(sum[:]), IndexedAt: indexedAt,
+		Subject: n.Subject, Confidence: n.Confidence, ImportanceScore: importance,
+	}
+	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, nil)...); err != nil {
+		return fmt.Errorf("memory: index %s: %w", n.ID, err)
+	}
+	return nil
+}
+```
+
+This is a deliberate behavior addition: an `upsertIndexNode` call can now fail for a NEW reason (an importance signal lookup error) in addition to its existing failure modes. Every one of the 15 callers already has a policy for handling an `upsertIndexNode` error (7 abort-and-propagate, 5 log-and-continue via `p.logf`/self-heal-next-Reconcile, 1 tail-call propagation in `dedupe.go`, `Merge` itself, and the 2 in `evict.go`) — this task does not change any caller's error-handling policy, only adds one more error source flowing through the same existing channel.
+
+- [ ] **Step 6: update all 15 call sites**, adding the vault variable already in scope at each (per the research: a bare `v` parameter at `aging.go:77`, `dedupe.go:163`, `concepts.go:91`, `evict.go:201`/`206`, `ingest.go:166`, `seed.go:135`, and `merge.go:77`; the `p.vault` struct field at `action_ingest.go:303`, `beliefs.go:210`, `calendar_ingest.go:268`, `gmail_extract.go:331`, `mirror_ingest.go:168`, `pipeline.go:1021`, `reflect.go:190`, `rewrite.go:168`). Example (`aging.go:77`):
+
+```go
+		if err := upsertIndexNode(database, v, n, nowStr); err != nil {
+```
+
+Example (`action_ingest.go:303`, a `Pipeline` method):
+
+```go
+			if ierr := upsertIndexNode(p.db, p.vault, n, now); ierr != nil {
+```
+
+Apply the equivalent one-argument insertion at every other listed call site — each is a single-line change (add `v,` or `p.vault,` as the second argument), no other logic in these functions changes.
+
+- [ ] **Step 7: run it — expect green:**
+
+```
+$ go test ./internal/memory/ -run 'TestUpsertIndexNodeComputesImportance|TestUpsertIndexNodeImportanceOverrideWins' -v
+=== RUN   TestUpsertIndexNodeComputesImportance
+--- PASS: TestUpsertIndexNodeComputesImportance (0.02s)
+=== RUN   TestUpsertIndexNodeImportanceOverrideWins
+--- PASS: TestUpsertIndexNodeImportanceOverrideWins (0.01s)
+PASS
+ok  	watchtower/internal/memory	0.3s
+```
+
+- [ ] **Step 8: confirm the regression is fixed — run the previously-failing guard test and the full package:**
+
+```
+$ go test ./internal/memory/ -run TestEvictReindexEquivalence -v
+=== RUN   TestEvictReindexEquivalence
+--- PASS: TestEvictReindexEquivalence (0.05s)
+PASS
+ok  	watchtower/internal/memory	0.2s
+
+$ go build ./... && go test -count=1 ./internal/memory/... -v 2>&1 | tail -10
+ok  	watchtower/internal/memory	9.4s
+```
+
+Expected: **zero** failures anywhere in the package — this is the load-bearing proof that extending `computeNodeImportance` to all 15 `upsertIndexNode` call sites actually closed the gap Task 5 surfaced, not just silenced one test.
+
+- [ ] **Step 9: broader blast-radius check** (every one of the 15 call sites lives in `internal/memory`, but confirm nothing outside the package calls `upsertIndexNode` directly — it is unexported — and that no other package's tests regressed):
+
+```
+$ go vet ./... && go build ./...
+$ go test ./internal/db/... ./internal/inbox/... ./internal/daemon/... 2>&1 | tail -10
+```
+
+- [ ] **Step 10: commit:**
+
+```
+$ git add internal/memory/importance.go internal/memory/index.go internal/memory/merge.go internal/memory/merge_test.go internal/memory/aging.go internal/memory/action_ingest.go internal/memory/beliefs.go internal/memory/calendar_ingest.go internal/memory/dedupe.go internal/memory/concepts.go internal/memory/evict.go internal/memory/gmail_extract.go internal/memory/ingest.go internal/memory/mirror_ingest.go internal/memory/pipeline.go internal/memory/seed.go internal/memory/reflect.go internal/memory/rewrite.go
+$ git commit -m "fix(memory): extend importance computation to upsertIndexNode, all non-Reconcile write paths (Slice A follow-up, MEM-16)
+
+Task 5 wired importance_score into Reconcile/Rebuild only. upsertIndexNode
+(merge.go) — the second index-write path used by eviction/dedupe/concepts/
+beliefs/aging/mirrors/gmail/calendar/action-ingest/seed/ingest/reflect/
+rewrite — never set the field, silently clobbering any prior value to 0 via
+UpsertMemoryNode's unconditional ON CONFLICT SET (added in Task 4). Extracted
+the shared computeNodeImportance from index.go's former reconcilePass method;
+upsertIndexNode now computes the same merged override-or-computed value.
+Fixes the TestEvictReindexEquivalence regression Task 5 surfaced (owner
+decision 2026-07-18: fix for real across all 15 call sites, not a narrow
+evict.go-only patch or a documented staleness limitation)."
+```
+
+---
+
 ## Task 6: Strengthen the MEM-02 guard + add override/quarantine regression tests
 
-**Depends on:** Task 5 (the behavior under test must already exist). **Blocks:** Task 7.
+**Depends on:** Task 5b (needs `TestEvictReindexEquivalence` passing again before this task's own "full package, expect green" step; also needs Task 5's behavior under test to already exist). **Blocks:** Task 7.
 
 **Files:**
 - Test only: `internal/memory/index_test.go` — modify `TestMemory02_ReindexEquivalence` (lines 352–393); add two new tests after `TestReconcileQuarantinesDuplicateAlias` (ends line 346), before `TestMemory02_ReindexEquivalence` (line 348)
