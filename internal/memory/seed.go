@@ -131,8 +131,9 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 		return 0, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
 	for _, n := range nodes {
-		if err := upsertIndexNode(database, v, n, now); err != nil {
+		if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
 			return 0, err
 		}
 	}

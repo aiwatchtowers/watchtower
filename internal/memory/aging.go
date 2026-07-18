@@ -73,8 +73,9 @@ func AgeEpisodes(v *Vault, database *db.DB, ageAfterDays int, now time.Time, log
 		return 0, err
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
 	for _, n := range nodes {
-		if err := upsertIndexNode(database, v, n, nowStr); err != nil {
+		if err := upsertIndexNode(database, mem.lookup, n, nowStr); err != nil {
 			return aged, err
 		}
 	}

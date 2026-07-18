@@ -164,8 +164,9 @@ func (p *Pipeline) commitMirrorNodes(runID int64, nodes []Node) error {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(p.vault)
 	for _, n := range nodes {
-		if err := upsertIndexNode(p.db, p.vault, n, now); err != nil {
+		if err := upsertIndexNode(p.db, mem.lookup, n, now); err != nil {
 			p.logf("memory: index %s after operational mirror: %v", n.ID, err)
 		}
 	}

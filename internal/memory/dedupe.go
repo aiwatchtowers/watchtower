@@ -52,6 +52,7 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 	if err != nil {
 		return 0, err
 	}
+	mem := newOwnerEditedMemo(v)
 
 	// Collect candidate episodes grouped by channel. ListMemoryNodes already
 	// orders by id, so within each channel the slice stays oldest-first.
@@ -99,7 +100,7 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 				// loser-only provenance refs into the winner BEFORE the merge (the
 				// tombstone stub Merge writes for the loser drops its body), so a
 				// partial-overlap merge never thins provenance (MEM-07).
-				if err := unionProvenance(v, database, eps[i].id, eps[j].id); err != nil {
+				if err := unionProvenance(v, database, mem.lookup, eps[i].id, eps[j].id); err != nil {
 					return merged, err
 				}
 				if err := Merge(v, database, eps[j].id, eps[i].id); err != nil {
@@ -124,7 +125,7 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 // a partial-overlap dedupe merge never loses a ref (MEM-07: provenance never
 // thins). Identical ref sets — the common retry-duplicate case — are a no-op:
 // the winner already holds every ref, so nothing is written or committed.
-func unionProvenance(v *Vault, database *db.DB, winnerID, loserID string) error {
+func unionProvenance(v *Vault, database *db.DB, ownerEdited func(rel string) (bool, error), winnerID, loserID string) error {
 	winner, err := v.ReadNode(winnerID)
 	if err != nil {
 		return err
@@ -160,7 +161,7 @@ func unionProvenance(v *Vault, database *db.DB, winnerID, loserID string) error 
 	if _, err := v.WriteNodes([]Node{winner}, msg); err != nil {
 		return err
 	}
-	return upsertIndexNode(database, v, winner, time.Now().UTC().Format(time.RFC3339))
+	return upsertIndexNode(database, ownerEdited, winner, time.Now().UTC().Format(time.RFC3339))
 }
 
 // epCandidate is one episode's dedupe key: its provenance ref set within a

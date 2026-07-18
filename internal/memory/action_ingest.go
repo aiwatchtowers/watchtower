@@ -299,8 +299,9 @@ func (p *Pipeline) ingestInteractions(floor, sfFloor int64) (staged *stagedChat,
 			return nil, 0, 0, floor, sfFloor, werr
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
+		mem := newOwnerEditedMemo(p.vault)
 		for _, n := range nodes {
-			if ierr := upsertIndexNode(p.db, p.vault, n, now); ierr != nil {
+			if ierr := upsertIndexNode(p.db, mem.lookup, n, now); ierr != nil {
 				p.logf("memory: interactions: index %s: %v", n.ID, ierr)
 			}
 		}

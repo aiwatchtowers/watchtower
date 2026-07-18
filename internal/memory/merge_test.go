@@ -208,7 +208,7 @@ func TestUpsertIndexNodeComputesImportance(t *testing.T) {
 	// target now has LinksIn == 1 in the index. Re-write it via
 	// upsertIndexNode directly (the non-Reconcile path) and confirm the
 	// persisted importance_score reflects that link, not a reset to 0.
-	require.NoError(t, upsertIndexNode(d, v, target, "2026-07-18T00:00:00Z"))
+	require.NoError(t, upsertIndexNode(d, v.OwnerEdited, target, "2026-07-18T00:00:00Z"))
 
 	row, err := d.GetMemoryNode(target.ID)
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestUpsertIndexNodeImportanceOverrideWins(t *testing.T) {
 	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5UI3", "entity", "Overridden")
 	n.ImportanceOverride = &override
 
-	require.NoError(t, upsertIndexNode(d, v, n, "2026-07-18T00:00:00Z"))
+	require.NoError(t, upsertIndexNode(d, v.OwnerEdited, n, "2026-07-18T00:00:00Z"))
 
 	row, err := d.GetMemoryNode(n.ID)
 	require.NoError(t, err)

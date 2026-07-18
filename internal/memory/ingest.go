@@ -162,8 +162,9 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 			return stats, err
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
+		mem := newOwnerEditedMemo(v)
 		for _, n := range toWrite {
-			if err := upsertIndexNode(database, v, n, now); err != nil {
+			if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
 				return stats, err
 			}
 		}

@@ -75,6 +75,7 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 		now:              time.Now().UTC().Format(time.RFC3339),
 		stats:            &stats,
 		priorLinkTargets: make(map[string]bool),
+		ownerMemo:        newOwnerEditedMemo(v),
 	}
 	for _, sub := range vaultSubdirs {
 		entries, err := os.ReadDir(filepath.Join(v.path, sub))
@@ -142,16 +143,12 @@ type reconcilePass struct {
 	// 2026-07-19, MEM-16 addendum).
 	priorLinkTargets map[string]bool
 
-	// ownerEditedFiles/ownerEditedErr/ownerEditedLoaded memoize
-	// v.OwnerEditedFiles() lazily: computed at most ONCE per Reconcile call,
-	// on the first node that actually needs the owner-touch signal (a fully
-	// unchanged pass — the common case — never pays for it at all), and
-	// reused by every subsequent computeNodeImportance call this pass
-	// instead of each paying its own full-history git-log walk (whole-branch
-	// review follow-up, added 2026-07-18, MEM-16).
-	ownerEditedFiles  map[string]bool
-	ownerEditedErr    error
-	ownerEditedLoaded bool
+	// ownerMemo lazily memoizes v.OwnerEditedFiles() (ownerEditedMemo,
+	// vault.go) — Reconcile's own instance of the same shared per-call
+	// memoization every genuine batch upsertIndexNode caller now uses
+	// (second whole-branch review follow-up, 2026-07-19, MEM-16 addendum:
+	// this used to be three ad hoc fields on reconcilePass alone).
+	ownerMemo *ownerEditedMemo
 }
 
 func (p *reconcilePass) quarantine(rel string, reason error) {
@@ -162,21 +159,10 @@ func (p *reconcilePass) quarantine(rel string, reason error) {
 
 // ownerEdited is reconcilePass's owner-touch signal, passed to
 // computeNodeImportance as its ownerEdited func(rel string) (bool, error)
-// parameter: a lazily-loaded memoization of v.OwnerEditedFiles(), computed
-// at most once per Reconcile call. A load failure is cached too, so a
-// broken repo fails every subsequent lookup the same way instead of
-// re-walking (each caller already handles the error via the existing
-// quarantine/log-and-continue paths — this only avoids repeating a failing
-// walk pointlessly).
+// parameter — a thin delegate to the shared ownerEditedMemo (vault.go),
+// scoped to this one Reconcile call exactly as before this refactor.
 func (p *reconcilePass) ownerEdited(rel string) (bool, error) {
-	if !p.ownerEditedLoaded {
-		p.ownerEditedFiles, p.ownerEditedErr = p.v.OwnerEditedFiles()
-		p.ownerEditedLoaded = true
-	}
-	if p.ownerEditedErr != nil {
-		return false, p.ownerEditedErr
-	}
-	return p.ownerEditedFiles[rel], nil
+	return p.ownerMemo.lookup(rel)
 }
 
 // file processes one directory entry: skip non-node files, hash, parse, and

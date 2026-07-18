@@ -431,3 +431,53 @@ func TestVaultOwnerEditedFilesAggregatesAcrossHistory(t *testing.T) {
 	assert.True(t, files["episodes/"+b.ID+".md"], "B's LATER owner edit is also in the set, not just the most recent one")
 	assert.False(t, files["episodes/"+c.ID+".md"], "a machine write must not appear in the owner-edited set")
 }
+
+// TestOwnerEditedMemoCachesAcrossLookups: ownerEditedMemo loads
+// OwnerEditedFiles() at most ONCE and reuses it for every subsequent lookup
+// in the same instance — proven by committing a NEW owner-edit AFTER the
+// memo's first lookup and showing a second lookup on the SAME memo instance
+// still does not see it (a fresh, uncached lookup against the vault would).
+// This is the shared helper every genuine batch upsertIndexNode caller uses
+// instead of reconcilePass's own ad hoc fields (second whole-branch review
+// follow-up, 2026-07-19, MEM-16 addendum).
+func TestOwnerEditedMemoCachesAcrossLookups(t *testing.T) {
+	v := newTestVault(t)
+
+	a := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5MO1", "entity", "Alpha")
+	b := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5MO2", "episode", "Beta")
+	_, err := v.WriteNodes([]Node{a, b}, CommitMsg{Op: "seed", Summary: "seed", Cause: "seed", NodeIDs: []string{a.ID, b.ID}})
+	require.NoError(t, err)
+
+	// Owner edits A only, BEFORE the memo is created.
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "entities", a.ID+".md"),
+		append(a.Render(), []byte("\nhand edit\n")...), 0o644))
+	made, err := v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	mem := newOwnerEditedMemo(v)
+	gotA, err := mem.lookup("entities/" + a.ID + ".md")
+	require.NoError(t, err)
+	assert.True(t, gotA, "A's owner edit predates the memo — must be seen on first lookup")
+	gotB, err := mem.lookup("episodes/" + b.ID + ".md")
+	require.NoError(t, err)
+	assert.False(t, gotB, "B has no owner edit yet")
+
+	// A SECOND owner edit, of B, AFTER the memo already loaded.
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "episodes", b.ID+".md"),
+		append(b.Render(), []byte("\nhand edit two\n")...), 0o644))
+	made, err = v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	gotB, err = mem.lookup("episodes/" + b.ID + ".md")
+	require.NoError(t, err)
+	assert.False(t, gotB, "the SAME memo instance must stay cached — a fresh lookup would see B's new owner edit, a memoized one must not")
+
+	// A brand-new memo over the SAME vault DOES see it — proving the miss
+	// above is memoization, not a bug in OwnerEditedFiles itself.
+	fresh := newOwnerEditedMemo(v)
+	gotB, err = fresh.lookup("episodes/" + b.ID + ".md")
+	require.NoError(t, err)
+	assert.True(t, gotB, "sanity: a FRESH memo over the same vault does see B's owner edit")
+}
