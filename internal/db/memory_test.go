@@ -331,6 +331,32 @@ func TestUpdateMemoryNodeImportanceScore(t *testing.T) {
 	}
 }
 
+// TestGetMemoryNodeBody: the new narrow FTS-body reader returns the exact
+// body last upserted, and sql.ErrNoRows for an id with no FTS row — the
+// contract memory's Reconcile (index.go) relies on to read a node's PRIOR
+// body BEFORE UpsertMemoryNode overwrites it (whole-branch review follow-up,
+// 2026-07-19, MEM-16 addendum — closing the link-removal asymmetry).
+func TestGetMemoryNodeBody(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_body_read", nil)
+	if err := db.UpsertMemoryNode(row, "# Body\n\nSee [[ent_other]].\n", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	body, err := db.GetMemoryNodeBody("ent_body_read")
+	if err != nil {
+		t.Fatalf("GetMemoryNodeBody: %v", err)
+	}
+	if body != "# Body\n\nSee [[ent_other]].\n" {
+		t.Errorf("GetMemoryNodeBody = %q, want the exact body last upserted", body)
+	}
+
+	if _, err := db.GetMemoryNodeBody("ent_does_not_exist"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetMemoryNodeBody for unknown id: err = %v, want sql.ErrNoRows", err)
+	}
+}
+
 // TestMemoryNodeSubjectConfidenceDefaults: non-belief nodes (and the memTestNode
 // helper's zero-value Subject/Confidence) persist as ""/0.
 func TestMemoryNodeSubjectConfidenceDefaults(t *testing.T) {

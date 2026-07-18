@@ -391,6 +391,24 @@ func (db *DB) UpdateMemoryNodeImportanceScore(id string, score float64) error {
 	return nil
 }
 
+// GetMemoryNodeBody returns the raw body last indexed for id from
+// memory_fts — the pre-edit body a caller must read BEFORE overwriting it via
+// UpsertMemoryNode, e.g. to diff a node's OLD outgoing links against its NEW
+// ones (internal/memory/index.go's Reconcile, MEM-16: closing the
+// link-removal asymmetry). Returns sql.ErrNoRows when the node has no FTS row
+// (never indexed, or already deleted) — the LookupMemoryAlias convention.
+func (db *DB) GetMemoryNodeBody(id string) (string, error) {
+	var body string
+	err := db.QueryRow(`SELECT body FROM memory_fts WHERE id = ?`, id).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting memory fts body for %s: %w", id, err)
+	}
+	return body, nil
+}
+
 // SearchMemoryFTS runs a full-text search over node titles and bodies,
 // excluding tombstones. The query is sanitized the same way as message search
 // (each term double-quoted) so user input cannot inject FTS5 operators.
