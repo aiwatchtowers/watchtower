@@ -236,7 +236,32 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 // A; only its importance may be transiently stale, which is an accepted
 // characteristic elsewhere in this design). Slice A follow-up, added
 // 2026-07-18, MEM-16.
+// refineImportance is Reconcile's phase B, run after the deletion loop (see
+// 5d-i): recompute importance for every file this pass successfully indexed
+// (phase A), now that the run's full link graph is populated and this run's
+// deletions have already happened — correcting phase A's scan-order-
+// dependent initial value. It then delta-refines every node a touched node's
+// body links to that WASN'T itself touched this run: a node's own file may
+// never change while its LinksIn keeps growing purely from OTHER nodes'
+// new links (e.g. a person entity linked from many new Slack-extracted
+// episodes over weeks) — CountMemoryLinksIn is this formula's dominant
+// signal, so without this delta pass such a node's importance_score would
+// stay frozen indefinitely (whole-branch review follow-up, added
+// 2026-07-18, MEM-16 — the Critical bug). Known residual asymmetry: a link
+// REMOVED from a touched node's edited body is not detected here (only the
+// new body's current links are read), so a node whose LinksIn just
+// decreased stays stale until its own file next changes or another touched
+// node happens to link to it — accepted, matching this design's existing
+// "eventually consistent" character. Any recompute error (either phase) is
+// logged and that node's prior importance_score is kept — not escalated to
+// an abort or a quarantine, the same policy this function already used for
+// its own phase-A-value errors.
 func (p *reconcilePass) refineImportance() error {
+	touchedIDs := make(map[string]bool, len(p.touched))
+	for _, tn := range p.touched {
+		touchedIDs[tn.n.ID] = true
+	}
+
 	for _, tn := range p.touched {
 		importance, err := computeNodeImportance(p.database, p.ownerEdited, tn.n, tn.rel)
 		if err != nil {
@@ -246,6 +271,53 @@ func (p *reconcilePass) refineImportance() error {
 		if err := p.database.UpdateMemoryNodeImportanceScore(tn.n.ID, importance); err != nil {
 			return fmt.Errorf("memory: reconcile: refining importance for %s: %w", tn.n.ID, err)
 		}
+	}
+
+	linkTargets := make(map[string]bool)
+	for _, tn := range p.touched {
+		for _, link := range tn.n.Links() {
+			if touchedIDs[link.ID] {
+				continue
+			}
+			linkTargets[link.ID] = true
+		}
+	}
+	for id := range linkTargets {
+		if err := p.refineLinkedNode(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refineLinkedNode recomputes and persists the importance of id — a node
+// some touched node's body links to, but which was not itself touched this
+// run (so file() never computed a value for it this pass). A dangling or
+// stale link (not a valid node id, or the node no longer exists on disk —
+// merge.go documents that incoming [[loser]] links are never rewritten
+// after a merge, so a tombstoned-but-still-present id is normal and simply
+// gets its tombstone body re-read here) or a signal-lookup error is logged
+// and skipped, keeping that node's prior importance_score untouched — the
+// same log-and-continue-keep-prior-value policy refineImportance uses for
+// its own errors above.
+func (p *reconcilePass) refineLinkedNode(id string) error {
+	rel, err := nodeRelPath(id)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (not a node id, keeping prior value): %v", id, err)
+		return nil
+	}
+	n, err := p.v.ReadNode(id)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (keeping prior value): %v", id, err)
+		return nil
+	}
+	importance, err := computeNodeImportance(p.database, p.ownerEdited, n, rel)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (keeping prior value): %v", id, err)
+		return nil
+	}
+	if err := p.database.UpdateMemoryNodeImportanceScore(id, importance); err != nil {
+		return fmt.Errorf("memory: reconcile: refining linked node %s: %w", id, err)
 	}
 	return nil
 }

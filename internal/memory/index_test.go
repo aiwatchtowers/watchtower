@@ -555,6 +555,47 @@ func TestReconcileImportanceRefinesAfterDeletion(t *testing.T) {
 		"the deleted linker must not be counted — refineImportance must run AFTER the deletion loop, matching a fresh Rebuild")
 }
 
+// TestReconcileImportanceRefinesUnchangedLinkedNode: a brand-new episode
+// links to an existing, otherwise-untouched entity — the entity's OWN file
+// never changes this pass (or ever again, in this test), so file()'s
+// content-hash gate skips it entirely and it never enters p.touched. Without
+// a delta-refine pass over touched nodes' outgoing links, the entity's
+// importance_score would stay frozen at its original value forever, even
+// though CountMemoryLinksIn — the formula's dominant signal — has grown
+// (whole-branch review follow-up, added 2026-07-18, MEM-16 — the Critical
+// bug: a node linked from many new episodes over weeks, none of which touch
+// its own file, never gets its importance_score refreshed).
+func TestReconcileImportanceRefinesUnchangedLinkedNode(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5DL1", "entity", "Target")
+	writeNodes(t, v, target)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Zero(t, baseline.ImportanceScore, "sanity: no links yet")
+
+	// A brand-new episode links to target — target's OWN file is untouched
+	// this pass (its content hash is unchanged, so file() never reparses it
+	// and it never enters p.touched).
+	linker := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DL2", "episode", "New Story")
+	linker.Body = "# New Story\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5DL1]] for background.\n"
+	writeNodes(t, v, linker)
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	require.Equal(t, Stats{Added: 1}, stats, "sanity: only the new episode is (re)indexed, target is not reparsed")
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	want := ComputeImportance(ImportanceInputs{LinksIn: 1})
+	assert.Equal(t, want, row.ImportanceScore,
+		"target's importance must be refreshed even though ITS OWN file never changed — the new episode's outgoing link is what changed target's LinksIn")
+	assert.Equal(t, baseline.ContentHash, row.ContentHash, "target's content/hash must be untouched — only its score changed")
+}
+
 // TestMemory02_ReindexEquivalence guards MEM-02: dropping all memory_* tables
 // and rebuilding from the vault reproduces the incrementally-maintained index.
 // memory_node_stats is excluded by design — access stats are runtime state,
