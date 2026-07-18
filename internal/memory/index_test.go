@@ -596,6 +596,75 @@ func TestReconcileImportanceRefinesUnchangedLinkedNode(t *testing.T) {
 	assert.Equal(t, baseline.ContentHash, row.ContentHash, "target's content/hash must be untouched — only its score changed")
 }
 
+// TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit: a touched node's body
+// EDIT that REMOVES a link must still cause the old link target's
+// importance_score to drop — closing the link-removal asymmetry 5d-iii's
+// version of refineImportance left open (only the NEW body's current links
+// were read there). Reconcile now also captures the PRIOR body's outgoing
+// links (read from memory_fts, before UpsertMemoryNode overwrites it) and
+// unions them into the same delta-refine candidate set — recomputation is
+// idempotent, so unioning in a link that's still present costs nothing extra
+// (second whole-branch review follow-up, 2026-07-19, MEM-16 addendum).
+func TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5RM1", "entity", "Target")
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5RM2", "Linker", target.ID)
+	writeNodes(t, v, target, linker)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, baseline.ImportanceScore, "sanity: linker gives target a link-in")
+
+	// Edit the linker's body to REMOVE its link to target — target's OWN
+	// file is untouched, so without reading the linker's PRIOR body this
+	// pass would never know to re-refine target.
+	linker.Body = "# Linker\n\nNo more link.\n"
+	writeNodes(t, v, linker)
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, Stats{Updated: 1}, stats, "sanity: only the linker is reparsed this pass")
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	assert.Zero(t, row.ImportanceScore,
+		"target's importance must drop once its only linker's body no longer links to it")
+}
+
+// TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion: deleting a node's
+// FILE removes its outgoing links too — the SECOND vector of the same
+// asymmetry (a node whose only linker's FILE disappeared entirely was also
+// never re-refined). Reconcile now captures the doomed node's body (from
+// memory_fts) BEFORE calling DeleteMemoryNode, unioning its outgoing links
+// into the same delta-refine candidate set (second whole-branch review
+// follow-up, 2026-07-19, MEM-16 addendum).
+func TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5RM3", "entity", "Target")
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5RM4", "Linker", target.ID)
+	writeNodes(t, v, target, linker)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, baseline.ImportanceScore, "sanity: linker gives target a link-in")
+
+	// Delete the linker's FILE entirely — target's own file is untouched.
+	require.NoError(t, os.Remove(filepath.Join(v.path, "entities", linker.ID+".md")))
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, Stats{Deleted: 1}, stats, "sanity: only the linker's file is gone, target is not reparsed")
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	assert.Zero(t, row.ImportanceScore,
+		"target's importance must drop once its only linker's FILE — and its outgoing links — are gone")
+}
+
 // TestMemory02_ReindexEquivalence guards MEM-02: dropping all memory_* tables
 // and rebuilding from the vault reproduces the incrementally-maintained index.
 // memory_node_stats is excluded by design — access stats are runtime state,

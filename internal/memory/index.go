@@ -67,13 +67,14 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 	}
 
 	pass := &reconcilePass{
-		v:        v,
-		database: database,
-		logf:     logf,
-		indexed:  indexed,
-		onDisk:   make(map[string]bool),
-		now:      time.Now().UTC().Format(time.RFC3339),
-		stats:    &stats,
+		v:                v,
+		database:         database,
+		logf:             logf,
+		indexed:          indexed,
+		onDisk:           make(map[string]bool),
+		now:              time.Now().UTC().Format(time.RFC3339),
+		stats:            &stats,
+		priorLinkTargets: make(map[string]bool),
 	}
 	for _, sub := range vaultSubdirs {
 		entries, err := os.ReadDir(filepath.Join(v.path, sub))
@@ -90,6 +91,19 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 	for _, row := range existing {
 		if pass.onDisk[row.ID] {
 			continue
+		}
+		// Capture this doomed node's OWN outgoing links before its row and
+		// FTS entry vanish below — its former link targets must still be
+		// delta-refined (the second vector of the same link-removal
+		// asymmetry file()'s edit case closes above). A read failure only
+		// narrows this pass's delta-refine set for this one deletion; the
+		// deletion itself is never blocked by it.
+		if oldBody, berr := database.GetMemoryNodeBody(row.ID); berr != nil {
+			logf("memory: reconcile: reading body for deleted node %s failed (link-removal delta-refine narrowed for this deletion): %v", row.ID, berr)
+		} else {
+			for _, link := range (Node{Body: oldBody}).Links() {
+				pass.priorLinkTargets[link.ID] = true
+			}
 		}
 		if err := database.DeleteMemoryNode(row.ID); err != nil {
 			return stats, fmt.Errorf("memory: reconcile: %w", err)
@@ -115,6 +129,18 @@ type reconcilePass struct {
 	now      string
 	stats    *Stats
 	touched  []touchedNode
+
+	// priorLinkTargets collects node ids a REMOVED link used to point at:
+	// from an edited touched node's PRIOR body (captured in file(), read
+	// from memory_fts before UpsertMemoryNode overwrites it) and from a
+	// deleted node's body (captured in Reconcile's deletion loop, read
+	// before DeleteMemoryNode drops it). Unioned into refineImportance's
+	// delta-refine candidate set alongside the NEW-body link targets 5d-iii
+	// already collects, so both a link ADDED and a link REMOVED cause the
+	// affected target to be recomputed — closing the asymmetry 5d-iii left
+	// open as a documented residual (second whole-branch review follow-up,
+	// 2026-07-19, MEM-16 addendum).
+	priorLinkTargets map[string]bool
 
 	// ownerEditedFiles/ownerEditedErr/ownerEditedLoaded memoize
 	// v.OwnerEditedFiles() lazily: computed at most ONCE per Reconcile call,
@@ -200,6 +226,24 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 		return nil
 	}
 
+	if wasIndexed {
+		// Capture the PRIOR body's outgoing links before UpsertMemoryNode
+		// (below) overwrites the FTS row — a link REMOVED by this edit must
+		// still cause its old target to be delta-refined. A read failure
+		// only narrows this pass's delta-refine candidate set for this one
+		// file; it does not quarantine the file or abort Reconcile (the
+		// file's own index write proceeds normally either way) — the same
+		// log-and-continue-keep-prior-value policy this package already
+		// applies to every other signal-lookup error.
+		if oldBody, berr := p.database.GetMemoryNodeBody(id); berr != nil {
+			p.logf("memory: reconcile: reading prior body for %s failed (link-removal delta-refine narrowed for this edit): %v", id, berr)
+		} else {
+			for _, link := range (Node{Body: oldBody}).Links() {
+				p.priorLinkTargets[link.ID] = true
+			}
+		}
+	}
+
 	row := db.MemoryNodeRow{
 		ID:              n.ID,
 		Type:            n.Type,
@@ -238,15 +282,18 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 // episodes over weeks) — CountMemoryLinksIn is this formula's dominant
 // signal, so without this delta pass such a node's importance_score would
 // stay frozen indefinitely (whole-branch review follow-up, added
-// 2026-07-18, MEM-16 — the Critical bug). Known residual asymmetry: a link
-// REMOVED from a touched node's edited body is not detected here (only the
-// new body's current links are read), so a node whose LinksIn just
-// decreased stays stale until its own file next changes or another touched
-// node happens to link to it — accepted, matching this design's existing
-// "eventually consistent" character. Any recompute error (either phase) is
-// logged and that node's prior importance_score is kept — not escalated to
-// an abort or a quarantine, the same policy this function already used for
-// its own phase-A-value errors.
+// 2026-07-18, MEM-16 — the Critical bug). Also delta-refines every node a
+// REMOVED link used to point at: file() captures an edited touched node's
+// PRIOR body's outgoing links (read from memory_fts before UpsertMemoryNode
+// overwrites it) and Reconcile's deletion loop captures a doomed node's own
+// outgoing links (read before DeleteMemoryNode drops it) — both unioned into
+// the same candidate set below, closing the asymmetry a prior version of
+// this pass left as a documented residual (second whole-branch review
+// follow-up, 2026-07-19, MEM-16 addendum). Still one hop only: a target's
+// OWN further link neighbors are never chased. Any recompute error (either
+// phase) is logged and that node's prior importance_score is kept — not
+// escalated to an abort or a quarantine, the same policy this function
+// already used for its own phase-A-value errors.
 func (p *reconcilePass) refineImportance() error {
 	touchedIDs := make(map[string]bool, len(p.touched))
 	for _, tn := range p.touched {
@@ -272,6 +319,18 @@ func (p *reconcilePass) refineImportance() error {
 			}
 			linkTargets[link.ID] = true
 		}
+	}
+	// Union in every id a REMOVED link (from an edit's prior body, or from a
+	// deleted node's body) used to point at — recomputation is idempotent,
+	// so a target already in linkTargets (a link that's still present) costs
+	// nothing extra to add again. Closes the asymmetry a link ADDITION alone
+	// left open (second whole-branch review follow-up, 2026-07-19, MEM-16
+	// addendum).
+	for id := range p.priorLinkTargets {
+		if touchedIDs[id] {
+			continue
+		}
+		linkTargets[id] = true
 	}
 	for id := range linkTargets {
 		if err := p.refineLinkedNode(id); err != nil {
