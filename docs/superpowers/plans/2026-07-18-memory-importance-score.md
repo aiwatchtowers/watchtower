@@ -38,34 +38,23 @@
 
 ---
 
-## Task 0: Branch precondition — Slice A depends on unmerged Phase 5 code
+## Task 0: Branch precondition — owner-approved exception, resolved 2026-07-18
 
 **Depends on:** nothing. **Blocks:** Tasks 1, 2, 3 (everything else).
 
 **Files:** none (git operations only).
 
-**Interfaces:** none — this task only decides which branch the rest of the plan commits to.
+**Interfaces:** none — this task only confirms which branch the rest of the plan commits to.
 
-Slice A's `computeImportance` (Task 5) calls `database.LinkedEntityEngagement` and reads `RetentionInputs`/`memory_engagement`-style engagement signals — all introduced in Phase 5 slice 1 (see CLAUDE.md: "Retention importance now consumes `memory_engagement` (`RetentionInputs.Engagement`)..."), which exists only on `feature/memory-phase5` (PR #40). The design spec's Rollout section calls for landing Slice A "as its own branch cut from `main` after PR #40 merges, not stacked on the still-open PR" — but `main` does not yet have `LinkedEntityEngagement`/`memory_engagement` to build against, so that is only possible once PR #40 actually merges.
+**Resolved.** Slice A's `computeImportance` (Task 5) calls `database.LinkedEntityEngagement` and reads `RetentionInputs`/`memory_engagement`-style engagement signals — all introduced in Phase 5 slice 1, which exists only on `feature/memory-phase5` (PR #40, still OPEN as of 2026-07-18). The design spec's Rollout section calls for Slice A to land on its own branch cut from `main` after PR #40 merges — but the owner explicitly decided **not to wait**: Slice A is implemented now, stacked on top of `feature/memory-phase5`, as a documented exception. Record this in the eventual PR description: *"Slice A lands stacked on feature/memory-phase5 rather than a fresh branch off main, per the owner's explicit 2026-07-18 direction — main doesn't yet have Phase 5 slice 1's `LinkedEntityEngagement`/`memory_engagement`, which this slice's computeImportance depends on."*
 
-- [ ] **Step 1: check PR #40's merge state before touching any other task:**
-
-```
-$ gh pr view 40 --json state,mergedAt --jq '.state, .mergedAt'
-```
-
-- [ ] **Step 2a: if `state` is `MERGED`** — branch from `main`:
+- [ ] **Step 1: confirm the working tree is on `feature/memory-phase5` before starting Task 1:**
 
 ```
-$ git fetch origin main
-$ git checkout -b feature/memory-importance-score origin/main
+$ git branch --show-current
 ```
 
-Proceed to Task 1.
-
-- [ ] **Step 2b: if `state` is still `OPEN`** — stop here and get an explicit decision from the project owner before proceeding. Two options, pick one deliberately (do not default silently):
-  1. Wait for PR #40 to merge, then run Step 2a.
-  2. Implement Slice A now, stacked on top of `feature/memory-phase5`, as a documented exception to the design spec's Rollout note — record in the eventual PR description *why* (Slice A landed before PR #40 merged, at the owner's explicit direction).
+Expected: `feature/memory-phase5`. If it's anything else, `git checkout feature/memory-phase5` first — do not branch off `main` or create a new branch for this slice.
 
 ## Task 1: Extract `ComputeImportance` from `RetentionScore`
 
