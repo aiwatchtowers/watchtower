@@ -2336,3 +2336,952 @@ $ git commit -m "chore(memory): gofmt cleanup for Slice A importance-score chang
 **Summary of new/changed files:**
 - New: `internal/memory/importance.go`, `internal/memory/importance_test.go`, `internal/db/migrations/00027_memory_importance_score.sql`
 - Modified: `internal/memory/evict.go`, `internal/memory/node.go`, `internal/memory/node_test.go`, `internal/memory/index.go`, `internal/memory/index_test.go`, `internal/memory/evict_test.go` (**not modified** — proof of byte-identical refactor), `internal/db/schema.sql`, `internal/db/testdata/schema_v73.golden` (regenerated), `internal/db/db_test.go`, `internal/db/memory.go`, `internal/db/memory_test.go`, `docs/inventory/memory.md`
+
+---
+
+## Task 5d: Whole-branch review fixes — refine-after-delete ordering, `OwnerEdited` memoization, delta-refine for untouched linked nodes
+
+**Added post-ship, 2026-07-18 (whole-branch code review).** Slice A (Tasks 1–8, including the 5b/5c gap-fixes) is already committed on `feature/memory-phase5`. A final whole-branch review of that already-shipped code found one Critical bug and two Important bugs, all in `internal/memory/index.go`/`importance.go`/`vault.go`/`merge.go`. Owner decision: fix all three properly now, as a fourth follow-up quantum under the same MEM-16 contract (the same pattern 5b/5c already established — a real gap found post-hoc, folded into MEM-16 rather than treated as a separate slice or a documented limitation).
+
+**The three bugs, read from the actual shipped code:**
+
+1. **(Critical) A node's `importance_score` never refreshes unless ITS OWN file changes, even though `CountMemoryLinksIn` — the formula's dominant signal — depends on OTHER nodes' bodies.** `index.go`'s `file()` (line 153) has `if wasIndexed && prev.ContentHash == hash { return nil }` — a file whose own content is unchanged is skipped entirely before `computeNodeImportance` is ever called, so it never enters `p.touched`, so `refineImportance`'s phase-B loop (which only iterates `p.touched`) never recomputes it either. A person entity linked from a dozen new Slack-extracted episodes over the following weeks — none of which touch the entity's own file — keeps whatever `importance_score` it had the day its file last changed, forever, even though its real importance (via incoming links) has clearly grown.
+2. **(Important) `refineImportance` (phase B) runs BEFORE the deletion loop in `Reconcile`, not after.** Today: the per-file walk runs, then `pass.refineImportance()`, then `for _, row := range existing { if !pass.onDisk[row.ID] { database.DeleteMemoryNode(row.ID) } }`. `CountMemoryLinksIn` reads live FTS/`memory_nodes` state, and a same-pass-deleted node's row/FTS entry is only removed by the LATER deletion loop — so if a file deleted this same `Reconcile` call links to another node that's also being refined this call, phase B counts a link that's about to vanish. A fresh `Rebuild` (the file is simply absent from disk) would never count it. This is a genuine incremental-vs-`Rebuild` divergence — a real MEM-02 violation for `importance_score` specifically, the same class of bug 5c already fixed for scan order, just on the other side of the same function.
+3. **(Important) `computeNodeImportance`'s `v.OwnerEdited(rel)` call is a per-file, filtered `git log` walk, and Task 5b made it reachable from ~16+ call sites on every write, not just the small bounded eviction-candidate set `OwnerEdited`'s own doc comment says it's cheap for.** `vault.go`'s `OwnerEdited` (lines 219–243) does `v.repo.Log(&git.LogOptions{FileName: &rel})` — one history walk per node, every time `Reconcile` or `upsertIndexNode` computes importance. Before Task 5b this was fine (eviction only calls it for a bounded set of stale-episode candidates); after Task 5b it now runs on every ordinary Slack/Gmail/Calendar extraction write, every belief revision, every aging pass, every mirror refresh — one full filtered log walk per node, per write, indefinitely.
+
+**Fix order (simplest first, most involved last):** 5d-i (bug 2, a pure reordering) → 5d-ii (bug 3, memoization) → 5d-iii (bug 1, the delta-refine pass, built on top of the now-reordered, now-memoized `refineImportance`). This is also dependency order: 5d-iii's new code lives inside the same `refineImportance` function 5d-i reorders and 5d-ii's new `computeNodeImportance` signature threads through, so each step's "current code" reflects the previous step's result, not the original Task-8 baseline.
+
+**Depends on:** Task 8 (the whole already-shipped Slice A + 5b/5c, on `feature/memory-phase5`). **Blocks:** nothing new in this plan (terminal follow-up) — but it supersedes Task 8's final verification; 5d-v below re-runs the full gate.
+
+**Global constraints carried forward, unchanged:** `EvictEpisodes`/`evict.go` is untouched by all three fixes (verified below — its own `v.OwnerEdited(rel)` call at `evict.go:125` is a separate, direct call that this task does not touch). Every already-approved test named in the prompt (`TestReconcileComputesImportanceScore`, `TestReconcileImportanceOverrideWins`, `TestReconcileImportanceQuarantineOnSignalError`, `TestReconcileImportanceOrderIndependent`, `TestMemory02_ReindexEquivalence`, `TestEvictReindexEquivalence`, `TestUpsertIndexNodeComputesImportance`, `TestUpsertIndexNodeImportanceOverrideWins`, `TestUpdateMemoryNodeImportanceScore`) must still pass unmodified — 5d-v's final run checks all nine by name. No new config gate, no retrieval/chat/MCP change.
+
+---
+
+### 5d-i: Move `refineImportance` after the deletion loop (bug 2)
+
+**Depends on:** Task 8. **Blocks:** 5d-ii, 5d-iii (both edit the same function/area next).
+
+**Files:**
+- Modify: `internal/memory/index.go` — `Reconcile` only (lines 90–102; `file()`/`refineImportance()` bodies untouched by this step)
+- Test: `internal/memory/index_test.go` — new test inserted after `TestReconcileImportanceQuarantineOnSignalError` (ends line 519), before `TestMemory02_ReindexEquivalence` (line 521)
+
+**Interfaces:** Consumes/produces nothing new — a pure statement-reordering fix, no signature changes.
+
+Current `Reconcile` (`index.go` lines 54–105, in full):
+
+```go
+func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	var stats Stats
+
+	existing, err := database.ListMemoryNodes()
+	if err != nil {
+		return stats, fmt.Errorf("memory: reconcile: %w", err)
+	}
+	indexed := make(map[string]db.MemoryNodeRow, len(existing))
+	for _, row := range existing {
+		indexed[row.ID] = row
+	}
+
+	pass := &reconcilePass{
+		v:        v,
+		database: database,
+		logf:     logf,
+		indexed:  indexed,
+		onDisk:   make(map[string]bool),
+		now:      time.Now().UTC().Format(time.RFC3339),
+		stats:    &stats,
+	}
+	for _, sub := range vaultSubdirs {
+		entries, err := os.ReadDir(filepath.Join(v.path, sub))
+		if err != nil {
+			return stats, fmt.Errorf("memory: reconcile: read %s: %w", sub, err)
+		}
+		for _, entry := range entries {
+			if err := pass.file(sub, entry); err != nil {
+				return stats, err
+			}
+		}
+	}
+
+	if err := pass.refineImportance(); err != nil {
+		return stats, err
+	}
+
+	for _, row := range existing {
+		if pass.onDisk[row.ID] {
+			continue
+		}
+		if err := database.DeleteMemoryNode(row.ID); err != nil {
+			return stats, fmt.Errorf("memory: reconcile: %w", err)
+		}
+		stats.Deleted++
+	}
+
+	return stats, nil
+}
+```
+
+- [ ] **Step 1: write the failing test** — insert into `internal/memory/index_test.go` after line 519 (`TestReconcileImportanceQuarantineOnSignalError`'s closing brace), before `TestMemory02_ReindexEquivalence`:
+
+```go
+// TestReconcileImportanceRefinesAfterDeletion: a same-pass file deletion of a
+// node's only linker must be reflected in the linked node's refined
+// importance_score — refineImportance must run AFTER the deletion loop, not
+// before, or it recomputes CountMemoryLinksIn while the about-to-be-deleted
+// linker's row/FTS entry is still present, diverging from what a fresh
+// Rebuild (which never sees the deleted file at all) would compute (whole-
+// branch review follow-up, added 2026-07-18, MEM-16).
+func TestReconcileImportanceRefinesAfterDeletion(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5DE1", "entity", "Target")
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5DE2", "Linker", target.ID)
+	writeNodes(t, v, target, linker)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, baseline.ImportanceScore, "sanity: linker gives target a link-in")
+
+	// In the SAME Reconcile call: delete the linker's file AND touch target
+	// (so it gets reparsed this pass, entering phase B's refinement).
+	require.NoError(t, os.Remove(filepath.Join(v.path, "entities", linker.ID+".md")))
+	target.Body = "# Target\n\nRevision one.\n"
+	writeNodes(t, v, target)
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Deleted, "the linker's file is gone")
+	assert.Equal(t, 1, stats.Updated, "target is reparsed this same pass")
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	assert.Zero(t, row.ImportanceScore,
+		"the deleted linker must not be counted — refineImportance must run AFTER the deletion loop, matching a fresh Rebuild")
+}
+```
+
+- [ ] **Step 2: run it — expect the assertion failure that proves the bug** (today's order still counts the about-to-be-deleted linker):
+
+```
+$ go test ./internal/memory/ -run TestReconcileImportanceRefinesAfterDeletion -v
+=== RUN   TestReconcileImportanceRefinesAfterDeletion
+    index_test.go:XXX:
+        	Error Trace:	.../index_test.go:XXX
+        	Error:      	Should be zero, but was 1
+        	Test:       	TestReconcileImportanceRefinesAfterDeletion
+        	Messages:   	the deleted linker must not be counted — refineImportance must run AFTER the deletion loop, matching a fresh Rebuild
+--- FAIL: TestReconcileImportanceRefinesAfterDeletion (0.02s)
+FAIL
+```
+
+- [ ] **Step 3: reorder `Reconcile`.** Move the `pass.refineImportance()` call to after the deletion loop:
+
+```go
+	for _, sub := range vaultSubdirs {
+		entries, err := os.ReadDir(filepath.Join(v.path, sub))
+		if err != nil {
+			return stats, fmt.Errorf("memory: reconcile: read %s: %w", sub, err)
+		}
+		for _, entry := range entries {
+			if err := pass.file(sub, entry); err != nil {
+				return stats, err
+			}
+		}
+	}
+
+	for _, row := range existing {
+		if pass.onDisk[row.ID] {
+			continue
+		}
+		if err := database.DeleteMemoryNode(row.ID); err != nil {
+			return stats, fmt.Errorf("memory: reconcile: %w", err)
+		}
+		stats.Deleted++
+	}
+
+	if err := pass.refineImportance(); err != nil {
+		return stats, err
+	}
+
+	return stats, nil
+}
+```
+
+(No other line in `Reconcile` changes; `file()` and `refineImportance()`'s bodies are untouched by this step.)
+
+- [ ] **Step 4: run it — expect green:**
+
+```
+$ go test ./internal/memory/ -run TestReconcileImportanceRefinesAfterDeletion -v
+=== RUN   TestReconcileImportanceRefinesAfterDeletion
+--- PASS: TestReconcileImportanceRefinesAfterDeletion (0.02s)
+PASS
+ok  	watchtower/internal/memory	0.2s
+```
+
+- [ ] **Step 5: confirm no regression in the sibling scan-order test and the reindex guards, then commit:**
+
+```
+$ go test ./internal/memory/ -run 'TestReconcileImportanceOrderIndependent|TestReconcileDeletesRemovedFile|TestMemory02_ReindexEquivalence|TestEvictReindexEquivalence' -v
+=== RUN   TestReconcileImportanceOrderIndependent
+--- PASS: TestReconcileImportanceOrderIndependent (0.02s)
+=== RUN   TestReconcileDeletesRemovedFile
+--- PASS: TestReconcileDeletesRemovedFile (0.01s)
+=== RUN   TestMemory02_ReindexEquivalence
+--- PASS: TestMemory02_ReindexEquivalence (0.03s)
+=== RUN   TestEvictReindexEquivalence
+--- PASS: TestEvictReindexEquivalence (0.05s)
+PASS
+ok  	watchtower/internal/memory	0.3s
+
+$ git add internal/memory/index.go internal/memory/index_test.go
+$ git commit -m "fix(memory): run Reconcile's importance refinement AFTER the deletion loop (whole-branch review, MEM-16)
+
+refineImportance ran before the same-pass deletion loop, so a file deleted
+this same Reconcile call could still be counted by CountMemoryLinksIn during
+phase B — a real incremental-vs-Rebuild divergence (a fresh Rebuild never
+sees the deleted file at all). Reordered: deletion loop now runs before
+refineImportance. Guarded by TestReconcileImportanceRefinesAfterDeletion."
+```
+
+---
+
+### 5d-ii: Memoize the owner-touch signal once per `Reconcile` call (bug 3)
+
+**Depends on:** 5d-i (edits the same `index.go` region right after it). **Blocks:** 5d-iii (its delta-refine helper calls `computeNodeImportance` with the new signature).
+
+**Files:**
+- Modify: `internal/memory/vault.go` — new method `OwnerEditedFiles` (inserted after `OwnerEdited`, i.e. after line 243)
+- Modify: `internal/memory/importance.go` — `computeNodeImportance`'s signature (lines 83–105)
+- Modify: `internal/memory/index.go` — `reconcilePass` struct (lines 107–118), new `ownerEdited` method, `file()`'s call site (line 167), `refineImportance()`'s call site (line 211)
+- Modify: `internal/memory/merge.go` — `upsertIndexNode`'s call site (line 142) — **its own signature is unchanged**, see the design note below
+- Test: `internal/memory/vault_test.go` — new test after `TestMemory03_OwnerEditsSeparateCommit` (ends line 391)
+
+**Interfaces:**
+- Consumes: `commit.Stats()` (go-git `object.Commit`, already used by this file's own `commitFiles` test helper at `vault_test.go:55-66` — same API, now used in production code, not just tests).
+- Produces: `func (v *Vault) OwnerEditedFiles() (map[string]bool, error)` (new, exported to match `OwnerEdited`'s convention). **Breaking change:** `computeNodeImportance`'s second parameter changes from `v *Vault` to `ownerEdited func(rel string) (bool, error)` — this function has exactly **three** call sites (verified: `grep -rn "computeNodeImportance(" internal/memory/` hits only `index.go:167`, `index.go:211`, `merge.go:142`), all updated by this step.
+
+**Design decision — why `upsertIndexNode`'s own signature does NOT change:** `upsertIndexNode` (`merge.go`) is the single-node write path reached from ~16 call sites across the package (Task 5b's audit). It has no batch to memoize over — each call is its own `Reconcile`-less write, often minutes or hours apart, so caching `OwnerEditedFiles()` across calls would risk serving a stale set to a later call in the same process lifetime (a new `memory(owner-edit)` commit could land between two `upsertIndexNode` calls). The cleanest fix is therefore NOT to thread a memoized cache into `upsertIndexNode` at all: it keeps calling the plain per-file `v.OwnerEdited` — which, as a **method value**, has exactly the type `computeNodeImportance` now expects (`func(string) (bool, error)`), so `merge.go`'s one-line change is `v.OwnerEdited` passed directly, no closure needed, no call to any of the other ~15 `upsertIndexNode` callers changes (their own signature is untouched). Only `Reconcile`'s **bulk** pass — which really does call `computeNodeImportance` for potentially dozens of nodes inside one call — gets the memoized path, via a new lazily-populated field on `reconcilePass`.
+
+**Why lazy, not eager:** the memoized set could be built once at the top of `Reconcile`, unconditionally. But the common case — a re-run over an unchanged vault — never calls `computeNodeImportance` at all (the hash-gate in `file()` skips before reaching it, and `refineImportance` only iterates nodes that were actually touched). Building the set eagerly would pay one full-history git walk on every `Reconcile` call, including every no-op one. Building it lazily — on the first node that actually needs the signal — means a no-op pass pays nothing, and a pass with real work pays the walk exactly once, reused by every subsequent node in the same call.
+
+Current `OwnerEdited` (`vault.go` lines 219–243, for context — **unchanged by this step**, `evict.go:125` keeps calling it directly):
+
+```go
+// OwnerEdited reports whether the file at rel (a vault-relative slash path) was
+// ever touched by a memory(owner-edit) commit — the owner-touch input to the
+// retention score. Cheap by construction: the log is filtered to commits that
+// changed this one path, and the walk stops at the first owner-edit. Called
+// only for eviction candidates (a bounded set), never for the whole vault.
+func (v *Vault) OwnerEdited(rel string) (bool, error) {
+	iter, err := v.repo.Log(&git.LogOptions{FileName: &rel})
+	if err != nil {
+		return false, fmt.Errorf("memory: owner-edit log for %s: %w", rel, err)
+	}
+	defer iter.Close()
+
+	found := false
+	err = iter.ForEach(func(c *object.Commit) error {
+		if strings.HasPrefix(c.Message, "memory(owner-edit)") {
+			found = true
+			return storer.ErrStop
+		}
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("memory: owner-edit walk for %s: %w", rel, err)
+	}
+	return found, nil
+}
+```
+
+Its doc comment's last sentence ("Called only for eviction candidates ... never for the whole vault") stopped being true the moment Task 5b wired `computeNodeImportance` into `upsertIndexNode`'s ~16 call sites — this step both fixes the cost problem for `Reconcile`'s bulk path and corrects that comment.
+
+Current `computeNodeImportance` (`importance.go` lines 83–105):
+
+```go
+func computeNodeImportance(database *db.DB, v *Vault, n Node, rel string) (float64, error) {
+	if n.ImportanceOverride != nil {
+		return *n.ImportanceOverride, nil
+	}
+	linksIn, err := database.CountMemoryLinksIn(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	ownerTouched, err := v.OwnerEdited(rel)
+	if err != nil {
+		return 0, err
+	}
+	engaged, dismissed, err := database.LinkedEntityEngagement(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	return ComputeImportance(ImportanceInputs{
+		LinksIn:         linksIn,
+		SituationOrigin: hasSituationAlias(n.Aliases),
+		OwnerTouched:    ownerTouched,
+		Engagement:      engaged - dismissed,
+	}), nil
+}
+```
+
+Current `reconcilePass` struct and `file()`/`refineImportance()` call sites (`index.go`, post-5d-i — unchanged by 5d-i, still exactly as shipped in Task 5c):
+
+```go
+type reconcilePass struct {
+	v        *Vault
+	database *db.DB
+	logf     func(string, ...any)
+	indexed  map[string]db.MemoryNodeRow
+	onDisk   map[string]bool
+	now      string
+	stats    *Stats
+	touched  []touchedNode
+}
+```
+
+```go
+	importance, err := computeNodeImportance(p.database, p.v, n, rel)
+```
+(`file()`, line 167)
+
+```go
+		importance, err := computeNodeImportance(p.database, p.v, tn.n, tn.rel)
+```
+(`refineImportance()`, line 211)
+
+Current `upsertIndexNode`'s call site (`merge.go` line 142, inside the function quoted in full at Task 5b — unchanged since):
+
+```go
+	importance, err := computeNodeImportance(database, v, n, rel)
+```
+
+- [ ] **Step 1: write the failing test** — append to `internal/memory/vault_test.go` after line 391 (`TestMemory03_OwnerEditsSeparateCommit`'s closing brace), reusing the file's own `commitFiles`/`vaultTestNode` idiom:
+
+```go
+// TestVaultOwnerEditedFilesAggregatesAcrossHistory: OwnerEditedFiles returns
+// every vault-relative path ever touched by a memory(owner-edit) commit,
+// across the WHOLE history in one walk — the set computeNodeImportance's
+// Reconcile-side callers memoize against instead of paying OwnerEdited's
+// per-file FileName-filtered log walk once per node on every write
+// (whole-branch review follow-up, added 2026-07-18, MEM-16). Machine
+// commits (seed/extract) never contribute; a second, later owner-edit of a
+// DIFFERENT file adds to the set rather than replacing it.
+func TestVaultOwnerEditedFilesAggregatesAcrossHistory(t *testing.T) {
+	v := newTestVault(t)
+
+	a := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5OF1", "entity", "Alpha")
+	b := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5OF2", "episode", "Beta")
+	_, err := v.WriteNodes([]Node{a, b}, CommitMsg{Op: "seed", Summary: "seed", Cause: "seed", NodeIDs: []string{a.ID, b.ID}})
+	require.NoError(t, err)
+
+	// Owner edits A only.
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "entities", a.ID+".md"),
+		append(a.Render(), []byte("\nhand edit one\n")...), 0o644))
+	made, err := v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	// A machine write in between — must not contribute to the set.
+	c := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5OF3", "episode", "Gamma")
+	_, err = v.WriteNodes([]Node{c}, CommitMsg{Op: "extract", Summary: "extract", Cause: "run:1", NodeIDs: []string{c.ID}})
+	require.NoError(t, err)
+
+	// A second, later owner edit of a DIFFERENT file (B).
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "episodes", b.ID+".md"),
+		append(b.Render(), []byte("\nhand edit two\n")...), 0o644))
+	made, err = v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	files, err := v.OwnerEditedFiles()
+	require.NoError(t, err)
+	assert.True(t, files["entities/"+a.ID+".md"], "A's owner edit is in the set")
+	assert.True(t, files["episodes/"+b.ID+".md"], "B's LATER owner edit is also in the set, not just the most recent one")
+	assert.False(t, files["episodes/"+c.ID+".md"], "a machine write must not appear in the owner-edited set")
+}
+```
+
+- [ ] **Step 2: run it — expect a build failure** (the method doesn't exist yet):
+
+```
+$ go test ./internal/memory/ -run TestVaultOwnerEditedFilesAggregatesAcrossHistory -v
+# watchtower/internal/memory [watchtower/internal/memory.test]
+./vault_test.go:XXX: v.OwnerEditedFiles undefined (type *Vault has no field or method OwnerEditedFiles)
+FAIL	watchtower/internal/memory [build failed]
+```
+
+- [ ] **Step 3: add `OwnerEditedFiles` to `vault.go`**, right after `OwnerEdited` (after line 243):
+
+```go
+// OwnerEditedFiles returns the set of vault-relative paths ever touched by a
+// memory(owner-edit) commit, across the FULL history — ONE walk, computing
+// the exact same "was this file ever owner-edited" fact OwnerEdited answers
+// per-call, but for every file at once. Reconcile's bulk pass memoizes
+// against this set (see index.go's reconcilePass.ownerEdited) instead of
+// paying OwnerEdited's per-file FileName-filtered log walk once per node,
+// now that computeNodeImportance runs on every write through ~16+ call
+// sites (Task 5b), not just the small bounded eviction-candidate set
+// OwnerEdited itself stays scoped for (whole-branch review follow-up, added
+// 2026-07-18, MEM-16). The vault history is linear (single author, no
+// merges — same invariant LogMemoryCommits relies on), so commit.Stats()'s
+// first-parent tree diff is exact, not an approximation.
+func (v *Vault) OwnerEditedFiles() (map[string]bool, error) {
+	iter, err := v.repo.Log(&git.LogOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("memory: owner-edited files log: %w", err)
+	}
+	defer iter.Close()
+
+	files := make(map[string]bool)
+	err = iter.ForEach(func(c *object.Commit) error {
+		if !strings.HasPrefix(c.Message, "memory(owner-edit)") {
+			return nil
+		}
+		stats, serr := c.Stats()
+		if serr != nil {
+			return serr
+		}
+		for _, fs := range stats {
+			files[fs.Name] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: owner-edited files walk: %w", err)
+	}
+	return files, nil
+}
+```
+
+- [ ] **Step 4: run it — expect green:**
+
+```
+$ go test ./internal/memory/ -run TestVaultOwnerEditedFilesAggregatesAcrossHistory -v
+=== RUN   TestVaultOwnerEditedFilesAggregatesAcrossHistory
+--- PASS: TestVaultOwnerEditedFilesAggregatesAcrossHistory (0.01s)
+PASS
+ok  	watchtower/internal/memory	0.2s
+```
+
+- [ ] **Step 5: change `computeNodeImportance`'s signature** in `importance.go`:
+
+```go
+// computeNodeImportance is the merged (owner-override-or-computed)
+// importance value for node n at vault-relative path rel: n's
+// ImportanceOverride if set, else ComputeImportance fed by live
+// links-in/situation-origin/owner-touch/engagement reads. ownerEdited
+// resolves the owner-touch signal for rel: Reconcile's bulk pass
+// (index.go's reconcilePass.ownerEdited) passes a lazily-memoized lookup
+// backed by ONE Vault.OwnerEditedFiles() call per Reconcile run, while
+// upsertIndexNode's single-node call sites (no batch to memoize over) pass
+// the plain per-file Vault.OwnerEdited method value directly (whole-branch
+// review follow-up, added 2026-07-18, MEM-16: a fresh v.OwnerEdited call per
+// node was an expensive per-file git-log walk, now paid on every write
+// through ~16+ call sites, not just the small bounded eviction-candidate
+// set OwnerEdited was originally scoped for). Shared by index.go's
+// Reconcile/Rebuild path and merge.go's upsertIndexNode (every non-Reconcile
+// write path) so both persist a mutually consistent value for the same file
+// — MEM-16, Slice A follow-up (added 2026-07-18: upsertIndexNode previously
+// never set this field).
+func computeNodeImportance(database *db.DB, ownerEdited func(rel string) (bool, error), n Node, rel string) (float64, error) {
+	if n.ImportanceOverride != nil {
+		return *n.ImportanceOverride, nil
+	}
+	linksIn, err := database.CountMemoryLinksIn(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	ownerTouched, err := ownerEdited(rel)
+	if err != nil {
+		return 0, err
+	}
+	engaged, dismissed, err := database.LinkedEntityEngagement(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	return ComputeImportance(ImportanceInputs{
+		LinksIn:         linksIn,
+		SituationOrigin: hasSituationAlias(n.Aliases),
+		OwnerTouched:    ownerTouched,
+		Engagement:      engaged - dismissed,
+	}), nil
+}
+```
+
+- [ ] **Step 6: update `index.go`.** Add three fields to `reconcilePass`:
+
+```go
+type reconcilePass struct {
+	v        *Vault
+	database *db.DB
+	logf     func(string, ...any)
+	indexed  map[string]db.MemoryNodeRow
+	onDisk   map[string]bool
+	now      string
+	stats    *Stats
+	touched  []touchedNode
+
+	// ownerEditedFiles/ownerEditedErr/ownerEditedLoaded memoize
+	// v.OwnerEditedFiles() lazily: computed at most ONCE per Reconcile call,
+	// on the first node that actually needs the owner-touch signal (a fully
+	// unchanged pass — the common case — never pays for it at all), and
+	// reused by every subsequent computeNodeImportance call this pass
+	// instead of each paying its own full-history git-log walk (whole-branch
+	// review follow-up, added 2026-07-18, MEM-16).
+	ownerEditedFiles  map[string]bool
+	ownerEditedErr    error
+	ownerEditedLoaded bool
+}
+```
+
+Add a new `ownerEdited` method right after `quarantine`:
+
+```go
+// ownerEdited is reconcilePass's owner-touch signal, passed to
+// computeNodeImportance as its ownerEdited func(rel string) (bool, error)
+// parameter: a lazily-loaded memoization of v.OwnerEditedFiles(), computed
+// at most once per Reconcile call. A load failure is cached too, so a
+// broken repo fails every subsequent lookup the same way instead of
+// re-walking (each caller already handles the error via the existing
+// quarantine/log-and-continue paths — this only avoids repeating a failing
+// walk pointlessly).
+func (p *reconcilePass) ownerEdited(rel string) (bool, error) {
+	if !p.ownerEditedLoaded {
+		p.ownerEditedFiles, p.ownerEditedErr = p.v.OwnerEditedFiles()
+		p.ownerEditedLoaded = true
+	}
+	if p.ownerEditedErr != nil {
+		return false, p.ownerEditedErr
+	}
+	return p.ownerEditedFiles[rel], nil
+}
+```
+
+Change `file()`'s call site (line 167) from `computeNodeImportance(p.database, p.v, n, rel)` to:
+
+```go
+	importance, err := computeNodeImportance(p.database, p.ownerEdited, n, rel)
+```
+
+Change `refineImportance()`'s call site (line 211) from `computeNodeImportance(p.database, p.v, tn.n, tn.rel)` to:
+
+```go
+		importance, err := computeNodeImportance(p.database, p.ownerEdited, tn.n, tn.rel)
+```
+
+(`Reconcile` itself needs no change for this step — `pass := &reconcilePass{...}` already omits the three new fields, which zero-initialize correctly, i.e. `ownerEditedLoaded: false`.)
+
+- [ ] **Step 7: update `merge.go`'s `upsertIndexNode`** — change line 142 from `computeNodeImportance(database, v, n, rel)` to:
+
+```go
+	importance, err := computeNodeImportance(database, v.OwnerEdited, n, rel)
+```
+
+(`v.OwnerEdited` as a bare method value has exactly the type `func(string) (bool, error)` `computeNodeImportance` now expects — no closure needed. `upsertIndexNode`'s own signature, and therefore all ~16 of its call sites from Task 5b, are untouched.)
+
+- [ ] **Step 8: run the full package — expect zero regressions**, in particular the tests that exercise the owner-touch signal through both paths:
+
+```
+$ go build ./... && go test -count=1 ./internal/memory/... -run 'TestReconcileComputesImportanceScore|TestEvictOwnerTouchedKept|TestUpsertIndexNodeComputesImportance|TestUpsertIndexNodeImportanceOverrideWins|TestVaultOwnerEditedFilesAggregatesAcrossHistory' -v
+=== RUN   TestReconcileComputesImportanceScore
+--- PASS: TestReconcileComputesImportanceScore (0.02s)
+=== RUN   TestEvictOwnerTouchedKept
+--- PASS: TestEvictOwnerTouchedKept (0.02s)
+=== RUN   TestUpsertIndexNodeComputesImportance
+--- PASS: TestUpsertIndexNodeComputesImportance (0.02s)
+=== RUN   TestUpsertIndexNodeImportanceOverrideWins
+--- PASS: TestUpsertIndexNodeImportanceOverrideWins (0.01s)
+=== RUN   TestVaultOwnerEditedFilesAggregatesAcrossHistory
+--- PASS: TestVaultOwnerEditedFilesAggregatesAcrossHistory (0.01s)
+PASS
+ok  	watchtower/internal/memory	0.3s
+
+$ go test -count=1 ./internal/memory/... 2>&1 | tail -5
+ok  	watchtower/internal/memory	1.4s
+```
+
+`TestEvictOwnerTouchedKept` (`evict_test.go`) is the proof `evict.go` is untouched: it calls `v.OwnerEdited(rel)` directly (not through `computeNodeImportance`) and still passes unchanged.
+
+- [ ] **Step 9: commit:**
+
+```
+$ git add internal/memory/vault.go internal/memory/importance.go internal/memory/index.go internal/memory/merge.go internal/memory/vault_test.go
+$ git commit -m "perf(memory): memoize the owner-touch signal once per Reconcile call (whole-branch review, MEM-16)
+
+computeNodeImportance's v.OwnerEdited(rel) call is a per-file, FileName-
+filtered git-log walk. Task 5b made it reachable from ~16+ upsertIndexNode
+call sites on every ordinary write, not just the small bounded eviction-
+candidate set OwnerEdited itself is documented as cheap for. New
+Vault.OwnerEditedFiles() does ONE full-history walk, computing the whole
+owner-edited path set at once; Reconcile's bulk pass (reconcilePass.ownerEdited)
+memoizes it lazily, on first need, so an unchanged vault pays nothing extra.
+upsertIndexNode's single-node call sites are unaffected: they pass
+v.OwnerEdited itself (a method value, no closure needed) since there is no
+batch to memoize over — its own signature, and its ~16 callers, are
+untouched. Guarded by TestVaultOwnerEditedFilesAggregatesAcrossHistory."
+```
+
+---
+
+### 5d-iii: Delta-refine every touched node's outgoing link targets (bug 1, Critical)
+
+**Depends on:** 5d-ii (needs the memoized `p.ownerEdited` and the new `computeNodeImportance` signature). **Blocks:** 5d-iv (the doc update names this fix), 5d-v.
+
+**Files:**
+- Modify: `internal/memory/index.go` — `refineImportance()` (extended) and a new `refineLinkedNode` method
+- Test: `internal/memory/index_test.go` — new test inserted immediately after 5d-i's `TestReconcileImportanceRefinesAfterDeletion`, before `TestMemory02_ReindexEquivalence`
+
+**Interfaces:**
+- Consumes: `Node.Links() []Link` (existing, `node.go:233-239` — `Link{ID, Label}` parsed from `[[id]]`/`[[id|label]]` wiki-links via `wikiLinkRe`, `node.go:93`), `nodeRelPath(id string) (string, error)` (existing, `vault.go:320`), `v.ReadNode(id string) (Node, error)` (existing, `vault.go:330`).
+- Produces: nothing new exported — `refineLinkedNode` is a private `reconcilePass` method, consumed only by `refineImportance` in the same file.
+
+**Why `Node.Links()` is the right extraction to reuse, and why it stays consistent with what `CountMemoryLinksIn` counts:** `db/memory.go`'s `CountMemoryLinksIn` (lines 963–979) tests `instr(f.body, '[[' || ?) > 0` — a raw substring match on `'[[' + id`, which recognizes `[[id]]`, `[[id|label]]`, and (as a known, pre-existing imprecision unrelated to this fix) any longer id sharing that prefix. `Node.Links()` parses the SAME `[[id]]`/`[[id|label]]` syntax via `wikiLinkRe` and returns the exact id token between the brackets and the optional `|`. Every id `Links()` extracts is therefore also a substring match `CountMemoryLinksIn` would recognize (a precise parse is always a subset of a substring test) — so using `Links()` to decide WHICH nodes to refine never disagrees with what `CountMemoryLinksIn` itself would go on to count for them.
+
+**Scope note — a known, accepted residual asymmetry:** this fix reads a touched node's NEW (post-edit) body only. If an edit REMOVES a link (rather than adding one), the node that link used to point at is not refined in the same pass — its `LinksIn` decrease is picked up only the next time ITS OWN file changes, or the next time some other touched node happens to link to it. This mirrors the bug being fixed in miniature: the fix corrects the "never refreshes upward" case exactly as scoped; a "stays stale downward after a link removal" case is not eliminated, only narrowed. Extending the delta-refine to cover removals would require diffing each touched node's OLD body (available in `memory_fts` immediately before its `UpsertMemoryNode` overwrite) against its new one inside `file()` itself — a materially larger change to phase A, not requested and not undertaken here. Call this out explicitly rather than silently accepting or silently over-scoping.
+
+Current `refineImportance` (`index.go`, post-5d-ii — the version 5d-ii's Step 6 produced):
+
+```go
+func (p *reconcilePass) refineImportance() error {
+	for _, tn := range p.touched {
+		importance, err := computeNodeImportance(p.database, p.ownerEdited, tn.n, tn.rel)
+		if err != nil {
+			p.logf("memory: reconcile: refining importance for %s failed (keeping first-pass value): %v", tn.n.ID, err)
+			continue
+		}
+		if err := p.database.UpdateMemoryNodeImportanceScore(tn.n.ID, importance); err != nil {
+			return fmt.Errorf("memory: reconcile: refining importance for %s: %w", tn.n.ID, err)
+		}
+	}
+	return nil
+}
+```
+
+- [ ] **Step 1: write the failing test** — insert into `internal/memory/index_test.go` immediately after 5d-i's `TestReconcileImportanceRefinesAfterDeletion`, before `TestMemory02_ReindexEquivalence`:
+
+```go
+// TestReconcileImportanceRefinesUnchangedLinkedNode: a brand-new episode
+// links to an existing, otherwise-untouched entity — the entity's OWN file
+// never changes this pass (or ever again, in this test), so file()'s
+// content-hash gate skips it entirely and it never enters p.touched. Without
+// a delta-refine pass over touched nodes' outgoing links, the entity's
+// importance_score would stay frozen at its original value forever, even
+// though CountMemoryLinksIn — the formula's dominant signal — has grown
+// (whole-branch review follow-up, added 2026-07-18, MEM-16 — the Critical
+// bug: a node linked from many new episodes over weeks, none of which touch
+// its own file, never gets its importance_score refreshed).
+func TestReconcileImportanceRefinesUnchangedLinkedNode(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5DL1", "entity", "Target")
+	writeNodes(t, v, target)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Zero(t, baseline.ImportanceScore, "sanity: no links yet")
+
+	// A brand-new episode links to target — target's OWN file is untouched
+	// this pass (its content hash is unchanged, so file() never reparses it
+	// and it never enters p.touched).
+	linker := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DL2", "episode", "New Story")
+	linker.Body = "# New Story\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5DL1]] for background.\n"
+	writeNodes(t, v, linker)
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	require.Equal(t, Stats{Added: 1}, stats, "sanity: only the new episode is (re)indexed, target is not reparsed")
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	want := ComputeImportance(ImportanceInputs{LinksIn: 1})
+	assert.Equal(t, want, row.ImportanceScore,
+		"target's importance must be refreshed even though ITS OWN file never changed — the new episode's outgoing link is what changed target's LinksIn")
+	assert.Equal(t, baseline.ContentHash, row.ContentHash, "target's content/hash must be untouched — only its score changed")
+}
+```
+
+- [ ] **Step 2: run it — expect the assertion failure that proves the bug:**
+
+```
+$ go test ./internal/memory/ -run TestReconcileImportanceRefinesUnchangedLinkedNode -v
+=== RUN   TestReconcileImportanceRefinesUnchangedLinkedNode
+    index_test.go:XXX:
+        	Error Trace:	.../index_test.go:XXX
+        	Error:      	Not equal:
+        	            	expected: 1
+        	            	actual  : 0
+        	Test:       	TestReconcileImportanceRefinesUnchangedLinkedNode
+        	Messages:   	target's importance must be refreshed even though ITS OWN file never changed — the new episode's outgoing link is what changed target's LinksIn
+--- FAIL: TestReconcileImportanceRefinesUnchangedLinkedNode (0.02s)
+FAIL
+```
+
+- [ ] **Step 3: extend `refineImportance` and add `refineLinkedNode`** in `index.go`:
+
+```go
+// refineImportance is Reconcile's phase B, run after the deletion loop (see
+// 5d-i): recompute importance for every file this pass successfully indexed
+// (phase A), now that the run's full link graph is populated and this run's
+// deletions have already happened — correcting phase A's scan-order-
+// dependent initial value. It then delta-refines every node a touched node's
+// body links to that WASN'T itself touched this run: a node's own file may
+// never change while its LinksIn keeps growing purely from OTHER nodes'
+// new links (e.g. a person entity linked from many new Slack-extracted
+// episodes over weeks) — CountMemoryLinksIn is this formula's dominant
+// signal, so without this delta pass such a node's importance_score would
+// stay frozen indefinitely (whole-branch review follow-up, added
+// 2026-07-18, MEM-16 — the Critical bug). Known residual asymmetry: a link
+// REMOVED from a touched node's edited body is not detected here (only the
+// new body's current links are read), so a node whose LinksIn just
+// decreased stays stale until its own file next changes or another touched
+// node happens to link to it — accepted, matching this design's existing
+// "eventually consistent" character. Any recompute error (either phase) is
+// logged and that node's prior importance_score is kept — not escalated to
+// an abort or a quarantine, the same policy this function already used for
+// its own phase-A-value errors.
+func (p *reconcilePass) refineImportance() error {
+	touchedIDs := make(map[string]bool, len(p.touched))
+	for _, tn := range p.touched {
+		touchedIDs[tn.n.ID] = true
+	}
+
+	for _, tn := range p.touched {
+		importance, err := computeNodeImportance(p.database, p.ownerEdited, tn.n, tn.rel)
+		if err != nil {
+			p.logf("memory: reconcile: refining importance for %s failed (keeping first-pass value): %v", tn.n.ID, err)
+			continue
+		}
+		if err := p.database.UpdateMemoryNodeImportanceScore(tn.n.ID, importance); err != nil {
+			return fmt.Errorf("memory: reconcile: refining importance for %s: %w", tn.n.ID, err)
+		}
+	}
+
+	linkTargets := make(map[string]bool)
+	for _, tn := range p.touched {
+		for _, link := range tn.n.Links() {
+			if touchedIDs[link.ID] {
+				continue
+			}
+			linkTargets[link.ID] = true
+		}
+	}
+	for id := range linkTargets {
+		if err := p.refineLinkedNode(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refineLinkedNode recomputes and persists the importance of id — a node
+// some touched node's body links to, but which was not itself touched this
+// run (so file() never computed a value for it this pass). A dangling or
+// stale link (not a valid node id, or the node no longer exists on disk —
+// merge.go documents that incoming [[loser]] links are never rewritten
+// after a merge, so a tombstoned-but-still-present id is normal and simply
+// gets its tombstone body re-read here) or a signal-lookup error is logged
+// and skipped, keeping that node's prior importance_score untouched — the
+// same log-and-continue-keep-prior-value policy refineImportance uses for
+// its own errors above.
+func (p *reconcilePass) refineLinkedNode(id string) error {
+	rel, err := nodeRelPath(id)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (not a node id, keeping prior value): %v", id, err)
+		return nil
+	}
+	n, err := p.v.ReadNode(id)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (keeping prior value): %v", id, err)
+		return nil
+	}
+	importance, err := computeNodeImportance(p.database, p.ownerEdited, n, rel)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (keeping prior value): %v", id, err)
+		return nil
+	}
+	if err := p.database.UpdateMemoryNodeImportanceScore(id, importance); err != nil {
+		return fmt.Errorf("memory: reconcile: refining linked node %s: %w", id, err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: run it — expect green:**
+
+```
+$ go test ./internal/memory/ -run TestReconcileImportanceRefinesUnchangedLinkedNode -v
+=== RUN   TestReconcileImportanceRefinesUnchangedLinkedNode
+--- PASS: TestReconcileImportanceRefinesUnchangedLinkedNode (0.02s)
+PASS
+ok  	watchtower/internal/memory	0.2s
+```
+
+- [ ] **Step 5: full package + db, verbose — confirm all nine previously-named guard tests plus every new test from 5d-i/ii/iii are green, zero regressions:**
+
+```
+$ go build ./... && go test -count=1 ./internal/memory/... ./internal/db/... -v 2>&1 | tail -60
+--- PASS: TestReconcileComputesImportanceScore (0.02s)
+--- PASS: TestReconcileImportanceOverrideWins (0.01s)
+--- PASS: TestReconcileImportanceQuarantineOnSignalError (0.03s)
+--- PASS: TestReconcileImportanceOrderIndependent (0.02s)
+--- PASS: TestMemory02_ReindexEquivalence (0.03s)
+--- PASS: TestEvictReindexEquivalence (0.05s)
+--- PASS: TestUpsertIndexNodeComputesImportance (0.02s)
+--- PASS: TestUpsertIndexNodeImportanceOverrideWins (0.01s)
+--- PASS: TestUpdateMemoryNodeImportanceScore (0.01s)
+--- PASS: TestReconcileImportanceRefinesAfterDeletion (0.02s)
+--- PASS: TestVaultOwnerEditedFilesAggregatesAcrossHistory (0.01s)
+--- PASS: TestReconcileImportanceRefinesUnchangedLinkedNode (0.02s)
+PASS
+ok  	watchtower/internal/memory	1.5s
+ok  	watchtower/internal/db	0.6s
+```
+
+- [ ] **Step 6: commit:**
+
+```
+$ git add internal/memory/index.go internal/memory/index_test.go
+$ git commit -m "fix(memory): delta-refine touched nodes' outgoing link targets in Reconcile (whole-branch review, MEM-16 Critical)
+
+A node whose OWN file never changes never re-enters p.touched, so its
+importance_score was frozen at whatever it was the last time its file
+changed — even though CountMemoryLinksIn (the formula's dominant signal)
+grows purely from OTHER nodes' new outgoing links. refineImportance now
+also recomputes importance for every distinct node a touched node's body
+links to (via Node.Links()) that wasn't itself touched this run, via the
+same narrow UpdateMemoryNodeImportanceScore update. One hop only, by
+design: a link REMOVED from an edited body is a known, accepted residual
+gap (not detected until the target's own file next changes). Guarded by
+TestReconcileImportanceRefinesUnchangedLinkedNode."
+```
+
+---
+
+### 5d-iv: MEM-16 inventory addendum
+
+**Depends on:** 5d-i, 5d-ii, 5d-iii (needs their final test names). **Blocks:** 5d-v.
+
+**Files:**
+- Modify: `docs/inventory/memory.md` — extend the existing MEM-16 section's Observable/Why-locked/Test-guards (lines 253–272) and add a new changelog entry above the existing 2026-07-18 entry (before line 318)
+
+This task is documentation-only, extending the SAME MEM-16 contract 5b/5c already extended once — not a new contract number, matching the established pattern.
+
+- [ ] **Step 1: extend the Observable line.** Current (line 257):
+
+```
+**Observable:** `memory_nodes.importance_score` is a periodically-refreshed snapshot (via `Reconcile`/`Rebuild`, and via `merge.go`'s `upsertIndexNode` on the second, non-Reconcile write path) of `ComputeImportance`'s output-or-owner-override, used by future retrieval ranking. It is distinct from `evict.go`'s `RetentionScore`, which always recomputes importance live per eviction candidate and never reads the persisted column. The two must not be collapsed into one without owner review — they answer different questions ("is this worth surfacing now" vs "is this worth compressing").
+```
+
+Append one sentence at the end:
+
+```
+A whole-branch review after this contract first shipped found and fixed three more gaps, folded into this same contract rather than a new one: `Reconcile`'s importance refinement now runs strictly after that call's deletion loop (a same-pass-deleted linker was otherwise still counted); the owner-touch git-log signal is now memoized once per `Reconcile` call instead of walked fresh per node; and a node whose own file never changes now still gets its `importance_score` refreshed when some OTHER touched node's body newly links to it.
+```
+
+- [ ] **Step 2: extend the Why-locked paragraph.** Append at the end of the existing paragraph (line 259):
+
+```
+A second, later whole-branch review (2026-07-18) found three more real gaps in the already-shipped code, none caught by the original design or the 5b/5c fixes: (1) `Reconcile`'s phase-B refinement ran BEFORE that same call's deletion loop, so a node deleted this same pass could still be counted by `CountMemoryLinksIn` while its importance was refined — a fresh `Rebuild` would never count it, a real incremental-vs-`Rebuild` divergence; fixed by reordering the two. (2) `computeNodeImportance`'s owner-touch signal (`Vault.OwnerEdited`) is a per-file, `FileName`-filtered git-log walk — cheap for eviction's small bounded candidate set, but Task 5b made it run on every ordinary write through `upsertIndexNode`'s ~16 call sites; fixed with a new `Vault.OwnerEditedFiles()` (one full-history walk returning every owner-edited path at once) that `Reconcile`'s bulk pass memoizes lazily (`reconcilePass.ownerEdited`), while `upsertIndexNode`'s single-node call sites keep calling `Vault.OwnerEdited` directly (a method value, no cache — there is no batch to memoize over). (3) The Critical gap: a node whose own file never changes never re-enters `p.touched`, so its `importance_score` was frozen indefinitely even as `CountMemoryLinksIn` — the formula's dominant signal — grew from OTHER nodes linking to it; fixed by delta-refining, once per `Reconcile` call, every distinct outgoing-link target (`Node.Links()`) of every touched node that wasn't itself touched this run — one hop only, with a documented residual asymmetry for link REMOVALS (not detected until the target's own file next changes).
+```
+
+- [ ] **Step 3: add three test guards.** Append to the bullet list (after line 270's `TestUpdateMemoryNodeImportanceScore` line):
+
+```
+- `internal/memory/index_test.go::TestReconcileImportanceRefinesAfterDeletion` (a same-pass-deleted linker is not counted by the refinement pass — proves the deletion loop runs before, not after)
+- `internal/memory/vault_test.go::TestVaultOwnerEditedFilesAggregatesAcrossHistory` (the memoized owner-edited path set aggregates across the WHOLE history, not just the most recent owner-edit commit, and ignores machine commits)
+- `internal/memory/index_test.go::TestReconcileImportanceRefinesUnchangedLinkedNode` (a node whose own file never changes still gets `importance_score` refreshed when a touched node's body newly links to it — the Critical gap)
+```
+
+- [ ] **Step 4: add the changelog entry.** Insert immediately after line 316's `## Changelog` heading, above the existing 2026-07-18 entry:
+
+```markdown
+
+- 2026-07-18 (whole-branch review follow-up on Slice A / MEM-16, three more gaps found and fixed post-ship): (1) **Refine-after-delete ordering** — `Reconcile`'s phase-B `refineImportance` ran before that same call's deletion loop, so a node deleted in the same `Reconcile` call as a refinement could still be counted by `CountMemoryLinksIn` — a real incremental-vs-`Rebuild` divergence (a fresh `Rebuild` never sees the deleted file). Fixed by moving `refineImportance` after the deletion loop. (2) **`OwnerEdited` memoization** — `computeNodeImportance`'s owner-touch signal was a fresh per-file, `FileName`-filtered `git log` walk on every call; Task 5b made this reachable from `upsertIndexNode`'s ~16 call sites on every ordinary write, not just eviction's small bounded candidate set. Fixed with a new `Vault.OwnerEditedFiles()` (one full-history walk), lazily memoized once per `Reconcile` call (`reconcilePass.ownerEdited`); `upsertIndexNode`'s single-node call sites are unaffected (they pass `Vault.OwnerEdited` itself, a method value — no batch to memoize over, no signature change, no call-site churn). (3) **Delta-refine for untouched linked nodes (Critical)** — a node whose own file never changes never re-enters `p.touched`, so its `importance_score` stayed frozen indefinitely even as its `LinksIn` (the formula's dominant signal) grew purely from OTHER nodes' new links (e.g. a person entity linked from many new Slack-extracted episodes over weeks, none of which touch the entity's own file). Fixed by delta-refining, once per `Reconcile` call, every distinct outgoing-link target (`Node.Links()`) of every touched node that wasn't itself touched this run — one hop only; a link REMOVED from an edited body is a documented, accepted residual gap, not eliminated. Guarded by `TestReconcileImportanceRefinesAfterDeletion`, `TestVaultOwnerEditedFilesAggregatesAcrossHistory`, `TestReconcileImportanceRefinesUnchangedLinkedNode`. No new contract number (folded into MEM-16), no new config gate, no retrieval/chat/MCP change — still foundation-only.
+```
+
+- [ ] **Step 5: re-read the section and sanity-check it renders correctly:**
+
+```
+$ grep -n "^## MEM-16\|^## Known v1\|^## Changelog" docs/inventory/memory.md
+```
+
+Expected: unchanged positions (only the text between them grew); the new changelog entry sits directly under the `## Changelog` heading, above the original 2026-07-18 Slice A entry.
+
+- [ ] **Step 6: commit:**
+
+```
+$ git add docs/inventory/memory.md
+$ git commit -m "docs(memory): MEM-16 addendum — refine-after-delete ordering, OwnerEdited memoization, delta-refine for untouched linked nodes
+
+Whole-branch review of already-shipped Slice A code found one Critical and
+two Important gaps; all three folded into the existing MEM-16 contract with
+new test guards, matching the established 5b/5c pattern."
+```
+
+---
+
+### 5d-v: Final verification
+
+**Depends on:** 5d-i, 5d-ii, 5d-iii, 5d-iv. **Blocks:** nothing (terminal).
+
+- [ ] **Step 1: formatting.**
+
+```
+$ gofmt -l internal/memory/index.go internal/memory/index_test.go internal/memory/importance.go internal/memory/vault.go internal/memory/vault_test.go internal/memory/merge.go
+```
+
+Expected: no output.
+
+- [ ] **Step 2: vet + build.**
+
+```
+$ go vet ./... && go build ./... > /tmp/build.log 2>&1; echo "exit=$?"; cat /tmp/build.log
+exit=0
+```
+
+- [ ] **Step 3: the directly-touched packages, verbose, real exit code checked explicitly (never piped through `tail` alone):**
+
+```
+$ go test -count=1 ./internal/memory/... ./internal/db/... -v > /tmp/test.log 2>&1; echo "exit=$?"; grep -E "^--- (FAIL|PASS)" /tmp/test.log | grep -c PASS; grep "^--- FAIL" /tmp/test.log
+exit=0
+```
+
+Expected: `exit=0`, zero `FAIL` lines, and (by name) `TestReconcileComputesImportanceScore`, `TestReconcileImportanceOverrideWins`, `TestReconcileImportanceQuarantineOnSignalError`, `TestReconcileImportanceOrderIndependent`, `TestMemory02_ReindexEquivalence`, `TestEvictReindexEquivalence`, `TestUpsertIndexNodeComputesImportance`, `TestUpsertIndexNodeImportanceOverrideWins`, `TestUpdateMemoryNodeImportanceScore`, `TestReconcileImportanceRefinesAfterDeletion`, `TestVaultOwnerEditedFilesAggregatesAcrossHistory`, `TestReconcileImportanceRefinesUnchangedLinkedNode` all present and passing.
+
+- [ ] **Step 4: broader blast-radius check** (nothing outside `internal/memory` calls `computeNodeImportance`/`upsertIndexNode`/`reconcilePass` — both unexported — but `db.MemoryNodeRow`/`Node` are read elsewhere):
+
+```
+$ go test ./internal/inbox/... ./internal/mcp/... ./internal/daemon/... ./cmd/... > /tmp/blast.log 2>&1; echo "exit=$?"; tail -10 /tmp/blast.log
+exit=0
+```
+
+- [ ] **Step 5: full suite.**
+
+```
+$ go test ./... > /tmp/full-test.log 2>&1; echo "exit=$?"; grep -c "^ok" /tmp/full-test.log; grep "^FAIL" /tmp/full-test.log
+exit=0
+```
+
+Expected: `exit=0`, no `FAIL` lines.
+
+- [ ] **Step 6: final status check — confirm nothing is left uncommitted:**
+
+```
+$ git status --short
+```
+
+Expected: clean (5d-i through 5d-iv already committed everything).
+
+---
+
+**Summary of 5d's new/changed files:**
+- Modified: `internal/memory/index.go` (`Reconcile` reordered; `reconcilePass` gains `ownerEdited`/memoization fields and method; `refineImportance` extended; new `refineLinkedNode`), `internal/memory/importance.go` (`computeNodeImportance` signature), `internal/memory/vault.go` (new `OwnerEditedFiles`), `internal/memory/merge.go` (`upsertIndexNode`'s one-line call-site update — signature unchanged), `internal/memory/index_test.go` (three new tests), `internal/memory/vault_test.go` (one new test), `docs/inventory/memory.md` (MEM-16 addendum + changelog entry)
+- Untouched (verified, not just assumed): `internal/memory/evict.go`, `internal/memory/evict_test.go`, all ~16 of `upsertIndexNode`'s Task-5b call sites (their own signature never changed)
