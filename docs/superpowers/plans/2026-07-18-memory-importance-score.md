@@ -3285,3 +3285,1657 @@ Expected: clean (5d-i through 5d-iv already committed everything).
 **Summary of 5d's new/changed files:**
 - Modified: `internal/memory/index.go` (`Reconcile` reordered; `reconcilePass` gains `ownerEdited`/memoization fields and method; `refineImportance` extended; new `refineLinkedNode`), `internal/memory/importance.go` (`computeNodeImportance` signature), `internal/memory/vault.go` (new `OwnerEditedFiles`), `internal/memory/merge.go` (`upsertIndexNode`'s one-line call-site update — signature unchanged), `internal/memory/index_test.go` (three new tests), `internal/memory/vault_test.go` (one new test), `docs/inventory/memory.md` (MEM-16 addendum + changelog entry)
 - Untouched (verified, not just assumed): `internal/memory/evict.go`, `internal/memory/evict_test.go`, all ~16 of `upsertIndexNode`'s Task-5b call sites (their own signature never changed)
+
+---
+
+## Task 5e: Second whole-branch review fixes — close the link-removal asymmetry, generalize `upsertIndexNode`'s owner-touch memoization to every batch call site
+
+**Added post-ship, 2026-07-19 (second whole-branch code review).** Task 5d (5d-i through 5d-v) shipped and is committed on `feature/memory-phase5`. A SECOND whole-branch review, run specifically to confirm 5d's three fixes, found all three genuinely fixed — and surfaced two more real, non-blocking ("should fix") issues in the same `internal/memory/index.go`/`merge.go` machinery. Owner decision: fix both now, as a fifth follow-up quantum under the same MEM-16 contract (the 5b/5c/5d precedent: a real gap found post-hoc, folded into MEM-16 rather than spun into a new contract or a documented-only limitation).
+
+**The two issues, read from the actual shipped (post-5d) code:**
+
+1. **The link-removal asymmetry 5d-iii explicitly documented as a "known, accepted residual" is a real, closeable gap — and the guard test meant to catch a regression in it is currently blind to it.** `index.go`'s `refineImportance` (post-5d) only reads a touched node's NEW body's `Links()` to build its delta-refine candidate set; a link REMOVED from an edited body is invisible to it, so the old target keeps a stale, too-HIGH `importance_score` until its own file next changes or some other touched node happens to link to it. A second, worse vector: `Reconcile`'s deletion loop removes a node's file (and index row) entirely — that node's own outgoing links vanish with it, but nothing refines ITS former link targets either. Since a later slice will use this score for retrieval ranking, a stale-too-HIGH score is the harmful direction (over-surfacing something no longer well-connected). Compounding this: `TestMemory02_ReindexEquivalence`'s pass-3 "touch A once more" step is redundant (5d-iii's delta-refine already gets A to the right value in pass 2, when C's link first lands) and its redundancy means the guard has never actually exercised a link-removal scenario — a regression here would currently go undetected.
+2. **`upsertIndexNode`'s owner-touch signal still pays a full per-node git walk inside batch loops.** 5d-ii's design assumed `upsertIndexNode`'s call sites were single-node writes with no batch to memoize over, so it left all ~16 of them calling the un-memoized `v.OwnerEdited` (a bare method value) directly. Reading every real call site (not just the reviewer's named seven) shows this assumption fails almost everywhere: `aging.go`'s `AgeEpisodes`, `action_ingest.go`'s `ingestInteractions`, `beliefs.go`'s `ReviseBeliefs`, `calendar_ingest.go`'s `commitCalendarNodes`, `concepts.go`'s `PromoteConcepts`, `dedupe.go`'s `DedupeEpisodes` (via repeated `unionProvenance` calls within one run), `evict.go`'s `EvictEpisodes` (both its tombstone and rollup loops), `gmail_extract.go`'s `extractGmailBatch`, `ingest.go`'s `IngestSituations`, `merge.go`'s own `Merge` (its `stub`/`winner` pair), `mirror_ingest.go`'s `commitMirrorNodes`, `pipeline.go`'s `extractBatch`, `reflect.go`'s `Reflect`, `rewrite.go`'s `RewriteEntityPages`, and `seed.go`'s `SeedEntities` ALL loop over more than one node calling `upsertIndexNode` (or, for `dedupe.go`, calling a helper that calls it) within a single invocation. In practice essentially every production call site qualifies — the "single-node call site with nothing to memoize" case 5d-ii's design note describes does not exist in today's code.
+
+**Fix order:** 5e-i (issue 1, the code fix) → 5e-ii (strengthen the `TestMemory02_ReindexEquivalence` fixture that 5e-i's fix makes meaningfully testable) → 5e-iii (issue 2, batch memoization — independent of 5e-i/5e-ii, touches a different signal path, ordered last only because it is the larger diff) → 5e-iv (docs) → 5e-v (final verification).
+
+**Depends on:** Task 5d (5d-i through 5d-v, already committed). **Blocks:** nothing new in this plan (terminal follow-up) — supersedes 5d-v's final verification; 5e-v below re-runs the full gate.
+
+**Global constraints carried forward, unchanged:** `EvictEpisodes`'s own retention-SCORING logic (`RetentionScore`, the per-candidate loop computing `score := RetentionScore(...)`) is untouched by both fixes and never reads `memory_nodes.importance_score` — its two `upsertIndexNode` calls (writing the tombstone/rollup index mirrors, a DIFFERENT concern) DO get 5e-iii's batch-memoization fix, since those are ordinary `upsertIndexNode` call sites like any other. No new config gate, no retrieval/chat/MCP/prompt change — still foundation-only. A signal-lookup error anywhere in the new code follows the same log-and-continue-keep-prior-value policy already established everywhere in this contract. Every already-approved test named in 5d's prompt, plus 5d's own three new tests (`TestReconcileImportanceRefinesAfterDeletion`, `TestVaultOwnerEditedFilesAggregatesAcrossHistory`, `TestReconcileImportanceRefinesUnchangedLinkedNode`), must still pass unmodified — 5e-v's final run checks all twelve by name.
+
+---
+
+### 5e-i: Close the link-removal asymmetry — capture prior/doomed bodies' outgoing links before they vanish
+
+**Depends on:** Task 5d (5d-iii's `refineImportance`/`refineLinkedNode`, already shipped). **Blocks:** 5e-ii (its fixture change proves this fix), 5e-iv.
+
+**Files:**
+- Modify: `internal/db/memory.go` — new `GetMemoryNodeBody` (inserted after `UpdateMemoryNodeImportanceScore`, before `SearchMemoryFTS`)
+- Modify: `internal/memory/index.go` — `reconcilePass` struct (new `priorLinkTargets` field), `file()` (capture prior body before `UpsertMemoryNode`), `Reconcile`'s deletion loop (capture doomed body before `DeleteMemoryNode`), `refineImportance()` (union `priorLinkTargets` into the delta-refine candidate set)
+- Test: `internal/db/memory_test.go` — new `TestGetMemoryNodeBody` (after `TestUpdateMemoryNodeImportanceScore`)
+- Test: `internal/memory/index_test.go` — two new tests inserted after 5d-iii's `TestReconcileImportanceRefinesUnchangedLinkedNode`, before `TestMemory02_ReindexEquivalence`
+
+**Interfaces:**
+- Produces: `func (db *DB) GetMemoryNodeBody(id string) (string, error)` — reads `memory_fts.body` for id, `sql.ErrNoRows` when absent (the `LookupMemoryAlias` convention: bare `sql.ErrNoRows`, not wrapped, so callers can `errors.Is` it if they choose to — this task's own callers treat ANY error uniformly, see below).
+- Consumes: `Node.Links() []Link` (existing, `node.go:233-239`) — called against a throwaway `Node{Body: oldBody}` for the OLD-body case, since `Links()` reads only `n.Body` and nothing else (confirmed by inspection: no other field is referenced). No new parsing helper needed — `Node{Body: s}.Links()` is the simplest correct extraction, exactly as the design note anticipated.
+
+**Why a throwaway `Node{Body: oldBody}` rather than a new `parseLinkIDs(body string) []string` helper:** `Node.Links()`'s entire body is `for _, m := range wikiLinkRe.FindAllStringSubmatch(n.Body, -1) { ... }` — it reads `n.Body` and nothing else on `n`. Constructing `Node{Body: oldBody}` and calling `.Links()` on it is therefore exactly equivalent to a standalone function, with zero new exported surface and no duplicated regex logic.
+
+Current `GetMemoryNodeBody`'s neighbors (`db/memory.go`, for placement context — `UpdateMemoryNodeImportanceScore` ends, then `SearchMemoryFTS` begins, unchanged):
+
+```go
+func (db *DB) UpdateMemoryNodeImportanceScore(id string, score float64) error {
+	_, err := db.Exec(`UPDATE memory_nodes SET importance_score = ? WHERE id = ?`, score, id)
+	if err != nil {
+		return fmt.Errorf("updating importance_score for %s: %w", id, err)
+	}
+	return nil
+}
+
+// SearchMemoryFTS runs a full-text search over node titles and bodies, ...
+```
+
+- [ ] **Step 1: write the failing test** — append to `internal/db/memory_test.go` after `TestUpdateMemoryNodeImportanceScore` (ends line 332):
+
+```go
+// TestGetMemoryNodeBody: the new narrow FTS-body reader returns the exact
+// body last upserted, and sql.ErrNoRows for an id with no FTS row — the
+// contract memory's Reconcile (index.go) relies on to read a node's PRIOR
+// body BEFORE UpsertMemoryNode overwrites it (whole-branch review follow-up,
+// 2026-07-19, MEM-16 addendum — closing the link-removal asymmetry).
+func TestGetMemoryNodeBody(t *testing.T) {
+	db := openTestDB(t)
+
+	row := memTestNode("ent_body_read", nil)
+	if err := db.UpsertMemoryNode(row, "# Body\n\nSee [[ent_other]].\n", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode: %v", err)
+	}
+
+	body, err := db.GetMemoryNodeBody("ent_body_read")
+	if err != nil {
+		t.Fatalf("GetMemoryNodeBody: %v", err)
+	}
+	if body != "# Body\n\nSee [[ent_other]].\n" {
+		t.Errorf("GetMemoryNodeBody = %q, want the exact body last upserted", body)
+	}
+
+	if _, err := db.GetMemoryNodeBody("ent_does_not_exist"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetMemoryNodeBody for unknown id: err = %v, want sql.ErrNoRows", err)
+	}
+}
+```
+
+- [ ] **Step 2: run it — expect a build failure** (the method doesn't exist yet):
+
+```
+$ go test ./internal/db/ -run TestGetMemoryNodeBody -v
+# watchtower/internal/db [watchtower/internal/db.test]
+./memory_test.go:XXX: db.GetMemoryNodeBody undefined (type *DB has no field or method GetMemoryNodeBody)
+FAIL	watchtower/internal/db [build failed]
+```
+
+- [ ] **Step 3: add `GetMemoryNodeBody`** to `internal/db/memory.go`, between `UpdateMemoryNodeImportanceScore` and `SearchMemoryFTS`:
+
+```go
+// GetMemoryNodeBody returns the raw body last indexed for id from
+// memory_fts — the pre-edit body a caller must read BEFORE overwriting it via
+// UpsertMemoryNode, e.g. to diff a node's OLD outgoing links against its NEW
+// ones (internal/memory/index.go's Reconcile, MEM-16: closing the
+// link-removal asymmetry). Returns sql.ErrNoRows when the node has no FTS row
+// (never indexed, or already deleted) — the LookupMemoryAlias convention.
+func (db *DB) GetMemoryNodeBody(id string) (string, error) {
+	var body string
+	err := db.QueryRow(`SELECT body FROM memory_fts WHERE id = ?`, id).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting memory fts body for %s: %w", id, err)
+	}
+	return body, nil
+}
+```
+
+- [ ] **Step 4: run it — expect green:**
+
+```
+$ go test ./internal/db/ -run TestGetMemoryNodeBody -v
+=== RUN   TestGetMemoryNodeBody
+--- PASS: TestGetMemoryNodeBody (0.01s)
+PASS
+ok  	watchtower/internal/db	0.2s
+```
+
+- [ ] **Step 5: commit:**
+
+```
+$ git add internal/db/memory.go internal/db/memory_test.go
+$ git commit -m "feat(memory): add GetMemoryNodeBody, the pre-overwrite FTS body reader (MEM-16 prep)
+
+A caller diffing a node's OLD vs NEW outgoing links (closing the
+link-removal importance asymmetry) needs the body memory_fts held BEFORE
+UpsertMemoryNode replaces it. New narrow reader, LookupMemoryAlias's
+sql.ErrNoRows convention. Guarded by TestGetMemoryNodeBody."
+```
+
+Now the core `index.go` fix.
+
+Current `reconcilePass` struct (`index.go` lines 107-129, post-5d):
+
+```go
+type reconcilePass struct {
+	v        *Vault
+	database *db.DB
+	logf     func(string, ...any)
+	indexed  map[string]db.MemoryNodeRow
+	onDisk   map[string]bool
+	now      string
+	stats    *Stats
+	touched  []touchedNode
+
+	// ownerEditedFiles/ownerEditedErr/ownerEditedLoaded memoize
+	// v.OwnerEditedFiles() lazily: computed at most ONCE per Reconcile call,
+	// on the first node that actually needs the owner-touch signal (a fully
+	// unchanged pass — the common case — never pays for it at all), and
+	// reused by every subsequent computeNodeImportance call this pass
+	// instead of each paying its own full-history git-log walk (whole-branch
+	// review follow-up, added 2026-07-18, MEM-16).
+	ownerEditedFiles  map[string]bool
+	ownerEditedErr    error
+	ownerEditedLoaded bool
+}
+```
+
+- [ ] **Step 6: write the two failing tests** — insert into `internal/memory/index_test.go` immediately after 5d-iii's `TestReconcileImportanceRefinesUnchangedLinkedNode`, before `TestMemory02_ReindexEquivalence`:
+
+```go
+// TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit: a touched node's body
+// EDIT that REMOVES a link must still cause the old link target's
+// importance_score to drop — closing the link-removal asymmetry 5d-iii's
+// version of refineImportance left open (only the NEW body's current links
+// were read there). Reconcile now also captures the PRIOR body's outgoing
+// links (read from memory_fts, before UpsertMemoryNode overwrites it) and
+// unions them into the same delta-refine candidate set — recomputation is
+// idempotent, so unioning in a link that's still present costs nothing extra
+// (second whole-branch review follow-up, 2026-07-19, MEM-16 addendum).
+func TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5RM1", "entity", "Target")
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5RM2", "Linker", target.ID)
+	writeNodes(t, v, target, linker)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, baseline.ImportanceScore, "sanity: linker gives target a link-in")
+
+	// Edit the linker's body to REMOVE its link to target — target's OWN
+	// file is untouched, so without reading the linker's PRIOR body this
+	// pass would never know to re-refine target.
+	linker.Body = "# Linker\n\nNo more link.\n"
+	writeNodes(t, v, linker)
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, Stats{Updated: 1}, stats, "sanity: only the linker is reparsed this pass")
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	assert.Zero(t, row.ImportanceScore,
+		"target's importance must drop once its only linker's body no longer links to it")
+}
+
+// TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion: deleting a node's
+// FILE removes its outgoing links too — the SECOND vector of the same
+// asymmetry (a node whose only linker's FILE disappeared entirely was also
+// never re-refined). Reconcile now captures the doomed node's body (from
+// memory_fts) BEFORE calling DeleteMemoryNode, unioning its outgoing links
+// into the same delta-refine candidate set (second whole-branch review
+// follow-up, 2026-07-19, MEM-16 addendum).
+func TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5RM3", "entity", "Target")
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5RM4", "Linker", target.ID)
+	writeNodes(t, v, target, linker)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	baseline, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, baseline.ImportanceScore, "sanity: linker gives target a link-in")
+
+	// Delete the linker's FILE entirely — target's own file is untouched.
+	require.NoError(t, os.Remove(filepath.Join(v.path, "entities", linker.ID+".md")))
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, Stats{Deleted: 1}, stats, "sanity: only the linker's file is gone, target is not reparsed")
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	assert.Zero(t, row.ImportanceScore,
+		"target's importance must drop once its only linker's FILE — and its outgoing links — are gone")
+}
+```
+
+- [ ] **Step 7: run them — expect both assertion failures that prove the gap:**
+
+```
+$ go test ./internal/memory/ -run 'TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit|TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion' -v
+=== RUN   TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit
+    index_test.go:XXX:
+        	Error Trace:	.../index_test.go:XXX
+        	Error:      	Should be zero, but was 1
+        	Test:       	TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit
+        	Messages:   	target's importance must drop once its only linker's body no longer links to it
+--- FAIL: TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit (0.02s)
+=== RUN   TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion
+    index_test.go:XXX:
+        	Error Trace:	.../index_test.go:XXX
+        	Error:      	Should be zero, but was 1
+        	Test:       	TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion
+        	Messages:   	target's importance must drop once its only linker's FILE — and its outgoing links — are gone
+--- FAIL: TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion (0.02s)
+FAIL
+```
+
+- [ ] **Step 8: extend `reconcilePass`** with a new field, right after `touched`:
+
+```go
+type reconcilePass struct {
+	v        *Vault
+	database *db.DB
+	logf     func(string, ...any)
+	indexed  map[string]db.MemoryNodeRow
+	onDisk   map[string]bool
+	now      string
+	stats    *Stats
+	touched  []touchedNode
+
+	// priorLinkTargets collects node ids a REMOVED link used to point at:
+	// from an edited touched node's PRIOR body (captured in file(), read
+	// from memory_fts before UpsertMemoryNode overwrites it) and from a
+	// deleted node's body (captured in Reconcile's deletion loop, read
+	// before DeleteMemoryNode drops it). Unioned into refineImportance's
+	// delta-refine candidate set alongside the NEW-body link targets 5d-iii
+	// already collects, so both a link ADDED and a link REMOVED cause the
+	// affected target to be recomputed — closing the asymmetry 5d-iii left
+	// open as a documented residual (second whole-branch review follow-up,
+	// 2026-07-19, MEM-16 addendum).
+	priorLinkTargets map[string]bool
+
+	// ownerEditedFiles/ownerEditedErr/ownerEditedLoaded memoize
+	// v.OwnerEditedFiles() lazily: computed at most ONCE per Reconcile call,
+	// on the first node that actually needs the owner-touch signal (a fully
+	// unchanged pass — the common case — never pays for it at all), and
+	// reused by every subsequent computeNodeImportance call this pass
+	// instead of each paying its own full-history git-log walk (whole-branch
+	// review follow-up, added 2026-07-18, MEM-16).
+	ownerEditedFiles  map[string]bool
+	ownerEditedErr    error
+	ownerEditedLoaded bool
+}
+```
+
+(5e-iii below replaces the last three fields with a shared `*ownerEditedMemo` — left untouched here so this step's diff is purely additive and isolated to issue 1.)
+
+Update `Reconcile`'s pass literal (unchanged fields omitted) to initialize the new map:
+
+```go
+	pass := &reconcilePass{
+		v:                v,
+		database:         database,
+		logf:             logf,
+		indexed:          indexed,
+		onDisk:           make(map[string]bool),
+		now:              time.Now().UTC().Format(time.RFC3339),
+		stats:            &stats,
+		priorLinkTargets: make(map[string]bool),
+	}
+```
+
+- [ ] **Step 9: capture the prior body in `file()`**, right before the `UpsertMemoryNode` call (current code for context — `row := db.MemoryNodeRow{...}` through `p.touched = append(...)`, unchanged except for the new block inserted directly above `row := db.MemoryNodeRow{`):
+
+```go
+	importance, err := computeNodeImportance(p.database, p.ownerEdited, n, rel)
+	if err != nil {
+		p.quarantine(rel, fmt.Errorf("computing importance: %w", err))
+		return nil
+	}
+
+	if wasIndexed {
+		// Capture the PRIOR body's outgoing links before UpsertMemoryNode
+		// (below) overwrites the FTS row — a link REMOVED by this edit must
+		// still cause its old target to be delta-refined. A read failure
+		// only narrows this pass's delta-refine candidate set for this one
+		// file; it does not quarantine the file or abort Reconcile (the
+		// file's own index write proceeds normally either way) — the same
+		// log-and-continue-keep-prior-value policy this package already
+		// applies to every other signal-lookup error.
+		if oldBody, berr := p.database.GetMemoryNodeBody(id); berr != nil {
+			p.logf("memory: reconcile: reading prior body for %s failed (link-removal delta-refine narrowed for this edit): %v", id, berr)
+		} else {
+			for _, link := range (Node{Body: oldBody}).Links() {
+				p.priorLinkTargets[link.ID] = true
+			}
+		}
+	}
+
+	row := db.MemoryNodeRow{
+		ID:              n.ID,
+		Type:            n.Type,
+		Tier:            n.Tier,
+		Status:          n.Status,
+		RedirectTo:      n.RedirectTo,
+		Title:           n.Title,
+		Path:            rel,
+		ContentHash:     hash,
+		IndexedAt:       p.now,
+		Subject:         n.Subject,
+		Confidence:      n.Confidence,
+		ImportanceScore: importance,
+	}
+	if err := p.database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, p.logf)...); err != nil {
+		p.quarantine(rel, err)
+		return nil
+	}
+	p.touched = append(p.touched, touchedNode{n: n, rel: rel})
+	if wasIndexed {
+		p.stats.Updated++
+	} else {
+		p.stats.Added++
+	}
+	return nil
+}
+```
+
+- [ ] **Step 10: capture doomed bodies in `Reconcile`'s deletion loop**, before `database.DeleteMemoryNode`:
+
+Current (post-5d-i, `Reconcile` lines 90-98):
+
+```go
+	for _, row := range existing {
+		if pass.onDisk[row.ID] {
+			continue
+		}
+		if err := database.DeleteMemoryNode(row.ID); err != nil {
+			return stats, fmt.Errorf("memory: reconcile: %w", err)
+		}
+		stats.Deleted++
+	}
+```
+
+New:
+
+```go
+	for _, row := range existing {
+		if pass.onDisk[row.ID] {
+			continue
+		}
+		// Capture this doomed node's OWN outgoing links before its row and
+		// FTS entry vanish below — its former link targets must still be
+		// delta-refined (the second vector of the same link-removal
+		// asymmetry file()'s edit case closes above). A read failure only
+		// narrows this pass's delta-refine set for this one deletion; the
+		// deletion itself is never blocked by it.
+		if oldBody, berr := database.GetMemoryNodeBody(row.ID); berr != nil {
+			logf("memory: reconcile: reading body for deleted node %s failed (link-removal delta-refine narrowed for this deletion): %v", row.ID, berr)
+		} else {
+			for _, link := range (Node{Body: oldBody}).Links() {
+				pass.priorLinkTargets[link.ID] = true
+			}
+		}
+		if err := database.DeleteMemoryNode(row.ID); err != nil {
+			return stats, fmt.Errorf("memory: reconcile: %w", err)
+		}
+		stats.Deleted++
+	}
+```
+
+- [ ] **Step 11: union `priorLinkTargets` into `refineImportance`'s delta-refine set.**
+
+Current `refineImportance` (post-5d-iii, for the relevant tail — the per-touched recompute loop above is unchanged):
+
+```go
+	linkTargets := make(map[string]bool)
+	for _, tn := range p.touched {
+		for _, link := range tn.n.Links() {
+			if touchedIDs[link.ID] {
+				continue
+			}
+			linkTargets[link.ID] = true
+		}
+	}
+	for id := range linkTargets {
+		if err := p.refineLinkedNode(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+```
+
+New:
+
+```go
+	linkTargets := make(map[string]bool)
+	for _, tn := range p.touched {
+		for _, link := range tn.n.Links() {
+			if touchedIDs[link.ID] {
+				continue
+			}
+			linkTargets[link.ID] = true
+		}
+	}
+	// Union in every id a REMOVED link (from an edit's prior body, or from a
+	// deleted node's body) used to point at — recomputation is idempotent,
+	// so a target already in linkTargets (a link that's still present) costs
+	// nothing extra to add again. Closes the asymmetry a link ADDITION alone
+	// left open (second whole-branch review follow-up, 2026-07-19, MEM-16
+	// addendum).
+	for id := range p.priorLinkTargets {
+		if touchedIDs[id] {
+			continue
+		}
+		linkTargets[id] = true
+	}
+	for id := range linkTargets {
+		if err := p.refineLinkedNode(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+```
+
+Also update `refineImportance`'s doc comment: replace its "Known residual asymmetry: a link REMOVED..." sentence (the one 5d-iii wrote) with:
+
+```go
+// Also delta-refines every node a REMOVED link used to point at: file()
+// captures an edited touched node's PRIOR body's outgoing links (read from
+// memory_fts before UpsertMemoryNode overwrites it) and Reconcile's deletion
+// loop captures a doomed node's own outgoing links (read before
+// DeleteMemoryNode drops it) — both unioned into the same candidate set
+// below, closing the asymmetry a prior version of this pass left as a
+// documented residual (second whole-branch review follow-up, 2026-07-19,
+// MEM-16 addendum). Still one hop only: a target's OWN further link
+// neighbors are never chased.
+```
+
+- [ ] **Step 12: run the two new tests — expect green:**
+
+```
+$ go test ./internal/memory/ -run 'TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit|TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion' -v
+=== RUN   TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit
+--- PASS: TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit (0.02s)
+=== RUN   TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion
+--- PASS: TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion (0.02s)
+PASS
+ok  	watchtower/internal/memory	0.3s
+```
+
+- [ ] **Step 13: confirm no regression in every 5d guard, then commit:**
+
+```
+$ go test ./internal/memory/... ./internal/db/... -run 'TestReconcileComputesImportanceScore|TestReconcileImportanceOverrideWins|TestReconcileImportanceQuarantineOnSignalError|TestReconcileImportanceOrderIndependent|TestMemory02_ReindexEquivalence|TestEvictReindexEquivalence|TestUpsertIndexNodeComputesImportance|TestUpsertIndexNodeImportanceOverrideWins|TestUpdateMemoryNodeImportanceScore|TestReconcileImportanceRefinesAfterDeletion|TestVaultOwnerEditedFilesAggregatesAcrossHistory|TestReconcileImportanceRefinesUnchangedLinkedNode' -v 2>&1 | tail -30
+--- PASS: TestReconcileComputesImportanceScore (0.02s)
+--- PASS: TestReconcileImportanceOverrideWins (0.01s)
+--- PASS: TestReconcileImportanceQuarantineOnSignalError (0.03s)
+--- PASS: TestReconcileImportanceOrderIndependent (0.02s)
+--- PASS: TestMemory02_ReindexEquivalence (0.03s)
+--- PASS: TestEvictReindexEquivalence (0.05s)
+--- PASS: TestUpsertIndexNodeComputesImportance (0.02s)
+--- PASS: TestUpsertIndexNodeImportanceOverrideWins (0.01s)
+--- PASS: TestUpdateMemoryNodeImportanceScore (0.01s)
+--- PASS: TestReconcileImportanceRefinesAfterDeletion (0.02s)
+--- PASS: TestVaultOwnerEditedFilesAggregatesAcrossHistory (0.01s)
+--- PASS: TestReconcileImportanceRefinesUnchangedLinkedNode (0.02s)
+PASS
+ok  	watchtower/internal/memory	1.6s
+ok  	watchtower/internal/db	0.6s
+
+$ git add internal/memory/index.go internal/memory/index_test.go
+$ git commit -m "fix(memory): close the link-removal importance asymmetry (second whole-branch review, MEM-16)
+
+refineImportance's delta-refine only read a touched node's NEW body, so a
+REMOVED link left its old target's importance_score stale-too-high — the
+harmful direction for future retrieval ranking. Reconcile now also captures
+an edited node's PRIOR body (file(), before UpsertMemoryNode overwrites the
+FTS row) and a deleted node's own body (the deletion loop, before
+DeleteMemoryNode) and unions their outgoing links into the same delta-refine
+candidate set 5d-iii built — recomputation is idempotent so re-adding a
+still-present link costs nothing. One hop only, still. Guarded by
+TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit and
+TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion."
+```
+
+---
+
+### 5e-ii: Strengthen `TestMemory02_ReindexEquivalence`'s fixture to actually exercise a link removal
+
+**Depends on:** 5e-i (the fixture change proves 5e-i's fix; it would fail against pre-5e-i code). **Blocks:** 5e-iv.
+
+**Files:**
+- Modify: `internal/memory/index_test.go` — `TestMemory02_ReindexEquivalence`'s pass 3 (lines 630-652, post-5d)
+
+**Why this test's fixture, not a new standalone test:** `TestMemory02_ReindexEquivalence` is MEM-02's guard — its whole job is proving an incremental history and a fresh `Rebuild` converge on the SAME `memory_nodes` dump, including `importance_score`. The second review's specific finding was that THIS test's own pass-3 step ("touch A once more") is redundant given 5d-iii's delta-refine (A already reaches `LinksIn=1` in pass 2, the moment C's link to it first lands) — and that redundancy means the guard has never exercised a link REMOVAL, so a regression in 5e-i's fix would slip past MEM-02's own equivalence guard undetected. The fix is therefore to make THIS fixture actually cover a removal, not to add a parallel test that duplicates the guard's setup while leaving the original blind spot in place. (5e-i's two new dedicated tests already prove the mechanism in isolation; this step proves it specifically under MEM-02's incremental-vs-`Rebuild` lens — Task 6's precedent for "strengthen this SAME guard test's fixture" rather than adding a new one.)
+
+Current pass 3 (`index_test.go` lines 630-652, post-5d — for context, passes 1-2 above and the final `Rebuild`/`assert.Equal` below are UNCHANGED by this step):
+
+```go
+	// Pass 3: delete B (its provenance rows must vanish with it), edit C —
+	// keep its link to A alongside a surviving ## Provenance section — and
+	// touch A once more (a trivial body edit) so A gets reparsed NOW THAT C's
+	// link to it is already committed (pass 2): this is what makes A's
+	// persisted importance_score reflect LinksIn=1 by the end of the
+	// incremental history, matching what a fresh Rebuild computes from the
+	// FINAL vault state.
+	require.NoError(t, os.Remove(filepath.Join(v.path, "episodes", b.ID+".md")))
+	c.Body = "# Q3 rollup\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5IXA]] for background.\n\n## Provenance\n" +
+		"- C0AAAAAAA 1700100000.000200\n"
+	a.Body = "# Alpha Prime\n\nRewritten body, revision two.\n"
+	writeNodes(t, v, c, a)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	incremental := dumpIndex(t, d)
+	require.Len(t, incremental.Nodes, 2, "sanity: A and C survive")
+	for _, row := range incremental.Nodes {
+		if row.ID == a.ID {
+			require.Equal(t, 1.0, row.ImportanceScore,
+				"sanity: A's persisted importance reflects C's link-in, not a trivial zero")
+		}
+	}
+
+	_, err = Rebuild(v, d, t.Logf)
+	require.NoError(t, err)
+	rebuilt := dumpIndex(t, d)
+
+	assert.Equal(t, incremental, rebuilt)
+}
+```
+
+New pass 3 + a new pass 4 (replaces the block above through the end of the function):
+
+```go
+	// Pass 3: delete B (its provenance rows must vanish with it) and edit C —
+	// keep its link to A alongside a surviving ## Provenance section. A is
+	// deliberately NOT re-touched here: 5d-iii's delta-refine already brought
+	// A to LinksIn=1 in pass 2, the moment C's link to A first landed —
+	// re-touching A here would be redundant AND would mask whether pass 4's
+	// removal below actually works (the second whole-branch review's exact
+	// finding about this fixture, 2026-07-19).
+	require.NoError(t, os.Remove(filepath.Join(v.path, "episodes", b.ID+".md")))
+	c.Body = "# Q3 rollup\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5IXA]] for background.\n\n## Provenance\n" +
+		"- C0AAAAAAA 1700100000.000200\n"
+	writeNodes(t, v, c)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	midpoint := dumpIndex(t, d)
+	for _, row := range midpoint.Nodes {
+		if row.ID == a.ID {
+			require.Equal(t, 1.0, row.ImportanceScore,
+				"sanity: A already reflects C's link-in without ever being re-touched itself")
+		}
+	}
+
+	// Pass 4: edit C to REMOVE its link to A entirely — a link REMOVAL, not
+	// just an addition. Without closing the link-removal asymmetry (5e-i),
+	// A's importance_score would stay stuck at 1.0 here even though its only
+	// linker no longer links to it at all — a stale-too-HIGH score, and one
+	// that this guard's PRE-5e-ii fixture could never have caught (second
+	// whole-branch review follow-up, MEM-16 addendum).
+	c.Body = "# Q3 rollup\n\nNo more link to Alpha.\n\n## Provenance\n" +
+		"- C0AAAAAAA 1700100000.000200\n"
+	writeNodes(t, v, c)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	incremental := dumpIndex(t, d)
+	require.Len(t, incremental.Nodes, 2, "sanity: A and C survive")
+	for _, row := range incremental.Nodes {
+		if row.ID == a.ID {
+			require.Zero(t, row.ImportanceScore,
+				"A's importance must drop back to 0 once C's link to it is removed — the closed link-removal asymmetry")
+		}
+	}
+
+	_, err = Rebuild(v, d, t.Logf)
+	require.NoError(t, err)
+	rebuilt := dumpIndex(t, d)
+
+	assert.Equal(t, incremental, rebuilt)
+}
+```
+
+- [ ] **Step 1: apply the fixture change above, run it, then confirm it WOULD have failed before 5e-i by temporarily reverting 5e-i's `index.go` changes:**
+
+```
+$ go test ./internal/memory/ -run TestMemory02_ReindexEquivalence -v
+=== RUN   TestMemory02_ReindexEquivalence
+--- PASS: TestMemory02_ReindexEquivalence (0.03s)
+PASS
+ok  	watchtower/internal/memory	0.2s
+
+$ git stash push internal/memory/index.go   # temporarily revert 5e-i's production fix only
+$ go test ./internal/memory/ -run TestMemory02_ReindexEquivalence -v
+=== RUN   TestMemory02_ReindexEquivalence
+    index_test.go:XXX:
+        	Error Trace:	.../index_test.go:XXX
+        	Error:      	Should be zero, but was 1
+        	Test:       	TestMemory02_ReindexEquivalence
+--- FAIL: TestMemory02_ReindexEquivalence (0.02s)
+FAIL
+$ git stash pop   # restore 5e-i's fix
+```
+
+Expected: the second run FAILS without 5e-i's `index.go` fix (proving the strengthened fixture actually exercises the gap 5e-i closed), and the restored run is green again.
+
+- [ ] **Step 2: full package regression check, then commit:**
+
+```
+$ go test -count=1 ./internal/memory/... ./internal/db/... -v 2>&1 | tail -20
+ok  	watchtower/internal/memory	1.6s
+ok  	watchtower/internal/db	0.6s
+
+$ git add internal/memory/index_test.go
+$ git commit -m "test(memory): strengthen TestMemory02_ReindexEquivalence to exercise a link removal (MEM-16 addendum)
+
+The prior fixture's pass-3 'touch A once more' step was redundant (5d-iii's
+delta-refine already reached the right value in pass 2) and its redundancy
+meant this guard never exercised a link REMOVAL — a regression in the
+link-removal asymmetry fix (5e-i) could have slipped past MEM-02's own
+equivalence guard. Removed the redundant re-touch; added a pass 4 that
+removes C's link to A and asserts A's importance_score drops to 0 in both
+the incremental and rebuilt dumps."
+```
+
+---
+
+### 5e-iii: Generalize `upsertIndexNode`'s owner-touch memoization to every genuine batch call site
+
+**Depends on:** Task 5d (5d-ii's `computeNodeImportance(database, ownerEdited func(string)(bool,error), n, rel)` signature and `Vault.OwnerEditedFiles()`, already shipped) — independent of 5e-i/5e-ii (a different signal path: owner-touch, not links-in). **Blocks:** 5e-iv.
+
+**Files:**
+- Modify: `internal/memory/vault.go` — new `ownerEditedMemo` type + constructor (inserted after `OwnerEditedFiles`)
+- Modify: `internal/memory/merge.go` — `upsertIndexNode`'s signature (`v *Vault` → `ownerEdited func(rel string) (bool, error)`); `Merge`'s call-site loop
+- Modify: `internal/memory/index.go` — `reconcilePass` drops its own three `ownerEdited*` fields in favor of the shared `*ownerEditedMemo`; `ownerEdited` method becomes a one-line delegate
+- Modify every genuine batch call site — `aging.go` (`AgeEpisodes`), `action_ingest.go` (`ingestInteractions`), `beliefs.go` (`ReviseBeliefs`), `calendar_ingest.go` (`commitCalendarNodes`), `concepts.go` (`PromoteConcepts`), `dedupe.go` (`DedupeEpisodes`/`unionProvenance` — signature threaded), `evict.go` (`EvictEpisodes`), `gmail_extract.go` (`extractGmailBatch`), `ingest.go` (`IngestSituations`), `mirror_ingest.go` (`commitMirrorNodes`), `pipeline.go` (`extractBatch`), `reflect.go` (`Reflect`), `rewrite.go` (`RewriteEntityPages`), `seed.go` (`SeedEntities`)
+- Test: `internal/memory/vault_test.go` — new `TestOwnerEditedMemoCachesAcrossLookups` (after `TestVaultOwnerEditedFilesAggregatesAcrossHistory`)
+- Test: `internal/memory/merge_test.go` — update `TestUpsertIndexNodeComputesImportance`/`TestUpsertIndexNodeImportanceOverrideWins`'s direct `upsertIndexNode` calls (lines 211, 227) to the new signature
+
+**Interfaces:**
+- Produces: `type ownerEditedMemo struct{...}`, `func newOwnerEditedMemo(v *Vault) *ownerEditedMemo`, `func (m *ownerEditedMemo) lookup(rel string) (bool, error)` — a single small, reusable "memoize one `v.OwnerEditedFiles()` call across one function invocation" helper, generalizing the pattern 5d-ii built ad hoc inside `reconcilePass`. `reconcilePass` itself is refactored to USE this shared type (not a second parallel implementation) so there is exactly one memoization implementation in the package.
+- **Breaking change:** `upsertIndexNode`'s second parameter changes from `v *Vault` to `ownerEdited func(rel string) (bool, error)` — mirroring `computeNodeImportance`'s own shape (5d-ii). `unionProvenance` (`dedupe.go`) gains the same parameter, threaded from its one caller, `DedupeEpisodes`.
+
+**Why every call site turns out to need the batch fix, not just the reviewer's named seven:** grepping `upsertIndexNode(` (`grep -rn "upsertIndexNode(" internal/memory/*.go`) surfaces 16 production call sites (plus 2 direct test calls in `merge_test.go`, unaffected by this design question). Reading each enclosing function in full:
+
+| File / function | Loops over > 1 node calling `upsertIndexNode` in one invocation? |
+|---|---|
+| `aging.go` `AgeEpisodes` | Yes — `for _, n := range nodes` over every aged episode this run |
+| `action_ingest.go` `ingestInteractions` | Yes — `for _, n := range nodes` over every annotated situation mirror |
+| `beliefs.go` `ReviseBeliefs` | Yes — `for _, n := range nodes` over every applied belief op |
+| `calendar_ingest.go` `commitCalendarNodes` | Yes — `for _, n := range nodes` over every dirty calendar/series entity |
+| `concepts.go` `PromoteConcepts` | Yes — `for _, n := range nodes` over every newly-created concept entity |
+| `dedupe.go` `DedupeEpisodes` (via `unionProvenance`) | Yes — indirectly: `unionProvenance` itself writes exactly one node per call, but `DedupeEpisodes`'s own nested merge loop can call it many times in one run |
+| `evict.go` `EvictEpisodes` | Yes — TWO loops, over `tombstones` and over `order` (rollups) |
+| `gmail_extract.go` `extractGmailBatch` | Yes — `for _, n := range nodes` over every built episode in the batch |
+| `ingest.go` `IngestSituations` | Yes — `for _, n := range toWrite` over every situation episode + linked entity this run |
+| `merge.go` `Merge` | Yes — `for _, n := range []Node{stub, winner}`, exactly 2 nodes every call — a genuine batch-of-2 the original 5d-ii design note did not call out |
+| `mirror_ingest.go` `commitMirrorNodes` | Yes — `for _, n := range nodes` over every built/refreshed mirror |
+| `pipeline.go` `extractBatch` | Yes — `for _, n := range nodes` over every built episode in the batch (the reviewer's named example) |
+| `reflect.go` `Reflect` | Yes — `for _, nd := range noteNodes` over every entity that got a reflection note |
+| `rewrite.go` `RewriteEntityPages` | Yes — `for _, n := range nodes` over every rewritten entity page |
+| `seed.go` `SeedEntities` | Yes — `for _, n := range nodes` over every seeded entity |
+
+Every production call site qualifies. The "isolated single-node write, no batch to memoize over" case 5d-ii's design note assumed for `upsertIndexNode`'s callers turns out not to exist anywhere in the package today — `Merge`'s own 2-node loop is the smallest instance, and even it pays one avoidable git walk per call. The fix therefore threads a memoized lookup through literally every production caller; there is no longer a caller left that passes `v.OwnerEdited` (the bare method value) directly.
+
+**Design — one shared type, no over-engineering:** `ownerEditedMemo` is deliberately minimal: a struct holding the source `*Vault`, the loaded map, a cached error, and a loaded flag — exactly `reconcilePass`'s own three ad hoc fields, lifted out and given one constructor + one method so every batch function can allocate its own instance (`mem := newOwnerEditedMemo(v)`) at the top of its node-writing block and pass `mem.lookup` to every `upsertIndexNode` call inside it. This is per-function-call memoization, not a package- or run-wide cache: two separate calls to, say, `extractGmailBatch` within one Gmail-extraction run each pay their own walk — a smaller win than a whole-run cache would give, but consistent with "a small closure per function suffices" and with keeping this change's blast radius to the exact shape 5d-ii already established for `Reconcile`, not a new cross-cutting cache lifetime to reason about.
+
+Current `OwnerEditedFiles` (`vault.go`, unchanged, for placement context — the new type is inserted directly after it):
+
+```go
+func (v *Vault) OwnerEditedFiles() (map[string]bool, error) {
+	iter, err := v.repo.Log(&git.LogOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("memory: owner-edited files log: %w", err)
+	}
+	defer iter.Close()
+
+	files := make(map[string]bool)
+	err = iter.ForEach(func(c *object.Commit) error {
+		if !strings.HasPrefix(c.Message, "memory(owner-edit)") {
+			return nil
+		}
+		stats, serr := c.Stats()
+		if serr != nil {
+			return serr
+		}
+		for _, fs := range stats {
+			files[fs.Name] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: owner-edited files walk: %w", err)
+	}
+	return files, nil
+}
+```
+
+- [ ] **Step 1: write the failing test** — append to `internal/memory/vault_test.go` after `TestVaultOwnerEditedFilesAggregatesAcrossHistory` (5d-ii's test):
+
+```go
+// TestOwnerEditedMemoCachesAcrossLookups: ownerEditedMemo loads
+// OwnerEditedFiles() at most ONCE and reuses it for every subsequent lookup
+// in the same instance — proven by committing a NEW owner-edit AFTER the
+// memo's first lookup and showing a second lookup on the SAME memo instance
+// still does not see it (a fresh, uncached lookup against the vault would).
+// This is the shared helper every genuine batch upsertIndexNode caller uses
+// instead of reconcilePass's own ad hoc fields (second whole-branch review
+// follow-up, 2026-07-19, MEM-16 addendum).
+func TestOwnerEditedMemoCachesAcrossLookups(t *testing.T) {
+	v := newTestVault(t)
+
+	a := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5MO1", "entity", "Alpha")
+	b := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5MO2", "episode", "Beta")
+	_, err := v.WriteNodes([]Node{a, b}, CommitMsg{Op: "seed", Summary: "seed", Cause: "seed", NodeIDs: []string{a.ID, b.ID}})
+	require.NoError(t, err)
+
+	// Owner edits A only, BEFORE the memo is created.
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "entities", a.ID+".md"),
+		append(a.Render(), []byte("\nhand edit\n")...), 0o644))
+	made, err := v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	mem := newOwnerEditedMemo(v)
+	gotA, err := mem.lookup("entities/" + a.ID + ".md")
+	require.NoError(t, err)
+	assert.True(t, gotA, "A's owner edit predates the memo — must be seen on first lookup")
+	gotB, err := mem.lookup("episodes/" + b.ID + ".md")
+	require.NoError(t, err)
+	assert.False(t, gotB, "B has no owner edit yet")
+
+	// A SECOND owner edit, of B, AFTER the memo already loaded.
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, "episodes", b.ID+".md"),
+		append(b.Render(), []byte("\nhand edit two\n")...), 0o644))
+	made, err = v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, made)
+
+	gotB, err = mem.lookup("episodes/" + b.ID + ".md")
+	require.NoError(t, err)
+	assert.False(t, gotB, "the SAME memo instance must stay cached — a fresh lookup would see B's new owner edit, a memoized one must not")
+
+	// A brand-new memo over the SAME vault DOES see it — proving the miss
+	// above is memoization, not a bug in OwnerEditedFiles itself.
+	fresh := newOwnerEditedMemo(v)
+	gotB, err = fresh.lookup("episodes/" + b.ID + ".md")
+	require.NoError(t, err)
+	assert.True(t, gotB, "sanity: a FRESH memo over the same vault does see B's owner edit")
+}
+```
+
+- [ ] **Step 2: run it — expect a build failure** (the type doesn't exist yet):
+
+```
+$ go test ./internal/memory/ -run TestOwnerEditedMemoCachesAcrossLookups -v
+# watchtower/internal/memory [watchtower/internal/memory.test]
+./vault_test.go:XXX: undefined: newOwnerEditedMemo
+FAIL	watchtower/internal/memory [build failed]
+```
+
+- [ ] **Step 3: add `ownerEditedMemo` to `vault.go`**, right after `OwnerEditedFiles`:
+
+```go
+// ownerEditedMemo lazily memoizes ONE Vault.OwnerEditedFiles() call, reused
+// by every upsertIndexNode call made within a single batch-writing function
+// invocation — the reconcilePass.ownerEdited pattern (Task 5d-ii),
+// generalized so every production caller that writes more than one node per
+// call gets it, not just Reconcile's bulk pass (second whole-branch review
+// follow-up, 2026-07-19, MEM-16 addendum: every real upsertIndexNode call
+// site turns out to loop over more than one node). A load failure is cached
+// too, so every subsequent lookup in the same batch fails the same way
+// instead of repeating a failing walk — each caller already handles the
+// error via its existing log-and-continue/quarantine path.
+type ownerEditedMemo struct {
+	v      *Vault
+	files  map[string]bool
+	err    error
+	loaded bool
+}
+
+// newOwnerEditedMemo returns a fresh memo scoped to ONE batch-writing call.
+// Constructing it does no I/O — the walk happens lazily, on the first
+// lookup — so a batch that ends up writing zero nodes never pays for it.
+func newOwnerEditedMemo(v *Vault) *ownerEditedMemo {
+	return &ownerEditedMemo{v: v}
+}
+
+// lookup resolves the owner-touch signal for rel, loading
+// v.OwnerEditedFiles() at most once per memo instance. Pass m.lookup wherever
+// computeNodeImportance (via upsertIndexNode) needs its
+// ownerEdited func(string) (bool, error) parameter.
+func (m *ownerEditedMemo) lookup(rel string) (bool, error) {
+	if !m.loaded {
+		m.files, m.err = m.v.OwnerEditedFiles()
+		m.loaded = true
+	}
+	if m.err != nil {
+		return false, m.err
+	}
+	return m.files[rel], nil
+}
+```
+
+- [ ] **Step 4: run it — expect green:**
+
+```
+$ go test ./internal/memory/ -run TestOwnerEditedMemoCachesAcrossLookups -v
+=== RUN   TestOwnerEditedMemoCachesAcrossLookups
+--- PASS: TestOwnerEditedMemoCachesAcrossLookups (0.02s)
+PASS
+ok  	watchtower/internal/memory	0.2s
+```
+
+- [ ] **Step 5: refactor `reconcilePass` to use the shared type instead of its own three fields.**
+
+Current (post-5e-i's Step 8):
+
+```go
+	priorLinkTargets map[string]bool
+
+	// ownerEditedFiles/ownerEditedErr/ownerEditedLoaded memoize
+	// v.OwnerEditedFiles() lazily: computed at most ONCE per Reconcile call,
+	// on the first node that actually needs the owner-touch signal (a fully
+	// unchanged pass — the common case — never pays for it at all), and
+	// reused by every subsequent computeNodeImportance call this pass
+	// instead of each paying its own full-history git-log walk (whole-branch
+	// review follow-up, added 2026-07-18, MEM-16).
+	ownerEditedFiles  map[string]bool
+	ownerEditedErr    error
+	ownerEditedLoaded bool
+}
+```
+
+New:
+
+```go
+	priorLinkTargets map[string]bool
+
+	// ownerMemo lazily memoizes v.OwnerEditedFiles() (ownerEditedMemo,
+	// vault.go) — Reconcile's own instance of the same shared per-call
+	// memoization every genuine batch upsertIndexNode caller now uses
+	// (second whole-branch review follow-up, 2026-07-19, MEM-16 addendum:
+	// this used to be three ad hoc fields on reconcilePass alone).
+	ownerMemo *ownerEditedMemo
+}
+```
+
+Current `ownerEdited` method:
+
+```go
+func (p *reconcilePass) ownerEdited(rel string) (bool, error) {
+	if !p.ownerEditedLoaded {
+		p.ownerEditedFiles, p.ownerEditedErr = p.v.OwnerEditedFiles()
+		p.ownerEditedLoaded = true
+	}
+	if p.ownerEditedErr != nil {
+		return false, p.ownerEditedErr
+	}
+	return p.ownerEditedFiles[rel], nil
+}
+```
+
+New:
+
+```go
+// ownerEdited is reconcilePass's owner-touch signal, passed to
+// computeNodeImportance as its ownerEdited func(rel string) (bool, error)
+// parameter — a thin delegate to the shared ownerEditedMemo (vault.go),
+// scoped to this one Reconcile call exactly as before this refactor.
+func (p *reconcilePass) ownerEdited(rel string) (bool, error) {
+	return p.ownerMemo.lookup(rel)
+}
+```
+
+Update `Reconcile`'s pass literal to construct the memo instead of leaving the removed fields to zero-initialize:
+
+```go
+	pass := &reconcilePass{
+		v:                v,
+		database:         database,
+		logf:             logf,
+		indexed:          indexed,
+		onDisk:           make(map[string]bool),
+		now:              time.Now().UTC().Format(time.RFC3339),
+		stats:            &stats,
+		priorLinkTargets: make(map[string]bool),
+		ownerMemo:        newOwnerEditedMemo(v),
+	}
+```
+
+- [ ] **Step 6: change `upsertIndexNode`'s signature** in `merge.go`:
+
+Current (`merge.go` lines 134-165):
+
+```go
+// upsertIndexNode mirrors a just-written node into the SQLite index, hashing
+// the same rendered bytes that WriteNodes put on disk (so a later Reconcile
+// sees the file as unchanged).
+func upsertIndexNode(database *db.DB, v *Vault, n Node, indexedAt string) error {
+	rel, err := nodeRelPath(n.ID)
+	if err != nil {
+		return err
+	}
+	importance, err := computeNodeImportance(database, v.OwnerEdited, n, rel)
+	if err != nil {
+		return fmt.Errorf("memory: computing importance for %s: %w", n.ID, err)
+	}
+	sum := sha256.Sum256(n.Render())
+	row := db.MemoryNodeRow{
+		ID:              n.ID,
+		Type:            n.Type,
+		Tier:            n.Tier,
+		Status:          n.Status,
+		RedirectTo:      n.RedirectTo,
+		Title:           n.Title,
+		Path:            rel,
+		ContentHash:     hex.EncodeToString(sum[:]),
+		IndexedAt:       indexedAt,
+		Subject:         n.Subject,
+		Confidence:      n.Confidence,
+		ImportanceScore: importance,
+	}
+	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, nil)...); err != nil {
+		return fmt.Errorf("memory: index %s: %w", n.ID, err)
+	}
+	return nil
+}
+```
+
+New:
+
+```go
+// upsertIndexNode mirrors a just-written node into the SQLite index, hashing
+// the same rendered bytes that WriteNodes put on disk (so a later Reconcile
+// sees the file as unchanged). ownerEdited resolves the owner-touch signal
+// for computeNodeImportance: every real caller of this function loops over
+// more than one node per invocation (second whole-branch review follow-up,
+// 2026-07-19, MEM-16 addendum — the "single-node, nothing to memoize" case
+// 5d-ii's design assumed does not exist in production code), so every caller
+// passes a per-call ownerEditedMemo's lookup method, never v.OwnerEdited
+// directly.
+func upsertIndexNode(database *db.DB, ownerEdited func(rel string) (bool, error), n Node, indexedAt string) error {
+	rel, err := nodeRelPath(n.ID)
+	if err != nil {
+		return err
+	}
+	importance, err := computeNodeImportance(database, ownerEdited, n, rel)
+	if err != nil {
+		return fmt.Errorf("memory: computing importance for %s: %w", n.ID, err)
+	}
+	sum := sha256.Sum256(n.Render())
+	row := db.MemoryNodeRow{
+		ID:              n.ID,
+		Type:            n.Type,
+		Tier:            n.Tier,
+		Status:          n.Status,
+		RedirectTo:      n.RedirectTo,
+		Title:           n.Title,
+		Path:            rel,
+		ContentHash:     hex.EncodeToString(sum[:]),
+		IndexedAt:       indexedAt,
+		Subject:         n.Subject,
+		Confidence:      n.Confidence,
+		ImportanceScore: importance,
+	}
+	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, nil)...); err != nil {
+		return fmt.Errorf("memory: index %s: %w", n.ID, err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 7: update every production call site.** Each gets a one-line `mem := newOwnerEditedMemo(v)` (or `p.vault`) inserted immediately before its node-writing loop, and its `upsertIndexNode(..., v, ...)` / `upsertIndexNode(..., p.vault, ...)` calls become `upsertIndexNode(..., mem.lookup, ...)`. Every quoted "current" block below is verbatim from the actual post-5d source (comments included).
+
+`merge.go`'s `Merge` (current loop, lines 75-81):
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range []Node{stub, winner} {
+		if err := upsertIndexNode(database, v, n, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+```
+
+New:
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
+	for _, n := range []Node{stub, winner} {
+		if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+```
+
+`aging.go`'s `AgeEpisodes` (current tail, lines 75-81):
+
+```go
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(database, v, n, nowStr); err != nil {
+			return aged, err
+		}
+	}
+	return aged, nil
+}
+```
+
+New:
+
+```go
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
+	for _, n := range nodes {
+		if err := upsertIndexNode(database, mem.lookup, n, nowStr); err != nil {
+			return aged, err
+		}
+	}
+	return aged, nil
+}
+```
+
+`concepts.go`'s `PromoteConcepts` (current inner block, lines 89-94):
+
+```go
+		now := time.Now().UTC().Format(time.RFC3339)
+		for _, n := range nodes {
+			if err := upsertIndexNode(database, v, n, now); err != nil {
+				return 0, err
+			}
+		}
+	}
+```
+
+New:
+
+```go
+		now := time.Now().UTC().Format(time.RFC3339)
+		mem := newOwnerEditedMemo(v)
+		for _, n := range nodes {
+			if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
+				return 0, err
+			}
+		}
+	}
+```
+
+`seed.go`'s `SeedEntities` (current tail, lines 133-138):
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(database, v, n, now); err != nil {
+			return 0, err
+		}
+	}
+	return len(nodes), nil
+}
+```
+
+New:
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
+	for _, n := range nodes {
+		if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
+			return 0, err
+		}
+	}
+	return len(nodes), nil
+}
+```
+
+`ingest.go`'s `IngestSituations` (current inner block, lines 164-169):
+
+```go
+		now := time.Now().UTC().Format(time.RFC3339)
+		for _, n := range toWrite {
+			if err := upsertIndexNode(database, v, n, now); err != nil {
+				return stats, err
+			}
+		}
+	}
+```
+
+New:
+
+```go
+		now := time.Now().UTC().Format(time.RFC3339)
+		mem := newOwnerEditedMemo(v)
+		for _, n := range toWrite {
+			if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
+				return stats, err
+			}
+		}
+	}
+```
+
+`evict.go`'s `EvictEpisodes` (current tail, lines 199-210 — its own `RetentionScore` candidate loop above, including the DIRECT `v.OwnerEdited(rel)` call at line 125, is UNTOUCHED by this step: that is a different concern, `RetentionScore`'s own live per-candidate signal, not the persisted `importance_score` this task is about):
+
+```go
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	for _, t := range tombstones {
+		if err := upsertIndexNode(database, v, t, nowStr); err != nil {
+			return evicted, err
+		}
+	}
+	for _, key := range order {
+		if err := upsertIndexNode(database, v, *rollups[key], nowStr); err != nil {
+			return evicted, err
+		}
+	}
+	return evicted, nil
+}
+```
+
+New:
+
+```go
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
+	for _, t := range tombstones {
+		if err := upsertIndexNode(database, mem.lookup, t, nowStr); err != nil {
+			return evicted, err
+		}
+	}
+	for _, key := range order {
+		if err := upsertIndexNode(database, mem.lookup, *rollups[key], nowStr); err != nil {
+			return evicted, err
+		}
+	}
+	return evicted, nil
+}
+```
+
+`dedupe.go`: `unionProvenance` gains the parameter, and `DedupeEpisodes` allocates ONE memo for its whole run, passed to every merge's `unionProvenance` call.
+
+Current `DedupeEpisodes`'s `sitMirrors` load (lines 51-54), its merge-loop call site (line 102), and `unionProvenance`'s signature/tail (lines 127, 163):
+
+```go
+	sitMirrors, err := database.SituationMirrorNodeIDs()
+	if err != nil {
+		return 0, err
+	}
+```
+
+```go
+				if err := unionProvenance(v, database, eps[i].id, eps[j].id); err != nil {
+					return merged, err
+				}
+```
+
+```go
+func unionProvenance(v *Vault, database *db.DB, winnerID, loserID string) error {
+```
+
+```go
+	return upsertIndexNode(database, v, winner, time.Now().UTC().Format(time.RFC3339))
+}
+```
+
+New — one memo allocated right after `sitMirrors` is loaded, threaded through:
+
+```go
+	sitMirrors, err := database.SituationMirrorNodeIDs()
+	if err != nil {
+		return 0, err
+	}
+	mem := newOwnerEditedMemo(v)
+```
+
+```go
+				if err := unionProvenance(v, database, mem.lookup, eps[i].id, eps[j].id); err != nil {
+					return merged, err
+				}
+```
+
+```go
+func unionProvenance(v *Vault, database *db.DB, ownerEdited func(rel string) (bool, error), winnerID, loserID string) error {
+```
+
+```go
+	return upsertIndexNode(database, ownerEdited, winner, time.Now().UTC().Format(time.RFC3339))
+}
+```
+
+`mirror_ingest.go`'s `commitMirrorNodes` (current tail, lines 166-172):
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, p.vault, n, now); err != nil {
+			p.logf("memory: index %s after operational mirror: %v", n.ID, err)
+		}
+	}
+	return nil
+}
+```
+
+New:
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(p.vault)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, mem.lookup, n, now); err != nil {
+			p.logf("memory: index %s after operational mirror: %v", n.ID, err)
+		}
+	}
+	return nil
+}
+```
+
+`calendar_ingest.go`'s `commitCalendarNodes` (current tail, lines 266-272):
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, p.vault, n, now); err != nil {
+			p.logf("memory: index %s after calendar ingest: %v", n.ID, err)
+		}
+	}
+	return nil
+}
+```
+
+New:
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(p.vault)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, mem.lookup, n, now); err != nil {
+			p.logf("memory: index %s after calendar ingest: %v", n.ID, err)
+		}
+	}
+	return nil
+}
+```
+
+`gmail_extract.go`'s `extractGmailBatch` (current tail, lines 329-337):
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, p.vault, n, now); err != nil {
+			// The vault commit stands; the index is derived and the next Reconcile
+			// repairs it, so this does not fail the batch (the Slack extractor's rule).
+			p.logf("memory: index %s after gmail extract: %v", n.ID, err)
+		}
+	}
+	return len(kept), usage, nil
+}
+```
+
+New:
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(p.vault)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, mem.lookup, n, now); err != nil {
+			// The vault commit stands; the index is derived and the next Reconcile
+			// repairs it, so this does not fail the batch (the Slack extractor's rule).
+			p.logf("memory: index %s after gmail extract: %v", n.ID, err)
+		}
+	}
+	return len(kept), usage, nil
+}
+```
+
+`pipeline.go`'s `extractBatch` (current tail, lines 1019-1027):
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, p.vault, n, now); err != nil {
+			// The vault commit stands; the index is derived and the next
+			// Reconcile repairs it, so this does not fail the batch.
+			p.logf("memory: index %s after extract: %v", n.ID, err)
+		}
+	}
+	return len(kept), rejected, malformed, usage, nil
+}
+```
+
+New:
+
+```go
+	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(p.vault)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, mem.lookup, n, now); err != nil {
+			// The vault commit stands; the index is derived and the next
+			// Reconcile repairs it, so this does not fail the batch.
+			p.logf("memory: index %s after extract: %v", n.ID, err)
+		}
+	}
+	return len(kept), rejected, malformed, usage, nil
+}
+```
+
+`beliefs.go`'s `ReviseBeliefs` (current tail, lines 208-216):
+
+```go
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, p.vault, n, nowStr); err != nil {
+			// Index-mirror consistency: return the error so the step is recorded
+			// as error; reconcile self-heals the missed mirror next run.
+			return touched, rejected, capHit, usage, err
+		}
+	}
+	return touched, rejected, capHit, usage, nil
+}
+```
+
+New:
+
+```go
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(p.vault)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, mem.lookup, n, nowStr); err != nil {
+			// Index-mirror consistency: return the error so the step is recorded
+			// as error; reconcile self-heals the missed mirror next run.
+			return touched, rejected, capHit, usage, err
+		}
+	}
+	return touched, rejected, capHit, usage, nil
+}
+```
+
+`action_ingest.go`'s `ingestInteractions` (current inner block, lines 301-306):
+
+```go
+		now := time.Now().UTC().Format(time.RFC3339)
+		for _, n := range nodes {
+			if ierr := upsertIndexNode(p.db, p.vault, n, now); ierr != nil {
+				p.logf("memory: interactions: index %s: %v", n.ID, ierr)
+			}
+		}
+	}
+```
+
+New:
+
+```go
+		now := time.Now().UTC().Format(time.RFC3339)
+		mem := newOwnerEditedMemo(p.vault)
+		for _, n := range nodes {
+			if ierr := upsertIndexNode(p.db, mem.lookup, n, now); ierr != nil {
+				p.logf("memory: interactions: index %s: %v", n.ID, ierr)
+			}
+		}
+	}
+```
+
+`rewrite.go`'s `RewriteEntityPages` (current tail, lines 166-174):
+
+```go
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, p.vault, n, nowStr); err != nil {
+			// Index-mirror consistency: return the error so the step is recorded
+			// as error; reconcile self-heals the missed mirror next run.
+			return rewritten, failed, usage, err
+		}
+	}
+	return rewritten, failed, usage, nil
+}
+```
+
+New:
+
+```go
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(p.vault)
+	for _, n := range nodes {
+		if err := upsertIndexNode(p.db, mem.lookup, n, nowStr); err != nil {
+			// Index-mirror consistency: return the error so the step is recorded
+			// as error; reconcile self-heals the missed mirror next run.
+			return rewritten, failed, usage, err
+		}
+	}
+	return rewritten, failed, usage, nil
+}
+```
+
+`reflect.go`'s `Reflect` (current inner block, lines 188-193):
+
+```go
+		nowStr := time.Now().UTC().Format(time.RFC3339)
+		for _, nd := range noteNodes {
+			if ierr := upsertIndexNode(p.db, p.vault, nd, nowStr); ierr != nil {
+				return n, flagged, dropped, usage, ierr // reconcile self-heals next run
+			}
+		}
+	}
+```
+
+New:
+
+```go
+		nowStr := time.Now().UTC().Format(time.RFC3339)
+		mem := newOwnerEditedMemo(p.vault)
+		for _, nd := range noteNodes {
+			if ierr := upsertIndexNode(p.db, mem.lookup, nd, nowStr); ierr != nil {
+				return n, flagged, dropped, usage, ierr // reconcile self-heals next run
+			}
+		}
+	}
+```
+
+- [ ] **Step 8: update the two direct test call sites** in `merge_test.go` (lines 211, 227):
+
+```go
+	require.NoError(t, upsertIndexNode(d, v, target, "2026-07-18T00:00:00Z"))
+```
+
+and
+
+```go
+	require.NoError(t, upsertIndexNode(d, v, n, "2026-07-18T00:00:00Z"))
+```
+
+both become (each is a single-node test call with nothing to batch — `v.OwnerEdited` as a bare method value is exactly the shape the parameter now expects, no memo needed for a lone call):
+
+```go
+	require.NoError(t, upsertIndexNode(d, v.OwnerEdited, target, "2026-07-18T00:00:00Z"))
+```
+
+and
+
+```go
+	require.NoError(t, upsertIndexNode(d, v.OwnerEdited, n, "2026-07-18T00:00:00Z"))
+```
+
+- [ ] **Step 9: build + run the full memory/db packages — expect zero regressions:**
+
+```
+$ go build ./... && go test -count=1 ./internal/memory/... ./internal/db/... -v > /tmp/test.log 2>&1; echo "exit=$?"; grep -c "^--- PASS" /tmp/test.log; grep "^--- FAIL" /tmp/test.log
+exit=0
+187
+```
+
+(no `FAIL` lines printed by the second grep)
+
+- [ ] **Step 10: targeted check of every test that exercises a batch write path, by name:**
+
+```
+$ go test ./internal/memory/... -run 'TestAgeEpisodes|TestPromoteConcepts|TestSeedEntities|TestIngestSituations|TestEvict|TestDedupeEpisodes|TestReviseBeliefs|TestCommitCalendarNodes|TestExtractGmailBatch|TestExtractBatch|TestIngestInteractions|TestRewriteEntityPages|TestReflect|TestMerge|TestUpsertIndexNode|TestOwnerEditedMemoCachesAcrossLookups' -v 2>&1 | tail -80
+```
+
+Expected: every existing test in each touched file still passes (each file's own `_test.go` suite already exercises its production function's success/failure paths; this step's diff never changes behavior, only how the owner-touch signal is threaded, so no existing assertion should need updating beyond the two `merge_test.go` call sites in Step 8).
+
+- [ ] **Step 11: commit:**
+
+```
+$ git add internal/memory/vault.go internal/memory/vault_test.go internal/memory/merge.go internal/memory/merge_test.go internal/memory/index.go internal/memory/aging.go internal/memory/action_ingest.go internal/memory/beliefs.go internal/memory/calendar_ingest.go internal/memory/concepts.go internal/memory/dedupe.go internal/memory/evict.go internal/memory/gmail_extract.go internal/memory/ingest.go internal/memory/mirror_ingest.go internal/memory/pipeline.go internal/memory/reflect.go internal/memory/rewrite.go internal/memory/seed.go
+$ git commit -m "perf(memory): memoize upsertIndexNode's owner-touch signal in every batch call site (second whole-branch review, MEM-16)
+
+5d-ii assumed upsertIndexNode's ~16 call sites were isolated single-node
+writes with nothing to memoize. Reading every one shows that assumption is
+wrong almost everywhere: AgeEpisodes, ingestInteractions, ReviseBeliefs,
+commitCalendarNodes, PromoteConcepts, DedupeEpisodes (via unionProvenance),
+EvictEpisodes (both loops), extractGmailBatch, IngestSituations, Merge (its
+own stub/winner pair), commitMirrorNodes, extractBatch, Reflect,
+RewriteEntityPages, and SeedEntities all loop over more than one node per
+invocation. upsertIndexNode's signature now takes an
+ownerEdited func(string) (bool, error) directly (computeNodeImportance's own
+shape); every batch function allocates one ownerEditedMemo (new shared type,
+vault.go — the reconcilePass.ownerEdited pattern generalized) before its
+node-writing loop and passes its lookup method to every call inside it.
+reconcilePass itself now delegates to the same shared type instead of
+duplicating the memoization logic. EvictEpisodes' own RetentionScore
+candidate-scoring loop (a different concern, never touches importance_score)
+is untouched. Guarded by TestOwnerEditedMemoCachesAcrossLookups."
+```
+
+---
+
+### 5e-iv: MEM-16 inventory addendum
+
+**Depends on:** 5e-i, 5e-ii, 5e-iii (needs their final test names). **Blocks:** 5e-v.
+
+**Files:**
+- Modify: `docs/inventory/memory.md` — extend MEM-16's Observable/Why-locked paragraphs and test-guard list, add a new changelog entry above the existing 2026-07-18 entries
+
+This task is documentation-only, extending the SAME MEM-16 contract 5b/5c/5d already extended — not a new contract number, matching the established pattern. `MEM-02`'s own text needs NO edit: with the link-removal asymmetry closed (5e-i/5e-ii), there is no longer any known residual divergence between the incremental and `Rebuild` paths for `importance_score` — MEM-02's existing blanket dump-equality claim is true again, not merely re-scoped. (Verified: the fix is one hop, symmetric with the ADD-a-link case 5d-iii already covers correctly, and `TestMemory02_ReindexEquivalence`'s strengthened fixture now exercises the removal case directly and passes.)
+
+- [ ] **Step 1: extend the Observable line.** Current (line 257, post-5d):
+
+```
+... A whole-branch review after this contract first shipped found and fixed three more gaps, folded into this same contract rather than a new one: `Reconcile`'s importance refinement now runs strictly after that call's deletion loop (a same-pass-deleted linker was otherwise still counted); the owner-touch git-log signal is now memoized once per `Reconcile` call instead of walked fresh per node; and a node whose own file never changes now still gets its `importance_score` refreshed when some OTHER touched node's body newly links to it.
+```
+
+Append one sentence at the end:
+
+```
+A second whole-branch review (2026-07-19), run to confirm those three fixes, found them genuinely fixed and surfaced two more real, non-blocking gaps, also folded in here: the link-removal asymmetry the first review's delta-refine fix left as a documented residual is now closed (a REMOVED link — whether from an edit or from a whole-file deletion — now delta-refines its old target too), and `upsertIndexNode`'s owner-touch memoization, which the first review scoped to `Reconcile`'s bulk pass only, now covers every one of its production call sites, since every one of them turns out to loop over more than one node per invocation.
+```
+
+- [ ] **Step 2: extend the Why-locked paragraph.** Append at the end of the existing paragraph (after the second whole-branch-review sentence 5d-iv added):
+
+```
+A THIRD whole-branch review (2026-07-19), run specifically to confirm the second review's three fixes, found them genuinely fixed and surfaced two more real, non-blocking gaps in the same code. (1) The link-removal asymmetry 5d-iii explicitly documented as an accepted residual — a node whose only linker's body (or whole file) no longer links to it kept a stale, too-HIGH `importance_score`, the harmful direction for future retrieval ranking — is now closed: `Reconcile`'s `file()` captures an edited touched node's PRIOR body (read from `memory_fts` before `UpsertMemoryNode` overwrites it) and the deletion loop captures a doomed node's own body (read before `DeleteMemoryNode` drops it), unioning both bodies' outgoing links into the SAME delta-refine candidate set 5d-iii built — recomputation is idempotent, so re-adding a link that's still present costs nothing. `TestMemory02_ReindexEquivalence`'s own fixture was also strengthened to actually exercise a link removal (its prior "touch A once more" step was redundant given 5d-iii's fix, and that redundancy meant the guard could never have caught a regression here). (2) `upsertIndexNode`'s owner-touch memoization, which 5d-ii scoped to `Reconcile`'s bulk pass on the assumption that its other ~16 call sites were isolated single-node writes with nothing to memoize, turns out to be needed almost everywhere: reading every real call site shows all of them loop over more than one node per invocation (`AgeEpisodes`, `ingestInteractions`, `ReviseBeliefs`, `commitCalendarNodes`, `PromoteConcepts`, `DedupeEpisodes` via `unionProvenance`, `EvictEpisodes`'s two loops, `extractGmailBatch`, `IngestSituations`, `Merge`'s own stub/winner pair, `commitMirrorNodes`, `extractBatch`, `Reflect`, `RewriteEntityPages`, `SeedEntities`). `upsertIndexNode`'s second parameter now takes the `ownerEdited func(string) (bool, error)` signal directly (mirroring `computeNodeImportance`'s own shape); every batch function allocates one per-call `ownerEditedMemo` (a new small shared type generalizing `reconcilePass`'s own ad hoc fields, which now delegate to it too) before its node-writing loop.
+```
+
+- [ ] **Step 3: add five test guards.** Append to the bullet list (after the 5d-iv bullets):
+
+```
+- `internal/db/memory_test.go::TestGetMemoryNodeBody` (the new pre-overwrite FTS body reader returns the exact prior body, `sql.ErrNoRows` for an unknown id)
+- `internal/memory/index_test.go::TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit` (a touched node's body edit that REMOVES a link delta-refines the old target down)
+- `internal/memory/index_test.go::TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion` (a deleted node's own outgoing links delta-refine their former targets down)
+- `internal/memory/index_test.go::TestMemory02_ReindexEquivalence` (strengthened again: pass 4 removes a link and asserts the target's score drops to 0 in both the incremental and rebuilt dumps — NEEDS-OWNER-REVIEW, an extension)
+- `internal/memory/vault_test.go::TestOwnerEditedMemoCachesAcrossLookups` (the shared per-call memo loads `OwnerEditedFiles()` at most once and stays stale-by-design for the rest of that call — proving true memoization, not just a correct first answer)
+```
+
+- [ ] **Step 4: add the changelog entry.** Insert immediately after the `## Changelog` heading, above the existing 2026-07-18 entries:
+
+```markdown
+
+- 2026-07-19 (second whole-branch review follow-up on Slice A / MEM-16, run to confirm 5d's three fixes — confirmed, and two more non-blocking gaps found and fixed): (1) **Link-removal asymmetry closed** — 5d-iii's delta-refine only read a touched node's NEW body, so a link REMOVED by an edit (or by the node's whole file being deleted) left the old target's `importance_score` stale-too-HIGH, the harmful direction for future retrieval ranking, and 5d-iii itself documented this as an accepted residual. Fixed: `Reconcile`'s `file()` now captures an edited touched node's PRIOR body (`db.GetMemoryNodeBody`, new, reads `memory_fts` before `UpsertMemoryNode` overwrites it) and the deletion loop captures a doomed node's own body (read before `DeleteMemoryNode`), unioning both bodies' outgoing links into the same delta-refine candidate set — one hop only, still, and idempotent (re-adding a still-present link costs nothing). `TestMemory02_ReindexEquivalence`'s fixture was strengthened: the redundant "touch A once more" step (which masked whether this guard could ever catch a removal regression) was replaced with a real link-removal pass. (2) **`upsertIndexNode` batch memoization generalized** — 5d-ii scoped the owner-touch memoization to `Reconcile`'s bulk pass, assuming its other ~16 call sites were isolated single-node writes; reading every real call site shows virtually all of them loop over more than one node per invocation. `upsertIndexNode`'s signature now takes an `ownerEdited func(string) (bool, error)` directly; every batch function (`AgeEpisodes`, `ingestInteractions`, `ReviseBeliefs`, `commitCalendarNodes`, `PromoteConcepts`, `DedupeEpisodes`/`unionProvenance`, `EvictEpisodes`, `extractGmailBatch`, `IngestSituations`, `Merge`, `commitMirrorNodes`, `extractBatch`, `Reflect`, `RewriteEntityPages`, `SeedEntities`) now allocates one per-call `ownerEditedMemo` (new shared type, generalizing `reconcilePass`'s own ad hoc fields, which now delegate to it) instead of paying a fresh git-log walk per node. Guarded by `TestGetMemoryNodeBody`, `TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit`, `TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion`, the strengthened `TestMemory02_ReindexEquivalence`, and `TestOwnerEditedMemoCachesAcrossLookups`. No new contract number (folded into MEM-16), no new config gate, no retrieval/chat/MCP change — still foundation-only. `EvictEpisodes`'s own `RetentionScore` scoring logic (a different concern, never reads `importance_score`) is untouched.
+```
+
+- [ ] **Step 5: re-read the section and sanity-check it renders correctly:**
+
+```
+$ grep -n "^## MEM-16\|^## Known v1\|^## Changelog" docs/inventory/memory.md
+```
+
+Expected: unchanged positions (only the text between them grew); the new changelog entry sits directly under the `## Changelog` heading, above the 5d and Slice-A entries.
+
+- [ ] **Step 6: commit:**
+
+```
+$ git add docs/inventory/memory.md
+$ git commit -m "docs(memory): MEM-16 addendum — link-removal asymmetry closed, upsertIndexNode batch memoization generalized
+
+Second whole-branch review confirmed 5d's three fixes and found two more
+non-blocking gaps; both folded into the existing MEM-16 contract with new
+test guards, matching the established 5b/5c/5d pattern."
+```
+
+---
+
+### 5e-v: Final verification
+
+**Depends on:** 5e-i, 5e-ii, 5e-iii, 5e-iv. **Blocks:** nothing (terminal).
+
+- [ ] **Step 1: formatting.**
+
+```
+$ gofmt -l internal/db/memory.go internal/db/memory_test.go internal/memory/index.go internal/memory/index_test.go internal/memory/vault.go internal/memory/vault_test.go internal/memory/merge.go internal/memory/merge_test.go internal/memory/aging.go internal/memory/action_ingest.go internal/memory/beliefs.go internal/memory/calendar_ingest.go internal/memory/concepts.go internal/memory/dedupe.go internal/memory/evict.go internal/memory/gmail_extract.go internal/memory/ingest.go internal/memory/mirror_ingest.go internal/memory/pipeline.go internal/memory/reflect.go internal/memory/rewrite.go internal/memory/seed.go docs/inventory/memory.md
+```
+
+Expected: no output (the last path is markdown — `gofmt` ignores it silently; included for a single copy-pasteable command, harmless).
+
+- [ ] **Step 2: vet + build.**
+
+```
+$ go vet ./... && go build ./... > /tmp/build.log 2>&1; echo "exit=$?"; cat /tmp/build.log
+exit=0
+```
+
+- [ ] **Step 3: the directly-touched packages, verbose, real exit code checked explicitly (never piped through `tail` alone):**
+
+```
+$ go test -count=1 ./internal/memory/... ./internal/db/... -v > /tmp/test.log 2>&1; echo "exit=$?"; grep -E "^--- (FAIL|PASS)" /tmp/test.log | grep -c PASS; grep "^--- FAIL" /tmp/test.log
+exit=0
+```
+
+Expected: `exit=0`, zero `FAIL` lines, and (by name) every 5d guard (`TestReconcileComputesImportanceScore`, `TestReconcileImportanceOverrideWins`, `TestReconcileImportanceQuarantineOnSignalError`, `TestReconcileImportanceOrderIndependent`, `TestMemory02_ReindexEquivalence`, `TestEvictReindexEquivalence`, `TestUpsertIndexNodeComputesImportance`, `TestUpsertIndexNodeImportanceOverrideWins`, `TestUpdateMemoryNodeImportanceScore`, `TestReconcileImportanceRefinesAfterDeletion`, `TestVaultOwnerEditedFilesAggregatesAcrossHistory`, `TestReconcileImportanceRefinesUnchangedLinkedNode`) plus every 5e guard (`TestGetMemoryNodeBody`, `TestReconcileImportanceDeltaRefinesRemovedLinkOnEdit`, `TestReconcileImportanceDeltaRefinesRemovedLinkOnDeletion`, `TestOwnerEditedMemoCachesAcrossLookups`) present and passing — sixteen names total.
+
+- [ ] **Step 4: broader blast-radius check** (nothing outside `internal/memory` calls `computeNodeImportance`/`upsertIndexNode`/`unionProvenance`/`reconcilePass`/`ownerEditedMemo` — all unexported — but `db.MemoryNodeRow`/`Node` are read elsewhere):
+
+```
+$ go test ./internal/inbox/... ./internal/mcp/... ./internal/daemon/... ./cmd/... > /tmp/blast.log 2>&1; echo "exit=$?"; tail -10 /tmp/blast.log
+exit=0
+```
+
+- [ ] **Step 5: full suite.**
+
+```
+$ go test ./... > /tmp/full-test.log 2>&1; echo "exit=$?"; grep -c "^ok" /tmp/full-test.log; grep "^FAIL" /tmp/full-test.log
+exit=0
+```
+
+Expected: `exit=0`, no `FAIL` lines.
+
+- [ ] **Step 6: final status check — confirm nothing is left uncommitted:**
+
+```
+$ git status --short
+```
+
+Expected: clean (5e-i through 5e-iv already committed everything).
+
+---
+
+**Summary of 5e's new/changed files:**
+- Modified: `internal/db/memory.go` (new `GetMemoryNodeBody`), `internal/memory/index.go` (`reconcilePass` gains `priorLinkTargets` then drops its own three `ownerEdited*` fields for a shared `*ownerEditedMemo`; `file()` captures prior bodies; `Reconcile`'s deletion loop captures doomed bodies; `refineImportance` unions `priorLinkTargets`), `internal/memory/vault.go` (new `ownerEditedMemo` type + constructor), `internal/memory/merge.go` (`upsertIndexNode`'s signature; `Merge`'s loop), `internal/memory/aging.go`, `internal/memory/action_ingest.go`, `internal/memory/beliefs.go`, `internal/memory/calendar_ingest.go`, `internal/memory/concepts.go`, `internal/memory/dedupe.go` (`unionProvenance`'s signature), `internal/memory/evict.go`, `internal/memory/gmail_extract.go`, `internal/memory/ingest.go`, `internal/memory/mirror_ingest.go`, `internal/memory/pipeline.go`, `internal/memory/reflect.go`, `internal/memory/rewrite.go`, `internal/memory/seed.go` (each gets one `mem := newOwnerEditedMemo(...)` line before its node-writing loop), `internal/db/memory_test.go` (one new test), `internal/memory/index_test.go` (two new tests + `TestMemory02_ReindexEquivalence`'s fixture strengthened), `internal/memory/vault_test.go` (one new test), `internal/memory/merge_test.go` (two call sites updated to the new signature), `docs/inventory/memory.md` (MEM-16 addendum + changelog entry)
+- Untouched (verified, not just assumed): `internal/memory/evict.go`'s own `RetentionScore`/candidate-scoring logic and its direct `v.OwnerEdited(rel)` call (line ~125) — a different concern from `upsertIndexNode`'s owner-touch memoization; `internal/memory/evict_test.go`; `MEM-02`'s own inventory text (no edit needed — the claim is true again, not re-scoped); `computeNodeImportance`'s signature (unchanged since 5d-ii).
