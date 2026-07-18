@@ -237,6 +237,34 @@ func (db *DB) MirrorAliasNodeIDs() (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// SituationMirrorNodeIDs returns the set of node ids carrying a numeric
+// `situation:<id>` alias — the situation episode-mirrors. The episode-dedupe
+// pass excludes them entirely (M2, 2026-07-18): two situations can share an
+// inbox signal, so their mirrors share a provenance ref, but they are distinct
+// stories whose identity is the alias — merging them makes the ingest refresh
+// ping-pong the merged node every run. Same numeric anchoring discipline as
+// MirrorAliasNodeIDs (LIKE keeps the alias-index prefix search; the
+// case-sensitive GLOB pair rejects case-variant and non-numeric aliases).
+func (db *DB) SituationMirrorNodeIDs() (map[string]bool, error) {
+	rows, err := db.Query(`SELECT node_id FROM memory_aliases
+		WHERE alias LIKE 'situation:%' AND alias GLOB 'situation:*'
+		  AND alias != 'situation:' AND alias NOT GLOB 'situation:*[^0-9]*'`)
+	if err != nil {
+		return nil, fmt.Errorf("listing situation mirror aliases: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]bool{}
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			return nil, fmt.Errorf("scanning situation mirror alias: %w", err)
+		}
+		out[nodeID] = true
+	}
+	return out, rows.Err()
+}
+
 // memoryNodeSelectCols is the shared column list for GetMemoryNode/
 // ListMemoryNodes/ListDisputePendingBeliefs: the base memory_nodes columns
 // plus DisputePending, derived via EXISTS over the memory_dispute_flags side

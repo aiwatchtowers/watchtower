@@ -42,6 +42,16 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 	if err != nil {
 		return 0, err
 	}
+	// Situation mirrors are excluded entirely — winner AND loser (M2): two
+	// situations can share an inbox signal, so their mirrors legitimately share
+	// a provenance ref while being DIFFERENT stories; a merge makes the
+	// situations-ingest refresh ping-pong the merged node's content every run.
+	// A mirror's identity is its situation: alias, not ref overlap (the
+	// gmailthread:/calevent: alias-keyed idempotency precedent).
+	sitMirrors, err := database.SituationMirrorNodeIDs()
+	if err != nil {
+		return 0, err
+	}
 
 	// Collect candidate episodes grouped by channel. ListMemoryNodes already
 	// orders by id, so within each channel the slice stays oldest-first.
@@ -49,6 +59,9 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 	for _, row := range rows {
 		if row.Type != "episode" || row.Tier != "short" || row.Status != "active" {
 			continue
+		}
+		if sitMirrors[row.ID] {
+			continue // situation mirror — alias-keyed identity, never dedupe-merged (M2)
 		}
 		n, rerr := v.ReadNode(row.ID)
 		if rerr != nil {
