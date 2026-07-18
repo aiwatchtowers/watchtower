@@ -1183,6 +1183,7 @@ var interactionTables = map[string]bool{
 	"user_interactions": true,
 	"decision_reads":    true,
 	"situations":        true,
+	"feedback":          true, // situation-level dashboard thumbs (M8, see 00026)
 }
 
 // InteractionExists reports whether row id exists in a WHITELISTED
@@ -1230,6 +1231,32 @@ func (db *DB) MemoryInteractionFloor() (int64, error) {
 func (db *DB) SetMemoryInteractionFloor(id int64) error {
 	if _, err := db.Exec(`UPDATE workspace SET memory_last_interaction_id = ?`, id); err != nil {
 		return fmt.Errorf("setting memory interaction floor: %w", err)
+	}
+	return nil
+}
+
+// MemorySituationFeedbackFloor returns the interaction-ingest floor over
+// feedback(entity_type='situation') — the dashboard's situation-level thumbs
+// (M8, see 00026). A sibling of MemoryInteractionFloor with the same
+// discipline: read at step start, advanced only after the step's vault commit
+// and aggregate writes succeed. A fresh workspace reads as 0.
+func (db *DB) MemorySituationFeedbackFloor() (int64, error) {
+	var id int64
+	err := db.QueryRow(`SELECT COALESCE(memory_last_situation_feedback_id, 0) FROM workspace LIMIT 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting memory situation-feedback floor: %w", err)
+	}
+	return id, nil
+}
+
+// SetMemorySituationFeedbackFloor advances the situation-feedback ingest floor
+// (see MemorySituationFeedbackFloor).
+func (db *DB) SetMemorySituationFeedbackFloor(id int64) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_last_situation_feedback_id = ?`, id); err != nil {
+		return fmt.Errorf("setting memory situation-feedback floor: %w", err)
 	}
 	return nil
 }
@@ -1368,6 +1395,41 @@ func (db *DB) ListInteractionFeedback(floor int64) ([]InteractionFeedback, error
 		var f InteractionFeedback
 		if err := rows.Scan(&f.ID, &f.SituationID, &f.Rating, &f.Date, &f.At, &f.TSUnix); err != nil {
 			return nil, fmt.Errorf("scanning interaction feedback: %w", err)
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// ListSituationFeedback returns feedback(entity_type='situation') rows with id
+// strictly above the situation-feedback floor, oldest id first — the dashboard's
+// situation-level 👍/👎, the interaction ingest's SECOND floor-driven source
+// (M8, see 00026): since bda8032 the Desktop persists the owner's primary
+// rating gesture here on both the Swift fast path and the CLI path, never to
+// inbox_feedback. Projected into the same InteractionFeedback shape (the
+// situation id parsed from entity_id; a non-numeric entity_id yields
+// SituationID 0 and is consumed by the floor like an unattached inbox_feedback
+// row). READ-ONLY: memory never writes feedback (MEM-05 discipline). feedback
+// is a core (always-migrated) table, so a query failure propagates (freezing
+// the floor) rather than being masked.
+func (db *DB) ListSituationFeedback(floor int64) ([]InteractionFeedback, error) {
+	rows, err := db.Query(`
+		SELECT id, COALESCE(CAST(entity_id AS INTEGER), 0), rating,
+		       strftime('%Y-%m-%d', created_at), created_at,
+		       CAST(strftime('%s', created_at) AS INTEGER)
+		FROM feedback
+		WHERE entity_type = 'situation' AND id > ?
+		ORDER BY id`, floor)
+	if err != nil {
+		return nil, fmt.Errorf("listing situation feedback: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InteractionFeedback
+	for rows.Next() {
+		var f InteractionFeedback
+		if err := rows.Scan(&f.ID, &f.SituationID, &f.Rating, &f.Date, &f.At, &f.TSUnix); err != nil {
+			return nil, fmt.Errorf("scanning situation feedback: %w", err)
 		}
 		out = append(out, f)
 	}

@@ -76,7 +76,7 @@ func TestIngestInteractionsFeedbackAnnotatesAndBumps(t *testing.T) {
 	fid := seedFeedback(t, d, itemID, -1, "2026-07-16T10:00:00Z")
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	staged, folded, bumped, newFloor, err := p.ingestInteractions(0)
+	staged, folded, bumped, newFloor, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 1, folded, "one interaction folded")
 	assert.Equal(t, 1, bumped, "one entity engagement bumped")
@@ -107,7 +107,7 @@ func TestIngestInteractions_EngagementStampIsRFC3339(t *testing.T) {
 	seedFeedback(t, d, itemID, 1, "2026-07-16T10:00:00Z")
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, _, bumped, _, err := p.ingestInteractions(0)
+	_, _, bumped, _, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	require.Equal(t, 1, bumped)
 
@@ -134,7 +134,7 @@ func TestIngestInteractionsConversionAnnotatesEngaged(t *testing.T) {
 	require.NoError(t, d.MarkSituationConverted(sitID, 12, 0))
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, folded, bumped, _, err := p.ingestInteractions(0)
+	_, folded, bumped, _, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 1, folded)
 	assert.Equal(t, 1, bumped)
@@ -149,6 +149,60 @@ func TestIngestInteractionsConversionAnnotatesEngaged(t *testing.T) {
 	assert.Contains(t, n.Body, "converted to target #12", "conversion outcome annotation")
 }
 
+// seedSituationFeedback inserts one feedback(entity_type='situation') row — the
+// dashboard's situation-level 👍/👎 write (FeedbackQueries.addFeedback) — and
+// returns its id.
+func seedSituationFeedback(t *testing.T, d *db.DB, sitID, rating int, createdAt string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO feedback (entity_type, entity_id, rating, comment, created_at)
+		VALUES ('situation', ?, ?, '', ?)`, fmt.Sprintf("%d", sitID), rating, createdAt)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+// TestIngestInteractionsSituationFeedbackFolds guards the M8 fix (2026-07-18
+// final validation): the dashboard's situation-level 👍/👎 persists to
+// feedback(entity_type='situation'), not inbox_feedback — the ingest's second
+// floor-driven source. A 👎 row annotates the situation's mirror, bumps
+// dismissed_count, stages an act:feedback:<id> ref, and advances the
+// situation-feedback floor while leaving the inbox_feedback floor untouched.
+func TestIngestInteractionsSituationFeedbackFolds(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	sitID, _, entID := seedActSituation(t, v, d, "C1GEN")
+	fid := seedSituationFeedback(t, d, sitID, -1, "2026-07-18T09:00:00Z")
+
+	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
+	staged, folded, bumped, newFloor, newSFFloor, err := p.ingestInteractions(0, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, folded, "one situation-feedback interaction folded")
+	assert.Equal(t, 1, bumped)
+	assert.Zero(t, newFloor, "inbox_feedback floor untouched")
+	assert.Equal(t, fid, newSFFloor, "situation-feedback floor advances to the feedback id")
+
+	engaged, dismissed, err := d.GetEngagement(entID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, engaged)
+	assert.Equal(t, 1, dismissed, "situation 👎 → dismissed_count")
+
+	n, err := Resolve(v, d, fmt.Sprintf("situation:%d", sitID))
+	require.NoError(t, err)
+	assert.Contains(t, n.Body, "- 2026-07-18: owner dismissed", "owner-action bullet appended")
+
+	require.NotNil(t, staged)
+	var ts int64
+	require.NoError(t, d.QueryRow(`SELECT CAST(strftime('%s', created_at) AS INTEGER) FROM feedback WHERE id = ?`, fid).Scan(&ts))
+	assert.True(t, staged.refs[fmt.Sprintf("act:feedback:%d %d", fid, ts)], "act:feedback ref staged")
+
+	// The act:feedback ref must resolve through the act resolver whitelist
+	// (MEM-15 — a validated owner-interaction row).
+	exists, err := d.InteractionExists("feedback", fid)
+	require.NoError(t, err)
+	assert.True(t, exists, "feedback is a whitelisted interaction table")
+}
+
 // TestIngestInteractionsOwnerDoneFolds: a situation the OWNER closed from the
 // Desktop (status='done', resolved_reason='user_done' — SituationQueries.done's
 // exact write) folds: "owner resolved" bullet + engaged_count.
@@ -161,7 +215,7 @@ func TestIngestInteractionsOwnerDoneFolds(t *testing.T) {
 	require.NoError(t, err)
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, folded, bumped, _, err := p.ingestInteractions(0)
+	_, folded, bumped, _, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 1, folded, "an owner-closed situation folds")
 	assert.Equal(t, 1, bumped)
@@ -191,7 +245,7 @@ func TestIngestInteractionsSystemAutoResolveNeverFolds(t *testing.T) {
 	require.NoError(t, err)
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	staged, folded, bumped, _, err := p.ingestInteractions(0)
+	staged, folded, bumped, _, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Zero(t, folded, "a system auto-resolve is not an owner verdict")
 	assert.Zero(t, bumped, "no engagement from system actions")
@@ -219,9 +273,9 @@ func TestIngestInteractionsConversionIdempotent(t *testing.T) {
 	require.NoError(t, d.MarkSituationConverted(1, 12, 0))
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, _, _, _, err := p.ingestInteractions(0)
+	_, _, _, _, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
-	_, folded, bumped, _, err := p.ingestInteractions(0)
+	_, folded, bumped, _, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Zero(t, folded, "an already-annotated verdict is a no-op on re-scan")
 	assert.Zero(t, bumped)
@@ -241,7 +295,7 @@ func TestIngestInteractionsMapsToNoEntity(t *testing.T) {
 	fid := seedFeedback(t, d, itemID, -1, "2026-07-16T10:00:00Z")
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	staged, folded, bumped, newFloor, err := p.ingestInteractions(0)
+	staged, folded, bumped, newFloor, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Zero(t, folded)
 	assert.Zero(t, bumped)
@@ -262,7 +316,7 @@ func TestIngestInteractionsFloorHoldsOnError(t *testing.T) {
 	require.NoError(t, err)
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, _, _, newFloor, err := p.ingestInteractions(0)
+	_, _, _, newFloor, _, err := p.ingestInteractions(0, 0)
 	require.Error(t, err, "a mapping DB error freezes the step")
 	assert.Equal(t, int64(0), newFloor, "the floor holds on error")
 }
@@ -274,7 +328,7 @@ func TestIngestInteractionsNoRowsNoOp(t *testing.T) {
 	seedWorkspaceRow(t, d)
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	staged, folded, bumped, newFloor, err := p.ingestInteractions(0)
+	staged, folded, bumped, newFloor, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Nil(t, staged)
 	assert.Zero(t, folded)
@@ -299,7 +353,7 @@ func TestMemory05_InteractionIngestInboxUntouched(t *testing.T) {
 	signalsBefore := dumpTable(t, d, "situation_signals")
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, _, _, _, err = p.ingestInteractions(0)
+	_, _, _, _, _, err = p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 
 	assert.Equal(t, inboxBefore, dumpTable(t, d, "inbox_items"), "inbox_items byte-identical")
@@ -388,7 +442,7 @@ func TestIngestInteractions_SharedEntityBumpedOnce(t *testing.T) {
 	fid := seedFeedback(t, d, int(item), 1, "2026-07-16T10:00:00Z")
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, folded, bumped, newFloor, err := p.ingestInteractions(0)
+	_, folded, bumped, newFloor, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 1, folded, "one DISTINCT feedback id, not one per situation")
 	assert.Equal(t, 1, bumped, "the shared entity is bumped once")
@@ -412,7 +466,7 @@ func TestIngestInteractions_FloorHeldOnBumpFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, _, bumped, newFloor, err := p.ingestInteractions(0)
+	_, _, bumped, newFloor, _, err := p.ingestInteractions(0, 0)
 	require.Error(t, err, "a bump failure fails the step")
 	assert.Zero(t, bumped)
 	assert.Equal(t, int64(0), newFloor, "the feedback floor holds so the batch re-scans")
@@ -429,7 +483,7 @@ func TestIngestInteractions_VerdictStableKeyOnUpdatedAtMove(t *testing.T) {
 	require.NoError(t, d.MarkSituationConverted(sitID, 12, 0))
 
 	p := NewPipeline(d, v, &fakeGen{}, actionsConfig(), t.Logf)
-	_, folded, bumped, _, err := p.ingestInteractions(0)
+	_, folded, bumped, _, _, err := p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	require.Equal(t, 1, folded)
 	require.Equal(t, 1, bumped)
@@ -437,7 +491,7 @@ func TestIngestInteractions_VerdictStableKeyOnUpdatedAtMove(t *testing.T) {
 	// AttachSignal-style bump of updated_at, verdict UNCHANGED.
 	_, err = d.Exec(`UPDATE situations SET updated_at = '2026-07-16T12:00:00Z' WHERE id = ?`, sitID)
 	require.NoError(t, err)
-	_, folded, bumped, _, err = p.ingestInteractions(0)
+	_, folded, bumped, _, _, err = p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Zero(t, folded, "same verdict, moved date → not re-folded")
 	assert.Zero(t, bumped)
@@ -448,7 +502,7 @@ func TestIngestInteractions_VerdictStableKeyOnUpdatedAtMove(t *testing.T) {
 	// A genuinely changed verdict (track added) appends once more.
 	_, err = d.Exec(`UPDATE situations SET converted_track_id = 5 WHERE id = ?`, sitID)
 	require.NoError(t, err)
-	_, folded, bumped, _, err = p.ingestInteractions(0)
+	_, folded, bumped, _, _, err = p.ingestInteractions(0, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 1, folded, "a changed verdict is folded once more")
 	assert.Equal(t, 1, bumped)

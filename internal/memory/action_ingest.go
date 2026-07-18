@@ -70,9 +70,15 @@ func (p *Pipeline) runInteractionIngest(runID int64, stepOffset int, stats *RunS
 		p.recordSemanticStep(runID, &step, "interaction-ingest", "error", nil, start)
 		return nil, 1
 	}
-	staged, folded, bumped, nf, ierr := p.ingestInteractions(floor)
+	sfFloor, sferr := p.db.MemorySituationFeedbackFloor()
+	if sferr != nil {
+		p.logf("memory: interaction ingest: read situation-feedback floor: %v", sferr)
+		p.recordSemanticStep(runID, &step, "interaction-ingest", "error", nil, start)
+		return nil, 1
+	}
+	staged, folded, bumped, nf, nsf, ierr := p.ingestInteractions(floor, sfFloor)
 	if ierr != nil {
-		p.logf("memory: interaction ingest: %v", ierr) // floor held (nf == floor)
+		p.logf("memory: interaction ingest: %v", ierr) // floors held (nf/nsf == floor/sfFloor)
 		p.recordSemanticStep(runID, &step, "interaction-ingest", "error", nil, start)
 		return nil, 1
 	}
@@ -83,19 +89,30 @@ func (p *Pipeline) runInteractionIngest(runID int64, stepOffset int, stats *RunS
 			p.logf("memory: interaction ingest: advance floor: %v", serr)
 		}
 	}
+	if nsf > sfFloor {
+		if serr := p.db.SetMemorySituationFeedbackFloor(nsf); serr != nil {
+			p.logf("memory: interaction ingest: advance situation-feedback floor: %v", serr)
+		}
+	}
 	p.recordSemanticStep(runID, &step, "interaction-ingest", "done", nil, start)
 	return staged, 1
 }
 
 // ingestInteractions folds the owner's dashboard interactions above the given
-// interaction floor. It returns the act: refs staged for the belief pass (nil
-// when none), the count of distinct interactions folded, the number of
-// engagement aggregates bumped, and the new floor (== floor on a
-// mapping/commit/bump error, so the caller holds it and re-scans next run).
+// floors (floor: inbox_feedback; sfFloor: feedback(entity_type='situation') —
+// the dashboard's situation-level thumbs, M8). It returns the act: refs staged
+// for the belief pass (nil when none), the count of distinct interactions
+// folded, the number of engagement aggregates bumped, and the new floors
+// (== the inputs on a mapping/commit/bump error, so the caller holds both and
+// re-scans next run).
 //
 // Idempotency & discipline:
 //   - inbox_feedback is append-only and floor-driven; InteractionsIngested counts
 //     DISTINCT feedback ids (one 👍 shared by N situations is one interaction).
+//   - feedback(entity_type='situation') is likewise append-only and floor-driven
+//     (its own floor, memory_last_situation_feedback_id) — the same gesture
+//     re-rated later is a NEW row, folded again (the newest rating annotates on
+//     its own date; engagement counts each rating, mirroring inbox_feedback).
 //   - situation verdicts have no floor: they are folded by a bounded idempotent
 //     re-scan whose novelty key is the situation id + verdict TEXT (not the
 //     movable updated_at date), so AttachSignal bumping updated_at cannot
@@ -105,8 +122,9 @@ func (p *Pipeline) runInteractionIngest(runID int64, stepOffset int, stats *RunS
 //     bumps a shared entity once, and applied in ONE transaction (BumpEngagements):
 //     if ANY bump fails the whole batch rolls back and the feedback floor is HELD
 //     (transient-error semantics like chat ingest), so the re-scan is clean.
-func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interactions, bumped int, newFloor int64, err error) {
+func (p *Pipeline) ingestInteractions(floor, sfFloor int64) (staged *stagedChat, interactions, bumped int, newFloor, newSFFloor int64, err error) {
 	newFloor = floor
+	newSFFloor = sfFloor
 	sc := &stagedChat{refs: map[string]bool{}, subjects: map[string]bool{}}
 
 	// loaded caches each situation mirror read once; order/dirty track only the
@@ -187,7 +205,7 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 	// distinct feedback ids, so a feedback item on several situations is one.
 	feedback, ferr := p.db.ListInteractionFeedback(floor)
 	if ferr != nil {
-		return nil, 0, 0, floor, ferr
+		return nil, 0, 0, floor, sfFloor, ferr
 	}
 	foldedFB := map[int64]bool{}
 	for _, fb := range feedback {
@@ -199,7 +217,7 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 			}
 			folded, fErr := fold(fb.SituationID, ref, fb.TSUnix, fb.At, fb.Date, bullet, "", fb.Rating > 0)
 			if fErr != nil {
-				return nil, 0, 0, floor, fErr
+				return nil, 0, 0, floor, sfFloor, fErr
 			}
 			if folded {
 				foldedFB[fb.ID] = true
@@ -211,20 +229,50 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 	}
 	interactions += len(foldedFB)
 
+	// (A2) feedback(entity_type='situation') — the dashboard's situation-level
+	// thumbs (M8, see 00026): append-only on its OWN floor, the situation id
+	// carried directly in entity_id (no signal join). Same fold semantics as (A);
+	// the act: ref scheme is act:feedback:<id>.
+	sfRows, sfErr := p.db.ListSituationFeedback(sfFloor)
+	if sfErr != nil {
+		return nil, 0, 0, floor, sfFloor, sfErr
+	}
+	foldedSF := map[int64]bool{}
+	for _, fb := range sfRows {
+		if fb.SituationID != 0 {
+			ref := fmt.Sprintf("act:feedback:%d", fb.ID)
+			bullet := "owner marked useful"
+			if fb.Rating < 0 {
+				bullet = "owner dismissed"
+			}
+			folded, fErr := fold(fb.SituationID, ref, fb.TSUnix, fb.At, fb.Date, bullet, "", fb.Rating > 0)
+			if fErr != nil {
+				return nil, 0, 0, floor, sfFloor, fErr
+			}
+			if folded {
+				foldedSF[fb.ID] = true
+			}
+		}
+		if fb.ID > newSFFloor {
+			newSFFloor = fb.ID // consumed whether or not it mapped to an entity
+		}
+	}
+	interactions += len(foldedSF)
+
 	// (B) situation verdicts — bounded idempotent re-scan (no floor): a situation
 	// terminal for longer than interactionRescanWindowDays is skipped, so the
 	// unbounded terminal backlog never rides every run.
 	since := time.Now().AddDate(0, 0, -interactionRescanWindowDays).UTC().Format(time.RFC3339)
 	sits, serr := p.db.ListInteractionSituations(since)
 	if serr != nil {
-		return nil, 0, 0, floor, serr
+		return nil, 0, 0, floor, sfFloor, serr
 	}
 	for _, s := range sits {
 		ref := fmt.Sprintf("act:situations:%d", s.ID)
 		bullet, engaged := verdictBullet(s)
 		folded, fErr := fold(s.ID, ref, s.TSUnix, s.At, s.Date, bullet, bullet, engaged)
 		if fErr != nil {
-			return nil, 0, 0, floor, fErr
+			return nil, 0, 0, floor, sfFloor, fErr
 		}
 		if folded {
 			interactions++
@@ -248,7 +296,7 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 			NodeIDs: ids,
 		}
 		if _, werr := p.vault.WriteNodes(nodes, msg); werr != nil {
-			return nil, 0, 0, floor, werr
+			return nil, 0, 0, floor, sfFloor, werr
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		for _, n := range nodes {
@@ -269,7 +317,7 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 			batch = append(batch, b)
 		}
 		if berr := p.db.BumpEngagements(batch); berr != nil {
-			return nil, 0, 0, floor, fmt.Errorf("memory: interactions: bump engagement: %w", berr)
+			return nil, 0, 0, floor, sfFloor, fmt.Errorf("memory: interactions: bump engagement: %w", berr)
 		}
 		bumped = len(batch)
 	}
@@ -277,7 +325,7 @@ func (p *Pipeline) ingestInteractions(floor int64) (staged *stagedChat, interact
 	if len(sc.refs) == 0 {
 		sc = nil
 	}
-	return sc, interactions, bumped, newFloor, nil
+	return sc, interactions, bumped, newFloor, newSFFloor, nil
 }
 
 // annotateOutcome appends a dated owner-action bullet to the mirror's "## Outcome"
