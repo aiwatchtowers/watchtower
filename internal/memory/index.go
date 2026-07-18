@@ -148,18 +148,25 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 		return nil
 	}
 
+	importance, err := p.computeImportance(n, rel)
+	if err != nil {
+		p.quarantine(rel, fmt.Errorf("computing importance: %w", err))
+		return nil
+	}
+
 	row := db.MemoryNodeRow{
-		ID:          n.ID,
-		Type:        n.Type,
-		Tier:        n.Tier,
-		Status:      n.Status,
-		RedirectTo:  n.RedirectTo,
-		Title:       n.Title,
-		Path:        rel,
-		ContentHash: hash,
-		IndexedAt:   p.now,
-		Subject:     n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
-		Confidence:  n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
+		ID:              n.ID,
+		Type:            n.Type,
+		Tier:            n.Tier,
+		Status:          n.Status,
+		RedirectTo:      n.RedirectTo,
+		Title:           n.Title,
+		Path:            rel,
+		ContentHash:     hash,
+		IndexedAt:       p.now,
+		Subject:         n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
+		Confidence:      n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
+		ImportanceScore: importance,   // merged override-or-computed snapshot, see 00027 (MEM-16)
 	}
 	if err := p.database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, p.logf)...); err != nil {
 		p.quarantine(rel, err)
@@ -171,6 +178,40 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 		p.stats.Added++
 	}
 	return nil
+}
+
+// computeImportance returns node n's merged importance value: its
+// frontmatter override when set, else ComputeImportance's live read of
+// links-in, situation-origin, owner-touch, and net linked-entity engagement —
+// the same signal calls EvictEpisodes uses. No recency factor (MEM-16;
+// recency is eviction-specific and stays in RetentionScore only). rel is the
+// node's vault-relative path (for the OwnerEdited git-log check). A signal
+// lookup error propagates so file() can quarantine the node and keep its
+// prior importance_score untouched rather than persist a half-failed read
+// (design §6) — an override, by contrast, needs none of these lookups and so
+// can never fail this way.
+func (p *reconcilePass) computeImportance(n Node, rel string) (float64, error) {
+	if n.ImportanceOverride != nil {
+		return *n.ImportanceOverride, nil
+	}
+	linksIn, err := p.database.CountMemoryLinksIn(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	ownerTouched, err := p.v.OwnerEdited(rel)
+	if err != nil {
+		return 0, err
+	}
+	engaged, dismissed, err := p.database.LinkedEntityEngagement(n.ID)
+	if err != nil {
+		return 0, err
+	}
+	return ComputeImportance(ImportanceInputs{
+		LinksIn:         linksIn,
+		SituationOrigin: hasSituationAlias(n.Aliases),
+		OwnerTouched:    ownerTouched,
+		Engagement:      engaged - dismissed,
+	}), nil
 }
 
 // Rebuild drops the whole memory index and reconciles it back from the vault

@@ -284,6 +284,54 @@ func TestReconcileSkipsNonNodeFiles(t *testing.T) {
 	assert.Equal(t, n.ID, nodes[0].ID)
 }
 
+// TestReconcileComputesImportanceScore: a fixture exercising all four
+// ComputeImportance signals together — links-in, situation-origin,
+// owner-touch, net engagement — proves Reconcile persists the SAME value
+// ComputeImportance would compute directly, with no recency factor (Slice A,
+// MEM-16).
+func TestReconcileComputesImportanceScore(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	ep := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5RC1", "episode", "Warm story")
+	ep.Aliases = []string{"situation:77"}
+	writeNodes(t, v, ep)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5RC2", "Linker", ep.ID)
+	writeNodes(t, v, linker)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	require.NoError(t, d.BumpEngagement(linker.ID, true, "2026-07-18T10:00:00Z"))
+
+	// Simulate an owner edit on ep, then touch it once more so it gets
+	// reparsed NOW THAT the link (and the engagement bump) are already
+	// committed.
+	rel, err := nodeRelPath(ep.ID)
+	require.NoError(t, err)
+	edited := ep
+	edited.Body = ep.Body + "\nOwner annotation.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, filepath.FromSlash(rel)), edited.Render(), 0o644))
+	committed, err := v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, committed)
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Updated, "the owner-edited episode is reparsed")
+
+	row, err := d.GetMemoryNode(ep.ID)
+	require.NoError(t, err)
+
+	want := ComputeImportance(ImportanceInputs{
+		LinksIn:         1,
+		SituationOrigin: true,
+		OwnerTouched:    true,
+		Engagement:      1,
+	})
+	assert.Equal(t, want, row.ImportanceScore, "importance_score matches ComputeImportance with no recency applied")
+}
+
 // A malformed node file (unknown frontmatter key — classic Obsidian-side
 // damage) is quarantined: the run continues, other files are indexed, and the
 // file's previously indexed row survives because the file is still on disk
