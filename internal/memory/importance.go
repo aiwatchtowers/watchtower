@@ -76,19 +76,15 @@ func ComputeImportance(in ImportanceInputs) float64 {
 // importance value for node n at vault-relative path rel: n's
 // ImportanceOverride if set, else ComputeImportance fed by live
 // links-in/situation-origin/owner-touch/engagement reads. ownerEdited
-// resolves the owner-touch signal for rel: Reconcile's bulk pass
-// (index.go's reconcilePass.ownerEdited) passes a lazily-memoized lookup
-// backed by ONE Vault.OwnerEditedFiles() call per Reconcile run, while
-// upsertIndexNode's single-node call sites (no batch to memoize over) pass
-// the plain per-file Vault.OwnerEdited method value directly (whole-branch
-// review follow-up, added 2026-07-18, MEM-16: a fresh v.OwnerEdited call per
-// node was an expensive per-file git-log walk, now paid on every write
-// through ~16+ call sites, not just the small bounded eviction-candidate
-// set OwnerEdited was originally scoped for). Shared by index.go's
-// Reconcile/Rebuild path and merge.go's upsertIndexNode (every non-Reconcile
-// write path) so both persist a mutually consistent value for the same file
-// — MEM-16, Slice A follow-up (added 2026-07-18: upsertIndexNode previously
-// never set this field).
+// resolves the owner-touch signal for rel: every real caller of this function
+// loops over more than one node per invocation (whole-branch review follow-up,
+// 2026-07-19, MEM-16 addendum — the "single-node, nothing to memoize" case
+// 5d-ii's design assumed does not exist in production code), so every caller
+// passes a per-call ownerEditedMemo's lookup method, never v.OwnerEdited
+// directly. Shared by index.go's Reconcile/Rebuild path and merge.go's
+// upsertIndexNode (every non-Reconcile write path) so both persist a mutually
+// consistent value for the same file — MEM-16, Slice A follow-up (added
+// 2026-07-18: upsertIndexNode previously never set this field).
 func computeNodeImportance(database *db.DB, ownerEdited func(rel string) (bool, error), n Node, rel string) (float64, error) {
 	if n.ImportanceOverride != nil {
 		return *n.ImportanceOverride, nil
