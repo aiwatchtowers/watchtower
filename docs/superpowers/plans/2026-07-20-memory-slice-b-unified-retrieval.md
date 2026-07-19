@@ -3511,7 +3511,7 @@ proven by TestGatherMemoryContext_CompareShadowWrittenContextUnchanged."
 **Files:**
 - Create: `internal/memory/retrieve_compare_cli.go` (+ `_test.go`) — `RunRetrieveCompare`, `RenderRetrieveCompareReport`
 - Modify: `cmd/memory.go` — new `memoryRetrieveCompareCmd` subcommand, `runMemoryRetrieveCompare`
-- Modify: `docs/inventory/memory.md` — new contract (**number decided by the plan owner — see the question posed alongside this plan**), module/audit-date header, changelog
+- Modify: `docs/inventory/memory.md` — new contract **MEM-17** (owner-confirmed 2026-07-20: Slice B is a new mechanism — unified retrieval ranking, not an extension of MEM-16's importance-score foundation — so it gets a new number, per the same-day owner review's own "new number only for a new principle" rule), module/audit-date header, changelog
 
 **Interfaces:**
 - Consumes: `memory.CompareRecall`/`CompareRevisions`/`CompareSubject` (Task 7).
@@ -3940,7 +3940,7 @@ ok  	watchtower/internal/cmd	...
 ok  	watchtower/internal/memory	...
 ```
 
-- [ ] **Step 7: docs — inventory addendum.** Update `docs/inventory/memory.md` with the contract entry (MEM-16 addendum or new MEM-17, per the plan owner's decision), following existing formatting exactly (Observable/Why-locked/Test-guards/Locked-since), plus a changelog entry summarizing: `RankByImportance` as the one place `importance_score`/relevance combine; `RetrieveByQuery`/`RetrieveBySubject`/`RetrieveRevisions` replacing memory_recall's FTS-only rank, meeting-prep's confidence-only order, and briefing's encounter-order selection; dark compare-mode (all three flags default false) with the byte-identical-live-response guarantee proven per surface; the `WithMemoryRetrieveCompare` second-writable-handle exception to `internal/mcp`'s read-only rule; the evidence-gated per-surface switch as Task 13, not automatic.
+- [ ] **Step 7: docs — inventory addendum.** Update `docs/inventory/memory.md` with a new **MEM-17** contract entry, following existing formatting exactly (Observable/Why-locked/Test-guards/Locked-since), plus a changelog entry summarizing: `RankByImportance` as the one place `importance_score`/relevance combine; `RetrieveByQuery`/`RetrieveBySubject`/`RetrieveRevisions` replacing memory_recall's FTS-only rank, meeting-prep's confidence-only order, and briefing's encounter-order selection; dark compare-mode (all three flags default false) with the byte-identical-live-response guarantee proven per surface; the `WithMemoryRetrieveCompare` second-writable-handle exception to `internal/mcp`'s read-only rule; the evidence-gated per-surface switch as Task 13, not automatic. **Before editing**, re-check `docs/inventory/memory.md`'s current state — as of this plan's writing there is an uncommitted, separate 2026-07-20 owner-review pass in the working tree that renumbered/merged MEM-10/14 into MEM-05 and MEM-13 into MEM-01; if that pass has landed (or moved further) by the time this task runs, write MEM-17 against whatever the file's live "last full audit" and highest live MEM number actually are, not against this plan's snapshot of it.
 
 - [ ] **Step 8: commit:**
 
