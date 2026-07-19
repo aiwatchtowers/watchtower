@@ -96,16 +96,8 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 		// Capture this doomed node's OWN outgoing links before its row and
 		// FTS entry vanish below — its former link targets must still be
 		// delta-refined (the second vector of the same link-removal
-		// asymmetry file()'s edit case closes above). A read failure only
-		// narrows this pass's delta-refine set for this one deletion; the
-		// deletion itself is never blocked by it.
-		if oldBody, berr := database.GetMemoryNodeBody(row.ID); berr != nil {
-			logf("memory: reconcile: reading body for deleted node %s failed (link-removal delta-refine narrowed for this deletion): %v", row.ID, berr)
-		} else {
-			for _, link := range (Node{Body: oldBody}).Links() {
-				pass.priorLinkTargets[link.ID] = true
-			}
-		}
+		// asymmetry file()'s edit case closes above).
+		pass.capturePriorLinks(row.ID)
 		if err := database.DeleteMemoryNode(row.ID); err != nil {
 			return stats, fmt.Errorf("memory: reconcile: %w", err)
 		}
@@ -165,6 +157,26 @@ func (p *reconcilePass) ownerEdited(rel string) (bool, error) {
 	return p.ownerMemo.lookup(rel)
 }
 
+// capturePriorLinks reads id's currently-indexed body — BEFORE the caller
+// overwrites it (file(), an edited node) or removes it (Reconcile's deletion
+// loop) — and adds every outgoing link target to priorLinkTargets, closing
+// the link-removal asymmetry: a link REMOVED by an edit, or a linking file
+// deleted outright, must still cause its old target to be delta-refined
+// (refineImportance, MEM-16). A read failure only narrows this pass's
+// delta-refine candidate set for id; it never blocks the caller's own write
+// or deletion — the same log-and-continue-keep-prior-value policy this
+// package already applies to every other signal-lookup error.
+func (p *reconcilePass) capturePriorLinks(id string) {
+	oldBody, err := p.database.GetMemoryNodeBody(id)
+	if err != nil {
+		p.logf("memory: reconcile: reading prior body for %s failed (link-removal delta-refine narrowed): %v", id, err)
+		return
+	}
+	for _, link := range (Node{Body: oldBody}).Links() {
+		p.priorLinkTargets[link.ID] = true
+	}
+}
+
 // file processes one directory entry: skip non-node files, hash, parse, and
 // upsert. It returns an error only for IO-wide failures; per-file problems
 // quarantine the file and return nil.
@@ -215,19 +227,8 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 	if wasIndexed {
 		// Capture the PRIOR body's outgoing links before UpsertMemoryNode
 		// (below) overwrites the FTS row — a link REMOVED by this edit must
-		// still cause its old target to be delta-refined. A read failure
-		// only narrows this pass's delta-refine candidate set for this one
-		// file; it does not quarantine the file or abort Reconcile (the
-		// file's own index write proceeds normally either way) — the same
-		// log-and-continue-keep-prior-value policy this package already
-		// applies to every other signal-lookup error.
-		if oldBody, berr := p.database.GetMemoryNodeBody(id); berr != nil {
-			p.logf("memory: reconcile: reading prior body for %s failed (link-removal delta-refine narrowed for this edit): %v", id, berr)
-		} else {
-			for _, link := range (Node{Body: oldBody}).Links() {
-				p.priorLinkTargets[link.ID] = true
-			}
-		}
+		// still cause its old target to be delta-refined.
+		p.capturePriorLinks(id)
 	}
 
 	row := db.MemoryNodeRow{
