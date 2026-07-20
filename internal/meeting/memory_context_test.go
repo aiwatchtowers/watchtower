@@ -2,11 +2,13 @@ package meeting
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -274,6 +276,52 @@ func TestPrepareForEvent_LeavesVaultGitLogUnchanged(t *testing.T) {
 	after := memGitHeadCount(t, vp)
 
 	assert.Equal(t, before, after, "a prep run must not write the vault")
+}
+
+// TestGatherMemoryContext_CompareShadowWrittenContextUnchanged: with
+// memory.retrieve.meeting_prep_compare on, gatherMemoryContext ALSO runs
+// RetrieveBySubject per attendee and writes a memory_retrieve_shadow row —
+// but the rendered ATTENDEE MEMORY block is byte-identical to the flag-off
+// legacy render (the single most important behavioral guarantee).
+func TestGatherMemoryContext_CompareShadowWrittenContextUnchanged(t *testing.T) {
+	cfg := memCtxCfg(t, true)
+	vp := initMemVault(t, cfg)
+	d := openTestDB(t)
+	writePersonEntity(t, d, vp, "ent_alice", "Alice", "Backend lead", "Owns the migration", []string{"prefers async comms"}, []string{"U123", "alice@example.com"})
+	writeBelief(t, d, vp, "bel_a1", "Alice dislikes long meetings", "ent_alice", "active", 0.6)
+
+	p := New(d, cfg, &mockGenerator{}, nil)
+	baseline := p.gatherMemoryContext(aliceAttendees())
+
+	cfg.Memory.Retrieve.MeetingPrepCompare = true
+	compared := p.gatherMemoryContext(aliceAttendees())
+
+	require.Equal(t, baseline, compared, "compare mode must not change the rendered attendee memory block")
+
+	rows, err := d.ListMemoryRetrieveShadow("meeting_prep", time.Time{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "one shadow row for the one attendee with a resolved entity (Bob has none)")
+
+	var diff memory.SubjectDiff
+	require.NoError(t, json.Unmarshal([]byte(rows[0].DiffMetricsJSON), &diff))
+	assert.Equal(t, "ent_alice", diff.Subject)
+	assert.Contains(t, diff.OldBeliefIDs, "bel_a1")
+}
+
+// TestGatherMemoryContext_CompareGateOffWritesNoShadow: without the flag, no
+// memory_retrieve_shadow row is ever written.
+func TestGatherMemoryContext_CompareGateOffWritesNoShadow(t *testing.T) {
+	cfg := memCtxCfg(t, true) // meeting_prep surface on, retrieve-compare off
+	vp := initMemVault(t, cfg)
+	d := openTestDB(t)
+	writePersonEntity(t, d, vp, "ent_alice", "Alice", "Backend lead", "Owns the migration", nil, []string{"U123"})
+
+	p := New(d, cfg, &mockGenerator{}, nil)
+	p.gatherMemoryContext(aliceAttendees())
+
+	rows, err := d.ListMemoryRetrieveShadow("meeting_prep", time.Time{})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
 }
 
 func TestMeetingPrepVersionBumpedToFour(t *testing.T) {

@@ -108,6 +108,17 @@ func (p *Pipeline) gatherMemoryContext(attendees []attendeeEntry) string {
 				break
 			}
 		}
+
+		// Slice B Task 10 dark retrieval-compare (memory.retrieve.meeting_prep_compare):
+		// runs RetrieveBySubject for this attendee and shadow-diffs it against
+		// beliefIDsFor's legacy selection above (same cap). The rendered
+		// ATTENDEE MEMORY block is unaffected by the flag in every case.
+		if p.cfg.Memory.Retrieve.MeetingPrepCompare {
+			legacyIDs := beliefIDsFor(nodes, node.ID)
+			if _, err := memory.CompareSubject(p.db, p.db, node.ID, legacyIDs, maxAttendeeBeliefs, meetingPrepShortTermSampleLimit); err != nil {
+				p.logger.Printf("meeting: retrieve compare (subject %s): %v", node.ID, err)
+			}
+		}
 	}
 
 	// len(attendees) > 0 (checked above) and the per-attendee "### name" header
@@ -163,6 +174,33 @@ func beliefLinesFor(nodes []db.MemoryNodeRow, entityID string) []string {
 	}
 	return lines
 }
+
+// beliefIDsFor returns the same subset+cap beliefLinesFor renders, as bare
+// ids — the legacy side of Task 10's retrieval compare. Kept in lockstep
+// with beliefLinesFor's filter (type=belief, subject match, active/shaken,
+// same maxAttendeeBeliefs cap) by construction: both walk the same nodes
+// slice with the same predicate, so the two can never silently drift.
+func beliefIDsFor(nodes []db.MemoryNodeRow, entityID string) []string {
+	var ids []string
+	for _, n := range nodes {
+		if n.Type != "belief" || n.Subject != entityID {
+			continue
+		}
+		if n.Status != "active" && n.Status != "shaken" {
+			continue
+		}
+		ids = append(ids, n.ID)
+		if len(ids) >= maxAttendeeBeliefs {
+			break
+		}
+	}
+	return ids
+}
+
+// meetingPrepShortTermSampleLimit bounds CompareSubject's shortTerm episode
+// sample — purely additive telemetry with no legacy equivalent to size
+// against, so this is just a reasonable exercise cap, not a rendered limit.
+const meetingPrepShortTermSampleLimit = 5
 
 // firstSectionLine returns the first non-empty content line under the given
 // "## <heading>" section, or "" when the section is absent or empty.
