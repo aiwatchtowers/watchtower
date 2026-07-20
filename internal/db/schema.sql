@@ -1332,3 +1332,4 @@ CREATE TABLE IF NOT EXISTS memory_retrieve_shadow (
     diff_metrics_json TEXT NOT NULL,
     ts                TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surface, ts);

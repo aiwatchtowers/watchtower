@@ -328,6 +328,11 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 	assert.False(t, cfg.Memory.Surfaces.DayPlan, "day_plan surface off by default")
 	assert.False(t, cfg.Memory.Surfaces.MeetingPrep, "meeting_prep surface off by default")
 	assert.False(t, cfg.Memory.Semantic.Preferences, "preferences semantic gate off by default")
+
+	// Slice B dark retrieval-compare: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Retrieve.RecallCompare, "recall_compare off by default")
+	assert.False(t, cfg.Memory.Retrieve.BriefingCompare, "briefing_compare off by default")
+	assert.False(t, cfg.Memory.Retrieve.MeetingPrepCompare, "meeting_prep_compare off by default")
 }
 
 func TestMemorySlice4Config_FromYAML(t *testing.T) {
@@ -400,6 +405,23 @@ memory:
 	require.NoError(t, err)
 
 	assert.True(t, cfg.Memory.Renders.DigestCompare)
+}
+
+func TestMemoryRetrieveConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  retrieve:
+    recall_compare: true
+    briefing_compare: true
+    meeting_prep_compare: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Retrieve.RecallCompare)
+	assert.True(t, cfg.Memory.Retrieve.BriefingCompare)
+	assert.True(t, cfg.Memory.Retrieve.MeetingPrepCompare)
 }
 
 func TestMemoryConfig_FromYAML(t *testing.T) {

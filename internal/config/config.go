@@ -380,6 +380,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.surfaces.day_plan", false)
 	v.SetDefault("memory.surfaces.meeting_prep", false)
 	v.SetDefault("memory.semantic.preferences", false)
+	v.SetDefault("memory.retrieve.recall_compare", false) // Slice B dark retrieval-compare, dark by default
+	v.SetDefault("memory.retrieve.briefing_compare", false)
+	v.SetDefault("memory.retrieve.meeting_prep_compare", false)
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)
