@@ -495,6 +495,62 @@ func (db *DB) SearchMemoryFTS(query string, limit int) ([]MemoryHit, error) {
 	return hits, rows.Err()
 }
 
+// MemoryFTSCandidate is one full-text search candidate carrying its full
+// indexed row (importance_score included) plus the raw FTS5 rank — the
+// wider candidate window RetrieveByQuery (Slice B) re-ranks through
+// RankByImportance. Sibling of MemoryHit, which stays the shape
+// SearchMemoryFTS/memory_recall use unchanged.
+type MemoryFTSCandidate struct {
+	Row  MemoryNodeRow
+	Rank float64
+}
+
+// SearchMemoryFTSCandidates runs the same sanitized FTS5 MATCH as
+// SearchMemoryFTS but returns full MemoryNodeRows plus the raw rank,
+// best-match-first (ORDER BY rank ascending — SQLite FTS5's bm25-style rank
+// is more negative for a better match, the same convention SearchMemoryFTS
+// already relies on). SearchMemoryFTS itself is UNCHANGED — this is a new
+// sibling, not a modification, so memory_recall's legacy path is untouched
+// in this half (Slice B, RetrieveByQuery).
+func (db *DB) SearchMemoryFTSCandidates(query string, limit int) ([]MemoryFTSCandidate, error) {
+	sanitized := sanitizeFTS5Query(query)
+	if sanitized == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// memory_fts and memory_nodes both have an "id" column, so
+	// memoryNodeSelectCols's bare "id" would be ambiguous if joined directly
+	// against memory_fts; scoping the MATCH in a subquery that renames its id
+	// keeps only memory_nodes.id in the outer scope.
+	rows, err := db.Query(`SELECT `+memoryNodeSelectCols+`, cand.rank
+		FROM memory_nodes
+		JOIN (SELECT id AS cand_id, rank FROM memory_fts WHERE memory_fts MATCH ?) cand
+			ON cand.cand_id = memory_nodes.id
+		WHERE memory_nodes.status != 'tombstone'
+		ORDER BY cand.rank
+		LIMIT ?`, sanitized, limit)
+	if err != nil {
+		return nil, fmt.Errorf("searching memory fts candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MemoryFTSCandidate
+	for rows.Next() {
+		var rank float64
+		row, err := scanMemoryNodeRow(func(dest ...any) error {
+			return rows.Scan(append(dest, &rank)...)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("scanning memory fts candidate: %w", err)
+		}
+		out = append(out, MemoryFTSCandidate{Row: row, Rank: rank})
+	}
+	return out, rows.Err()
+}
+
 // BumpMemoryAccess increments a node's access counter and stamps the access
 // time (powers recency/usage stats for the memory_open MCP tool).
 func (db *DB) BumpMemoryAccess(id string) error {

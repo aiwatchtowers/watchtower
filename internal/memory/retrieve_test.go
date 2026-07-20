@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
 )
@@ -111,4 +112,57 @@ func TestRankByImportance_LimitZeroOrNegativeReturnsEmpty(t *testing.T) {
 	cands := []ScoredCandidate{{Row: candRow("a", 1), Relevance: 1.0}}
 	assert.Empty(t, RankByImportance(cands, 0))
 	assert.Empty(t, RankByImportance(cands, -1))
+}
+
+// memTestNodeMemory is retrieve_test.go's own memTestNode-equivalent (the
+// helper itself is internal/db-scoped and cannot be imported), building a
+// minimal valid entity row for RetrieveByQuery/RetrieveBySubject tests.
+func memTestNodeMemory(id string, mutate func(*db.MemoryNodeRow)) db.MemoryNodeRow {
+	row := db.MemoryNodeRow{
+		ID: id, Type: "entity", Tier: "long", Status: "active",
+		Title: "Test " + id, Path: "entities/" + id + ".md",
+		ContentHash: "hash-" + id, IndexedAt: "2026-07-20T00:00:00Z",
+	}
+	if mutate != nil {
+		mutate(&row)
+	}
+	return row
+}
+
+// TestNormalizeFTSRank: SQLite FTS5's default rank is bm25-style — more
+// NEGATIVE is a BETTER match. normalizeFTSRank must map that into a
+// Relevance that INCREASES with match quality, staying in [0, 1).
+func TestNormalizeFTSRank(t *testing.T) {
+	strongMatch := normalizeFTSRank(-8.0) // very negative = strong match
+	weakMatch := normalizeFTSRank(-1.0)   // mildly negative = weak match
+	noMatch := normalizeFTSRank(0.0)      // degenerate edge case
+
+	assert.Greater(t, strongMatch, weakMatch, "a more negative rank must normalize to a HIGHER relevance")
+	assert.Greater(t, weakMatch, noMatch, "any negative rank beats the zero-rank edge case")
+	assert.Zero(t, noMatch)
+	assert.Less(t, strongMatch, 1.0, "relevance must stay bounded below 1")
+	assert.GreaterOrEqual(t, weakMatch, 0.0)
+
+	// Concrete worked values, so a future refactor can't silently invert the
+	// sign again: rank=-1 -> x=1 -> 1/2 = 0.5; rank=-8 -> x=8 -> 8/9 = 0.8889.
+	assert.InDelta(t, 0.5, weakMatch, 1e-9)
+	assert.InDelta(t, 8.0/9.0, strongMatch, 1e-9)
+}
+
+func TestRetrieveByQuery(t *testing.T) {
+	d := newTestDB(t)
+
+	important := memTestNodeMemory("ent_important", func(r *db.MemoryNodeRow) { r.ImportanceScore = 10 })
+	trivial := memTestNodeMemory("ent_trivial", func(r *db.MemoryNodeRow) { r.ImportanceScore = 0.1 })
+	// Give the TRIVIAL node the stronger raw FTS match (more term repetition)
+	// so a pure-rank ordering would put it first — RetrieveByQuery must not,
+	// because importance x relevance favors the important node once both are
+	// inside the candidate window.
+	require.NoError(t, d.UpsertMemoryNode(important, "widget rollout status update", nil))
+	require.NoError(t, d.UpsertMemoryNode(trivial, "widget widget widget widget", nil))
+
+	got, err := RetrieveByQuery(d, "widget", 2)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "ent_important", got[0].ID, "importance x relevance must outrank a purely stronger keyword match")
 }

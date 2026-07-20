@@ -529,6 +529,43 @@ func TestSearchMemoryFTSSnippetAndTombstones(t *testing.T) {
 	}
 }
 
+// TestSearchMemoryFTSCandidates: same sanitized MATCH as SearchMemoryFTS, but
+// returns full MemoryNodeRows (importance_score included) plus the raw rank,
+// best-match-first — SearchMemoryFTS itself is untouched (still
+// memory_recall's legacy path).
+func TestSearchMemoryFTSCandidates(t *testing.T) {
+	d := openTestDB(t)
+
+	strong := memTestNode("ent_strong", func(r *MemoryNodeRow) { r.ImportanceScore = 1 })
+	weak := memTestNode("ent_weak", func(r *MemoryNodeRow) { r.ImportanceScore = 9 })
+	if err := d.UpsertMemoryNode(strong, "deployments deployments deployments rollout", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode strong: %v", err)
+	}
+	if err := d.UpsertMemoryNode(weak, "deployments happened once, briefly", nil); err != nil {
+		t.Fatalf("UpsertMemoryNode weak: %v", err)
+	}
+
+	cands, err := d.SearchMemoryFTSCandidates("deployments", 10)
+	if err != nil {
+		t.Fatalf("SearchMemoryFTSCandidates: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("SearchMemoryFTSCandidates returned %d candidates, want 2", len(cands))
+	}
+	// Best FTS match (more mentions of the term) ranks first, REGARDLESS of
+	// importance_score — this function does not re-rank; RetrieveByQuery does.
+	if cands[0].Row.ID != "ent_strong" {
+		t.Errorf("cands[0].Row.ID = %q, want ent_strong (strongest FTS match)", cands[0].Row.ID)
+	}
+	if cands[0].Row.ImportanceScore != 1 {
+		t.Errorf("cands[0].Row.ImportanceScore = %v, want 1 (the full row, not just id/title)", cands[0].Row.ImportanceScore)
+	}
+	// A better match has a MORE NEGATIVE (smaller) rank.
+	if !(cands[0].Rank < cands[1].Rank) {
+		t.Errorf("cands[0].Rank = %v, cands[1].Rank = %v; want cands[0] (better match) more negative", cands[0].Rank, cands[1].Rank)
+	}
+}
+
 func TestBumpMemoryAccess(t *testing.T) {
 	db := openTestDB(t)
 
