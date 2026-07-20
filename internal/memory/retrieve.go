@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"watchtower/internal/db"
 )
@@ -122,4 +123,67 @@ func normalizeFTSRank(rank float64) float64 {
 		x = 0 // defensive: a positive rank must never be treated as "better than a match"
 	}
 	return x / (1 + x)
+}
+
+// RetrieveBySubject replaces meeting-prep's ad hoc encounter-order belief
+// filter (beliefLinesFor) with importance-ranked selection (Slice B):
+// longTerm is every active-or-shaken belief on subjects, ranked by
+// RankByImportance with a flat Relevance of 1.0 (an exact subject match has
+// no gradation — there is no "how well does this belief match the subject,"
+// only yes/no). shortTerm is the recency-ordered short-tier episodes whose
+// provenance sender matches a subject (ListShortTierEpisodesForAliases,
+// Task 4) — NOT re-ranked by importance: a short-tier episode's value here
+// is "what recently happened," not "how important is this in general"
+// (design spec §3).
+func RetrieveBySubject(database *db.DB, subjects []string, limitLong, limitShort int) (longTerm, shortTerm []db.MemoryNodeRow, err error) {
+	if len(subjects) == 0 {
+		return nil, nil, nil
+	}
+	beliefs, err := database.ListBeliefsForSubjects(subjects)
+	if err != nil {
+		return nil, nil, fmt.Errorf("memory: retrieve by subject: %w", err)
+	}
+	scored := make([]ScoredCandidate, len(beliefs))
+	for i, b := range beliefs {
+		scored[i] = ScoredCandidate{Row: b, Relevance: 1.0}
+	}
+	longTerm = RankByImportance(scored, limitLong)
+
+	shortTerm, err = database.ListShortTierEpisodesForAliases(subjects, limitShort)
+	if err != nil {
+		return nil, nil, fmt.Errorf("memory: retrieve by subject (short-tier): %w", err)
+	}
+	return longTerm, shortTerm, nil
+}
+
+// RetrieveRevisions replaces briefing's encounter-order-capped notable-
+// revision selection (Slice B): every belief node is checked for notability
+// via NotableRevision (UNCHANGED filter — MEM-11, this slice never revisits
+// what counts as notable), then ranked through RankByImportance so a
+// notable change on a high-importance belief surfaces before the
+// same-magnitude change on a low-importance one. v is required because
+// notability is computed from the live vault body's ## History, which is
+// not mirrored into the SQLite index.
+func RetrieveRevisions(database *db.DB, v *Vault, sinceTS float64, limit int) ([]db.MemoryNodeRow, error) {
+	since := time.Unix(int64(sinceTS), 0).UTC()
+	nodes, err := database.ListMemoryNodes()
+	if err != nil {
+		return nil, fmt.Errorf("memory: retrieve revisions: %w", err)
+	}
+	var scored []ScoredCandidate
+	for _, row := range nodes {
+		if row.Type != "belief" {
+			continue
+		}
+		node, err := v.ReadNode(row.ID)
+		if err != nil {
+			continue // index/vault drift (file removed since indexing) — skip, matching gatherMemoryRevisions's existing tolerance
+		}
+		nr, ok := NotableRevision(node, since)
+		if !ok {
+			continue
+		}
+		scored = append(scored, ScoredCandidate{Row: row, Relevance: nr.Magnitude})
+	}
+	return RankByImportance(scored, limit), nil
 }

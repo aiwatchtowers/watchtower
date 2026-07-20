@@ -255,6 +255,43 @@ func TestMemoryNodeSubjectConfidenceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestListBeliefsForSubjects(t *testing.T) {
+	d := openTestDB(t)
+
+	mustUpsert := func(row MemoryNodeRow) {
+		t.Helper()
+		if err := d.UpsertMemoryNode(row, "body", nil); err != nil {
+			t.Fatalf("UpsertMemoryNode %s: %v", row.ID, err)
+		}
+	}
+	mustUpsert(memTestNode("bel_active", func(r *MemoryNodeRow) { r.Type = "belief"; r.Subject = "ent_alice"; r.Status = "active" }))
+	mustUpsert(memTestNode("bel_shaken", func(r *MemoryNodeRow) { r.Type = "belief"; r.Subject = "ent_alice"; r.Status = "shaken" }))
+	mustUpsert(memTestNode("bel_retired", func(r *MemoryNodeRow) { r.Type = "belief"; r.Subject = "ent_alice"; r.Status = "retired" }))
+	mustUpsert(memTestNode("bel_other_subject", func(r *MemoryNodeRow) { r.Type = "belief"; r.Subject = "ent_bob"; r.Status = "active" }))
+	mustUpsert(memTestNode("ent_alice", func(r *MemoryNodeRow) { r.Type = "entity" }))
+
+	got, err := d.ListBeliefsForSubjects([]string{"ent_alice"})
+	if err != nil {
+		t.Fatalf("ListBeliefsForSubjects: %v", err)
+	}
+	var ids []string
+	for _, r := range got {
+		ids = append(ids, r.ID)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("ListBeliefsForSubjects = %v, want exactly [bel_active bel_shaken] (retired excluded, other-subject excluded, entity excluded)", ids)
+	}
+	for _, want := range []string{"bel_active", "bel_shaken"} {
+		found := false
+		for _, id := range ids {
+			found = found || id == want
+		}
+		if !found {
+			t.Errorf("ListBeliefsForSubjects missing %s", want)
+		}
+	}
+}
+
 // TestMemoryNodeImportanceScoreRoundTrip: memory_nodes.importance_score
 // (Slice A, migration 00027, MEM-16) round-trips through
 // UpsertMemoryNode/GetMemoryNode/ListMemoryNodes.

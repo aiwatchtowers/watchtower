@@ -476,3 +476,54 @@ func TestBuildReviseBeliefsPromptListsKnownSubjects(t *testing.T) {
 	_, empty := buildReviseBeliefsPrompt("%s", "en", nil, nil, nil, nil, nil)
 	assert.Contains(t, empty, "none — do not propose-new this run")
 }
+
+// beliefBodyWithHistory builds a minimal belief body with a ## History
+// section from raw "YYYY-MM-DD: cause[ — rationale]" lines, for
+// NotableRevision tests.
+func beliefBodyWithHistory(lines ...string) string {
+	body := "# Test Belief\n\n## History\n"
+	for _, l := range lines {
+		body += "- " + l + "\n"
+	}
+	return body
+}
+
+func TestNotableRevision_StatusTransitionIsAlwaysNotable(t *testing.T) {
+	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	node := Node{ID: "bel_x", Title: "X", Body: beliefBodyWithHistory("2026-07-10: shake — new conflicting evidence")}
+
+	nr, ok := NotableRevision(node, since)
+	require.True(t, ok)
+	assert.Equal(t, 1.0, nr.Magnitude, "a status transition is unconditionally maximal relevance")
+	assert.Contains(t, nr.Line, "X")
+	assert.Contains(t, nr.Line, "shaken")
+}
+
+func TestNotableRevision_ConfidenceDeltaBelowThresholdIsNotNotable(t *testing.T) {
+	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	node := Node{ID: "bel_x", Title: "X", Body: beliefBodyWithHistory("2026-07-10: confirm — more evidence")}
+
+	_, ok := NotableRevision(node, since)
+	assert.False(t, ok, "a single 0.1 confirm is below the 0.2 notability threshold")
+}
+
+func TestNotableRevision_ConfidenceDeltaMagnitudeFeedsRelevance(t *testing.T) {
+	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	node := Node{ID: "bel_x", Title: "X", Body: beliefBodyWithHistory(
+		"2026-07-10: confirm — evidence A",
+		"2026-07-11: confirm — evidence B",
+		"2026-07-12: confirm — evidence C",
+	)}
+
+	nr, ok := NotableRevision(node, since)
+	require.True(t, ok)
+	assert.InDelta(t, 0.3, nr.Magnitude, 1e-9, "three 0.1 confirms sum to a 0.3 magnitude, not clamped to 1.0")
+}
+
+func TestNotableRevision_NoEntriesInWindowIsNotNotable(t *testing.T) {
+	since := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	node := Node{ID: "bel_x", Title: "X", Body: beliefBodyWithHistory("2026-07-01: confirm — stale evidence")}
+
+	_, ok := NotableRevision(node, since)
+	assert.False(t, ok, "an entry before the window start does not count")
+}

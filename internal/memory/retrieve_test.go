@@ -2,6 +2,7 @@ package memory
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,4 +166,44 @@ func TestRetrieveByQuery(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, "ent_important", got[0].ID, "importance x relevance must outrank a purely stronger keyword match")
+}
+
+func TestRetrieveBySubject(t *testing.T) {
+	d := newTestDB(t)
+
+	important := memTestNodeMemory("bel_important", func(r *db.MemoryNodeRow) {
+		r.Type, r.Subject, r.Status, r.ImportanceScore = "belief", "ent_x", "active", 10
+	})
+	trivial := memTestNodeMemory("bel_trivial", func(r *db.MemoryNodeRow) {
+		r.Type, r.Subject, r.Status, r.ImportanceScore = "belief", "ent_x", "shaken", 0.1
+	})
+	require.NoError(t, d.UpsertMemoryNode(important, "body", nil))
+	require.NoError(t, d.UpsertMemoryNode(trivial, "body", nil))
+
+	longTerm, shortTerm, err := RetrieveBySubject(d, []string{"ent_x"}, 5, 5)
+	require.NoError(t, err)
+	require.Len(t, longTerm, 2)
+	assert.Equal(t, "bel_important", longTerm[0].ID, "exact-subject relevance is flat 1.0 — importance alone breaks the tie")
+	assert.Empty(t, shortTerm, "no short-tier episodes were seeded for ent_x")
+}
+
+func TestRetrieveRevisions(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	since := time.Now().Add(-24 * time.Hour)
+	historyLine := since.Add(time.Hour).Format("2006-01-02") + ": shake — conflicting evidence"
+
+	important := Node{ID: "bel_important", Type: "belief", Tier: "long", Status: "shaken", Title: "Important",
+		Body: "# Important\n\n## History\n- " + historyLine + "\n"}
+	trivial := Node{ID: "bel_trivial", Type: "belief", Tier: "long", Status: "shaken", Title: "Trivial",
+		Body: "# Trivial\n\n## History\n- " + historyLine + "\n"}
+	writeAndIndex(t, v, d, important)
+	writeAndIndex(t, v, d, trivial)
+	require.NoError(t, d.UpdateMemoryNodeImportanceScore("bel_important", 10))
+	require.NoError(t, d.UpdateMemoryNodeImportanceScore("bel_trivial", 0.1))
+
+	got, err := RetrieveRevisions(d, v, float64(since.Unix()), 5)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "bel_important", got[0].ID, "same-magnitude (status transition) revisions rank by importance")
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -668,6 +669,124 @@ func ParseHistory(body string) []HistoryBullet {
 		out = append(out, HistoryBullet{Date: rest[:colon], Cause: cause, Rationale: rationale})
 	}
 	return out
+}
+
+// RevisionNotability is NotableRevision's result: the rendered journal line
+// and the magnitude to feed RankByImportance's Relevance (Slice B of the
+// memory-retrieval redesign) — a status transition is unconditionally
+// maximal relevance (1.0); otherwise the summed |confidence delta|, already
+// >= confidenceNotableDelta by construction whenever ok is true.
+type RevisionNotability struct {
+	Line      string
+	Magnitude float64
+}
+
+// confidenceNotableDelta is the |confidence| move within the window that
+// makes a non-status revision worth surfacing. Beliefs move in 0.1 steps, so
+// this is two net steps in one direction. Relocated verbatim from
+// internal/briefing/memory_revisions.go (Slice B) — internal/briefing
+// already imports internal/memory (OpenExistingVault, Node, ParseHistory,
+// HistoryBullet); internal/memory must never import internal/briefing, so
+// this shared notability logic lives here and briefing calls in, not the
+// reverse.
+const confidenceNotableDelta = 0.2
+
+// NotableRevision inspects one belief's ## History for entries dated on or
+// after since and, when the aggregate change is notable, renders a single
+// journal line:
+//
+//	<belief title> — <what changed> — because <evidence digest>
+//
+// Notability (code-side filter, UNCHANGED by Slice B — MEM-11, this slice
+// never revisits what counts as notable): any status transition
+// (shake/retire) or belief creation always qualifies; otherwise a summed
+// |confidence| move of >=0.2 across the window's confirm/weaken entries
+// qualifies. Returns ok=false when no in-window entry is notable.
+//
+// Relocated verbatim from internal/briefing/memory_revisions.go's
+// notableRevision (Slice B) — briefing's gatherMemoryRevisions now calls
+// this exported version and reads .Line for its exact prior behavior;
+// .Magnitude is new, consumed only by RetrieveRevisions (retrieve.go).
+func NotableRevision(node Node, since time.Time) (RevisionNotability, bool) {
+	entries := historyEntriesSince(node.Body, since)
+	if len(entries) == 0 {
+		return RevisionNotability{}, false
+	}
+
+	statusNotable := false
+	confDelta := 0.0
+	for _, e := range entries {
+		switch e.Cause {
+		case "shake", "retire", "created", "propose-new":
+			statusNotable = true
+		case "confirm":
+			confDelta += 0.1
+		case "weaken":
+			confDelta -= 0.1
+		}
+	}
+
+	if !statusNotable && math.Abs(confDelta) < confidenceNotableDelta {
+		return RevisionNotability{}, false
+	}
+
+	tail := entries[len(entries)-1]
+	title := strings.TrimSpace(node.Title)
+	if title == "" {
+		title = node.ID
+	}
+	digest := tail.Rationale
+	if digest == "" {
+		digest = "recent evidence"
+	}
+	magnitude := 1.0 // a status transition is unconditionally maximal relevance
+	if !statusNotable {
+		magnitude = math.Abs(confDelta)
+	}
+	return RevisionNotability{
+		Line:      title + " — " + describeChange(tail.Cause, confDelta) + " — because " + digest,
+		Magnitude: magnitude,
+	}, true
+}
+
+// historyEntriesSince returns the belief ## History bullets dated on or
+// after since, in file order (oldest first). Relocated verbatim from
+// internal/briefing/memory_revisions.go (Slice B).
+func historyEntriesSince(body string, since time.Time) []HistoryBullet {
+	sinceDate := since.Format("2006-01-02")
+	var entries []HistoryBullet
+	for _, b := range ParseHistory(body) {
+		if b.Date >= sinceDate {
+			entries = append(entries, b)
+		}
+	}
+	return entries
+}
+
+// describeChange renders the human "what changed" clause for a journal
+// line. Relocated verbatim from internal/briefing/memory_revisions.go
+// (Slice B).
+func describeChange(cause string, confDelta float64) string {
+	switch cause {
+	case "shake":
+		return "belief shaken — evidence now conflicts"
+	case "retire":
+		return "belief retired"
+	case "created", "propose-new":
+		return "new belief formed"
+	case "confirm":
+		return "confidence strengthened"
+	case "weaken":
+		return "confidence weakened"
+	default:
+		if confDelta > 0 {
+			return "confidence strengthened"
+		}
+		if confDelta < 0 {
+			return "confidence weakened"
+		}
+		return "belief revised"
+	}
 }
 
 // splitCauseRationale splits "cause — rationale" (em dash) into the op cause and

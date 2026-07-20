@@ -407,6 +407,39 @@ func (db *DB) ListDisputePendingBeliefs(limit int) ([]MemoryNodeRow, error) {
 	return nodes, rows.Err()
 }
 
+// ListBeliefsForSubjects returns belief nodes whose subject is one of
+// subjects and whose status is 'active' or 'shaken' — a retired or
+// tombstoned belief is not live evidence. This is RetrieveBySubject's
+// long-term candidate set (Slice B), replacing meeting-prep's ad hoc
+// encounter-order filter (beliefLinesFor); ordering here is arbitrary (by
+// id) since RankByImportance imposes the real order. Empty subjects is a
+// clean empty read (nil, nil) — no query runs.
+func (db *DB) ListBeliefsForSubjects(subjects []string) ([]MemoryNodeRow, error) {
+	if len(subjects) == 0 {
+		return nil, nil
+	}
+	placeholders, args := inClause(subjects)
+	rows, err := db.Query(`SELECT `+memoryNodeSelectCols+`
+		FROM memory_nodes
+		WHERE memory_nodes.type = 'belief' AND memory_nodes.subject IN (`+placeholders+`)
+		  AND memory_nodes.status IN ('active','shaken')
+		ORDER BY memory_nodes.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing beliefs for subjects: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MemoryNodeRow
+	for rows.Next() {
+		row, err := scanMemoryNodeRow(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning belief for subject: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // SetDisputePending flags a belief as disputed: the belief pass or weekly
 // reflection (internal/memory) believes the node's evidence conflicts and the
 // inbox watchtower detector (internal/inbox) should surface it as a dashboard
