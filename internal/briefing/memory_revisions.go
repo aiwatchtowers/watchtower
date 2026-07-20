@@ -52,7 +52,7 @@ func (p *Pipeline) gatherMemoryRevisions(userID, date string) string {
 		return noNotableRevisions
 	}
 
-	var lines []string
+	var lines, ids []string
 	for _, n := range nodes {
 		if n.Type != "belief" {
 			continue
@@ -64,9 +64,21 @@ func (p *Pipeline) gatherMemoryRevisions(userID, date string) string {
 		}
 		if nr, ok := memory.NotableRevision(node, since); ok {
 			lines = append(lines, nr.Line)
+			ids = append(ids, n.ID)
 			if len(lines) >= maxMemoryRevisions {
 				break
 			}
+		}
+	}
+
+	// Slice B Task 9 dark retrieval-compare (memory.retrieve.briefing_compare):
+	// runs RetrieveRevisions and shadow-diffs it against `ids` — the EXACT
+	// legacy notable-revision selection above, same cap. The rendered journal
+	// text below is unaffected by the flag in every case.
+	if p.cfg.Memory.Retrieve.BriefingCompare {
+		sinceTS := float64(since.Unix())
+		if _, err := memory.CompareRevisions(p.db, p.db, vault, sinceTS, ids, maxMemoryRevisions); err != nil {
+			p.logger.Printf("briefing: retrieve compare: %v", err)
 		}
 	}
 
