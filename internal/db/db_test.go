@@ -371,6 +371,46 @@ func TestMigration00027MemoryImportanceScore(t *testing.T) {
 	}
 }
 
+// TestMigration00028MemoryProvenanceSender: memory_provenance.sender_id
+// (Slice B of the memory-retrieval redesign) is additive, defaults ”, a
+// plain insert that omits it still succeeds, and its index exists.
+func TestMigration00028MemoryProvenanceSender(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('memory_provenance') WHERE name = 'sender_id'`).Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("memory_provenance.sender_id missing (count=%d err=%v)", n, err)
+	}
+
+	var idxCount int
+	if err := database.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_memory_provenance_sender'`).Scan(&idxCount); err != nil || idxCount != 1 {
+		t.Fatalf("idx_memory_provenance_sender missing (count=%d err=%v)", idxCount, err)
+	}
+
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ep_sender_x', 'episode', 'short', 'episodes/x.md', 'h', '2026-07-20T00:00:00Z')`); err != nil {
+		t.Fatalf("inserting memory node: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_provenance (node_id, channel_id, ts_raw, ts_unix)
+		 VALUES ('ep_sender_x', 'C0AAA', '100.000100', 100.0001)`); err != nil {
+		t.Fatalf("inserting provenance row without sender_id: %v", err)
+	}
+	var sender string
+	if err := database.QueryRow(
+		`SELECT sender_id FROM memory_provenance WHERE node_id = 'ep_sender_x'`).Scan(&sender); err != nil {
+		t.Fatalf("reading sender_id default: %v", err)
+	}
+	if sender != "" {
+		t.Fatalf("sender_id default = %q, want empty string", sender)
+	}
+}
+
 // TestMigration00019ClearsBeliefContentHash proves the migration empties every
 // pre-existing belief's content_hash (M1) so the next Reconcile re-parses it and
 // fills the new subject/confidence columns — a belief indexed before 00019 has

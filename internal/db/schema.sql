@@ -1294,9 +1294,11 @@ CREATE TABLE IF NOT EXISTS memory_provenance (
     channel_id  TEXT NOT NULL,
     ts_raw      TEXT NOT NULL,
     ts_unix     REAL NOT NULL,
+    sender_id   TEXT NOT NULL DEFAULT '',    -- per-message sender (Slack user_id / Gmail from_email); '' for cal:/chat:/act: schemes (see 00028, Slice B)
     PRIMARY KEY (node_id, channel_id, ts_raw)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix);
+CREATE INDEX IF NOT EXISTS idx_memory_provenance_sender ON memory_provenance(sender_id);
 
 -- Phase-5 slice-3 (see 00024): dark compare-mode telemetry
 -- (memory.renders.digest_compare) — memory-owned, never the legacy
