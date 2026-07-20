@@ -178,14 +178,19 @@ func (db *DB) DeleteMemoryNode(id string) error {
 // passing a bare Slack channel_id naturally excludes the prefixed-scheme
 // refs. The bound is exclusive-low / inclusive-high so adjacent windows tile
 // without double-counting the boundary second: overlap means
-// MIN(ts_unix) <= to AND MAX(ts_unix) > from.
+// MIN(ts_unix) <= to AND MAX(ts_unix) > from. The span endpoints are floored
+// to whole seconds in SQL exactly as loadRenderEpisodes floors the Go-side
+// spans (messages.ts_unix is second-truncated but provenance refs carry
+// microsecond suffixes) — without the floor here, an episode whose earliest
+// cited ref is N.x fails MIN(ts_unix) <= N for a window ending at whole
+// second N, so selection and coverage agree at boundary seconds.
 func (db *DB) ListEpisodesForChannelWindow(channelID string, fromUnix, toUnix float64) ([]string, error) {
 	rows, err := db.Query(`SELECT p.node_id
 		FROM memory_provenance p
 		JOIN memory_nodes n ON n.id = p.node_id
 		WHERE p.channel_id = ? AND n.status != 'tombstone'
 		GROUP BY p.node_id
-		HAVING MIN(p.ts_unix) <= ? AND MAX(p.ts_unix) > ?
+		HAVING CAST(MIN(p.ts_unix) AS INTEGER) <= ? AND CAST(MAX(p.ts_unix) AS INTEGER) > ?
 		ORDER BY p.node_id`, channelID, toUnix, fromUnix)
 	if err != nil {
 		return nil, fmt.Errorf("listing episodes for channel %s window (%v,%v]: %w", channelID, fromUnix, toUnix, err)

@@ -739,6 +739,12 @@ func TestListEpisodesForChannelWindow(t *testing.T) {
 	// Span crossing the window but in ANOTHER channel — per-channel spans only.
 	mk("ep_span_other", ProvenanceRow{NodeID: "ep_span_other", ChannelID: "C0BBB", TSRaw: "50", TSUnix: 50},
 		ProvenanceRow{NodeID: "ep_span_other", ChannelID: "C0BBB", TSRaw: "250", TSUnix: 250})
+	// Fractional-suffix span: raw min 200.00005 > to(200), but the SQL
+	// HAVING floors both aggregates to whole seconds first (matching
+	// loadRenderEpisodes' Go-side flooring), so floored min 200 <= to(200)
+	// selects it even though the unfloored comparison would not.
+	mk("ep_frac", ProvenanceRow{NodeID: "ep_frac", ChannelID: "C0AAA", TSRaw: "200.000050", TSUnix: 200.00005},
+		ProvenanceRow{NodeID: "ep_frac", ChannelID: "C0AAA", TSRaw: "300.5", TSUnix: 300.5})
 
 	ids, err := db.ListEpisodesForChannelWindow("C0AAA", 100, 200)
 	if err != nil {
@@ -746,11 +752,12 @@ func TestListEpisodesForChannelWindow(t *testing.T) {
 	}
 	// (100,200] with span semantics: ep_in (ref inside), ep_at_to (span
 	// [200,200], min <= to), ep_span (span [50,250] crosses the window),
-	// ep_span_at_to (span [200,300], min == to). Excluded: ep_before (span
-	// [100,100], max == from), ep_span_before (max == from), ep_after,
+	// ep_span_at_to (span [200,300], min == to), ep_frac (floored span
+	// [200,300], floored min == to). Excluded: ep_before (span [100,100],
+	// max == from), ep_span_before (max == from), ep_after,
 	// ep_span_other/ep_other (other channel), ep_mail (scheme ref),
 	// ep_tomb (tombstone).
-	want := []string{"ep_at_to", "ep_in", "ep_span", "ep_span_at_to"}
+	want := []string{"ep_at_to", "ep_frac", "ep_in", "ep_span", "ep_span_at_to"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Errorf("window ids = %v, want %v", ids, want)
 	}

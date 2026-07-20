@@ -411,6 +411,42 @@ func TestLoadRenderEpisodesFloorsSpanToPeriodSeconds(t *testing.T) {
 	assert.Equal(t, fmt.Sprintf("%d.000100", base+200), gap[0].TS)
 }
 
+// TestLoadRenderEpisodesSkipsUnparseableRefForSpan: an episode body whose
+// ## Provenance section carries one non-numeric ref line (defensively
+// tolerated — "cannot happen for extractor-written episodes" per
+// loadRenderEpisodes' doc comment) must not fail the whole episode. The span
+// is built from the remaining parseable ref only, and the episode still
+// renders. Provenance rows in the DB INDEX skip the non-numeric ref
+// (provenanceRows requires a numeric ts to window it), but loadRenderEpisodes
+// re-parses the vault BODY directly, so the bad ref's raw ts still lands in
+// the episode's Provenance list — seed via the body, not the index, to
+// exercise that.
+func TestLoadRenderEpisodesSkipsUnparseableRefForSpan(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedChannelRow(t, d, "C0AAA", "general")
+
+	base := int64(1719230400)
+	indexEpisodeWithProvenance(t, v, d, episodeNode("ep_00000000000000000000000098", "Bad ref", "C0AAA",
+		"A story with one bad ref.", "Outcome.",
+		"not-a-ts",                     // non-numeric: unparseable, skipped for span
+		fmt.Sprintf("%d.5", base+100))) // valid fractional ref
+
+	p := NewPipeline(d, v, &fakeGen{reply: func(string) (string, error) { return `{"summary":"","topics":[]}`, nil }}, pipelineTestConfig(), t.Logf)
+
+	episodes, spans, err := p.loadRenderEpisodes("C0AAA", []string{"ep_00000000000000000000000098"})
+	require.NoError(t, err)
+	require.Len(t, episodes, 1, "the episode still renders despite the bad ref")
+	require.Len(t, spans, 1, "span comes from the one valid ref, not zero/two")
+
+	span := spans[0]
+	assert.Equal(t, float64(base+100), span.from, "span floored from the valid fractional ref")
+	assert.Equal(t, float64(base+100), span.to)
+
+	assert.Contains(t, episodes[0].Provenance, "not-a-ts", "the bad raw ts still enters Provenance (parsed from the body, not the index)")
+	assert.Contains(t, episodes[0].Provenance, fmt.Sprintf("%d.5", base+100))
+}
+
 // TestCompareDigestsSpanSelectsBetweenRefs: the live 0%-window artifact (the
 // 2026-07-19 compare: 29/56 windows read coverage 0 while their stories were
 // in the vault) — a legacy window that falls strictly BETWEEN an episode's two
