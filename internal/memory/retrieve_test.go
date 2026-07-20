@@ -53,7 +53,7 @@ func TestRankByImportance_RelevanceOnlyOrdering(t *testing.T) {
 func TestRankByImportance_ZeroImportanceSortsLast(t *testing.T) {
 	cands := []ScoredCandidate{
 		{Row: candRow("fresh", 0), Relevance: 1.0}, // max relevance, zero importance
-		{Row: candRow("aged", 1), Relevance: 0.1},   // min relevance, nonzero importance
+		{Row: candRow("aged", 1), Relevance: 0.1},  // min relevance, nonzero importance
 	}
 	got := RankByImportance(cands, 2)
 	assert.Equal(t, "aged", got[0].ID)
