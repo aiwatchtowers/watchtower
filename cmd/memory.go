@@ -81,6 +81,18 @@ var memoryDigestCompareCmd = &cobra.Command{
 	RunE: runMemoryDigestCompare,
 }
 
+var memoryRetrieveCompareCmd = &cobra.Command{
+	Use:   "retrieve-compare",
+	Short: "Run the Slice B dark retrieval-compare (recall/briefing/meeting_prep) against the current vault/DB",
+	Long: "Owner-facing diagnostic for the Phase-5 Slice B unified retrieval ranking. Runs the new\n" +
+		"RankByImportance-based retrieval alongside each surface's legacy selection and writes a\n" +
+		"per-comparison diff to memory_retrieve_shadow. Every legacy selection (memory_recall's FTS\n" +
+		"ranking, briefing's notable-revision order, meeting-prep's confidence order) is a pure read here\n" +
+		"— nothing about a live response changes. The report exists for the go/no-go hand-review\n" +
+		"before any per-surface switch (see docs/inventory/memory.md).",
+	RunE: runMemoryRetrieveCompare,
+}
+
 // newMemoryPipelineFactory is the seam tests override to inject a fake
 // pipeline (same pattern as newDayPlanPipelineFactory). The default wires
 // the standard CLI generator, the prompt store, the digest language for
@@ -107,12 +119,15 @@ func init() {
 	rootCmd.AddCommand(memoryCmd)
 	memoryCmd.AddCommand(memoryStatusCmd, memoryReindexCmd, memoryOpenCmd,
 		memoryRecallCmd, memoryConsolidateCmd, memorySeedCmd, memoryIndexCmd,
-		memoryDigestCompareCmd)
+		memoryDigestCompareCmd, memoryRetrieveCompareCmd)
 
 	memoryRecallCmd.Flags().Int("limit", 10, "max results to print")
 	memorySeedCmd.Flags().Bool("dry-run", false, "print what would be created without writing")
 	memoryDigestCompareCmd.Flags().Duration("since", 7*24*time.Hour, "compare legacy channel digests written within this lookback")
 	memoryDigestCompareCmd.Flags().String("out", "docs/specs/memory-digest-compare-report.md", "path to write the markdown compare report")
+	memoryRetrieveCompareCmd.Flags().Duration("since", 24*time.Hour, "briefing surface: compare notable revisions since this lookback")
+	memoryRetrieveCompareCmd.Flags().String("out", "docs/specs/memory-retrieve-compare-report.md", "path to write the markdown compare report")
+	memoryRetrieveCompareCmd.Flags().StringSlice("surface", []string{"recall", "briefing", "meeting_prep"}, "which surfaces to compare (recall, briefing, meeting_prep)")
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -444,6 +459,50 @@ func runMemoryDigestCompare(cmd *cobra.Command, _ []string) error {
 	if stats.ShadowsWritten == 0 {
 		fmt.Fprintf(out, "No legacy channel digests found in the last %s — nothing to render.\n", since)
 	}
+	fmt.Fprintf(out, "Report written to %s\n", outPath)
+	return nil
+}
+
+func runMemoryRetrieveCompare(cmd *cobra.Command, _ []string) error {
+	since, _ := cmd.Flags().GetDuration("since")
+	outPath, _ := cmd.Flags().GetString("out")
+	surfaces, _ := cmd.Flags().GetStringSlice("surface")
+	cfg, database, err := memoryConfigAndDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	out := cmd.OutOrStdout()
+
+	if !cfg.Memory.Enabled {
+		fmt.Fprintln(out, "Memory is disabled (memory.enabled = false in config); nothing to compare.")
+		return nil
+	}
+
+	vault, err := memory.OpenExistingVault(memoryVaultPath(cfg))
+	if errors.Is(err, memory.ErrVaultNotInitialized) {
+		fmt.Fprintln(out, "Memory vault not initialized; nothing to compare.")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	stats, err := memory.RunRetrieveCompare(database, vault, time.Now().Add(-since), surfaces)
+	if err != nil {
+		return fmt.Errorf("retrieve compare: %w", err)
+	}
+
+	report := memory.RenderRetrieveCompareReport(stats, time.Now())
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("creating report directory: %w", err)
+	}
+	if err := os.WriteFile(outPath, []byte(report), 0o644); err != nil {
+		return fmt.Errorf("writing compare report to %s: %w", outPath, err)
+	}
+
+	fmt.Fprintf(out, "Retrieve compare done: recall %d (failed %d), briefing %d, meeting_prep %d.\n",
+		stats.RecallCompared, stats.Failed, stats.BriefingCompared, stats.MeetingPrepCompared)
 	fmt.Fprintf(out, "Report written to %s\n", outPath)
 	return nil
 }
