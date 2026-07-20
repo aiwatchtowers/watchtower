@@ -289,10 +289,10 @@ func TestRenderCompareReport(t *testing.T) {
 		Channels: []ChannelCompare{
 			{ChannelID: "C0AAA", LegacyDigestID: 1, LegacyTopics: 3, MemoryTopics: 2,
 				LegacyRefs: 10, LegacyRefsValid: 1, MemoryRefs: 5, MemoryRefsRejected: 2,
-				Coverage: 0.75, LegacyChars: 400, MemoryChars: 200},
+				Episodes: 2, Coverage: 0.75, LegacyChars: 400, MemoryChars: 200},
 			{ChannelID: "C0BBB", LegacyDigestID: 2, LegacyTopics: 1, MemoryTopics: 1,
 				LegacyRefs: 4, LegacyRefsValid: 0, MemoryRefs: 2, MemoryRefsRejected: 0,
-				Coverage: 1.0, LegacyChars: 100, MemoryChars: 80},
+				Episodes: 0, Coverage: 1.0, LegacyChars: 100, MemoryChars: 80},
 		},
 	}
 	at := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
@@ -305,6 +305,14 @@ func TestRenderCompareReport(t *testing.T) {
 	// Aggregate ref-validity: legacy 1/14, memory 7/7 (100%).
 	assert.Contains(t, report, "Aggregate")
 	assert.Contains(t, report, "hand-review", "the report points at the hand-review protocol")
+	// Span-semantics coverage column.
+	if !strings.Contains(report, "Coverage (episode span)") {
+		t.Errorf("report missing span-semantics column header; got:\n%s", report)
+	}
+	// Windows with episodes aggregate: 1 of 2 channels have Episodes > 0.
+	if !strings.Contains(report, "Windows with episodes: **1/2**") {
+		t.Errorf("report missing span aggregate; got:\n%s", report)
+	}
 	// Deterministic: rendering twice yields the same bytes.
 	assert.Equal(t, report, RenderCompareReport(cs, at))
 }
