@@ -1,7 +1,10 @@
 // Package mcp implements a read-only Model Context Protocol server that
 // exposes Watchtower's curated product data to MCP clients. Every registered
-// tool is a read surface; the single deliberate write is memory_open's
-// best-effort usage-stats bump (telemetry, not domain data).
+// tool is a read surface; the deliberate writes are memory_open's best-effort
+// usage-stats bump (telemetry, not domain data) and, when
+// WithMemoryRetrieveCompare is supplied, memory_recall's dark retrieval-
+// compare shadow row (also telemetry — Slice B Task 8, memory_retrieve_shadow
+// only, never the tool's own response).
 package mcp
 
 import (
@@ -65,6 +68,16 @@ type Server struct {
 	// memoryVaultPath is the workspace memory vault directory; empty when
 	// memory is disabled — the memory_ tools then answer "not initialized".
 	memoryVaultPath string
+
+	// retrieveShadowDB is a SEPARATE, ordinarily-writable *db.DB handle used
+	// ONLY for memory_recall's dark retrieval-compare shadow write (Slice B
+	// Task 8). The server's main `database` handle is deliberately
+	// PRAGMA query_only=ON at the call sites (cmd/mcp.go, cmd/tools.go) so
+	// no tool handler can write; this field is the one narrow, explicit
+	// exception, threaded in only when memory.retrieve.recall_compare is on.
+	// nil means the flag is off — memory_recall behaves byte-identically to
+	// before this field existed.
+	retrieveShadowDB *db.DB
 }
 
 // ServerOption customizes NewServer additively, so existing call sites keep
@@ -76,6 +89,15 @@ type ServerOption func(*Server)
 // enabled; without it the tools report memory as not initialized.
 func WithMemoryVault(path string) ServerOption {
 	return func(srv *Server) { srv.memoryVaultPath = path }
+}
+
+// WithMemoryRetrieveCompare enables memory_recall's dark retrieval-compare
+// mode (Slice B Task 8, memory.retrieve.recall_compare): shadowDB must be an
+// ordinarily-writable *db.DB (NOT the server's read-only main handle) used
+// exclusively for the one memory_retrieve_shadow insert per call. Absent
+// (nil) or never called, memory_recall never touches that table.
+func WithMemoryRetrieveCompare(shadowDB *db.DB) ServerOption {
+	return func(srv *Server) { srv.retrieveShadowDB = shadowDB }
 }
 
 // NewServer builds an MCP server over the given database and registers every
@@ -96,7 +118,7 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	registerJira(srv.s, database)
 	registerMessages(srv.s, database)
 	registerTranscripts(srv.s, database)
-	registerMemory(srv.s, database, srv.memoryVaultPath)
+	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 
 	return srv
 }

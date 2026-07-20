@@ -138,16 +138,31 @@ func openToolSession(cmd *cobra.Command) (*internalmcp.LocalSession, func(), err
 		return nil, nil, fmt.Errorf("enforcing read-only: %w", err)
 	}
 	var mcpOpts []internalmcp.ServerOption
+	var shadowDB *db.DB
 	if cfg.Memory.Enabled {
 		mcpOpts = append(mcpOpts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))
+		if cfg.Memory.Retrieve.RecallCompare {
+			shadowDB, err = db.Open(cfg.DBPath())
+			if err != nil {
+				database.Close()
+				return nil, nil, fmt.Errorf("opening retrieve-compare shadow handle: %w", err)
+			}
+			mcpOpts = append(mcpOpts, internalmcp.WithMemoryRetrieveCompare(shadowDB))
+		}
 	}
 	session, err := internalmcp.NewServer(database, mcpOpts...).ConnectLocal(cmdContext(cmd))
 	if err != nil {
+		if shadowDB != nil {
+			shadowDB.Close()
+		}
 		database.Close()
 		return nil, nil, fmt.Errorf("connecting tool session: %w", err)
 	}
 	cleanup := func() {
 		_ = session.Close()
+		if shadowDB != nil {
+			shadowDB.Close()
+		}
 		database.Close()
 	}
 	return session, cleanup, nil

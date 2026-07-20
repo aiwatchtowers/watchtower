@@ -89,7 +89,7 @@ func memoryUnavailable(vaultPath string) *mcpsdk.CallToolResult {
 	return nil
 }
 
-func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
+func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string, retrieveShadowDB *db.DB) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_map",
 		Description: "Read the hot memory world map (map.md — a compact at-a-glance summary; use memory_recall or memory_open for anything not shown) plus node counts by type and tier.",
@@ -103,7 +103,7 @@ func registerMemory(s *mcpsdk.Server, database *db.DB, vaultPath string) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "memory_recall",
 		Description: "Full-text search over memory nodes; an exact alias match ranks first. Returns id, title, type, snippet per hit.",
-	}, memoryRecallHandler(database, vaultPath))
+	}, memoryRecallHandler(database, vaultPath, retrieveShadowDB))
 }
 
 func memoryMapHandler(database *db.DB, vaultPath string) func(context.Context, *mcpsdk.CallToolRequest, memoryMapArgs) (*mcpsdk.CallToolResult, any, error) {
@@ -186,7 +186,7 @@ func memoryOpenHandler(database *db.DB, vaultPath string) func(context.Context, 
 	}
 }
 
-func memoryRecallHandler(database *db.DB, vaultPath string) func(context.Context, *mcpsdk.CallToolRequest, memoryRecallArgs) (*mcpsdk.CallToolResult, any, error) {
+func memoryRecallHandler(database *db.DB, vaultPath string, retrieveShadowDB *db.DB) func(context.Context, *mcpsdk.CallToolRequest, memoryRecallArgs) (*mcpsdk.CallToolResult, any, error) {
 	return func(ctx context.Context, req *mcpsdk.CallToolRequest, args memoryRecallArgs) (*mcpsdk.CallToolResult, any, error) {
 		if res := memoryUnavailable(vaultPath); res != nil {
 			return res, nil, nil
@@ -225,6 +225,22 @@ func memoryRecallHandler(database *db.DB, vaultPath string) func(context.Context
 		if len(hits) > limit {
 			hits = hits[:limit]
 		}
+
+		// Slice B Task 8 dark retrieval-compare (memory.retrieve.recall_compare):
+		// runs RetrieveByQuery and shadow-diffs it against `hits` above — the
+		// EXACT combined legacy result this handler is about to return. The
+		// comparison result is discarded; the response below is unaffected
+		// regardless of the flag. A compare failure is skipped silently here
+		// (no logger threaded into this handler today) — it must never fail
+		// or alter the actual tool call.
+		if retrieveShadowDB != nil {
+			legacyIDs := make([]string, len(hits))
+			for i, h := range hits {
+				legacyIDs[i] = h.ID
+			}
+			_, _ = memory.CompareRecall(database, retrieveShadowDB, query, legacyIDs, limit)
+		}
+
 		return jsonListResult(hits)
 	}
 }
