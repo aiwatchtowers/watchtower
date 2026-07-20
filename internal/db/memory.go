@@ -205,6 +205,51 @@ func (db *DB) ListEpisodesForChannelWindow(channelID string, fromUnix, toUnix fl
 	return ids, rows.Err()
 }
 
+// ListShortTierEpisodesForAliases returns short-tier, non-tombstone episode
+// rows whose memory_provenance.sender_id matches one of aliases, ordered by
+// each node's MOST RECENT matching ref (recency, not importance — a
+// short-tier episode's value here is "what recently happened," see Slice B
+// design spec §3). A node with multiple matching provenance rows (e.g. two
+// refs from the same Slack user) appears once via the per-node MAX(ts_unix)
+// derived table, mirroring ListDisputePendingBeliefs's unaliased
+// memoryNodeSelectCols-against-bare-memory_nodes shape. Empty aliases is a
+// clean empty read (nil, nil) — no query runs.
+func (db *DB) ListShortTierEpisodesForAliases(aliases []string, limit int) ([]MemoryNodeRow, error) {
+	if len(aliases) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = -1 // SQLite: LIMIT -1 is unbounded (ListDisputePendingBeliefs precedent)
+	}
+	placeholders, args := inClause(aliases)
+	args = append(args, limit)
+	rows, err := db.Query(`SELECT `+memoryNodeSelectCols+`
+		FROM memory_nodes
+		JOIN (
+			SELECT node_id, MAX(ts_unix) AS max_ts
+			FROM memory_provenance
+			WHERE sender_id IN (`+placeholders+`)
+			GROUP BY node_id
+		) latest ON latest.node_id = memory_nodes.id
+		WHERE memory_nodes.tier = 'short' AND memory_nodes.status != 'tombstone'
+		ORDER BY latest.max_ts DESC
+		LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing short-tier episodes for aliases: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MemoryNodeRow
+	for rows.Next() {
+		row, err := scanMemoryNodeRow(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scanning short-tier episode for aliases: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // LookupMemoryAlias resolves an alias (case-insensitive — the column is
 // COLLATE NOCASE) to its node ID. Returns sql.ErrNoRows when unknown.
 func (db *DB) LookupMemoryAlias(ref string) (string, error) {

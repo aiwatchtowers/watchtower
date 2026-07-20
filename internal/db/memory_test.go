@@ -299,6 +299,71 @@ func TestMemoryNodeImportanceScoreRoundTrip(t *testing.T) {
 	}
 }
 
+// seedProvenanceRow is a small test helper: inserts one memory_provenance row
+// directly (bypassing the memory package's provenanceRows), for tests that
+// only need the DB-layer index populated, not a real vault file.
+func seedProvenanceRow(t *testing.T, d *DB, nodeID, channelID, tsRaw string, tsUnix float64, senderID string) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO memory_provenance (node_id, scheme, channel_id, ts_raw, ts_unix, sender_id)
+		VALUES (?, '', ?, ?, ?, ?)`, nodeID, channelID, tsRaw, tsUnix, senderID); err != nil {
+		t.Fatalf("seeding provenance row for %s: %v", nodeID, err)
+	}
+}
+
+// TestListShortTierEpisodesForAliases: recency-ordered short-tier episodes
+// whose provenance sender_id matches one of the given aliases (Slice B).
+// Long-tier episodes, tombstones, and episodes with no matching sender are
+// excluded; a node with multiple matching provenance rows appears once,
+// ordered by its MOST RECENT matching ref.
+func TestListShortTierEpisodesForAliases(t *testing.T) {
+	d := openTestDB(t)
+
+	mustUpsert := func(row MemoryNodeRow) {
+		t.Helper()
+		if err := d.UpsertMemoryNode(row, row.ID+" body", nil); err != nil {
+			t.Fatalf("UpsertMemoryNode %s: %v", row.ID, err)
+		}
+	}
+	mustUpsert(memTestNode("ep_recent", func(r *MemoryNodeRow) { r.Type = "episode"; r.Tier = "short" }))
+	mustUpsert(memTestNode("ep_older", func(r *MemoryNodeRow) { r.Type = "episode"; r.Tier = "short" }))
+	mustUpsert(memTestNode("ep_long_tier", func(r *MemoryNodeRow) { r.Type = "episode"; r.Tier = "long" }))
+	mustUpsert(memTestNode("ep_tombstoned", func(r *MemoryNodeRow) { r.Type = "episode"; r.Tier = "short"; r.Status = "tombstone" }))
+	mustUpsert(memTestNode("ep_other_sender", func(r *MemoryNodeRow) { r.Type = "episode"; r.Tier = "short" }))
+
+	seedProvenanceRow(t, d, "ep_recent", "C1", "200.0", 200.0, "U1")
+	seedProvenanceRow(t, d, "ep_older", "C1", "100.0", 100.0, "U1")
+	// ep_recent also has an OLDER ref from the same sender — must still be
+	// deduped to one row, ordered by its most recent ref.
+	seedProvenanceRow(t, d, "ep_recent", "C1", "50.0", 50.0, "U1")
+	seedProvenanceRow(t, d, "ep_long_tier", "C1", "300.0", 300.0, "U1")    // wrong tier, excluded
+	seedProvenanceRow(t, d, "ep_tombstoned", "C1", "400.0", 400.0, "U1")   // tombstone, excluded
+	seedProvenanceRow(t, d, "ep_other_sender", "C1", "500.0", 500.0, "U2") // wrong sender, excluded
+
+	got, err := d.ListShortTierEpisodesForAliases([]string{"U1"}, 10)
+	if err != nil {
+		t.Fatalf("ListShortTierEpisodesForAliases: %v", err)
+	}
+	var ids []string
+	for _, r := range got {
+		ids = append(ids, r.ID)
+	}
+	if len(ids) != 2 || ids[0] != "ep_recent" || ids[1] != "ep_older" {
+		t.Fatalf("ListShortTierEpisodesForAliases ids = %v, want [ep_recent ep_older] in that order", ids)
+	}
+
+	// Empty aliases: no query, clean empty result.
+	empty, err := d.ListShortTierEpisodesForAliases(nil, 10)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("ListShortTierEpisodesForAliases(nil) = (%v, %v), want (empty, nil)", empty, err)
+	}
+
+	// Limit truncates to the most recent.
+	limited, err := d.ListShortTierEpisodesForAliases([]string{"U1"}, 1)
+	if err != nil || len(limited) != 1 || limited[0].ID != "ep_recent" {
+		t.Fatalf("ListShortTierEpisodesForAliases limit=1 = %+v, want just ep_recent", limited)
+	}
+}
+
 // TestUpdateMemoryNodeImportanceScore: a narrow single-column update that
 // changes only importance_score, leaving every other field (content_hash,
 // title, etc.) untouched — the primitive Reconcile's phase-B refinement
