@@ -167,22 +167,26 @@ func (db *DB) DeleteMemoryNode(id string) error {
 	return nil
 }
 
-// ListEpisodesForChannelWindow returns the distinct node ids whose
-// `## Provenance` refs for channelID fall in the half-open window (fromUnix,
-// toUnix] — the episode-window substrate the digest render (Phase-5 5B) queries
-// to ask "which episodes cover Slack channel C in [t0,t1]?". Tombstones are
-// excluded (a redirected/merged node is not a real episode). Because a Slack
-// channel_id carries scheme "" while mail:/cal:/chat:/act: refs carry their
-// prefix in channel_id, passing a bare Slack channel_id naturally excludes the
-// prefixed-scheme refs. The bound is exclusive-low / inclusive-high so adjacent
-// windows tile without double-counting the boundary second.
+// ListEpisodesForChannelWindow returns the distinct non-tombstone node ids
+// whose per-channel provenance SPAN [MIN(ts_unix), MAX(ts_unix)] overlaps the
+// window (fromUnix, toUnix] on channelID, sorted by node id. Span overlap —
+// not ref-in-window — because episodes cite only sparse key messages while a
+// story runs for days: a window falling between two cited refs still belongs
+// to the story (the 2026-07-20 compare-instrument fix; see
+// docs/superpowers/specs/2026-07-20-digest-compare-span-fix-design.md).
+// Because provenance rows keep the raw scheme-prefixed ref in channel_id,
+// passing a bare Slack channel_id naturally excludes the prefixed-scheme
+// refs. The bound is exclusive-low / inclusive-high so adjacent windows tile
+// without double-counting the boundary second: overlap means
+// MIN(ts_unix) <= to AND MAX(ts_unix) > from.
 func (db *DB) ListEpisodesForChannelWindow(channelID string, fromUnix, toUnix float64) ([]string, error) {
-	rows, err := db.Query(`SELECT DISTINCT p.node_id
+	rows, err := db.Query(`SELECT p.node_id
 		FROM memory_provenance p
 		JOIN memory_nodes n ON n.id = p.node_id
-		WHERE p.channel_id = ? AND p.ts_unix > ? AND p.ts_unix <= ?
-		  AND n.status != 'tombstone'
-		ORDER BY p.node_id`, channelID, fromUnix, toUnix)
+		WHERE p.channel_id = ? AND n.status != 'tombstone'
+		GROUP BY p.node_id
+		HAVING MIN(p.ts_unix) <= ? AND MAX(p.ts_unix) > ?
+		ORDER BY p.node_id`, channelID, toUnix, fromUnix)
 	if err != nil {
 		return nil, fmt.Errorf("listing episodes for channel %s window (%v,%v]: %w", channelID, fromUnix, toUnix, err)
 	}

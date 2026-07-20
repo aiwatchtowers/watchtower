@@ -695,9 +695,9 @@ func TestDropMemoryIndexClearsProvenance(t *testing.T) {
 }
 
 // TestListEpisodesForChannelWindow: the window query returns episodes whose
-// bare-channel provenance falls in (from,to], is boundary-correct (excludes
-// from, includes to), and never returns prefixed-scheme (mail:/cal:) refs for
-// a bare Slack channel id or tombstoned nodes.
+// per-channel provenance SPAN [min,max] overlaps (from,to], is boundary-correct
+// (excludes from, includes to), and never returns prefixed-scheme (mail:/cal:)
+// refs for a bare Slack channel id or tombstoned nodes.
 func TestListEpisodesForChannelWindow(t *testing.T) {
 	db := openTestDB(t)
 
@@ -725,13 +725,32 @@ func TestListEpisodesForChannelWindow(t *testing.T) {
 		t.Fatalf("upsert tomb: %v", err)
 	}
 
+	// Span fixtures: refs OUTSIDE (100,200] but story span overlapping it —
+	// the 2026-07-20 instrument fix (episodes cite sparse key messages, so a
+	// window falling between two cited refs must still select the episode).
+	mk("ep_span", ProvenanceRow{NodeID: "ep_span", ChannelID: "C0AAA", TSRaw: "50", TSUnix: 50},
+		ProvenanceRow{NodeID: "ep_span", ChannelID: "C0AAA", TSRaw: "250", TSUnix: 250})
+	// Span entirely before the window (max == from is still OUT: bounds are (from,to]).
+	mk("ep_span_before", ProvenanceRow{NodeID: "ep_span_before", ChannelID: "C0AAA", TSRaw: "40", TSUnix: 40},
+		ProvenanceRow{NodeID: "ep_span_before", ChannelID: "C0AAA", TSRaw: "100", TSUnix: 100})
+	// Span starting exactly at to (min == to is IN: inclusive-high).
+	mk("ep_span_at_to", ProvenanceRow{NodeID: "ep_span_at_to", ChannelID: "C0AAA", TSRaw: "200", TSUnix: 200},
+		ProvenanceRow{NodeID: "ep_span_at_to", ChannelID: "C0AAA", TSRaw: "300", TSUnix: 300})
+	// Span crossing the window but in ANOTHER channel — per-channel spans only.
+	mk("ep_span_other", ProvenanceRow{NodeID: "ep_span_other", ChannelID: "C0BBB", TSRaw: "50", TSUnix: 50},
+		ProvenanceRow{NodeID: "ep_span_other", ChannelID: "C0BBB", TSRaw: "250", TSUnix: 250})
+
 	ids, err := db.ListEpisodesForChannelWindow("C0AAA", 100, 200)
 	if err != nil {
 		t.Fatalf("window query: %v", err)
 	}
-	// (100,200]: excludes ep_before (==100), includes ep_in and ep_at_to,
-	// excludes ep_after/ep_other/ep_mail/ep_tomb.
-	want := []string{"ep_at_to", "ep_in"}
+	// (100,200] with span semantics: ep_in (ref inside), ep_at_to (span
+	// [200,200], min <= to), ep_span (span [50,250] crosses the window),
+	// ep_span_at_to (span [200,300], min == to). Excluded: ep_before (span
+	// [100,100], max == from), ep_span_before (max == from), ep_after,
+	// ep_span_other/ep_other (other channel), ep_mail (scheme ref),
+	// ep_tomb (tombstone).
+	want := []string{"ep_at_to", "ep_in", "ep_span", "ep_span_at_to"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Errorf("window ids = %v, want %v", ids, want)
 	}
