@@ -336,3 +336,70 @@ func TestCompareDigestsSkipsFreshShadow(t *testing.T) {
 	assert.Equal(t, 1, cs2.Skipped)
 	assert.Equal(t, 1, calls, "no second AI call")
 }
+
+// TestSplitCoverageSpans: span-based coverage (2026-07-20 instrument fix) —
+// a message inside ANY selected episode's [from,to] span is covered even when
+// its exact ts was never cited; messages outside every span are the raw gap
+// fed to the render prompt.
+func TestSplitCoverageSpans(t *testing.T) {
+	msgs := []db.MemoryExtractMessage{
+		{TS: "100.000100", TSUnix: 100, Author: "a", Text: "at span start"},
+		{TS: "150.000100", TSUnix: 150, Author: "a", Text: "inside span, uncited"},
+		{TS: "200.000100", TSUnix: 200, Author: "a", Text: "at span end"},
+		{TS: "250.000100", TSUnix: 250, Author: "a", Text: "outside every span"},
+	}
+	gap, covered := splitCoverage(msgs, []tsSpan{{from: 100, to: 200}})
+	if covered != 3 {
+		t.Errorf("covered = %d, want 3 (span bounds inclusive both ends)", covered)
+	}
+	if len(gap) != 1 || gap[0].TS != "250.000100" {
+		t.Errorf("gap = %+v, want the single out-of-span message", gap)
+	}
+	// No spans (no episodes): everything is gap, coverage 0.
+	gap, covered = splitCoverage(msgs, nil)
+	if covered != 0 || len(gap) != 4 {
+		t.Errorf("no-span split = covered %d / gap %d, want 0/4", covered, len(gap))
+	}
+}
+
+// TestCompareDigestsSpanSelectsBetweenRefs: the live 0%-window artifact (the
+// 2026-07-19 compare: 29/56 windows read coverage 0 while their stories were
+// in the vault) — a legacy window that falls strictly BETWEEN an episode's two
+// cited refs must still select that episode (span overlap), render, and report
+// full span coverage.
+func TestCompareDigestsSpanSelectsBetweenRefs(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedUserRow(t, d, "U1ALICE", "alice")
+	seedChannelRow(t, d, "C0AAA", "general")
+
+	base := time.Now().Add(-time.Hour).Unix()
+	// The digest window's messages sit strictly between the episode's refs.
+	seedMessageRow(t, d, "C0AAA", fmt.Sprintf("%d.000100", base+10), "U1ALICE", "mid-story update")
+	seedMessageRow(t, d, "C0AAA", fmt.Sprintf("%d.000200", base+20), "U1ALICE", "another mid-story message")
+	digestID := seedLegacyChannelDigest(t, d, "C0AAA", float64(base+5), float64(base+25), []db.DigestTopic{
+		{Title: "Mid", Summary: "mid-window", KeyMessages: "[]", Decisions: "[]"},
+	})
+
+	// The episode cites only the story's endpoints — both OUTSIDE (base+5, base+25].
+	indexEpisodeWithProvenance(t, v, d, episodeNode("ep_00000000000000000000000003", "Long story", "C0AAA",
+		"A story spanning the whole hour.", "Resolved.",
+		fmt.Sprintf("%d.000050", base), fmt.Sprintf("%d.000300", base+30)))
+
+	reply := func(string) (string, error) {
+		return fmt.Sprintf(`{"summary":"rendered","topics":[
+			{"title":"Long story","summary":"the mid-window part","decisions":[],"action_items":[],"situations":[],"key_messages":["%d.000050"]}
+		]}`, base), nil
+	}
+	p := NewPipeline(d, v, &fakeGen{reply: reply}, pipelineTestConfig(), t.Logf)
+
+	cs, err := p.CompareDigests(context.Background(), time.Now().Add(-24*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, cs.Channels, 1)
+	cc := cs.Channels[0]
+	assert.Equal(t, digestID, cc.LegacyDigestID)
+	assert.Equal(t, 1, cc.MemoryTopics, "render RAN — the old refs-in-window query skipped this window entirely")
+	assert.InDelta(t, 1.0, cc.Coverage, 0.001, "both window messages inside the [base, base+30] story span")
+	assert.Equal(t, 1, cc.MemoryRefs, "the episode-cited endpoint ref survives render validation")
+	assert.Equal(t, 0, cc.MemoryRefsRejected)
+}

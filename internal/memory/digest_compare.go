@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -148,7 +149,7 @@ func (p *Pipeline) shadowRender(ctx context.Context, d db.Digest) (memTopics, me
 	if err != nil {
 		return 0, 0, 0, 0, 0, err
 	}
-	episodes, coveredTS, err := p.loadRenderEpisodes(d.ChannelID, ids)
+	episodes, spans, err := p.loadRenderEpisodes(d.ChannelID, ids)
 	if err != nil {
 		return 0, 0, 0, 0, 0, err
 	}
@@ -156,7 +157,7 @@ func (p *Pipeline) shadowRender(ctx context.Context, d db.Digest) (memTopics, me
 	if err != nil {
 		return 0, 0, 0, 0, 0, err
 	}
-	gapMsgs, covered := splitCoverage(windowMsgs, coveredTS)
+	gapMsgs, covered := splitCoverage(windowMsgs, spans)
 	coverage = coverageRatio(covered, len(windowMsgs))
 
 	if len(episodes) == 0 {
@@ -180,25 +181,55 @@ func (p *Pipeline) shadowRender(ctx context.Context, d db.Digest) (memTopics, me
 	return len(rendered.Topics), countMemoryRefs(rendered), rejected, renderedChars(rendered), coverage, nil
 }
 
+// tsSpan is one selected episode's story interval on the compare channel:
+// [from, to] over its parseable channel-scoped provenance ts. Coverage and the
+// gap split are span-based (2026-07-20 instrument fix): an in-span message is
+// represented by the episode narrative even when its exact ts was never cited.
+type tsSpan struct{ from, to float64 }
+
 // loadRenderEpisodes reads each episode node's body from the vault and projects
-// it into a renderEpisode (title + Story/Outcome + this channel's provenance ts).
-// coveredTS is the union of those channel-scoped provenance ts — the coverage
-// numerator and the gap-message filter. A vault read error propagates (the
-// caller isolates the whole channel).
-func (p *Pipeline) loadRenderEpisodes(channelID string, ids []string) ([]renderEpisode, map[string]bool, error) {
+// it into a renderEpisode (title + Story/Outcome + this channel's provenance ts)
+// plus the episode's story span on this channel — the coverage/gap intervals.
+// An episode with no parseable channel-scoped ref contributes no span (cannot
+// happen for extractor-written episodes; defensive skip only). A vault read
+// error propagates (the caller isolates the whole channel).
+func (p *Pipeline) loadRenderEpisodes(channelID string, ids []string) ([]renderEpisode, []tsSpan, error) {
 	var episodes []renderEpisode
-	covered := make(map[string]bool)
+	var spans []tsSpan
 	for _, id := range ids {
 		n, err := p.vault.ReadNode(id)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read episode %s: %w", id, err)
 		}
 		var prov []string
+		span := tsSpan{}
+		hasSpan := false
 		for _, r := range parseProvenance(n.Body) {
-			if r.ChannelID == channelID {
-				prov = append(prov, r.TS)
-				covered[r.TS] = true
+			if r.ChannelID != channelID {
+				continue
 			}
+			prov = append(prov, r.TS)
+			ts, perr := strconv.ParseFloat(r.TS, 64)
+			if perr != nil {
+				continue
+			}
+			// Use only the integer part of ts, matching how the database
+			// computes ts_unix (the Slack timestamp's second part only).
+			tsUnix := float64(int64(ts))
+			if !hasSpan {
+				span = tsSpan{from: tsUnix, to: tsUnix}
+				hasSpan = true
+				continue
+			}
+			if tsUnix < span.from {
+				span.from = tsUnix
+			}
+			if tsUnix > span.to {
+				span.to = tsUnix
+			}
+		}
+		if hasSpan {
+			spans = append(spans, span)
 		}
 		episodes = append(episodes, renderEpisode{
 			Title:      n.Title,
@@ -207,15 +238,23 @@ func (p *Pipeline) loadRenderEpisodes(channelID string, ids []string) ([]renderE
 			Provenance: prov,
 		})
 	}
-	return episodes, covered, nil
+	return episodes, spans, nil
 }
 
-// splitCoverage partitions the window's messages: covered counts those whose ts
-// is in coveredTS (an episode's provenance), and the rest become raw gap messages
+// splitCoverage partitions the window's messages by the selected episodes'
+// story spans: covered counts messages inside ANY span (inclusive both ends —
+// the episode narrative represents them), and the rest become raw gap messages
 // the render may cite to fill what the episodes miss.
-func splitCoverage(msgs []db.MemoryExtractMessage, coveredTS map[string]bool) (gap []gapMessage, covered int) {
+func splitCoverage(msgs []db.MemoryExtractMessage, spans []tsSpan) (gap []gapMessage, covered int) {
 	for _, m := range msgs {
-		if coveredTS[m.TS] {
+		inSpan := false
+		for _, s := range spans {
+			if m.TSUnix >= s.from && m.TSUnix <= s.to {
+				inSpan = true
+				break
+			}
+		}
+		if inSpan {
 			covered++
 			continue
 		}
