@@ -167,6 +167,9 @@ CREATE INDEX idx_memory_provenance_sender ON memory_provenance(sender_id)
 index	idx_memory_provenance_window
 CREATE INDEX idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix)
 
+index	idx_memory_retrieve_shadow_surface
+CREATE INDEX idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surface, ts)
+
 index	idx_messages_channel_ts_unix
 CREATE INDEX idx_messages_channel_ts_unix ON messages(channel_id, ts_unix)
 
@@ -967,6 +970,17 @@ channel_id TEXT NOT NULL,
 ts_raw TEXT NOT NULL,
 ts_unix REAL NOT NULL, sender_id TEXT NOT NULL DEFAULT '',
 PRIMARY KEY (node_id, channel_id, ts_raw)
+)
+
+table	memory_retrieve_shadow
+CREATE TABLE memory_retrieve_shadow (
+id INTEGER PRIMARY KEY,
+surface TEXT NOT NULL CHECK (surface IN ('recall','briefing','meeting_prep')),
+query_key TEXT NOT NULL DEFAULT '', -- recall's query text / briefing's since-ts / meeting-prep's subject entity id
+old_result_json TEXT NOT NULL,
+new_result_json TEXT NOT NULL,
+diff_metrics_json TEXT NOT NULL,
+ts TEXT NOT NULL
 )
 
 table	messages
@@ -2056,6 +2070,15 @@ END
 3	ts_raw	TEXT	notnull=1	dflt=NULL	pk=3
 4	ts_unix	REAL	notnull=1	dflt=NULL	pk=0
 5	sender_id	TEXT	notnull=1	dflt=''	pk=0
+
+## memory_retrieve_shadow
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	surface	TEXT	notnull=1	dflt=NULL	pk=0
+2	query_key	TEXT	notnull=1	dflt=''	pk=0
+3	old_result_json	TEXT	notnull=1	dflt=NULL	pk=0
+4	new_result_json	TEXT	notnull=1	dflt=NULL	pk=0
+5	diff_metrics_json	TEXT	notnull=1	dflt=NULL	pk=0
+6	ts	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## messages
 0	channel_id	TEXT	notnull=1	dflt=NULL	pk=1

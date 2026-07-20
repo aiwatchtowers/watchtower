@@ -191,6 +191,7 @@ type MemoryConfig struct {
 	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/disputes/reflection), each dark by default
 	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // Phase-5 slice-1 sources (gmail/actions), each dark by default
 	Renders              MemoryRendersConfig  `mapstructure:"renders"`                 // Phase-5 slice-3 renders (digest_compare), dark by default
+	Retrieve             MemoryRetrieveConfig `mapstructure:"retrieve"`                // Phase-5 Slice B dark retrieval-compare (recall/briefing/meeting_prep), each dark by default
 }
 
 // MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
@@ -245,6 +246,20 @@ type MemorySourcesConfig struct {
 // (dark by default).
 type MemoryRendersConfig struct {
 	DigestCompare bool `mapstructure:"digest_compare"` // dark compare-mode: render channel digests from memory episodes and diff against the legacy digest pipeline (default: false)
+}
+
+// MemoryRetrieveConfig gates the Phase-5 Slice-B dark retrieval-compare mode
+// independently per surface — each is a no-op when its flag is off, mirroring
+// Renders.DigestCompare's precedent. All default false (dark by default).
+// Unlike Renders.DigestCompare (one daemon-tail batch job), these three run
+// inline at each surface's own live call site (memory_recall's MCP handler,
+// briefing's gatherMemoryRevisions, meeting-prep's gatherMemoryContext) —
+// there is no cost concern requiring a daemon-cycle gate, since none of the
+// three retrieval functions makes an AI call.
+type MemoryRetrieveConfig struct {
+	RecallCompare      bool `mapstructure:"recall_compare"`       // memory_recall MCP tool also runs RetrieveByQuery and shadow-diffs against the legacy FTS ranking (default: false)
+	BriefingCompare    bool `mapstructure:"briefing_compare"`     // briefing's Memory revisions journal also runs RetrieveRevisions and shadow-diffs against the legacy notable-revision order (default: false)
+	MeetingPrepCompare bool `mapstructure:"meeting_prep_compare"` // meeting-prep's attendee memory context also runs RetrieveBySubject and shadow-diffs against the legacy confidence-ordered belief selection (default: false)
 }
 
 type Config struct {

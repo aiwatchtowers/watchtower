@@ -1318,3 +1318,17 @@ CREATE TABLE IF NOT EXISTS memory_digest_shadow (
     created_at           TEXT NOT NULL,
     UNIQUE(channel_id, period_from, period_to)
 );
+
+-- Slice B Task 7 (see 00029): dark retrieval-compare telemetry
+-- (memory.retrieve.{recall_compare,briefing_compare,meeting_prep_compare}) —
+-- append-only, no FK onto memory_nodes (a shadow row is pure telemetry that
+-- must survive independently of the compared node's later eviction).
+CREATE TABLE IF NOT EXISTS memory_retrieve_shadow (
+    id                INTEGER PRIMARY KEY,
+    surface           TEXT NOT NULL CHECK (surface IN ('recall','briefing','meeting_prep')),
+    query_key         TEXT NOT NULL DEFAULT '',
+    old_result_json   TEXT NOT NULL,
+    new_result_json   TEXT NOT NULL,
+    diff_metrics_json TEXT NOT NULL,
+    ts                TEXT NOT NULL
+);

@@ -2038,3 +2038,54 @@ func (db *DB) HasFreshDigestShadow(channelID string, periodFrom, periodTo float6
 	}
 	return n > 0, nil
 }
+
+// MemoryRetrieveShadowRow mirrors one row of memory_retrieve_shadow (see
+// 00029) — Slice B's dark retrieval-compare telemetry, one row per live
+// surface comparison (recall/briefing/meeting_prep). Append-only, no FK onto
+// memory_nodes: pure telemetry that must survive the compared node's later
+// eviction/deletion.
+type MemoryRetrieveShadowRow struct {
+	ID              int64
+	Surface         string // "recall" | "briefing" | "meeting_prep"
+	QueryKey        string // surface-specific: the recall query text, the briefing since-ts, the meeting-prep subject entity id
+	OldResultJSON   string
+	NewResultJSON   string
+	DiffMetricsJSON string
+	TS              string // RFC3339
+}
+
+// InsertMemoryRetrieveShadow appends one Slice-B retrieval-compare telemetry
+// row (Task 7). Append-only — unlike UpsertDigestShadow, there is no natural
+// dedup key (a surface is called ad hoc, not per fixed window), so repeat
+// comparisons simply accumulate as an audit trail.
+func (db *DB) InsertMemoryRetrieveShadow(row MemoryRetrieveShadowRow) error {
+	_, err := db.Exec(`INSERT INTO memory_retrieve_shadow
+		(surface, query_key, old_result_json, new_result_json, diff_metrics_json, ts)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		row.Surface, row.QueryKey, row.OldResultJSON, row.NewResultJSON, row.DiffMetricsJSON, row.TS)
+	if err != nil {
+		return fmt.Errorf("inserting memory retrieve shadow row: %w", err)
+	}
+	return nil
+}
+
+// ListMemoryRetrieveShadow returns surface's shadow rows created at or after
+// since (zero time = all), newest first — the CLI report's read path.
+func (db *DB) ListMemoryRetrieveShadow(surface string, since time.Time) ([]MemoryRetrieveShadowRow, error) {
+	rows, err := db.Query(`SELECT id, surface, query_key, old_result_json, new_result_json, diff_metrics_json, ts
+		FROM memory_retrieve_shadow WHERE surface = ? AND ts >= ? ORDER BY id DESC`,
+		surface, since.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, fmt.Errorf("listing memory retrieve shadow: %w", err)
+	}
+	defer rows.Close()
+	var out []MemoryRetrieveShadowRow
+	for rows.Next() {
+		var r MemoryRetrieveShadowRow
+		if err := rows.Scan(&r.ID, &r.Surface, &r.QueryKey, &r.OldResultJSON, &r.NewResultJSON, &r.DiffMetricsJSON, &r.TS); err != nil {
+			return nil, fmt.Errorf("scanning memory retrieve shadow row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

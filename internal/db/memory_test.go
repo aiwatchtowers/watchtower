@@ -1988,3 +1988,31 @@ func TestListDigestShadow_FiltersBySinceISO(t *testing.T) {
 		t.Fatalf("ListDigestShadow(since) = %+v, want only the recent row", rows)
 	}
 }
+
+func TestMemoryRetrieveShadowRoundTrip(t *testing.T) {
+	database := openTestDB(t)
+
+	err := database.InsertMemoryRetrieveShadow(MemoryRetrieveShadowRow{
+		Surface: "recall", QueryKey: "billing",
+		OldResultJSON: `["ent_1"]`, NewResultJSON: `["ent_1","ent_2"]`,
+		DiffMetricsJSON: `{"coverage_ok":true}`, TS: "2026-07-20T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("InsertMemoryRetrieveShadow: %v", err)
+	}
+	// A second surface must not collide with the first.
+	if err := database.InsertMemoryRetrieveShadow(MemoryRetrieveShadowRow{
+		Surface: "briefing", QueryKey: "1721433600",
+		OldResultJSON: `[]`, NewResultJSON: `[]`, DiffMetricsJSON: `{}`, TS: "2026-07-20T01:00:00Z",
+	}); err != nil {
+		t.Fatalf("second insert: %v", err)
+	}
+
+	rows, err := database.ListMemoryRetrieveShadow("recall", time.Time{})
+	if err != nil {
+		t.Fatalf("ListMemoryRetrieveShadow: %v", err)
+	}
+	if len(rows) != 1 || rows[0].QueryKey != "billing" {
+		t.Fatalf("ListMemoryRetrieveShadow(recall) = %+v, want one billing row", rows)
+	}
+}

@@ -106,7 +106,7 @@ func TestAllTablesExist(t *testing.T) {
 		"gmail_messages", "gmail_auth_state",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
 		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",
-		"memory_provenance", "memory_digest_shadow",
+		"memory_provenance", "memory_digest_shadow", "memory_retrieve_shadow",
 	}
 
 	for _, table := range expectedTables {
@@ -408,6 +408,38 @@ func TestMigration00028MemoryProvenanceSender(t *testing.T) {
 	}
 	if sender != "" {
 		t.Fatalf("sender_id default = %q, want empty string", sender)
+	}
+}
+
+// TestMigration00029MemoryRetrieveShadow: memory_retrieve_shadow (Slice B
+// Task 7, dark retrieval compare-mode) is additive, has no FK onto
+// memory_nodes (a shadow row must survive even if the compared node is later
+// deleted — it is pure telemetry, not derived state), and a plain insert
+// with all five payload columns succeeds.
+func TestMigration00029MemoryRetrieveShadow(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_retrieve_shadow'`).Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("memory_retrieve_shadow table missing (count=%d err=%v)", n, err)
+	}
+
+	_, err = database.Exec(
+		`INSERT INTO memory_retrieve_shadow (surface, query_key, old_result_json, new_result_json, diff_metrics_json, ts)
+		 VALUES ('recall', 'billing', '["ent_1"]', '["ent_1","ent_2"]', '{"coverage_ok":true}', '2026-07-20T00:00:00Z')`)
+	if err != nil {
+		t.Fatalf("inserting memory_retrieve_shadow row: %v", err)
+	}
+
+	var surface string
+	if err := database.QueryRow(`SELECT surface FROM memory_retrieve_shadow WHERE query_key = 'billing'`).Scan(&surface); err != nil {
+		t.Fatalf("reading back inserted row: %v", err)
+	}
+	if surface != "recall" {
+		t.Errorf("surface = %q, want recall", surface)
 	}
 }
 
