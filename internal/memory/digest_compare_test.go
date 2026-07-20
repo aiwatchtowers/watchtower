@@ -362,6 +362,47 @@ func TestSplitCoverageSpans(t *testing.T) {
 	}
 }
 
+// TestLoadRenderEpisodesFloorsSpanToPeriodSeconds: span endpoints are floored
+// to whole seconds to match messages.ts_unix's second-truncated granularity.
+// An episode whose earliest cited ref has a fractional suffix (e.g. "N.000050")
+// must produce span.from == N so that a message at that same second's TSUnix
+// is covered — the message that generated the ref itself must be inside the span.
+func TestLoadRenderEpisodesFloorsSpanToPeriodSeconds(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedChannelRow(t, d, "C0AAA", "general")
+
+	base := int64(1719230400) // arbitrary base unix second
+	// Episode cites a fractional-part ref and a whole-second ref.
+	indexEpisodeWithProvenance(t, v, d, episodeNode("ep_00000000000000000000000099", "Test flooring", "C0AAA",
+		"A story with fractional refs.", "Outcome.",
+		fmt.Sprintf("%d.000050", base),      // fractional: would parse as base.00005
+		fmt.Sprintf("%d.000200", base+100))) // another second
+
+	p := NewPipeline(d, v, &fakeGen{reply: func(string) (string, error) { return `{"summary":"","topics":[]}`, nil }}, pipelineTestConfig(), t.Logf)
+
+	episodes, spans, err := p.loadRenderEpisodes("C0AAA", []string{"ep_00000000000000000000000099"})
+	require.NoError(t, err)
+	require.Len(t, episodes, 1)
+	require.Len(t, spans, 1)
+
+	// The span must be [base, base+100] (floored seconds), NOT [base.00005, base+100.0002].
+	span := spans[0]
+	assert.Equal(t, float64(base), span.from, "earliest ref floored to whole second")
+	assert.Equal(t, float64(base+100), span.to, "latest ref floored to whole second")
+
+	// Now verify that a message at TSUnix==base (same second as the fractional ref)
+	// is covered by the span.
+	msgs := []db.MemoryExtractMessage{
+		{TS: fmt.Sprintf("%d.000100", base), TSUnix: float64(base), Author: "a", Text: "at the fractional ref's second"},
+		{TS: fmt.Sprintf("%d.000100", base+200), TSUnix: float64(base + 200), Author: "a", Text: "outside span"},
+	}
+	gap, covered := splitCoverage(msgs, spans)
+	assert.Equal(t, 1, covered, "message at the fractional ref's second is covered by the floored span")
+	assert.Len(t, gap, 1, "message outside the span is gap")
+	assert.Equal(t, fmt.Sprintf("%d.000100", base+200), gap[0].TS)
+}
+
 // TestCompareDigestsSpanSelectsBetweenRefs: the live 0%-window artifact (the
 // 2026-07-19 compare: 29/56 windows read coverage 0 while their stories were
 // in the vault) — a legacy window that falls strictly BETWEEN an episode's two

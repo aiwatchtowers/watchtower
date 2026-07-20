@@ -190,9 +190,12 @@ type tsSpan struct{ from, to float64 }
 // loadRenderEpisodes reads each episode node's body from the vault and projects
 // it into a renderEpisode (title + Story/Outcome + this channel's provenance ts)
 // plus the episode's story span on this channel — the coverage/gap intervals.
-// An episode with no parseable channel-scoped ref contributes no span (cannot
-// happen for extractor-written episodes; defensive skip only). A vault read
-// error propagates (the caller isolates the whole channel).
+// Span endpoints are floored to whole seconds to match messages.ts_unix's
+// second-truncated granularity (so the first cited message's own second is
+// always inside the span). An episode with no parseable channel-scoped ref
+// contributes no span (cannot happen for extractor-written episodes; defensive
+// skip only). A vault read error propagates (the caller isolates the whole
+// channel).
 func (p *Pipeline) loadRenderEpisodes(channelID string, ids []string) ([]renderEpisode, []tsSpan, error) {
 	var episodes []renderEpisode
 	var spans []tsSpan
