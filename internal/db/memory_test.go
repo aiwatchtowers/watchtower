@@ -1011,6 +1011,44 @@ func TestMessageExistsIgnoresDeleted(t *testing.T) {
 	}
 }
 
+func TestMessageSender(t *testing.T) {
+	d := openTestDB(t)
+	if _, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1SND', '100.000100', 'U9', 'hi')`); err != nil {
+		t.Fatalf("seeding message: %v", err)
+	}
+
+	sender, err := d.MessageSender("C1SND", "100.000100")
+	if err != nil {
+		t.Fatalf("MessageSender: %v", err)
+	}
+	if sender != "U9" {
+		t.Errorf("MessageSender = %q, want U9", sender)
+	}
+
+	if _, err := d.MessageSender("C1SND", "nonexistent"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("MessageSender on missing message = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestGmailMessageSender(t *testing.T) {
+	d := openTestDB(t)
+	if _, err := d.Exec(`INSERT INTO gmail_messages (id, from_email) VALUES ('gm1', 'sender@example.com')`); err != nil {
+		t.Fatalf("seeding gmail message: %v", err)
+	}
+
+	sender, err := d.GmailMessageSender("gm1")
+	if err != nil {
+		t.Fatalf("GmailMessageSender: %v", err)
+	}
+	if sender != "sender@example.com" {
+		t.Errorf("GmailMessageSender = %q, want sender@example.com", sender)
+	}
+
+	if _, err := d.GmailMessageSender("nonexistent"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GmailMessageSender on missing message = %v, want sql.ErrNoRows", err)
+	}
+}
+
 // TestMemoryChatTurnFloorRoundTrip: the owner-chat ingest floor (Task 1,
 // migration 00019) defaults to 0 on a fresh workspace and persists after
 // SetMemoryChatTurnFloor, mirroring MemoryIngestFloor/SetMemoryIngestFloor.

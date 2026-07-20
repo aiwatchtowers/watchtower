@@ -59,6 +59,12 @@ type ProvenanceRow struct {
 	ChannelID string // the raw ref channel_id, e.g. "C0AAA" or "mail:<id>"
 	TSRaw     string // the ref ts verbatim as rendered in ## Provenance
 	TSUnix    float64
+	// SenderID is the per-message sender (Slack messages.user_id, Gmail
+	// gmail_messages.from_email), populated only for those two schemes —
+	// "" for cal:/chat:/act: refs (Slice B, migration 00028). The recency-
+	// ordered "what recently happened involving X" query
+	// (ListShortTierEpisodesForAliases) filters on this.
+	SenderID string
 }
 
 // UpsertMemoryNode writes a node row, replaces its aliases, replaces its FTS
@@ -126,8 +132,8 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string,
 	}
 	for _, p := range provenance {
 		if _, err := tx.Exec(`INSERT INTO memory_provenance
-			(node_id, scheme, channel_id, ts_raw, ts_unix) VALUES (?, ?, ?, ?, ?)`,
-			row.ID, p.Scheme, p.ChannelID, p.TSRaw, p.TSUnix); err != nil {
+			(node_id, scheme, channel_id, ts_raw, ts_unix, sender_id) VALUES (?, ?, ?, ?, ?, ?)`,
+			row.ID, p.Scheme, p.ChannelID, p.TSRaw, p.TSUnix, p.SenderID); err != nil {
 			return fmt.Errorf("inserting provenance %s/%s for %s: %w", p.ChannelID, p.TSRaw, row.ID, err)
 		}
 	}
@@ -473,6 +479,40 @@ func (db *DB) MessageExists(channelID, ts string) (bool, error) {
 		return false, fmt.Errorf("checking message %s/%s: %w", channelID, ts, err)
 	}
 	return true, nil
+}
+
+// MessageSender returns messages.user_id for (channelID, ts) — the Slack
+// half of memory_provenance.sender_id population (Slice B). Returns
+// sql.ErrNoRows when no such message exists (e.g. deleted since extraction);
+// the memory package logs and leaves SenderID empty rather than failing the
+// whole provenance row — this is index-population plumbing that runs after
+// MessageExists (MEM-01) already validated the ref at write time, not a
+// second validation gate.
+func (db *DB) MessageSender(channelID, ts string) (string, error) {
+	var userID string
+	err := db.QueryRow(`SELECT user_id FROM messages WHERE channel_id = ? AND ts = ?`, channelID, ts).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting message sender %s/%s: %w", channelID, ts, err)
+	}
+	return userID, nil
+}
+
+// GmailMessageSender returns gmail_messages.from_email for id — the Gmail
+// half of memory_provenance.sender_id population (Slice B). Returns
+// sql.ErrNoRows when no such message exists, mirroring MessageSender.
+func (db *DB) GmailMessageSender(id string) (string, error) {
+	var fromEmail string
+	err := db.QueryRow(`SELECT from_email FROM gmail_messages WHERE id = ?`, id).Scan(&fromEmail)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting gmail message sender %s: %w", id, err)
+	}
+	return fromEmail, nil
 }
 
 // GmailMessageExists reports whether a synced gmail_messages row with the given

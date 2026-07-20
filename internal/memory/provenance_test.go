@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -300,10 +301,33 @@ func TestMemory12_UnregisteredSchemeRejectedAtWrite(t *testing.T) {
 	assert.Equal(t, 1, dropped2)
 }
 
+// fakeSenderResolver is a scriptable senderResolver for tests: each method
+// looks up its argument in a map and returns the mapped error otherwise.
+type fakeSenderResolver struct {
+	slack map[string]string // "channelID ts" -> sender
+	mail  map[string]string // messageID -> sender
+	err   error             // when set, every lookup returns ("", err) instead
+}
+
+func (f fakeSenderResolver) SlackSender(channelID, ts string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.slack[channelID+" "+ts], nil
+}
+
+func (f fakeSenderResolver) MailSender(messageID string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.mail[messageID], nil
+}
+
 // TestProvenanceRows builds the db-layer index rows from a node's ## Provenance
 // section: each ref is classified by scheme and its ts decoded to a unix float;
 // a ref whose ts is not numeric is skipped (it cannot be windowed), and a node
-// with no ## Provenance section yields nil.
+// with no ## Provenance section yields nil. SenderID is populated for Slack and
+// Gmail refs via the resolver (Slice B); every other scheme stays "".
 func TestProvenanceRows(t *testing.T) {
 	body := "# Ep\n\n## Story\nstuff\n\n## Provenance\n" +
 		"- C0AAA 1700000000.000100\n" +
@@ -311,7 +335,11 @@ func TestProvenanceRows(t *testing.T) {
 		"- notanumber whoops\n"
 	n := Node{ID: "ep_1", Type: "episode", Body: body}
 
-	rows := provenanceRows(n, nil)
+	resolver := fakeSenderResolver{
+		slack: map[string]string{"C0AAA 1700000000.000100": "U1"},
+		mail:  map[string]string{"abc": "sender@example.com"},
+	}
+	rows := provenanceRows(n, resolver, nil)
 	require.Len(t, rows, 2, "the non-numeric ts ref is skipped")
 
 	assert.Equal(t, "ep_1", rows[0].NodeID)
@@ -319,12 +347,40 @@ func TestProvenanceRows(t *testing.T) {
 	assert.Equal(t, "C0AAA", rows[0].ChannelID)
 	assert.Equal(t, "1700000000.000100", rows[0].TSRaw)
 	assert.InDelta(t, 1700000000.0001, rows[0].TSUnix, 1e-6)
+	assert.Equal(t, "U1", rows[0].SenderID)
 
 	assert.Equal(t, "mail", rows[1].Scheme)
 	assert.Equal(t, "mail:abc", rows[1].ChannelID)
 	assert.InDelta(t, 1700000500.0, rows[1].TSUnix, 1e-6)
+	assert.Equal(t, "sender@example.com", rows[1].SenderID)
 
 	// A node with no provenance section yields nil.
 	plain := Node{ID: "ent_1", Type: "entity", Body: "# Entity\n\n## What\nA thing.\n"}
-	assert.Nil(t, provenanceRows(plain, nil))
+	assert.Nil(t, provenanceRows(plain, resolver, nil))
+
+	// A nil resolver (e.g. merge.go's historical call before Task 3, or any
+	// caller that doesn't need sender population) leaves every SenderID "".
+	rowsNoResolver := provenanceRows(n, nil, nil)
+	require.Len(t, rowsNoResolver, 2)
+	assert.Equal(t, "", rowsNoResolver[0].SenderID)
+	assert.Equal(t, "", rowsNoResolver[1].SenderID)
+}
+
+// TestProvenanceRows_SenderLookupErrorIsNotFatal: a sender-lookup error (or a
+// clean not-found) never drops the ref or fails the whole row — it only
+// leaves SenderID empty for that one ref (this is index-population plumbing
+// downstream of MEM-01's write-time validation, not a second validation
+// gate; a genuinely invalid ref was already rejected before it was ever
+// written).
+func TestProvenanceRows_SenderLookupErrorIsNotFatal(t *testing.T) {
+	body := "# Ep\n\n## Story\nstuff\n\n## Provenance\n- C0AAA 1700000000.000100\n"
+	n := Node{ID: "ep_1", Type: "episode", Body: body}
+
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+
+	rows := provenanceRows(n, fakeSenderResolver{err: errors.New("boom")}, logf)
+	require.Len(t, rows, 1, "a sender lookup failure must not drop the ref")
+	assert.Equal(t, "", rows[0].SenderID)
+	assert.NotEmpty(t, logged, "the lookup failure is logged")
 }

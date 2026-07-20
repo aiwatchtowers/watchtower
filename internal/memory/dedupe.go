@@ -224,22 +224,56 @@ func parseProvenance(body string) []episodeRef {
 	return refs
 }
 
+// senderResolver resolves a provenance ref's per-message sender id for
+// memory_provenance.sender_id (Slice B of the memory-retrieval redesign) —
+// mirrors the messageChecker/mailChecker seam (provenance.go) so a resolver
+// can be faked in tests without a live database. Only Slack (scheme "") and
+// Gmail (scheme "mail") refs have a genuine per-message sender;
+// provenanceRows never calls this for any other scheme.
+type senderResolver interface {
+	SlackSender(channelID, ts string) (string, error)
+	MailSender(messageID string) (string, error)
+}
+
+// dbSenderResolver is the production senderResolver, backed directly by
+// *db.DB. Every real caller of provenanceRows already carries a *db.DB, so
+// each call site wraps it inline (dbSenderResolver{database}) — no
+// standalone constructor needed.
+type dbSenderResolver struct{ db *db.DB }
+
+func (r dbSenderResolver) SlackSender(channelID, ts string) (string, error) {
+	return r.db.MessageSender(channelID, ts)
+}
+
+func (r dbSenderResolver) MailSender(messageID string) (string, error) {
+	return r.db.GmailMessageSender(messageID)
+}
+
 // provenanceRows builds the db-layer memory_provenance index rows for a node
 // from its ## Provenance section — the single parse site the derived
 // provenance index flows through (parseProvenance → classify scheme →
-// decode ts), keeping the db layer a dumb store (one parse site in memory,
-// one write site in db.UpsertMemoryNode, one transaction). Each ref is
-// classified by schemeOf (a bare Slack channel_id is scheme "", mail:/cal:/
-// chat:/act: carry their prefix) and its ts decoded to a unix float for
-// windowed lookup; a ref whose ts is not numeric cannot be windowed and is
-// skipped (logged when logf is non-nil). Refs are deduped by
+// decode ts → resolve sender), keeping the db layer a dumb store (one parse
+// site in memory, one write site in db.UpsertMemoryNode, one transaction).
+// Each ref is classified by schemeOf (a bare Slack channel_id is scheme "",
+// mail:/cal:/chat:/act: carry their prefix) and its ts decoded to a unix
+// float for windowed lookup; a ref whose ts is not numeric cannot be
+// windowed and is skipped (logged when logf is non-nil). Refs are deduped by
 // (channel_id, ts_raw) so the wholesale insert cannot collide on the
 // memory_provenance primary key. A node with no ## Provenance section (every
 // non-episode/rollup type) yields nil.
-func provenanceRows(n Node, logf func(string, ...any)) []db.ProvenanceRow {
+//
+// resolver populates SenderID (Slice B) for Slack/Gmail refs only; a nil
+// resolver (or a lookup miss/error) leaves SenderID "" for that ref WITHOUT
+// dropping it or failing the row — this runs strictly after MEM-01's
+// write-time validation already accepted the ref, so a miss here just means
+// the source row was deleted afterward, never that the ref was invented.
+func provenanceRows(n Node, resolver senderResolver, logf func(string, ...any)) []db.ProvenanceRow {
 	refs := parseProvenance(n.Body)
 	if len(refs) == 0 {
 		return nil
+	}
+	if logf == nil {
+		logf = func(string, ...any) {}
 	}
 	seen := make(map[string]bool, len(refs))
 	var rows []db.ProvenanceRow
@@ -251,18 +285,42 @@ func provenanceRows(n Node, logf func(string, ...any)) []db.ProvenanceRow {
 		seen[key] = true
 		tsUnix, err := strconv.ParseFloat(strings.TrimSpace(r.TS), 64)
 		if err != nil {
-			if logf != nil {
-				logf("memory: provenance ref %s %s on %s skipped (non-numeric ts, not windowable)", r.ChannelID, r.TS, n.ID)
-			}
+			logf("memory: provenance ref %s %s on %s skipped (non-numeric ts, not windowable)", r.ChannelID, r.TS, n.ID)
 			continue
 		}
+		scheme := schemeOf(r.ChannelID)
 		rows = append(rows, db.ProvenanceRow{
 			NodeID:    n.ID,
-			Scheme:    schemeOf(r.ChannelID),
+			Scheme:    scheme,
 			ChannelID: r.ChannelID,
 			TSRaw:     r.TS,
 			TSUnix:    tsUnix,
+			SenderID:  resolveSenderID(resolver, scheme, r, logf, n.ID),
 		})
 	}
 	return rows
+}
+
+// resolveSenderID looks up the per-message sender for a Slack or Gmail ref
+// (Slice B, memory_provenance.sender_id); every other scheme stays "" and
+// never calls resolver. See provenanceRows's doc for the not-fatal policy.
+func resolveSenderID(resolver senderResolver, scheme string, r episodeRef, logf func(string, ...any), nodeID string) string {
+	if resolver == nil {
+		return ""
+	}
+	var sender string
+	var err error
+	switch scheme {
+	case "":
+		sender, err = resolver.SlackSender(r.ChannelID, r.TS)
+	case "mail":
+		sender, err = resolver.MailSender(strings.TrimPrefix(r.ChannelID, mailRefPrefix))
+	default:
+		return ""
+	}
+	if err != nil {
+		logf("memory: provenance ref %s %s on %s: sender lookup: %v (left empty)", r.ChannelID, r.TS, nodeID, err)
+		return ""
+	}
+	return sender
 }

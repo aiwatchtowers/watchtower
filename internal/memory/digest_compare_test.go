@@ -28,7 +28,7 @@ func indexEpisodeWithProvenance(t *testing.T, v *Vault, d *db.DB, n Node) {
 		ID: n.ID, Type: n.Type, Tier: n.Tier, Status: n.Status,
 		RedirectTo: n.RedirectTo, Title: n.Title, Path: rel,
 		ContentHash: "test-hash", IndexedAt: "2026-07-15T00:00:00Z",
-	}, n.Body, n.Aliases, provenanceRows(n, nil)...))
+	}, n.Body, n.Aliases, provenanceRows(n, nil, nil)...))
 }
 
 // episodeNode builds an episode node body (H1, Story, Outcome, Provenance) for

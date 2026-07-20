@@ -165,7 +165,7 @@ func upsertIndexNode(database *db.DB, ownerEdited func(rel string) (bool, error)
 		Confidence:      n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
 		ImportanceScore: importance,
 	}
-	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, nil)...); err != nil {
+	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, dbSenderResolver{database}, nil)...); err != nil {
 		return fmt.Errorf("memory: index %s: %w", n.ID, err)
 	}
 	return nil
