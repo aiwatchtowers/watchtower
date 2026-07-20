@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +46,7 @@ type ChannelCompare struct {
 	LegacyRefsValid    int     // how many of them resolve against messages (the ~0.6% hallucination audit)
 	MemoryRefs         int     // total memory render refs (100% valid by construction — MEM-13)
 	MemoryRefsRejected int     // invented render refs dropped at write (RenderRefsRejected)
+	Episodes           int     // episodes selected for the window (span overlap; 0 = nothing in memory covers it)
 	Coverage           float64 // covered window messages / total window messages
 	LegacyChars        int     // legacy summary+topic char length
 	MemoryChars        int     // memory render summary+topic char length
@@ -118,7 +120,7 @@ func (p *Pipeline) compareOneChannel(ctx context.Context, d db.Digest) (ChannelC
 	if cc.LegacyTopics, cc.LegacyRefs, cc.LegacyRefsValid, cc.LegacyChars, err = p.legacyMetrics(d); err != nil {
 		return cc, 0, err
 	}
-	if cc.MemoryTopics, cc.MemoryRefs, cc.MemoryRefsRejected, cc.MemoryChars, cc.Coverage, err = p.shadowRender(ctx, d); err != nil {
+	if cc.MemoryTopics, cc.MemoryRefs, cc.MemoryRefsRejected, cc.MemoryChars, cc.Episodes, cc.Coverage, err = p.shadowRender(ctx, d); err != nil {
 		return cc, 0, err
 	}
 	return cc, cc.MemoryRefsRejected, nil
@@ -143,62 +145,95 @@ func (p *Pipeline) legacyMetrics(d db.Digest) (topics, refs, valid, chars int, e
 // overlapping episodes records a coverage-0 shadow row and makes NO generator
 // call (nothing distilled to render from; rendering only-raw gaps would just
 // re-run legacy at cost).
-func (p *Pipeline) shadowRender(ctx context.Context, d db.Digest) (memTopics, memRefs, rejected, memChars int, coverage float64, err error) {
+func (p *Pipeline) shadowRender(ctx context.Context, d db.Digest) (memTopics, memRefs, rejected, memChars, episodes int, coverage float64, err error) {
 	ids, err := p.db.ListEpisodesForChannelWindow(d.ChannelID, d.PeriodFrom, d.PeriodTo)
 	if err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, err
 	}
-	episodes, coveredTS, err := p.loadRenderEpisodes(d.ChannelID, ids)
+	selectedEpisodes, spans, err := p.loadRenderEpisodes(d.ChannelID, ids)
 	if err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, err
 	}
 	windowMsgs, err := p.db.ListChannelMessagesInWindow(d.ChannelID, d.PeriodFrom, d.PeriodTo)
 	if err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, err
 	}
-	gapMsgs, covered := splitCoverage(windowMsgs, coveredTS)
+	gapMsgs, covered := splitCoverage(windowMsgs, spans)
 	coverage = coverageRatio(covered, len(windowMsgs))
 
-	if len(episodes) == 0 {
+	if len(selectedEpisodes) == 0 {
 		if err := p.writeShadow(d, renderedDigest{Topics: []renderedTopic{}}, 0, coverage, ""); err != nil {
-			return 0, 0, 0, 0, 0, err
+			return 0, 0, 0, 0, 0, 0, err
 		}
-		return 0, 0, 0, 0, coverage, nil
+		return 0, 0, 0, 0, len(ids), coverage, nil
 	}
 
-	rendered, rejected, usage, err := p.renderChannelDigest(ctx, d.ChannelID, episodes, gapMsgs)
+	rendered, rejected, usage, err := p.renderChannelDigest(ctx, d.ChannelID, selectedEpisodes, gapMsgs)
 	if err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, err
 	}
 	model := ""
 	if usage != nil {
 		model = usage.Model
 	}
 	if err := p.writeShadow(d, rendered, rejected, coverage, model); err != nil {
-		return 0, 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, 0, err
 	}
-	return len(rendered.Topics), countMemoryRefs(rendered), rejected, renderedChars(rendered), coverage, nil
+	return len(rendered.Topics), countMemoryRefs(rendered), rejected, renderedChars(rendered), len(ids), coverage, nil
 }
 
+// tsSpan is one selected episode's story interval on the compare channel:
+// [from, to] over its parseable channel-scoped provenance ts. Coverage and the
+// gap split are span-based (2026-07-20 instrument fix): an in-span message is
+// represented by the episode narrative even when its exact ts was never cited.
+type tsSpan struct{ from, to float64 }
+
 // loadRenderEpisodes reads each episode node's body from the vault and projects
-// it into a renderEpisode (title + Story/Outcome + this channel's provenance ts).
-// coveredTS is the union of those channel-scoped provenance ts — the coverage
-// numerator and the gap-message filter. A vault read error propagates (the
-// caller isolates the whole channel).
-func (p *Pipeline) loadRenderEpisodes(channelID string, ids []string) ([]renderEpisode, map[string]bool, error) {
+// it into a renderEpisode (title + Story/Outcome + this channel's provenance ts)
+// plus the episode's story span on this channel — the coverage/gap intervals.
+// Span endpoints are floored to whole seconds to match messages.ts_unix's
+// second-truncated granularity (so the first cited message's own second is
+// always inside the span). An episode with no parseable channel-scoped ref
+// contributes no span (cannot happen for extractor-written episodes; defensive
+// skip only). A vault read error propagates (the caller isolates the whole
+// channel).
+func (p *Pipeline) loadRenderEpisodes(channelID string, ids []string) ([]renderEpisode, []tsSpan, error) {
 	var episodes []renderEpisode
-	covered := make(map[string]bool)
+	var spans []tsSpan
 	for _, id := range ids {
 		n, err := p.vault.ReadNode(id)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read episode %s: %w", id, err)
 		}
 		var prov []string
+		span := tsSpan{}
+		hasSpan := false
 		for _, r := range parseProvenance(n.Body) {
-			if r.ChannelID == channelID {
-				prov = append(prov, r.TS)
-				covered[r.TS] = true
+			if r.ChannelID != channelID {
+				continue
 			}
+			prov = append(prov, r.TS)
+			ts, perr := strconv.ParseFloat(r.TS, 64)
+			if perr != nil {
+				continue
+			}
+			// Use only the integer part of ts, matching how the database
+			// computes ts_unix (the Slack timestamp's second part only).
+			tsUnix := float64(int64(ts))
+			if !hasSpan {
+				span = tsSpan{from: tsUnix, to: tsUnix}
+				hasSpan = true
+				continue
+			}
+			if tsUnix < span.from {
+				span.from = tsUnix
+			}
+			if tsUnix > span.to {
+				span.to = tsUnix
+			}
+		}
+		if hasSpan {
+			spans = append(spans, span)
 		}
 		episodes = append(episodes, renderEpisode{
 			Title:      n.Title,
@@ -207,15 +242,23 @@ func (p *Pipeline) loadRenderEpisodes(channelID string, ids []string) ([]renderE
 			Provenance: prov,
 		})
 	}
-	return episodes, covered, nil
+	return episodes, spans, nil
 }
 
-// splitCoverage partitions the window's messages: covered counts those whose ts
-// is in coveredTS (an episode's provenance), and the rest become raw gap messages
+// splitCoverage partitions the window's messages by the selected episodes'
+// story spans: covered counts messages inside ANY span (inclusive both ends —
+// the episode narrative represents them), and the rest become raw gap messages
 // the render may cite to fill what the episodes miss.
-func splitCoverage(msgs []db.MemoryExtractMessage, coveredTS map[string]bool) (gap []gapMessage, covered int) {
+func splitCoverage(msgs []db.MemoryExtractMessage, spans []tsSpan) (gap []gapMessage, covered int) {
 	for _, m := range msgs {
-		if coveredTS[m.TS] {
+		inSpan := false
+		for _, s := range spans {
+			if m.TSUnix >= s.from && m.TSUnix <= s.to {
+				inSpan = true
+				break
+			}
+		}
+		if inSpan {
 			covered++
 			continue
 		}
@@ -409,18 +452,20 @@ func RenderCompareReport(cs CompareStats, generatedAt time.Time) string {
 	b.WriteString("# Digest compare report (dark compare-mode)\n\n")
 	fmt.Fprintf(&b, "Generated: %s\n\n", generatedAt.UTC().Format(time.RFC3339))
 	b.WriteString("> Auto-generated by `watchtower memory digest-compare`. The legacy digest pipeline is authoritative and byte-untouched; these memory renders live only in `memory_digest_shadow`.\n\n")
+	b.WriteString("Coverage is span-based (2026-07-20): a window message counts as covered when it falls inside any selected episode's [first ref, last ref] story span.\n\n")
 
 	fmt.Fprintf(&b, "Channels compared: %d (failed: %d, invented refs dropped: %d)\n\n", cs.ShadowsWritten, cs.Failed, cs.RefsRejected)
 
 	// Per-channel table.
 	b.WriteString("## Per-channel\n\n")
-	b.WriteString("| Channel | Legacy topics | Memory topics | Legacy ref-valid | Memory ref-valid | Coverage | Length ratio |\n")
+	b.WriteString("| Channel | Legacy topics | Memory topics | Legacy ref-valid | Memory ref-valid | Coverage (episode span) | Length ratio |\n")
 	b.WriteString("|---|---|---|---|---|---|---|\n")
 	var (
 		totLegacyRefs, totLegacyValid int
 		totMemRefs                    int
 		totLegacyChars, totMemChars   int
 		sumCoverage                   float64
+		withEpisodes                  int
 	)
 	for _, c := range cs.Channels {
 		fmt.Fprintf(&b, "| %s | %d | %d | %.1f%% (%d/%d) | %.1f%% (%d/%d) | %.0f%% | %.2f |\n",
@@ -434,6 +479,9 @@ func RenderCompareReport(cs CompareStats, generatedAt time.Time) string {
 		totLegacyChars += c.LegacyChars
 		totMemChars += c.MemoryChars
 		sumCoverage += c.Coverage
+		if c.Episodes > 0 {
+			withEpisodes++
+		}
 	}
 
 	// Aggregate.
@@ -447,6 +495,7 @@ func RenderCompareReport(cs CompareStats, generatedAt time.Time) string {
 	fmt.Fprintf(&b, "- Memory render ref-validity: **%.1f%%** (%d/%d — 100%% by construction, MEM-13)\n",
 		100*refValidityRate(totMemRefs, totMemRefs), totMemRefs, totMemRefs)
 	fmt.Fprintf(&b, "- Mean episode coverage: **%.0f%%**\n", 100*avgCoverage)
+	fmt.Fprintf(&b, "- Windows with episodes: **%d/%d**\n", withEpisodes, len(cs.Channels))
 	fmt.Fprintf(&b, "- Length ratio (memory/legacy chars): **%.2f**\n\n", lengthRatio(totMemChars, totLegacyChars))
 
 	// Hand-review pointer.

@@ -289,10 +289,10 @@ func TestRenderCompareReport(t *testing.T) {
 		Channels: []ChannelCompare{
 			{ChannelID: "C0AAA", LegacyDigestID: 1, LegacyTopics: 3, MemoryTopics: 2,
 				LegacyRefs: 10, LegacyRefsValid: 1, MemoryRefs: 5, MemoryRefsRejected: 2,
-				Coverage: 0.75, LegacyChars: 400, MemoryChars: 200},
+				Episodes: 2, Coverage: 0.75, LegacyChars: 400, MemoryChars: 200},
 			{ChannelID: "C0BBB", LegacyDigestID: 2, LegacyTopics: 1, MemoryTopics: 1,
 				LegacyRefs: 4, LegacyRefsValid: 0, MemoryRefs: 2, MemoryRefsRejected: 0,
-				Coverage: 1.0, LegacyChars: 100, MemoryChars: 80},
+				Episodes: 0, Coverage: 1.0, LegacyChars: 100, MemoryChars: 80},
 		},
 	}
 	at := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
@@ -305,6 +305,14 @@ func TestRenderCompareReport(t *testing.T) {
 	// Aggregate ref-validity: legacy 1/14, memory 7/7 (100%).
 	assert.Contains(t, report, "Aggregate")
 	assert.Contains(t, report, "hand-review", "the report points at the hand-review protocol")
+	// Span-semantics coverage column.
+	if !strings.Contains(report, "Coverage (episode span)") {
+		t.Errorf("report missing span-semantics column header; got:\n%s", report)
+	}
+	// Windows with episodes aggregate: 1 of 2 channels have Episodes > 0.
+	if !strings.Contains(report, "Windows with episodes: **1/2**") {
+		t.Errorf("report missing span aggregate; got:\n%s", report)
+	}
 	// Deterministic: rendering twice yields the same bytes.
 	assert.Equal(t, report, RenderCompareReport(cs, at))
 }
@@ -335,4 +343,148 @@ func TestCompareDigestsSkipsFreshShadow(t *testing.T) {
 	assert.Equal(t, 0, cs2.ShadowsWritten, "fresh shadow short-circuits the window")
 	assert.Equal(t, 1, cs2.Skipped)
 	assert.Equal(t, 1, calls, "no second AI call")
+}
+
+// TestSplitCoverageSpans: span-based coverage (2026-07-20 instrument fix) —
+// a message inside ANY selected episode's [from,to] span is covered even when
+// its exact ts was never cited; messages outside every span are the raw gap
+// fed to the render prompt.
+func TestSplitCoverageSpans(t *testing.T) {
+	msgs := []db.MemoryExtractMessage{
+		{TS: "100.000100", TSUnix: 100, Author: "a", Text: "at span start"},
+		{TS: "150.000100", TSUnix: 150, Author: "a", Text: "inside span, uncited"},
+		{TS: "200.000100", TSUnix: 200, Author: "a", Text: "at span end"},
+		{TS: "250.000100", TSUnix: 250, Author: "a", Text: "outside every span"},
+	}
+	gap, covered := splitCoverage(msgs, []tsSpan{{from: 100, to: 200}})
+	if covered != 3 {
+		t.Errorf("covered = %d, want 3 (span bounds inclusive both ends)", covered)
+	}
+	if len(gap) != 1 || gap[0].TS != "250.000100" {
+		t.Errorf("gap = %+v, want the single out-of-span message", gap)
+	}
+	// No spans (no episodes): everything is gap, coverage 0.
+	gap, covered = splitCoverage(msgs, nil)
+	if covered != 0 || len(gap) != 4 {
+		t.Errorf("no-span split = covered %d / gap %d, want 0/4", covered, len(gap))
+	}
+}
+
+// TestLoadRenderEpisodesFloorsSpanToPeriodSeconds: span endpoints are floored
+// to whole seconds to match messages.ts_unix's second-truncated granularity.
+// An episode whose earliest cited ref has a fractional suffix (e.g. "N.000050")
+// must produce span.from == N so that a message at that same second's TSUnix
+// is covered — the message that generated the ref itself must be inside the span.
+func TestLoadRenderEpisodesFloorsSpanToPeriodSeconds(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedChannelRow(t, d, "C0AAA", "general")
+
+	base := int64(1719230400) // arbitrary base unix second
+	// Episode cites a fractional-part ref and a whole-second ref.
+	indexEpisodeWithProvenance(t, v, d, episodeNode("ep_00000000000000000000000099", "Test flooring", "C0AAA",
+		"A story with fractional refs.", "Outcome.",
+		fmt.Sprintf("%d.000050", base),      // fractional: would parse as base.00005
+		fmt.Sprintf("%d.000200", base+100))) // another second
+
+	p := NewPipeline(d, v, &fakeGen{reply: func(string) (string, error) { return `{"summary":"","topics":[]}`, nil }}, pipelineTestConfig(), t.Logf)
+
+	episodes, spans, err := p.loadRenderEpisodes("C0AAA", []string{"ep_00000000000000000000000099"})
+	require.NoError(t, err)
+	require.Len(t, episodes, 1)
+	require.Len(t, spans, 1)
+
+	// The span must be [base, base+100] (floored seconds), NOT [base.00005, base+100.0002].
+	span := spans[0]
+	assert.Equal(t, float64(base), span.from, "earliest ref floored to whole second")
+	assert.Equal(t, float64(base+100), span.to, "latest ref floored to whole second")
+
+	// Now verify that a message at TSUnix==base (same second as the fractional ref)
+	// is covered by the span.
+	msgs := []db.MemoryExtractMessage{
+		{TS: fmt.Sprintf("%d.000100", base), TSUnix: float64(base), Author: "a", Text: "at the fractional ref's second"},
+		{TS: fmt.Sprintf("%d.000100", base+200), TSUnix: float64(base + 200), Author: "a", Text: "outside span"},
+	}
+	gap, covered := splitCoverage(msgs, spans)
+	assert.Equal(t, 1, covered, "message at the fractional ref's second is covered by the floored span")
+	assert.Len(t, gap, 1, "message outside the span is gap")
+	assert.Equal(t, fmt.Sprintf("%d.000100", base+200), gap[0].TS)
+}
+
+// TestLoadRenderEpisodesSkipsUnparseableRefForSpan: an episode body whose
+// ## Provenance section carries one non-numeric ref line (defensively
+// tolerated — "cannot happen for extractor-written episodes" per
+// loadRenderEpisodes' doc comment) must not fail the whole episode. The span
+// is built from the remaining parseable ref only, and the episode still
+// renders. Provenance rows in the DB INDEX skip the non-numeric ref
+// (provenanceRows requires a numeric ts to window it), but loadRenderEpisodes
+// re-parses the vault BODY directly, so the bad ref's raw ts still lands in
+// the episode's Provenance list — seed via the body, not the index, to
+// exercise that.
+func TestLoadRenderEpisodesSkipsUnparseableRefForSpan(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedChannelRow(t, d, "C0AAA", "general")
+
+	base := int64(1719230400)
+	indexEpisodeWithProvenance(t, v, d, episodeNode("ep_00000000000000000000000098", "Bad ref", "C0AAA",
+		"A story with one bad ref.", "Outcome.",
+		"not-a-ts",                     // non-numeric: unparseable, skipped for span
+		fmt.Sprintf("%d.5", base+100))) // valid fractional ref
+
+	p := NewPipeline(d, v, &fakeGen{reply: func(string) (string, error) { return `{"summary":"","topics":[]}`, nil }}, pipelineTestConfig(), t.Logf)
+
+	episodes, spans, err := p.loadRenderEpisodes("C0AAA", []string{"ep_00000000000000000000000098"})
+	require.NoError(t, err)
+	require.Len(t, episodes, 1, "the episode still renders despite the bad ref")
+	require.Len(t, spans, 1, "span comes from the one valid ref, not zero/two")
+
+	span := spans[0]
+	assert.Equal(t, float64(base+100), span.from, "span floored from the valid fractional ref")
+	assert.Equal(t, float64(base+100), span.to)
+
+	assert.Contains(t, episodes[0].Provenance, "not-a-ts", "the bad raw ts still enters Provenance (parsed from the body, not the index)")
+	assert.Contains(t, episodes[0].Provenance, fmt.Sprintf("%d.5", base+100))
+}
+
+// TestCompareDigestsSpanSelectsBetweenRefs: the live 0%-window artifact (the
+// 2026-07-19 compare: 29/56 windows read coverage 0 while their stories were
+// in the vault) — a legacy window that falls strictly BETWEEN an episode's two
+// cited refs must still select that episode (span overlap), render, and report
+// full span coverage.
+func TestCompareDigestsSpanSelectsBetweenRefs(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedUserRow(t, d, "U1ALICE", "alice")
+	seedChannelRow(t, d, "C0AAA", "general")
+
+	base := time.Now().Add(-time.Hour).Unix()
+	// The digest window's messages sit strictly between the episode's refs.
+	seedMessageRow(t, d, "C0AAA", fmt.Sprintf("%d.000100", base+10), "U1ALICE", "mid-story update")
+	seedMessageRow(t, d, "C0AAA", fmt.Sprintf("%d.000200", base+20), "U1ALICE", "another mid-story message")
+	digestID := seedLegacyChannelDigest(t, d, "C0AAA", float64(base+5), float64(base+25), []db.DigestTopic{
+		{Title: "Mid", Summary: "mid-window", KeyMessages: "[]", Decisions: "[]"},
+	})
+
+	// The episode cites only the story's endpoints — both OUTSIDE (base+5, base+25].
+	indexEpisodeWithProvenance(t, v, d, episodeNode("ep_00000000000000000000000003", "Long story", "C0AAA",
+		"A story spanning the whole hour.", "Resolved.",
+		fmt.Sprintf("%d.000050", base), fmt.Sprintf("%d.000300", base+30)))
+
+	reply := func(string) (string, error) {
+		return fmt.Sprintf(`{"summary":"rendered","topics":[
+			{"title":"Long story","summary":"the mid-window part","decisions":[],"action_items":[],"situations":[],"key_messages":["%d.000050"]}
+		]}`, base), nil
+	}
+	p := NewPipeline(d, v, &fakeGen{reply: reply}, pipelineTestConfig(), t.Logf)
+
+	cs, err := p.CompareDigests(context.Background(), time.Now().Add(-24*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, cs.Channels, 1)
+	cc := cs.Channels[0]
+	assert.Equal(t, digestID, cc.LegacyDigestID)
+	assert.Equal(t, 1, cc.MemoryTopics, "render RAN — the old refs-in-window query skipped this window entirely")
+	assert.InDelta(t, 1.0, cc.Coverage, 0.001, "both window messages inside the [base, base+30] story span")
+	assert.Equal(t, 1, cc.MemoryRefs, "the episode-cited endpoint ref survives render validation")
+	assert.Equal(t, 0, cc.MemoryRefsRejected)
 }
