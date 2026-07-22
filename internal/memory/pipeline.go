@@ -61,6 +61,10 @@ type RunStats struct {
 	CalendarEpisodes     int // episode nodes built/refreshed by the mechanical calendar builder
 	CalendarEventsFailed int // calendar events dropped (unresolved ref) or frozen (step error)
 
+	// Jira source (Phase-5 slice-2/3, zero unless memory.sources.jira).
+	JiraEpisodes     int // episode nodes built/refreshed by the mechanical jira issue builder
+	JiraIssuesFailed int // jira issues dropped (unresolved ref) or frozen (step error)
+
 	// Operational mirrors (Phase-5 slice-4, zero unless memory.sources.operational).
 	Mirrored      int // target/track entity mirrors created/refreshed by the mechanical mirror step
 	MirrorsFailed int // mirror steps frozen by a read/resolve/commit error (MEM-14)
