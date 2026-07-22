@@ -74,7 +74,7 @@ final class MeetingChatViewModelTests: XCTestCase {
             summary: "shipped v2", keyDecisions: ["ship"], actionItems: [], openQuestions: [])
 
         let prompt = MeetingChatViewModel.buildSystemPrompt(
-            transcript: transcript, recapContent: recap)
+            transcript: transcript, recapContent: recap, dbPool: dbManager.dbPool)
 
         XCTAssertTrue(prompt.contains("Big meeting"))
         XCTAssertTrue(prompt.contains("shipped v2"))

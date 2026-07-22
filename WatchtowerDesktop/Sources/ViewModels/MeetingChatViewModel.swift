@@ -135,7 +135,7 @@ final class MeetingChatViewModel {
     ) async {
         let dbPool = dbManager.dbPool
         let systemPrompt: String? = currentSessionID == nil
-            ? Self.buildSystemPrompt(transcript: transcript, recapContent: recapContent)
+            ? Self.buildSystemPrompt(transcript: transcript, recapContent: recapContent, dbPool: dbPool)
             : nil
         // Resumed sessions drop the system prompt (CLI --resume); carry the
         // meeting context with the message so an expired session never loses
@@ -270,11 +270,42 @@ final class MeetingChatViewModel {
         return b
     }
 
+    /// This meeting's subjects for the MEMORY block: the linked calendar
+    /// event's attendees (Slack user id where already resolved via
+    /// calendar_attendee_map, plus email always). An ad-hoc recording with no
+    /// linked event (eventID == nil) or a since-deleted event yields an empty,
+    /// clean subject list — not an error.
+    nonisolated static func meetingMemorySubjects(transcript: MeetingTranscript, dbPool: DatabasePool) -> [String] {
+        guard let eventID = transcript.eventID else { return [] }
+        let event = try? dbPool.read { db in
+            try CalendarEvent.fetchOne(db, sql: "SELECT * FROM calendar_events WHERE id = ?", arguments: [eventID])
+        }
+        guard let event = event ?? nil else { return [] }
+        var subjects = Set<String>()
+        for attendee in event.parsedAttendees {
+            if !attendee.slackUserID.isEmpty { subjects.insert(attendee.slackUserID) }
+            if !attendee.email.isEmpty { subjects.insert(attendee.email) }
+        }
+        return Array(subjects)
+    }
+
     nonisolated static func buildSystemPrompt(
-        transcript: MeetingTranscript, recapContent: MeetingRecap.Content?
+        transcript: MeetingTranscript, recapContent: MeetingRecap.Content?, dbPool: DatabasePool,
+        memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
+        memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
         let excerpt = String(transcript.transcriptText.prefix(transcriptExcerptLimit))
         let truncated = transcript.transcriptText.count > transcriptExcerptLimit
+
+        // memoryChatEnabled/memoryVaultDir default to the config-derived values
+        // in production; tests inject them explicitly — same pattern as
+        // SituationChatViewModel/TrackChatViewModel/TargetChatViewModel.
+        let memoryBlock = memoryChatEnabled
+            ? renderMemorySection(
+                hotMap: hotMap(vaultDir: memoryVaultDir),
+                context: relevantMemoryContext(subjects: meetingMemorySubjects(transcript: transcript, dbPool: dbPool), dbPool: dbPool)
+              ) + "\n\n"
+            : ""
 
         return """
         You are the user's AI secretary, discussing ONE recorded meeting. \
@@ -282,7 +313,7 @@ final class MeetingChatViewModel {
 
         \(meetingContextBlock(transcript, recapContent: recapContent))
 
-        === TRANSCRIPT EXCERPT (single-track, speakers not labeled, may mix ru/uk/en) ===
+        \(memoryBlock)=== TRANSCRIPT EXCERPT (single-track, speakers not labeled, may mix ru/uk/en) ===
         \(excerpt)
         \(truncated ? "(…truncated — use get_transcript with the transcript id above for the full text)" : "(full transcript shown)")
 
