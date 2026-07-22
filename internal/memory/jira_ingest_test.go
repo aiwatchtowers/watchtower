@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -191,5 +192,28 @@ func TestRunJiraIngestWatermarkFreezeOnError(t *testing.T) {
 	wm, _ := d.MemoryJiraWatermark()
 	if wm != 1 {
 		t.Errorf("watermark moved to %v on a failed commit (must freeze at 1)", wm)
+	}
+}
+
+// TestRunJiraIngestDarkByDefault: with memory.sources.jira off, a full Run
+// never touches the jira path — no jiraissue: alias appears and the jira
+// watermark stays 0 even with pending issues present.
+func TestRunJiraIngestDarkByDefault(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedJiraIssueExtract(t, d, "CEX-1", "CEX", "pending", "", "To Do", "todo", "", "2026-07-22T10:00:00.000+0000", "")
+
+	cfg := pipelineTestConfig() // Sources.Jira is false by default
+	p := NewPipeline(d, v, nil, cfg, t.Logf)
+
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := d.LookupMemoryAlias("jiraissue:CEX-1"); err == nil {
+		t.Error("dark run built a jira episode")
+	}
+	wm, _ := d.MemoryJiraWatermark()
+	if wm != 0 {
+		t.Errorf("dark run moved the jira watermark to %v", wm)
 	}
 }

@@ -498,6 +498,7 @@ func fullSlice4Config() config.MemoryConfig {
 	cfg.Sources.Actions = true
 	cfg.Sources.Calendar = true
 	cfg.Sources.Chats = true
+	cfg.Sources.Jira = true
 	cfg.Surfaces.DayPlan = true
 	cfg.Surfaces.MeetingPrep = true
 	return cfg
@@ -545,7 +546,12 @@ func TestMemory14_FullRunNeverWritesOperationalTables(t *testing.T) {
 	_, err = d.Exec(`UPDATE workspace SET inbox_last_processed_ts = 4242 WHERE id = 'T1'`)
 	require.NoError(t, err)
 
-	tables := []string{"targets", "tracks", "day_plans", "day_plan_items", "inbox_items", "situations", "situation_signals"}
+	// One pending jira issue, watermark primed to 1 so the jira step (gated on
+	// above) actually builds an episode this run rather than no-op initializing.
+	seedJiraIssueExtract(t, d, "CEX-1", "CEX", "pending", "", "To Do", "todo", "", "2026-07-22T10:00:00.000+0000", "")
+	require.NoError(t, d.SetMemoryJiraWatermark(1))
+
+	tables := []string{"targets", "tracks", "day_plans", "day_plan_items", "inbox_items", "situations", "situation_signals", "jira_issues"}
 	before := map[string]string{}
 	for _, tb := range tables {
 		before[tb] = dumpTable(t, d, tb)

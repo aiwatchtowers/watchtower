@@ -272,12 +272,26 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		mirrorSteps = n
 	}
 
+	// (3d) Mechanical Jira issue → episode builder (dark behind
+	// memory.sources.jira, owner scope-B: all issues, watermark-bounded, no
+	// backfill). Runs after mirrors and before Slack extraction. No AI call.
+	// Source-isolated: a jira-step error is logged, never fatal, and never
+	// touches another watermark.
+	jiraSteps := 0
+	if p.cfg.Sources.Jira {
+		n, jerr := p.runJiraIngest(runID, calSteps+mirrorSteps, &stats)
+		if jerr != nil {
+			p.logf("memory: jira ingest: %v", jerr)
+		}
+		jiraSteps = n
+	}
+
 	// (4) Episode extraction from raw text.
-	slackSteps, err := p.runExtract(ctx, runID, calSteps+mirrorSteps, acc, &stats)
+	slackSteps, err := p.runExtract(ctx, runID, calSteps+mirrorSteps+jiraSteps, acc, &stats)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
-	batchSteps := calSteps + mirrorSteps + slackSteps
+	batchSteps := calSteps + mirrorSteps + jiraSteps + slackSteps
 
 	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
 	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
@@ -346,9 +360,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected)",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
-		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.InteractionsIngested, stats.EngagementUpdated,
+		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed, stats.InteractionsIngested, stats.EngagementUpdated,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
 		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected)
 	return stats, nil
