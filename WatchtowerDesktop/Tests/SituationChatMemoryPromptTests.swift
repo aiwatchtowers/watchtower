@@ -165,6 +165,33 @@ final class SituationChatMemoryPromptTests: XCTestCase {
         XCTAssertFalse(prompt.contains("Unrelated entity X"), "alias join must exclude non-matching aliases")
     }
 
+    func testEntitiesRankedByImportanceScore() throws {
+        let situation = try makeSituation()
+        let signals = try signals(channelID: "C1", senderUserID: "U9")
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ent_low", type: "entity", title: "Zebra Corp", importanceScore: 1)
+            try TestDatabase.insertMemoryAlias(db, alias: "C1", nodeID: "ent_low")
+            try TestDatabase.insertMemoryNode(db, id: "ent_high", type: "entity", title: "Acme Inc", importanceScore: 9)
+            try TestDatabase.insertMemoryAlias(db, alias: "U9", nodeID: "ent_high")
+        }
+        let prompt = build(situation, signals, enabled: true, vault: vaultDir)
+        let acmeIdx = try XCTUnwrap(prompt.range(of: "Acme Inc")).lowerBound
+        let zebraIdx = try XCTUnwrap(prompt.range(of: "Zebra Corp")).lowerBound
+        XCTAssertLessThan(acmeIdx, zebraIdx, "higher-importance entity must render first despite alphabetical order")
+    }
+
+    func testRecentActivitySectionAppearsForMatchingShortTierEpisode() throws {
+        let situation = try makeSituation()
+        let signals = try signals(channelID: "C1", senderUserID: "U9")
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ep_recent", type: "episode", title: "Nova Card rollout update", tier: "short")
+            try TestDatabase.insertMemoryProvenance(db, nodeID: "ep_recent", channelID: "C1", tsRaw: "100.0", tsUnix: 100.0, senderID: "U9")
+        }
+        let prompt = build(situation, signals, enabled: true, vault: vaultDir)
+        XCTAssertTrue(prompt.contains("Recent activity"))
+        XCTAssertTrue(prompt.contains("Nova Card rollout update"))
+    }
+
     func testMapTruncatedTo4KB() throws {
         let situation = try makeSituation()
         // 600 lines of ~12 bytes = ~7 KB, well over the 4 KB cap.
