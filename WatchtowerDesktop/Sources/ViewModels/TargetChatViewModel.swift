@@ -519,8 +519,32 @@ final class TargetChatViewModel {
         """
     }
 
+    /// This target's subjects for the MEMORY block: every track linked via
+    /// `tracks.linked_target_id = target.id` (unfiltered by origin/dismissed —
+    /// unlike TrackQueries.fetchByLinkedTarget, which is scoped to custom
+    /// watches for a different UI feature), each contributing the same
+    /// channels/participants/scalars TrackChatViewModel.trackMemorySubjects
+    /// extracts, unioned, plus the target's own "target:<id>" mirror alias
+    /// (mirroring Go's targetSubjects prepend). A bare target with no linked
+    /// track yields just its own mirror alias.
+    nonisolated static func targetMemorySubjects(target: Target, dbPool: DatabasePool) -> [String] {
+        var subjects = Set<String>()
+        subjects.insert("target:\(target.id)")
+        let linkedTracks = (try? dbPool.read { db in
+            try Track.fetchAll(db, sql: "SELECT * FROM tracks WHERE linked_target_id = ?", arguments: [target.id])
+        }) ?? []
+        for track in linkedTracks {
+            for subject in TrackChatViewModel.trackMemorySubjects(track: track) where subject != "track:\(track.id)" {
+                subjects.insert(subject)
+            }
+        }
+        return Array(subjects)
+    }
+
     nonisolated static func buildSystemPrompt(
-        target: Target, dbPool: DatabasePool
+        target: Target, dbPool: DatabasePool,
+        memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
+        memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
         let schema = (try? dbPool.read { db in
             try ChatViewModel.fetchSchema(db)
@@ -534,6 +558,16 @@ final class TargetChatViewModel {
         let rawDomain = ws?.domain ?? ""
         let domain = rawDomain.isEmpty ? "unknown" : rawDomain
 
+        // memoryChatEnabled/memoryVaultDir default to the config-derived values
+        // in production; tests inject them explicitly — same pattern as
+        // SituationChatViewModel/TrackChatViewModel.
+        let memoryBlock = memoryChatEnabled
+            ? renderMemorySection(
+                hotMap: hotMap(vaultDir: memoryVaultDir),
+                context: relevantMemoryContext(subjects: targetMemorySubjects(target: target, dbPool: dbPool), dbPool: dbPool)
+              ) + "\n\n"
+            : ""
+
         return """
         You are Watchtower, an AI assistant helping the user make progress on a specific \
         task (target) tracked in their workspace.
@@ -541,7 +575,7 @@ final class TargetChatViewModel {
         \(Self.taskContextBlock(target))
         \(Self.watchActivityBlock(target: target, dbPool: dbPool))
 
-        \(Self.taskActionsContract)
+        \(memoryBlock)\(Self.taskActionsContract)
 
         === CAPABILITIES ===
         You can query the database to find related messages, threads, and people involved.
