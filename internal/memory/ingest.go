@@ -42,18 +42,27 @@ type ingestSituation struct {
 // ingested" is detected purely via alias resolution and "needs finalize" by
 // comparing node status vs situation status — nothing new is stored in the
 // main DB, and inbox/situation tables are never written (MEM-05). Signal
-// message refs are re-validated against messages before being written as
-// provenance (MEM-01). All changes of a run land in one commit; a no-op run
-// commits nothing.
+// refs are re-validated before being written as provenance: ordinary Slack
+// refs against messages (MEM-01), jira-detector signals against jira_issues
+// via the jira: scheme (MEM-12) instead of being dropped against messages.
+// All changes of a run land in one commit; a no-op run commits nothing.
 //
-// checker is the MEM-01 provenance lookup (the database in production; the
-// pipeline passes its seam). A provenance lookup ERROR fails only that
-// situation — it is logged and skipped this run, and ingest continues with
-// the next situation, so one broken lookup cannot starve the whole mirror.
+// checker is the MEM-01 message-provenance lookup (the database in
+// production; the pipeline passes its seam) — it is wrapped into this run's
+// registry alongside the always-real-database jira resolver, built once per
+// pass. A provenance lookup ERROR fails only that situation — it is logged
+// and skipped this run, and ingest continues with the next situation, so one
+// broken lookup cannot starve the whole mirror.
 func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf func(string, ...any)) (IngestStats, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	// The ingest registry: message refs validate through the passed-in checker
+	// seam (so the MEM-01 lookup-freeze tests keep biting it), jira refs always
+	// through the real database (jira_issues is a migration-guaranteed base
+	// table, independent of the checker seam under test). Built once per pass,
+	// not per signal (MEM-12).
+	reg := newProvenanceRegistry(messageResolver{checker: checker}, jiraResolver{database})
 	var stats IngestStats
 	oldFloor, err := database.MemoryIngestFloor()
 	if err != nil {
@@ -103,9 +112,9 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 			pending bool
 		)
 		if notIngested {
-			n, hints, pending = ingestNewSituation(database, checker, logf, s, alias, &stats)
+			n, hints, pending = ingestNewSituation(database, reg, logf, s, alias, &stats)
 		} else {
-			n, hints, pending = ingestExistingSituation(v, database, checker, logf, s, nodeID, &stats)
+			n, hints, pending = ingestExistingSituation(v, database, reg, logf, s, nodeID, &stats)
 		}
 		advanceFloor(s, pending)
 
@@ -188,11 +197,11 @@ func IngestSituations(v *Vault, database *db.DB, checker messageChecker, logf fu
 // open situations start a node; one already terminal before it was ever
 // ingested predates memory and is skipped for good (settled, pending=false).
 // A provenance lookup error is a transient skip (pending=true).
-func ingestNewSituation(database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, alias string, stats *IngestStats) (*Node, []string, bool) {
+func ingestNewSituation(database *db.DB, reg *provenanceRegistry, logf func(string, ...any), s ingestSituation, alias string, stats *IngestStats) (*Node, []string, bool) {
 	if s.status != "open" {
 		return nil, nil, false // terminal & never ingested — settled, skipped for good
 	}
-	refs, hints, err := situationProvenance(database, checker, s.id, logf)
+	refs, hints, err := situationProvenance(database, reg, s.id, logf)
 	if err != nil {
 		logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
 		return nil, nil, true // transient — retry next run
@@ -217,7 +226,7 @@ func ingestNewSituation(database *db.DB, checker messageChecker, logf func(strin
 // (corrupted/quarantined file) or a provenance lookup error is pending; an
 // already-finalized node, an unchanged open one, or a normal update/finalize
 // is settled (pending=false).
-func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, logf func(string, ...any), s ingestSituation, nodeID string, stats *IngestStats) (*Node, []string, bool) {
+func ingestExistingSituation(v *Vault, database *db.DB, reg *provenanceRegistry, logf func(string, ...any), s ingestSituation, nodeID string, stats *IngestStats) (*Node, []string, bool) {
 	n, err := v.ReadNode(nodeID)
 	if err != nil {
 		// A corrupted/quarantined episode file must not brick the whole
@@ -227,7 +236,7 @@ func ingestExistingSituation(v *Vault, database *db.DB, checker messageChecker, 
 		logf("memory: ingest situation %d: read %s: %v — skipped this run", s.id, nodeID, err)
 		return nil, nil, true // transient — retry once the file is repaired
 	}
-	refs, hints, err := situationProvenance(database, checker, s.id, logf)
+	refs, hints, err := situationProvenance(database, reg, s.id, logf)
 	if err != nil {
 		logf("memory: ingest situation %d: %v — skipped this run", s.id, err)
 		return nil, nil, true // transient — retry next run
@@ -284,18 +293,31 @@ func listIngestSituations(database *db.DB, floor int64) ([]ingestSituation, erro
 	return out, rows.Err()
 }
 
-// situationProvenance collects the situation's signal message refs and
-// re-validates them through the same MEM-01 path as the extractor: refs that
-// positively do not resolve against messages are dropped (and logged), never
-// repaired. A lookup error propagates — the caller skips this situation for
-// the run rather than writing provenance it could not verify.
+// jiraProjectKey derives the project key from an issue key ("CEX-7413" →
+// "CEX") — the entity-hint identity for jira-sourced signals (the project
+// entity is what seedJiraProjects aliases; the issue itself is not an entity).
+func jiraProjectKey(issueKey string) string {
+	if i := strings.IndexByte(issueKey, '-'); i > 0 {
+		return issueKey[:i]
+	}
+	return ""
+}
+
+// situationProvenance collects the situation's signal refs and re-validates
+// them through reg (MEM-01/MEM-12): refs that positively do not resolve, or
+// whose scheme is unregistered, are dropped (and logged), never repaired. A
+// lookup error propagates — the caller skips this situation for the run
+// rather than writing provenance it could not verify.
 //
-// It also returns the situation's structural entity hints — its distinct
-// channel and sender ids — for the caller to link against the entity index.
-// These come from situation_signals directly (not from the MEM-01-validated
-// refs): a channel/sender is a structural fact about the situation regardless
-// of whether one particular message ref later fails existence validation.
-func situationProvenance(database *db.DB, checker messageChecker, situationID int, logf func(string, ...any)) (refs []episodeRef, hints []string, err error) {
+// It also returns the situation's structural entity hints — for an ordinary
+// Slack-sourced signal, its distinct channel and sender ids; for a
+// jira-detector signal (trigger_type "jira_*", whose channel_id carries the
+// issue key rather than a Slack channel) the issue's PROJECT key instead,
+// since the issue itself is never seeded as an entity. These come from
+// situation_signals directly (not from the validated refs): a hint is a
+// structural fact about the situation regardless of whether one particular
+// ref later fails existence validation.
+func situationProvenance(database *db.DB, reg *provenanceRegistry, situationID int, logf func(string, ...any)) (refs []episodeRef, hints []string, err error) {
 	items, err := database.ListSituationSignals(situationID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("memory: ingest signals for situation %d: %w", situationID, err)
@@ -310,11 +332,19 @@ func situationProvenance(database *db.DB, checker messageChecker, situationID in
 		hints = append(hints, id)
 	}
 	for _, it := range items {
+		if strings.HasPrefix(it.TriggerType, "jira_") {
+			// A jira-detector signal: channel_id carries the issue key, which
+			// never resolves in messages — mint a jira: ref instead (MEM-12)
+			// and hint the PROJECT entity.
+			refs = append(refs, episodeRef{ChannelID: jiraRefPrefix + it.ChannelID, TS: it.MessageTS})
+			addHint(jiraProjectKey(it.ChannelID))
+			continue
+		}
 		refs = append(refs, episodeRef{ChannelID: it.ChannelID, TS: it.MessageTS})
 		addHint(it.ChannelID)
 		addHint(it.SenderUserID)
 	}
-	kept, dropped, err := validateRefs(checker, []extractedEpisode{{Refs: refs}})
+	kept, dropped, err := validateRefsVia(reg, []extractedEpisode{{Refs: refs}})
 	if err != nil {
 		return nil, nil, err
 	}
