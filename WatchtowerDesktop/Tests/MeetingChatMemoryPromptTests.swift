@@ -50,18 +50,18 @@ final class MeetingChatMemoryPromptTests: XCTestCase {
     }
 
     func testDeletedEventYieldsEmptySubjectsNotAnError() throws {
-        // `meeting_transcripts.event_id` has an `ON DELETE SET NULL` FK, so a
-        // normal delete auto-nulls it — can't happen live. Simulate a
-        // dangling reference (legacy data / FK added after existing rows)
-        // by disabling FK enforcement just for the delete.
+        // `meeting_transcripts.event_id` has an `ON DELETE SET NULL` FK, so
+        // deleting the row is a normal, FK-satisfying operation on its own
+        // (it nulls the DB column, no enforcement toggle needed) — but the
+        // in-memory `transcript` struct fetched before the delete keeps its
+        // stale `eventID`, so its lookup still misses the now-gone row. That
+        // stale-reference path, not a dangling FK, is what this test exercises.
         try dbManager.dbPool.write { db in
             try TestDatabase.insertCalendarEvent(db, id: "evt_1", attendees: "[]")
         }
         let transcript = try makeTranscript(eventID: "evt_1")
         try dbManager.dbPool.write { db in
-            try db.execute(sql: "PRAGMA foreign_keys = OFF")
             try db.execute(sql: "DELETE FROM calendar_events WHERE id = ?", arguments: ["evt_1"])
-            try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
         let subjects = MeetingChatViewModel.meetingMemorySubjects(transcript: transcript, dbPool: dbManager.dbPool)
         XCTAssertTrue(subjects.isEmpty)
