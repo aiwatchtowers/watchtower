@@ -37,7 +37,7 @@ Two gaps, one root: Jira has no provenance scheme.
 - Title: `<KEY>: <summary>`.
 - `## Story`: issue type, status (+ category), priority, assignee/reporter display names, sprint name, epic key, due date, story points (each line only when non-empty), then a `description_text` snippet capped at **1500 bytes** on a rune boundary (descriptions can be huge; the cap is a code const).
 - `## Outcome`: `Resolved (<status>) at <resolved_at>` when `status_category = 'done'` and `resolved_at` is set; otherwise `Current status: <status>`.
-- `## Provenance`: `- jira:<KEY> <updated_at raw>` (one ref; `memory_provenance` stores it under scheme `jira`, `ts_unix` best-effort from the parsed time — never queried by the Slack window query, which passes bare channel ids).
+- `## Provenance`: `- jira:<KEY> <updated_at unix seconds>` (parsed; makes the ref indexable in memory_provenance and ageable by eviction math — final-review fix 2026-07-22) (one ref; `memory_provenance` stores it under scheme `jira`, `ts_unix` best-effort from the parsed time — never queried by the Slack window query, which passes bare channel ids).
 - Status/tier: `active`/`short`; born (or refreshed) `closed`/`long` when `status_category = 'done'` with `resolved_at` set — deterministic from the row, no aging dependency.
 - `## Links`: the issue's project entity (already seeded by `seedJiraProjects`) plus assignee/reporter person entities resolved via `assignee_slack_id`/`reporter_slack_id` when non-empty — structural back-links, the calendar-attendee precedent, no model judgment.
 
