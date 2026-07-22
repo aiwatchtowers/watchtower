@@ -2074,9 +2074,6 @@ func seedJiraIssueRow(t *testing.T, db *DB, s jiraIssueSeed) {
 	}
 }
 
-// parseJiraTimeForTest exposes the production parser to tests in this package.
-func parseJiraTimeForTest(s string) (int64, bool) { return parseJiraTime(s) }
-
 // TestMemoryJiraWatermark: the fifth extraction watermark round-trips on the
 // workspace singleton and reads 0 on a fresh workspace.
 func TestMemoryJiraWatermark(t *testing.T) {
@@ -2123,7 +2120,7 @@ func TestListJiraIssuesForExtract(t *testing.T) {
 	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-4", ProjectKey: "CEX", Summary: "deleted", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T12:00:00.000+0000", IsDeleted: true})
 	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-5", ProjectKey: "CEX", Summary: "badts", Status: "To Do", StatusCategory: "todo", UpdatedAt: "not-a-time"})
 
-	since, ok := parseJiraTimeForTest("2026-07-21T00:00:00.000+0000")
+	since, ok := ParseJiraTime("2026-07-21T00:00:00.000+0000")
 	if !ok {
 		t.Fatal("test time failed to parse")
 	}
@@ -2145,7 +2142,7 @@ func TestListJiraIssuesForExtract(t *testing.T) {
 	}
 	// Max helper sees the newest parseable non-deleted row (CEX-3).
 	maxU, err := db.MaxJiraUpdatedUnix()
-	want, _ := parseJiraTimeForTest("2026-07-22T11:00:00.000+0000")
+	want, _ := ParseJiraTime("2026-07-22T11:00:00.000+0000")
 	if err != nil || maxU != want {
 		t.Errorf("MaxJiraUpdatedUnix = %v, %v; want %v", maxU, err, want)
 	}

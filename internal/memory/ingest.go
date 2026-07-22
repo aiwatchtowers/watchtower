@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -335,8 +336,16 @@ func situationProvenance(database *db.DB, reg *provenanceRegistry, situationID i
 		if strings.HasPrefix(it.TriggerType, "jira_") {
 			// A jira-detector signal: channel_id carries the issue key, which
 			// never resolves in messages — mint a jira: ref instead (MEM-12)
-			// and hint the PROJECT entity.
-			refs = append(refs, episodeRef{ChannelID: jiraRefPrefix + it.ChannelID, TS: it.MessageTS})
+			// and hint the PROJECT entity. TS is rendered as the parsed unix
+			// seconds when MessageTS parses (indexable in memory_provenance,
+			// ageable by eviction math, the calendar/builder precedent); on a
+			// parse failure the raw MessageTS is tolerated as a fallback — the
+			// ref still validates by key, it just won't index.
+			ts := it.MessageTS
+			if u, ok := db.ParseJiraTime(it.MessageTS); ok {
+				ts = strconv.FormatInt(u, 10)
+			}
+			refs = append(refs, episodeRef{ChannelID: jiraRefPrefix + it.ChannelID, TS: ts})
 			addHint(jiraProjectKey(it.ChannelID))
 			continue
 		}

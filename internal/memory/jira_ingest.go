@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -128,7 +129,7 @@ func (p *Pipeline) buildJiraEpisodes(runID int64, jiraReg *provenanceRegistry, i
 		if is.UpdatedUnix > maxUpdated {
 			maxUpdated = is.UpdatedUnix
 		}
-		ref := episodeRef{ChannelID: jiraRefPrefix + is.Key, TS: is.UpdatedAtRaw}
+		ref := episodeRef{ChannelID: jiraRefPrefix + is.Key, TS: strconv.FormatInt(is.UpdatedUnix, 10)}
 
 		ok, registered, verr := jiraReg.Validate(ref)
 		if verr != nil {
@@ -192,7 +193,11 @@ func (p *Pipeline) buildJiraEpisodes(runID int64, jiraReg *provenanceRegistry, i
 // the deterministic status/tier refreshed (a done+resolved issue is closed/
 // long; a reopened issue flips back to active/short). changed reports whether
 // anything differs from disk. A LookupMemoryAlias error (not a clean miss)
-// fails the step — the alias is the idempotency key.
+// fails the step — the alias is the idempotency key. If the alias has been
+// re-aliased onto a non-episode node (a rollup after eviction, or any future
+// re-alias), the builder never rewrites it — an evicted rollup is a deliberate
+// compaction the mechanical builder must not resurrect into an episode body;
+// the existing node is returned untouched with changed=false.
 func (p *Pipeline) jiraEpisodeNode(alias, title, body, status, tier string) (n Node, changed bool, err error) {
 	existingID, lerr := p.db.LookupMemoryAlias(alias)
 	switch {
@@ -200,6 +205,10 @@ func (p *Pipeline) jiraEpisodeNode(alias, title, body, status, tier string) (n N
 		existing, rerr := p.vault.ReadNode(existingID)
 		if rerr != nil {
 			return Node{}, false, fmt.Errorf("memory: jira ingest: read %s for %q: %w", existingID, alias, rerr)
+		}
+		if existing.Type != "episode" {
+			p.logf("memory: jira ingest: alias %q resolves to %s (%s), skipping update (archived)", alias, existingID, existing.Type)
+			return existing, false, nil
 		}
 		if existing.Title == title && existing.Body == body && existing.Status == status && existing.Tier == tier {
 			return existing, false, nil // unchanged — no commit

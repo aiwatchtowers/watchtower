@@ -56,7 +56,7 @@ type MemoryHit struct {
 // in memory, one write site in db, one transaction).
 type ProvenanceRow struct {
 	NodeID    string
-	Scheme    string // "" (Slack), "mail", "cal", "chat", "act"
+	Scheme    string // "" (Slack), "mail", "cal", "chat", "act", "jira"
 	ChannelID string // the raw ref channel_id, e.g. "C0AAA" or "mail:<id>"
 	TSRaw     string // the ref ts verbatim as rendered in ## Provenance
 	TSUnix    float64
@@ -1389,10 +1389,10 @@ func (db *DB) JiraIssueExists(key string) (bool, error) {
 // colon, so SQLite's strftime cannot parse it; all time math happens in Go).
 const jiraUpdatedLayout = "2006-01-02T15:04:05.000-0700"
 
-// parseJiraTime parses a jira_issues timestamp, RFC3339 fallback. ok=false for
+// ParseJiraTime parses a jira_issues timestamp, RFC3339 fallback. ok=false for
 // an unparseable value — the caller skips the row (the Gmail internal_date
 // defensive-skip precedent; the sync guarantees the format).
-func parseJiraTime(s string) (int64, bool) {
+func ParseJiraTime(s string) (int64, bool) {
 	if t, err := time.Parse(jiraUpdatedLayout, s); err == nil {
 		return t.Unix(), true
 	}
@@ -1419,7 +1419,7 @@ type JiraExtractIssue struct {
 // ListJiraIssuesForExtract returns non-deleted issues whose PARSED updated_at
 // is strictly above sinceUnix, ascending by UpdatedUnix, capped at limit.
 // updated_at carries a "+0100"-style offset SQLite cannot compare reliably, so
-// rows are filtered/sorted in Go after parseJiraTime (an unparseable value
+// rows are filtered/sorted in Go after ParseJiraTime (an unparseable value
 // skips the row). The table is small (low thousands), a full scan per run is
 // fine.
 func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtractIssue, error) {
@@ -1442,7 +1442,7 @@ func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtrac
 			&is.StoryPoints, &is.UpdatedAtRaw, &is.ResolvedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira issue for extract: %w", err)
 		}
-		u, ok := parseJiraTime(is.UpdatedAtRaw)
+		u, ok := ParseJiraTime(is.UpdatedAtRaw)
 		if !ok || u <= sinceUnix {
 			continue
 		}
@@ -1473,7 +1473,7 @@ func (db *DB) MaxJiraUpdatedUnix() (int64, error) {
 		if err := rows.Scan(&raw); err != nil {
 			return 0, fmt.Errorf("scanning jira updated_at: %w", err)
 		}
-		if u, ok := parseJiraTime(raw); ok && u > maxU {
+		if u, ok := ParseJiraTime(raw); ok && u > maxU {
 			maxU = u
 		}
 	}

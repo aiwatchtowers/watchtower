@@ -446,9 +446,12 @@ func TestIngestSituationJiraSignalMintsJiraRef(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, IngestStats{Created: 1}, stats)
 
+	wantUnix, ok := db.ParseJiraTime("2026-07-22T10:00:00.000+0000")
+	require.True(t, ok, "test time failed to parse")
+
 	n, err := Resolve(v, d, fmt.Sprintf("situation:%d", sitID))
 	require.NoError(t, err)
-	assert.Contains(t, n.Body, "- jira:CEX-7413 2026-07-22T10:00:00.000+0000", "episode carries the validated jira: ref")
+	assert.Contains(t, n.Body, fmt.Sprintf("- jira:CEX-7413 %d", wantUnix), "episode carries the validated jira: ref, ts rendered as parsed unix seconds")
 
 	en, err := Resolve(v, d, "CEX")
 	require.NoError(t, err)
