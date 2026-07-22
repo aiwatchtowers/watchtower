@@ -2146,4 +2146,28 @@ func TestListJiraIssuesForExtract(t *testing.T) {
 	if err != nil || maxU != want {
 		t.Errorf("MaxJiraUpdatedUnix = %v, %v; want %v", maxU, err, want)
 	}
+
+	// Boundary-drain (Finding 2, final-review fix wave): a same-second tie at
+	// the cap boundary must never be split. Two issues share one updated_at
+	// second, a third is strictly later; limit=1 must still return BOTH
+	// same-second issues (the later one stays excluded).
+	db2 := openTestDB(t)
+	seedJiraIssueRow(t, db2, jiraIssueSeed{Key: "TIE-1", ProjectKey: "TIE", Summary: "a", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000"})
+	seedJiraIssueRow(t, db2, jiraIssueSeed{Key: "TIE-2", ProjectKey: "TIE", Summary: "b", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000"})
+	seedJiraIssueRow(t, db2, jiraIssueSeed{Key: "TIE-3", ProjectKey: "TIE", Summary: "later", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T11:00:00.000+0000"})
+
+	tieIssues, err := db2.ListJiraIssuesForExtract(0, 1)
+	if err != nil {
+		t.Fatalf("boundary-drain list: %v", err)
+	}
+	if len(tieIssues) != 2 {
+		t.Fatalf("boundary drain len = %d, want 2 (both same-second issues drained in)", len(tieIssues))
+	}
+	gotKeys := map[string]bool{}
+	for _, is := range tieIssues {
+		gotKeys[is.Key] = true
+	}
+	if !gotKeys["TIE-1"] || !gotKeys["TIE-2"] || gotKeys["TIE-3"] {
+		t.Errorf("boundary drain keys = %+v, want exactly {TIE-1, TIE-2}, TIE-3 excluded", tieIssues)
+	}
 }

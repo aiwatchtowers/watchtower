@@ -1417,11 +1417,14 @@ type JiraExtractIssue struct {
 }
 
 // ListJiraIssuesForExtract returns non-deleted issues whose PARSED updated_at
-// is strictly above sinceUnix, ascending by UpdatedUnix, capped at limit.
-// updated_at carries a "+0100"-style offset SQLite cannot compare reliably, so
-// rows are filtered/sorted in Go after ParseJiraTime (an unparseable value
-// skips the row). The table is small (low thousands), a full scan per run is
-// fine.
+// is strictly above sinceUnix, ascending by UpdatedUnix, capped at limit —
+// draining the boundary second so a same-second tie is never split (the
+// Slack/Gmail boundary-drain precedent). updated_at carries a "+0100"-style
+// offset SQLite cannot compare reliably, so rows are filtered/sorted in Go
+// after ParseJiraTime (an unparseable value skips the row). The table is
+// small (low thousands), a full scan per run is fine — the whole filtered set
+// is already in memory before the cap, so the drain is a plain Go slice
+// extension, no second query needed (unlike the Slack/Gmail two-query drain).
 func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtractIssue, error) {
 	rows, err := db.Query(`SELECT key, project_key, summary, description_text, issue_type,
 		status, status_category, priority, assignee_display_name, assignee_slack_id,
@@ -1454,7 +1457,12 @@ func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtrac
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedUnix < out[j].UpdatedUnix })
 	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+		boundary := out[limit-1].UpdatedUnix
+		end := limit
+		for end < len(out) && out[end].UpdatedUnix == boundary {
+			end++
+		}
+		out = out[:end]
 	}
 	return out, nil
 }
