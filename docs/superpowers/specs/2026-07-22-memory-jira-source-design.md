@@ -25,7 +25,7 @@ Two gaps, one root: Jira has no provenance scheme.
 
 ### Selection + watermark
 
-- Fifth extraction watermark: `workspace.memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0` (migration 00028, additive `ALTER TABLE ADD COLUMN`; mirror into `schema.sql`, `TestSchemaGolden` regenerated).
+- Fifth extraction watermark: `workspace.memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0` (migration 00030 — 00028/00029 were taken by the concurrent Slice B merge; additive `ALTER TABLE ADD COLUMN`; mirror into `schema.sql`, `TestSchemaGolden` regenerated).
 - **No-backfill initialization:** when the gate is on and the watermark is 0, the step sets it to the maximum parsed `updated_at` among synced rows and builds nothing (logged `memory: jira source initialized, no backfill`). An empty `jira_issues` leaves the watermark 0 (retry next run).
 - Each subsequent run: rows with parsed `updated_at > watermark AND is_deleted = 0`, ordered by `updated_at`, become episodes committed in ONE vault commit (`memory(jira)`); the watermark advances to the max processed `updated_at` **only after the commit succeeded** (MEM-04 freeze discipline — any build/commit/lookup error freezes the step, `JiraFailed` counted, run continues).
 - `updated_at` is parsed in Go with Jira's layout `2006-01-02T15:04:05.000-0700` (RFC3339 fallback); an unparseable value skips the row (the Gmail `internal_date` precedent — the sync guarantees the format; no defensive parse beyond the skip).
