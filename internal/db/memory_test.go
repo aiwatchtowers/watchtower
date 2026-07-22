@@ -2042,3 +2042,111 @@ func TestMemoryRetrieveShadowRoundTrip(t *testing.T) {
 		t.Fatalf("ListMemoryRetrieveShadow(recall) = %+v, want one billing row", rows)
 	}
 }
+
+// jiraIssueSeed is the minimal jira_issues fixture for memory-source tests.
+type jiraIssueSeed struct {
+	Key, ProjectKey, Summary, DescriptionText     string
+	IssueType, Status, StatusCategory, Priority   string
+	AssigneeDisplayName, AssigneeSlackID          string
+	ReporterDisplayName, ReporterSlackID          string
+	SprintName, EpicKey, DueDate, ResolvedAt      string
+	UpdatedAt                                     string
+	IsDeleted                                     bool
+}
+
+func seedJiraIssueRow(t *testing.T, db *DB, s jiraIssueSeed) {
+	t.Helper()
+	deleted := 0
+	if s.IsDeleted {
+		deleted = 1
+	}
+	_, err := db.Exec(`INSERT INTO jira_issues
+		(key, project_key, summary, description_text, issue_type, status, status_category,
+		 priority, assignee_display_name, assignee_slack_id, reporter_display_name, reporter_slack_id,
+		 sprint_name, epic_key, due_date, resolved_at, created_at, updated_at, synced_at, is_deleted)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		s.Key, s.ProjectKey, s.Summary, s.DescriptionText, s.IssueType, s.Status, s.StatusCategory,
+		s.Priority, s.AssigneeDisplayName, s.AssigneeSlackID, s.ReporterDisplayName, s.ReporterSlackID,
+		s.SprintName, s.EpicKey, s.DueDate, s.ResolvedAt, "2026-07-01T00:00:00.000+0000", s.UpdatedAt,
+		"2026-07-22T00:00:00Z", deleted)
+	if err != nil {
+		t.Fatalf("seed jira issue %s: %v", s.Key, err)
+	}
+}
+
+// parseJiraTimeForTest exposes the production parser to tests in this package.
+func parseJiraTimeForTest(s string) (int64, bool) { return parseJiraTime(s) }
+
+// TestMemoryJiraWatermark: the fifth extraction watermark round-trips on the
+// workspace singleton and reads 0 on a fresh workspace.
+func TestMemoryJiraWatermark(t *testing.T) {
+	db := openTestDB(t)
+	seedWorkspace(t, db)
+	wm, err := db.MemoryJiraWatermark()
+	if err != nil || wm != 0 {
+		t.Fatalf("fresh watermark = %v, %v; want 0, nil", wm, err)
+	}
+	if err := db.SetMemoryJiraWatermark(1784500000); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	wm, err = db.MemoryJiraWatermark()
+	if err != nil || wm != 1784500000 {
+		t.Fatalf("watermark = %v, %v; want 1784500000, nil", wm, err)
+	}
+}
+
+// TestJiraIssueExists: key+is_deleted=0 resolves; a deleted issue 404s (the
+// tombstoned-message reasoning); an absent key is a clean false.
+func TestJiraIssueExists(t *testing.T) {
+	db := openTestDB(t)
+	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-1", ProjectKey: "CEX", Summary: "s", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000"})
+	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-2", ProjectKey: "CEX", Summary: "s", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000", IsDeleted: true})
+
+	if ok, err := db.JiraIssueExists("CEX-1"); err != nil || !ok {
+		t.Errorf("CEX-1 = %v, %v; want true, nil", ok, err)
+	}
+	if ok, err := db.JiraIssueExists("CEX-2"); err != nil || ok {
+		t.Errorf("deleted CEX-2 = %v, %v; want false, nil", ok, err)
+	}
+	if ok, err := db.JiraIssueExists("CEX-404"); err != nil || ok {
+		t.Errorf("absent = %v, %v; want false, nil", ok, err)
+	}
+}
+
+// TestListJiraIssuesForExtract: parsed-updated_at filtering and ordering, the
+// is_deleted filter, the unparseable-updated_at skip, and the limit cap.
+func TestListJiraIssuesForExtract(t *testing.T) {
+	db := openTestDB(t)
+	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-1", ProjectKey: "CEX", Summary: "old", Status: "Done", StatusCategory: "done", UpdatedAt: "2026-07-20T10:00:00.000+0000"})
+	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-2", ProjectKey: "CEX", Summary: "new", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000"})
+	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-3", ProjectKey: "CEX", Summary: "newer", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T11:00:00.000+0000"})
+	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-4", ProjectKey: "CEX", Summary: "deleted", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T12:00:00.000+0000", IsDeleted: true})
+	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-5", ProjectKey: "CEX", Summary: "badts", Status: "To Do", StatusCategory: "todo", UpdatedAt: "not-a-time"})
+
+	since, ok := parseJiraTimeForTest("2026-07-21T00:00:00.000+0000")
+	if !ok {
+		t.Fatal("test time failed to parse")
+	}
+	issues, err := db.ListJiraIssuesForExtract(since, 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var keys []string
+	for _, is := range issues {
+		keys = append(keys, is.Key)
+	}
+	if strings.Join(keys, ",") != "CEX-2,CEX-3" {
+		t.Errorf("keys = %v, want [CEX-2 CEX-3] (old filtered, deleted filtered, unparseable skipped, ascending)", keys)
+	}
+	// Limit caps from the oldest pending side.
+	issues, err = db.ListJiraIssuesForExtract(since, 1)
+	if err != nil || len(issues) != 1 || issues[0].Key != "CEX-2" {
+		t.Errorf("limited = %v, %v; want just CEX-2", issues, err)
+	}
+	// Max helper sees the newest parseable non-deleted row (CEX-3).
+	maxU, err := db.MaxJiraUpdatedUnix()
+	want, _ := parseJiraTimeForTest("2026-07-22T11:00:00.000+0000")
+	if err != nil || maxU != want {
+		t.Errorf("MaxJiraUpdatedUnix = %v, %v; want %v", maxU, err, want)
+	}
+}
