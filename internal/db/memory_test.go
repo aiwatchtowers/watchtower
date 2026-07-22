@@ -2045,13 +2045,13 @@ func TestMemoryRetrieveShadowRoundTrip(t *testing.T) {
 
 // jiraIssueSeed is the minimal jira_issues fixture for memory-source tests.
 type jiraIssueSeed struct {
-	Key, ProjectKey, Summary, DescriptionText     string
-	IssueType, Status, StatusCategory, Priority   string
-	AssigneeDisplayName, AssigneeSlackID          string
-	ReporterDisplayName, ReporterSlackID          string
-	SprintName, EpicKey, DueDate, ResolvedAt      string
-	UpdatedAt                                     string
-	IsDeleted                                     bool
+	Key, ProjectKey, Summary, DescriptionText   string
+	IssueType, Status, StatusCategory, Priority string
+	AssigneeDisplayName, AssigneeSlackID        string
+	ReporterDisplayName, ReporterSlackID        string
+	SprintName, EpicKey, DueDate, ResolvedAt    string
+	UpdatedAt                                   string
+	IsDeleted                                   bool
 }
 
 func seedJiraIssueRow(t *testing.T, db *DB, s jiraIssueSeed) {
