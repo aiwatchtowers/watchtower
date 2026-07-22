@@ -200,17 +200,24 @@ enum TestDatabase {
         decisionOptions: String = "[]",
         subItems: String = "[]",
         relatedDigestIDs: String = "[]",
-        model: String = "haiku"
-    ) throws {
+        model: String = "haiku",
+        assigneeUserID: String = "",
+        ownerUserID: String = "",
+        requesterUserID: String = "",
+        linkedTargetID: Int? = nil
+    ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO tracks (text, context, category, ownership, priority, tags,
                 channel_ids, source_refs, has_updates, participants, requester_name,
-                blocking, decision_summary, decision_options, sub_items, related_digest_ids, model)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                blocking, decision_summary, decision_options, sub_items, related_digest_ids, model,
+                assignee_user_id, owner_user_id, requester_user_id, linked_target_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [text, context, category, ownership, priority, tags,
                              channelIDs, sourceRefs, hasUpdates ? 1 : 0, participants,
                              requesterName, blocking, decisionSummary, decisionOptions,
-                             subItems, relatedDigestIDs, model])
+                             subItems, relatedDigestIDs, model,
+                             assigneeUserID, ownerUserID, requesterUserID, linkedTargetID])
+        return db.lastInsertedRowID
     }
 
     // MARK: - Schema
