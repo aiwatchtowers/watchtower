@@ -152,15 +152,16 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 	}
 	p := &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, checkMsg: database, Source: "cli"}
 	// MEM-12: the belief surface's registry — chat (MEM-09) and act (MEM-15), the
-	// only schemes validateChatRefs routes through it. The interaction tables are
-	// base tables, so the act resolver is registered even when memory.sources.
-	// actions is dark (a stray act: ref can only reach the belief pass through the
-	// independently gated interaction ingest). The Slack/Gmail extractors validate
-	// through their own message-only / mail-only registries.
+	// only schemes validateChatRefs routes through it. Calendar, Jira, and
+	// interaction tables are base tables, so the cal/jira/act resolvers are
+	// registered even when their sources are dark (a stray ref can only reach the
+	// belief pass through independently gated sources). The Slack/Gmail extractors
+	// validate through their own message-only / mail-only registries.
 	p.chatChecker = &memoChatChecker{db: database}
 	p.registry = newProvenanceRegistry(
 		chatResolver{db: p.chatChecker, logf: logf, contextTypes: chatContextTypes(cfg.Sources.Chats)},
 		calResolver{database},
+		jiraResolver{database},
 		actResolver{db: database, logf: logf},
 	)
 	return p

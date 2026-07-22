@@ -21,6 +21,7 @@ func TestSchemeOf(t *testing.T) {
 		"chat:42":              "chat",
 		"mail:abc":             "mail",
 		"cal:evt_1":            "cal",
+		"jira:CEX-7413":        "jira",
 		"act:inbox_feedback:7": "act",
 		"bogus:x":              "bogus",
 		"":                     "",
@@ -383,4 +384,50 @@ func TestProvenanceRows_SenderLookupErrorIsNotFatal(t *testing.T) {
 	require.Len(t, rows, 1, "a sender lookup failure must not drop the ref")
 	assert.Equal(t, "", rows[0].SenderID)
 	assert.NotEmpty(t, logged, "the lookup failure is logged")
+}
+
+// TestProvenanceRegistryDispatchesJira: a jira:<KEY> ref resolves through
+// jiraResolver by issue key; a missing/deleted key is a clean non-resolution.
+func TestProvenanceRegistryDispatchesJira(t *testing.T) {
+	reg := newProvenanceRegistry(jiraResolver{db: fakeJiraChecker{exists: map[string]bool{"CEX-7413": true}}})
+	ok, registered, err := reg.Validate(episodeRef{ChannelID: "jira:CEX-7413", TS: "2026-07-22T10:00:00.000+0000"})
+	if err != nil || !registered || !ok {
+		t.Errorf("existing issue = ok %v registered %v err %v; want true,true,nil", ok, registered, err)
+	}
+	ok, registered, err = reg.Validate(episodeRef{ChannelID: "jira:CEX-404", TS: "x"})
+	if err != nil || !registered || ok {
+		t.Errorf("missing issue = ok %v registered %v err %v; want false,true,nil", ok, registered, err)
+	}
+}
+
+// TestJiraResolverPropagatesLookupError: a jira_issues lookup error propagates
+// (registered=true) — the table is migration-guaranteed, never a clean miss.
+func TestJiraResolverPropagatesLookupError(t *testing.T) {
+	reg := newProvenanceRegistry(jiraResolver{db: fakeJiraChecker{err: errors.New("db down")}})
+	_, registered, err := reg.Validate(episodeRef{ChannelID: "jira:CEX-1", TS: "x"})
+	if err == nil || !registered {
+		t.Errorf("lookup error: registered %v err %v; want true, non-nil", registered, err)
+	}
+}
+
+// TestJiraRegisteredInPipelineRegistry: the belief surface's registry carries
+// the jira scheme so a belief op may cite a jira: episode ref.
+func TestJiraRegisteredInPipelineRegistry(t *testing.T) {
+	d, v := newTestDB(t), newTestVault(t)
+	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+	if _, registered, _ := p.registry.Validate(episodeRef{ChannelID: "jira:CEX-1", TS: "x"}); !registered {
+		t.Error("jira scheme not registered in the pipeline registry")
+	}
+}
+
+type fakeJiraChecker struct {
+	exists map[string]bool
+	err    error
+}
+
+func (f fakeJiraChecker) JiraIssueExists(key string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.exists[key], nil
 }
