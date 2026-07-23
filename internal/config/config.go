@@ -239,6 +239,7 @@ type MemorySourcesConfig struct {
 	Calendar    bool `mapstructure:"calendar"`    // Phase-5 slice-2: mechanical past-event->episode builder + recurring-series seeding (default: false)
 	Chats       bool `mapstructure:"chats"`       // Phase-5 slice-2: generalizes internal-dialogs ingest to target/track Discuss chats + the "remember this" command (default: false)
 	Operational bool `mapstructure:"operational"` // Phase-5 slice-4: mechanical target/track entity mirrors in the vault (target:<id>/track:<id>), its own Run step (default: false)
+	Jira        bool `mapstructure:"jira"`        // mechanical jira issue->episode builder + jira: provenance scheme, its own Run step (default: false)
 }
 
 // MemoryRendersConfig gates the Phase-5 slice-3 render-inversion steps

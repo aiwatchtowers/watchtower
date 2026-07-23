@@ -1455,7 +1455,7 @@ synced_at TEXT, -- ISO8601 timestamp of last sync
 search_last_date TEXT NOT NULL DEFAULT '', -- YYYY-MM-DD of last search sync
 current_user_id TEXT NOT NULL DEFAULT '', -- Slack user_id of the token owner (from auth.test)
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', gmail_last_internal_date REAL NOT NULL DEFAULT 0, memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0)
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', gmail_last_internal_date REAL NOT NULL DEFAULT 0, memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0)
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
@@ -2503,4 +2503,5 @@ END
 16	memory_last_interaction_id	INTEGER	notnull=1	dflt=0	pk=0
 17	memory_calendar_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
 18	memory_last_situation_feedback_id	INTEGER	notnull=1	dflt=0	pk=0
+19	memory_jira_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
 

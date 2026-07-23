@@ -25,7 +25,7 @@ Two gaps, one root: Jira has no provenance scheme.
 
 ### Selection + watermark
 
-- Fifth extraction watermark: `workspace.memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0` (migration 00028, additive `ALTER TABLE ADD COLUMN`; mirror into `schema.sql`, `TestSchemaGolden` regenerated).
+- Fifth extraction watermark: `workspace.memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0` (migration 00030 — 00028/00029 were taken by the concurrent Slice B merge; additive `ALTER TABLE ADD COLUMN`; mirror into `schema.sql`, `TestSchemaGolden` regenerated).
 - **No-backfill initialization:** when the gate is on and the watermark is 0, the step sets it to the maximum parsed `updated_at` among synced rows and builds nothing (logged `memory: jira source initialized, no backfill`). An empty `jira_issues` leaves the watermark 0 (retry next run).
 - Each subsequent run: rows with parsed `updated_at > watermark AND is_deleted = 0`, ordered by `updated_at`, become episodes committed in ONE vault commit (`memory(jira)`); the watermark advances to the max processed `updated_at` **only after the commit succeeded** (MEM-04 freeze discipline — any build/commit/lookup error freezes the step, `JiraFailed` counted, run continues).
 - `updated_at` is parsed in Go with Jira's layout `2006-01-02T15:04:05.000-0700` (RFC3339 fallback); an unparseable value skips the row (the Gmail `internal_date` precedent — the sync guarantees the format; no defensive parse beyond the skip).
@@ -37,7 +37,7 @@ Two gaps, one root: Jira has no provenance scheme.
 - Title: `<KEY>: <summary>`.
 - `## Story`: issue type, status (+ category), priority, assignee/reporter display names, sprint name, epic key, due date, story points (each line only when non-empty), then a `description_text` snippet capped at **1500 bytes** on a rune boundary (descriptions can be huge; the cap is a code const).
 - `## Outcome`: `Resolved (<status>) at <resolved_at>` when `status_category = 'done'` and `resolved_at` is set; otherwise `Current status: <status>`.
-- `## Provenance`: `- jira:<KEY> <updated_at raw>` (one ref; `memory_provenance` stores it under scheme `jira`, `ts_unix` best-effort from the parsed time — never queried by the Slack window query, which passes bare channel ids).
+- `## Provenance`: `- jira:<KEY> <updated_at unix seconds>` (parsed; makes the ref indexable in memory_provenance and ageable by eviction math — final-review fix 2026-07-22) (one ref; `memory_provenance` stores it under scheme `jira`, `ts_unix` best-effort from the parsed time — never queried by the Slack window query, which passes bare channel ids).
 - Status/tier: `active`/`short`; born (or refreshed) `closed`/`long` when `status_category = 'done'` with `resolved_at` set — deterministic from the row, no aging dependency.
 - `## Links`: the issue's project entity (already seeded by `seedJiraProjects`) plus assignee/reporter person entities resolved via `assignee_slack_id`/`reporter_slack_id` when non-empty — structural back-links, the calendar-attendee precedent, no model judgment.
 

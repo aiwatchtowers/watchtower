@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -55,7 +56,7 @@ type MemoryHit struct {
 // in memory, one write site in db, one transaction).
 type ProvenanceRow struct {
 	NodeID    string
-	Scheme    string // "" (Slack), "mail", "cal", "chat", "act"
+	Scheme    string // "" (Slack), "mail", "cal", "chat", "act", "jira"
 	ChannelID string // the raw ref channel_id, e.g. "C0AAA" or "mail:<id>"
 	TSRaw     string // the ref ts verbatim as rendered in ## Provenance
 	TSUnix    float64
@@ -1341,6 +1342,150 @@ func (db *DB) ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit 
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// MemoryJiraWatermark reads the Jira episode-extraction watermark — the FIFTH
+// extraction watermark (see 00030), unix seconds of the newest fully-committed
+// parsed jira_issues.updated_at. A fresh workspace reads 0.
+func (db *DB) MemoryJiraWatermark() (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT COALESCE(memory_jira_last_extracted_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting memory jira watermark: %w", err)
+	}
+	return ts, nil
+}
+
+// SetMemoryJiraWatermark advances the Jira extraction watermark. Callers only
+// move it behind fully-committed issue episodes (MEM-04, adapted).
+func (db *DB) SetMemoryJiraWatermark(ts float64) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_jira_last_extracted_ts = ?`, ts); err != nil {
+		return fmt.Errorf("setting memory jira watermark: %w", err)
+	}
+	return nil
+}
+
+// JiraIssueExists is the jira: scheme's write-time existence check (MEM-12): a
+// jira:<KEY> ref resolves iff a non-deleted jira_issues row carries that key —
+// a deleted issue 404s for the owner exactly like a tombstoned Slack message.
+// jira_issues is migration-guaranteed, so a lookup failure is a genuine error
+// (step freeze), never a clean miss (the CalendarEventExists precedent).
+func (db *DB) JiraIssueExists(key string) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM jira_issues WHERE key = ? AND is_deleted = 0`, key).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking jira issue %s: %w", key, err)
+	}
+	return true, nil
+}
+
+// jiraUpdatedLayout is Jira Cloud's updated_at format ("+0100" offset — no
+// colon, so SQLite's strftime cannot parse it; all time math happens in Go).
+const jiraUpdatedLayout = "2006-01-02T15:04:05.000-0700"
+
+// ParseJiraTime parses a jira_issues timestamp, RFC3339 fallback. ok=false for
+// an unparseable value — the caller skips the row (the Gmail internal_date
+// defensive-skip precedent; the sync guarantees the format).
+func ParseJiraTime(s string) (int64, bool) {
+	if t, err := time.Parse(jiraUpdatedLayout, s); err == nil {
+		return t.Unix(), true
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Unix(), true
+	}
+	return 0, false
+}
+
+// JiraExtractIssue is one jira_issues row projected for the mechanical
+// issue→episode builder (memory.sources.jira).
+type JiraExtractIssue struct {
+	Key, ProjectKey, Summary, DescriptionText   string
+	IssueType, Status, StatusCategory, Priority string
+	AssigneeDisplayName, AssigneeSlackID        string
+	ReporterDisplayName, ReporterSlackID        string
+	SprintName, EpicKey, DueDate                string
+	StoryPoints                                 sql.NullFloat64
+	UpdatedAtRaw                                string
+	UpdatedUnix                                 int64
+	ResolvedAt                                  string
+}
+
+// ListJiraIssuesForExtract returns non-deleted issues whose PARSED updated_at
+// is strictly above sinceUnix, ascending by UpdatedUnix, capped at limit —
+// draining the boundary second so a same-second tie is never split (the
+// Slack/Gmail boundary-drain precedent). updated_at carries a "+0100"-style
+// offset SQLite cannot compare reliably, so rows are filtered/sorted in Go
+// after ParseJiraTime (an unparseable value skips the row). The table is
+// small (low thousands), a full scan per run is fine — the whole filtered set
+// is already in memory before the cap, so the drain is a plain Go slice
+// extension, no second query needed (unlike the Slack/Gmail two-query drain).
+func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtractIssue, error) {
+	rows, err := db.Query(`SELECT key, project_key, summary, description_text, issue_type,
+		status, status_category, priority, assignee_display_name, assignee_slack_id,
+		reporter_display_name, reporter_slack_id, sprint_name, epic_key, due_date,
+		story_points, updated_at, resolved_at
+		FROM jira_issues WHERE is_deleted = 0`)
+	if err != nil {
+		return nil, fmt.Errorf("listing jira issues for extract: %w", err)
+	}
+	defer rows.Close()
+
+	var out []JiraExtractIssue
+	for rows.Next() {
+		var is JiraExtractIssue
+		if err := rows.Scan(&is.Key, &is.ProjectKey, &is.Summary, &is.DescriptionText, &is.IssueType,
+			&is.Status, &is.StatusCategory, &is.Priority, &is.AssigneeDisplayName, &is.AssigneeSlackID,
+			&is.ReporterDisplayName, &is.ReporterSlackID, &is.SprintName, &is.EpicKey, &is.DueDate,
+			&is.StoryPoints, &is.UpdatedAtRaw, &is.ResolvedAt); err != nil {
+			return nil, fmt.Errorf("scanning jira issue for extract: %w", err)
+		}
+		u, ok := ParseJiraTime(is.UpdatedAtRaw)
+		if !ok || u <= sinceUnix {
+			continue
+		}
+		is.UpdatedUnix = u
+		out = append(out, is)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("jira extract rows: %w", err)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedUnix < out[j].UpdatedUnix })
+	if limit > 0 && len(out) > limit {
+		boundary := out[limit-1].UpdatedUnix
+		end := limit
+		for end < len(out) && out[end].UpdatedUnix == boundary {
+			end++
+		}
+		out = out[:end]
+	}
+	return out, nil
+}
+
+// MaxJiraUpdatedUnix is the no-backfill initializer's bound: the newest parsed
+// updated_at among non-deleted issues, 0 when none exist or parse.
+func (db *DB) MaxJiraUpdatedUnix() (int64, error) {
+	rows, err := db.Query(`SELECT updated_at FROM jira_issues WHERE is_deleted = 0`)
+	if err != nil {
+		return 0, fmt.Errorf("scanning jira updated_at for max: %w", err)
+	}
+	defer rows.Close()
+	var maxU int64
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return 0, fmt.Errorf("scanning jira updated_at: %w", err)
+		}
+		if u, ok := ParseJiraTime(raw); ok && u > maxU {
+			maxU = u
+		}
+	}
+	return maxU, rows.Err()
 }
 
 // GmailExtractMessage is one gmail_messages row fed to the Gmail thread→episode

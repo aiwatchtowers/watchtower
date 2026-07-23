@@ -61,6 +61,10 @@ type RunStats struct {
 	CalendarEpisodes     int // episode nodes built/refreshed by the mechanical calendar builder
 	CalendarEventsFailed int // calendar events dropped (unresolved ref) or frozen (step error)
 
+	// Jira source (zero unless memory.sources.jira).
+	JiraEpisodes     int // episode nodes built/refreshed by the mechanical jira issue builder
+	JiraIssuesFailed int // jira issues dropped (unresolved ref) or frozen (step error)
+
 	// Operational mirrors (Phase-5 slice-4, zero unless memory.sources.operational).
 	Mirrored      int // target/track entity mirrors created/refreshed by the mechanical mirror step
 	MirrorsFailed int // mirror steps frozen by a read/resolve/commit error (MEM-14)
@@ -152,15 +156,16 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 	}
 	p := &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, checkMsg: database, Source: "cli"}
 	// MEM-12: the belief surface's registry — chat (MEM-09) and act (MEM-15), the
-	// only schemes validateChatRefs routes through it. The interaction tables are
-	// base tables, so the act resolver is registered even when memory.sources.
-	// actions is dark (a stray act: ref can only reach the belief pass through the
-	// independently gated interaction ingest). The Slack/Gmail extractors validate
-	// through their own message-only / mail-only registries.
+	// only schemes validateChatRefs routes through it. Calendar, Jira, and
+	// interaction tables are base tables, so the cal/jira/act resolvers are
+	// registered even when their sources are dark (a stray ref can only reach the
+	// belief pass through independently gated sources). The Slack/Gmail extractors
+	// validate through their own message-only / mail-only registries.
 	p.chatChecker = &memoChatChecker{db: database}
 	p.registry = newProvenanceRegistry(
 		chatResolver{db: p.chatChecker, logf: logf, contextTypes: chatContextTypes(cfg.Sources.Chats)},
 		calResolver{database},
+		jiraResolver{database},
 		actResolver{db: database, logf: logf},
 	)
 	return p
@@ -267,12 +272,26 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		mirrorSteps = n
 	}
 
+	// (3d) Mechanical Jira issue → episode builder (dark behind
+	// memory.sources.jira, owner scope-B: all issues, watermark-bounded, no
+	// backfill). Runs after mirrors and before Slack extraction. No AI call.
+	// Source-isolated: a jira-step error is logged, never fatal, and never
+	// touches another watermark.
+	jiraSteps := 0
+	if p.cfg.Sources.Jira {
+		n, jerr := p.runJiraIngest(runID, calSteps+mirrorSteps, &stats)
+		if jerr != nil {
+			p.logf("memory: jira ingest: %v", jerr)
+		}
+		jiraSteps = n
+	}
+
 	// (4) Episode extraction from raw text.
-	slackSteps, err := p.runExtract(ctx, runID, calSteps+mirrorSteps, acc, &stats)
+	slackSteps, err := p.runExtract(ctx, runID, calSteps+mirrorSteps+jiraSteps, acc, &stats)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
-	batchSteps := calSteps + mirrorSteps + slackSteps
+	batchSteps := calSteps + mirrorSteps + jiraSteps + slackSteps
 
 	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
 	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
@@ -341,9 +360,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected)",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
-		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.InteractionsIngested, stats.EngagementUpdated,
+		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed, stats.InteractionsIngested, stats.EngagementUpdated,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
 		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected)
 	return stats, nil

@@ -227,6 +227,29 @@ func (c calResolver) Validate(ref episodeRef) (bool, error) {
 	return c.db.CalendarEventExists(strings.TrimPrefix(ref.ChannelID, calRefPrefix))
 }
 
+// jiraChecker is the write-time jira-ref lookup seam. *db.DB satisfies it;
+// tests inject an erroring fake to exercise the freeze path.
+type jiraChecker interface {
+	JiraIssueExists(key string) (bool, error)
+}
+
+// jiraResolver is the scheme-"jira" resolver: a jira:<KEY> ref resolves iff a
+// non-deleted jira_issues row carries that key (identity is the issue key; the
+// ref's ts carries updated_at for age math but is not re-validated — the
+// calResolver shape). jira_issues is a migration-guaranteed base table, so a
+// lookup failure is a genuine error (step freeze), not a clean miss.
+type jiraResolver struct{ db jiraChecker }
+
+// jiraRefPrefix marks an evidence/episode channel_id as a Jira issue
+// reference ("jira:<KEY>").
+const jiraRefPrefix = "jira:"
+
+func (jiraResolver) Scheme() string { return strings.TrimSuffix(jiraRefPrefix, ":") }
+
+func (j jiraResolver) Validate(ref episodeRef) (bool, error) {
+	return j.db.JiraIssueExists(strings.TrimPrefix(ref.ChannelID, jiraRefPrefix))
+}
+
 // interactionChecker is the write-time owner-interaction existence lookup behind
 // the act: scheme (MEM-15). *db.DB satisfies it; the whitelist of source tables
 // lives in InteractionExists.

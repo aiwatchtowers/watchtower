@@ -203,7 +203,7 @@ func (p *Pipeline) buildCalendarEpisodes(runID int64, calReg *provenanceRegistry
 		}
 	}
 
-	if lerr := p.commitCalendarNodes(runID, byID, order, dirty); lerr != nil {
+	if lerr := p.commitSourceNodes(runID, "calendar", byID, order, dirty); lerr != nil {
 		return 0, 0, 0, lerr
 	}
 	return built, failed, maxEnd, nil
@@ -212,14 +212,15 @@ func (p *Pipeline) buildCalendarEpisodes(runID int64, calReg *provenanceRegistry
 // linkEntity appends the episode back-link to the entity that entRef resolves
 // to, accumulating into byID so several events linking one entity append to the
 // same in-memory node. A not-found entity (an attendee memory holds no entity
-// for) is a clean skip; a genuine resolve error freezes the step.
+// for) is a clean skip; a genuine resolve error freezes the step. Shared by
+// every mechanical source builder (calendar, jira).
 func linkEntity(p *Pipeline, byID map[string]*Node, order *[]string, dirty map[string]bool, entRef, link string) error {
 	en, rerr := Resolve(p.vault, p.db, entRef)
 	if rerr != nil {
 		if errors.Is(rerr, ErrNotFound) {
 			return nil // no entity for this participant/series — skipped
 		}
-		return fmt.Errorf("memory: calendar ingest: resolve %s: %w", entRef, rerr)
+		return fmt.Errorf("memory: source ingest: resolve %s: %w", entRef, rerr)
 	}
 	if en.Type != "entity" || en.Status != "active" {
 		return nil
@@ -238,11 +239,12 @@ func linkEntity(p *Pipeline, byID map[string]*Node, order *[]string, dirty map[s
 	return nil
 }
 
-// commitCalendarNodes writes the dirty nodes as one vault commit + index mirror.
-// An all-unchanged run commits nothing (no empty git commit). A commit failure
+// commitSourceNodes writes the dirty nodes of one mechanical source (calendar,
+// jira, ...) as one vault commit + index mirror, labeled by op. An
+// all-unchanged run commits nothing (no empty git commit). A commit failure
 // propagates (freezing the step); an index-mirror error is non-fatal (reconcile
 // self-heals).
-func (p *Pipeline) commitCalendarNodes(runID int64, byID map[string]*Node, order []string, dirty map[string]bool) error {
+func (p *Pipeline) commitSourceNodes(runID int64, op string, byID map[string]*Node, order []string, dirty map[string]bool) error {
 	var nodes []Node
 	var ids []string
 	for _, id := range order {
@@ -255,8 +257,8 @@ func (p *Pipeline) commitCalendarNodes(runID int64, byID map[string]*Node, order
 		return nil
 	}
 	msg := CommitMsg{
-		Op:      "calendar",
-		Summary: fmt.Sprintf("%d calendar episode(s)", len(ids)),
+		Op:      op,
+		Summary: fmt.Sprintf("%d %s episode(s)", len(ids), op),
 		Cause:   fmt.Sprintf("run:%d", runID),
 		NodeIDs: ids,
 	}
