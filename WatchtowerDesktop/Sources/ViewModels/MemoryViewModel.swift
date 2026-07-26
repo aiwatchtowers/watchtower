@@ -61,6 +61,13 @@ final class MemoryViewModel {
     var editorText = ""
     var editorError: String?
 
+    // Focus editor state (owner-authored vault-root focus.md — a separate
+    // whole-file editor from the per-node one above, same write mechanics).
+    var isFocusEditing = false
+    var focusEditorText = ""
+    var focusEditorError: String?
+    var isSavingFocus = false
+
     // Importance override state (a separate, smaller edit path from the
     // whole-file editor above — see saveImportanceOverride).
     var importanceOverrideInput: Double = 0
@@ -387,6 +394,60 @@ final class MemoryViewModel {
         editorError = nil
         await rebuildBacklinkGraph()
         await select(id: detail.node.id)
+    }
+
+    // MARK: - Focus editing (owner-authored focus.md salience directives)
+
+    /// Raw contents of the vault-root `focus.md`, or "" when the file doesn't
+    /// exist yet — a missing file is not an error here (unlike the per-node
+    /// editor's `fileReadError`), it just means no directives have been
+    /// written. Template seeding for a fresh editor is the view's job, not
+    /// this method's — it never writes anything.
+    func loadFocusRaw() async -> String {
+        let fileURL = vaultURL.appendingPathComponent("focus.md")
+        return (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+    }
+
+    func cancelFocusEditing() {
+        isFocusEditing = false
+        focusEditorError = nil
+    }
+
+    /// Writes `focus.md` back to the vault root under the same cross-process
+    /// memory lock and atomic-write mechanics as `saveEdit` — the next memory
+    /// run's owner-edit commit (MEM-03) and focus-salience step pick it up.
+    func saveFocusRaw(_ text: String) async {
+        guard !isSavingFocus else { return }
+        isSavingFocus = true
+        defer { isSavingFocus = false }
+
+        let fileURL = vaultURL.appendingPathComponent("focus.md")
+        let lockPath = lockURL.path
+
+        let writeError: String? = await Task.detached(priority: .userInitiated) {
+            let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o644)
+            guard fd >= 0 else {
+                return "Cannot open memory lock: \(String(cString: strerror(errno)))"
+            }
+            defer { Darwin.close(fd) }
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+                return "A memory run is in progress — try again in a moment."
+            }
+            defer { flock(fd, LOCK_UN) }
+            do {
+                try text.write(to: fileURL, atomically: true, encoding: .utf8)
+                return nil
+            } catch {
+                return "Save failed: \(error.localizedDescription)"
+            }
+        }.value
+
+        if let writeError {
+            focusEditorError = writeError
+            return
+        }
+        focusEditorError = nil
+        isFocusEditing = false
     }
 
     /// Sets or clears the node's manual importance override by patching just

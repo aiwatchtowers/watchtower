@@ -262,3 +262,47 @@ struct MemoryNodeEditorSheet: View {
         .padding(16)
     }
 }
+
+/// Whole-file editor for the vault-root `focus.md` salience directives (memory.focus.enabled).
+/// A missing file pre-fills this fixed template in the editor only — nothing
+/// is written to disk until Save.
+struct MemoryFocusEditorSheet: View {
+    @Bindable var vm: MemoryViewModel
+
+    static let template = "# Focus\n\n## Now\n\n## Cooled\n"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Focus")
+                    .font(.headline)
+                Spacer()
+            }
+            TextEditor(text: $vm.focusEditorText)
+                .font(.body.monospaced())
+                .frame(minWidth: 560, minHeight: 380)
+            if let error = vm.focusEditorError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            Text("""
+            Bullets under Now/Cooled boost or cool matching memory nodes during consolidation. \
+            Saved edits are committed as owner-edit by the next memory run.
+            """)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { vm.cancelFocusEditing() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(vm.isSavingFocus)
+                Button("Save") { Task { await vm.saveFocusRaw(vm.focusEditorText) } }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(vm.isSavingFocus)
+            }
+        }
+        .padding(16)
+    }
+}

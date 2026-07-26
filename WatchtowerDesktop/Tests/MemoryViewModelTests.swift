@@ -127,6 +127,49 @@ final class MemoryViewModelTests: XCTestCase {
         XCTAssertFalse(onDisk.contains("Blocked edit."))
     }
 
+    func testLoadFocusRawReturnsEmptyWhenFileMissing() async throws {
+        let vm = try makeVM()
+        let raw = await vm.loadFocusRaw()
+        XCTAssertEqual(raw, "")
+    }
+
+    func testSaveFocusRawWritesFileUnderLock() async throws {
+        let vm = try makeVM()
+        try FileManager.default.createDirectory(atPath: vaultDir, withIntermediateDirectories: true)
+
+        await vm.saveFocusRaw("# Focus\n\n## Now\n- widget launch\n\n## Cooled\n")
+
+        XCTAssertNil(vm.focusEditorError)
+        XCTAssertFalse(vm.isFocusEditing)
+        let onDisk = try String(contentsOfFile: vaultDir + "/focus.md", encoding: .utf8)
+        XCTAssertTrue(onDisk.contains("- widget launch"))
+
+        let reloaded = await vm.loadFocusRaw()
+        XCTAssertEqual(reloaded, onDisk)
+    }
+
+    func testSaveFocusRawFailsWhileMemoryRunHoldsLock() async throws {
+        let vm = try makeVM()
+        try FileManager.default.createDirectory(atPath: vaultDir, withIntermediateDirectories: true)
+        vm.isFocusEditing = true
+
+        // Simulate a running memory pipeline: hold the flock the Go side takes.
+        let lockPath = workspaceDir + "/memory.lock"
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        defer {
+            flock(fd, LOCK_UN)
+            close(fd)
+        }
+
+        await vm.saveFocusRaw("# Focus\n\n## Now\n- blocked\n")
+
+        XCTAssertNotNil(vm.focusEditorError)
+        XCTAssertTrue(vm.isFocusEditing) // stays open so the edit isn't lost
+        XCTAssertFalse(FileManager.default.fileExists(atPath: vaultDir + "/focus.md"))
+    }
+
     func testVaultMissingReportsNotInitialized() throws {
         let vm = try makeVM()
         XCTAssertFalse(vm.vaultExists)

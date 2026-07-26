@@ -22,6 +22,9 @@ struct MemoryView: View {
             .sheet(isPresented: $vm.isEditing) {
                 MemoryNodeEditorSheet(vm: vm)
             }
+            .sheet(isPresented: $vm.isFocusEditing) {
+                MemoryFocusEditorSheet(vm: vm)
+            }
     }
 
     @ViewBuilder
@@ -54,6 +57,26 @@ struct MemoryView: View {
                 nodeList
             }
         }
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    Task { await openFocusEditor() }
+                } label: {
+                    Label("Focus", systemImage: "scope")
+                }
+                .help("Edit focus.md — the Now/Cooled salience directives")
+            }
+        }
+    }
+
+    /// Loads focus.md and opens the editor sheet; a missing file is pre-filled
+    /// with the fixed template here in the view — nothing is written to disk
+    /// until Save (vm.loadFocusRaw/saveFocusRaw never see the template).
+    private func openFocusEditor() async {
+        let raw = await vm.loadFocusRaw()
+        vm.focusEditorText = raw.isEmpty ? MemoryFocusEditorSheet.template : raw
+        vm.focusEditorError = nil
+        vm.isFocusEditing = true
     }
 
     private var sortBar: some View {
