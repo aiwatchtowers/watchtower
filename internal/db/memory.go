@@ -2248,7 +2248,7 @@ func (db *DB) ReplaceFocusMatches(now, cooled []string) error {
 	return tx.Commit()
 }
 
-// FocusState reads one node's focus membership: '' (unmatched), 'now', or
+// FocusState reads one node's focus membership: ” (unmatched), 'now', or
 // 'cooled'. The empty answer is the overwhelmingly common case and must stay
 // cheap — a primary-key point read.
 func (db *DB) FocusState(nodeID string) (string, error) {

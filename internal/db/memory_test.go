@@ -2154,7 +2154,7 @@ func TestFocusFingerprintRoundTrip(t *testing.T) {
 }
 
 // TestFocusMatches: ReplaceFocusMatches rewrites wholesale; FocusState reads
-// '' for unmatched, 'now'/'cooled' for matched.
+// ” for unmatched, 'now'/'cooled' for matched.
 func TestFocusMatches(t *testing.T) {
 	db := openTestDB(t)
 	if err := db.ReplaceFocusMatches([]string{"ent_a", "ent_b"}, []string{"ent_c"}); err != nil {
