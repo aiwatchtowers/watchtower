@@ -269,8 +269,6 @@ struct MemoryNodeEditorSheet: View {
 struct MemoryFocusEditorSheet: View {
     @Bindable var vm: MemoryViewModel
 
-    static let template = "# Focus\n\n## Now\n\n## Cooled\n"
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {

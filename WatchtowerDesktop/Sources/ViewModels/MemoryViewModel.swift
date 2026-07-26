@@ -426,6 +426,10 @@ final class MemoryViewModel {
         return try String(contentsOf: fileURL, encoding: .utf8)
     }
 
+    /// The empty-file scaffold the Focus editor pre-fills (never written
+    /// to disk until the owner saves) — VM-owned so Views depend on the VM,
+    /// not on a sibling View's constant (house layering).
+    static let focusTemplate = "# Focus\n\n## Now\n\n## Cooled\n"
     /// Loads focus.md and opens the editor sheet — the VM-owned counterpart
     /// of the per-node editor's `startEditing` (style reviewer: this used to
     /// live in `MemoryView` as a private view function). A missing file
@@ -437,7 +441,7 @@ final class MemoryViewModel {
     func beginFocusEditing() async {
         do {
             let raw = try await loadFocusRaw()
-            focusEditorText = raw.isEmpty ? MemoryFocusEditorSheet.template : raw
+            focusEditorText = raw.isEmpty ? Self.focusTemplate : raw
             focusEditorError = nil
             isFocusEditing = true
         } catch {

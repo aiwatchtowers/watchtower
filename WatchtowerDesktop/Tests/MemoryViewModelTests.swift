@@ -176,7 +176,7 @@ final class MemoryViewModelTests: XCTestCase {
 
         XCTAssertNil(vm.focusEditorError)
         XCTAssertTrue(vm.isFocusEditing)
-        XCTAssertEqual(vm.focusEditorText, MemoryFocusEditorSheet.template)
+        XCTAssertEqual(vm.focusEditorText, MemoryViewModel.focusTemplate)
     }
 
     func testSaveFocusRawFailsWhileMemoryRunHoldsLock() async throws {

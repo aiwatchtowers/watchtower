@@ -288,7 +288,7 @@ func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, 
 		return 0, nil
 	}
 
-	return p.applyFocusState(runID, "focus", now, cooled, fp, stats, time.Now())
+	return p.applyFocusState(runID, stepOffset, "focus", now, cooled, fp, stats, time.Now())
 }
 
 // sweepFocusImportance recomputes and persists importance_score for EVERY
@@ -368,7 +368,7 @@ func (p *Pipeline) runFocusDisable(runID int64, stepOffset int, stats *RunStats)
 		return 0, nil
 	}
 
-	return p.applyFocusState(runID, "focus-disable", nil, nil, "", stats, time.Now())
+	return p.applyFocusState(runID, stepOffset, "focus-disable", nil, nil, "", stats, time.Now())
 }
 
 // applyFocusState performs the ReplaceFocusMatches → sweep →
@@ -382,11 +382,9 @@ func (p *Pipeline) runFocusDisable(runID int64, stepOffset int, stats *RunStats)
 // "fully applied". The match rewrite itself is correct and stays written in
 // the failed>0 case (only the applied-fingerprint advance waits for a clean
 // sweep, so the next run's fingerprint comparison retries the sweep, not the
-// already-correct match set). stepOffset is always 0 at both call sites
-// today, so step is a fixed 1 here — the same value stepOffset+1 always
-// resolved to before this helper existed.
-func (p *Pipeline) applyFocusState(runID int64, stepName string, now, cooled []string, fp string, stats *RunStats, start time.Time) (int, error) {
-	step := 1
+// already-correct match set).
+func (p *Pipeline) applyFocusState(runID int64, stepOffset int, stepName string, now, cooled []string, fp string, stats *RunStats, start time.Time) (int, error) {
+	step := stepOffset + 1
 
 	if err := p.db.ReplaceFocusMatches(now, cooled); err != nil {
 		p.recordSemanticStep(runID, &step, stepName, "error", nil, start)
