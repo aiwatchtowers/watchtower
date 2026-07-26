@@ -41,7 +41,7 @@ Once per consolidation run (gate on): parse `focus.md` → directives; for each 
 - alias resolution of the bullet's phrases/tokens against `memory_aliases` (`CEX`, `U1ALICE`, `target:19`, channel names — the existing resolver grammar);
 - case-insensitive title match against `memory_nodes.title` (one SQL pass per bullet).
 
-The result is two node-id sets (`now`, `cooled`), threaded to every `computeNodeImportance` call site AND to `RetentionScore`'s eviction path — so eviction breathes focus too (Now nodes resist compression; Cooled nodes go earlier). A bullet matching nothing is logged, never an error. A node matched by both sections counts as `now` (the stronger claim wins; logged). V1 matches directly-named nodes only; one-hop propagation (episodes of a focused entity) is a documented future extension.
+The result is two node-id sets (`now`, `cooled`), threaded to every `computeNodeImportance` call site AND to `RetentionScore`'s eviction path — so eviction breathes focus too (Now nodes resist compression; Cooled nodes go earlier). A bullet matching nothing is logged, never an error. A node matched by both sections counts as `now` (the stronger claim wins; logged). V1 matches directly-named nodes only; one-hop propagation (episodes of a focused entity) is a documented future extension. (Implementation note, plan-stage decision: the sets persist in a memory-owned memory_focus_matches table rewritten on fingerprint change, and computeNodeImportance reads FocusState(nodeID) with one point SELECT — threading sets through the ~17 call sites would have churned every signature for no gain.)
 
 ### 3. The math
 
