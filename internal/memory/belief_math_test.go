@@ -233,9 +233,9 @@ func TestRankNameRoundTrip(t *testing.T) {
 	}
 }
 
-// TestOwnerActionWeightOrder: owner-action sits strictly between observed (0.6)
-// and fresh owner (1.0) at a fixed 0.8 with NO age decay in Slice 1 (resolved
-// ambiguity #4).
+// TestOwnerActionWeightOrder pins the rank order (observed < owner-action < fresh owner).
+// Since 2026-07-26 (curve C), owner-action decays with age like every rank; MEM-15's
+// non-protection (owner-action confers no retire-protection) is guarded elsewhere.
 func TestOwnerActionWeightOrder(t *testing.T) {
 	observed := evidenceWeight(rankObserved, 0)
 	ownerAction := evidenceWeight(rankOwnerAction, 0)
@@ -298,4 +298,16 @@ func TestEvidenceWeightHalfLife(t *testing.T) {
 	assert.InDelta(t, 1.0/0.8,
 		evidenceWeight(rankOwner, 365)/evidenceWeight(rankOwnerAction, 365), 1e-9,
 		"owner:owner-action ratio is age-invariant")
+}
+
+// TestFreshOwnerWindowBoundary pins the MEM-06 protection boundary at exactly
+// ownerFreshWindowDays (strict <): owner support at 179.9 days still protects,
+// at 180.0 it no longer does. The window is a standalone knob independent of
+// the weight half-life — this pin catches an accidental retune or a < / <=
+// drift that every other fixture (10d vs 200d) would miss.
+func TestFreshOwnerWindowBoundary(t *testing.T) {
+	justInside := []evidence{{Rank: rankOwner, AgeDays: 179.9, Support: true}}
+	assert.True(t, hasFreshOwnerSupport(justInside), "owner support at 179.9d must still protect")
+	atWindow := []evidence{{Rank: rankOwner, AgeDays: 180.0, Support: true}}
+	assert.False(t, hasFreshOwnerSupport(atWindow), "owner support at exactly 180.0d must no longer protect (strict <)")
 }
