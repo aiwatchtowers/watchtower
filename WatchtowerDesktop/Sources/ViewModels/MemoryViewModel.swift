@@ -35,6 +35,7 @@ final class MemoryViewModel {
     var nodes: [MemoryNodeListItem] = []
     var typeCounts: [String: Int] = [:]
     var typeFilter: String? // nil = all; "entity"|"episode"|"rollup"|"belief"
+    var sort: MemorySort = .recent
     var searchText = ""
     var searchHits: [MemorySearchHit] = []
     var beliefs: [MemoryBeliefRow] = []
@@ -107,8 +108,8 @@ final class MemoryViewModel {
     // so refresh-on-appear is the whole story.
     func refresh() async {
         do {
-            let (nodes, counts, beliefs) = try await dbPool.read { db in
-                (try MemoryQueries.fetchNodes(db),
+            let (nodes, counts, beliefs) = try await dbPool.read { [sort] db in
+                (try MemoryQueries.fetchNodes(db, sort: sort),
                  try MemoryQueries.fetchTypeCounts(db),
                  try MemoryQueries.fetchBeliefs(db))
             }

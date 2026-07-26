@@ -44,6 +44,9 @@ struct MemoryView: View {
         VStack(alignment: .leading, spacing: 0) {
             searchField
             typeFilterBar
+            if !vm.isSearching {
+                sortBar
+            }
             Divider()
             if vm.isSearching {
                 searchResultsList
@@ -51,6 +54,23 @@ struct MemoryView: View {
                 nodeList
             }
         }
+    }
+
+    private var sortBar: some View {
+        Picker("Sort", selection: Binding(
+            get: { vm.sort },
+            set: { newValue in
+                vm.sort = newValue
+                Task { await vm.refresh() }
+            }
+        )) {
+            Text("Recent").tag(MemorySort.recent)
+            Text("Important").tag(MemorySort.important)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
     }
 
     private var searchField: some View {
