@@ -304,6 +304,68 @@ func TestRunJiraIngestWatermarkFreezeOnError(t *testing.T) {
 	}
 }
 
+// TestRunJiraIngestWatermarkSetFailureAfterBuildRecordsStepError (round-1
+// review panel): the build can succeed (episodes committed) while the
+// SUBSEQUENT watermark advance fails — the prior code only logged that
+// failure while the step still recorded "done", hiding a partial success
+// from pipeline_steps. A trigger on the watermark column simulates a write
+// failure that leaves every read (and the build's own writes, which never
+// touch workspace) unaffected.
+func TestRunJiraIngestWatermarkSetFailureAfterBuildRecordsStepError(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	if err := d.SetMemoryJiraWatermark(1); err != nil {
+		t.Fatal(err)
+	}
+	seedJiraIssueExtract(t, d, "CEX-1", "CEX", "s", "", "To Do", "todo", "", "2026-07-22T10:00:00.000+0000", "")
+	p := NewPipeline(d, v, noCallGen(t), pipelineTestConfig(), t.Logf)
+
+	if _, err := d.Exec(`CREATE TRIGGER jira_watermark_write_fails
+		BEFORE UPDATE OF memory_jira_last_extracted_ts ON workspace
+		BEGIN SELECT RAISE(FAIL, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	runID, err := d.CreatePipelineRun("memory", "test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stats RunStats
+	n, err := p.runJiraIngest(runID, 0, &stats)
+	if err != nil {
+		t.Fatalf("runJiraIngest: %v (the function itself still returns nil — only the recorded step status must flip)", err)
+	}
+	if n != 1 {
+		t.Fatalf("steps = %d, want 1", n)
+	}
+	if stats.JiraEpisodes != 1 {
+		t.Fatalf("JiraEpisodes = %d, want 1 (the build itself succeeded)", stats.JiraEpisodes)
+	}
+
+	steps, err := d.GetPipelineSteps(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, s := range steps {
+		if s.ChannelName == "jira-ingest" {
+			found = true
+			if s.Status != "error" {
+				t.Errorf("jira-ingest step status = %q, want %q (watermark set failed post-build)", s.Status, "error")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no jira-ingest step recorded")
+	}
+
+	wm, _ := d.MemoryJiraWatermark()
+	if wm != 1 {
+		t.Errorf("watermark = %v, want unchanged 1 (the set failed)", wm)
+	}
+}
+
 // TestRunJiraIngestDarkByDefault: with memory.sources.jira off, a full Run
 // never touches the jira path — no jiraissue: alias appears and the jira
 // watermark stays 0 even with pending issues present.

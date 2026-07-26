@@ -215,6 +215,7 @@ func (p *Pipeline) loadRenderEpisodes(channelID string, ids []string) ([]renderE
 			prov = append(prov, r.TS)
 			ts, perr := strconv.ParseFloat(r.TS, 64)
 			if perr != nil {
+				p.logf("memory: digest-compare: episode %s: unparseable channel-scoped provenance ts %q: %v", id, r.TS, perr)
 				continue
 			}
 			// Use only the integer part of ts, matching how the database

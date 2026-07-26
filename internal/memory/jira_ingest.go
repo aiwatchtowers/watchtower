@@ -92,6 +92,13 @@ func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (
 
 	start := time.Now()
 	built, failed, maxUpdated, berr := p.buildJiraEpisodes(runID, jiraReg, issues)
+	// stepErr drives the recorded step status below; it starts as the build
+	// error but also picks up a post-build watermark-set failure (round-1
+	// review panel: that failure used to only be logged while the step still
+	// recorded "done", hiding a partial success — the episodes committed but
+	// the watermark never advanced — from pipeline_steps; the init path above
+	// already got this right).
+	stepErr := berr
 	if berr != nil {
 		// A commit/lookup failure freezes the whole step: the watermark stays
 		// and every pending issue re-scans next run (MEM-04-adapted).
@@ -103,11 +110,12 @@ func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (
 		if float64(maxUpdated) > wm {
 			if serr := p.db.SetMemoryJiraWatermark(float64(maxUpdated)); serr != nil {
 				p.logf("memory: jira ingest: set watermark: %v", serr)
+				stepErr = serr
 			}
 		}
 	}
 	step := stepOffset + 1
-	p.recordSemanticStep(runID, &step, "jira-ingest", stepStatus(berr), nil, start)
+	p.recordSemanticStep(runID, &step, "jira-ingest", stepStatus(stepErr), nil, start)
 	return 1, nil
 }
 
@@ -264,19 +272,21 @@ func jiraStory(is db.JiraExtractIssue) string {
 	if is.StoryPoints.Valid {
 		fmt.Fprintf(&b, " Story points: %g.", is.StoryPoints.Float64)
 	}
-	if desc := capRunes(oneLine(is.DescriptionText), jiraDescriptionCapBytes); desc != "" {
+	if desc := capBytes(oneLine(is.DescriptionText), jiraDescriptionCapBytes); desc != "" {
 		b.WriteString("\n" + desc)
 	}
 	return b.String()
 }
 
-// capRunes truncates s to at most capBytes bytes on a rune boundary, appending
-// "…" when truncated.
-func capRunes(s string, capBytes int) string {
-	if len(s) <= capBytes {
+// capBytes truncates s to at most maxBytes bytes on a rune boundary,
+// appending "…" when truncated (round-1 review panel nit: renamed from
+// capRunes to match the doc's own "bytes-on-rune-boundary" description — the
+// cap is a byte budget, not a rune count).
+func capBytes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
 		return s
 	}
-	cut := capBytes
+	cut := maxBytes
 	for cut > 0 && !isRuneStart(s[cut]) {
 		cut--
 	}
