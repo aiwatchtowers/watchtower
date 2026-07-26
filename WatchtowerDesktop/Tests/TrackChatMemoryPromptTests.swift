@@ -8,8 +8,7 @@ final class TrackChatMemoryPromptTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        do { (dbManager, dbPath) = try TestDatabase.createDatabaseManager() }
-        catch { XCTFail("setUp failed: \(error)") }
+        do { (dbManager, dbPath) = try TestDatabase.createDatabaseManager() } catch { XCTFail("setUp failed: \(error)") }
     }
 
     override func tearDown() {

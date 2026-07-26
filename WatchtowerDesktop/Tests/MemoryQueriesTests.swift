@@ -140,8 +140,12 @@ final class MemoryQueriesTests: XCTestCase {
     func testFetchNodesSortRecentIsUnchangedDefault() throws {
         let dbQueue = try TestDatabase.create()
         try dbQueue.write { db in
-            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T11:00:00Z", importanceScore: 1.0)
-            try TestDatabase.insertMemoryNode(db, id: "ep_B", type: "episode", title: "Incident", indexedAt: "2026-07-17T10:00:00Z", importanceScore: 9.0)
+            try TestDatabase.insertMemoryNode(
+                db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T11:00:00Z", importanceScore: 1.0
+            )
+            try TestDatabase.insertMemoryNode(
+                db, id: "ep_B", type: "episode", title: "Incident", indexedAt: "2026-07-17T10:00:00Z", importanceScore: 9.0
+            )
         }
         try dbQueue.read { db in
             let all = try MemoryQueries.fetchNodes(db)
@@ -152,8 +156,12 @@ final class MemoryQueriesTests: XCTestCase {
     func testFetchNodesSortImportantOrdersByImportanceScoreDesc() throws {
         let dbQueue = try TestDatabase.create()
         try dbQueue.write { db in
-            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T11:00:00Z", importanceScore: 1.0)
-            try TestDatabase.insertMemoryNode(db, id: "ep_B", type: "episode", title: "Incident", indexedAt: "2026-07-17T10:00:00Z", importanceScore: 9.0)
+            try TestDatabase.insertMemoryNode(
+                db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T11:00:00Z", importanceScore: 1.0
+            )
+            try TestDatabase.insertMemoryNode(
+                db, id: "ep_B", type: "episode", title: "Incident", indexedAt: "2026-07-17T10:00:00Z", importanceScore: 9.0
+            )
         }
         try dbQueue.read { db in
             let all = try MemoryQueries.fetchNodes(db, sort: .important)

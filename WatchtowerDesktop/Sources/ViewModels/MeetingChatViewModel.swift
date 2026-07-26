@@ -280,7 +280,7 @@ final class MeetingChatViewModel {
         let event = try? dbPool.read { db in
             try CalendarEvent.fetchOne(db, sql: "SELECT * FROM calendar_events WHERE id = ?", arguments: [eventID])
         }
-        guard let event = event ?? nil else { return [] }
+        guard let event = event else { return [] }
         var subjects = Set<String>()
         for attendee in event.parsedAttendees {
             if !attendee.slackUserID.isEmpty { subjects.insert(attendee.slackUserID) }
@@ -290,7 +290,9 @@ final class MeetingChatViewModel {
     }
 
     nonisolated static func buildSystemPrompt(
-        transcript: MeetingTranscript, recapContent: MeetingRecap.Content?, dbPool: DatabasePool,
+        transcript: MeetingTranscript,
+        recapContent: MeetingRecap.Content?,
+        dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
         memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {

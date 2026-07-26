@@ -178,8 +178,12 @@ final class MemoryViewModelTests: XCTestCase {
     func testRefreshSortTogglesNodeOrder() async throws {
         let vm = try makeVM()
         try await pool.write { db in
-            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T11:00:00Z", importanceScore: 1.0)
-            try TestDatabase.insertMemoryNode(db, id: "ep_B", type: "episode", title: "Incident", indexedAt: "2026-07-17T10:00:00Z", importanceScore: 9.0)
+            try TestDatabase.insertMemoryNode(
+                db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T11:00:00Z", importanceScore: 1.0
+            )
+            try TestDatabase.insertMemoryNode(
+                db, id: "ep_B", type: "episode", title: "Incident", indexedAt: "2026-07-17T10:00:00Z", importanceScore: 9.0
+            )
         }
         await vm.refresh()
         XCTAssertEqual(vm.nodes.map(\.id), ["ent_A", "ep_B"], "default .recent sort: newest indexed first")

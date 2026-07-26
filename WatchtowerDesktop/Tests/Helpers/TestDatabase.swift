@@ -1618,7 +1618,9 @@ enum TestDatabase {
         importanceScore: Double = 0
     ) throws {
         try db.execute(sql: """
-            INSERT INTO memory_nodes (id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence, importance_score)
+            INSERT INTO memory_nodes (
+                id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence, importance_score
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
             """, arguments: [id, type, tier, status, redirectTo, title, path, indexedAt, subject, confidence, importanceScore])
     }

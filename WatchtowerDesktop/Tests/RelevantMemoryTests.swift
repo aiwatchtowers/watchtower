@@ -8,8 +8,7 @@ final class RelevantMemoryTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        do { (dbManager, dbPath) = try TestDatabase.createDatabaseManager() }
-        catch { XCTFail("setUp failed: \(error)") }
+        do { (dbManager, dbPath) = try TestDatabase.createDatabaseManager() } catch { XCTFail("setUp failed: \(error)") }
     }
 
     override func tearDown() {
@@ -91,7 +90,9 @@ final class RelevantMemoryTests: XCTestCase {
             try TestDatabase.insertMemoryNode(db, id: "ep_long_tier", type: "episode", title: "Long-tier episode", tier: "long")
             try TestDatabase.insertMemoryProvenance(db, nodeID: "ep_long_tier", channelID: "C1", tsRaw: "300.0", tsUnix: 300.0, senderID: "U1")
 
-            try TestDatabase.insertMemoryNode(db, id: "ep_tombstoned", type: "episode", title: "Tombstoned episode", status: "tombstone", tier: "short")
+            try TestDatabase.insertMemoryNode(
+                db, id: "ep_tombstoned", type: "episode", title: "Tombstoned episode", status: "tombstone", tier: "short"
+            )
             try TestDatabase.insertMemoryProvenance(db, nodeID: "ep_tombstoned", channelID: "C1", tsRaw: "400.0", tsUnix: 400.0, senderID: "U1")
 
             try TestDatabase.insertMemoryNode(db, id: "ep_other_sender", type: "episode", title: "Other sender episode", tier: "short")

@@ -8,8 +8,7 @@ final class MeetingChatMemoryPromptTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        do { (dbManager, dbPath) = try TestDatabase.createDatabaseManager() }
-        catch { XCTFail("setUp failed: \(error)") }
+        do { (dbManager, dbPath) = try TestDatabase.createDatabaseManager() } catch { XCTFail("setUp failed: \(error)") }
     }
 
     override func tearDown() {
@@ -25,7 +24,9 @@ final class MeetingChatMemoryPromptTests: XCTestCase {
             try TestDatabase.insertMeetingTranscript(db, eventID: eventID, transcriptText: "hello world")
         }
         return try XCTUnwrap(try dbManager.dbPool.read { db in
-            try MeetingTranscript.fetchOne(db, sql: "SELECT * FROM meeting_transcripts WHERE event_id IS ? ORDER BY id DESC LIMIT 1", arguments: [eventID])
+            try MeetingTranscript.fetchOne(
+                db, sql: "SELECT * FROM meeting_transcripts WHERE event_id IS ? ORDER BY id DESC LIMIT 1", arguments: [eventID]
+            )
         })
     }
 

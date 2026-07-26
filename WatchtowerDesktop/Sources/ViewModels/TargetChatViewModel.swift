@@ -542,7 +542,8 @@ final class TargetChatViewModel {
     }
 
     nonisolated static func buildSystemPrompt(
-        target: Target, dbPool: DatabasePool,
+        target: Target,
+        dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
         memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {

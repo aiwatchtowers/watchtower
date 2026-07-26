@@ -317,7 +317,8 @@ final class TrackChatViewModel {
     }
 
     nonisolated static func buildSystemPrompt(
-        track: Track, dbPool: DatabasePool,
+        track: Track,
+        dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
         memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
@@ -377,6 +378,21 @@ final class TrackChatViewModel {
         Slack team ID: \(teamID)
         Slack web domain: \(domain).slack.com
 
+        \(Self.queryAndLinkingGuidance(teamID: teamID, domain: domain, channelInClause: channelInClause))
+        """
+    }
+
+    /// QUERY TIPS / LINKING RULES / RESPONSE STYLE guidance shared by
+    /// buildSystemPrompt's returned prompt. Extracted purely to keep
+    /// buildSystemPrompt under the function-body-length limit — no behavior
+    /// change, the interpolated result is byte-identical to the inline text
+    /// it replaced.
+    nonisolated private static func queryAndLinkingGuidance(
+        teamID: String,
+        domain: String,
+        channelInClause: String
+    ) -> String {
+        """
         === QUERY TIPS ===
         - Always SELECT m.thread_ts alongside m.ts so you can build correct links for threaded messages.
         - Find messages in track channels:
