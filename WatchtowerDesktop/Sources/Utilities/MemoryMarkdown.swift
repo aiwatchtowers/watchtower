@@ -29,6 +29,39 @@ enum MemoryMarkdown {
         return (frontmatter, body)
     }
 
+    /// Inserts, replaces (in place), or removes the `importance_override:`
+    /// line in a node's frontmatter text (the fence contents `splitFrontmatter`
+    /// returns — no fences). `value == nil` removes the line if present and is
+    /// a no-op if already absent (never rewrites a file that has nothing to
+    /// change). A present value replaces an existing line's value in place, or
+    /// appends a new line when none exists yet.
+    static func patchImportanceOverride(frontmatter: String, value: Double?) -> String {
+        let prefix = "importance_override:"
+        var lines = frontmatter.isEmpty ? [] : frontmatter.components(separatedBy: "\n")
+        if let idx = lines.firstIndex(where: { $0.hasPrefix(prefix) }) {
+            if let value {
+                lines[idx] = "\(prefix) \(value)"
+            } else {
+                lines.remove(at: idx)
+            }
+        } else if let value {
+            lines.append("\(prefix) \(value)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The current `importance_override:` value in a node's frontmatter text,
+    /// or nil when unset or unparsable (a hand-edited malformed value degrades
+    /// to "no override shown" rather than crashing).
+    static func currentImportanceOverride(frontmatter: String) -> Double? {
+        let prefix = "importance_override:"
+        guard let line = frontmatter.components(separatedBy: "\n").first(where: { $0.hasPrefix(prefix) }) else {
+            return nil
+        }
+        let raw = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+        return Double(raw)
+    }
+
     /// All wiki-link occurrences in a body, in order, duplicates preserved.
     static func parseWikiLinks(_ body: String) -> [MemoryWikiLink] {
         let ns = body as NSString

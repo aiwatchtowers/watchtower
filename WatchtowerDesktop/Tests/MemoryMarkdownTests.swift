@@ -82,4 +82,42 @@ final class MemoryMarkdownTests: XCTestCase {
     func testLinkTargetRejectsForeignScheme() {
         XCTAssertNil(MemoryMarkdown.linkTarget(from: URL(string: "https://example.com/x")!))
     }
+
+    // MARK: - importance_override
+
+    func testPatchImportanceOverrideInsertsWhenAbsent() {
+        let fm = "id: ent_A\ntype: entity"
+        let out = MemoryMarkdown.patchImportanceOverride(frontmatter: fm, value: 5.0)
+        XCTAssertEqual(out, "id: ent_A\ntype: entity\nimportance_override: 5.0")
+    }
+
+    func testPatchImportanceOverrideReplacesExistingValueInPlace() {
+        let fm = "id: ent_A\nimportance_override: 2.0\ntype: entity"
+        let out = MemoryMarkdown.patchImportanceOverride(frontmatter: fm, value: 7.5)
+        XCTAssertEqual(out, "id: ent_A\nimportance_override: 7.5\ntype: entity")
+    }
+
+    func testPatchImportanceOverrideRemovesWhenValueIsNil() {
+        let fm = "id: ent_A\nimportance_override: 2.0\ntype: entity"
+        let out = MemoryMarkdown.patchImportanceOverride(frontmatter: fm, value: nil)
+        XCTAssertEqual(out, "id: ent_A\ntype: entity")
+    }
+
+    func testPatchImportanceOverrideNoOpWhenAbsentAndNil() {
+        let fm = "id: ent_A\ntype: entity"
+        let out = MemoryMarkdown.patchImportanceOverride(frontmatter: fm, value: nil)
+        XCTAssertEqual(out, fm)
+    }
+
+    func testCurrentImportanceOverrideParsesValue() {
+        XCTAssertEqual(MemoryMarkdown.currentImportanceOverride(frontmatter: "id: ent_A\nimportance_override: 3.5"), 3.5)
+    }
+
+    func testCurrentImportanceOverrideNilWhenAbsent() {
+        XCTAssertNil(MemoryMarkdown.currentImportanceOverride(frontmatter: "id: ent_A"))
+    }
+
+    func testCurrentImportanceOverrideNilWhenUnparsable() {
+        XCTAssertNil(MemoryMarkdown.currentImportanceOverride(frontmatter: "id: ent_A\nimportance_override: not-a-number"))
+    }
 }
