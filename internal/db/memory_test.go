@@ -2178,18 +2178,30 @@ func TestFocusMatches(t *testing.T) {
 	}
 }
 
-// TestListMemoryNodeIDsByTitleMatch: case-insensitive substring on title,
-// tombstones excluded, sorted by id.
-func TestListMemoryNodeIDsByTitleMatch(t *testing.T) {
+// TestListMemoryNodeTitles: returns every non-tombstone node's (id, title)
+// pair, tombstones excluded — the raw material the focus matcher (Go-side,
+// Unicode-aware) filters case-insensitively itself (final-review Fix 3).
+func TestListMemoryNodeTitles(t *testing.T) {
 	db := openTestDB(t)
 	upsertNamedNode(t, db, "ent_hash", "Hashbank Integration", "active")
 	upsertNamedNode(t, db, "ent_other", "Preview Environments", "active")
 	upsertNamedNode(t, db, "ent_tomb", "hashbank legacy", "tombstone")
-	ids, err := db.ListMemoryNodeIDsByTitleMatch("HASHBANK")
+
+	titles, err := db.ListMemoryNodeTitles()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(ids, ",") != "ent_hash" {
-		t.Errorf("ids = %v, want [ent_hash] (case-insensitive, tombstone excluded)", ids)
+	got := map[string]string{}
+	for _, tt := range titles {
+		got[tt.ID] = tt.Title
+	}
+	want := map[string]string{"ent_hash": "Hashbank Integration", "ent_other": "Preview Environments"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v (tombstone must be excluded)", got, want)
+	}
+	for id, title := range want {
+		if got[id] != title {
+			t.Errorf("ListMemoryNodeTitles()[%s] = %q, want %q", id, got[id], title)
+		}
 	}
 }

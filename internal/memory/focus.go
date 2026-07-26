@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"watchtower/internal/db"
 )
 
 // focusFileName is the vault-root file the owner edits to steer memory
@@ -112,20 +114,39 @@ func (p *Pipeline) readFocusFile() (string, bool, error) {
 
 // matchFocus resolves a parsed focusDirectives' bullets to memory node ids.
 // For each bullet it tries, on the whole trimmed bullet AND on each
-// comma-separated fragment: (1) LookupMemoryAlias, (2)
-// ListMemoryNodeIDsByTitleMatch. Every id found across those probes is
-// unioned into the bullet's section set. A bullet that resolves nothing logs
-// once and contributes nothing (not an error — an owner typo shouldn't
-// freeze the whole focus step). A node id that lands in both sections is
-// kept in Now only (logged once) — Now always wins the tie. A DB error from
-// either probe propagates immediately so the caller can freeze the step.
+// comma-separated fragment: (1) LookupMemoryAlias, (2) a case-insensitive
+// substring match against every non-tombstone node's title. The title
+// candidates are fetched ONCE per call via ListMemoryNodeTitles — final-
+// review Fix 3: matching used to run one ListMemoryNodeIDsByTitleMatch SQL
+// query per candidate, relying on SQLite's lower(), which folds ASCII only
+// and silently misses non-Latin titles (the owner works in Russian); folding
+// case in Go with strings.ToLower handles Unicode correctly, and fetching
+// the title list once per pass (rather than once per candidate) is also
+// cheaper. No bullets at all skips the fetch entirely (kept for
+// TestRunFocusSweepErrorFreezesFingerprint's isolation: an empty focus.md
+// must never touch memory_nodes, so a dropped-table failure is attributable
+// to the sweep alone). Every id found across those probes is unioned into
+// the bullet's section set. A bullet that resolves nothing logs once and
+// contributes nothing (not an error — an owner typo shouldn't freeze the
+// whole focus step). A node id that lands in both sections is kept in Now
+// only (logged once) — Now always wins the tie. A DB error from either probe
+// propagates immediately so the caller can freeze the step.
 func (p *Pipeline) matchFocus(fd focusDirectives) (now, cooled []string, err error) {
+	if len(fd.Now) == 0 && len(fd.Cooled) == 0 {
+		return nil, nil, nil
+	}
+
+	titles, err := p.db.ListMemoryNodeTitles()
+	if err != nil {
+		return nil, nil, fmt.Errorf("memory: focus: list node titles: %w", err)
+	}
+
 	nowIDs := map[string]bool{}
-	if err := p.resolveBulletsInto(fd.Now, nowIDs); err != nil {
+	if err := p.resolveBulletsInto(fd.Now, titles, nowIDs); err != nil {
 		return nil, nil, err
 	}
 	cooledIDs := map[string]bool{}
-	if err := p.resolveBulletsInto(fd.Cooled, cooledIDs); err != nil {
+	if err := p.resolveBulletsInto(fd.Cooled, titles, cooledIDs); err != nil {
 		return nil, nil, err
 	}
 
@@ -139,11 +160,12 @@ func (p *Pipeline) matchFocus(fd focusDirectives) (now, cooled []string, err err
 	return sortedSet(nowIDs), sortedSet(cooledIDs), nil
 }
 
-// resolveBulletsInto resolves each bullet to node ids (via matchBullet) and
-// unions the hits into dst, logging a no-match line per unresolved bullet.
-func (p *Pipeline) resolveBulletsInto(bullets []string, dst map[string]bool) error {
+// resolveBulletsInto resolves each bullet to node ids (via matchBullet,
+// matched against the shared titles snapshot) and unions the hits into dst,
+// logging a no-match line per unresolved bullet.
+func (p *Pipeline) resolveBulletsInto(bullets []string, titles []db.MemoryNodeTitle, dst map[string]bool) error {
 	for _, bullet := range bullets {
-		ids, err := p.matchBullet(bullet)
+		ids, err := p.matchBullet(bullet, titles)
 		if err != nil {
 			return err
 		}
@@ -159,9 +181,10 @@ func (p *Pipeline) resolveBulletsInto(bullets []string, dst map[string]bool) err
 }
 
 // matchBullet resolves one bullet (the whole trimmed text plus each
-// comma-separated fragment) to a set of node ids via alias lookup and title
-// match.
-func (p *Pipeline) matchBullet(bullet string) (map[string]bool, error) {
+// comma-separated fragment) to a set of node ids via alias lookup and a
+// Unicode-case-folded substring match against titles (matchFocus's one
+// fetch-per-pass snapshot).
+func (p *Pipeline) matchBullet(bullet string, titles []db.MemoryNodeTitle) (map[string]bool, error) {
 	candidates := []string{bullet}
 	for _, frag := range strings.Split(bullet, ",") {
 		frag = strings.TrimSpace(frag)
@@ -178,12 +201,11 @@ func (p *Pipeline) matchBullet(bullet string) (map[string]bool, error) {
 			return nil, fmt.Errorf("memory: focus: alias lookup %q: %w", c, err)
 		}
 
-		titleIDs, err := p.db.ListMemoryNodeIDsByTitleMatch(c)
-		if err != nil {
-			return nil, fmt.Errorf("memory: focus: title match %q: %w", c, err)
-		}
-		for _, id := range titleIDs {
-			ids[id] = true
+		needle := strings.ToLower(c)
+		for _, t := range titles {
+			if strings.Contains(strings.ToLower(t.Title), needle) {
+				ids[t.ID] = true
+			}
 		}
 	}
 	return ids, nil

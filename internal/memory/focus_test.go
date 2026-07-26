@@ -218,6 +218,23 @@ func TestMatchFocus_EmptyDirectivesNoError(t *testing.T) {
 	assert.Empty(t, cooled)
 }
 
+// TestMatchFocus_UnicodeTitleCaseInsensitive (Fix 3, final-review wave): a
+// Cyrillic bullet matches a differently-cased Cyrillic title — SQLite's
+// lower() folds ASCII only, so this only works because matching now runs in
+// Go via strings.ToLower (which folds Unicode), against a title fetched via
+// the new ListMemoryNodeTitles helper.
+func TestMatchFocus_UnicodeTitleCaseInsensitive(t *testing.T) {
+	d := newTestDB(t)
+	id := "ent_00000000000000000000hashru"
+	indexNode(t, d, Node{ID: id, Type: "entity", Tier: "long", Status: "active", Title: "хешбанк интеграция"})
+	p := NewPipeline(d, newTestVault(t), nil, pipelineTestConfig(), t.Logf)
+
+	now, cooled, err := p.matchFocus(focusDirectives{Now: []string{"Хешбанк"}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{id}, now)
+	assert.Empty(t, cooled)
+}
+
 func TestMatchFocus_ResultsAreSortedAndDeduped(t *testing.T) {
 	d := newTestDB(t)
 	cexID, hashbankID := seedFocusFixture(t, d)

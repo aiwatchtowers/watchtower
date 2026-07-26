@@ -2263,23 +2263,32 @@ func (db *DB) FocusState(nodeID string) (string, error) {
 	return state, nil
 }
 
-// ListMemoryNodeIDsByTitleMatch returns non-tombstone node ids whose title
-// contains phrase case-insensitively — the focus matcher's title arm.
-func (db *DB) ListMemoryNodeIDsByTitleMatch(phrase string) ([]string, error) {
-	rows, err := db.Query(`SELECT id FROM memory_nodes
-		WHERE status != 'tombstone' AND instr(lower(title), lower(?)) > 0
-		ORDER BY id`, phrase)
+// MemoryNodeTitle is one non-tombstone node's id+title — the raw material
+// for the focus matcher's Unicode-aware, in-process substring match
+// (final-review Fix 3: SQLite's lower() folds ASCII only, silently missing
+// non-Latin titles; Go's strings.ToLower folds Unicode correctly).
+type MemoryNodeTitle struct {
+	ID    string
+	Title string
+}
+
+// ListMemoryNodeTitles returns every non-tombstone node's (id, title) pair —
+// the focus matcher's title arm (internal/memory/focus.go's matchFocus)
+// fetches this ONCE per call and matches all candidates against it in Go,
+// rather than issuing one SQL query per candidate.
+func (db *DB) ListMemoryNodeTitles() ([]MemoryNodeTitle, error) {
+	rows, err := db.Query(`SELECT id, title FROM memory_nodes WHERE status != 'tombstone' ORDER BY id`)
 	if err != nil {
-		return nil, fmt.Errorf("title-matching focus phrase: %w", err)
+		return nil, fmt.Errorf("listing memory node titles: %w", err)
 	}
 	defer rows.Close()
-	var ids []string
+	var out []MemoryNodeTitle
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scanning title match: %w", err)
+		var t MemoryNodeTitle
+		if err := rows.Scan(&t.ID, &t.Title); err != nil {
+			return nil, fmt.Errorf("scanning memory node title: %w", err)
 		}
-		ids = append(ids, id)
+		out = append(out, t)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }
