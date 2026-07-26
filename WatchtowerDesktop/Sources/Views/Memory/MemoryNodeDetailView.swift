@@ -13,6 +13,7 @@ struct MemoryNodeDetailView: View {
                 if detail.node.isDisputed {
                     disputeBanner
                 }
+                importanceSection
                 Divider()
                 if let readError = detail.fileReadError {
                     Label(readError, systemImage: "exclamationmark.triangle")
@@ -120,6 +121,55 @@ struct MemoryNodeDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.orange.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    // MARK: - Importance
+
+    private var importanceSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("Importance")
+            HStack(spacing: 8) {
+                Text(String(format: "%.1f", detail.node.importanceScore))
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                if detail.importanceOverride != nil {
+                    Text("manual override")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if detail.canEditImportance {
+                importanceEditor
+            } else {
+                Text("Malformed frontmatter — importance override disabled for this node.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = vm.importanceError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private var importanceEditor: some View {
+        HStack(spacing: 8) {
+            TextField("Override", value: $vm.importanceOverrideInput, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 70)
+            Button("Save") {
+                Task { await vm.saveImportanceOverride(value: vm.importanceOverrideInput) }
+            }
+            .disabled(vm.importanceOverrideInput < 0)
+            if detail.importanceOverride != nil {
+                Button("Clear override") {
+                    Task { await vm.saveImportanceOverride(value: nil) }
+                }
+            }
+        }
     }
 
     // MARK: - Backlinks
