@@ -430,6 +430,7 @@ final class MemoryViewModel {
     /// to disk until the owner saves) — VM-owned so Views depend on the VM,
     /// not on a sibling View's constant (house layering).
     static let focusTemplate = "# Focus\n\n## Now\n\n## Cooled\n"
+
     /// Loads focus.md and opens the editor sheet — the VM-owned counterpart
     /// of the per-node editor's `startEditing` (style reviewer: this used to
     /// live in `MemoryView` as a private view function). A missing file
