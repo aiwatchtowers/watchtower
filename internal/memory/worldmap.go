@@ -53,6 +53,7 @@ var (
 // mapEntry is one entity line in the mechanical index.
 type mapEntry struct {
 	id, title, what string
+	importance      float64
 }
 
 // renderIndex is the mechanical full world listing (formerly renderMap): counts
@@ -81,7 +82,7 @@ func (p *Pipeline) renderIndex(runID int64) error {
 				p.logf("memory: index: read %s: %v", row.ID, err)
 				continue
 			}
-			e := mapEntry{id: row.ID, title: row.Title, what: whatExcerpt(n.Body)}
+			e := mapEntry{id: row.ID, title: row.Title, what: whatExcerpt(n.Body), importance: row.ImportanceScore}
 			switch classifyEntity(n) {
 			case "people":
 				people = append(people, e)
@@ -338,6 +339,9 @@ func writeMapSection(b *strings.Builder, heading string, entries []mapEntry) {
 		fmt.Fprintf(b, "- [[%s|%s]]", e.id, linkLabel(e.title))
 		if e.what != "" {
 			b.WriteString(" — " + e.what)
+		}
+		if e.importance != 0 {
+			fmt.Fprintf(b, " (importance %.1f)", e.importance)
 		}
 		b.WriteString("\n")
 	}

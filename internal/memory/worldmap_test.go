@@ -113,3 +113,26 @@ func TestRenderMapSemanticOffNeverCallsGenerator(t *testing.T) {
 	_, err = os.Stat(filepath.Join(v.path, mapFileName))
 	require.NoError(t, err)
 }
+
+func TestRenderIndexAnnotatesImportance(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Zebra", "no override yet"))
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000002", "Anna", "override set"))
+	require.NoError(t, d.UpdateMemoryNodeImportanceScore("ent_00000000000000000000000002", 4.0))
+	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
+
+	require.NoError(t, p.renderIndex(1))
+
+	content, err := os.ReadFile(filepath.Join(v.path, indexFileName))
+	require.NoError(t, err)
+	s := string(content)
+	assert.Contains(t, s, "Anna")
+	assert.Contains(t, s, "(importance 4.0)")
+	assert.NotContains(t, s, "Zebra — no override yet (importance", "zero importance gets no annotation noise")
+
+	annaIdx := strings.Index(s, "Anna")
+	zebraIdx := strings.Index(s, "Zebra")
+	require.NotEqual(t, -1, annaIdx)
+	require.NotEqual(t, -1, zebraIdx)
+	assert.Less(t, annaIdx, zebraIdx, "alphabetical order (Anna before Zebra) unaffected by importance weight")
+}
