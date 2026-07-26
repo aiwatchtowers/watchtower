@@ -821,3 +821,49 @@ func TestMemory02_ReindexEquivalence(t *testing.T) {
 
 	assert.Equal(t, incremental, rebuilt)
 }
+
+// TestMemoryFocusMatchesSurviveReindex (round-1 review panel, focus × MEM-02):
+// memory_focus_matches is deliberately NOT cleared by DropMemoryIndex (it
+// isn't vault-derived — it's the resolved focus.md match set, alongside
+// memory_node_stats/engagement/hints as index-adjacent runtime state), so a
+// reindex must not lose a node's focus boost. A NEW test, not an edit of
+// TestMemory02_ReindexEquivalence above (which deliberately never touches
+// focus).
+func TestMemoryFocusMatchesSurviveReindex(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	// situation:1 alias gives the node a nonzero organic base importance
+	// (1.0, the situation-origin bonus alone) so the focus ×2 multiplier
+	// lands on an unambiguous 2.0 rather than 0×2=0.
+	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5FOC", "entity", "Focused Thing")
+	n.Aliases = []string{"situation:1"}
+	writeNodes(t, v, n)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, focusFileName), []byte("## Now\n- Focused Thing\n"), 0o644))
+	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
+	var stats RunStats
+	steps, err := p.runFocus(1, 0, &stats)
+	require.NoError(t, err)
+	require.Equal(t, 1, steps)
+
+	before, err := d.GetMemoryNode(n.ID)
+	require.NoError(t, err)
+	require.Equal(t, 2.0, before.ImportanceScore, "sanity: the now-match doubled the organic base importance")
+	state, err := d.FocusState(n.ID)
+	require.NoError(t, err)
+	require.Equal(t, "now", state)
+
+	require.NoError(t, d.DropMemoryIndex())
+	_, err = Rebuild(v, d, t.Logf)
+	require.NoError(t, err)
+
+	stateAfter, err := d.FocusState(n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "now", stateAfter, "the focus match row survives DropMemoryIndex")
+
+	after, err := d.GetMemoryNode(n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2.0, after.ImportanceScore, "Rebuild's computeNodeImportance re-reads FocusState, reapplying the ×2 boost")
+}
