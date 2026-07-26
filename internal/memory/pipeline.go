@@ -93,6 +93,11 @@ type RunStats struct {
 	DigestsCompared     int // shadow rows written by the compare runner (covered + coverage-0 windows)
 	CompareFailed       int // channels whose render/read failed and were isolated
 	CompareRefsRejected int // invented render refs dropped across all compared channels (MEM-13)
+
+	// Focus salience (zero unless memory.focus.enabled).
+	FocusMatched int // nodes newly matched into memory_focus_matches ("now" + "cooled") by a changed focus.md
+	FocusSwept   int // nodes whose persisted importance_score was recomputed by the whole-vault sweep
+	FocusFailed  int // nodes the sweep skipped after a per-node signal/read error (quarantine philosophy)
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
@@ -229,6 +234,21 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
 
+	// (1b) Focus salience (dark behind memory.focus.enabled). Runs immediately
+	// after the owner-edit commit + Reconcile (above) so a focus.md edit is
+	// already committed and the index already fresh, and before every
+	// consumer of importance (seeding, ingestion, extraction, semantic).
+	// Source-isolated like calendar/mirrors/jira below: a focus-step error is
+	// logged, never fatal, and never blocks the rest of the run.
+	focusSteps := 0
+	if p.cfg.Focus.Enabled {
+		n, ferr := p.runFocus(runID, 0, &stats)
+		if ferr != nil {
+			p.logf("memory: focus: %v", ferr)
+		}
+		focusSteps = n
+	}
+
 	// (2) Mechanical entity seeding (no AI). Gmail-sender seeding is gated on
 	// memory.sources.gmail so the source is literally dark when off.
 	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail, Calendar: p.cfg.Sources.Calendar})
@@ -250,7 +270,7 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	// batches number after it.
 	calSteps := 0
 	if p.cfg.Sources.Calendar {
-		n, cerr := p.runCalendarIngest(runID, 0, &stats)
+		n, cerr := p.runCalendarIngest(runID, focusSteps, &stats)
 		if cerr != nil {
 			p.logf("memory: calendar ingest: %v", cerr)
 		}
@@ -265,7 +285,7 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	// step (logged, MirrorsFailed) but is never fatal to the run (source isolation).
 	mirrorSteps := 0
 	if p.cfg.Sources.Operational {
-		n, merr := p.runOperationalMirrors(runID, calSteps, &stats)
+		n, merr := p.runOperationalMirrors(runID, focusSteps+calSteps, &stats)
 		if merr != nil {
 			p.logf("memory: operational mirrors: %v", merr)
 		}
@@ -279,7 +299,7 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	// touches another watermark.
 	jiraSteps := 0
 	if p.cfg.Sources.Jira {
-		n, jerr := p.runJiraIngest(runID, calSteps+mirrorSteps, &stats)
+		n, jerr := p.runJiraIngest(runID, focusSteps+calSteps+mirrorSteps, &stats)
 		if jerr != nil {
 			p.logf("memory: jira ingest: %v", jerr)
 		}
@@ -287,11 +307,11 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	}
 
 	// (4) Episode extraction from raw text.
-	slackSteps, err := p.runExtract(ctx, runID, calSteps+mirrorSteps+jiraSteps, acc, &stats)
+	slackSteps, err := p.runExtract(ctx, runID, focusSteps+calSteps+mirrorSteps+jiraSteps, acc, &stats)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
-	batchSteps := calSteps + mirrorSteps + jiraSteps + slackSteps
+	batchSteps := focusSteps + calSteps + mirrorSteps + jiraSteps + slackSteps
 
 	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
 	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
@@ -360,11 +380,11 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected)",
+	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
 		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
 		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed, stats.InteractionsIngested, stats.EngagementUpdated,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
-		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected)
+		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected, stats.FocusMatched, stats.FocusSwept, stats.FocusFailed)
 	return stats, nil
 }
 

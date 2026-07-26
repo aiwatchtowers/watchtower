@@ -192,6 +192,7 @@ type MemoryConfig struct {
 	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // Phase-5 slice-1 sources (gmail/actions), each dark by default
 	Renders              MemoryRendersConfig  `mapstructure:"renders"`                 // Phase-5 slice-3 renders (digest_compare), dark by default
 	Retrieve             MemoryRetrieveConfig `mapstructure:"retrieve"`                // Phase-5 Slice B dark retrieval-compare (recall/briefing/meeting_prep), each dark by default
+	Focus                MemoryFocusConfig    `mapstructure:"focus"`                   // focus-salience Run step (fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep), dark by default
 }
 
 // MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
@@ -261,6 +262,15 @@ type MemoryRetrieveConfig struct {
 	RecallCompare      bool `mapstructure:"recall_compare"`       // memory_recall MCP tool also runs RetrieveByQuery and shadow-diffs against the legacy FTS ranking (default: false)
 	BriefingCompare    bool `mapstructure:"briefing_compare"`     // briefing's Memory revisions journal also runs RetrieveRevisions and shadow-diffs against the legacy notable-revision order (default: false)
 	MeetingPrepCompare bool `mapstructure:"meeting_prep_compare"` // meeting-prep's attendee memory context also runs RetrieveBySubject and shadow-diffs against the legacy confidence-ordered belief selection (default: false)
+}
+
+// MemoryFocusConfig gates the focus-salience Run step independently — a
+// no-op when Enabled is false: focus.md (internal/memory/focus.go) is never
+// parsed, memory_focus_matches stays whatever it last was, and no node's
+// persisted importance_score is swept for a focus change. Default false
+// (dark by default).
+type MemoryFocusConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable the focus-salience Run step: fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep (default: false)
 }
 
 type Config struct {
@@ -384,6 +394,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.retrieve.recall_compare", false) // Slice B dark retrieval-compare, dark by default
 	v.SetDefault("memory.retrieve.briefing_compare", false)
 	v.SetDefault("memory.retrieve.meeting_prep_compare", false)
+	v.SetDefault("memory.focus.enabled", false) // focus-salience Run step dark by default
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

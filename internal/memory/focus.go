@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // focusFileName is the vault-root file the owner edits to steer memory
@@ -191,4 +192,114 @@ func sortedSet(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// runFocus is the focus-salience step (behind memory.focus.enabled): parse
+// focus.md, and when the parsed directive set's fingerprint differs from the
+// last APPLIED one, rewrite memory_focus_matches wholesale, sweep EVERY
+// indexed node's persisted importance_score (a focus edit touches no node
+// file, so the MEM-16 touched-node refresh would never see it), and only
+// after both succeeded store the new fingerprint (freeze-on-error: a failed
+// sweep leaves the old fingerprint so the next run retries). Runs after the
+// owner-edit commit + Reconcile (the focus edit is committed, the index is
+// fresh) and before every consumer of importance. The gate itself is checked
+// by the caller (Run), the calendar/mirror/jira precedent — this function
+// always does the work when called. Returns the number of pipeline_steps
+// rows recorded (0 when the fingerprint is unchanged — no step row at all,
+// mirroring "nothing to do" elsewhere in this package) and an error that is
+// logged by the caller but never fails the run (source-isolation precedent).
+func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, error) {
+	step := stepOffset + 1
+
+	raw, _, err := p.readFocusFile()
+	if err != nil {
+		p.recordSemanticStep(runID, &step, "focus", "error", nil, time.Now())
+		return 1, err
+	}
+	fd := parseFocus(raw)
+	fp := fd.fingerprint()
+
+	stored, err := p.db.FocusFingerprint()
+	if err != nil {
+		p.recordSemanticStep(runID, &step, "focus", "error", nil, time.Now())
+		return 1, err
+	}
+	if fp == stored {
+		// Unchanged directive set (including the absent-file/empty-set case
+		// once it has already been applied) — nothing to rewrite or sweep.
+		return 0, nil
+	}
+
+	start := time.Now()
+	now, cooled, err := p.matchFocus(fd)
+	if err == nil {
+		err = p.db.ReplaceFocusMatches(now, cooled)
+	}
+	if err != nil {
+		p.recordSemanticStep(runID, &step, "focus", "error", nil, start)
+		return 1, err
+	}
+	stats.FocusMatched += len(now) + len(cooled)
+
+	swept, failed, err := p.sweepFocusImportance()
+	stats.FocusSwept += swept
+	stats.FocusFailed += failed
+	if err != nil {
+		p.recordSemanticStep(runID, &step, "focus", "error", nil, start)
+		return 1, err
+	}
+
+	// Only now, with the match rewrite AND the whole-vault sweep both
+	// committed, does the applied fingerprint advance — a failure anywhere
+	// above leaves it exactly as it was so the next run retries the same work.
+	if err := p.db.SetFocusFingerprint(fp); err != nil {
+		p.recordSemanticStep(runID, &step, "focus", "error", nil, start)
+		return 1, err
+	}
+
+	p.recordSemanticStep(runID, &step, "focus", "done", nil, start)
+	return 1, nil
+}
+
+// sweepFocusImportance recomputes and persists importance_score for EVERY
+// indexed node — a focus.md edit changes no node file, so it is invisible to
+// the touched-node-only refresh Reconcile/upsertIndexNode already do (MEM-16);
+// this is the whole-vault catch-up. One ownerEditedMemo is shared across the
+// entire pass (the MEM-16 addendum precedent: every real multi-node caller of
+// computeNodeImportance memoizes the owner-touch walk once, not per node). A
+// per-node failure (the node's file went missing/corrupt since it was
+// indexed, or one of computeNodeImportance's signal reads errors) is logged,
+// skipped, and counted in failed — quarantine philosophy, the same
+// log-and-keep-prior-value policy index.go's refineLinkedNode already uses.
+// Only a failure reading the node LIST itself (ListMemoryNodes) is DB-wide and
+// propagates, freezing the whole focus step (the caller never advances the
+// fingerprint on that error).
+func (p *Pipeline) sweepFocusImportance() (swept, failed int, err error) {
+	nodes, err := p.db.ListMemoryNodes()
+	if err != nil {
+		return 0, 0, fmt.Errorf("memory: focus: sweep: list nodes: %w", err)
+	}
+
+	memo := newOwnerEditedMemo(p.vault)
+	for _, row := range nodes {
+		n, rerr := p.vault.ReadNode(row.ID)
+		if rerr != nil {
+			p.logf("memory: focus: sweep: read %s: %v", row.ID, rerr)
+			failed++
+			continue
+		}
+		importance, cerr := computeNodeImportance(p.db, memo.lookup, n, row.Path)
+		if cerr != nil {
+			p.logf("memory: focus: sweep: compute importance %s: %v", row.ID, cerr)
+			failed++
+			continue
+		}
+		if uerr := p.db.UpdateMemoryNodeImportanceScore(row.ID, importance); uerr != nil {
+			p.logf("memory: focus: sweep: update %s: %v", row.ID, uerr)
+			failed++
+			continue
+		}
+		swept++
+	}
+	return swept, failed, nil
 }
