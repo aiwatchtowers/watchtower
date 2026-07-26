@@ -2,7 +2,11 @@ import Foundation
 import Yams
 
 enum Constants {
-    static let configPath = NSString("~/.config/watchtower/config.yaml").expandingTildeInPath
+    /// `WATCHTOWER_CONFIG_PATH` lets a dev/verification run point the app at
+    /// an isolated config.yaml instead of the real one, without touching it —
+    /// mirrors ConfigService's existing test-friendly `init(configPath:)`.
+    static let configPath = ProcessInfo.processInfo.environment["WATCHTOWER_CONFIG_PATH"]
+        ?? NSString("~/.config/watchtower/config.yaml").expandingTildeInPath
     static let databasePath = NSString("~/.local/share/watchtower").expandingTildeInPath
     static let bundleID = "com.watchtower.desktop"
     static let configDir = NSString("~/.config/watchtower").expandingTildeInPath
