@@ -239,7 +239,7 @@ final class MemoryViewModelTests: XCTestCase {
         XCTAssertNil(vm.importanceError)
         XCTAssertEqual(vm.detail?.importanceOverride, 5.0)
         let onDisk = try String(contentsOfFile: vaultDir + "/entities/ent_A.md", encoding: .utf8)
-        XCTAssertTrue(onDisk.contains("importance_override: 5.0"))
+        XCTAssertTrue(onDisk.contains("importance_override: 5"))
     }
 
     func testSaveImportanceOverrideClearsValue() async throws {

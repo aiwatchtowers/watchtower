@@ -40,14 +40,24 @@ enum MemoryMarkdown {
         var lines = frontmatter.isEmpty ? [] : frontmatter.components(separatedBy: "\n")
         if let idx = lines.firstIndex(where: { $0.hasPrefix(prefix) }) {
             if let value {
-                lines[idx] = "\(prefix) \(value)"
+                lines[idx] = "\(prefix) \(formatImportanceOverride(value))"
             } else {
                 lines.remove(at: idx)
             }
         } else if let value {
-            lines.append("\(prefix) \(value)")
+            lines.append("\(prefix) \(formatImportanceOverride(value))")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Formats an importance override value to match Go's shortest-float
+    /// representation (%g format): whole numbers render without a trailing
+    /// `.0` (e.g., `5`), while fractional values render normally (e.g., `4.5`).
+    private static func formatImportanceOverride(_ value: Double) -> String {
+        if value == value.rounded() {
+            return String(format: "%.0f", value)
+        }
+        return String(value)
     }
 
     /// The current `importance_override:` value in a node's frontmatter text,

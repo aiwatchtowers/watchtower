@@ -88,7 +88,7 @@ final class MemoryMarkdownTests: XCTestCase {
     func testPatchImportanceOverrideInsertsWhenAbsent() {
         let fm = "id: ent_A\ntype: entity"
         let out = MemoryMarkdown.patchImportanceOverride(frontmatter: fm, value: 5.0)
-        XCTAssertEqual(out, "id: ent_A\ntype: entity\nimportance_override: 5.0")
+        XCTAssertEqual(out, "id: ent_A\ntype: entity\nimportance_override: 5")
     }
 
     func testPatchImportanceOverrideReplacesExistingValueInPlace() {
