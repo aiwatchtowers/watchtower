@@ -239,12 +239,22 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	// already committed and the index already fresh, and before every
 	// consumer of importance (seeding, ingestion, extraction, semantic).
 	// Source-isolated like calendar/mirrors/jira below: a focus-step error is
-	// logged, never fatal, and never blocks the rest of the run.
+	// logged, never fatal, and never blocks the rest of the run. Gate OFF
+	// still runs runFocusDisable (final-review Fix 1) so a workspace that had
+	// focus on at some point doesn't keep a stale ×2.0/×0.5 skew forever —
+	// its own fingerprint-driven fast path keeps a never-enabled workspace
+	// byte-identical.
 	focusSteps := 0
 	if p.cfg.Focus.Enabled {
 		n, ferr := p.runFocus(runID, 0, &stats)
 		if ferr != nil {
 			p.logf("memory: focus: %v", ferr)
+		}
+		focusSteps = n
+	} else {
+		n, ferr := p.runFocusDisable(runID, 0, &stats)
+		if ferr != nil {
+			p.logf("memory: focus-disable: %v", ferr)
 		}
 		focusSteps = n
 	}

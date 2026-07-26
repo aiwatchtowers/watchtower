@@ -303,3 +303,54 @@ func (p *Pipeline) sweepFocusImportance() (swept, failed int, err error) {
 	}
 	return swept, failed, nil
 }
+
+// runFocusDisable is the gate-OFF counterpart of runFocus (Fix 1,
+// final-review wave): a workspace that had focus enabled and accumulated
+// memory_focus_matches / boosted importance_scores must not keep that ×2.0/
+// ×0.5 skew forever once the owner flips memory.focus.enabled back off. The
+// caller (Run) invokes this in the gate's else-branch. It reads the applied
+// fingerprint: empty means focus was never enabled (or was already
+// neutralized by a prior disabled run) — the fast path, 0 steps, no DB write
+// at all, so a never-enabled workspace stays byte-identical
+// (TestRunFocusGateOffByteIdentical). A non-empty fingerprint means residual
+// state exists: memory_focus_matches is emptied, every indexed node's
+// importance_score is swept back to its unboosted value (sweepFocusImportance
+// reused verbatim — same computation, focus now reads back as "" for every
+// node since the table is already empty), and only once both succeeded does
+// the fingerprint clear to "" — the same freeze-on-error discipline as
+// runFocus, so a failed sweep leaves the fingerprint non-empty and the next
+// run retries the neutralization instead of silently losing residual state.
+func (p *Pipeline) runFocusDisable(runID int64, stepOffset int, stats *RunStats) (int, error) {
+	step := stepOffset + 1
+
+	fp, err := p.db.FocusFingerprint()
+	if err != nil {
+		p.recordSemanticStep(runID, &step, "focus-disable", "error", nil, time.Now())
+		return 1, err
+	}
+	if fp == "" {
+		return 0, nil
+	}
+
+	start := time.Now()
+	if err := p.db.ReplaceFocusMatches(nil, nil); err != nil {
+		p.recordSemanticStep(runID, &step, "focus-disable", "error", nil, start)
+		return 1, err
+	}
+
+	swept, failed, err := p.sweepFocusImportance()
+	stats.FocusSwept += swept
+	stats.FocusFailed += failed
+	if err != nil {
+		p.recordSemanticStep(runID, &step, "focus-disable", "error", nil, start)
+		return 1, err
+	}
+
+	if err := p.db.SetFocusFingerprint(""); err != nil {
+		p.recordSemanticStep(runID, &step, "focus-disable", "error", nil, start)
+		return 1, err
+	}
+
+	p.recordSemanticStep(runID, &step, "focus-disable", "done", nil, start)
+	return 1, nil
+}

@@ -381,3 +381,66 @@ func TestRunFocusGateOffByteIdentical(t *testing.T) {
 	require.NoError(t, ferr)
 	assert.Empty(t, fp, "gate off: focus.md is never parsed, fingerprint stays unset")
 }
+
+// TestRunFocusDisableNeutralizesResidual (Fix 1, final-review wave): a
+// workspace that HAD focus enabled and accumulated a matched/boosted node
+// must have that residual state cleared once the gate flips back off — a
+// stale ×2/×0.5 skew must not survive forever. An enable-run matches and
+// doubles a node's score; flipping the gate off and running again empties
+// memory_focus_matches, sweeps the score back to its un-boosted value, and
+// clears the fingerprint; a THIRD disabled run takes the fast path
+// (fingerprint already empty) and records no focus-disable step at all.
+func TestRunFocusDisableNeutralizesResidual(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	entID := "ent_00000000000000000000000cex"
+	writeAndIndex(t, v, d, Node{
+		ID: entID, Type: "entity", Tier: "long", Status: "active",
+		Title: "CEX Exchange", Aliases: []string{"CEX", "situation:1"},
+		Body: "# CEX Exchange\n",
+	})
+	require.NoError(t, d.UpdateMemoryNodeImportanceScore(entID, 1.0))
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, focusFileName), []byte("## Now\n- CEX\n"), 0o644))
+
+	enabledCfg := pipelineTestConfig()
+	enabledCfg.Focus.Enabled = true
+	pEnabled := NewPipeline(d, v, noCallGen(t), enabledCfg, t.Logf)
+	_, err := pEnabled.Run(context.Background())
+	require.NoError(t, err)
+
+	got, err := d.GetMemoryNode(entID)
+	require.NoError(t, err)
+	require.Equal(t, 2.0, got.ImportanceScore, "enable-run doubled the matched node's score")
+	fp, err := d.FocusFingerprint()
+	require.NoError(t, err)
+	require.NotEmpty(t, fp, "enable-run applied a fingerprint")
+
+	// Flip the gate off: the second Run must neutralize the residual state.
+	pDisabled := NewPipeline(d, v, noCallGen(t), pipelineTestConfig(), t.Logf)
+	_, err = pDisabled.Run(context.Background())
+	require.NoError(t, err)
+
+	state, err := d.FocusState(entID)
+	require.NoError(t, err)
+	assert.Empty(t, state, "matches table emptied")
+	fp, err = d.FocusFingerprint()
+	require.NoError(t, err)
+	assert.Empty(t, fp, "fingerprint cleared")
+	got, err = d.GetMemoryNode(entID)
+	require.NoError(t, err)
+	assert.Equal(t, 1.0, got.ImportanceScore, "score restored to its un-boosted value")
+
+	// A third disabled run takes the fast path: fingerprint already empty,
+	// so no focus-disable step is even recorded.
+	_, err = pDisabled.Run(context.Background())
+	require.NoError(t, err)
+
+	var runID int64
+	require.NoError(t, d.QueryRow(`SELECT id FROM pipeline_runs WHERE pipeline = 'memory' ORDER BY id DESC LIMIT 1`).Scan(&runID))
+	steps, err := d.GetPipelineSteps(runID)
+	require.NoError(t, err)
+	for _, s := range steps {
+		assert.NotEqual(t, "focus-disable", s.ChannelName, "fast path records no step")
+	}
+}
