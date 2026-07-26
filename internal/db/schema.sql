@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00022)
     memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00023)
     memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last jira issue fully folded into an episode by the jira issue extractor; a fifth independent memory watermark (see 00030)
-    memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00026, M8)
+    memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00026, M8)
+    memory_focus_fingerprint TEXT NOT NULL DEFAULT ''  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00031)
 );
 
 -- Users
@@ -1334,3 +1335,13 @@ CREATE TABLE IF NOT EXISTS memory_retrieve_shadow (
     ts                TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surface, ts);
+
+-- Focus salience (see 00031): mechanically-matched node set (state 'now' or
+-- 'cooled'), rewritten wholesale on every fingerprint change. Runtime state:
+-- rebuilt from focus.md + the index, cleared and rewritten by the pipeline.
+-- No FK (a match may outlive its node briefly between runs; reads join
+-- against live nodes).
+CREATE TABLE IF NOT EXISTS memory_focus_matches (
+    node_id TEXT PRIMARY KEY,
+    state   TEXT NOT NULL CHECK (state IN ('now','cooled'))
+);

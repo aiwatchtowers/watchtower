@@ -107,6 +107,7 @@ func TestAllTablesExist(t *testing.T) {
 		"memory_nodes", "memory_aliases", "memory_node_stats",
 		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",
 		"memory_provenance", "memory_digest_shadow", "memory_retrieve_shadow",
+		"memory_focus_matches",
 	}
 
 	for _, table := range expectedTables {

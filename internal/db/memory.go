@@ -2200,3 +2200,86 @@ func (db *DB) ListMemoryRetrieveShadow(surface string, since time.Time) ([]Memor
 	}
 	return out, rows.Err()
 }
+
+// FocusFingerprint reads the hash of the last APPLIED focus.md directive set
+// (memory focus salience; runtime state like the extraction watermarks).
+func (db *DB) FocusFingerprint() (string, error) {
+	var fp string
+	err := db.QueryRow(`SELECT COALESCE(memory_focus_fingerprint, '') FROM workspace LIMIT 1`).Scan(&fp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting focus fingerprint: %w", err)
+	}
+	return fp, nil
+}
+
+// SetFocusFingerprint stores the applied-focus hash. Callers set it only AFTER
+// the matches rewrite and the importance sweep succeeded (freeze-on-error).
+func (db *DB) SetFocusFingerprint(fp string) error {
+	if _, err := db.Exec(`UPDATE workspace SET memory_focus_fingerprint = ?`, fp); err != nil {
+		return fmt.Errorf("setting focus fingerprint: %w", err)
+	}
+	return nil
+}
+
+// ReplaceFocusMatches rewrites the matched-node set wholesale in one
+// transaction — the focus counterpart of the alias/FTS replace discipline.
+func (db *DB) ReplaceFocusMatches(now, cooled []string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("focus matches tx: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM memory_focus_matches`); err != nil {
+		return fmt.Errorf("clearing focus matches: %w", err)
+	}
+	for _, id := range now {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO memory_focus_matches (node_id, state) VALUES (?, 'now')`, id); err != nil {
+			return fmt.Errorf("inserting focus match %s: %w", id, err)
+		}
+	}
+	for _, id := range cooled {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO memory_focus_matches (node_id, state) VALUES (?, 'cooled')`, id); err != nil {
+			return fmt.Errorf("inserting cooled match %s: %w", id, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// FocusState reads one node's focus membership: '' (unmatched), 'now', or
+// 'cooled'. The empty answer is the overwhelmingly common case and must stay
+// cheap — a primary-key point read.
+func (db *DB) FocusState(nodeID string) (string, error) {
+	var state string
+	err := db.QueryRow(`SELECT state FROM memory_focus_matches WHERE node_id = ?`, nodeID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading focus state for %s: %w", nodeID, err)
+	}
+	return state, nil
+}
+
+// ListMemoryNodeIDsByTitleMatch returns non-tombstone node ids whose title
+// contains phrase case-insensitively — the focus matcher's title arm.
+func (db *DB) ListMemoryNodeIDsByTitleMatch(phrase string) ([]string, error) {
+	rows, err := db.Query(`SELECT id FROM memory_nodes
+		WHERE status != 'tombstone' AND instr(lower(title), lower(?)) > 0
+		ORDER BY id`, phrase)
+	if err != nil {
+		return nil, fmt.Errorf("title-matching focus phrase: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning title match: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

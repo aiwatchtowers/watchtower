@@ -2121,3 +2121,75 @@ func TestListJiraIssuesForExtract(t *testing.T) {
 		t.Errorf("boundary drain keys = %+v, want exactly {TIE-1, TIE-2}, TIE-3 excluded", tieIssues)
 	}
 }
+
+// upsertNamedNode is a test helper for inserting a memory_nodes row with the
+// given id/title/status via UpsertMemoryNode.
+func upsertNamedNode(t *testing.T, db *DB, id, title, status string) {
+	t.Helper()
+	row := memTestNode(id, func(r *MemoryNodeRow) {
+		r.Title = title
+		r.Status = status
+	})
+	if err := db.UpsertMemoryNode(row, "body", nil); err != nil {
+		t.Fatalf("upsert node %s: %v", id, err)
+	}
+}
+
+// TestFocusFingerprintRoundTrip: the applied-focus fingerprint round-trips on
+// the workspace singleton; a fresh workspace reads "".
+func TestFocusFingerprintRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	seedWorkspace(t, db)
+	fp, err := db.FocusFingerprint()
+	if err != nil || fp != "" {
+		t.Fatalf("fresh = %q, %v; want \"\", nil", fp, err)
+	}
+	if err := db.SetFocusFingerprint("abc123"); err != nil {
+		t.Fatal(err)
+	}
+	fp, err = db.FocusFingerprint()
+	if err != nil || fp != "abc123" {
+		t.Fatalf("got %q, %v; want abc123", fp, err)
+	}
+}
+
+// TestFocusMatches: ReplaceFocusMatches rewrites wholesale; FocusState reads
+// '' for unmatched, 'now'/'cooled' for matched.
+func TestFocusMatches(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.ReplaceFocusMatches([]string{"ent_a", "ent_b"}, []string{"ent_c"}); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{"ent_a": "now", "ent_b": "now", "ent_c": "cooled", "ent_zzz": ""} {
+		got, err := db.FocusState(id)
+		if err != nil || got != want {
+			t.Errorf("FocusState(%s) = %q, %v; want %q", id, got, err, want)
+		}
+	}
+	// Wholesale replace: previous matches vanish.
+	if err := db.ReplaceFocusMatches(nil, []string{"ent_a"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.FocusState("ent_b"); got != "" {
+		t.Errorf("ent_b survived replace: %q", got)
+	}
+	if got, _ := db.FocusState("ent_a"); got != "cooled" {
+		t.Errorf("ent_a = %q, want cooled", got)
+	}
+}
+
+// TestListMemoryNodeIDsByTitleMatch: case-insensitive substring on title,
+// tombstones excluded, sorted by id.
+func TestListMemoryNodeIDsByTitleMatch(t *testing.T) {
+	db := openTestDB(t)
+	upsertNamedNode(t, db, "ent_hash", "Hashbank Integration", "active")
+	upsertNamedNode(t, db, "ent_other", "Preview Environments", "active")
+	upsertNamedNode(t, db, "ent_tomb", "hashbank legacy", "tombstone")
+	ids, err := db.ListMemoryNodeIDsByTitleMatch("HASHBANK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(ids, ",") != "ent_hash" {
+		t.Errorf("ids = %v, want [ent_hash] (case-insensitive, tombstone excluded)", ids)
+	}
+}
