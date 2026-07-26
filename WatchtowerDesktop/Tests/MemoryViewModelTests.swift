@@ -223,4 +223,81 @@ final class MemoryViewModelTests: XCTestCase {
             "a failed read must never be persisted as an empty file"
         )
     }
+
+    func testSaveImportanceOverrideSetsValue() async throws {
+        let vm = try makeVM()
+        try writeVaultFile("entities/ent_A.md", "---\nid: ent_A\ntype: entity\ntier: long\nstatus: active\n---\n# Alice\n")
+        try await pool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", path: "entities/ent_A.md")
+        }
+        await vm.refresh()
+        await vm.select(id: "ent_A")
+        XCTAssertNil(vm.detail?.importanceOverride)
+
+        await vm.saveImportanceOverride(value: 5.0)
+
+        XCTAssertNil(vm.importanceError)
+        XCTAssertEqual(vm.detail?.importanceOverride, 5.0)
+        let onDisk = try String(contentsOfFile: vaultDir + "/entities/ent_A.md", encoding: .utf8)
+        XCTAssertTrue(onDisk.contains("importance_override: 5.0"))
+    }
+
+    func testSaveImportanceOverrideClearsValue() async throws {
+        let vm = try makeVM()
+        try writeVaultFile("entities/ent_A.md", "---\nid: ent_A\ntype: entity\ntier: long\nstatus: active\nimportance_override: 5.0\n---\n# Alice\n")
+        try await pool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", path: "entities/ent_A.md")
+        }
+        await vm.refresh()
+        await vm.select(id: "ent_A")
+        XCTAssertEqual(vm.detail?.importanceOverride, 5.0)
+
+        await vm.saveImportanceOverride(value: nil)
+
+        XCTAssertNil(vm.importanceError)
+        XCTAssertNil(vm.detail?.importanceOverride)
+        let onDisk = try String(contentsOfFile: vaultDir + "/entities/ent_A.md", encoding: .utf8)
+        XCTAssertFalse(onDisk.contains("importance_override"))
+    }
+
+    func testSaveImportanceOverrideFailsWhileMemoryRunHoldsLock() async throws {
+        let vm = try makeVM()
+        try writeVaultFile("entities/ent_A.md", "---\nid: ent_A\ntype: entity\ntier: long\nstatus: active\n---\n# Alice\n")
+        try await pool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", path: "entities/ent_A.md")
+        }
+        await vm.refresh()
+        await vm.select(id: "ent_A")
+
+        let lockPath = workspaceDir + "/memory.lock"
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        defer {
+            flock(fd, LOCK_UN)
+            close(fd)
+        }
+
+        await vm.saveImportanceOverride(value: 5.0)
+
+        XCTAssertNotNil(vm.importanceError)
+        let onDisk = try String(contentsOfFile: vaultDir + "/entities/ent_A.md", encoding: .utf8)
+        XCTAssertFalse(onDisk.contains("importance_override"))
+    }
+
+    func testSaveImportanceOverrideDisabledOnMalformedFrontmatter() async throws {
+        let vm = try makeVM()
+        // No closing fence — splitFrontmatter degrades to ("", raw).
+        try writeVaultFile("entities/ent_A.md", "---\nid: ent_A\nno closing fence")
+        try await pool.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", path: "entities/ent_A.md")
+        }
+        await vm.refresh()
+        await vm.select(id: "ent_A")
+
+        XCTAssertFalse(vm.detail?.canEditImportance ?? true)
+        await vm.saveImportanceOverride(value: 5.0) // guarded no-op
+        let onDisk = try String(contentsOfFile: vaultDir + "/entities/ent_A.md", encoding: .utf8)
+        XCTAssertEqual(onDisk, "---\nid: ent_A\nno closing fence", "malformed frontmatter — nothing written")
+    }
 }

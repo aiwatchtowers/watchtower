@@ -27,6 +27,19 @@ struct MemoryNodeDetail: Equatable {
     var history: [MemoryCommit] = [] // filled asynchronously
 
     var isEditable: Bool { fileReadError == nil }
+
+    /// Manual importance override parsed from the raw file's frontmatter, nil
+    /// when unset (the merged `node.importanceScore` is the computed value in
+    /// that case) or when the frontmatter fence itself can't be parsed.
+    var importanceOverride: Double? {
+        MemoryMarkdown.currentImportanceOverride(frontmatter: MemoryMarkdown.splitFrontmatter(raw).frontmatter)
+    }
+
+    /// The Importance section is only editable when the file has a real
+    /// frontmatter fence to patch — same degrade-not-guess rule as `isEditable`.
+    var canEditImportance: Bool {
+        isEditable && !MemoryMarkdown.splitFrontmatter(raw).frontmatter.isEmpty
+    }
 }
 
 @MainActor
@@ -47,6 +60,11 @@ final class MemoryViewModel {
     var isEditing = false
     var editorText = ""
     var editorError: String?
+
+    // Importance override state (a separate, smaller edit path from the
+    // whole-file editor above — see saveImportanceOverride).
+    var importanceOverrideInput: Double = 0
+    var importanceError: String?
 
     private let dbPool: DatabasePool
     private var searchTask: Task<Void, Never>?
@@ -155,6 +173,7 @@ final class MemoryViewModel {
         selectedID = id
         isEditing = false
         editorError = nil
+        importanceError = nil
         historyTask?.cancel()
         do {
             guard let node = try await dbPool.read({ db in
@@ -223,6 +242,7 @@ final class MemoryViewModel {
                 subjectID: subjectID,
                 subjectTitle: subjectTitle
             )
+            importanceOverrideInput = detail?.importanceOverride ?? 0
             error = nil
             loadHistory(for: node)
         } catch {
@@ -366,6 +386,48 @@ final class MemoryViewModel {
         isEditing = false
         editorError = nil
         await rebuildBacklinkGraph()
+        await select(id: detail.node.id)
+    }
+
+    /// Sets or clears the node's manual importance override by patching just
+    /// the `importance_override:` frontmatter line — unlike `saveEdit`, this
+    /// never opens the whole-file editor sheet. Same MEM-03 contract: the
+    /// write is the whole owner edit, the next pipeline run commits it and (on
+    /// a clear) recomputes `memory_nodes.importance_score` from scratch —
+    /// `detail.node.importanceScore` won't reflect a clear/set until then.
+    /// `value == nil` clears the override.
+    func saveImportanceOverride(value: Double?) async {
+        guard let detail, detail.canEditImportance else { return }
+        let (frontmatter, body) = MemoryMarkdown.splitFrontmatter(detail.raw)
+        let patched = MemoryMarkdown.patchImportanceOverride(frontmatter: frontmatter, value: value)
+        let newRaw = "---\n\(patched)\n---\n\(body)"
+        guard newRaw != detail.raw else { return } // no-op: nothing actually changed
+        let fileURL = vaultURL.appendingPathComponent(detail.node.path)
+        let lockPath = lockURL.path
+
+        let writeError: String? = await Task.detached(priority: .userInitiated) {
+            let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o644)
+            guard fd >= 0 else {
+                return "Cannot open memory lock: \(String(cString: strerror(errno)))"
+            }
+            defer { Darwin.close(fd) }
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+                return "A memory run is in progress — try again in a moment."
+            }
+            defer { flock(fd, LOCK_UN) }
+            do {
+                try newRaw.write(to: fileURL, atomically: true, encoding: .utf8)
+                return nil
+            } catch {
+                return "Save failed: \(error.localizedDescription)"
+            }
+        }.value
+
+        if let writeError {
+            importanceError = writeError
+            return
+        }
+        importanceError = nil
         await select(id: detail.node.id)
     }
 }
