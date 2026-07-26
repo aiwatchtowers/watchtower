@@ -26,6 +26,21 @@ func TestComputeImportance(t *testing.T) {
 	assert.Greater(t, owner, situation)
 }
 
+// TestComputeImportanceFocus pins the 2026-07-26 salience multiplier (owner
+// verdict A): focus multiplies the COMPUTED importance — now ×2, cooled ×0.5,
+// unmatched ×1 — proportional to organic importance, so a barely-linked node
+// never outranks an org-central one just by being mentioned in focus.
+func TestComputeImportanceFocus(t *testing.T) {
+	base := ImportanceInputs{LinksIn: 3, SituationOrigin: true} // computed 4.0
+	assert.InDelta(t, 4.0, ComputeImportance(base), 1e-9)
+	now := base
+	now.Focus = "now"
+	assert.InDelta(t, 8.0, ComputeImportance(now), 1e-9)
+	cooled := base
+	cooled.Focus = "cooled"
+	assert.InDelta(t, 2.0, ComputeImportance(cooled), 1e-9)
+}
+
 // TestComputeImportanceEngagement: positive net owner-engagement raises
 // importance; zero or negative net adds no bonus and never lowers the score
 // below the un-engaged baseline; the net is clamped in both directions

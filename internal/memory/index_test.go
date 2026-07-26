@@ -332,6 +332,82 @@ func TestReconcileComputesImportanceScore(t *testing.T) {
 	assert.Equal(t, want, row.ImportanceScore, "importance_score matches ComputeImportance with no recency applied")
 }
 
+// TestReconcileFocusOverrideNeverMultiplied: a node carrying BOTH an
+// importance_override and a live 'now' focus match persists the override
+// exactly — the multiplier applies only to the computed arm, so an override
+// never sees it (2026-07-26 owner verdict A, ImportanceOverride early-return
+// stays FIRST in computeNodeImportance).
+func TestReconcileFocusOverrideNeverMultiplied(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	override := 7.5
+	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5FV1", "entity", "Manually Important")
+	n.ImportanceOverride = &override
+	writeNodes(t, v, n)
+	require.NoError(t, d.ReplaceFocusMatches([]string{n.ID}, nil))
+
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	row, err := d.GetMemoryNode(n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 7.5, row.ImportanceScore, "a 'now' focus match never multiplies an override")
+}
+
+// TestReconcileFocusNowDoublesImportance: a node with organic importance
+// signals (links-in, situation-origin, owner-touch, engagement — the same
+// fixture as TestReconcileComputesImportanceScore) AND a live 'now' focus
+// match persists exactly double the un-matched computed value (2026-07-26
+// owner verdict A).
+func TestReconcileFocusNowDoublesImportance(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	ep := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5FN1", "episode", "Warm story")
+	ep.Aliases = []string{"situation:78"}
+	writeNodes(t, v, ep)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	linker := linkingEntity(t, "ent_01ARZ3NDEKTSV4RRFFQ69G5FN2", "Linker", ep.ID)
+	writeNodes(t, v, linker)
+	_, err = Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	require.NoError(t, d.BumpEngagement(linker.ID, true, "2026-07-26T10:00:00Z"))
+
+	rel, err := nodeRelPath(ep.ID)
+	require.NoError(t, err)
+	edited := ep
+	edited.Body = ep.Body + "\nOwner annotation.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, filepath.FromSlash(rel)), edited.Render(), 0o644))
+	committed, err := v.CommitOwnerEdits()
+	require.NoError(t, err)
+	require.True(t, committed)
+
+	require.NoError(t, d.ReplaceFocusMatches([]string{ep.ID}, nil))
+
+	stats, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Updated, "the owner-edited episode is reparsed")
+
+	row, err := d.GetMemoryNode(ep.ID)
+	require.NoError(t, err)
+
+	unmatched := ComputeImportance(ImportanceInputs{
+		LinksIn:         1,
+		SituationOrigin: true,
+		OwnerTouched:    true,
+		Engagement:      1,
+	})
+	matched := ComputeImportance(ImportanceInputs{
+		LinksIn:         1,
+		SituationOrigin: true,
+		OwnerTouched:    true,
+		Engagement:      1,
+		Focus:           "now",
+	})
+	assert.Equal(t, 2*unmatched, matched, "sanity: the multiplier doubles the organic value")
+	assert.Equal(t, matched, row.ImportanceScore, "importance_score reflects the live focus match")
+}
+
 // A malformed node file (unknown frontmatter key — classic Obsidian-side
 // damage) is quarantined: the run continues, other files are indexed, and the
 // file's previously indexed row survives because the file is still on disk

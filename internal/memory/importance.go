@@ -21,6 +21,14 @@ type ImportanceInputs struct {
 	// baseline. Clamped to [-engagementNetClamp, +engagementNetClamp] before
 	// scoring so one heavily-engaged entity cannot dominate importance.
 	Engagement int
+	// Focus is the node's memory_focus_matches state — "" (unmatched), "now",
+	// or "cooled" — read via db.FocusState. Per the 2026-07-26 owner verdict
+	// (focus-salience design, verdict A), it multiplies the COMPUTED importance
+	// (proportional to organic signals, not an additive bonus) at the very end
+	// of ComputeImportance: ×2 for "now", ×0.5 for "cooled", ×1 for "". The
+	// zero value "" is ×1, so this field is purely additive to every existing
+	// caller.
+	Focus string
 }
 
 // engagementNetClamp bounds the net-engagement contribution to importance: a
@@ -39,6 +47,11 @@ const (
 	// entity the owner actively engages with (👍, converts, resolves — Phase-5 5D)
 	// resists eviction/decay on par with an owner-touched file.
 	importanceEngagementWeight = 2.0
+	// focusBoostFactor/focusCooledFactor scale the computed importance by a
+	// node's live focus-match state (2026-07-26 owner verdict A) — applied at
+	// the end of ComputeImportance, after every additive bonus above.
+	focusBoostFactor  = 2.0
+	focusCooledFactor = 0.5
 )
 
 // ComputeImportance is the pure importance formula: links-in + situation-
@@ -68,6 +81,12 @@ func ComputeImportance(in ImportanceInputs) float64 {
 	}
 	if net > 0 { // only positive net raises importance (a dismissed entity never scores below baseline)
 		importance += importanceEngagementWeight * float64(net)
+	}
+	switch in.Focus {
+	case "now":
+		importance *= focusBoostFactor
+	case "cooled":
+		importance *= focusCooledFactor
 	}
 	return importance
 }
@@ -101,10 +120,15 @@ func computeNodeImportance(database *db.DB, ownerEdited func(rel string) (bool, 
 	if err != nil {
 		return 0, err
 	}
+	focus, err := database.FocusState(n.ID)
+	if err != nil {
+		return 0, err
+	}
 	return ComputeImportance(ImportanceInputs{
 		LinksIn:         linksIn,
 		SituationOrigin: hasSituationAlias(n.Aliases),
 		OwnerTouched:    ownerTouched,
 		Engagement:      engaged - dismissed,
+		Focus:           focus,
 	}), nil
 }

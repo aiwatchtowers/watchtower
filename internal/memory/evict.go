@@ -27,6 +27,11 @@ type RetentionInputs struct {
 	// engagementNetClamp) before scoring so one heavily-engaged entity cannot
 	// pin an episode in memory forever (a runaway counter is bounded).
 	Engagement int
+	// Focus is the episode's memory_focus_matches state, forwarded verbatim
+	// into ComputeImportance's ImportanceInputs.Focus (2026-07-26 owner
+	// verdict A) — a live 'now' match resists eviction the same way an
+	// owner-touch or engagement bonus does.
+	Focus string
 }
 
 // Retention constants live in code, not config (mirrors belief_math.go): one
@@ -61,6 +66,7 @@ func RetentionScore(in RetentionInputs) float64 {
 		SituationOrigin: in.SituationOrigin,
 		OwnerTouched:    in.OwnerTouched,
 		Engagement:      in.Engagement,
+		Focus:           in.Focus,
 	})
 	return recency * importance
 }
@@ -133,12 +139,20 @@ func EvictEpisodes(v *Vault, database *db.DB, olderThanDays int, scoreThreshold 
 		if eerr != nil {
 			return evicted, eerr
 		}
+		// Same bounded per-candidate read as OwnerEdited/LinkedEntityEngagement
+		// above (2026-07-26 owner verdict A) — a live 'now' match resists
+		// eviction.
+		focus, ferr := database.FocusState(n.ID)
+		if ferr != nil {
+			return evicted, ferr
+		}
 		score := RetentionScore(RetentionInputs{
 			LastEventAgeDays: ageDays,
 			LinksIn:          linksIn,
 			SituationOrigin:  hasSituationAlias(n.Aliases),
 			OwnerTouched:     ownerTouched,
 			Engagement:       engaged - dismissed,
+			Focus:            focus,
 		})
 		if score >= scoreThreshold {
 			continue // still warm enough — keep the episode

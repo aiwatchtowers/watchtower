@@ -56,6 +56,17 @@ func TestRetentionScoreEngagement(t *testing.T) {
 	assert.Greater(t, RetentionScore(more), RetentionScore(engaged), "score rises with engagement")
 }
 
+// TestRetentionScoreFocus: a 'now' focus match doubles RetentionScore's
+// importance arm versus the identical unmatched fixture — recency is
+// untouched, so the ratio is exactly 2x (2026-07-26 owner verdict A, adapted
+// from TestRetentionScore's links-in fixture).
+func TestRetentionScoreFocus(t *testing.T) {
+	base := RetentionInputs{LastEventAgeDays: 50, LinksIn: 3}
+	now := base
+	now.Focus = "now"
+	assert.InDelta(t, 2*RetentionScore(base), RetentionScore(now), 1e-9)
+}
+
 // TestEvictEngagedEpisodeSurvivesTwinEvicts: two otherwise-identical cold, closed,
 // linked episodes — the one whose linking entity has positive engagement survives
 // eviction while its un-engaged twin is rolled up. Isolates engagement as the
