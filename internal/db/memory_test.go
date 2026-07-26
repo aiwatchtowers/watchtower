@@ -525,7 +525,7 @@ func TestSearchMemoryFTSCandidates(t *testing.T) {
 
 	strong := memTestNode("ent_strong", func(r *MemoryNodeRow) { r.ImportanceScore = 1 })
 	weak := memTestNode("ent_weak", func(r *MemoryNodeRow) { r.ImportanceScore = 9 })
-	if err := d.UpsertMemoryNode(strong, "deployments deployments deployments rollout", nil); err != nil {
+	if err := d.UpsertMemoryNode(strong, "deployments of deployments for deployments rollout", nil); err != nil {
 		t.Fatalf("UpsertMemoryNode strong: %v", err)
 	}
 	if err := d.UpsertMemoryNode(weak, "deployments happened once, briefly", nil); err != nil {

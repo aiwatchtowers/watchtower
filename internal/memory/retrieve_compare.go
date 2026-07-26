@@ -178,12 +178,12 @@ func nodeIDs(rows []db.MemoryNodeRow) []string {
 // idsSubsetOf reports whether every id in old is present in new — the
 // "nothing is silently lost, only reordered/added" coverage check shared by
 // all three surfaces (design spec §6).
-func idsSubsetOf(old, new []string) bool {
-	present := make(map[string]bool, len(new))
-	for _, id := range new {
+func idsSubsetOf(oldIDs, newIDs []string) bool {
+	present := make(map[string]bool, len(newIDs))
+	for _, id := range newIDs {
 		present[id] = true
 	}
-	for _, id := range old {
+	for _, id := range oldIDs {
 		if !present[id] {
 			return false
 		}

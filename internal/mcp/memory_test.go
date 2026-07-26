@@ -470,7 +470,7 @@ func newMemorySessionCompare(t *testing.T, database, shadowDB *db.DB, vaultPath 
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	t.Cleanup(func() { cs.Close() })
+	t.Cleanup(func() { cs.Close() }) //nolint:errcheck // test cleanup, error irrelevant
 	return cs
 }
 

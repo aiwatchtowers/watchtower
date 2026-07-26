@@ -160,7 +160,7 @@ func TestRetrieveByQuery(t *testing.T) {
 	// because importance x relevance favors the important node once both are
 	// inside the candidate window.
 	require.NoError(t, d.UpsertMemoryNode(important, "widget rollout status update", nil))
-	require.NoError(t, d.UpsertMemoryNode(trivial, "widget widget widget widget", nil))
+	require.NoError(t, d.UpsertMemoryNode(trivial, "widget and widget and widget and widget", nil))
 
 	got, err := RetrieveByQuery(d, "widget", 2)
 	require.NoError(t, err)

@@ -568,6 +568,7 @@ func (db *DB) SearchMemoryFTSCandidates(query string, limit int) ([]MemoryFTSCan
 	// memoryNodeSelectCols's bare "id" would be ambiguous if joined directly
 	// against memory_fts; scoping the MATCH in a subquery that renames its id
 	// keeps only memory_nodes.id in the outer scope.
+	//nolint:sqlclosecheck // rows IS closed by the defer below; the scan closure hides it from the linter
 	rows, err := db.Query(`SELECT `+memoryNodeSelectCols+`, cand.rank
 		FROM memory_nodes
 		JOIN (SELECT id AS cand_id, rank FROM memory_fts WHERE memory_fts MATCH ?) cand
