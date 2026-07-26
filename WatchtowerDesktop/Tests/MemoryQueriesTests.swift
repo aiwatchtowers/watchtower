@@ -134,4 +134,31 @@ final class MemoryQueriesTests: XCTestCase {
             XCTAssertNil(try MemoryQueries.fetchTitle(db, id: "missing"))
         }
     }
+
+    // MARK: - Sort
+
+    func testFetchNodesSortRecentIsUnchangedDefault() throws {
+        let dbQueue = try TestDatabase.create()
+        try dbQueue.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T11:00:00Z", importanceScore: 1.0)
+            try TestDatabase.insertMemoryNode(db, id: "ep_B", type: "episode", title: "Incident", indexedAt: "2026-07-17T10:00:00Z", importanceScore: 9.0)
+        }
+        try dbQueue.read { db in
+            let all = try MemoryQueries.fetchNodes(db)
+            XCTAssertEqual(all.map(\.id), ["ent_A", "ep_B"], "default sort stays newest-indexed-first, unaffected by importance")
+        }
+    }
+
+    func testFetchNodesSortImportantOrdersByImportanceScoreDesc() throws {
+        let dbQueue = try TestDatabase.create()
+        try dbQueue.write { db in
+            try TestDatabase.insertMemoryNode(db, id: "ent_A", type: "entity", title: "Alice", indexedAt: "2026-07-17T11:00:00Z", importanceScore: 1.0)
+            try TestDatabase.insertMemoryNode(db, id: "ep_B", type: "episode", title: "Incident", indexedAt: "2026-07-17T10:00:00Z", importanceScore: 9.0)
+        }
+        try dbQueue.read { db in
+            let all = try MemoryQueries.fetchNodes(db, sort: .important)
+            XCTAssertEqual(all.map(\.id), ["ep_B", "ent_A"], "highest importance_score first, even though it's the older-indexed node")
+            XCTAssertEqual(all[0].importanceScore, 9.0)
+        }
+    }
 }

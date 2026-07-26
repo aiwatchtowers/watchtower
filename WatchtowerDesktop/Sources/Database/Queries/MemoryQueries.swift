@@ -10,20 +10,29 @@ enum MemoryQueries {
 
     // MARK: - Fetch
 
-    /// Browser list: all non-tombstone nodes, newest-indexed first, joined
-    /// with the dispute side table. Type filtering happens in-memory (the
-    /// vault is a few hundred nodes); redirect tombstones and the mechanical
-    /// map/index pages never appear (they are not nodes).
-    static func fetchNodes(_ db: Database) throws -> [MemoryNodeListItem] {
-        try MemoryNodeListItem.fetchAll(
+    /// Browser list: all non-tombstone nodes, joined with the dispute side
+    /// table, ordered per `sort` (`.recent` — today's default, newest-indexed
+    /// first — or `.important` — highest `importance_score` first). Type
+    /// filtering happens in-memory (the vault is a few hundred nodes);
+    /// redirect tombstones and the mechanical map/index pages never appear
+    /// (they are not nodes).
+    static func fetchNodes(_ db: Database, sort: MemorySort = .recent) throws -> [MemoryNodeListItem] {
+        let orderClause: String
+        switch sort {
+        case .recent:
+            orderClause = "n.indexed_at DESC, n.id"
+        case .important:
+            orderClause = "n.importance_score DESC, n.indexed_at DESC, n.id"
+        }
+        return try MemoryNodeListItem.fetchAll(
             db,
             sql: """
                 SELECT n.id, n.type, n.tier, n.status, n.title, n.path, n.indexed_at,
-                       n.subject, n.confidence, d.reason AS dispute_reason
+                       n.subject, n.confidence, n.importance_score, d.reason AS dispute_reason
                 FROM memory_nodes n
                 LEFT JOIN memory_dispute_flags d ON d.node_id = n.id
                 WHERE n.status != 'tombstone'
-                ORDER BY n.indexed_at DESC, n.id
+                ORDER BY \(orderClause)
                 """
         )
     }
@@ -33,7 +42,7 @@ enum MemoryQueries {
             db,
             sql: """
                 SELECT n.id, n.type, n.tier, n.status, n.title, n.path, n.indexed_at,
-                       n.subject, n.confidence, d.reason AS dispute_reason
+                       n.subject, n.confidence, n.importance_score, d.reason AS dispute_reason
                 FROM memory_nodes n
                 LEFT JOIN memory_dispute_flags d ON d.node_id = n.id
                 WHERE n.id = ?

@@ -8,6 +8,13 @@ import GRDB
 // everything here is read-side. File bodies come from the vault directory,
 // not from these rows.
 
+/// Master-list ordering for the Memory tab: `.recent` (today's default,
+/// newest-indexed first) or `.important` (highest `importance_score` first).
+enum MemorySort: Hashable {
+    case recent
+    case important
+}
+
 /// One `memory_nodes` row as shown in the browser list, joined with the
 /// dispute side table. Tombstones are filtered out at query level.
 struct MemoryNodeListItem: FetchableRecord, Identifiable, Equatable {
@@ -20,6 +27,7 @@ struct MemoryNodeListItem: FetchableRecord, Identifiable, Equatable {
     let indexedAt: String
     let subject: String // belief subject entity id, "" otherwise
     let confidence: Double // belief confidence 0..1, 0 otherwise
+    let importanceScore: Double // merged override-or-computed importance
     let disputeReason: String? // non-nil when a dispute flag is pending
 
     init(row: Row) {
@@ -32,6 +40,7 @@ struct MemoryNodeListItem: FetchableRecord, Identifiable, Equatable {
         indexedAt = row["indexed_at"] ?? ""
         subject = row["subject"] ?? ""
         confidence = row["confidence"] ?? 0
+        importanceScore = row["importance_score"] ?? 0
         disputeReason = row["dispute_reason"]
     }
 
