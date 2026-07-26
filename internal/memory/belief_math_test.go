@@ -9,22 +9,22 @@ import (
 
 func approx(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
-// TestOwnerRankWeight pins the linear owner-evidence decay: full weight fresh,
-// linear to the floor at 180 days, floored thereafter.
+// TestOwnerRankWeight pins the owner rank's decay curve — exponential
+// half-life since 2026-07-26 (curve C, owner-approved): no eternal floor,
+// the protection window (ownerFreshWindowDays) is a separate knob.
 func TestOwnerRankWeight(t *testing.T) {
 	cases := []struct {
 		ageDays float64
 		want    float64
 	}{
 		{0, 1.0},
-		{90, 0.7},
-		{180, 0.4},
-		{365, 0.4},
+		{180, 0.5},
+		{360, 0.25},
 		{-5, 1.0}, // future-dated / clock skew clamps to fresh
 	}
 	for _, c := range cases {
-		got := ownerRankWeight(c.ageDays)
-		assert.Truef(t, approx(got, c.want), "ownerRankWeight(%v) = %v, want %v", c.ageDays, got, c.want)
+		got := evidenceWeight(rankOwner, c.ageDays)
+		assert.Truef(t, approx(got, c.want), "evidenceWeight(owner, %v) = %v, want %v", c.ageDays, got, c.want)
 	}
 }
 
@@ -36,8 +36,10 @@ func TestEvidenceWeightRankOrder(t *testing.T) {
 	inferred := evidenceWeight(rankInferred, 0)
 	assert.Greater(t, owner, observed, "owner outranks observed")
 	assert.Greater(t, observed, inferred, "observed outranks inferred")
-	// Observed/inferred do not decay in Phase 3 (only owner rank does).
-	assert.Truef(t, approx(observed, evidenceWeight(rankObserved, 365)), "observed weight is age-invariant")
+	// Since 2026-07-26 (curve C) every rank decays on the same shared
+	// half-life, so observed weight is no longer age-invariant: at 365 days
+	// (~2.03 half-lives) it is 0.6 × 2^(-365/180) ≈ 0.147, well below fresh.
+	assert.Less(t, evidenceWeight(rankObserved, 365), observed, "observed weight now decays with age (curve C)")
 }
 
 // TestApplyOpShakeAlwaysTransitions: a direct contradiction (shake) always
@@ -241,7 +243,8 @@ func TestOwnerActionWeightOrder(t *testing.T) {
 	assert.Greater(t, ownerAction, observed, "owner-action outweighs observed")
 	assert.Greater(t, ownerFresh, ownerAction, "fresh owner outweighs owner-action")
 	assert.InDelta(t, 0.8, ownerAction, 1e-9)
-	assert.Equal(t, ownerAction, evidenceWeight(rankOwnerAction, 365), "owner-action weight is age-invariant (no decay)")
+	assert.Less(t, evidenceWeight(rankOwnerAction, 365), ownerAction,
+		"owner-action decays with age since 2026-07-26 (curve C) — a stale dismissal no longer weighs like a fresh one")
 }
 
 // TestApplyOpOwnerActionDoesNotProtectRetire is the MEM-06 non-protection
@@ -265,4 +268,34 @@ func TestApplyOpOwnerActionDoesNotProtectRetire(t *testing.T) {
 	got, dec = applyOp(beliefState{Confidence: 0.6, Stability: 0, Status: statusActive}, opRetire, owner)
 	assert.Equal(t, opDowngraded, dec, "owner rank still protects (MEM-06)")
 	assert.Equal(t, statusShaken, got.Status)
+}
+
+// TestEvidenceWeightHalfLife pins the 2026-07-26 curve-C decay: every rank
+// shares one 180-day exponential half-life (w = base × 2^(−age/180), no
+// floor), so rank RATIOS are age-invariant and curves can never cross.
+func TestEvidenceWeightHalfLife(t *testing.T) {
+	ranks := []struct {
+		rank evidenceRank
+		base float64
+	}{
+		{rankInferred, 0.3},
+		{rankObserved, 0.6},
+		{rankOwnerAction, 0.8},
+		{rankOwner, 1.0},
+	}
+	for _, r := range ranks {
+		assert.InDeltaf(t, r.base, evidenceWeight(r.rank, 0), 1e-9, "rank %v fresh", r.rank)
+		assert.InDeltaf(t, r.base/2, evidenceWeight(r.rank, 180), 1e-9, "rank %v at one half-life", r.rank)
+		assert.InDeltaf(t, r.base/4, evidenceWeight(r.rank, 360), 1e-9, "rank %v at two half-lives", r.rank)
+		assert.InDeltaf(t, r.base, evidenceWeight(r.rank, -5), 1e-9, "rank %v future-dated clamps to fresh", r.rank)
+	}
+	// Ordering holds at every age; ratios are age-invariant.
+	for _, age := range []float64{0, 180, 400} {
+		assert.Less(t, evidenceWeight(rankInferred, age), evidenceWeight(rankObserved, age))
+		assert.Less(t, evidenceWeight(rankObserved, age), evidenceWeight(rankOwnerAction, age))
+		assert.Less(t, evidenceWeight(rankOwnerAction, age), evidenceWeight(rankOwner, age))
+	}
+	assert.InDelta(t, 1.0/0.8,
+		evidenceWeight(rankOwner, 365)/evidenceWeight(rankOwnerAction, 365), 1e-9,
+		"owner:owner-action ratio is age-invariant")
 }
