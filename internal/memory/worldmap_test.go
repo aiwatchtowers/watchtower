@@ -136,3 +136,18 @@ func TestRenderIndexAnnotatesImportance(t *testing.T) {
 	require.NotEqual(t, -1, zebraIdx)
 	assert.Less(t, annaIdx, zebraIdx, "alphabetical order (Anna before Zebra) unaffected by importance weight")
 }
+
+func TestMapInputsRanksEntitiesByImportanceScore(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Low", "low importance project"))
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000002", "High", "high importance project"))
+	require.NoError(t, d.UpdateMemoryNodeImportanceScore("ent_00000000000000000000000001", 1.0))
+	require.NoError(t, d.UpdateMemoryNodeImportanceScore("ent_00000000000000000000000002", 5.0))
+	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
+
+	entities, _, _, err := p.mapInputs()
+	require.NoError(t, err)
+	require.Len(t, entities, 2)
+	assert.Equal(t, "ent_00000000000000000000000002", entities[0].id, "higher importance_score ranks first, not links-in")
+	assert.Equal(t, "ent_00000000000000000000000001", entities[1].id)
+}

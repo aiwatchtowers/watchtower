@@ -477,56 +477,6 @@ func TestMemoryNodeSubjectConfidenceDefaults(t *testing.T) {
 	}
 }
 
-// TestCountMemoryLinksInBulk: the grouped links-in query returns the same counts
-// as the per-id CountMemoryLinksIn, in one pass — self-links and tombstones
-// excluded, and every requested id present (0 when unlinked).
-func TestCountMemoryLinksInBulk(t *testing.T) {
-	db := openTestDB(t)
-
-	// a is linked by b and c; b is linked by c; c is linked by nobody. a's own
-	// body links to a (self-link, must not count). A tombstone links to a but is
-	// excluded.
-	if err := db.UpsertMemoryNode(memTestNode("ent_a", nil), "about a, see [[ent_a]] self", nil); err != nil {
-		t.Fatalf("UpsertMemoryNode a: %v", err)
-	}
-	if err := db.UpsertMemoryNode(memTestNode("ent_b", nil), "b references [[ent_a]]", nil); err != nil {
-		t.Fatalf("UpsertMemoryNode b: %v", err)
-	}
-	if err := db.UpsertMemoryNode(memTestNode("ent_c", nil), "c references [[ent_a]] and [[ent_b]]", nil); err != nil {
-		t.Fatalf("UpsertMemoryNode c: %v", err)
-	}
-	tomb := memTestNode("ent_t", func(r *MemoryNodeRow) { r.Status = "tombstone" })
-	if err := db.UpsertMemoryNode(tomb, "tombstone points at [[ent_a]]", nil); err != nil {
-		t.Fatalf("UpsertMemoryNode tomb: %v", err)
-	}
-
-	ids := []string{"ent_a", "ent_b", "ent_c", "ent_missing"}
-	got, err := db.CountMemoryLinksInBulk(ids)
-	if err != nil {
-		t.Fatalf("CountMemoryLinksInBulk: %v", err)
-	}
-
-	// Bulk result matches the per-id method for every id.
-	for _, id := range ids {
-		want, err := db.CountMemoryLinksIn(id)
-		if err != nil {
-			t.Fatalf("CountMemoryLinksIn(%s): %v", id, err)
-		}
-		if got[id] != want {
-			t.Errorf("bulk[%s] = %d, per-id = %d", id, got[id], want)
-		}
-	}
-	if got["ent_a"] != 2 {
-		t.Errorf("ent_a links-in = %d, want 2 (b + c, self and tombstone excluded)", got["ent_a"])
-	}
-	if got["ent_b"] != 1 {
-		t.Errorf("ent_b links-in = %d, want 1 (c)", got["ent_b"])
-	}
-	if _, ok := got["ent_missing"]; !ok {
-		t.Error("an unseen id must still get a (zero) entry")
-	}
-}
-
 func TestSearchMemoryFTSSnippetAndTombstones(t *testing.T) {
 	db := openTestDB(t)
 
