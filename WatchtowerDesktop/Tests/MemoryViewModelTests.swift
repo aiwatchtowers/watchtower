@@ -129,7 +129,7 @@ final class MemoryViewModelTests: XCTestCase {
 
     func testLoadFocusRawReturnsEmptyWhenFileMissing() async throws {
         let vm = try makeVM()
-        let raw = await vm.loadFocusRaw()
+        let raw = try await vm.loadFocusRaw()
         XCTAssertEqual(raw, "")
     }
 
@@ -144,8 +144,39 @@ final class MemoryViewModelTests: XCTestCase {
         let onDisk = try String(contentsOfFile: vaultDir + "/focus.md", encoding: .utf8)
         XCTAssertTrue(onDisk.contains("- widget launch"))
 
-        let reloaded = await vm.loadFocusRaw()
+        let reloaded = try await vm.loadFocusRaw()
         XCTAssertEqual(reloaded, onDisk)
+    }
+
+    // TestRunFocusSweepPerNodeFailureFreezesFingerprint's Swift counterpart
+    // (round-1 review panel, HIGH): `loadFocusRaw` used to swallow every read
+    // error (`try? … ?? ""`), so a real failure (here: focus.md is a
+    // DIRECTORY, not a file) read back indistinguishable from "missing" —
+    // `beginFocusEditing` would then open an editable sheet pre-filled with
+    // the template, and Save would silently overwrite/clobber the real
+    // on-disk state. It must instead surface the error and leave the sheet
+    // closed.
+    func testBeginFocusEditingSetsErrorOnUnreadableFileAndDoesNotOpen() async throws {
+        let vm = try makeVM()
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: vaultDir).appendingPathComponent("focus.md"),
+            withIntermediateDirectories: true
+        )
+
+        await vm.beginFocusEditing()
+
+        XCTAssertNotNil(vm.focusEditorError)
+        XCTAssertFalse(vm.isFocusEditing, "an unreadable focus.md must not open an editable sheet")
+    }
+
+    func testBeginFocusEditingOpensWithTemplateWhenFileMissing() async throws {
+        let vm = try makeVM()
+
+        await vm.beginFocusEditing()
+
+        XCTAssertNil(vm.focusEditorError)
+        XCTAssertTrue(vm.isFocusEditing)
+        XCTAssertEqual(vm.focusEditorText, MemoryFocusEditorSheet.template)
     }
 
     func testSaveFocusRawFailsWhileMemoryRunHoldsLock() async throws {

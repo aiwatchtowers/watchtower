@@ -343,6 +343,37 @@ final class MemoryViewModel {
         }
     }
 
+    // MARK: - Locked vault writes
+
+    /// Writes `text` to `fileURL` under the cross-process memory lock (the Go
+    /// pipeline's `vault.Lock`, taken here as a non-blocking flock) with an
+    /// atomic write — the one shared implementation behind every vault write
+    /// path (`saveEdit`, `saveFocusRaw`, `saveImportanceOverride`, all of
+    /// which previously triplicated this exact block; round-1 review panel
+    /// nit). Returns the user-facing error message on failure, nil on
+    /// success; callers keep their own distinct state handling (which flag
+    /// to clear, whether to reselect/reload).
+    private func lockedVaultWrite(_ text: String, to fileURL: URL) async -> String? {
+        let lockPath = lockURL.path
+        return await Task.detached(priority: .userInitiated) {
+            let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o644)
+            guard fd >= 0 else {
+                return "Cannot open memory lock: \(String(cString: strerror(errno)))"
+            }
+            defer { Darwin.close(fd) }
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+                return "A memory run is in progress — try again in a moment."
+            }
+            defer { flock(fd, LOCK_UN) }
+            do {
+                try text.write(to: fileURL, atomically: true, encoding: .utf8)
+                return nil
+            } catch {
+                return "Save failed: \(error.localizedDescription)"
+            }
+        }.value
+    }
+
     // MARK: - Editing (MEM-03 owner edits)
 
     func startEditing() {
@@ -365,28 +396,8 @@ final class MemoryViewModel {
     func saveEdit() async {
         guard let detail, detail.isEditable else { return }
         let fileURL = vaultURL.appendingPathComponent(detail.node.path)
-        let text = editorText
-        let lockPath = lockURL.path
 
-        let writeError: String? = await Task.detached(priority: .userInitiated) {
-            let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o644)
-            guard fd >= 0 else {
-                return "Cannot open memory lock: \(String(cString: strerror(errno)))"
-            }
-            defer { Darwin.close(fd) }
-            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-                return "A memory run is in progress — try again in a moment."
-            }
-            defer { flock(fd, LOCK_UN) }
-            do {
-                try text.write(to: fileURL, atomically: true, encoding: .utf8)
-                return nil
-            } catch {
-                return "Save failed: \(error.localizedDescription)"
-            }
-        }.value
-
-        if let writeError {
+        if let writeError = await lockedVaultWrite(editorText, to: fileURL) {
             editorError = writeError
             return
         }
@@ -401,11 +412,38 @@ final class MemoryViewModel {
     /// Raw contents of the vault-root `focus.md`, or "" when the file doesn't
     /// exist yet — a missing file is not an error here (unlike the per-node
     /// editor's `fileReadError`), it just means no directives have been
-    /// written. Template seeding for a fresh editor is the view's job, not
-    /// this method's — it never writes anything.
-    func loadFocusRaw() async -> String {
+    /// written. Any OTHER failure (EACCES, the path being a directory, a
+    /// decode failure, …) now PROPAGATES instead of collapsing into "" —
+    /// round-1 review panel, HIGH: the previous `try? … ?? ""` made a real
+    /// read error indistinguishable from "missing", so `beginFocusEditing`
+    /// would open an editable sheet pre-filled with the template and Save
+    /// would silently overwrite the real file. Template seeding for a fresh
+    /// editor is `beginFocusEditing`'s job, not this method's — it never
+    /// writes anything.
+    func loadFocusRaw() async throws -> String {
         let fileURL = vaultURL.appendingPathComponent("focus.md")
-        return (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return "" }
+        return try String(contentsOf: fileURL, encoding: .utf8)
+    }
+
+    /// Loads focus.md and opens the editor sheet — the VM-owned counterpart
+    /// of the per-node editor's `startEditing` (style reviewer: this used to
+    /// live in `MemoryView` as a private view function). A missing file
+    /// pre-fills the fixed template (nothing is written to disk until Save);
+    /// a real read error sets `focusEditorError` and leaves the sheet CLOSED
+    /// — mirroring the per-node editor's `fileReadError`/`isEditable` guard,
+    /// so an unreadable focus.md can never open editable and have Save
+    /// clobber it.
+    func beginFocusEditing() async {
+        do {
+            let raw = try await loadFocusRaw()
+            focusEditorText = raw.isEmpty ? MemoryFocusEditorSheet.template : raw
+            focusEditorError = nil
+            isFocusEditing = true
+        } catch {
+            focusEditorError = "Cannot read focus.md: \(error.localizedDescription)"
+            isFocusEditing = false
+        }
     }
 
     func cancelFocusEditing() {
@@ -422,27 +460,8 @@ final class MemoryViewModel {
         defer { isSavingFocus = false }
 
         let fileURL = vaultURL.appendingPathComponent("focus.md")
-        let lockPath = lockURL.path
 
-        let writeError: String? = await Task.detached(priority: .userInitiated) {
-            let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o644)
-            guard fd >= 0 else {
-                return "Cannot open memory lock: \(String(cString: strerror(errno)))"
-            }
-            defer { Darwin.close(fd) }
-            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-                return "A memory run is in progress — try again in a moment."
-            }
-            defer { flock(fd, LOCK_UN) }
-            do {
-                try text.write(to: fileURL, atomically: true, encoding: .utf8)
-                return nil
-            } catch {
-                return "Save failed: \(error.localizedDescription)"
-            }
-        }.value
-
-        if let writeError {
+        if let writeError = await lockedVaultWrite(text, to: fileURL) {
             focusEditorError = writeError
             return
         }
@@ -464,27 +483,8 @@ final class MemoryViewModel {
         let newRaw = "---\n\(patched)\n---\n\(body)"
         guard newRaw != detail.raw else { return } // no-op: nothing actually changed
         let fileURL = vaultURL.appendingPathComponent(detail.node.path)
-        let lockPath = lockURL.path
 
-        let writeError: String? = await Task.detached(priority: .userInitiated) {
-            let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o644)
-            guard fd >= 0 else {
-                return "Cannot open memory lock: \(String(cString: strerror(errno)))"
-            }
-            defer { Darwin.close(fd) }
-            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-                return "A memory run is in progress — try again in a moment."
-            }
-            defer { flock(fd, LOCK_UN) }
-            do {
-                try newRaw.write(to: fileURL, atomically: true, encoding: .utf8)
-                return nil
-            } catch {
-                return "Save failed: \(error.localizedDescription)"
-            }
-        }.value
-
-        if let writeError {
+        if let writeError = await lockedVaultWrite(newRaw, to: fileURL) {
             importanceError = writeError
             return
         }

@@ -25,6 +25,18 @@ struct MemoryView: View {
             .sheet(isPresented: $vm.isFocusEditing) {
                 MemoryFocusEditorSheet(vm: vm)
             }
+            // A focus.md READ failure (permissions, a directory in its place, a
+            // decode error, …) sets focusEditorError but deliberately leaves the
+            // sheet closed (beginFocusEditing) — surfaced here instead, since a
+            // save-time error (sheet already open) is shown inline in the sheet.
+            .alert("Focus file error", isPresented: Binding(
+                get: { vm.focusEditorError != nil && !vm.isFocusEditing },
+                set: { if !$0 { vm.focusEditorError = nil } }
+            )) {
+                Button("OK") { vm.focusEditorError = nil }
+            } message: {
+                Text(vm.focusEditorError ?? "")
+            }
     }
 
     @ViewBuilder
@@ -60,23 +72,13 @@ struct MemoryView: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    Task { await openFocusEditor() }
+                    Task { await vm.beginFocusEditing() }
                 } label: {
                     Label("Focus", systemImage: "scope")
                 }
                 .help("Edit focus.md — the Now/Cooled salience directives")
             }
         }
-    }
-
-    /// Loads focus.md and opens the editor sheet; a missing file is pre-filled
-    /// with the fixed template here in the view — nothing is written to disk
-    /// until Save (vm.loadFocusRaw/saveFocusRaw never see the template).
-    private func openFocusEditor() async {
-        let raw = await vm.loadFocusRaw()
-        vm.focusEditorText = raw.isEmpty ? MemoryFocusEditorSheet.template : raw
-        vm.focusEditorError = nil
-        vm.isFocusEditing = true
     }
 
     private var sortBar: some View {
