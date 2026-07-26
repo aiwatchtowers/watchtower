@@ -11,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"watchtower/internal/db"
 )
 
 // focusFileName is the vault-root file the owner edits to steer memory
@@ -100,45 +98,61 @@ func matchFingerprint(now, cooled []string) string {
 // readFocusFile reads the vault-root focus.md file. It is owner-authored and
 // this package never writes it (mirroring how map.md/index.md are vault-root
 // files, but reversed direction). A missing file is a clean miss, not an
-// error, so callers can treat "no focus.md yet" the same as "no directives".
-func (p *Pipeline) readFocusFile() (string, bool, error) {
+// error, so callers can treat "no focus.md yet" the same as "no directives"
+// — both read back as the empty string, so no separate presence flag is
+// needed (round-1 review panel nit: the bool was never consumed).
+func (p *Pipeline) readFocusFile() (string, error) {
 	raw, err := os.ReadFile(filepath.Join(p.vault.path, focusFileName))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", false, nil
+			return "", nil
 		}
-		return "", false, fmt.Errorf("memory: read focus.md: %w", err)
+		return "", fmt.Errorf("memory: read focus.md: %w", err)
 	}
-	return string(raw), true, nil
+	return string(raw), nil
+}
+
+// focusTitle is one node's id paired with its title pre-folded to lowercase
+// — matchFocus's snapshot lowers every title ONCE per call (round-1 review
+// panel nit: matchBullet used to call strings.ToLower(t.Title) once per
+// candidate per bullet, redoing the same fold on every title over and over).
+type focusTitle struct {
+	ID    string
+	Lower string
 }
 
 // matchFocus resolves a parsed focusDirectives' bullets to memory node ids.
 // For each bullet it tries, on the whole trimmed bullet AND on each
 // comma-separated fragment: (1) LookupMemoryAlias, (2) a case-insensitive
 // substring match against every non-tombstone node's title. The title
-// candidates are fetched ONCE per call via ListMemoryNodeTitles — final-
-// review Fix 3: matching used to run one ListMemoryNodeIDsByTitleMatch SQL
-// query per candidate, relying on SQLite's lower(), which folds ASCII only
-// and silently misses non-Latin titles (the owner works in Russian); folding
-// case in Go with strings.ToLower handles Unicode correctly, and fetching
-// the title list once per pass (rather than once per candidate) is also
-// cheaper. No bullets at all skips the fetch entirely (kept for
-// TestRunFocusSweepErrorFreezesFingerprint's isolation: an empty focus.md
-// must never touch memory_nodes, so a dropped-table failure is attributable
-// to the sweep alone). Every id found across those probes is unioned into
-// the bullet's section set. A bullet that resolves nothing logs once and
-// contributes nothing (not an error — an owner typo shouldn't freeze the
-// whole focus step). A node id that lands in both sections is kept in Now
-// only (logged once) — Now always wins the tie. A DB error from either probe
-// propagates immediately so the caller can freeze the step.
+// candidates are fetched ONCE per call via ListMemoryNodeTitles and their
+// titles lowered ONCE — final-review Fix 3: matching used to run one
+// ListMemoryNodeIDsByTitleMatch SQL query per candidate, relying on SQLite's
+// lower(), which folds ASCII only and silently misses non-Latin titles (the
+// owner works in Russian); folding case in Go with strings.ToLower handles
+// Unicode correctly, and fetching the title list once per pass (rather than
+// once per candidate) is also cheaper. No bullets at all skips the fetch
+// entirely (kept for TestRunFocusSweepErrorFreezesFingerprint's isolation:
+// an empty focus.md must never touch memory_nodes, so a dropped-table
+// failure is attributable to the sweep alone). Every id found across those
+// probes is unioned into the bullet's section set. A bullet that resolves
+// nothing logs once and contributes nothing (not an error — an owner typo
+// shouldn't freeze the whole focus step). A node id that lands in both
+// sections is kept in Now only (logged once) — Now always wins the tie. A DB
+// error from either probe propagates immediately so the caller can freeze
+// the step.
 func (p *Pipeline) matchFocus(fd focusDirectives) (now, cooled []string, err error) {
 	if len(fd.Now) == 0 && len(fd.Cooled) == 0 {
 		return nil, nil, nil
 	}
 
-	titles, err := p.db.ListMemoryNodeTitles()
+	rawTitles, err := p.db.ListMemoryNodeTitles()
 	if err != nil {
 		return nil, nil, fmt.Errorf("memory: focus: list node titles: %w", err)
+	}
+	titles := make([]focusTitle, len(rawTitles))
+	for i, t := range rawTitles {
+		titles[i] = focusTitle{ID: t.ID, Lower: strings.ToLower(t.Title)}
 	}
 
 	nowIDs := map[string]bool{}
@@ -161,9 +175,9 @@ func (p *Pipeline) matchFocus(fd focusDirectives) (now, cooled []string, err err
 }
 
 // resolveBulletsInto resolves each bullet to node ids (via matchBullet,
-// matched against the shared titles snapshot) and unions the hits into dst,
-// logging a no-match line per unresolved bullet.
-func (p *Pipeline) resolveBulletsInto(bullets []string, titles []db.MemoryNodeTitle, dst map[string]bool) error {
+// matched against the shared lowered-titles snapshot) and unions the hits
+// into dst, logging a no-match line per unresolved bullet.
+func (p *Pipeline) resolveBulletsInto(bullets []string, titles []focusTitle, dst map[string]bool) error {
 	for _, bullet := range bullets {
 		ids, err := p.matchBullet(bullet, titles)
 		if err != nil {
@@ -183,8 +197,8 @@ func (p *Pipeline) resolveBulletsInto(bullets []string, titles []db.MemoryNodeTi
 // matchBullet resolves one bullet (the whole trimmed text plus each
 // comma-separated fragment) to a set of node ids via alias lookup and a
 // Unicode-case-folded substring match against titles (matchFocus's one
-// fetch-per-pass snapshot).
-func (p *Pipeline) matchBullet(bullet string, titles []db.MemoryNodeTitle) (map[string]bool, error) {
+// fetch-and-lower-per-pass snapshot).
+func (p *Pipeline) matchBullet(bullet string, titles []focusTitle) (map[string]bool, error) {
 	candidates := []string{bullet}
 	for _, frag := range strings.Split(bullet, ",") {
 		frag = strings.TrimSpace(frag)
@@ -203,7 +217,7 @@ func (p *Pipeline) matchBullet(bullet string, titles []db.MemoryNodeTitle) (map[
 
 		needle := strings.ToLower(c)
 		for _, t := range titles {
-			if strings.Contains(strings.ToLower(t.Title), needle) {
+			if strings.Contains(t.Lower, needle) {
 				ids[t.ID] = true
 			}
 		}
@@ -230,23 +244,26 @@ func sortedSet(m map[string]bool) []string {
 // (final-review Fix 2 — matchFocus runs on every gated call, not just when
 // the file text changed, so a bullet naming a not-yet-existing node stops
 // being permanently inert once that node shows up), and when the RESOLVED
-// match set's fingerprint differs from the last APPLIED one, rewrite
-// memory_focus_matches wholesale, sweep EVERY indexed node's persisted
-// importance_score (a focus edit touches no node file, so the MEM-16
-// touched-node refresh would never see it), and only after both succeeded
-// store the new fingerprint (freeze-on-error: a failed sweep leaves the old
-// fingerprint so the next run retries). Runs after the owner-edit commit +
-// Reconcile (the focus edit is committed, the index is fresh) and before
-// every consumer of importance. The gate itself is checked by the caller
-// (Run), the calendar/mirror/jira precedent — this function always does the
-// work when called. Returns the number of pipeline_steps rows recorded (0
-// when the resolved set is unchanged — no step row at all, mirroring
-// "nothing to do" elsewhere in this package) and an error that is logged by
-// the caller but never fails the run (source-isolation precedent).
+// match set's fingerprint differs from the last APPLIED one, apply it via
+// applyFocusState: rewrite memory_focus_matches wholesale, sweep EVERY
+// indexed node's persisted importance_score (a focus edit touches no node
+// file, so the MEM-16 touched-node refresh would never see it), and only
+// after BOTH the rewrite AND a fully clean sweep (zero per-node failures)
+// store the new fingerprint (freeze-on-error/freeze-on-partial-failure: a
+// failed or partially-failed sweep leaves the old fingerprint so the next
+// run retries — round-1 review panel, the matches themselves are correct and
+// stay written even when the fingerprint holds). Runs after the owner-edit
+// commit + Reconcile (the focus edit is committed, the index is fresh) and
+// before every consumer of importance. The gate itself is checked by the
+// caller (Run), the calendar/mirror/jira precedent — this function always
+// does the work when called. Returns the number of pipeline_steps rows
+// recorded (0 when the resolved set is unchanged — no step row at all,
+// mirroring "nothing to do" elsewhere in this package) and an error that is
+// logged by the caller but never fails the run (source-isolation precedent).
 func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, error) {
 	step := stepOffset + 1
 
-	raw, _, err := p.readFocusFile()
+	raw, err := p.readFocusFile()
 	if err != nil {
 		p.recordSemanticStep(runID, &step, "focus", "error", nil, time.Now())
 		return 1, err
@@ -271,31 +288,7 @@ func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, 
 		return 0, nil
 	}
 
-	start := time.Now()
-	if err := p.db.ReplaceFocusMatches(now, cooled); err != nil {
-		p.recordSemanticStep(runID, &step, "focus", "error", nil, start)
-		return 1, err
-	}
-	stats.FocusMatched += len(now) + len(cooled)
-
-	swept, failed, err := p.sweepFocusImportance()
-	stats.FocusSwept += swept
-	stats.FocusFailed += failed
-	if err != nil {
-		p.recordSemanticStep(runID, &step, "focus", "error", nil, start)
-		return 1, err
-	}
-
-	// Only now, with the match rewrite AND the whole-vault sweep both
-	// committed, does the applied fingerprint advance — a failure anywhere
-	// above leaves it exactly as it was so the next run retries the same work.
-	if err := p.db.SetFocusFingerprint(fp); err != nil {
-		p.recordSemanticStep(runID, &step, "focus", "error", nil, start)
-		return 1, err
-	}
-
-	p.recordSemanticStep(runID, &step, "focus", "done", nil, start)
-	return 1, nil
+	return p.applyFocusState(runID, "focus", now, cooled, fp, stats, time.Now())
 }
 
 // sweepFocusImportance recomputes and persists importance_score for EVERY
@@ -308,9 +301,13 @@ func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, 
 // indexed, or one of computeNodeImportance's signal reads errors) is logged,
 // skipped, and counted in failed — quarantine philosophy, the same
 // log-and-keep-prior-value policy index.go's refineLinkedNode already uses.
-// Only a failure reading the node LIST itself (ListMemoryNodes) is DB-wide and
-// propagates, freezing the whole focus step (the caller never advances the
-// fingerprint on that error).
+// Quarantined per-node failures do not fail the sweep itself (err is nil,
+// the healthy nodes' scores are still updated) but the caller (applyFocusState)
+// holds the applied fingerprint back for retry whenever failed > 0 — a
+// partially-failed sweep must never read back as "fully applied" (round-1
+// review panel, blocker). Only a failure reading the node LIST itself
+// (ListMemoryNodes) is DB-wide and propagates, freezing the whole focus step
+// the same way.
 func (p *Pipeline) sweepFocusImportance() (swept, failed int, err error) {
 	nodes, err := p.db.ListMemoryNodes()
 	if err != nil {
@@ -350,13 +347,15 @@ func (p *Pipeline) sweepFocusImportance() (swept, failed int, err error) {
 // neutralized by a prior disabled run) — the fast path, 0 steps, no DB write
 // at all, so a never-enabled workspace stays byte-identical
 // (TestRunFocusGateOffByteIdentical). A non-empty fingerprint means residual
-// state exists: memory_focus_matches is emptied, every indexed node's
-// importance_score is swept back to its unboosted value (sweepFocusImportance
-// reused verbatim — same computation, focus now reads back as "" for every
-// node since the table is already empty), and only once both succeeded does
-// the fingerprint clear to "" — the same freeze-on-error discipline as
-// runFocus, so a failed sweep leaves the fingerprint non-empty and the next
-// run retries the neutralization instead of silently losing residual state.
+// state exists: applyFocusState empties memory_focus_matches, sweeps every
+// indexed node's importance_score back to its unboosted value
+// (sweepFocusImportance reused verbatim — same computation, focus now reads
+// back as "" for every node since the table is already empty), and only
+// once both the rewrite AND a fully clean sweep succeeded does the
+// fingerprint clear to "" — the same freeze-on-error/freeze-on-partial-
+// failure discipline as runFocus, so a failed or partially-failed sweep
+// leaves the fingerprint non-empty and the next run retries the
+// neutralization instead of silently losing residual state.
 func (p *Pipeline) runFocusDisable(runID int64, stepOffset int, stats *RunStats) (int, error) {
 	step := stepOffset + 1
 
@@ -369,25 +368,52 @@ func (p *Pipeline) runFocusDisable(runID int64, stepOffset int, stats *RunStats)
 		return 0, nil
 	}
 
-	start := time.Now()
-	if err := p.db.ReplaceFocusMatches(nil, nil); err != nil {
-		p.recordSemanticStep(runID, &step, "focus-disable", "error", nil, start)
+	return p.applyFocusState(runID, "focus-disable", nil, nil, "", stats, time.Now())
+}
+
+// applyFocusState performs the ReplaceFocusMatches → sweep →
+// (failed==0 ? SetFocusFingerprint : hold) sequence shared by runFocus (which
+// passes the newly-resolved now/cooled sets and their fingerprint) and
+// runFocusDisable (which passes nil/nil/"" — the neutralized state). Each
+// stage freezes independently: a ReplaceFocusMatches error, a sweep error, or
+// a sweep that completes with failed > 0 all record the step "error" and
+// return without advancing/clearing the fingerprint — round-1 review panel,
+// blocker: a sweep that only partially applied must never read back as
+// "fully applied". The match rewrite itself is correct and stays written in
+// the failed>0 case (only the applied-fingerprint advance waits for a clean
+// sweep, so the next run's fingerprint comparison retries the sweep, not the
+// already-correct match set). stepOffset is always 0 at both call sites
+// today, so step is a fixed 1 here — the same value stepOffset+1 always
+// resolved to before this helper existed.
+func (p *Pipeline) applyFocusState(runID int64, stepName string, now, cooled []string, fp string, stats *RunStats, start time.Time) (int, error) {
+	step := 1
+
+	if err := p.db.ReplaceFocusMatches(now, cooled); err != nil {
+		p.recordSemanticStep(runID, &step, stepName, "error", nil, start)
 		return 1, err
 	}
+	stats.FocusMatched += len(now) + len(cooled)
 
 	swept, failed, err := p.sweepFocusImportance()
 	stats.FocusSwept += swept
 	stats.FocusFailed += failed
 	if err != nil {
-		p.recordSemanticStep(runID, &step, "focus-disable", "error", nil, start)
+		p.recordSemanticStep(runID, &step, stepName, "error", nil, start)
+		return 1, err
+	}
+	if failed > 0 {
+		p.logf("memory: focus: %d node(s) failed in sweep — fingerprint held for retry", failed)
+		p.recordSemanticStep(runID, &step, stepName, "error", nil, start)
+		return 1, nil
+	}
+
+	// Only now, with the match rewrite AND a fully clean whole-vault sweep
+	// both committed, does the applied fingerprint advance.
+	if err := p.db.SetFocusFingerprint(fp); err != nil {
+		p.recordSemanticStep(runID, &step, stepName, "error", nil, start)
 		return 1, err
 	}
 
-	if err := p.db.SetFocusFingerprint(""); err != nil {
-		p.recordSemanticStep(runID, &step, "focus-disable", "error", nil, start)
-		return 1, err
-	}
-
-	p.recordSemanticStep(runID, &step, "focus-disable", "done", nil, start)
+	p.recordSemanticStep(runID, &step, stepName, "done", nil, start)
 	return 1, nil
 }

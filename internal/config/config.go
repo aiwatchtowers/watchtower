@@ -264,11 +264,14 @@ type MemoryRetrieveConfig struct {
 	MeetingPrepCompare bool `mapstructure:"meeting_prep_compare"` // meeting-prep's attendee memory context also runs RetrieveBySubject and shadow-diffs against the legacy confidence-ordered belief selection (default: false)
 }
 
-// MemoryFocusConfig gates the focus-salience Run step independently — a
-// no-op when Enabled is false: focus.md (internal/memory/focus.go) is never
-// parsed, memory_focus_matches stays whatever it last was, and no node's
-// persisted importance_score is swept for a focus change. Default false
-// (dark by default).
+// MemoryFocusConfig gates the focus-salience Run step independently. When
+// Enabled is false, focus.md (internal/memory/focus.go) is never parsed —
+// but the gate-off path still runs runFocusDisable, which neutralizes any
+// residual memory_focus_matches rows / boosted importance_scores left over
+// from a prior enabled run whenever the stored fingerprint is non-empty; it
+// is a fast no-op (no DB write at all) only once that fingerprint is already
+// empty, i.e. a workspace that never had focus enabled, or one already
+// neutralized by an earlier disabled run. Default false (dark by default).
 type MemoryFocusConfig struct {
 	Enabled bool `mapstructure:"enabled"` // enable the focus-salience Run step: fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep (default: false)
 }

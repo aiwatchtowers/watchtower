@@ -2227,6 +2227,12 @@ func (db *DB) SetFocusFingerprint(fp string) error {
 
 // ReplaceFocusMatches rewrites the matched-node set wholesale in one
 // transaction — the focus counterpart of the alias/FTS replace discipline.
+// now and cooled are guaranteed disjoint by the caller (memory.matchFocus
+// resolves the Now/Cooled tie itself, keeping a doubly-matched node in Now
+// only, before this is ever called), so both loops use a plain INSERT: a
+// duplicate node_id here would mean matchFocus's tie-break broke, and should
+// fail loudly (a UNIQUE constraint violation) rather than be silently
+// papered over by OR REPLACE/OR IGNORE (round-1 review panel nit).
 func (db *DB) ReplaceFocusMatches(now, cooled []string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -2237,12 +2243,12 @@ func (db *DB) ReplaceFocusMatches(now, cooled []string) error {
 		return fmt.Errorf("clearing focus matches: %w", err)
 	}
 	for _, id := range now {
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO memory_focus_matches (node_id, state) VALUES (?, 'now')`, id); err != nil {
+		if _, err := tx.Exec(`INSERT INTO memory_focus_matches (node_id, state) VALUES (?, 'now')`, id); err != nil {
 			return fmt.Errorf("inserting focus match %s: %w", id, err)
 		}
 	}
 	for _, id := range cooled {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO memory_focus_matches (node_id, state) VALUES (?, 'cooled')`, id); err != nil {
+		if _, err := tx.Exec(`INSERT INTO memory_focus_matches (node_id, state) VALUES (?, 'cooled')`, id); err != nil {
 			return fmt.Errorf("inserting cooled match %s: %w", id, err)
 		}
 	}

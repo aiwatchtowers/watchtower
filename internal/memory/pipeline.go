@@ -95,7 +95,7 @@ type RunStats struct {
 	CompareRefsRejected int // invented render refs dropped across all compared channels (MEM-13)
 
 	// Focus salience (zero unless memory.focus.enabled).
-	FocusMatched int // nodes newly matched into memory_focus_matches ("now" + "cooled") by a changed focus.md
+	FocusMatched int // nodes in the applied match set ("now" + "cooled") written to memory_focus_matches this run
 	FocusSwept   int // nodes whose persisted importance_score was recomputed by the whole-vault sweep
 	FocusFailed  int // nodes the sweep skipped after a per-node signal/read error (quarantine philosophy)
 }

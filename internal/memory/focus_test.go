@@ -118,9 +118,8 @@ func TestReadFocusFile(t *testing.T) {
 		p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 		require.NoError(t, os.WriteFile(filepath.Join(v.path, "focus.md"), []byte("## Now\n- CEX\n"), 0o644))
 
-		raw, present, err := p.readFocusFile()
+		raw, err := p.readFocusFile()
 		require.NoError(t, err)
-		assert.True(t, present)
 		assert.Equal(t, "## Now\n- CEX\n", raw)
 	})
 
@@ -128,9 +127,8 @@ func TestReadFocusFile(t *testing.T) {
 		v, d := newTestVault(t), newTestDB(t)
 		p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 
-		raw, present, err := p.readFocusFile()
+		raw, err := p.readFocusFile()
 		require.NoError(t, err)
-		assert.False(t, present)
 		assert.Equal(t, "", raw)
 	})
 }
@@ -410,6 +408,88 @@ func TestRunFocusSweepErrorFreezesFingerprint(t *testing.T) {
 	fp, ferr := d.FocusFingerprint()
 	require.NoError(t, ferr)
 	assert.Equal(t, "sentinel-old-fp", fp, "a failed sweep must freeze the fingerprint")
+}
+
+// TestRunFocusSweepPerNodeFailureFreezesFingerprint (round-1 review panel,
+// blocker): sweepFocusImportance quarantines per-node failures (err == nil,
+// failed > 0) instead of erroring the whole sweep — the prior runFocus code
+// only froze the fingerprint on a non-nil err, so a partially-failed sweep
+// still advanced the fingerprint as "fully applied" even though one node's
+// score was never refreshed. It must instead hold the fingerprint for retry;
+// the healthy node's score is still updated (quarantine, not all-or-nothing).
+func TestRunFocusSweepPerNodeFailureFreezesFingerprint(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	healthyID := "ent_00000000000000000000000cex"
+	writeAndIndex(t, v, d, Node{
+		ID: healthyID, Type: "entity", Tier: "long", Status: "active",
+		Title: "CEX Exchange", Aliases: []string{"CEX"}, Body: "# CEX Exchange\n",
+	})
+	require.NoError(t, d.UpdateMemoryNodeImportanceScore(healthyID, 999))
+
+	// Indexed in the DB but its file was never written to the vault — the
+	// sweep's ReadNode fails for this one node alone.
+	missingID := "ent_00000000000000000000miss1"
+	indexNode(t, d, Node{ID: missingID, Type: "entity", Tier: "long", Status: "active", Title: "Missing File"})
+
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, focusFileName), []byte("## Now\n- CEX\n"), 0o644))
+
+	runID, err := d.CreatePipelineRun("memory", "test", "")
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
+	var stats RunStats
+	n, err := p.runFocus(runID, 0, &stats)
+	require.NoError(t, err, "a quarantined per-node failure does not fail the whole step")
+	assert.Equal(t, 1, n)
+	assert.Equal(t, 1, stats.FocusSwept, "the healthy node was still swept")
+	assert.Equal(t, 1, stats.FocusFailed, "the missing-file node was quarantined")
+
+	fp, ferr := d.FocusFingerprint()
+	require.NoError(t, ferr)
+	assert.Empty(t, fp, "a per-node sweep failure must hold the fingerprint back for retry")
+
+	healthy, err := d.GetMemoryNode(healthyID)
+	require.NoError(t, err)
+	assert.NotEqual(t, 999.0, healthy.ImportanceScore, "the healthy node's score is still updated despite the other node's failure")
+
+	steps, err := d.GetPipelineSteps(runID)
+	require.NoError(t, err)
+	require.NotEmpty(t, steps)
+	assert.Equal(t, "error", steps[len(steps)-1].Status, "the step records error even though matches/healthy sweep applied")
+}
+
+// TestRunFocusDisablePerNodeFailureHoldsFingerprint: the disable path shares
+// applyFocusState with the enable path, so a per-node sweep failure while
+// neutralizing residual focus state must likewise hold the (non-empty)
+// fingerprint instead of clearing it — otherwise a broken neutralization
+// would look complete and never retry.
+func TestRunFocusDisablePerNodeFailureHoldsFingerprint(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	require.NoError(t, d.SetFocusFingerprint("sentinel-fp"))
+
+	healthyID := "ent_00000000000000000000000cex"
+	writeAndIndex(t, v, d, Node{
+		ID: healthyID, Type: "entity", Tier: "long", Status: "active",
+		Title: "CEX Exchange", Body: "# CEX Exchange\n",
+	})
+	require.NoError(t, d.UpdateMemoryNodeImportanceScore(healthyID, 999))
+
+	missingID := "ent_00000000000000000000miss1"
+	indexNode(t, d, Node{ID: missingID, Type: "entity", Tier: "long", Status: "active", Title: "Missing File"})
+
+	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
+	var stats RunStats
+	n, err := p.runFocusDisable(1, 0, &stats)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, 1, stats.FocusFailed)
+
+	fp, ferr := d.FocusFingerprint()
+	require.NoError(t, ferr)
+	assert.Equal(t, "sentinel-fp", fp, "a per-node sweep failure on the disable path must hold the fingerprint so neutralization retries")
 }
 
 // TestRunFocusGateOffByteIdentical: with memory.focus.enabled off, adding
