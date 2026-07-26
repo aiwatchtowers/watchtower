@@ -75,38 +75,38 @@ func TestParseFocus(t *testing.T) {
 	}
 }
 
-// ── focusDirectives.fingerprint ─────────────────────────────────────────────
+// ── matchFingerprint ─────────────────────────────────────────────────────
+//
+// matchFingerprint replaced focusDirectives.fingerprint() (final-review Fix
+// 2): the fingerprint now hashes the RESOLVED match set (node ids), not the
+// raw directive text, so it is exercised with ids rather than free-text
+// bullets — the case/space-normalization behavior of the old text fingerprint
+// no longer applies (ids are already canonical).
 
-func TestFocusDirectivesFingerprint(t *testing.T) {
+func TestMatchFingerprint(t *testing.T) {
 	t.Run("empty is stable non-special value", func(t *testing.T) {
-		fp1 := focusDirectives{}.fingerprint()
-		fp2 := focusDirectives{}.fingerprint()
+		fp1 := matchFingerprint(nil, nil)
+		fp2 := matchFingerprint(nil, nil)
 		assert.NotEmpty(t, fp1)
 		assert.Equal(t, fp1, fp2)
 	})
 
-	t.Run("bullet reorder within a section is invariant", func(t *testing.T) {
-		a := focusDirectives{Now: []string{"CEX", "Hashbank"}, Cooled: []string{"old"}}
-		b := focusDirectives{Now: []string{"Hashbank", "CEX"}, Cooled: []string{"old"}}
-		assert.Equal(t, a.fingerprint(), b.fingerprint())
+	t.Run("id reorder within a section is invariant", func(t *testing.T) {
+		a := matchFingerprint([]string{"ent_a", "ent_b"}, []string{"ent_c"})
+		b := matchFingerprint([]string{"ent_b", "ent_a"}, []string{"ent_c"})
+		assert.Equal(t, a, b)
 	})
 
-	t.Run("moving a bullet between sections changes it", func(t *testing.T) {
-		a := focusDirectives{Now: []string{"CEX"}, Cooled: []string{"old"}}
-		b := focusDirectives{Now: []string{"old"}, Cooled: []string{"CEX"}}
-		assert.NotEqual(t, a.fingerprint(), b.fingerprint())
-	})
-
-	t.Run("case and space normalization", func(t *testing.T) {
-		a := focusDirectives{Now: []string{"CEX"}}
-		b := focusDirectives{Now: []string{"  cex  "}}
-		assert.Equal(t, a.fingerprint(), b.fingerprint())
+	t.Run("moving an id between sections changes it", func(t *testing.T) {
+		a := matchFingerprint([]string{"ent_a"}, []string{"ent_b"})
+		b := matchFingerprint([]string{"ent_b"}, []string{"ent_a"})
+		assert.NotEqual(t, a, b)
 	})
 
 	t.Run("different content differs", func(t *testing.T) {
-		a := focusDirectives{Now: []string{"CEX"}}
-		b := focusDirectives{Now: []string{"Hashbank"}}
-		assert.NotEqual(t, a.fingerprint(), b.fingerprint())
+		a := matchFingerprint([]string{"ent_a"}, nil)
+		b := matchFingerprint([]string{"ent_b"}, nil)
+		assert.NotEqual(t, a, b)
 	})
 }
 
@@ -288,12 +288,17 @@ func TestRunFocusSweepOnFingerprintChange(t *testing.T) {
 
 	fp, err := d.FocusFingerprint()
 	require.NoError(t, err)
-	assert.Equal(t, focusDirectives{Now: []string{"CEX"}}.fingerprint(), fp, "fingerprint column advances to the applied directive set")
+	assert.Equal(t, matchFingerprint([]string{entID}, nil), fp, "fingerprint column advances to the resolved match set")
 }
 
 // TestRunFocusUnchangedFingerprintNoSweep: a second runFocus call against the
-// same focus.md content is a no-op — no rewrite, no sweep, 0 steps — proven
-// by a hand-tweaked sentinel importance_score surviving untouched.
+// same focus.md content AND the same index is a no-op — no rewrite, no
+// sweep, 0 steps — proven by a hand-tweaked sentinel importance_score
+// surviving untouched. Post Fix 2, matchFocus re-resolves on every call, but
+// since neither the file nor the index changed between calls, the RESOLVED
+// SET is identical and the fingerprint comparison still short-circuits (see
+// TestRunFocusMatchesNodeCreatedLater below for the case where the index
+// changes and the no-op breaks, as intended).
 func TestRunFocusUnchangedFingerprintNoSweep(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
@@ -320,6 +325,46 @@ func TestRunFocusUnchangedFingerprintNoSweep(t *testing.T) {
 	got, err := d.GetMemoryNode(entID)
 	require.NoError(t, err)
 	assert.Equal(t, 12345.0, got.ImportanceScore, "an unchanged-fingerprint run must not overwrite the sentinel")
+}
+
+// TestRunFocusMatchesNodeCreatedLater (Fix 2, final-review wave): the
+// fingerprint hashes the RESOLVED match set, not focus.md's raw text, so a
+// bullet naming a node that doesn't exist yet is not permanently inert — the
+// very next gated run re-resolves it (matchFocus always runs) and, once the
+// node shows up, matches and boosts it with NO focus.md edit at all.
+func TestRunFocusMatchesNodeCreatedLater(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, focusFileName), []byte("## Now\n- CEX\n"), 0o644))
+
+	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
+	var stats RunStats
+	n, err := p.runFocus(1, 0, &stats)
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "first run applies the (empty) resolved set — no node named CEX exists yet")
+	assert.Zero(t, stats.FocusMatched)
+
+	// The focused entity shows up later, seeded in a subsequent run — no
+	// focus.md edit at all. It carries a situation:1 alias so its organic
+	// base importance is exactly 1.0 (the situation-origin bonus alone), the
+	// same unambiguous-doubling setup as TestRunFocusSweepOnFingerprintChange.
+	entID := "ent_00000000000000000000000cex"
+	writeAndIndex(t, v, d, Node{
+		ID: entID, Type: "entity", Tier: "long", Status: "active",
+		Title: "CEX Exchange", Aliases: []string{"CEX", "situation:1"}, Body: "# CEX Exchange\n",
+	})
+
+	n2, err := p.runFocus(1, 0, &stats)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n2, "resolved set changed (∅ → {entID}) even though focus.md itself did not")
+
+	state, err := d.FocusState(entID)
+	require.NoError(t, err)
+	assert.Equal(t, "now", state)
+
+	got, err := d.GetMemoryNode(entID)
+	require.NoError(t, err)
+	assert.Equal(t, 2.0, got.ImportanceScore, "newly-matched node is boosted with no file edit")
 }
 
 // TestRunFocusSweepErrorFreezesFingerprint: a failure reading the sweep's

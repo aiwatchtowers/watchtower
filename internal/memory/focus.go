@@ -67,19 +67,28 @@ func parseFocus(raw string) focusDirectives {
 	return fd
 }
 
-// fingerprint hashes the directive set: sha256 hex over the sorted,
-// normalized (lowercased, TrimSpace'd) bullets tagged by section
-// ("now:"/"cooled:"). Sorting makes bullet reorder within a section a no-op;
-// the section tag makes moving a bullet between sections change the hash.
-// The empty directive set hashes to whatever sha256("") happens to be —
+// matchFingerprint hashes the RESOLVED match set — sha256 hex over the
+// sorted node ids tagged by section ("now:"/"cooled:") that matchFocus
+// produced — rather than the raw focus.md text (final-review Fix 2:
+// fingerprinting directive TEXT left a bullet naming a not-yet-existing node
+// permanently inert, since nothing about the text ever changes once the file
+// is stable, and a brand-new node about an already-focused topic could never
+// get matched either). Fingerprinting the resolved set instead means every
+// gated run re-resolves the directives (matchFocus always runs; see
+// runFocus) and the hash changes whenever the SET of matched ids changes —
+// whether that's because the owner edited focus.md or because a new node
+// showed up that a standing bullet now resolves to. Sorting makes match
+// order within a section a no-op; the section tag makes a node moving
+// between Now and Cooled change the hash. The empty match set (no bullets,
+// or every bullet unresolved) hashes to whatever sha256("") happens to be —
 // stable and unremarkable, no special-cased sentinel.
-func (fd focusDirectives) fingerprint() string {
-	tagged := make([]string, 0, len(fd.Now)+len(fd.Cooled))
-	for _, b := range fd.Now {
-		tagged = append(tagged, "now:"+strings.ToLower(strings.TrimSpace(b)))
+func matchFingerprint(now, cooled []string) string {
+	tagged := make([]string, 0, len(now)+len(cooled))
+	for _, id := range now {
+		tagged = append(tagged, "now:"+id)
 	}
-	for _, b := range fd.Cooled {
-		tagged = append(tagged, "cooled:"+strings.ToLower(strings.TrimSpace(b)))
+	for _, id := range cooled {
+		tagged = append(tagged, "cooled:"+id)
 	}
 	sort.Strings(tagged)
 	sum := sha256.Sum256([]byte(strings.Join(tagged, "\n")))
@@ -195,19 +204,23 @@ func sortedSet(m map[string]bool) []string {
 }
 
 // runFocus is the focus-salience step (behind memory.focus.enabled): parse
-// focus.md, and when the parsed directive set's fingerprint differs from the
-// last APPLIED one, rewrite memory_focus_matches wholesale, sweep EVERY
-// indexed node's persisted importance_score (a focus edit touches no node
-// file, so the MEM-16 touched-node refresh would never see it), and only
-// after both succeeded store the new fingerprint (freeze-on-error: a failed
-// sweep leaves the old fingerprint so the next run retries). Runs after the
-// owner-edit commit + Reconcile (the focus edit is committed, the index is
-// fresh) and before every consumer of importance. The gate itself is checked
-// by the caller (Run), the calendar/mirror/jira precedent — this function
-// always does the work when called. Returns the number of pipeline_steps
-// rows recorded (0 when the fingerprint is unchanged — no step row at all,
-// mirroring "nothing to do" elsewhere in this package) and an error that is
-// logged by the caller but never fails the run (source-isolation precedent).
+// focus.md, ALWAYS re-resolve its bullets against the live index
+// (final-review Fix 2 — matchFocus runs on every gated call, not just when
+// the file text changed, so a bullet naming a not-yet-existing node stops
+// being permanently inert once that node shows up), and when the RESOLVED
+// match set's fingerprint differs from the last APPLIED one, rewrite
+// memory_focus_matches wholesale, sweep EVERY indexed node's persisted
+// importance_score (a focus edit touches no node file, so the MEM-16
+// touched-node refresh would never see it), and only after both succeeded
+// store the new fingerprint (freeze-on-error: a failed sweep leaves the old
+// fingerprint so the next run retries). Runs after the owner-edit commit +
+// Reconcile (the focus edit is committed, the index is fresh) and before
+// every consumer of importance. The gate itself is checked by the caller
+// (Run), the calendar/mirror/jira precedent — this function always does the
+// work when called. Returns the number of pipeline_steps rows recorded (0
+// when the resolved set is unchanged — no step row at all, mirroring
+// "nothing to do" elsewhere in this package) and an error that is logged by
+// the caller but never fails the run (source-isolation precedent).
 func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, error) {
 	step := stepOffset + 1
 
@@ -217,7 +230,13 @@ func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, 
 		return 1, err
 	}
 	fd := parseFocus(raw)
-	fp := fd.fingerprint()
+
+	now, cooled, err := p.matchFocus(fd)
+	if err != nil {
+		p.recordSemanticStep(runID, &step, "focus", "error", nil, time.Now())
+		return 1, err
+	}
+	fp := matchFingerprint(now, cooled)
 
 	stored, err := p.db.FocusFingerprint()
 	if err != nil {
@@ -225,17 +244,13 @@ func (p *Pipeline) runFocus(runID int64, stepOffset int, stats *RunStats) (int, 
 		return 1, err
 	}
 	if fp == stored {
-		// Unchanged directive set (including the absent-file/empty-set case
+		// Unchanged resolved set (including the never-matched-anything case
 		// once it has already been applied) — nothing to rewrite or sweep.
 		return 0, nil
 	}
 
 	start := time.Now()
-	now, cooled, err := p.matchFocus(fd)
-	if err == nil {
-		err = p.db.ReplaceFocusMatches(now, cooled)
-	}
-	if err != nil {
+	if err := p.db.ReplaceFocusMatches(now, cooled); err != nil {
 		p.recordSemanticStep(runID, &step, "focus", "error", nil, start)
 		return 1, err
 	}
