@@ -160,25 +160,45 @@ func refsSameChannel(refs []episodeRef) bool {
 	return true
 }
 
-// validateRefs enforces MEM-01 at write time: every ref is checked against
-// the messages table and dropped when it positively does not resolve (never
-// repaired). An episode whose refs ALL fail is discarded entirely.
+// validateRefs enforces MEM-01/MEM-12 at write time for the Slack episode
+// extractor: every ref is dispatched through the provenance registry (built
+// from checker so the checkMsg lookup-failure seam is preserved) and dropped
+// when it positively does not resolve (never repaired). A ref whose scheme has
+// no registered resolver is rejected and counted the same way (MEM-12) — the
+// extractor only emits bare-channel (scheme "") refs, so an unregistered scheme
+// is a schema violation. An episode whose refs ALL fail is discarded entirely.
 //
 // A lookup ERROR is not an invalid ref: it means the check itself could not
 // run, so validateRefs returns the error and the caller must fail the whole
 // window/situation (watermark frozen, nothing written) instead of silently
-// dropping refs it never actually checked.
+// dropping refs it never actually checked. An unregistered scheme is NOT a
+// lookup error — it is a clean drop, never a freeze.
 //
 // Counting semantics: dropped counts individual refs that failed validation
 // — including the refs of fully-discarded episodes; the number of discarded
 // episodes itself is len(eps) - len(kept).
 func validateRefs(checker messageChecker, eps []extractedEpisode) (kept []extractedEpisode, dropped int, err error) {
+	return validateRefsVia(extractorRegistry(checker), eps)
+}
+
+// validateRefsVia is the scheme-agnostic core of validateRefs: it validates
+// every episode ref through the given registry, dropping refs that positively do
+// not resolve or whose scheme is unregistered (MEM-01/MEM-12), discarding an
+// episode left with no surviving provenance, and returning a lookup ERROR
+// unchanged so the caller keeps its freeze-vs-drop disposition. The Slack
+// extractor passes a message-only registry; the Gmail extractor passes a
+// mail-only one — the disposition (batch freeze on error) is identical.
+func validateRefsVia(reg *provenanceRegistry, eps []extractedEpisode) (kept []extractedEpisode, dropped int, err error) {
 	for _, ep := range eps {
 		var surviving []episodeRef
 		for _, ref := range ep.Refs {
-			ok, err := checker.MessageExists(ref.ChannelID, ref.TS)
-			if err != nil {
-				return nil, 0, fmt.Errorf("memory: validating ref %s/%s: %w", ref.ChannelID, ref.TS, err)
+			ok, registered, verr := reg.Validate(ref)
+			if verr != nil {
+				return nil, 0, fmt.Errorf("memory: validating ref %s/%s: %w", ref.ChannelID, ref.TS, verr)
+			}
+			if !registered {
+				dropped++ // MEM-12: no resolver for this scheme — rejected at write
+				continue
 			}
 			if !ok {
 				dropped++

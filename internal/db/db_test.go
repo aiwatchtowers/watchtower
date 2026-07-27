@@ -106,7 +106,9 @@ func TestAllTablesExist(t *testing.T) {
 		"gmail_messages", "gmail_auth_state",
 		"email_accounts", "imap_messages", "calendar_accounts",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
-		"memory_entity_hints", "memory_dispute_flags",
+		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",
+		"memory_provenance", "memory_digest_shadow", "memory_retrieve_shadow",
+		"memory_focus_matches",
 	}
 
 	for _, table := range expectedTables {
@@ -342,6 +344,107 @@ func TestMigration00019MemorySurfaces(t *testing.T) {
 	}
 }
 
+// TestMigration00037MemoryImportanceScore: memory_nodes.importance_score
+// (Slice A of the memory-importance-score redesign, MEM-16) is additive,
+// defaults 0, and a plain insert that omits it still succeeds.
+func TestMigration00037MemoryImportanceScore(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('memory_nodes') WHERE name = 'importance_score'`).Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("memory_nodes.importance_score missing (count=%d err=%v)", n, err)
+	}
+
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ent_importance_x', 'entity', 'long', 'entities/x.md', 'h', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("inserting memory node without importance_score: %v", err)
+	}
+	var score float64
+	if err := database.QueryRow(
+		`SELECT importance_score FROM memory_nodes WHERE id = 'ent_importance_x'`).Scan(&score); err != nil {
+		t.Fatalf("reading importance_score default: %v", err)
+	}
+	if score != 0 {
+		t.Fatalf("importance_score default = %v, want 0", score)
+	}
+}
+
+// TestMigration00038MemoryProvenanceSender: memory_provenance.sender_id
+// (Slice B of the memory-retrieval redesign) is additive, defaults ”, a
+// plain insert that omits it still succeeds, and its index exists.
+func TestMigration00038MemoryProvenanceSender(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('memory_provenance') WHERE name = 'sender_id'`).Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("memory_provenance.sender_id missing (count=%d err=%v)", n, err)
+	}
+
+	var idxCount int
+	if err := database.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_memory_provenance_sender'`).Scan(&idxCount); err != nil || idxCount != 1 {
+		t.Fatalf("idx_memory_provenance_sender missing (count=%d err=%v)", idxCount, err)
+	}
+
+	if _, err := database.Exec(
+		`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
+		 VALUES ('ep_sender_x', 'episode', 'short', 'episodes/x.md', 'h', '2026-07-20T00:00:00Z')`); err != nil {
+		t.Fatalf("inserting memory node: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_provenance (node_id, channel_id, ts_raw, ts_unix)
+		 VALUES ('ep_sender_x', 'C0AAA', '100.000100', 100.0001)`); err != nil {
+		t.Fatalf("inserting provenance row without sender_id: %v", err)
+	}
+	var sender string
+	if err := database.QueryRow(
+		`SELECT sender_id FROM memory_provenance WHERE node_id = 'ep_sender_x'`).Scan(&sender); err != nil {
+		t.Fatalf("reading sender_id default: %v", err)
+	}
+	if sender != "" {
+		t.Fatalf("sender_id default = %q, want empty string", sender)
+	}
+}
+
+// TestMigration00039MemoryRetrieveShadow: memory_retrieve_shadow (Slice B
+// Task 7, dark retrieval compare-mode) is additive, has no FK onto
+// memory_nodes (a shadow row must survive even if the compared node is later
+// deleted — it is pure telemetry, not derived state), and a plain insert
+// with all five payload columns succeeds.
+func TestMigration00039MemoryRetrieveShadow(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_retrieve_shadow'`).Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("memory_retrieve_shadow table missing (count=%d err=%v)", n, err)
+	}
+
+	_, err = database.Exec(
+		`INSERT INTO memory_retrieve_shadow (surface, query_key, old_result_json, new_result_json, diff_metrics_json, ts)
+		 VALUES ('recall', 'billing', '["ent_1"]', '["ent_1","ent_2"]', '{"coverage_ok":true}', '2026-07-20T00:00:00Z')`)
+	if err != nil {
+		t.Fatalf("inserting memory_retrieve_shadow row: %v", err)
+	}
+
+	var surface string
+	if err := database.QueryRow(`SELECT surface FROM memory_retrieve_shadow WHERE query_key = 'billing'`).Scan(&surface); err != nil {
+		t.Fatalf("reading back inserted row: %v", err)
+	}
+	if surface != "recall" {
+		t.Errorf("surface = %q, want recall", surface)
+	}
+}
+
 // TestMigration00019ClearsBeliefContentHash proves the migration empties every
 // pre-existing belief's content_hash (M1) so the next Reconcile re-parses it and
 // fills the new subject/confidence columns — a belief indexed before 00019 has
@@ -418,6 +521,215 @@ func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
 	); err != nil {
 		t.Errorf("memory_dispute_flags missing after cycle: %v", err)
 	}
+}
+
+// TestMigration00042MemoryPhase5Slice1 (renumbered from 00022 past main's email_accounts) covers Task 3's three additive
+// changes: the Gmail episode-extraction watermark and interaction-ingest
+// floor on workspace (both default 0), and the memory_engagement side table
+// (defaults ” / 0 / 0, keyed on memory_nodes.id).
+func TestMigration00042MemoryPhase5Slice1(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	for _, col := range []string{"memory_gmail_last_extracted_ts", "memory_last_interaction_id"} {
+		var n int
+		err := database.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = ?`, col).Scan(&n)
+		if err != nil || n != 1 {
+			t.Fatalf("workspace.%s missing (count=%d err=%v)", col, n, err)
+		}
+	}
+	if _, err := database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	var gmailTS float64
+	var interactionFloor int64
+	if err := database.QueryRow(
+		`SELECT memory_gmail_last_extracted_ts, memory_last_interaction_id FROM workspace WHERE id = 'T1'`,
+	).Scan(&gmailTS, &interactionFloor); err != nil {
+		t.Fatalf("reading watermark/floor defaults: %v", err)
+	}
+	if gmailTS != 0 || interactionFloor != 0 {
+		t.Fatalf("watermark/floor defaults = (%v, %v), want (0, 0)", gmailTS, interactionFloor)
+	}
+
+	assertTableExists(t, database, "memory_engagement")
+	if err := database.UpsertMemoryNode(memTestNode("ent_engage", nil), "body", nil); err != nil {
+		t.Fatalf("upsert node for engagement fk: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_engagement (node_id) VALUES ('ent_engage')`,
+	); err != nil {
+		t.Fatalf("inserting engagement row with only node_id: %v", err)
+	}
+	var engaged, dismissed int
+	var lastAt string
+	if err := database.QueryRow(
+		`SELECT engaged_count, dismissed_count, last_interaction_at FROM memory_engagement WHERE node_id = 'ent_engage'`,
+	).Scan(&engaged, &dismissed, &lastAt); err != nil {
+		t.Fatalf("reading engagement defaults: %v", err)
+	}
+	if engaged != 0 || dismissed != 0 || lastAt != "" {
+		t.Fatalf("engagement defaults = (%d, %d, %q), want (0, 0, \"\")", engaged, dismissed, lastAt)
+	}
+}
+
+// TestMemoryPhase5Slice1MigrationDownUpCycle: 00042's Down drops its
+// ALTER-added columns and the memory_engagement table (precedent: 00017-19's
+// Down), so a down;up cycle is clean.
+func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "phase5-slice1-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	if _, err := d.Exec(`UPDATE workspace SET memory_gmail_last_extracted_ts = 0, memory_last_interaction_id = 0`); err != nil {
+		t.Errorf("workspace columns missing after cycle: %v", err)
+	}
+	if err := d.UpsertMemoryNode(memTestNode("ent_cycle", nil), "body", nil); err != nil {
+		t.Fatalf("upsert node for engagement fk: %v", err)
+	}
+	if _, err := d.Exec(
+		`INSERT INTO memory_engagement (node_id) VALUES ('ent_cycle')`,
+	); err != nil {
+		t.Errorf("memory_engagement missing after cycle: %v", err)
+	}
+}
+
+// TestMigration00033MemoryPhase5Slice2 covers the Slice-2 Task 2 change: the
+// calendar episode-build watermark on workspace (defaults 0), a FOURTH
+// independent memory watermark alongside memory_last_extracted_ts (Slack),
+// memory_gmail_last_extracted_ts (Gmail), and memory_last_interaction_id (5D
+// floor). Additive ALTER TABLE ADD COLUMN only — no new table, no CHECK
+// change.
+func TestMigration00033MemoryPhase5Slice2(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('workspace') WHERE name = ?`, "memory_calendar_last_extracted_ts").Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("workspace.memory_calendar_last_extracted_ts missing (count=%d err=%v)", n, err)
+	}
+
+	if _, err := database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	var calTS float64
+	if err := database.QueryRow(
+		`SELECT memory_calendar_last_extracted_ts FROM workspace WHERE id = 'T1'`,
+	).Scan(&calTS); err != nil {
+		t.Fatalf("reading calendar watermark default: %v", err)
+	}
+	if calTS != 0 {
+		t.Fatalf("calendar watermark default = %v, want 0", calTS)
+	}
+}
+
+// TestMemoryPhase5Slice2MigrationDownUpCycle: 00033's Down drops its
+// ALTER-added column (precedent: 00017-19, 00042's Down), so a down;up cycle is
+// clean.
+func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "phase5-slice2-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	if _, err := d.Exec(`UPDATE workspace SET memory_calendar_last_extracted_ts = 0`); err != nil {
+		t.Errorf("memory_calendar_last_extracted_ts missing after cycle: %v", err)
+	}
+}
+
+func TestMigration00034MemoryDigestCompare(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	assertTableExists(t, database, "memory_provenance")
+	assertTableExists(t, database, "memory_digest_shadow")
+
+	// memory_provenance references memory_nodes(id); insert a node first,
+	// then confirm the columns and PRIMARY KEY(node_id, channel_id, ts_raw)
+	// shape.
+	if err := database.UpsertMemoryNode(memTestNode("ep_prov", nil), "body", nil); err != nil {
+		t.Fatalf("upsert node for provenance fk: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_provenance (node_id, scheme, channel_id, ts_raw, ts_unix) VALUES ('ep_prov', '', 'C1', '100.001', 100.001)`,
+	); err != nil {
+		t.Fatalf("inserting memory_provenance row: %v", err)
+	}
+	// A duplicate (node_id, channel_id, ts_raw) violates the PRIMARY KEY.
+	if _, err := database.Exec(
+		`INSERT INTO memory_provenance (node_id, scheme, channel_id, ts_raw, ts_unix) VALUES ('ep_prov', '', 'C1', '100.001', 100.001)`,
+	); err == nil {
+		t.Fatal("expected PRIMARY KEY violation on duplicate (node_id, channel_id, ts_raw)")
+	}
+
+	// memory_digest_shadow: default columns and UNIQUE(channel_id,
+	// period_from, period_to).
+	if _, err := database.Exec(
+		`INSERT INTO memory_digest_shadow (channel_id, period_from, period_to, rendered_json, created_at) VALUES ('C1', 0, 100, '{}', '2026-07-16T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("inserting memory_digest_shadow row: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO memory_digest_shadow (channel_id, period_from, period_to, rendered_json, created_at) VALUES ('C1', 0, 100, '{}', '2026-07-16T00:01:00Z')`,
+	); err == nil {
+		t.Fatal("expected UNIQUE violation on duplicate (channel_id, period_from, period_to)")
+	}
+
+	var legacyID, refsRejected int
+	var coverage float64
+	var model string
+	if err := database.QueryRow(
+		`SELECT legacy_digest_id, coverage, render_refs_rejected, model FROM memory_digest_shadow WHERE channel_id = 'C1'`,
+	).Scan(&legacyID, &coverage, &refsRejected, &model); err != nil {
+		t.Fatalf("reading memory_digest_shadow defaults: %v", err)
+	}
+	if legacyID != 0 || coverage != 0 || refsRejected != 0 || model != "" {
+		t.Fatalf("memory_digest_shadow defaults = (%d, %v, %d, %q), want (0, 0, 0, \"\")", legacyID, coverage, refsRejected, model)
+	}
+}
+
+// TestMemoryPhase5Slice3MigrationDownUpCycle: 00034's Down drops both
+// additive CREATE TABLEs (precedent: 00017-19, 00042/00033's Down), so a down;up cycle is
+// clean.
+func TestMemoryPhase5Slice3MigrationDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "phase5-slice3-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	assertTableExists(t, d, "memory_provenance")
+	assertTableExists(t, d, "memory_digest_shadow")
 }
 
 func TestFTS5TableExists(t *testing.T) {

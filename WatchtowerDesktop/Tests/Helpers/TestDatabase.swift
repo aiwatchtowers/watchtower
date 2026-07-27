@@ -181,6 +181,7 @@ enum TestDatabase {
                              styleDetails, recommendations, concerns, model])
     }
 
+    @discardableResult
     static func insertTrack(
         _ db: Database,
         text: String = "Fix the bug",
@@ -199,17 +200,24 @@ enum TestDatabase {
         decisionOptions: String = "[]",
         subItems: String = "[]",
         relatedDigestIDs: String = "[]",
-        model: String = "haiku"
-    ) throws {
+        model: String = "haiku",
+        assigneeUserID: String = "",
+        ownerUserID: String = "",
+        requesterUserID: String = "",
+        linkedTargetID: Int? = nil
+    ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO tracks (text, context, category, ownership, priority, tags,
                 channel_ids, source_refs, has_updates, participants, requester_name,
-                blocking, decision_summary, decision_options, sub_items, related_digest_ids, model)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                blocking, decision_summary, decision_options, sub_items, related_digest_ids, model,
+                assignee_user_id, owner_user_id, requester_user_id, linked_target_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [text, context, category, ownership, priority, tags,
                              channelIDs, sourceRefs, hasUpdates ? 1 : 0, participants,
                              requesterName, blocking, decisionSummary, decisionOptions,
-                             subItems, relatedDigestIDs, model])
+                             subItems, relatedDigestIDs, model,
+                             assigneeUserID, ownerUserID, requesterUserID, linkedTargetID])
+        return db.lastInsertedRowID
     }
 
     // MARK: - Schema
@@ -454,7 +462,8 @@ enum TestDatabase {
         cost_usd            REAL NOT NULL DEFAULT 0,
         prompt_version      INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        linked_target_id    INTEGER REFERENCES targets(id) ON DELETE SET NULL
     );
     CREATE TABLE IF NOT EXISTS track_states (
         id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -620,7 +629,7 @@ enum TestDatabase {
     CREATE TABLE IF NOT EXISTS feedback (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         entity_type TEXT NOT NULL CHECK(entity_type IN
-            ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox', 'catchup_theme')),
+            ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox', 'catchup_theme', 'situation')),
         entity_id   TEXT NOT NULL,
         rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
         comment     TEXT NOT NULL DEFAULT '',
@@ -1060,11 +1069,29 @@ enum TestDatabase {
         content_hash  TEXT NOT NULL DEFAULT '',
         indexed_at    TEXT NOT NULL DEFAULT '',
         subject       TEXT NOT NULL DEFAULT '',
-        confidence    REAL NOT NULL DEFAULT 0
+        confidence    REAL NOT NULL DEFAULT 0,
+        importance_score REAL NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS memory_aliases (
         alias    TEXT PRIMARY KEY COLLATE NOCASE,
         node_id  TEXT NOT NULL REFERENCES memory_nodes(id)
+    );
+    CREATE TABLE IF NOT EXISTS memory_provenance (
+        node_id     TEXT NOT NULL REFERENCES memory_nodes(id),
+        scheme      TEXT NOT NULL DEFAULT '',
+        channel_id  TEXT NOT NULL,
+        ts_raw      TEXT NOT NULL,
+        ts_unix     REAL NOT NULL,
+        sender_id   TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (node_id, channel_id, ts_raw)
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+        id UNINDEXED, title, body
+    );
+    CREATE TABLE IF NOT EXISTS memory_dispute_flags (
+        node_id     TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+        flagged_at  TEXT NOT NULL,
+        reason      TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS email_accounts (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1629,12 +1656,33 @@ enum TestDatabase {
         subject: String = "",
         confidence: Double = 0,
         status: String = "active",
-        tier: String = "long"
+        tier: String = "long",
+        path: String = "",
+        redirectTo: String? = nil,
+        indexedAt: String = "",
+        importanceScore: Double = 0
     ) throws {
         try db.execute(sql: """
-            INSERT INTO memory_nodes (id, type, tier, status, title, path, content_hash, indexed_at, subject, confidence)
-            VALUES (?, ?, ?, ?, ?, '', '', '', ?, ?)
-            """, arguments: [id, type, tier, status, title, subject, confidence])
+            INSERT INTO memory_nodes (
+                id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence, importance_score
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
+            """, arguments: [id, type, tier, status, redirectTo, title, path, indexedAt, subject, confidence, importanceScore])
+    }
+
+    static func insertMemoryProvenance(
+        _ db: Database,
+        nodeID: String,
+        channelID: String,
+        tsRaw: String,
+        tsUnix: Double,
+        senderID: String,
+        scheme: String = ""
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_provenance (node_id, scheme, channel_id, ts_raw, ts_unix, sender_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, arguments: [nodeID, scheme, channelID, tsRaw, tsUnix, senderID])
     }
 
     static func insertMemoryAlias(
@@ -1645,6 +1693,28 @@ enum TestDatabase {
         try db.execute(sql: """
             INSERT INTO memory_aliases (alias, node_id) VALUES (?, ?)
             """, arguments: [alias, nodeID])
+    }
+
+    static func insertMemoryFTS(
+        _ db: Database,
+        id: String,
+        title: String = "",
+        body: String = ""
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_fts (id, title, body) VALUES (?, ?, ?)
+            """, arguments: [id, title, body])
+    }
+
+    static func insertMemoryDispute(
+        _ db: Database,
+        nodeID: String,
+        reason: String = "contested"
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_dispute_flags (node_id, flagged_at, reason)
+            VALUES (?, '2026-07-17T00:00:00Z', ?)
+            """, arguments: [nodeID, reason])
     }
 
     // MARK: - Email Account Fixtures

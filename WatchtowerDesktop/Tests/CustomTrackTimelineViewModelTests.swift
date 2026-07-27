@@ -7,14 +7,14 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
 
     /// Mirrors the Go-side track_events DDL; the shared TestDatabase.schema
     /// predates custom tracks, so the harness patches the tracks table with the
-    /// custom-only columns (origin/instruction/enabled/last_run_at/
-    /// linked_target_id) and adds the track_events table.
+    /// custom-only columns (origin/instruction/enabled/last_run_at) and adds
+    /// the track_events table. linked_target_id is now part of the shared
+    /// schema itself (Secretary Memory Slice C) — no longer patched here.
     private static let trackEventsSQL = """
         ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto';
         ALTER TABLE tracks ADD COLUMN instruction TEXT NOT NULL DEFAULT '';
         ALTER TABLE tracks ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
         ALTER TABLE tracks ADD COLUMN last_run_at TEXT NOT NULL DEFAULT '';
-        ALTER TABLE tracks ADD COLUMN linked_target_id INTEGER;
         CREATE TABLE track_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             track_id INTEGER NOT NULL,

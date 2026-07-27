@@ -49,6 +49,50 @@ func TestDedupeMergesSharedProvenance(t *testing.T) {
 	assert.Equal(t, older.ID, resolved.ID, "resolver chases the newer id to the older")
 }
 
+// TestDedupeNeverMergesSituationMirrors guards the M2 finding from the
+// 2026-07-17 final validation: two situations can legitimately share an inbox
+// signal (the composer attaches one item to both), so their episode mirrors
+// share a provenance ref — but they are DIFFERENT stories, and merging them
+// makes the situations-ingest refresh ping-pong the merged node's content
+// between the two situations every run (one junk commit per consolidate, each
+// flip erasing the other story and dropping its refs). A situation-mirror
+// episode (any `situation:` alias) is excluded from dedupe entirely — its
+// identity is the alias, not ref overlap (the gmailthread:/calevent: precedent).
+func TestDedupeNeverMergesSituationMirrors(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	mirrorA := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DM1", "Meeting sync story", "C1CHAN", "1752570000.000100")
+	mirrorA.Aliases = []string{"situation:103"}
+	mirrorB := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DM2", "Toxic communication story", "C1CHAN", "1752570000.000100")
+	mirrorB.Aliases = []string{"situation:106"}
+	writeAndIndex(t, v, d, mirrorA)
+	writeAndIndex(t, v, d, mirrorB)
+
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
+	require.NoError(t, err)
+	assert.Zero(t, merged, "situation mirrors sharing a signal ref must not merge")
+
+	gotB, err := v.ReadNode(mirrorB.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", gotB.Status, "no tombstone")
+}
+
+// TestDedupeOrdinaryEpisodeNeverMergesIntoMirror: a raw-extraction episode
+// sharing a ref with a situation mirror stays separate too — the mirror is
+// excluded as winner AND loser (its body is regenerated wholesale by ingest,
+// so anything merged into it would be erased on the next refresh).
+func TestDedupeOrdinaryEpisodeNeverMergesIntoMirror(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	mirror := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DM3", "Situation story", "C1CHAN", "1752570000.000100")
+	mirror.Aliases = []string{"situation:42"}
+	ordinary := epNode("ep_01ARZ3NDEKTSV4RRFFQ69G5DM4", "Raw extraction story", "C1CHAN", "1752570000.000100")
+	writeAndIndex(t, v, d, mirror)
+	writeAndIndex(t, v, d, ordinary)
+
+	merged, err := DedupeEpisodes(v, d, 20, t.Logf)
+	require.NoError(t, err)
+	assert.Zero(t, merged, "a mirror never merges with an ordinary episode in either direction")
+}
+
 // TestDedupeDisjointRefsNeverMerge: near-identical titles but ZERO shared
 // provenance refs must NOT merge — title similarity is explicitly dead as a
 // signal (spec §3, E2E-proven).

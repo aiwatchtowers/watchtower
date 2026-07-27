@@ -89,6 +89,38 @@ func TestRewriteEntityPagesHappyPath(t *testing.T) {
 	assert.True(t, strings.HasSuffix(page.Body, rewriteTail), "tail preserved, got:\n%s", page.Body)
 }
 
+// TestRewriteEntityPagesSkipsMirrors (FIX-C): an operational mirror (an entity
+// aliased target:<id>/track:<id>) with linked episodes is NOT selected for the
+// strong-tier rewrite — mirrors are maintained mechanically and a rewrite would
+// churn against the next re-scan. A normal linked entity is still rewritten.
+func TestRewriteEntityPagesSkipsMirrors(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	dueIDs := dueEntityIDs(rewriteNow, 2)
+	mirrorID, normalID := dueIDs[0], dueIDs[1]
+	epID := "ep_00000000000000000000000001"
+	writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", "1710000000.000100"))
+
+	// A converted target mirror: an entity aliased target:5 that links the episode
+	// (linkedEpisodes-eligible, so absent FIX-C it would be selected).
+	mirror := rewriteEntityNode(mirrorID, "target #5", epID)
+	mirror.Aliases = []string{"target:5"}
+	writeAndIndex(t, v, d, mirror)
+
+	// A normal entity linking the same episode.
+	writeAndIndex(t, v, d, rewriteEntityNode(normalID, "Acme", epID))
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return rewriteReplyJSON(t, "new what", "new current", []string{"new fact"},
+			[]episodeRef{{ChannelID: "C1CHAN", TS: "1710000000.000100"}}), nil
+	}}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	rewritten, _, _, err := p.RewriteEntityPages(context.Background(), 10, rewriteNow)
+	require.NoError(t, err)
+	assert.Equal(t, []string{normalID}, rewritten, "only the normal entity is rewritten")
+	assert.NotContains(t, rewritten, mirrorID, "the mirror is excluded from the rewrite tier")
+}
+
 func TestRewriteEntityPagesDropsInventedMarker(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	entID := dueEntityIDs(rewriteNow, 1)[0]

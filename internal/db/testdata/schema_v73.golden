@@ -164,6 +164,15 @@ CREATE INDEX idx_meeting_prep_cache_generated ON meeting_prep_cache(generated_at
 index	idx_meeting_transcripts_event
 CREATE INDEX idx_meeting_transcripts_event ON meeting_transcripts(event_id)
 
+index	idx_memory_provenance_sender
+CREATE INDEX idx_memory_provenance_sender ON memory_provenance(sender_id)
+
+index	idx_memory_provenance_window
+CREATE INDEX idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix)
+
+index	idx_memory_retrieve_shadow_surface
+CREATE INDEX idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surface, ts)
+
 index	idx_messages_channel_ts_unix
 CREATE INDEX idx_messages_channel_ts_unix ON messages(channel_id, ts_unix)
 
@@ -622,7 +631,7 @@ bootstrap_cutoff TEXT NOT NULL
 table	feedback
 CREATE TABLE "feedback" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
-entity_type TEXT NOT NULL CHECK(entity_type IN ('digest','track','decision','user_analysis','briefing','target','inbox','catchup_theme')),
+entity_type TEXT NOT NULL CHECK(entity_type IN ('digest','track','decision','user_analysis','briefing','target','inbox','catchup_theme','situation')),
 entity_id TEXT NOT NULL,
 rating INTEGER NOT NULL CHECK(rating IN (-1, 1)),
 comment TEXT NOT NULL DEFAULT '',
@@ -928,11 +937,34 @@ alias TEXT PRIMARY KEY COLLATE NOCASE,
 node_id TEXT NOT NULL REFERENCES memory_nodes(id)
 )
 
+table	memory_digest_shadow
+CREATE TABLE memory_digest_shadow (
+id INTEGER PRIMARY KEY,
+channel_id TEXT NOT NULL,
+period_from REAL NOT NULL,
+period_to REAL NOT NULL,
+legacy_digest_id INTEGER NOT NULL DEFAULT 0,
+rendered_json TEXT NOT NULL,
+coverage REAL NOT NULL DEFAULT 0,
+render_refs_rejected INTEGER NOT NULL DEFAULT 0,
+model TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL,
+UNIQUE(channel_id, period_from, period_to)
+)
+
 table	memory_dispute_flags
 CREATE TABLE memory_dispute_flags (
 node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id),
 flagged_at TEXT NOT NULL,
 reason TEXT NOT NULL DEFAULT ''
+)
+
+table	memory_engagement
+CREATE TABLE memory_engagement (
+node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+engaged_count INTEGER NOT NULL DEFAULT 0,
+dismissed_count INTEGER NOT NULL DEFAULT 0,
+last_interaction_at TEXT NOT NULL DEFAULT ''
 )
 
 table	memory_entity_hints
@@ -942,6 +974,12 @@ episode_id TEXT NOT NULL, -- the ep_* node that emitted it (distinct-episode cou
 first_seen TEXT NOT NULL,
 promoted_to TEXT NOT NULL DEFAULT '', -- ent_* once a concept entity was created; '' until then
 PRIMARY KEY (hint, episode_id)
+)
+
+table	memory_focus_matches
+CREATE TABLE memory_focus_matches (
+node_id TEXT PRIMARY KEY,
+state TEXT NOT NULL CHECK (state IN ('now','cooled'))
 )
 
 table	memory_fts
@@ -982,7 +1020,28 @@ title TEXT NOT NULL DEFAULT '',
 path TEXT NOT NULL, -- vault-relative file path
 content_hash TEXT NOT NULL, -- sha256 of file bytes at last index
 indexed_at TEXT NOT NULL
-, subject TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0)
+, subject TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 0, importance_score REAL NOT NULL DEFAULT 0)
+
+table	memory_provenance
+CREATE TABLE memory_provenance (
+node_id TEXT NOT NULL REFERENCES memory_nodes(id),
+scheme TEXT NOT NULL DEFAULT '',
+channel_id TEXT NOT NULL,
+ts_raw TEXT NOT NULL,
+ts_unix REAL NOT NULL, sender_id TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (node_id, channel_id, ts_raw)
+)
+
+table	memory_retrieve_shadow
+CREATE TABLE memory_retrieve_shadow (
+id INTEGER PRIMARY KEY,
+surface TEXT NOT NULL CHECK (surface IN ('recall','briefing','meeting_prep')),
+query_key TEXT NOT NULL DEFAULT '', -- recall's query text / briefing's since-ts / meeting-prep's subject entity id
+old_result_json TEXT NOT NULL,
+new_result_json TEXT NOT NULL,
+diff_metrics_json TEXT NOT NULL,
+ts TEXT NOT NULL
+)
 
 table	messages
 CREATE TABLE messages (
@@ -1456,7 +1515,7 @@ synced_at TEXT, -- ISO8601 timestamp of last sync
 search_last_date TEXT NOT NULL DEFAULT '', -- YYYY-MM-DD of last search sync
 current_user_id TEXT NOT NULL DEFAULT '', -- Slack user_id of the token owner (from auth.test)
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', gmail_last_internal_date REAL NOT NULL DEFAULT 0, memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0)
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', gmail_last_internal_date REAL NOT NULL DEFAULT 0, memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_interaction_id INTEGER NOT NULL DEFAULT 0)
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
@@ -2032,16 +2091,38 @@ END
 0	alias	TEXT	notnull=0	dflt=NULL	pk=1
 1	node_id	TEXT	notnull=1	dflt=NULL	pk=0
 
+## memory_digest_shadow
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	channel_id	TEXT	notnull=1	dflt=NULL	pk=0
+2	period_from	REAL	notnull=1	dflt=NULL	pk=0
+3	period_to	REAL	notnull=1	dflt=NULL	pk=0
+4	legacy_digest_id	INTEGER	notnull=1	dflt=0	pk=0
+5	rendered_json	TEXT	notnull=1	dflt=NULL	pk=0
+6	coverage	REAL	notnull=1	dflt=0	pk=0
+7	render_refs_rejected	INTEGER	notnull=1	dflt=0	pk=0
+8	model	TEXT	notnull=1	dflt=''	pk=0
+9	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## memory_dispute_flags
 0	node_id	TEXT	notnull=0	dflt=NULL	pk=1
 1	flagged_at	TEXT	notnull=1	dflt=NULL	pk=0
 2	reason	TEXT	notnull=1	dflt=''	pk=0
+
+## memory_engagement
+0	node_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	engaged_count	INTEGER	notnull=1	dflt=0	pk=0
+2	dismissed_count	INTEGER	notnull=1	dflt=0	pk=0
+3	last_interaction_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## memory_entity_hints
 0	hint	TEXT	notnull=1	dflt=NULL	pk=1
 1	episode_id	TEXT	notnull=1	dflt=NULL	pk=2
 2	first_seen	TEXT	notnull=1	dflt=NULL	pk=0
 3	promoted_to	TEXT	notnull=1	dflt=''	pk=0
+
+## memory_focus_matches
+0	node_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	state	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## memory_fts
 0	id		notnull=0	dflt=NULL	pk=0
@@ -2088,6 +2169,24 @@ END
 8	indexed_at	TEXT	notnull=1	dflt=NULL	pk=0
 9	subject	TEXT	notnull=1	dflt=''	pk=0
 10	confidence	REAL	notnull=1	dflt=0	pk=0
+11	importance_score	REAL	notnull=1	dflt=0	pk=0
+
+## memory_provenance
+0	node_id	TEXT	notnull=1	dflt=NULL	pk=1
+1	scheme	TEXT	notnull=1	dflt=''	pk=0
+2	channel_id	TEXT	notnull=1	dflt=NULL	pk=2
+3	ts_raw	TEXT	notnull=1	dflt=NULL	pk=3
+4	ts_unix	REAL	notnull=1	dflt=NULL	pk=0
+5	sender_id	TEXT	notnull=1	dflt=''	pk=0
+
+## memory_retrieve_shadow
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	surface	TEXT	notnull=1	dflt=NULL	pk=0
+2	query_key	TEXT	notnull=1	dflt=''	pk=0
+3	old_result_json	TEXT	notnull=1	dflt=NULL	pk=0
+4	new_result_json	TEXT	notnull=1	dflt=NULL	pk=0
+5	diff_metrics_json	TEXT	notnull=1	dflt=NULL	pk=0
+6	ts	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## messages
 0	channel_id	TEXT	notnull=1	dflt=NULL	pk=1
@@ -2508,4 +2607,10 @@ END
 12	memory_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
 13	memory_last_ingested_situation_id	INTEGER	notnull=1	dflt=0	pk=0
 14	memory_chat_turn_floor	INTEGER	notnull=1	dflt=0	pk=0
+15	memory_calendar_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
+16	memory_last_situation_feedback_id	INTEGER	notnull=1	dflt=0	pk=0
+17	memory_jira_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
+18	memory_focus_fingerprint	TEXT	notnull=1	dflt=''	pk=0
+19	memory_gmail_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
+20	memory_last_interaction_id	INTEGER	notnull=1	dflt=0	pk=0
 

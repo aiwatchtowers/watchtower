@@ -18,6 +18,7 @@ type promptInputs struct {
 	CalendarEvents, Targets, Briefing  string
 	Jira, People, Manual, Previous     string
 	Feedback                           string
+	MemoryOpenLoops                    string
 }
 
 // buildPrompt formats the system prompt from the store (or built-in default)
@@ -38,6 +39,7 @@ func (p *Pipeline) buildPrompt(in *promptInputs) (string, string) {
 		in.CalendarEvents, in.Targets, in.Briefing,
 		in.Jira, in.People, in.Manual, in.Previous,
 		in.Feedback,
+		in.MemoryOpenLoops,
 	), version
 }
 

@@ -12,7 +12,7 @@ const (
 // Honors digest.SourceLight as the cross-harness contract for lightweight routing.
 func ModelForSource(source string) string {
 	switch source {
-	case digest.SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "customtrack.compose", "customtrack.shortlist", "memory.extract_episodes", "memory.extract_episodes_batch":
+	case digest.SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "customtrack.compose", "customtrack.shortlist", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", "memory.render_channel_digest":
 		return ModelLightweight
 	default:
 		return ModelDefault

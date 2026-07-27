@@ -8,13 +8,16 @@ import "math"
 // in this file is side-effect free and exhaustively unit-tested — constants
 // live in code (not config) so the math is one auditable place (spec §Beliefs).
 
-// evidenceRank orders belief evidence by trust: an owner statement outranks a
-// direct observation, which outranks an inference.
+// evidenceRank orders belief evidence by trust: an owner statement outranks an
+// owner action (a mechanical interaction — authentically the owner but
+// non-propositional and ambiguous), which outranks a direct observation, which
+// outranks an inference.
 type evidenceRank int
 
 const (
 	rankInferred evidenceRank = iota
 	rankObserved
+	rankOwnerAction // Phase-5 5D: a mechanical owner interaction (act: ref)
 	rankOwner
 )
 
@@ -65,11 +68,24 @@ type beliefState struct {
 
 // Tuning constants (spec §Beliefs "constants in code, not config — tune later").
 const (
-	ownerDecayDays   = 180.0 // owner weight decays linearly to the floor over this span
-	ownerWeightFresh = 1.0
-	ownerWeightFloor = 0.4
-	weightObserved   = 0.6 // observed/inferred do not decay in Phase 3
-	weightInferred   = 0.3
+	// evidenceHalfLifeDays is the shared exponential half-life of ALL evidence
+	// ranks (2026-07-26 owner review, curve C): w(age) = base × 2^(−age/180d),
+	// no floor — old evidence asymptotically approaches zero, and because the
+	// decay multiplier is rank-independent, rank RATIOS are age-invariant by
+	// construction (owner:observed stays 5:3 at every age; curves cannot cross).
+	evidenceHalfLifeDays = 180.0
+	// ownerFreshWindowDays is the MEM-06 protection window — deliberately a
+	// SEPARATE constant from the weight curve: fresh owner support blocks
+	// auto-retire/flip absolutely regardless of weight arithmetic.
+	ownerFreshWindowDays = 180.0
+
+	weightOwner = 1.0
+	// weightOwnerAction sits above weightObserved and below fresh owner — an
+	// owner acting on something outweighs a third-party observation but never
+	// the owner's own words; it still confers NO MEM-06 protection (MEM-15).
+	weightOwnerAction = 0.8
+	weightObserved    = 0.6
+	weightInferred    = 0.3
 
 	confidenceStep     = 0.1 // beliefs move in coarse 0.1 steps
 	confidenceFloor    = 0.0
@@ -80,24 +96,13 @@ const (
 	flipStabilityStep = 0.5 // each confirmation raises the required ratio (hysteresis)
 )
 
-// ownerRankWeight is the age-decayed weight of owner evidence: 1.0 fresh,
-// linear to 0.4 at 180 days, floored at 0.4 thereafter.
-func ownerRankWeight(ageDays float64) float64 {
-	if ageDays <= 0 {
-		return ownerWeightFresh
-	}
-	if ageDays >= ownerDecayDays {
-		return ownerWeightFloor
-	}
-	return ownerWeightFresh - (ownerWeightFresh-ownerWeightFloor)*(ageDays/ownerDecayDays)
-}
-
-// evidenceWeight is the preponderance weight of one evidence point. Only owner
-// rank decays with age; observed/inferred are age-invariant in Phase 3.
-func evidenceWeight(rank evidenceRank, ageDays float64) float64 {
+// baseWeight is the fresh weight of one evidence rank.
+func baseWeight(rank evidenceRank) float64 {
 	switch rank {
 	case rankOwner:
-		return ownerRankWeight(ageDays)
+		return weightOwner
+	case rankOwnerAction:
+		return weightOwnerAction
 	case rankObserved:
 		return weightObserved
 	case rankInferred:
@@ -107,13 +112,26 @@ func evidenceWeight(rank evidenceRank, ageDays float64) float64 {
 	}
 }
 
+// evidenceWeight is the preponderance weight of one evidence point: the rank's
+// base weight decayed by the shared exponential half-life (curve C, 2026-07-26
+// — every rank ages, so a year-old observation or dismissal no longer weighs
+// like yesterday's). Negative age (future-dated ref / clock skew) clamps to
+// fresh; weight never exceeds base.
+func evidenceWeight(rank evidenceRank, ageDays float64) float64 {
+	if ageDays < 0 {
+		ageDays = 0
+	}
+	return baseWeight(rank) * math.Exp2(-ageDays/evidenceHalfLifeDays)
+}
+
 // hasFreshOwnerSupport reports whether any *supporting* evidence is owner-rank
-// and still within the non-decayed window (age < 180d). This is the MEM-06
+// and still within the non-decayed window (age < ownerFreshWindowDays — a
+// window deliberately independent of the weight curve). This is the MEM-06
 // protection predicate: while it holds, observations may shake but never
 // retire/flip the belief.
 func hasFreshOwnerSupport(ev []evidence) bool {
 	for _, e := range ev {
-		if e.Support && e.Rank == rankOwner && e.AgeDays < ownerDecayDays {
+		if e.Support && e.Rank == rankOwner && e.AgeDays < ownerFreshWindowDays {
 			return true
 		}
 	}
@@ -238,6 +256,8 @@ func parseEvidenceRank(s string) (evidenceRank, bool) {
 	switch s {
 	case "owner":
 		return rankOwner, true
+	case "owner-action":
+		return rankOwnerAction, true
 	case "observed":
 		return rankObserved, true
 	case "inferred":

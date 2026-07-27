@@ -11,6 +11,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case tracks
     case digests
     case people
+    case memory
     case workload
     case blockers
     case projectMap
@@ -36,6 +37,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .tracks: "Tracks"
         case .digests: "Digests"
         case .people: "People"
+        case .memory: "Memory"
         case .workload: "Workload"
         case .blockers: "Blockers"
         case .projectMap: "Project Map"
@@ -61,6 +63,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .tracks: "binoculars"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
+        case .memory: "archivebox"
         case .workload: "gauge.with.dots.needle.33percent"
         case .blockers: "exclamationmark.triangle"
         case .projectMap: "map"

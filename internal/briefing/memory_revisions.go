@@ -2,7 +2,6 @@ package briefing
 
 import (
 	"errors"
-	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,11 +18,6 @@ const noNotableRevisions = "(no notable revisions)"
 // maxMemoryRevisions caps the journal at five lines so the briefing prompt stays
 // focused on the day's most consequential belief changes.
 const maxMemoryRevisions = 5
-
-// confidenceNotableDelta is the |confidence| move within the window that makes a
-// non-status revision worth surfacing. Beliefs move in 0.1 steps, so this is two
-// net steps in one direction.
-const confidenceNotableDelta = 0.2
 
 // gatherMemoryRevisions builds the "Memory revisions" journal block: belief nodes
 // whose ## History changed since the previous briefing, filtered in code to the
@@ -58,7 +52,7 @@ func (p *Pipeline) gatherMemoryRevisions(userID, date string) string {
 		return noNotableRevisions
 	}
 
-	var lines []string
+	var lines, ids []string
 	for _, n := range nodes {
 		if n.Type != "belief" {
 			continue
@@ -68,11 +62,23 @@ func (p *Pipeline) gatherMemoryRevisions(userID, date string) string {
 			// Index/vault drift (a file removed since indexing): skip, don't fail.
 			continue
 		}
-		if line, ok := notableRevision(node, since); ok {
-			lines = append(lines, line)
+		if nr, ok := memory.NotableRevision(node, since); ok {
+			lines = append(lines, nr.Line)
+			ids = append(ids, n.ID)
 			if len(lines) >= maxMemoryRevisions {
 				break
 			}
+		}
+	}
+
+	// Slice B Task 9 dark retrieval-compare (memory.retrieve.briefing_compare):
+	// runs RetrieveRevisions and shadow-diffs it against `ids` — the EXACT
+	// legacy notable-revision selection above, same cap. The rendered journal
+	// text below is unaffected by the flag in every case.
+	if p.cfg.Memory.Retrieve.BriefingCompare {
+		sinceTS := float64(since.Unix())
+		if _, err := memory.CompareRevisions(p.db, p.db, vault, sinceTS, ids, maxMemoryRevisions); err != nil {
+			p.logger.Printf("briefing: retrieve compare: %v", err)
 		}
 	}
 
@@ -102,88 +108,4 @@ func (p *Pipeline) revisionWindowStart(userID, date string) time.Time {
 		return fallback
 	}
 	return created
-}
-
-// notableRevision inspects one belief's ## History for entries dated on or after
-// since and, when the aggregate change is notable, renders a single journal line:
-//
-//	<belief title> — <what changed> — because <evidence digest>
-//
-// Notability (code-side filter): any status transition (shake/retire) or belief
-// creation always qualifies; otherwise a summed |confidence| move of >=0.2 across
-// the window's confirm/weaken entries qualifies. Returns ok=false when no in-
-// window entry is notable.
-func notableRevision(node memory.Node, since time.Time) (string, bool) {
-	entries := historyEntriesSince(node.Body, since)
-	if len(entries) == 0 {
-		return "", false
-	}
-
-	statusNotable := false
-	confDelta := 0.0
-	for _, e := range entries {
-		switch e.Cause {
-		case "shake", "retire", "created", "propose-new":
-			statusNotable = true
-		case "confirm":
-			confDelta += 0.1
-		case "weaken":
-			confDelta -= 0.1
-		}
-	}
-
-	if !statusNotable && math.Abs(confDelta) < confidenceNotableDelta {
-		return "", false
-	}
-
-	tail := entries[len(entries)-1]
-	title := strings.TrimSpace(node.Title)
-	if title == "" {
-		title = node.ID
-	}
-	digest := tail.Rationale
-	if digest == "" {
-		digest = "recent evidence"
-	}
-	return title + " — " + describeChange(tail.Cause, confDelta) + " — because " + digest, true
-}
-
-// historyEntriesSince returns the belief ## History bullets dated on or after
-// since, in file order (oldest first). It delegates parsing to the single
-// memory.ParseHistory reader (the counterpart of memory.historyLine) and only
-// filters by date; date comparison is day-granular via lexical YYYY-MM-DD
-// ordering.
-func historyEntriesSince(body string, since time.Time) []memory.HistoryBullet {
-	sinceDate := since.Format("2006-01-02")
-	var entries []memory.HistoryBullet
-	for _, b := range memory.ParseHistory(body) {
-		if b.Date >= sinceDate {
-			entries = append(entries, b)
-		}
-	}
-	return entries
-}
-
-// describeChange renders the human "what changed" clause for a journal line.
-func describeChange(cause string, confDelta float64) string {
-	switch cause {
-	case "shake":
-		return "belief shaken — evidence now conflicts"
-	case "retire":
-		return "belief retired"
-	case "created", "propose-new":
-		return "new belief formed"
-	case "confirm":
-		return "confidence strengthened"
-	case "weaken":
-		return "confidence weakened"
-	default:
-		if confDelta > 0 {
-			return "confidence strengthened"
-		}
-		if confDelta < 0 {
-			return "confidence weakened"
-		}
-		return "belief revised"
-	}
 }

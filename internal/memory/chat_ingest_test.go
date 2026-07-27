@@ -58,7 +58,7 @@ func TestIngestChatStatementsStages(t *testing.T) {
 	uID := seedChatMessage(t, d, conv, "user", "alice keeps  missing   deadlines", 1720000100.0)
 
 	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
-	staged, newFloor, err := p.ingestChatStatements(0)
+	staged, newFloor, err := p.ingestChatStatements(0, []string{"situation"})
 	require.NoError(t, err)
 	require.NotNil(t, staged)
 	require.Len(t, staged.statements, 1, "only the role='user' turn is staged")
@@ -78,7 +78,7 @@ func TestIngestChatStatementsAbsentTablesNoop(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t) // no chat tables
 	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
 
-	staged, newFloor, err := p.ingestChatStatements(5)
+	staged, newFloor, err := p.ingestChatStatements(5, []string{"situation"})
 	require.NoError(t, err)
 	assert.Nil(t, staged)
 	assert.Equal(t, int64(5), newFloor, "floor unchanged when there is nothing to scan")
@@ -98,7 +98,7 @@ func TestIngestChatStatementsBelowFloorSkipped(t *testing.T) {
 	above := seedChatMessage(t, d, conv, "user", "new turn", 1720000100.0)
 
 	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
-	staged, newFloor, err := p.ingestChatStatements(below)
+	staged, newFloor, err := p.ingestChatStatements(below, []string{"situation"})
 	require.NoError(t, err)
 	assert.Nil(t, staged, "the situation maps to no entity — nothing staged")
 	assert.Equal(t, above, newFloor, "the above-floor turn is still consumed (floor advances past it)")
@@ -131,7 +131,7 @@ func TestRunSemanticChatOwnerEvidence(t *testing.T) {
 	before := dumpInboxSituationState(t, d)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 	assert.Equal(t, 1, stats.ChatTurnsIngested)
 
 	got, err := v.ReadNode(bel.ID)
@@ -165,7 +165,7 @@ func TestRunSemanticChatFloorHeldOnBeliefError(t *testing.T) {
 	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)
@@ -199,7 +199,7 @@ func TestRunSemanticChatGateOffNoop(t *testing.T) {
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 	assert.Zero(t, stats.ChatTurnsIngested, "gate off → nothing ingested")
 
 	floor, err := d.MemoryChatTurnFloor()
@@ -265,7 +265,7 @@ func TestIngestChatStatementsMappingErrorHoldsFloor(t *testing.T) {
 	require.NoError(t, err)
 
 	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
-	staged, newFloor, err := p.ingestChatStatements(0)
+	staged, newFloor, err := p.ingestChatStatements(0, []string{"situation"})
 	require.Error(t, err, "a DB error mapping a turn's situation is returned, not swallowed")
 	assert.Nil(t, staged)
 	assert.Equal(t, int64(0), newFloor, "the erroring turn is not consumed — the floor holds")
@@ -300,7 +300,7 @@ func TestRunSemanticChatFloorHeldOnCapBreak(t *testing.T) {
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)
@@ -328,7 +328,7 @@ func TestRunSemanticChatFloorAdvancesWhenModelDeclinesToCite(t *testing.T) {
 	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)
@@ -338,6 +338,329 @@ func TestRunSemanticChatFloorAdvancesWhenModelDeclinesToCite(t *testing.T) {
 	got, err := v.ReadNode(bel.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "active", got.Status, "the belief is untouched when the model cited nothing")
+}
+
+// seedTrack inserts a tracks row with the given channels + participants +
+// assignee, returning its id — the subject source for chatSubjects("track").
+func seedTrack(t *testing.T, d *db.DB, channelIDsJSON, participantsJSON, assignee string) int {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO tracks (text, channel_ids, participants, assignee_user_id)
+		VALUES ('a track', ?, ?, ?)`, channelIDsJSON, participantsJSON, assignee)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return int(id)
+}
+
+// TestChatSubjectsTrack: a track context maps to its channel_ids + participant
+// user ids + assignee (each resolved to a memory entity, deduped).
+func TestChatSubjectsTrack(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	chID := "ent_00000000000000000000000001"
+	upID := "ent_00000000000000000000000002"
+	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
+	writeAndIndex(t, v, d, bareEntity(upID, "U2BOB"))
+	trackID := seedTrack(t, d, `["C1TRACK"]`, `[{"user_id":"U2BOB"}]`, "U2BOB")
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	subjects, err := p.chatSubjects("track", fmt.Sprintf("%d", trackID))
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{chID, upID}, subjects, "track channels + members resolve, deduped")
+}
+
+// TestChatSubjectsTargetViaLinkedTrack: a target context maps to the entities of
+// its linked track(s).
+func TestChatSubjectsTargetViaLinkedTrack(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	chID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
+	tgtID, err := d.CreateTarget(db.Target{Text: "ship", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO tracks (text, channel_ids, linked_target_id) VALUES ('t', ?, ?)`, `["C1TRACK"]`, tgtID)
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	subjects, err := p.chatSubjects("target", fmt.Sprintf("%d", tgtID))
+	require.NoError(t, err)
+	assert.Equal(t, []string{chID}, subjects, "target maps through its linked track")
+}
+
+// TestChatSubjectsTargetNoLinkedTrackEmpty: a bare target with no linked track
+// maps to no entity (the consumed-not-staged graceful path).
+func TestChatSubjectsTargetNoLinkedTrackEmpty(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	subjects, err := p.chatSubjects("target", fmt.Sprintf("%d", tgtID))
+	require.NoError(t, err)
+	assert.Empty(t, subjects, "a target with no linked track maps to no entity")
+}
+
+// TestChatSubjectsTrackIncludesMirror: a track chat's subjects include the
+// track's OWN entity mirror (track:<id>, the 5C mirror alias) UNIONED with the
+// existing channel/participant entities — Task 3.
+func TestChatSubjectsTrackIncludesMirror(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	chID := "ent_00000000000000000000000001"
+	upID := "ent_00000000000000000000000002"
+	mirrorID := "ent_00000000000000000000000003"
+	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
+	writeAndIndex(t, v, d, bareEntity(upID, "U2BOB"))
+	trackID := seedTrack(t, d, `["C1TRACK"]`, `[{"user_id":"U2BOB"}]`, "U2BOB")
+	writeAndIndex(t, v, d, bareEntity(mirrorID, trackMirrorAlias(trackID)))
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	subjects, err := p.chatSubjects("track", fmt.Sprintf("%d", trackID))
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{mirrorID, chID, upID}, subjects, "the track's own mirror plus its channel/participant entities")
+}
+
+// TestChatSubjectsTargetMirrorPresentMapsToMirror: with a target:<id> mirror
+// present, a bare target with NO linked track maps to its own mirror entity —
+// the slice-2 known-limitation ("a bare target chat maps to nothing") resolved
+// once operational mirrors exist (Task 3).
+func TestChatSubjectsTargetMirrorPresentMapsToMirror(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	mirrorID := "ent_00000000000000000000000001"
+	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	writeAndIndex(t, v, d, bareEntity(mirrorID, targetMirrorAlias(int(tgtID))))
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	subjects, err := p.chatSubjects("target", fmt.Sprintf("%d", tgtID))
+	require.NoError(t, err)
+	assert.Equal(t, []string{mirrorID}, subjects, "a bare target maps to its own mirror when one exists")
+}
+
+// TestIngestChatStatementsTargetMirrorPresentStages is the Task-3 end-to-end
+// contract: with a target:<id> mirror present, a "remember this:" turn in a
+// bare-target Discuss chat (no linked track) stages owner-rank evidence
+// subject-mapped to the mirror.
+func TestIngestChatStatementsTargetMirrorPresentStages(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	mirrorID := "ent_00000000000000000000000001"
+	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	writeAndIndex(t, v, d, bareEntity(mirrorID, targetMirrorAlias(int(tgtID))))
+	conv := seedChatConversation(t, d, "target", fmt.Sprintf("%d", tgtID))
+	turnID := seedChatMessage(t, d, conv, "user", "remember this: this needs a design doc first", 1720000100.0)
+
+	types := []string{"situation", "target", "track"}
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	staged, newFloor, err := p.ingestChatStatements(0, types)
+	require.NoError(t, err)
+	require.NotNil(t, staged, "with the mirror present, the bare-target turn stages")
+	require.Len(t, staged.statements, 1)
+	assert.Equal(t, "this needs a design doc first", staged.statements[0].text, "the command prefix is stripped")
+	assert.Equal(t, []string{mirrorID}, staged.statements[0].subjects, "subject-mapped to the target's own mirror")
+	assert.True(t, staged.subjects[mirrorID])
+	assert.Equal(t, turnID, newFloor)
+}
+
+// TestIngestChatStatementsTargetNoMirrorNotStaged: without a target:<id>
+// mirror, the same "remember this:" bare-target turn is consumed (the floor
+// advances) but NOT staged — byte-unchanged slice-2 behavior (Task 3).
+func TestIngestChatStatementsTargetNoMirrorNotStaged(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	conv := seedChatConversation(t, d, "target", fmt.Sprintf("%d", tgtID))
+	turnID := seedChatMessage(t, d, conv, "user", "remember this: this needs a design doc first", 1720000100.0)
+
+	types := []string{"situation", "target", "track"}
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	staged, newFloor, err := p.ingestChatStatements(0, types)
+	require.NoError(t, err)
+	assert.Nil(t, staged, "no mirror — the turn maps to no entity, consumed-not-staged")
+	assert.Equal(t, turnID, newFloor, "the turn is still consumed (floor advances past it)")
+}
+
+// TestParseRememberCommand pins the "remember this" prefix parser: case-
+// insensitive "remember:" / "remember this:", the remainder returned verbatim
+// (original case preserved), empty/prefix-only remainders and no-prefix text
+// yielding ok=false.
+func TestParseRememberCommand(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantStmt string
+		wantOK   bool
+	}{
+		{"remember: alice owns billing", "alice owns billing", true},
+		{"remember this: alice owns billing", "alice owns billing", true},
+		{"Remember This: Alice Owns Billing", "Alice Owns Billing", true},
+		{"  remember:   spaced fact  ", "spaced fact", true},
+		{"REMEMBER: shouty", "shouty", true},
+		{"just an ordinary drafting turn", "", false},
+		{"remember:", "", false},
+		{"remember this:", "", false},
+		{"remembering things is hard", "", false},
+	}
+	for _, c := range cases {
+		stmt, ok := parseRememberCommand(c.in)
+		assert.Equal(t, c.wantOK, ok, "ok for %q", c.in)
+		assert.Equal(t, c.wantStmt, stmt, "statement for %q", c.in)
+	}
+}
+
+// TestIngestChatStatementsTrackRequiresCommand: a plain track owner turn is
+// consumed by the floor but NOT staged; the same turn prefixed with
+// "remember this:" stages the prefix-stripped fact about the track's subjects.
+func TestIngestChatStatementsTrackRequiresCommand(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	chID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
+	trackID := seedTrack(t, d, `["C1TRACK"]`, `[]`, "")
+	conv := seedChatConversation(t, d, "track", fmt.Sprintf("%d", trackID))
+	// An ordinary drafting turn — must NOT stage.
+	plain := seedChatMessage(t, d, conv, "user", "reword this to be firmer", 1720000000.0)
+
+	types := []string{"situation", "target", "track"}
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	staged, newFloor, err := p.ingestChatStatements(0, types)
+	require.NoError(t, err)
+	assert.Nil(t, staged, "an ordinary track drafting turn is not staged")
+	assert.Equal(t, plain, newFloor, "the drafting turn is still consumed (floor advances past it)")
+
+	// A "remember this:" turn stages the stripped fact.
+	cmd := seedChatMessage(t, d, conv, "user", "remember this: this track is blocked on legal", 1720000100.0)
+	staged, newFloor, err = p.ingestChatStatements(plain, types)
+	require.NoError(t, err)
+	require.NotNil(t, staged)
+	require.Len(t, staged.statements, 1)
+	assert.Equal(t, "this track is blocked on legal", staged.statements[0].text, "the prefix is stripped for the statement")
+	assert.Equal(t, []string{chID}, staged.statements[0].subjects, "staged about the track's channel entity")
+	assert.Equal(t, cmd, newFloor)
+}
+
+// TestIngestChatStatementsSituationStagesEitherWay: a situation owner turn stages
+// with OR without the command (Phase-4 unchanged); when the command is present
+// the prefix is stripped for the statement text.
+func TestIngestChatStatementsSituationStagesEitherWay(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	entID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
+	sitID := seedSituationForChannel(t, d, "C1GEN", "U2BOB")
+	conv := seedChatConversation(t, d, "situation", fmt.Sprintf("%d", sitID))
+	plain := seedChatMessage(t, d, conv, "user", "alice keeps missing deadlines", 1720000000.0)
+	seedChatMessage(t, d, conv, "user", "remember this: bob owns releases", 1720000100.0)
+
+	types := []string{"situation", "target", "track"}
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+
+	// The plain situation turn stages verbatim.
+	staged, _, err := p.ingestChatStatements(0, types)
+	require.NoError(t, err)
+	require.NotNil(t, staged)
+	require.Len(t, staged.statements, 2, "both situation turns stage")
+	assert.Equal(t, "alice keeps missing deadlines", staged.statements[0].text)
+	assert.Equal(t, "bob owns releases", staged.statements[1].text, "a command on a situation turn strips the prefix, harmlessly")
+	_ = plain
+}
+
+// TestIngestChatStatementsOffIgnoresTrack: with only {"situation"} (flag off) a
+// track owner turn is never scanned — MEM-09 byte-identical behavior.
+func TestIngestChatStatementsOffIgnoresTrack(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	chID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
+	trackID := seedTrack(t, d, `["C1TRACK"]`, `[]`, "")
+	conv := seedChatConversation(t, d, "track", fmt.Sprintf("%d", trackID))
+	seedChatMessage(t, d, conv, "user", "the track is blocked on legal", 1720000000.0)
+
+	p := NewPipeline(d, v, &fakeGen{}, chatIngestConfig(), t.Logf)
+	staged, newFloor, err := p.ingestChatStatements(0, []string{"situation"})
+	require.NoError(t, err)
+	assert.Nil(t, staged, "flag off → a track turn is not even scanned")
+	assert.Equal(t, int64(0), newFloor, "flag off → nothing consumed")
+}
+
+// chatsSourceConfig is chatIngestConfig with memory.sources.chats ON — the
+// target/track widening + "remember this" gate.
+func chatsSourceConfig() config.MemoryConfig {
+	cfg := chatIngestConfig()
+	cfg.Sources.Chats = true
+	return cfg
+}
+
+// TestRunSemanticRememberThisTrackOwnerEvidence is the Task-6 end-to-end
+// contract: with memory.sources.chats ON, a "remember this:" track owner turn
+// mints exactly one owner-rank evidence line on a belief about the track's
+// subject entity (MEM-09 code-mint), and the chat-turn floor advances.
+func TestRunSemanticRememberThisTrackOwnerEvidence(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	chID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
+	bel := beliefTestNode("bel_00000000000000000000000001", "The track is on schedule", chID, 0.5, 0, "active")
+	writeAndIndex(t, v, d, bel)
+	trackID := seedTrack(t, d, `["C1TRACK"]`, `[]`, "")
+	conv := seedChatConversation(t, d, "track", fmt.Sprintf("%d", trackID))
+	turnID := seedChatMessage(t, d, conv, "user", "remember this: the track slipped a week", 1720000000.0)
+
+	chatRef := fmt.Sprintf("chat:%d", conv)
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return opsJSON(t, beliefOpJSON{BeliefID: bel.ID, Op: "retire",
+			Evidence: []episodeRef{{ChannelID: chatRef, TS: "1720000000"}}, Rationale: "owner said"}), nil
+	}}
+	p := NewPipeline(d, v, gen, chatsSourceConfig(), t.Logf)
+
+	var stats RunStats
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	assert.Equal(t, 1, stats.ChatTurnsIngested)
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.Contains(t, got.Body, "- owner against "+chatRef+" 1720000000", "MEM-09 owner rank minted for the track chat ref")
+
+	floor, err := d.MemoryChatTurnFloor()
+	require.NoError(t, err)
+	assert.Equal(t, turnID, floor, "the chat-turn floor advances after the belief pass commits")
+}
+
+// TestRunSemanticRememberThisTrackFlagOffNoEvidence: with memory.sources.chats
+// OFF, the same "remember this:" track turn is never scanned (context set is
+// {situation}), so no owner evidence is minted and the floor stays.
+func TestRunSemanticRememberThisTrackFlagOffNoEvidence(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	createChatTables(t, d)
+	seedWorkspaceRow(t, d)
+	chID := "ent_00000000000000000000000001"
+	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
+	bel := beliefTestNode("bel_00000000000000000000000001", "The track is on schedule", chID, 0.5, 0, "active")
+	writeAndIndex(t, v, d, bel)
+	trackID := seedTrack(t, d, `["C1TRACK"]`, `[]`, "")
+	conv := seedChatConversation(t, d, "track", fmt.Sprintf("%d", trackID))
+	seedChatMessage(t, d, conv, "user", "remember this: the track slipped a week", 1720000000.0)
+
+	// Flag off: chatIngestConfig has Sources.Chats false.
+	gen := &fakeGen{reply: func(string) (string, error) { return `{"ops":[]}`, nil }}
+	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
+
+	var stats RunStats
+	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	assert.Zero(t, stats.ChatTurnsIngested, "flag off → the track turn is not ingested")
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", got.Status, "flag off → belief untouched")
+	assert.NotContains(t, got.Body, "owner", "flag off → no owner evidence")
+
+	floor, err := d.MemoryChatTurnFloor()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), floor, "flag off → floor untouched")
 }
 
 // dumpInboxSituationState snapshots the inbox_items + situations +

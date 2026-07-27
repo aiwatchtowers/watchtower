@@ -26,6 +26,17 @@ type Stats struct {
 	QuarantinedPaths []string
 }
 
+// touchedNode records one successfully-indexed file from the current
+// Reconcile pass so its importance can be refined in phase B, once the
+// whole vaultSubdirs walk completes — see refineImportance. A link from a
+// later-scanned directory to an earlier one is otherwise invisible to
+// CountMemoryLinksIn during phase A's processing of the earlier node
+// (Slice A follow-up, added 2026-07-18, MEM-16).
+type touchedNode struct {
+	n   Node
+	rel string
+}
+
 // Reconcile diffs the vault working tree against the SQLite index: node files
 // whose sha256 content hash differs from memory_nodes.content_hash (or that
 // are missing from the index) are re-parsed and upserted (row + aliases +
@@ -56,13 +67,15 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 	}
 
 	pass := &reconcilePass{
-		v:        v,
-		database: database,
-		logf:     logf,
-		indexed:  indexed,
-		onDisk:   make(map[string]bool),
-		now:      time.Now().UTC().Format(time.RFC3339),
-		stats:    &stats,
+		v:                v,
+		database:         database,
+		logf:             logf,
+		indexed:          indexed,
+		onDisk:           make(map[string]bool),
+		now:              time.Now().UTC().Format(time.RFC3339),
+		stats:            &stats,
+		priorLinkTargets: make(map[string]bool),
+		ownerMemo:        newOwnerEditedMemo(v),
 	}
 	for _, sub := range vaultSubdirs {
 		entries, err := os.ReadDir(filepath.Join(v.path, sub))
@@ -80,10 +93,19 @@ func Reconcile(v *Vault, database *db.DB, logf func(string, ...any)) (Stats, err
 		if pass.onDisk[row.ID] {
 			continue
 		}
+		// Capture this doomed node's OWN outgoing links before its row and
+		// FTS entry vanish below — its former link targets must still be
+		// delta-refined (the second vector of the same link-removal
+		// asymmetry file()'s edit case closes above).
+		pass.capturePriorLinks(row.ID)
 		if err := database.DeleteMemoryNode(row.ID); err != nil {
 			return stats, fmt.Errorf("memory: reconcile: %w", err)
 		}
 		stats.Deleted++
+	}
+
+	if err := pass.refineImportance(); err != nil {
+		return stats, err
 	}
 
 	return stats, nil
@@ -99,12 +121,60 @@ type reconcilePass struct {
 	onDisk   map[string]bool
 	now      string
 	stats    *Stats
+	touched  []touchedNode
+
+	// priorLinkTargets collects node ids a REMOVED link used to point at:
+	// from an edited touched node's PRIOR body (captured in file(), read
+	// from memory_fts before UpsertMemoryNode overwrites it) and from a
+	// deleted node's body (captured in Reconcile's deletion loop, read
+	// before DeleteMemoryNode drops it). Unioned into refineImportance's
+	// delta-refine candidate set alongside the NEW-body link targets 5d-iii
+	// already collects, so both a link ADDED and a link REMOVED cause the
+	// affected target to be recomputed — closing the asymmetry 5d-iii left
+	// open as a documented residual (second whole-branch review follow-up,
+	// 2026-07-19, MEM-16 addendum).
+	priorLinkTargets map[string]bool
+
+	// ownerMemo lazily memoizes v.OwnerEditedFiles() (ownerEditedMemo,
+	// vault.go) — Reconcile's own instance of the same shared per-call
+	// memoization every genuine batch upsertIndexNode caller now uses
+	// (second whole-branch review follow-up, 2026-07-19, MEM-16 addendum:
+	// this used to be three ad hoc fields on reconcilePass alone).
+	ownerMemo *ownerEditedMemo
 }
 
 func (p *reconcilePass) quarantine(rel string, reason error) {
 	p.logf("memory: reconcile: quarantined %s: %v (file kept, existing index row preserved)", rel, reason)
 	p.stats.Quarantined++
 	p.stats.QuarantinedPaths = append(p.stats.QuarantinedPaths, rel)
+}
+
+// ownerEdited is reconcilePass's owner-touch signal, passed to
+// computeNodeImportance as its ownerEdited func(rel string) (bool, error)
+// parameter — a thin delegate to the shared ownerEditedMemo (vault.go),
+// scoped to this one Reconcile call exactly as before this refactor.
+func (p *reconcilePass) ownerEdited(rel string) (bool, error) {
+	return p.ownerMemo.lookup(rel)
+}
+
+// capturePriorLinks reads id's currently-indexed body — BEFORE the caller
+// overwrites it (file(), an edited node) or removes it (Reconcile's deletion
+// loop) — and adds every outgoing link target to priorLinkTargets, closing
+// the link-removal asymmetry: a link REMOVED by an edit, or a linking file
+// deleted outright, must still cause its old target to be delta-refined
+// (refineImportance, MEM-16). A read failure only narrows this pass's
+// delta-refine candidate set for id; it never blocks the caller's own write
+// or deletion — the same log-and-continue-keep-prior-value policy this
+// package already applies to every other signal-lookup error.
+func (p *reconcilePass) capturePriorLinks(id string) {
+	oldBody, err := p.database.GetMemoryNodeBody(id)
+	if err != nil {
+		p.logf("memory: reconcile: reading prior body for %s failed (link-removal delta-refine narrowed): %v", id, err)
+		return
+	}
+	for _, link := range (Node{Body: oldBody}).Links() {
+		p.priorLinkTargets[link.ID] = true
+	}
 }
 
 // file processes one directory entry: skip non-node files, hash, parse, and
@@ -148,27 +218,143 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 		return nil
 	}
 
-	row := db.MemoryNodeRow{
-		ID:          n.ID,
-		Type:        n.Type,
-		Tier:        n.Tier,
-		Status:      n.Status,
-		RedirectTo:  n.RedirectTo,
-		Title:       n.Title,
-		Path:        rel,
-		ContentHash: hash,
-		IndexedAt:   p.now,
-		Subject:     n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
-		Confidence:  n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
+	importance, err := computeNodeImportance(p.database, p.ownerEdited, n, rel)
+	if err != nil {
+		p.quarantine(rel, fmt.Errorf("computing importance: %w", err))
+		return nil
 	}
-	if err := p.database.UpsertMemoryNode(row, n.Body, n.Aliases); err != nil {
+
+	if wasIndexed {
+		// Capture the PRIOR body's outgoing links before UpsertMemoryNode
+		// (below) overwrites the FTS row — a link REMOVED by this edit must
+		// still cause its old target to be delta-refined.
+		p.capturePriorLinks(id)
+	}
+
+	row := db.MemoryNodeRow{
+		ID:              n.ID,
+		Type:            n.Type,
+		Tier:            n.Tier,
+		Status:          n.Status,
+		RedirectTo:      n.RedirectTo,
+		Title:           n.Title,
+		Path:            rel,
+		ContentHash:     hash,
+		IndexedAt:       p.now,
+		Subject:         n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
+		Confidence:      n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
+		ImportanceScore: importance,   // merged override-or-computed snapshot, see 00037 (MEM-16)
+	}
+	if err := p.database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, dbSenderResolver{p.database}, p.logf)...); err != nil {
 		p.quarantine(rel, err)
 		return nil
 	}
+	p.touched = append(p.touched, touchedNode{n: n, rel: rel})
 	if wasIndexed {
 		p.stats.Updated++
 	} else {
 		p.stats.Added++
+	}
+	return nil
+}
+
+// refineImportance is Reconcile's phase B, run after the deletion loop (see
+// 5d-i): recompute importance for every file this pass successfully indexed
+// (phase A), now that the run's full link graph is populated and this run's
+// deletions have already happened — correcting phase A's scan-order-
+// dependent initial value. It then delta-refines every node a touched node's
+// body links to that WASN'T itself touched this run: a node's own file may
+// never change while its LinksIn keeps growing purely from OTHER nodes'
+// new links (e.g. a person entity linked from many new Slack-extracted
+// episodes over weeks) — CountMemoryLinksIn is this formula's dominant
+// signal, so without this delta pass such a node's importance_score would
+// stay frozen indefinitely (whole-branch review follow-up, added
+// 2026-07-18, MEM-16 — the Critical bug). Also delta-refines every node a
+// REMOVED link used to point at: file() captures an edited touched node's
+// PRIOR body's outgoing links (read from memory_fts before UpsertMemoryNode
+// overwrites it) and Reconcile's deletion loop captures a doomed node's own
+// outgoing links (read before DeleteMemoryNode drops it) — both unioned into
+// the same candidate set below, closing the asymmetry a prior version of
+// this pass left as a documented residual (second whole-branch review
+// follow-up, 2026-07-19, MEM-16 addendum). Still one hop only: a target's
+// OWN further link neighbors are never chased. Any recompute error (either
+// phase) is logged and that node's prior importance_score is kept — not
+// escalated to an abort or a quarantine, the same policy this function
+// already used for its own phase-A-value errors.
+func (p *reconcilePass) refineImportance() error {
+	touchedIDs := make(map[string]bool, len(p.touched))
+	for _, tn := range p.touched {
+		touchedIDs[tn.n.ID] = true
+	}
+
+	for _, tn := range p.touched {
+		importance, err := computeNodeImportance(p.database, p.ownerEdited, tn.n, tn.rel)
+		if err != nil {
+			p.logf("memory: reconcile: refining importance for %s failed (keeping first-pass value): %v", tn.n.ID, err)
+			continue
+		}
+		if err := p.database.UpdateMemoryNodeImportanceScore(tn.n.ID, importance); err != nil {
+			return fmt.Errorf("memory: reconcile: refining importance for %s: %w", tn.n.ID, err)
+		}
+	}
+
+	linkTargets := make(map[string]bool)
+	for _, tn := range p.touched {
+		for _, link := range tn.n.Links() {
+			if touchedIDs[link.ID] {
+				continue
+			}
+			linkTargets[link.ID] = true
+		}
+	}
+	// Union in every id a REMOVED link (from an edit's prior body, or from a
+	// deleted node's body) used to point at — recomputation is idempotent,
+	// so a target already in linkTargets (a link that's still present) costs
+	// nothing extra to add again. Closes the asymmetry a link ADDITION alone
+	// left open (second whole-branch review follow-up, 2026-07-19, MEM-16
+	// addendum).
+	for id := range p.priorLinkTargets {
+		if touchedIDs[id] {
+			continue
+		}
+		linkTargets[id] = true
+	}
+	for id := range linkTargets {
+		if err := p.refineLinkedNode(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refineLinkedNode recomputes and persists the importance of id — a node
+// some touched node's body links to, but which was not itself touched this
+// run (so file() never computed a value for it this pass). A dangling or
+// stale link (not a valid node id, or the node no longer exists on disk —
+// merge.go documents that incoming [[loser]] links are never rewritten
+// after a merge, so a tombstoned-but-still-present id is normal and simply
+// gets its tombstone body re-read here) or a signal-lookup error is logged
+// and skipped, keeping that node's prior importance_score untouched — the
+// same log-and-continue-keep-prior-value policy refineImportance uses for
+// its own errors above.
+func (p *reconcilePass) refineLinkedNode(id string) error {
+	rel, err := nodeRelPath(id)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (not a node id, keeping prior value): %v", id, err)
+		return nil
+	}
+	n, err := p.v.ReadNode(id)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (keeping prior value): %v", id, err)
+		return nil
+	}
+	importance, err := computeNodeImportance(p.database, p.ownerEdited, n, rel)
+	if err != nil {
+		p.logf("memory: reconcile: refining linked node %s failed (keeping prior value): %v", id, err)
+		return nil
+	}
+	if err := p.database.UpdateMemoryNodeImportanceScore(id, importance); err != nil {
+		return fmt.Errorf("memory: reconcile: refining linked node %s: %w", id, err)
 	}
 	return nil
 }

@@ -30,9 +30,18 @@ type Node struct {
 	Confidence float64
 	Stability  int
 	Subject    string
-	Title      string // first H1 in Body, "" when absent
-	Aliases    []string
-	Refs       struct {
+	// ImportanceOverride is the owner's manual importance value (>= 0), legal
+	// on ANY node type (no belief-only gate). nil means unset, so the merged
+	// memory_nodes.importance_score falls back to ComputeImportance(...)
+	// (index.go). A pointer all the way through Node — unlike
+	// Confidence/Stability, which collapse to concrete zero values — so 0
+	// stays distinguishable from "unset": 0 is a legitimate override ("this
+	// matters least") (Slice A of the memory-importance-score redesign,
+	// MEM-16).
+	ImportanceOverride *float64
+	Title              string // first H1 in Body, "" when absent
+	Aliases            []string
+	Refs               struct {
 		PeopleCard int64
 		Targets    []int64
 	}
@@ -63,6 +72,9 @@ type frontmatter struct {
 	Subject    string    `yaml:"subject"`
 	Aliases    []string  `yaml:"aliases"`
 	Refs       *nodeRefs `yaml:"refs"`
+	// ImportanceOverride is legal on any node type (no belief-only gate) — see
+	// Node.ImportanceOverride.
+	ImportanceOverride *float64 `yaml:"importance_override"`
 }
 
 type nodeRefs struct {
@@ -135,16 +147,20 @@ func ParseNode(raw []byte) (Node, error) {
 	if fm.Stability != nil && *fm.Stability < 0 {
 		return Node{}, fmt.Errorf("memory: belief %s stability %d is negative", fm.ID, *fm.Stability)
 	}
+	if fm.ImportanceOverride != nil && *fm.ImportanceOverride < 0 {
+		return Node{}, fmt.Errorf("memory: node %s importance_override %v is negative", fm.ID, *fm.ImportanceOverride)
+	}
 
 	n := Node{
-		ID:         fm.ID,
-		Type:       fm.Type,
-		Tier:       fm.Tier,
-		Status:     fm.Status,
-		RedirectTo: fm.RedirectTo,
-		Subject:    fm.Subject,
-		Aliases:    fm.Aliases,
-		Body:       string(body),
+		ID:                 fm.ID,
+		Type:               fm.Type,
+		Tier:               fm.Tier,
+		Status:             fm.Status,
+		RedirectTo:         fm.RedirectTo,
+		Subject:            fm.Subject,
+		Aliases:            fm.Aliases,
+		ImportanceOverride: fm.ImportanceOverride,
+		Body:               string(body),
 	}
 	if fm.Confidence != nil {
 		n.Confidence = *fm.Confidence
@@ -174,6 +190,9 @@ func (n Node) Render() []byte {
 	fmt.Fprintf(&b, "status: %s\n", n.Status)
 	if n.RedirectTo != "" {
 		fmt.Fprintf(&b, "redirect_to: %s\n", n.RedirectTo)
+	}
+	if n.ImportanceOverride != nil {
+		fmt.Fprintf(&b, "importance_override: %s\n", strconv.FormatFloat(*n.ImportanceOverride, 'g', -1, 64))
 	}
 	if n.Type == "belief" {
 		// Emitted for every belief so an active belief always round-trips its
@@ -263,6 +282,34 @@ func appendToSection(body string, headingRe *regexp.Regexp, heading, line string
 		seg += "\n"
 	}
 	return seg + line + body[end:]
+}
+
+// SectionBullets returns the "- …" bullet texts (the "- " marker stripped, blank
+// bullets skipped) under the given "## <heading>" section of a node body, in file
+// order. It is the single reader for the read surfaces that scan a section's
+// bullets (the day plan's open loops, the meeting prep's attendee facts); the
+// internal mirrorSectionContent, which returns the whole section content verbatim
+// rather than parsed bullets, stays separate.
+func SectionBullets(body, heading string) []string {
+	want := "## " + heading
+	var out []string
+	in := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			in = trimmed == want
+			continue
+		}
+		if !in {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			if b := strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")); b != "" {
+				out = append(out, b)
+			}
+		}
+	}
+	return out
 }
 
 // NewID mints a node ID for the given kind ("entity", "episode", "rollup",

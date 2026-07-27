@@ -761,6 +761,67 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertNil(missingDefaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey))
     }
 
+    func testDismissRecoveredClearsPendingButKeepsAudio() async throws {
+        // A recovered recording the user chooses NOT to transcribe: dismissing
+        // the pill must clear the pending pointer (so the capsule never returns,
+        // this session or on relaunch) while leaving the audio file on disk —
+        // the Go orphan sweep reclaims it later, matching "audio survives".
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio) }
+
+        let defaults = try isolatedDefaults()
+        defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
+        defaults.set("evt-1", forKey: MeetingRecorderCenter.pendingEventIDKey)
+        defaults.set("Weekly", forKey: MeetingRecorderCenter.pendingTitleKey)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: defaults
+        )
+
+        center.restorePendingOnLaunch()
+        XCTAssertEqual(center.pendingAudioURL, audio)
+
+        center.dismissRecovered()
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertNil(center.pendingAudioURL, "dismiss must clear the pending pointer so the pill goes away")
+        XCTAssertNil(defaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey),
+                     "the pending-audio key must be cleared so the pill never returns on relaunch")
+        XCTAssertNil(defaults.string(forKey: MeetingRecorderCenter.pendingEventIDKey))
+        XCTAssertNil(defaults.string(forKey: MeetingRecorderCenter.pendingTitleKey))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path),
+                      "the audio file must survive — dismiss only forgets the pointer, the Go sweep reclaims the file")
+    }
+
+    func testDismissRecoveredIsNoOpWhileRecording() async throws {
+        // Guard: dismiss is only for the idle "recovered" pill. It must never
+        // tear the pending pointer out from under an in-flight recording.
+        let recorder = FakeRecorder()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: "evt-1", title: "Weekly")
+        let pendingBefore = try XCTUnwrap(center.pendingAudioURL)
+
+        center.dismissRecovered()
+
+        guard case .recording = center.phase else {
+            return XCTFail("dismiss must not disturb an active recording, got \(center.phase)")
+        }
+        XCTAssertEqual(center.pendingAudioURL, pendingBefore,
+                       "dismiss while recording must be a no-op on the pending pointer")
+    }
+
     func testRestorePendingRecoversEventLink() async throws {
         // A crash mid-recording mirrored the audio path AND its event link/title.
         let audio = try makeDummyAudioFile()

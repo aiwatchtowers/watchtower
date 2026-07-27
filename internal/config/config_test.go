@@ -311,6 +311,68 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 	assert.False(t, cfg.Memory.Surfaces.Briefing, "briefing surface off by default")
 	assert.False(t, cfg.Memory.Surfaces.Disputes, "disputes surface off by default")
 	assert.False(t, cfg.Memory.Surfaces.Reflection, "reflection surface off by default")
+
+	// Phase-5 slice-1 sources: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Sources.Gmail, "gmail source off by default")
+	assert.False(t, cfg.Memory.Sources.Actions, "actions source off by default")
+
+	// Phase-5 slice-2 sources: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Sources.Calendar, "calendar source off by default")
+	assert.False(t, cfg.Memory.Sources.Chats, "chats source off by default")
+
+	// Phase-5 slice-3 renders: dark by default.
+	assert.False(t, cfg.Memory.Renders.DigestCompare, "digest_compare render off by default")
+
+	// Phase-5 slice-4 gates: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Sources.Operational, "operational source off by default")
+	assert.False(t, cfg.Memory.Surfaces.DayPlan, "day_plan surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.MeetingPrep, "meeting_prep surface off by default")
+	assert.False(t, cfg.Memory.Semantic.Preferences, "preferences semantic gate off by default")
+
+	// Slice B dark retrieval-compare: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Retrieve.RecallCompare, "recall_compare off by default")
+	assert.False(t, cfg.Memory.Retrieve.BriefingCompare, "briefing_compare off by default")
+	assert.False(t, cfg.Memory.Retrieve.MeetingPrepCompare, "meeting_prep_compare off by default")
+}
+
+func TestMemorySlice4Config_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  sources:
+    operational: true
+  surfaces:
+    day_plan: true
+    meeting_prep: true
+  semantic:
+    preferences: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Sources.Operational)
+	assert.True(t, cfg.Memory.Surfaces.DayPlan)
+	assert.True(t, cfg.Memory.Surfaces.MeetingPrep)
+	assert.True(t, cfg.Memory.Semantic.Preferences)
+}
+
+func TestMemorySourcesConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  sources:
+    gmail: true
+    actions: true
+    calendar: true
+    chats: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Sources.Gmail)
+	assert.True(t, cfg.Memory.Sources.Actions)
+	assert.True(t, cfg.Memory.Sources.Calendar)
+	assert.True(t, cfg.Memory.Sources.Chats)
 }
 
 func TestMemorySurfacesConfig_FromYAML(t *testing.T) {
@@ -330,6 +392,36 @@ memory:
 	assert.True(t, cfg.Memory.Surfaces.Briefing)
 	assert.True(t, cfg.Memory.Surfaces.Disputes)
 	assert.True(t, cfg.Memory.Surfaces.Reflection)
+}
+
+func TestMemoryRendersConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  renders:
+    digest_compare: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Renders.DigestCompare)
+}
+
+func TestMemoryRetrieveConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  retrieve:
+    recall_compare: true
+    briefing_compare: true
+    meeting_prep_compare: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Retrieve.RecallCompare)
+	assert.True(t, cfg.Memory.Retrieve.BriefingCompare)
+	assert.True(t, cfg.Memory.Retrieve.MeetingPrepCompare)
 }
 
 func TestMemoryConfig_FromYAML(t *testing.T) {

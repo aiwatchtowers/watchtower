@@ -20,6 +20,8 @@ func TestModelForSource(t *testing.T) {
 		{"catchup.peel", ModelLightweight},
 		{"memory.extract_episodes", ModelLightweight},
 		{"memory.extract_episodes_batch", ModelLightweight},
+		{"memory.extract_email_episodes", ModelLightweight},
+		{prompts.MemoryRenderChannelDigest, ModelLightweight},
 		{"digest.channel", ModelDefault},
 		{"digest.daily", ModelDefault},
 		{"tracks.create", ModelDefault},

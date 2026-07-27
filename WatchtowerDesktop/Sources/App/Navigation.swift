@@ -186,6 +186,14 @@ struct MainNavigationView: View {
             DigestListView()
         case .people:
             PeopleListView()
+        case .memory:
+            if let vm = appState.memoryViewModel {
+                MemoryView(vm: vm)
+            } else {
+                Text("Memory unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .workload:
             WorkloadView()
         case .blockers:

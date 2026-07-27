@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"watchtower/internal/db"
@@ -56,10 +57,12 @@ func parseSituationLearn(raw string) (situationLearnResult, error) {
 	return out, nil
 }
 
-// SubmitSituationFeedback records 👍/👎 for a dashboard situation. Without a
-// comment it mirrors the Desktop fast path (Swift SituationQueries.recordFeedback):
+// SubmitSituationFeedback records 👍/👎 for a dashboard situation. The raw
+// rating always lands in the feedback table (entity_type='situation') so the
+// Desktop control can show the current state. Without a comment it otherwise
+// mirrors the Desktop fast path (Swift SituationQueries.recordFeedback):
 // rating -1 upserts a source_mute user_rule per distinct member-signal channel,
-// rating +1 is a no-op, and no AI call is ever made (DASH-04). With a comment
+// rating +1 derives no rules, and no AI call is ever made (DASH-04). With a comment
 // it runs the learning interpreter and persists the derived rules as
 // source='user_rule' (protected from implicit overwrite, INBOX-05).
 func (p *Pipeline) SubmitSituationFeedback(ctx context.Context, situationID int, rating int, comment string) error {
@@ -70,6 +73,17 @@ func (p *Pipeline) SubmitSituationFeedback(ctx context.Context, situationID int,
 	signals, err := p.db.ListSituationSignals(situationID)
 	if err != nil {
 		return fmt.Errorf("situation %d signals: %w", situationID, err)
+	}
+
+	// Persist the raw rating first so the Desktop 👍/👎 control reflects it
+	// even when the learning interpreter below fails.
+	if _, err := p.db.AddFeedback(db.Feedback{
+		EntityType: "situation",
+		EntityID:   strconv.Itoa(situationID),
+		Rating:     rating,
+		Comment:    strings.TrimSpace(comment),
+	}); err != nil {
+		return fmt.Errorf("recording situation %d feedback: %w", situationID, err)
 	}
 
 	if strings.TrimSpace(comment) == "" {

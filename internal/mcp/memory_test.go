@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -451,5 +452,104 @@ func TestMemoryRecallLimit(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0].ID != entPayments.ID {
 		t.Errorf("limit=1 should keep only the alias hit, got %+v", hits)
+	}
+}
+
+// newMemorySessionCompare is newMemorySession plus a writable shadowDB
+// wired via WithMemoryRetrieveCompare — the Task 8 dark-wiring seam.
+func newMemorySessionCompare(t *testing.T, database, shadowDB *db.DB, vaultPath string) *mcpsdk.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	srv := NewServer(database, WithMemoryVault(vaultPath), WithMemoryRetrieveCompare(shadowDB))
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "v0"}, nil)
+	st, ct := mcpsdk.NewInMemoryTransports()
+	if _, err := srv.s.Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { cs.Close() }) //nolint:errcheck // test cleanup, error irrelevant
+	return cs
+}
+
+// TestMemoryRecallCompare_ShadowWrittenResponseUnchanged: with
+// memory.retrieve.recall_compare wired on (via a second writable handle),
+// memory_recall ALSO runs the new RetrieveByQuery-based ranking and writes
+// one memory_retrieve_shadow row with sane diff metrics — but the actual MCP
+// response returned to the caller is BYTE-IDENTICAL to the flag-off legacy
+// response (the single most important behavioral guarantee this task adds).
+//
+// Query is "billing-team", not the alias-only "pay-svc" used elsewhere in
+// this file: RetrieveByQuery is pure FTS and "knows nothing about aliases"
+// (internal/memory/retrieve.go), so a query whose only legacy hit comes from
+// alias resolution (entPayments, by fixture design) can never show
+// coverage_ok=true here — that would be a real, expected divergence, not a
+// wiring bug. entBilling's alias also appears in its own body, so both the
+// legacy alias+FTS path and the new FTS-only path find it, exercising
+// coverage_ok=true on genuinely identical underlying data.
+func TestMemoryRecallCompare_ShadowWrittenResponseUnchanged(t *testing.T) {
+	database := seedDB(t)
+	_, vaultPath := seedMemoryFixture(t, database)
+
+	// Baseline: flag off, capture the legacy response bytes.
+	csOff := newMemorySession(t, database, vaultPath)
+	resOff, err := csOff.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "memory_recall", Arguments: map[string]any{"query": "billing-team"},
+	})
+	if err != nil || resOff.IsError {
+		t.Fatalf("baseline call failed: err=%v res=%+v", err, resOff)
+	}
+	baseline := textContent(t, resOff)
+
+	// Compare mode on: same query, same DB/vault state.
+	csOn := newMemorySessionCompare(t, database, database, vaultPath)
+	resOn, err := csOn.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "memory_recall", Arguments: map[string]any{"query": "billing-team"},
+	})
+	if err != nil || resOn.IsError {
+		t.Fatalf("compare-mode call failed: err=%v res=%+v", err, resOn)
+	}
+	if got := textContent(t, resOn); got != baseline {
+		t.Fatalf("compare mode changed the live response:\n legacy: %s\n got:    %s", baseline, got)
+	}
+
+	rows, err := database.ListMemoryRetrieveShadow("recall", time.Time{})
+	if err != nil {
+		t.Fatalf("ListMemoryRetrieveShadow: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly one recall shadow row, got %d", len(rows))
+	}
+	var diff memory.RecallDiff
+	if err := json.Unmarshal([]byte(rows[0].DiffMetricsJSON), &diff); err != nil {
+		t.Fatalf("unmarshaling diff metrics: %v", err)
+	}
+	if !diff.CoverageOK {
+		t.Errorf("expected coverage_ok on an identical-vault comparison, got false (diff=%+v)", diff)
+	}
+}
+
+// TestMemoryRecallCompare_GateOffWritesNoShadow: without
+// WithMemoryRetrieveCompare, memory_recall never touches memory_retrieve_shadow
+// — byte-identical to before this task existed.
+func TestMemoryRecallCompare_GateOffWritesNoShadow(t *testing.T) {
+	database := seedDB(t)
+	_, vaultPath := seedMemoryFixture(t, database)
+	cs := newMemorySession(t, database, vaultPath) // no compare option
+
+	_, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "memory_recall", Arguments: map[string]any{"query": "Pay-Svc"},
+	})
+	if err != nil {
+		t.Fatalf("call memory_recall: %v", err)
+	}
+	rows, err := database.ListMemoryRetrieveShadow("recall", time.Time{})
+	if err != nil {
+		t.Fatalf("ListMemoryRetrieveShadow: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected no shadow rows with the option absent, got %d", len(rows))
 	}
 }

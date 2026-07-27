@@ -190,7 +190,7 @@ func runCalDAVAddICS(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 
 	// url column stays EMPTY for ics: the feed URL lives only in the
-	// credential file (see internal/db/migrations/00023_calendar_accounts.sql).
+	// credential file (see internal/db/migrations/00033_calendar_accounts.sql).
 	id, err := createCalendarAccountWithCredentials(database, cfg.WorkspaceDir(), db.CalendarAccount{
 		Provider: "ics", Label: caldavAddICSFlagLabel,
 	}, &caldav.Credentials{FeedURL: feedURL}, cmd.ErrOrStderr())

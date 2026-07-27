@@ -220,6 +220,8 @@ struct RecordingIndicatorView: View {
             Button("Transcribe") { retry(center) }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+            Button("Dismiss") { center.dismissRecovered() }
+                .controlSize(.small)
         }
     }
 

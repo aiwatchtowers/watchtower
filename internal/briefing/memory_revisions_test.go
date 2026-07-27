@@ -2,6 +2,7 @@ package briefing
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"os"
@@ -187,6 +188,58 @@ func TestGatherMemoryRevisions_GateOffRendersPlaceholder(t *testing.T) {
 	assert.Contains(t, prompt, "(no notable revisions)")
 	assert.NotContains(t, prompt, "%!s(MISSING)", "arg count must still match with the gate off")
 	assert.NotContains(t, prompt, "Bob prefers async reviews")
+}
+
+// TestGatherMemoryRevisions_CompareShadowWrittenJournalUnchanged: with
+// memory.retrieve.briefing_compare on, gatherMemoryRevisions ALSO runs
+// RetrieveRevisions and writes one memory_retrieve_shadow row — but the
+// rendered "Memory revisions" journal text is byte-identical to the flag-off
+// legacy render (the single most important behavioral guarantee).
+func TestGatherMemoryRevisions_CompareShadowWrittenJournalUnchanged(t *testing.T) {
+	database, cfg, vaultPath := setupBriefingWithVault(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	writeBelief(t, database, vaultPath, "bel_shaken", "Bob prefers async reviews", "shaken", 0.4,
+		"- 2020-01-01: created — first observed\n- "+today+": shake — evidence now conflicts\n")
+
+	baseline := runBriefingCapturing(t, database, cfg)
+	baselineSection := memoryRevisionsSection(t, baseline)
+
+	// RunForDate dedupes on an existing briefings row for (user, date) and
+	// returns the cached briefing without regenerating — clear it so the
+	// second run actually re-invokes gatherMemoryRevisions instead of
+	// short-circuiting with an empty (never-called) capturing generator.
+	_, err := database.Exec("DELETE FROM briefings")
+	require.NoError(t, err)
+
+	cfg.Memory.Retrieve.BriefingCompare = true
+	compared := runBriefingCapturing(t, database, cfg)
+	comparedSection := memoryRevisionsSection(t, compared)
+
+	require.Equal(t, baselineSection, comparedSection, "compare mode must not change the rendered journal")
+
+	rows, err := database.ListMemoryRetrieveShadow("briefing", time.Time{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "exactly one briefing shadow row from the compare-mode run")
+
+	var diff memory.RevisionDiff
+	require.NoError(t, json.Unmarshal([]byte(rows[0].DiffMetricsJSON), &diff))
+	assert.Contains(t, diff.OldIDs, "bel_shaken")
+}
+
+// TestGatherMemoryRevisions_CompareGateOffWritesNoShadow: without the flag,
+// no memory_retrieve_shadow row is ever written — byte-identical to before
+// this task existed.
+func TestGatherMemoryRevisions_CompareGateOffWritesNoShadow(t *testing.T) {
+	database, cfg, vaultPath := setupBriefingWithVault(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	writeBelief(t, database, vaultPath, "bel_shaken", "Bob prefers async reviews", "shaken", 0.4,
+		"- "+today+": shake — evidence conflicts\n")
+
+	runBriefingCapturing(t, database, cfg)
+
+	rows, err := database.ListMemoryRetrieveShadow("briefing", time.Time{})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
 }
 
 func TestBriefingDailyVersionBumpedToSix(t *testing.T) {

@@ -37,10 +37,12 @@ var Defaults = map[string]string{
 	InboxSituationCard:         defaultInboxSituationCard,
 	MemoryExtractEpisodes:      defaultMemoryExtractEpisodes,
 	MemoryExtractEpisodesBatch: defaultMemoryExtractEpisodesBatch,
+	MemoryExtractEmailEpisodes: defaultMemoryExtractEmailEpisodes,
 	MemoryEntityRewrite:        defaultMemoryEntityRewrite,
 	MemoryReviseBeliefs:        defaultMemoryReviseBeliefs,
 	MemoryRenderMap:            defaultMemoryRenderMap,
 	MemoryReflect:              defaultMemoryReflect,
+	MemoryRenderChannelDigest:  defaultMemoryRenderChannelDigest,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -76,10 +78,12 @@ var AllIDs = []string{
 	InboxSituationCard,
 	MemoryExtractEpisodes,
 	MemoryExtractEpisodesBatch,
+	MemoryExtractEmailEpisodes,
 	MemoryEntityRewrite,
 	MemoryReviseBeliefs,
 	MemoryRenderMap,
 	MemoryReflect,
+	MemoryRenderChannelDigest,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -104,10 +108,10 @@ var DefaultVersions = map[string]int{
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
 	TasksUpdate:                1, // v1: AI task update from user instruction
-	MeetingPrep:                3, // v3: Jira context for attendees (workload, shared issues)
+	MeetingPrep:                4, // v4: attendee memory section (Phase-5 slice-4 surface, behind memory.surfaces.meeting_prep)
 	MeetingRecap:               1, // v1: initial meeting recap template
 	MeetingNotes:               1, // v1: publishable markdown meeting notes from a transcript
-	DayPlanGenerate:            2, // v2: mandatory language directive at top
+	DayPlanGenerate:            3, // v3: memory open-loops section (Phase-5 slice-4 surface, behind memory.surfaces.day_plan)
 	TargetsExtract:             1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:                1, // v1: single-target link proposal against active snapshot
 	TrackCompose:               1, // v1: draft custom-track title+instruction from a free-text request
@@ -117,10 +121,12 @@ var DefaultVersions = map[string]int{
 	InboxSituationCard:         1, // v1: context packet for one dashboard situation
 	MemoryExtractEpisodes:      1, // v1: raw-text episode extraction for the memory vault
 	MemoryExtractEpisodesBatch: 2, // v2: "===" block delimiter instead of "---" (a leading "--" broke claude CLI's argv flag parsing)
+	MemoryExtractEmailEpisodes: 1, // v1: Gmail thread → one-episode extraction (memory.sources.gmail)
 	MemoryEntityRewrite:        1, // v1: strong-tier entity page rewrite (What/Current/Facts + copied provenance markers)
 	MemoryReviseBeliefs:        1, // v1: strong-tier per-belief op proposals (confirm/weaken/shake/retire/propose-new)
 	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
 	MemoryReflect:              1, // v1: strong-tier weekly reflection over vault git history (Phase-4 surface, behind memory.surfaces.reflection)
+	MemoryRenderChannelDigest:  1, // v1: cheap-tier channel digest rendered from memory episodes (Phase-5 slice-3 dark compare-mode)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -160,10 +166,12 @@ var Descriptions = map[string]string{
 	InboxSituationCard:         "Dashboard: context packet for one situation",
 	MemoryExtractEpisodes:      "Memory: extract noteworthy episodes from one channel window of raw messages",
 	MemoryExtractEpisodesBatch: "Memory: extract noteworthy episodes from several low-activity channel windows in one call",
+	MemoryExtractEmailEpisodes: "Memory: extract one episode per Gmail thread (memory.sources.gmail)",
 	MemoryEntityRewrite:        "Memory: rewrite an entity page's What/Current/Facts from new episodes (strong tier)",
 	MemoryReviseBeliefs:        "Memory: propose per-belief revision ops from new episodes (strong tier; code disposes)",
 	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
 	MemoryReflect:              "Memory: weekly reflection over the vault's own git history — flag unstable beliefs/entities (strong tier; code disposes)",
+	MemoryRenderChannelDigest:  "Memory: render a channel digest from the window's memory episodes (cheap tier; dark compare-mode against the legacy digest)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1015,6 +1023,7 @@ Rules:
 - context_gaps: what's missing that would help prepare better (no agenda, unclear topic, unlinked attendees).
 - If no relevant data exists for a field, return an empty array — don't pad with loosely related filler.
 - If the meeting description/agenda is empty or vague, this is a HIGH priority context_gap and recommendation.
+- ATTENDEE MEMORY holds notes and beliefs the secretary derived from Slack/mail/calendar — model-mediated, NOT the attendees' own words. Treat it as soft context: it may sharpen people_notes and talking_points, but verify before relying on it and never quote it as fact. When it reads "(no memory context)", ignore attendee memory entirely.
 - %s
 - Return valid JSON only.
 
@@ -1034,6 +1043,9 @@ Rules:
 %s
 
 === USER NOTES ===
+%s
+
+=== ATTENDEE MEMORY (secretary's own notes + beliefs — model-mediated, not the attendees' words) ===
 %s`
 
 const defaultMeetingExtractTopics = `You split a raw blob of meeting-prep text into atomic discussion topics.
@@ -1399,6 +1411,53 @@ Rules:
 - an episode's refs must all belong to the SAME channel block — never combine messages from two different channels into one episode.
 - most windows are routine chatter and contain no episodes: return [] for those; a channel with nothing noteworthy simply contributes no episodes.
 - entity_hints: participants and the channel are already linked automatically — use entity_hints ONLY for a named project, system, or recurring topic the episode is specifically about (e.g. "CEX-7457", "HSM", "the migration"), not for people or channels. Omit it (empty array) when nothing like that is named.`
+
+// defaultMemoryExtractEmailEpisodes is the Gmail thread → episode extractor for
+// the secretary memory vault (cheap tier — see "memory.extract_email_episodes"
+// in the model routing). Unlike the Slack extractor, an email THREAD is one
+// story arc (a question, its discussion, its resolution), so each thread maps to
+// at most ONE episode. Each thread block shows its subject, participants, and
+// "[unix] name <email> (mail:<id>): body" lines; refs cite "mail:<message_id>"
+// with the shown unix ts. Args: language directive, max episodes (= thread
+// count in the call). The user message opens with a non-dash line (claude-CLI
+// argv gotcha).
+const defaultMemoryExtractEmailEpisodes = `%s
+
+You are the memory consolidator of a workplace secretary. You read Gmail threads, each shown in its own "=== Thread: subject ===" block, and extract at most one noteworthy episode PER THREAD — a self-contained story worth remembering (a decision, an agreement, an escalation, a commitment), not routine mail. A thread is one story arc; never merge two threads into one episode.
+
+Respond with STRICT JSON only: an array of at most %d episodes (one per thread at most), no prose, no markdown outside an optional single JSON code fence. Each episode is:
+{"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["name <email>"], "refs": [{"channel_id": "mail:<message_id>", "ts": "<unix seconds>"}], "entity_hints": ["email of a person involved"]}
+
+Rules:
+- copy each ref's channel_id ("mail:<message_id>") and ts EXACTLY from the message lines shown to you; never invent, adjust, or infer one.
+- an episode's refs must all belong to the SAME thread — never combine messages from two different threads into one episode.
+- most threads are routine and contain no episode: return [] for those; a thread with nothing noteworthy simply contributes no episode.`
+
+// defaultMemoryRenderChannelDigest renders a channel digest from the memory
+// episodes overlapping a time window (cheap tier — see
+// "memory.render_channel_digest" in the model routing; it consumes
+// already-distilled episodes, a lighter task than the legacy raw-message
+// digest, which also routes cheap). The output mirrors the legacy digest_topics
+// JSON shape EXACTLY (summary + topics[] with title/summary/decisions/
+// action_items/situations/key_messages) so the dark compare (Phase-5 slice-3)
+// is a field-by-field diff and a future switch is a drop-in. MEM-13: the model
+// may cite key_messages / decision message_ts ONLY by timestamps shown to it
+// (an episode's provenance ts or an uncovered gap message); code re-validates
+// every ref at write and drops any it did not show. Arg: the language
+// directive. The user message opens with a non-dash line (claude-CLI argv
+// gotcha).
+const defaultMemoryRenderChannelDigest = `%s
+
+You are the memory renderer of a workplace secretary. You are given the noteworthy EPISODES already distilled from ONE Slack channel over a time window — each with its Story, its Outcome, and the exact message timestamps it cites — and, when the episodes miss something, a few raw "uncovered" messages from the same window. Render a channel digest that summarizes what happened, grouped into topics.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"summary": "2-4 sentence channel-level summary, current state first", "topics": [{"title": "short headline", "summary": "2-4 sentences", "decisions": [{"text": "the decision", "by": "who decided", "message_ts": "the citing message ts", "importance": "high|medium|low"}], "action_items": [{"text": "the task", "assignee": "who", "status": "open|done"}], "situations": [], "key_messages": ["message ts"]}]}
+
+Rules:
+- summarize from the EPISODES; use the uncovered messages only to fill what the episodes miss.
+- cite key_messages and every decision message_ts ONLY by a timestamp shown to you (an episode's message timestamps, or an uncovered message's ts); copy it EXACTLY and never invent, adjust, or infer one.
+- leave "situations" as an empty array — situations are maintained elsewhere and anything you put there is ignored.
+- a quiet window may have nothing worth a topic: return an empty "topics" array.`
 
 // defaultMemoryEntityRewrite is the strong-tier entity-page rewrite for the
 // secretary memory vault (memory.entity_rewrite — routed to the default/strong
