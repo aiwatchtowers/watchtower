@@ -99,6 +99,12 @@ final class AppState {
     /// single-account flow (`GoogleConnectFlow.shared`) and is not covered here.
     private(set) var emailAccountsViewModel: EmailAccountsViewModel?
 
+    /// Calendar Accounts ViewModel (multi-account CalDAV/ICS) — persists across
+    /// tab switches so an in-flight connect survives navigating away from the
+    /// Settings window. Google Calendar keeps its own separate single-account
+    /// flow (`GoogleConnectFlow.shared`) and is not covered here.
+    private(set) var calendarAccountsViewModel: CalendarAccountsViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -264,6 +270,7 @@ final class AppState {
                 initDashboard(dbManager: manager)
                 initSecretaryProfile(dbManager: manager)
                 initEmailAccounts(dbPool: manager.dbPool)
+                initCalendarAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -409,6 +416,12 @@ final class AppState {
         let vm = EmailAccountsViewModel(dbPool: dbPool)
         vm.refresh()
         emailAccountsViewModel = vm
+    }
+
+    func initCalendarAccounts(dbPool: DatabasePool) {
+        let vm = CalendarAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        calendarAccountsViewModel = vm
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

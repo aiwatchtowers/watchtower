@@ -14,6 +14,7 @@ import (
 
 	gosync "sync"
 	"watchtower/internal/briefing"
+	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/dayplan"
@@ -66,6 +67,7 @@ type Daemon struct {
 	nextStepPipe     *targets.Pipeline
 	customTracksPipe *customtracks.Pipeline
 	calendarSyncer   *calendar.Syncer
+	calDAVSyncers    []*caldav.Syncer
 	gmailSyncer      *gmail.Syncer
 	imapSyncers      []*imap.Syncer
 	jiraSyncer       *jira.Syncer
@@ -149,6 +151,14 @@ func (d *Daemon) SetCustomTracksPipeline(p *customtracks.Pipeline) {
 // SetCalendarSyncer sets the calendar syncer for post-sync calendar fetch.
 func (d *Daemon) SetCalendarSyncer(s *calendar.Syncer) {
 	d.calendarSyncer = s
+}
+
+// SetCalDAVSyncers sets the per-account CalDAV/ICS calendar syncers — one
+// per connected calendar_accounts row, unlike Google Calendar's single
+// syncer, since a workspace can have any number of connected calendar
+// sources (mirrors SetImapSyncers).
+func (d *Daemon) SetCalDAVSyncers(s []*caldav.Syncer) {
+	d.calDAVSyncers = s
 }
 
 // SetGmailSyncer sets the Gmail syncer for post-sync mail fetch.
@@ -244,6 +254,7 @@ func (d *Daemon) wakeChannel() <-chan struct{} {
 func (d *Daemon) runSync(ctx context.Context) {
 	syncErr := d.phaseSlackSync(ctx)
 	d.phaseCalendarSync(ctx)
+	d.phaseCalDAVSync(ctx)
 	d.phaseGmailSync(ctx)
 	d.phaseImapSync(ctx)
 	d.phaseJiraSync(ctx)
@@ -360,6 +371,21 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 		d.logger.Printf("calendar sync error: %v", err)
 	} else if n > 0 {
 		d.logger.Printf("calendar: %d events synced", n)
+	}
+}
+
+// phaseCalDAVSync pulls calendar events for every connected CalDAV/ICS
+// account. Lightweight, runs every cycle. Like phaseImapSync, this loops
+// over one syncer per account — a per-account failure is logged and skipped
+// rather than aborting the rest of the accounts.
+func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
+	for _, s := range d.calDAVSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("caldav sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("caldav: %d events synced", n)
+		}
 	}
 }
 

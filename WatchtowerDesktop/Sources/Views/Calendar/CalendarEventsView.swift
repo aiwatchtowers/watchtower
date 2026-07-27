@@ -23,6 +23,7 @@ struct CalendarEventsView: View {
     @State private var userNotes: String = ""
     @State private var mode: CalendarMode = .events
     @State private var showAddEmailAccountSheet = false
+    @State private var showAddCalendarAccountSheet = false
 
     var body: some View {
         Group {
@@ -421,11 +422,22 @@ struct CalendarEventsView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .padding(.top, 8)
+
+            Button("Connect another calendar (iCloud, CalDAV, ICS link)…") {
+                showAddCalendarAccountSheet = true
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { google.refresh() }
         .sheet(isPresented: $showAddEmailAccountSheet) {
             AddEmailAccountView()
+                .environment(appState)
+        }
+        .sheet(isPresented: $showAddCalendarAccountSheet) {
+            AddCalendarAccountView()
                 .environment(appState)
         }
     }
