@@ -282,32 +282,9 @@ func (p *Pipeline) extractGmailBatch(ctx context.Context, runID int64, mailReg *
 	}
 	label := gmailBatchLabel(batch)
 
-	system, user := buildEmailEpisodesPrompt(p.getPrompt(prompts.MemoryExtractEmailEpisodes), p.Language, batch, len(batch))
-	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.MemoryExtractEmailEpisodes), system, user, "")
-	if err != nil {
-		return 0, usage, fmt.Errorf("generate: %w", err)
-	}
-	eps, err := parseExtract(raw)
+	kept, usage, err := p.generateValidatedGmailEpisodes(ctx, mailReg, batch, msgToThread, label)
 	if err != nil {
 		return 0, usage, err
-	}
-	if len(eps) > len(batch) {
-		eps = eps[:len(batch)] // at most one episode per thread
-	}
-
-	valid, malformed := splitMalformedEmail(eps, msgToThread)
-	if malformed > 0 {
-		return 0, usage, fmt.Errorf("memory: gmail extract returned %d episode(s) with zero or cross-thread refs — schema-degenerate reply", malformed)
-	}
-	// MEM-01/MEM-12: every mail: ref validates against gmail_messages through the
-	// mail resolver; a lookup error freezes the batch (re-extracted next run), a
-	// positive miss drops the ref, an episode left with no ref is discarded.
-	kept, rejected, err := validateRefsVia(mailReg, valid)
-	if err != nil {
-		return 0, usage, err
-	}
-	if rejected > 0 {
-		p.logf("memory: gmail extract [%s]: refs_rejected=%d (MEM-01)", label, rejected)
 	}
 	if len(kept) == 0 {
 		return 0, usage, nil // routine mail — a fully processed batch with nothing to keep
@@ -336,6 +313,44 @@ func (p *Pipeline) extractGmailBatch(ctx context.Context, runID int64, mailReg *
 		}
 	}
 	return len(kept), usage, nil
+}
+
+// generateValidatedGmailEpisodes runs the extraction prompt over batch and
+// returns the MEM-01/MEM-12-validated episodes ready to build into nodes:
+// generate → parse → drop malformed (zero or cross-thread refs, a
+// schema-degenerate reply that freezes the batch) → validate every mail: ref
+// against gmail_messages through the mail resolver (a lookup error freezes
+// the batch, a positive miss drops the ref). usage is populated even on error,
+// so the caller's usage accounting is unaffected by where extraction failed.
+func (p *Pipeline) generateValidatedGmailEpisodes(ctx context.Context, mailReg *provenanceRegistry, batch []gmailThread, msgToThread map[string]string, label string) (kept []extractedEpisode, usage *digest.Usage, err error) {
+	system, user := buildEmailEpisodesPrompt(p.getPrompt(prompts.MemoryExtractEmailEpisodes), p.Language, batch, len(batch))
+	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.MemoryExtractEmailEpisodes), system, user, "")
+	if err != nil {
+		return nil, usage, fmt.Errorf("generate: %w", err)
+	}
+	eps, err := parseExtract(raw)
+	if err != nil {
+		return nil, usage, err
+	}
+	if len(eps) > len(batch) {
+		eps = eps[:len(batch)] // at most one episode per thread
+	}
+
+	valid, malformed := splitMalformedEmail(eps, msgToThread)
+	if malformed > 0 {
+		return nil, usage, fmt.Errorf("memory: gmail extract returned %d episode(s) with zero or cross-thread refs — schema-degenerate reply", malformed)
+	}
+	// MEM-01/MEM-12: every mail: ref validates against gmail_messages through the
+	// mail resolver; a lookup error freezes the batch (re-extracted next run), a
+	// positive miss drops the ref, an episode left with no ref is discarded.
+	kept, rejected, err := validateRefsVia(mailReg, valid)
+	if err != nil {
+		return nil, usage, err
+	}
+	if rejected > 0 {
+		p.logf("memory: gmail extract [%s]: refs_rejected=%d (MEM-01)", label, rejected)
+	}
+	return kept, usage, nil
 }
 
 // buildGmailEpisodeNodes turns kept email episodes into episode nodes, keyed by
