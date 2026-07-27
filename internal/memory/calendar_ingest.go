@@ -152,54 +152,16 @@ func (p *Pipeline) buildCalendarEpisodes(runID int64, calReg *provenanceRegistry
 		if ev.EndUnix > maxEnd {
 			maxEnd = ev.EndUnix
 		}
-		ref := episodeRef{ChannelID: calRefPrefix + ev.ID, TS: strconv.FormatInt(ev.StartUnix, 10)}
-
-		// MEM-01/MEM-12: validate the cal: ref through the cal-only registry. A
-		// lookup error freezes the step; a positive non-resolution drops the event.
-		ok, registered, verr := calReg.Validate(ref)
-		if verr != nil {
-			return 0, 0, 0, fmt.Errorf("memory: calendar ingest: validate %s: %w", ref.ChannelID, verr)
-		}
-		if !registered || !ok {
-			failed++
-			p.logf("memory: calendar ingest: event %s ref unresolved — episode discarded (MEM-01)", ev.ID)
-			continue
-		}
-
-		recap, rerr := p.db.GetMeetingRecap(ev.ID)
-		if rerr != nil {
-			return 0, 0, 0, fmt.Errorf("memory: calendar ingest: recap %s: %w", ev.ID, rerr)
-		}
-
-		attendees := parseCalAttendees(ev.Attendees)
-		labels := attendeeLabels(attendees)
-		title := firstNonEmpty(strings.Join(strings.Fields(ev.Title), " "), "(untitled event)")
-		body := calendarEpisodeBody(title, labels, calendarStory(ev, labels, recap), calendarOutcome(recap), ref)
-		alias := calendarEventAlias(ev.ID)
-
-		epNode, changed, berr := p.calendarEpisodeNode(alias, title, body)
+		resolved, changed, berr := p.buildOneCalendarEpisode(ev, calReg, byID, &order, dirty, add)
 		if berr != nil {
 			return 0, 0, 0, berr
 		}
-		add(&epNode)
+		if !resolved {
+			failed++
+			continue
+		}
 		if changed {
-			dirty[epNode.ID] = true
 			built++
-		}
-
-		// Entity back-links: each attendee (by Slack user id when present, else
-		// email) plus, for a recurring instance, its series entity.
-		link := "- [[" + epNode.ID + "|" + linkLabel(title) + "]]\n"
-		refs := attendeeEntityRefs(attendees)
-		if ev.IsRecurring {
-			if series := parseRecurringEventID(ev.RawJSON); series != "" {
-				refs = append(refs, calendarSeriesAliasPrefix+series)
-			}
-		}
-		for _, entRef := range refs {
-			if lerr := linkEntity(p, byID, &order, dirty, entRef, link); lerr != nil {
-				return 0, 0, 0, lerr
-			}
 		}
 	}
 
@@ -207,6 +169,63 @@ func (p *Pipeline) buildCalendarEpisodes(runID int64, calReg *provenanceRegistry
 		return 0, 0, 0, lerr
 	}
 	return built, failed, maxEnd, nil
+}
+
+// buildOneCalendarEpisode processes one calendar event: validates its cal:
+// ref (MEM-01/MEM-12), builds/updates the episode node, and back-links every
+// attendee entity (plus the recurring series entity, when applicable).
+// resolved is false when the ref failed validation — the event is discarded,
+// not built, and changed/err are meaningless. changed reports whether the
+// episode node's body actually changed (the caller's built counter).
+func (p *Pipeline) buildOneCalendarEpisode(ev db.CalendarExtractEvent, calReg *provenanceRegistry, byID map[string]*Node, order *[]string, dirty map[string]bool, add func(*Node)) (resolved, changed bool, err error) {
+	ref := episodeRef{ChannelID: calRefPrefix + ev.ID, TS: strconv.FormatInt(ev.StartUnix, 10)}
+
+	// MEM-01/MEM-12: validate the cal: ref through the cal-only registry. A
+	// lookup error freezes the step; a positive non-resolution drops the event.
+	ok, registered, verr := calReg.Validate(ref)
+	if verr != nil {
+		return false, false, fmt.Errorf("memory: calendar ingest: validate %s: %w", ref.ChannelID, verr)
+	}
+	if !registered || !ok {
+		p.logf("memory: calendar ingest: event %s ref unresolved — episode discarded (MEM-01)", ev.ID)
+		return false, false, nil
+	}
+
+	recap, rerr := p.db.GetMeetingRecap(ev.ID)
+	if rerr != nil {
+		return false, false, fmt.Errorf("memory: calendar ingest: recap %s: %w", ev.ID, rerr)
+	}
+
+	attendees := parseCalAttendees(ev.Attendees)
+	labels := attendeeLabels(attendees)
+	title := firstNonEmpty(strings.Join(strings.Fields(ev.Title), " "), "(untitled event)")
+	body := calendarEpisodeBody(title, labels, calendarStory(ev, labels, recap), calendarOutcome(recap), ref)
+	alias := calendarEventAlias(ev.ID)
+
+	epNode, changed, berr := p.calendarEpisodeNode(alias, title, body)
+	if berr != nil {
+		return false, false, berr
+	}
+	add(&epNode)
+	if changed {
+		dirty[epNode.ID] = true
+	}
+
+	// Entity back-links: each attendee (by Slack user id when present, else
+	// email) plus, for a recurring instance, its series entity.
+	link := "- [[" + epNode.ID + "|" + linkLabel(title) + "]]\n"
+	refs := attendeeEntityRefs(attendees)
+	if ev.IsRecurring {
+		if series := parseRecurringEventID(ev.RawJSON); series != "" {
+			refs = append(refs, calendarSeriesAliasPrefix+series)
+		}
+	}
+	for _, entRef := range refs {
+		if lerr := linkEntity(p, byID, order, dirty, entRef, link); lerr != nil {
+			return false, false, lerr
+		}
+	}
+	return true, changed, nil
 }
 
 // linkEntity appends the episode back-link to the entity that entRef resolves
