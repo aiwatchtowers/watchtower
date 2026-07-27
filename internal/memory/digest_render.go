@@ -199,57 +199,73 @@ func validateRenderRefs(checker messageChecker, channelID string, episodes []ren
 
 	var keptTopics []renderedTopic
 	for ti := range rd.Topics {
-		t := rd.Topics[ti]
-		origRefs := 0
-
-		keptKM := make([]string, 0, len(t.KeyMessages))
-		for _, ts := range t.KeyMessages {
-			if ts == "" {
-				continue // an empty entry is not a ref — dropped silently, not counted
-			}
-			origRefs++
-			ok, verr := keep(ts)
-			if verr != nil {
-				return 0, fmt.Errorf("memory: render key_message ref %s/%s: %w", channelID, ts, verr)
-			}
-			if !ok {
-				rejected++
-				continue
-			}
-			keptKM = append(keptKM, ts)
+		t, drop, tRejected, terr := filterTopicRefs(keep, channelID, rd.Topics[ti])
+		if terr != nil {
+			return 0, terr
 		}
-		t.KeyMessages = keptKM
-
-		keptDec := make([]renderedDecision, 0, len(t.Decisions))
-		for _, d := range t.Decisions {
-			if d.MessageTS == "" {
-				keptDec = append(keptDec, d) // a decision with no citation — nothing to validate
-				continue
-			}
-			origRefs++
-			ok, verr := keep(d.MessageTS)
-			if verr != nil {
-				return 0, fmt.Errorf("memory: render decision ref %s/%s: %w", channelID, d.MessageTS, verr)
-			}
-			if !ok {
-				rejected++
-				continue // an invented decision citation — drop the decision whole
-			}
-			keptDec = append(keptDec, d)
-		}
-		t.Decisions = keptDec
-
-		survivingRefs := len(keptKM)
-		for _, d := range keptDec {
-			if d.MessageTS != "" {
-				survivingRefs++
-			}
-		}
-		if origRefs > 0 && survivingRefs == 0 {
+		rejected += tRejected
+		if drop {
 			continue // every ref this topic cited was invented — drop the topic
 		}
 		keptTopics = append(keptTopics, t)
 	}
 	rd.Topics = keptTopics
 	return rejected, nil
+}
+
+// filterTopicRefs validates one topic's key_messages and decision message_ts
+// refs against keep (episode-cited or checker-resolved), dropping invented
+// refs. It returns the filtered topic, whether every ref the topic originally
+// cited was invented (so the caller should drop the topic whole — the
+// hallucinated-topic class), the count of refs dropped, and any checker error
+// (which propagates rather than silently treating an unchecked ref as
+// invalid — the caller returns 0 rejected on error, matching validateRenderRefs'
+// existing all-or-nothing error contract).
+func filterTopicRefs(keep func(string) (bool, error), channelID string, t renderedTopic) (filtered renderedTopic, drop bool, rejected int, err error) {
+	origRefs := 0
+
+	keptKM := make([]string, 0, len(t.KeyMessages))
+	for _, ts := range t.KeyMessages {
+		if ts == "" {
+			continue // an empty entry is not a ref — dropped silently, not counted
+		}
+		origRefs++
+		ok, verr := keep(ts)
+		if verr != nil {
+			return renderedTopic{}, false, 0, fmt.Errorf("memory: render key_message ref %s/%s: %w", channelID, ts, verr)
+		}
+		if !ok {
+			rejected++
+			continue
+		}
+		keptKM = append(keptKM, ts)
+	}
+	t.KeyMessages = keptKM
+
+	keptDec := make([]renderedDecision, 0, len(t.Decisions))
+	for _, d := range t.Decisions {
+		if d.MessageTS == "" {
+			keptDec = append(keptDec, d) // a decision with no citation — nothing to validate
+			continue
+		}
+		origRefs++
+		ok, verr := keep(d.MessageTS)
+		if verr != nil {
+			return renderedTopic{}, false, 0, fmt.Errorf("memory: render decision ref %s/%s: %w", channelID, d.MessageTS, verr)
+		}
+		if !ok {
+			rejected++
+			continue // an invented decision citation — drop the decision whole
+		}
+		keptDec = append(keptDec, d)
+	}
+	t.Decisions = keptDec
+
+	survivingRefs := len(keptKM)
+	for _, d := range keptDec {
+		if d.MessageTS != "" {
+			survivingRefs++
+		}
+	}
+	return t, origRefs > 0 && survivingRefs == 0, rejected, nil
 }
