@@ -22,6 +22,7 @@ struct CalendarEventsView: View {
     @State private var expandedEventID: String?
     @State private var userNotes: String = ""
     @State private var mode: CalendarMode = .events
+    @State private var showAddEmailAccountSheet = false
 
     var body: some View {
         Group {
@@ -412,8 +413,20 @@ struct CalendarEventsView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+
+            Button("Add an IMAP or Outlook mailbox instead…") {
+                showAddEmailAccountSheet = true
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { google.refresh() }
+        .sheet(isPresented: $showAddEmailAccountSheet) {
+            AddEmailAccountView()
+                .environment(appState)
+        }
     }
 }
