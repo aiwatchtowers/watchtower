@@ -2060,6 +2060,50 @@ func TestJiraIssueExists(t *testing.T) {
 	}
 }
 
+// jiraIssueKeys projects an issue slice down to its ordered keys.
+func jiraIssueKeys(issues []JiraExtractIssue) []string {
+	keys := make([]string, 0, len(issues))
+	for _, is := range issues {
+		keys = append(keys, is.Key)
+	}
+	return keys
+}
+
+// assertSingleJiraIssue fails the test unless issues is exactly the one
+// wantKey issue with no error.
+func assertSingleJiraIssue(t *testing.T, issues []JiraExtractIssue, err error, wantKey string) {
+	t.Helper()
+	if err != nil || len(issues) != 1 || issues[0].Key != wantKey {
+		t.Errorf("limited = %v, %v; want just %s", issues, err, wantKey)
+	}
+}
+
+// assertMaxJiraUpdated fails the test unless got == want with no error.
+func assertMaxJiraUpdated(t *testing.T, got, want int64, err error) {
+	t.Helper()
+	if err != nil || got != want {
+		t.Errorf("MaxJiraUpdatedUnix = %v, %v; want %v", got, err, want)
+	}
+}
+
+// assertKeySet fails the test unless issues' keys are exactly the want set
+// (order-independent).
+func assertKeySet(t *testing.T, issues []JiraExtractIssue, want ...string) {
+	t.Helper()
+	got := map[string]bool{}
+	for _, k := range jiraIssueKeys(issues) {
+		got[k] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("keys = %+v, want exactly %v", issues, want)
+	}
+	for _, k := range want {
+		if !got[k] {
+			t.Errorf("keys = %+v, missing want key %q", issues, k)
+		}
+	}
+}
+
 // TestListJiraIssuesForExtract: parsed-updated_at filtering and ordering, the
 // is_deleted filter, the unparseable-updated_at skip, and the limit cap.
 func TestListJiraIssuesForExtract(t *testing.T) {
@@ -2078,24 +2122,16 @@ func TestListJiraIssuesForExtract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	var keys []string
-	for _, is := range issues {
-		keys = append(keys, is.Key)
-	}
-	if strings.Join(keys, ",") != "CEX-2,CEX-3" {
+	if keys := jiraIssueKeys(issues); strings.Join(keys, ",") != "CEX-2,CEX-3" {
 		t.Errorf("keys = %v, want [CEX-2 CEX-3] (old filtered, deleted filtered, unparseable skipped, ascending)", keys)
 	}
 	// Limit caps from the oldest pending side.
 	issues, err = db.ListJiraIssuesForExtract(since, 1)
-	if err != nil || len(issues) != 1 || issues[0].Key != "CEX-2" {
-		t.Errorf("limited = %v, %v; want just CEX-2", issues, err)
-	}
+	assertSingleJiraIssue(t, issues, err, "CEX-2")
 	// Max helper sees the newest parseable non-deleted row (CEX-3).
 	maxU, err := db.MaxJiraUpdatedUnix()
 	want, _ := ParseJiraTime("2026-07-22T11:00:00.000+0000")
-	if err != nil || maxU != want {
-		t.Errorf("MaxJiraUpdatedUnix = %v, %v; want %v", maxU, err, want)
-	}
+	assertMaxJiraUpdated(t, maxU, want, err)
 
 	// Boundary-drain (Finding 2, final-review fix wave): a same-second tie at
 	// the cap boundary must never be split. Two issues share one updated_at
@@ -2113,13 +2149,7 @@ func TestListJiraIssuesForExtract(t *testing.T) {
 	if len(tieIssues) != 2 {
 		t.Fatalf("boundary drain len = %d, want 2 (both same-second issues drained in)", len(tieIssues))
 	}
-	gotKeys := map[string]bool{}
-	for _, is := range tieIssues {
-		gotKeys[is.Key] = true
-	}
-	if !gotKeys["TIE-1"] || !gotKeys["TIE-2"] || gotKeys["TIE-3"] {
-		t.Errorf("boundary drain keys = %+v, want exactly {TIE-1, TIE-2}, TIE-3 excluded", tieIssues)
-	}
+	assertKeySet(t, tieIssues, "TIE-1", "TIE-2")
 }
 
 // upsertNamedNode is a test helper for inserting a memory_nodes row with the

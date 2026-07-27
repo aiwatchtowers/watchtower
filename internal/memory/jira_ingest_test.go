@@ -56,6 +56,47 @@ func TestRunJiraIngestNoBackfillInit(t *testing.T) {
 	}
 }
 
+// assertBodyContains fails the test for each want string not found in body.
+func assertBodyContains(t *testing.T, body string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\nbody:\n%s", want, body)
+		}
+	}
+}
+
+// assertEntityBackLinks fails the test for each entity id whose vault node
+// lacks a back-link to id.
+func assertEntityBackLinks(t *testing.T, v *Vault, entIDs []string, id string) {
+	t.Helper()
+	for _, entID := range entIDs {
+		en, rerr := v.ReadNode(entID)
+		if rerr != nil {
+			t.Fatalf("read entity: %v", rerr)
+		}
+		if !strings.Contains(en.Body, "[["+id+"|") {
+			t.Errorf("entity %s missing back-link to %s", entID, id)
+		}
+	}
+}
+
+// assertPipelineStepStatus fails the test unless steps contains one with the
+// given channel name whose status matches want.
+func assertPipelineStepStatus(t *testing.T, steps []db.PipelineStep, channelName, want string) {
+	t.Helper()
+	for _, s := range steps {
+		if s.ChannelName != channelName {
+			continue
+		}
+		if s.Status != want {
+			t.Errorf("%s step status = %q, want %q", channelName, s.Status, want)
+		}
+		return
+	}
+	t.Fatalf("no %s step recorded", channelName)
+}
+
 // TestRunJiraIngestBuildsEpisode: an issue updated above the watermark becomes
 // one episode with deterministic Story/Outcome/Provenance, aliased
 // jiraissue:<KEY>, linked to its project entity and assignee person entity;
@@ -97,28 +138,16 @@ func TestRunJiraIngestBuildsEpisode(t *testing.T) {
 	if !ok {
 		t.Fatal("test time failed to parse")
 	}
-	for _, want := range []string{
+	assertBodyContains(t, n.Body,
 		"# CEX-7413: Fix the webhook",
 		"Type: Task.", "Status: Done (done).", "Priority: Medium.",
 		"Assignee: Alice A.", "Reporter: Bob B.", "Sprint: Sprint 9.",
 		"Decision-request handling is broken on prod.",
 		"Resolved (Done) at 2026-07-22T09:00:00.000+0000",
 		fmt.Sprintf("- jira:CEX-7413 %d", wantUnix),
-	} {
-		if !strings.Contains(n.Body, want) {
-			t.Errorf("body missing %q\nbody:\n%s", want, n.Body)
-		}
-	}
+	)
 	// Back-links landed on both entities.
-	for _, entID := range []string{"ent_00000000000000000000000cex", "ent_0000000000000000000000alice"} {
-		en, rerr := v.ReadNode(entID)
-		if rerr != nil {
-			t.Fatalf("read entity: %v", rerr)
-		}
-		if !strings.Contains(en.Body, "[["+id+"|") {
-			t.Errorf("entity %s missing back-link to %s", entID, id)
-		}
-	}
+	assertEntityBackLinks(t, v, []string{"ent_00000000000000000000000cex", "ent_0000000000000000000000alice"}, id)
 	// Watermark advanced to the issue's parsed updated_at.
 	wm, _ := d.MemoryJiraWatermark()
 	if wm == 1 {
@@ -347,18 +376,7 @@ func TestRunJiraIngestWatermarkSetFailureAfterBuildRecordsStepError(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	var found bool
-	for _, s := range steps {
-		if s.ChannelName == "jira-ingest" {
-			found = true
-			if s.Status != "error" {
-				t.Errorf("jira-ingest step status = %q, want %q (watermark set failed post-build)", s.Status, "error")
-			}
-		}
-	}
-	if !found {
-		t.Fatal("no jira-ingest step recorded")
-	}
+	assertPipelineStepStatus(t, steps, "jira-ingest", "error")
 
 	wm, _ := d.MemoryJiraWatermark()
 	if wm != 1 {
