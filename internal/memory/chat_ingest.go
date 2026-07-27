@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"watchtower/internal/db"
 )
 
 // ownerStatement is one owner-authored Discuss turn staged for the belief pass:
@@ -103,44 +105,12 @@ func (p *Pipeline) ingestChatStatements(floor int64, contextTypes []string) (sta
 		// ingest and re-scan next run — the ingest-floor "advance only past
 		// fully-processed" discipline). Turns are id-ascending, so returning here
 		// leaves every turn at/above this one to be re-scanned.
-		subjects, serr := p.chatSubjects(t.ContextType, t.ContextID)
+		consumed, serr := p.stageChatTurn(t, sc)
 		if serr != nil {
-			return nil, floor, fmt.Errorf("memory: chat ingest: %s %s: %w", t.ContextType, t.ContextID, serr)
+			return nil, floor, serr
 		}
-		if t.ID > newFloor {
-			newFloor = t.ID // consumed: advance past it whether or not it maps to an entity
-		}
-		if len(subjects) == 0 {
-			// An owner turn about a context memory has no entity for: consumed
-			// (the floor advances) but nothing to stage. Logged rather than silent
-			// so a systemically unmappable owner is visible.
-			p.logf("memory: chat ingest: turn %d (%s %s) maps to no memory entity — consumed, not staged", t.ID, t.ContextType, t.ContextID)
-			continue
-		}
-		// Per-type staging rule (resolved ambiguity #5): a situation turn stages
-		// every owner turn (Phase-4, unchanged); a target/track turn is an ordinary
-		// drafting instruction unless it opens with the "remember this" command, so
-		// only a commanded target/track turn stages as a world statement. Either way
-		// the prefix is stripped for the verbatim statement text.
-		statement, commanded := parseRememberCommand(t.Text)
-		if t.ContextType != "situation" && !commanded {
-			// An ordinary target/track drafting turn: consumed (the floor advanced
-			// above) but not staged — the "remember this" command is the opt-in.
-			p.logf("memory: chat ingest: turn %d (%s %s) is not a \"remember this\" command — consumed, not staged", t.ID, t.ContextType, t.ContextID)
-			continue
-		}
-		if !commanded {
-			statement = t.Text // situation turn without the command: stage verbatim
-		}
-		text := strings.Join(strings.Fields(statement), " ")
-		if text == "" {
-			continue
-		}
-		st := ownerStatement{conversationID: t.ConversationID, turnTS: t.TurnTS, text: text, subjects: subjects}
-		sc.statements = append(sc.statements, st)
-		sc.refs[st.refKey()] = true
-		for _, s := range subjects {
-			sc.subjects[s] = true
+		if consumed > newFloor {
+			newFloor = consumed // consumed: advance past it whether or not it mapped to an entity
 		}
 	}
 	if len(sc.statements) == 0 {
@@ -149,6 +119,53 @@ func (p *Pipeline) ingestChatStatements(floor int64, contextTypes []string) (sta
 		return nil, newFloor, nil
 	}
 	return sc, newFloor, nil
+}
+
+// stageChatTurn resolves one owner chat turn's context subjects and, when it
+// stages as a world statement (a situation turn always; a target/track turn
+// only behind the "remember this" command), appends it to sc. It returns the
+// turn id — the caller advances the floor to it whether or not the turn
+// staged, per the consumed-not-staged discipline — or a non-nil error when
+// subject resolution itself failed (the caller must NOT advance the floor on
+// error, so the turn and everything after it re-scans next run).
+func (p *Pipeline) stageChatTurn(t db.OwnerChatTurn, sc *stagedChat) (turnID int64, err error) {
+	subjects, serr := p.chatSubjects(t.ContextType, t.ContextID)
+	if serr != nil {
+		return 0, fmt.Errorf("memory: chat ingest: %s %s: %w", t.ContextType, t.ContextID, serr)
+	}
+	if len(subjects) == 0 {
+		// An owner turn about a context memory has no entity for: consumed
+		// (the floor advances) but nothing to stage. Logged rather than silent
+		// so a systemically unmappable owner is visible.
+		p.logf("memory: chat ingest: turn %d (%s %s) maps to no memory entity — consumed, not staged", t.ID, t.ContextType, t.ContextID)
+		return t.ID, nil
+	}
+	// Per-type staging rule (resolved ambiguity #5): a situation turn stages
+	// every owner turn (Phase-4, unchanged); a target/track turn is an ordinary
+	// drafting instruction unless it opens with the "remember this" command, so
+	// only a commanded target/track turn stages as a world statement. Either way
+	// the prefix is stripped for the verbatim statement text.
+	statement, commanded := parseRememberCommand(t.Text)
+	if t.ContextType != "situation" && !commanded {
+		// An ordinary target/track drafting turn: consumed (the floor advanced
+		// above) but not staged — the "remember this" command is the opt-in.
+		p.logf("memory: chat ingest: turn %d (%s %s) is not a \"remember this\" command — consumed, not staged", t.ID, t.ContextType, t.ContextID)
+		return t.ID, nil
+	}
+	if !commanded {
+		statement = t.Text // situation turn without the command: stage verbatim
+	}
+	text := strings.Join(strings.Fields(statement), " ")
+	if text == "" {
+		return t.ID, nil
+	}
+	st := ownerStatement{conversationID: t.ConversationID, turnTS: t.TurnTS, text: text, subjects: subjects}
+	sc.statements = append(sc.statements, st)
+	sc.refs[st.refKey()] = true
+	for _, s := range subjects {
+		sc.subjects[s] = true
+	}
+	return t.ID, nil
 }
 
 // rememberCommandPrefixes are the case-insensitive opt-in prefixes that turn a
