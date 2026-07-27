@@ -14,6 +14,7 @@ struct InboxFeedView: View {
     @State private var tab: Tab = .feed
     private let google = GoogleConnectFlow.shared
     @State private var showConnectOptions = false
+    @State private var showAddEmailAccountSheet = false
 
     /// The dashboard VM is owned by `AppState` (survives tab switches so an
     /// in-flight "Generate" run isn't orphaned on navigation) rather than
@@ -140,9 +141,23 @@ struct InboxFeedView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!google.hasSelection)
+
+            Divider()
+
+            Button("Add an IMAP or Outlook mailbox instead…") {
+                showConnectOptions = false
+                showAddEmailAccountSheet = true
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(16)
         .frame(width: 320)
+        .sheet(isPresented: $showAddEmailAccountSheet) {
+            AddEmailAccountView()
+                .environment(appState)
+        }
     }
 
     // MARK: - Toolbar (Tracks-style: title + count badge + tab picker)
