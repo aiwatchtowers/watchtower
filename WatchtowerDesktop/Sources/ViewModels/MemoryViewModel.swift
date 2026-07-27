@@ -208,28 +208,7 @@ final class MemoryViewModel {
             // Resolve link targets to titles so label-less [[id]] links render readably.
             let targets = Set(links.map(\.target))
             let subjectID = node.isBelief && !node.subject.isEmpty ? node.subject : nil
-            typealias DetailReads = ([String: String], [String], [MemoryBacklink], String)
-            let (resolved, aliases, backlinkItems, subjectTitle) = try await dbPool.read { [backlinkGraph] db -> DetailReads in
-                var resolved: [String: String] = [:] // target -> display title
-                for target in targets {
-                    if let nodeID = try MemoryQueries.resolveNodeID(db, target: target) {
-                        let title = try MemoryQueries.fetchTitle(db, id: nodeID) ?? ""
-                        resolved[target] = title.isEmpty ? nodeID : title
-                    }
-                }
-                let aliases = try MemoryQueries.fetchAliases(db, nodeID: node.id)
-                var backlinkItems: [MemoryBacklink] = []
-                for source in (backlinkGraph[node.id] ?? []).sorted() {
-                    guard let item = try MemoryQueries.fetchNode(db, id: source) else { continue }
-                    backlinkItems.append(MemoryBacklink(id: source, title: item.displayTitle, type: item.type))
-                }
-                var subjectTitle = ""
-                if let subjectID {
-                    let title = try MemoryQueries.fetchTitle(db, id: subjectID) ?? ""
-                    subjectTitle = title.isEmpty ? subjectID : title
-                }
-                return (resolved, aliases, backlinkItems, subjectTitle)
-            }
+            let (resolved, aliases, backlinkItems, subjectTitle) = try await loadNodeDetailReads(node: node, targets: targets, subjectID: subjectID)
 
             // A newer selection may have landed while we awaited — don't
             // clobber it with this stale node.
@@ -255,6 +234,36 @@ final class MemoryViewModel {
         } catch {
             guard selectedID == id else { return }
             self.error = "Failed to open node: \(error.localizedDescription)"
+        }
+    }
+
+    /// Batch-reads select(id:)'s per-node detail data in one dbPool.read:
+    /// wiki-link target titles (for label-less [[id]] rendering), the node's
+    /// aliases, resolved backlink items (from the in-memory backlinkGraph),
+    /// and — for a belief node — its subject's display title.
+    private func loadNodeDetailReads(
+        node: MemoryNodeListItem, targets: Set<String>, subjectID: String?
+    ) async throws -> (resolved: [String: String], aliases: [String], backlinks: [MemoryBacklink], subjectTitle: String) {
+        try await dbPool.read { [backlinkGraph] db in
+            var resolved: [String: String] = [:] // target -> display title
+            for target in targets {
+                if let nodeID = try MemoryQueries.resolveNodeID(db, target: target) {
+                    let title = try MemoryQueries.fetchTitle(db, id: nodeID) ?? ""
+                    resolved[target] = title.isEmpty ? nodeID : title
+                }
+            }
+            let aliases = try MemoryQueries.fetchAliases(db, nodeID: node.id)
+            var backlinkItems: [MemoryBacklink] = []
+            for source in (backlinkGraph[node.id] ?? []).sorted() {
+                guard let item = try MemoryQueries.fetchNode(db, id: source) else { continue }
+                backlinkItems.append(MemoryBacklink(id: source, title: item.displayTitle, type: item.type))
+            }
+            var subjectTitle = ""
+            if let subjectID {
+                let title = try MemoryQueries.fetchTitle(db, id: subjectID) ?? ""
+                subjectTitle = title.isEmpty ? subjectID : title
+            }
+            return (resolved, aliases, backlinkItems, subjectTitle)
         }
     }
 
