@@ -216,33 +216,43 @@ func memoryRecallHandler(database *db.DB, vaultPath string, retrieveShadowDB *db
 		if err != nil {
 			return errResult("searching memory: " + err.Error()), nil, nil
 		}
-		for _, h := range ftsHits {
-			if len(hits) > 0 && hits[0].ID == h.ID {
-				continue // already present as the alias hit
-			}
-			hits = append(hits, memoryHitResult{ID: h.ID, Title: h.Title, Type: h.Type, Snippet: h.Snippet})
-		}
-		if len(hits) > limit {
-			hits = hits[:limit]
-		}
-
-		// Slice B Task 8 dark retrieval-compare (memory.retrieve.recall_compare):
-		// runs RetrieveByQuery and shadow-diffs it against `hits` above — the
-		// EXACT combined legacy result this handler is about to return. The
-		// comparison result is discarded; the response below is unaffected
-		// regardless of the flag. A compare failure is skipped silently here
-		// (no logger threaded into this handler today) — it must never fail
-		// or alter the actual tool call.
-		if retrieveShadowDB != nil {
-			legacyIDs := make([]string, len(hits))
-			for i, h := range hits {
-				legacyIDs[i] = h.ID
-			}
-			_, _ = memory.CompareRecall(database, retrieveShadowDB, query, legacyIDs, limit)
-		}
-
+		hits = mergeFTSHits(hits, ftsHits, limit)
+		runRecallCompare(database, retrieveShadowDB, query, hits, limit)
 		return jsonListResult(hits)
 	}
+}
+
+// mergeFTSHits appends ftsHits to hits (skipping the alias hit's own id, when
+// present), capped at limit.
+func mergeFTSHits(hits []memoryHitResult, ftsHits []db.MemoryHit, limit int) []memoryHitResult {
+	for _, h := range ftsHits {
+		if len(hits) > 0 && hits[0].ID == h.ID {
+			continue // already present as the alias hit
+		}
+		hits = append(hits, memoryHitResult{ID: h.ID, Title: h.Title, Type: h.Type, Snippet: h.Snippet})
+	}
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	return hits
+}
+
+// runRecallCompare is the Slice B Task 8 dark retrieval-compare
+// (memory.retrieve.recall_compare): runs RetrieveByQuery and shadow-diffs it
+// against hits — the EXACT combined legacy result the handler is about to
+// return. The comparison result is discarded; the response is unaffected
+// regardless of the flag. A compare failure is skipped silently here (no
+// logger threaded into this handler today) — it must never fail or alter the
+// actual tool call. A nil retrieveShadowDB (the flag off) is a no-op.
+func runRecallCompare(database, retrieveShadowDB *db.DB, query string, hits []memoryHitResult, limit int) {
+	if retrieveShadowDB == nil {
+		return
+	}
+	legacyIDs := make([]string, len(hits))
+	for i, h := range hits {
+		legacyIDs[i] = h.ID
+	}
+	_, _ = memory.CompareRecall(database, retrieveShadowDB, query, legacyIDs, limit)
 }
 
 // recallAliasHit returns the exact-alias hit for query as a zero-or-one-item
