@@ -74,56 +74,69 @@ func (p *Pipeline) gatherMemoryContext(attendees []attendeeEntry) string {
 	}
 
 	for _, a := range attendees {
-		name := a.DisplayName
-		if name == "" {
-			name = a.Email
-		}
-		if !add("### " + name) {
+		if !p.renderAttendeeMemory(vault, nodes, a, add) {
 			break
-		}
-
-		node, ok := p.resolveAttendeeEntity(vault, a)
-		if !ok {
-			add("(no memory entity for this attendee)")
-			continue
-		}
-
-		if what := firstSectionLine(node.Body, "What"); what != "" {
-			add("What: " + what)
-		}
-		if cur := firstSectionLine(node.Body, "Current"); cur != "" {
-			add("Current: " + cur)
-		}
-		facts := memory.SectionBullets(node.Body, "Facts")
-		if len(facts) > maxAttendeeFacts {
-			facts = facts[:maxAttendeeFacts]
-		}
-		for _, f := range facts {
-			if !add("- " + f) {
-				break
-			}
-		}
-		for _, line := range beliefLinesFor(nodes, node.ID) {
-			if !add(line) {
-				break
-			}
-		}
-
-		// Slice B Task 10 dark retrieval-compare (memory.retrieve.meeting_prep_compare):
-		// runs RetrieveBySubject for this attendee and shadow-diffs it against
-		// beliefIDsFor's legacy selection above (same cap). The rendered
-		// ATTENDEE MEMORY block is unaffected by the flag in every case.
-		if p.cfg.Memory.Retrieve.MeetingPrepCompare {
-			legacyIDs := beliefIDsFor(nodes, node.ID)
-			if _, err := memory.CompareSubject(p.db, p.db, node.ID, legacyIDs, maxAttendeeBeliefs, meetingPrepShortTermSampleLimit); err != nil {
-				p.logger.Printf("meeting: retrieve compare (subject %s): %v", node.ID, err)
-			}
 		}
 	}
 
 	// len(attendees) > 0 (checked above) and the per-attendee "### name" header
 	// always fits the 4 KB cap, so sb is never empty here.
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// renderAttendeeMemory appends one attendee's memory excerpt (header,
+// What/Current lines, facts, beliefs, or a bare absence line when
+// unresolved) via add, plus the Slice B Task 10 dark retrieval-compare
+// shadow diff. It returns false only when even the "### name" header did not
+// fit the cap, signalling gatherMemoryContext to stop walking further
+// attendees; a resolved-but-truncated attendee still returns true.
+func (p *Pipeline) renderAttendeeMemory(vault *memory.Vault, nodes []db.MemoryNodeRow, a attendeeEntry, add func(string) bool) bool {
+	name := a.DisplayName
+	if name == "" {
+		name = a.Email
+	}
+	if !add("### " + name) {
+		return false
+	}
+
+	node, ok := p.resolveAttendeeEntity(vault, a)
+	if !ok {
+		add("(no memory entity for this attendee)")
+		return true
+	}
+
+	if what := firstSectionLine(node.Body, "What"); what != "" {
+		add("What: " + what)
+	}
+	if cur := firstSectionLine(node.Body, "Current"); cur != "" {
+		add("Current: " + cur)
+	}
+	facts := memory.SectionBullets(node.Body, "Facts")
+	if len(facts) > maxAttendeeFacts {
+		facts = facts[:maxAttendeeFacts]
+	}
+	for _, f := range facts {
+		if !add("- " + f) {
+			break
+		}
+	}
+	for _, line := range beliefLinesFor(nodes, node.ID) {
+		if !add(line) {
+			break
+		}
+	}
+
+	// Slice B Task 10 dark retrieval-compare (memory.retrieve.meeting_prep_compare):
+	// runs RetrieveBySubject for this attendee and shadow-diffs it against
+	// beliefIDsFor's legacy selection above (same cap). The rendered
+	// ATTENDEE MEMORY block is unaffected by the flag in every case.
+	if p.cfg.Memory.Retrieve.MeetingPrepCompare {
+		legacyIDs := beliefIDsFor(nodes, node.ID)
+		if _, err := memory.CompareSubject(p.db, p.db, node.ID, legacyIDs, maxAttendeeBeliefs, meetingPrepShortTermSampleLimit); err != nil {
+			p.logger.Printf("meeting: retrieve compare (subject %s): %v", node.ID, err)
+		}
+	}
+	return true
 }
 
 // resolveAttendeeEntity resolves an attendee to their person entity via the
