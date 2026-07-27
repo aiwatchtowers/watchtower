@@ -5,7 +5,7 @@
 -- from the Slack (memory_last_extracted_ts), Gmail
 -- (memory_gmail_last_extracted_ts), calendar (memory_calendar_last_extracted_ts)
 -- watermarks and the interaction floor. Additive, no CHECK change — the
--- 00023/00027 ALTER TABLE precedent.
+-- 00033/00037 ALTER TABLE precedent.
 ALTER TABLE workspace ADD COLUMN memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0;
 
 -- +goose Down

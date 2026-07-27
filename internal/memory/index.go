@@ -243,7 +243,7 @@ func (p *reconcilePass) file(sub string, entry os.DirEntry) error {
 		IndexedAt:       p.now,
 		Subject:         n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
 		Confidence:      n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
-		ImportanceScore: importance,   // merged override-or-computed snapshot, see 00027 (MEM-16)
+		ImportanceScore: importance,   // merged override-or-computed snapshot, see 00037 (MEM-16)
 	}
 	if err := p.database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, dbSenderResolver{p.database}, p.logf)...); err != nil {
 		p.quarantine(rel, err)

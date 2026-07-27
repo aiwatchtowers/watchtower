@@ -344,10 +344,10 @@ func TestMigration00019MemorySurfaces(t *testing.T) {
 	}
 }
 
-// TestMigration00027MemoryImportanceScore: memory_nodes.importance_score
+// TestMigration00037MemoryImportanceScore: memory_nodes.importance_score
 // (Slice A of the memory-importance-score redesign, MEM-16) is additive,
 // defaults 0, and a plain insert that omits it still succeeds.
-func TestMigration00027MemoryImportanceScore(t *testing.T) {
+func TestMigration00037MemoryImportanceScore(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -373,10 +373,10 @@ func TestMigration00027MemoryImportanceScore(t *testing.T) {
 	}
 }
 
-// TestMigration00028MemoryProvenanceSender: memory_provenance.sender_id
+// TestMigration00038MemoryProvenanceSender: memory_provenance.sender_id
 // (Slice B of the memory-retrieval redesign) is additive, defaults ”, a
 // plain insert that omits it still succeeds, and its index exists.
-func TestMigration00028MemoryProvenanceSender(t *testing.T) {
+func TestMigration00038MemoryProvenanceSender(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -413,12 +413,12 @@ func TestMigration00028MemoryProvenanceSender(t *testing.T) {
 	}
 }
 
-// TestMigration00029MemoryRetrieveShadow: memory_retrieve_shadow (Slice B
+// TestMigration00039MemoryRetrieveShadow: memory_retrieve_shadow (Slice B
 // Task 7, dark retrieval compare-mode) is additive, has no FK onto
 // memory_nodes (a shadow row must survive even if the compared node is later
 // deleted — it is pure telemetry, not derived state), and a plain insert
 // with all five payload columns succeeds.
-func TestMigration00029MemoryRetrieveShadow(t *testing.T) {
+func TestMigration00039MemoryRetrieveShadow(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -523,11 +523,11 @@ func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-// TestMigration00032MemoryPhase5Slice1 (renumbered from 00022 past main's email_accounts) covers Task 3's three additive
+// TestMigration00042MemoryPhase5Slice1 (renumbered from 00022 past main's email_accounts) covers Task 3's three additive
 // changes: the Gmail episode-extraction watermark and interaction-ingest
 // floor on workspace (both default 0), and the memory_engagement side table
 // (defaults ” / 0 / 0, keyed on memory_nodes.id).
-func TestMigration00032MemoryPhase5Slice1(t *testing.T) {
+func TestMigration00042MemoryPhase5Slice1(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -574,7 +574,7 @@ func TestMigration00032MemoryPhase5Slice1(t *testing.T) {
 	}
 }
 
-// TestMemoryPhase5Slice1MigrationDownUpCycle: 00032's Down drops its
+// TestMemoryPhase5Slice1MigrationDownUpCycle: 00042's Down drops its
 // ALTER-added columns and the memory_engagement table (precedent: 00017-19's
 // Down), so a down;up cycle is clean.
 func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
@@ -605,13 +605,13 @@ func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-// TestMigration00023MemoryPhase5Slice2 covers the Slice-2 Task 2 change: the
+// TestMigration00033MemoryPhase5Slice2 covers the Slice-2 Task 2 change: the
 // calendar episode-build watermark on workspace (defaults 0), a FOURTH
 // independent memory watermark alongside memory_last_extracted_ts (Slack),
 // memory_gmail_last_extracted_ts (Gmail), and memory_last_interaction_id (5D
 // floor). Additive ALTER TABLE ADD COLUMN only — no new table, no CHECK
 // change.
-func TestMigration00023MemoryPhase5Slice2(t *testing.T) {
+func TestMigration00033MemoryPhase5Slice2(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -636,8 +636,8 @@ func TestMigration00023MemoryPhase5Slice2(t *testing.T) {
 	}
 }
 
-// TestMemoryPhase5Slice2MigrationDownUpCycle: 00023's Down drops its
-// ALTER-added column (precedent: 00017-19, 00032's Down), so a down;up cycle is
+// TestMemoryPhase5Slice2MigrationDownUpCycle: 00033's Down drops its
+// ALTER-added column (precedent: 00017-19, 00042's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "phase5-slice2-cycle.db")
@@ -659,7 +659,7 @@ func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-func TestMigration00024MemoryDigestCompare(t *testing.T) {
+func TestMigration00034MemoryDigestCompare(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -710,8 +710,8 @@ func TestMigration00024MemoryDigestCompare(t *testing.T) {
 	}
 }
 
-// TestMemoryPhase5Slice3MigrationDownUpCycle: 00024's Down drops both
-// additive CREATE TABLEs (precedent: 00017-19, 00032/00023's Down), so a down;up cycle is
+// TestMemoryPhase5Slice3MigrationDownUpCycle: 00034's Down drops both
+// additive CREATE TABLEs (precedent: 00017-19, 00042/00033's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice3MigrationDownUpCycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "phase5-slice3-cycle.db")

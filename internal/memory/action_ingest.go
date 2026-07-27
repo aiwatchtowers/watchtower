@@ -137,7 +137,7 @@ func (p *Pipeline) ingestInteractions(floor, sfFloor int64) (staged *stagedChat,
 	}
 
 	// (A2) feedback(entity_type='situation') — the dashboard's situation-level
-	// thumbs (M8, see 00026): append-only on its OWN floor, the situation id
+	// thumbs (M8, see 00036): append-only on its OWN floor, the situation id
 	// carried directly in entity_id (no signal join). Same fold semantics as (A);
 	// the act: ref scheme is act:feedback:<id>.
 	sfRows, sfErr := p.db.ListSituationFeedback(sfFloor)

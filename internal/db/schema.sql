@@ -18,12 +18,12 @@ CREATE TABLE IF NOT EXISTS workspace (
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
     memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
     memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0,  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
-    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00032)
-    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00032)
-    memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00023)
-    memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last jira issue fully folded into an episode by the jira issue extractor; a fifth independent memory watermark (see 00030)
-    memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00026, M8)
-    memory_focus_fingerprint TEXT NOT NULL DEFAULT ''  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00031)
+    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00042)
+    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00042)
+    memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00033)
+    memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last jira issue fully folded into an episode by the jira issue extractor; a fifth independent memory watermark (see 00040)
+    memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00036, M8)
+    memory_focus_fingerprint TEXT NOT NULL DEFAULT ''  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00041)
 );
 
 -- Users
@@ -1279,7 +1279,7 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     indexed_at    TEXT NOT NULL,
     subject       TEXT NOT NULL DEFAULT '',     -- belief subject entity id, '' for non-beliefs; file-derived (see 00019)
     confidence    REAL NOT NULL DEFAULT 0,      -- belief confidence 0..1, 0 for non-beliefs; file-derived (see 00019)
-    importance_score REAL NOT NULL DEFAULT 0    -- merged override-or-computed importance snapshot, refreshed by Reconcile/Rebuild (see 00027, MEM-16)
+    importance_score REAL NOT NULL DEFAULT 0    -- merged override-or-computed importance snapshot, refreshed by Reconcile/Rebuild (see 00037, MEM-16)
 );
 
 -- Alias → node lookup (natural keys like slack IDs, 'situation:<id>', names).
@@ -1325,7 +1325,7 @@ CREATE TABLE IF NOT EXISTS memory_dispute_flags (
     reason      TEXT NOT NULL DEFAULT ''
 );
 
--- Phase-5 slice-1 per-entity engagement aggregates (see 00032): the
+-- Phase-5 slice-1 per-entity engagement aggregates (see 00042): the
 -- retention-importance input Phase-3's RetentionInputs/RetentionScore
 -- stubbed out, fed by the mechanical interaction-ingest step
 -- (memory.sources.actions) from inbox_feedback/situation transitions/
@@ -1342,7 +1342,7 @@ CREATE TABLE IF NOT EXISTS memory_engagement (
     last_interaction_at TEXT NOT NULL DEFAULT ''
 );
 
--- Phase-5 slice-3 (see 00024): derived index of each episode/rollup node's
+-- Phase-5 slice-3 (see 00034): derived index of each episode/rollup node's
 -- `## Provenance` refs, so a channel+window lookup does not require a full
 -- vault body re-scan. Rebuildable from vault files — INSIDE the MEM-02
 -- reindex-equivalence set (an extension, not a weakening; owner-review
@@ -1355,13 +1355,13 @@ CREATE TABLE IF NOT EXISTS memory_provenance (
     channel_id  TEXT NOT NULL,
     ts_raw      TEXT NOT NULL,
     ts_unix     REAL NOT NULL,
-    sender_id   TEXT NOT NULL DEFAULT '',    -- per-message sender (Slack user_id / Gmail from_email); '' for cal:/chat:/act: schemes (see 00028, Slice B)
+    sender_id   TEXT NOT NULL DEFAULT '',    -- per-message sender (Slack user_id / Gmail from_email); '' for cal:/chat:/act: schemes (see 00038, Slice B)
     PRIMARY KEY (node_id, channel_id, ts_raw)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix);
 CREATE INDEX IF NOT EXISTS idx_memory_provenance_sender ON memory_provenance(sender_id);
 
--- Phase-5 slice-3 (see 00024): dark compare-mode telemetry
+-- Phase-5 slice-3 (see 00034): dark compare-mode telemetry
 -- (memory.renders.digest_compare) — memory-owned, never the legacy
 -- digests/digest_topics tables (MEM-05/MEM-14). Not a memory_nodes child;
 -- not vault-derived, so DropMemoryIndex leaves it alone. Never read by any
@@ -1380,7 +1380,7 @@ CREATE TABLE IF NOT EXISTS memory_digest_shadow (
     UNIQUE(channel_id, period_from, period_to)
 );
 
--- Slice B Task 7 (see 00029): dark retrieval-compare telemetry
+-- Slice B Task 7 (see 00039): dark retrieval-compare telemetry
 -- (memory.retrieve.{recall_compare,briefing_compare,meeting_prep_compare}) —
 -- append-only, no FK onto memory_nodes (a shadow row is pure telemetry that
 -- must survive independently of the compared node's later eviction).
@@ -1395,7 +1395,7 @@ CREATE TABLE IF NOT EXISTS memory_retrieve_shadow (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surface, ts);
 
--- Focus salience (see 00031): mechanically-matched node set (state 'now' or
+-- Focus salience (see 00041): mechanically-matched node set (state 'now' or
 -- 'cooled'), rewritten wholesale on every fingerprint change. Runtime state:
 -- rebuilt from focus.md + the index, cleared and rewritten by the pipeline.
 -- No FK (a match may outlive its node briefly between runs; reads join

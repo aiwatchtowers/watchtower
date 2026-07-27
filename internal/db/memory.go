@@ -29,7 +29,7 @@ type MemoryNodeRow struct {
 	// frontmatter carries one, else ComputeImportance(...)'s live signal read
 	// (internal/memory/index.go). A periodic snapshot for future retrieval
 	// ranking, distinct from evict.go's always-live RetentionScore (Slice A of
-	// the memory-importance-score redesign, MEM-16; migration 00027).
+	// the memory-importance-score redesign, MEM-16; migration 00037).
 	ImportanceScore float64
 	// DisputePending mirrors presence in the memory_dispute_flags SIDE TABLE
 	// (see 00019) — runtime state, never written by UpsertMemoryNode. Read-only
@@ -62,7 +62,7 @@ type ProvenanceRow struct {
 	TSUnix    float64
 	// SenderID is the per-message sender (Slack messages.user_id, Gmail
 	// gmail_messages.from_email), populated only for those two schemes —
-	// "" for cal:/chat:/act: refs (Slice B, migration 00028). The recency-
+	// "" for cal:/chat:/act: refs (Slice B, migration 00038). The recency-
 	// ordered "what recently happened involving X" query
 	// (ListShortTierEpisodesForAliases) filters on this.
 	SenderID string
@@ -1185,7 +1185,7 @@ func (db *DB) CountMemoryLinksIn(id string) (int, error) {
 // fully folded into an episode by the Gmail thread->episode extractor
 // (memory.sources.gmail), mirroring MemoryWatermark. Deliberately a THIRD,
 // independent watermark alongside gmail_last_internal_date (Gmail sync) and
-// memory_last_extracted_ts (Slack episode extraction) — see 00032, resolved
+// memory_last_extracted_ts (Slack episode extraction) — see 00042, resolved
 // ambiguity #7. A fresh workspace without its singleton row reads as 0.
 func (db *DB) MemoryGmailWatermark() (float64, error) {
 	var ts float64
@@ -1303,7 +1303,7 @@ func (db *DB) ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit 
 }
 
 // MemoryJiraWatermark reads the Jira episode-extraction watermark — the FIFTH
-// extraction watermark (see 00030), unix seconds of the newest fully-committed
+// extraction watermark (see 00040), unix seconds of the newest fully-committed
 // parsed jira_issues.updated_at. A fresh workspace reads 0.
 func (db *DB) MemoryJiraWatermark() (float64, error) {
 	var ts float64
@@ -1539,7 +1539,7 @@ var interactionTables = map[string]bool{
 	"user_interactions": true,
 	"decision_reads":    true,
 	"situations":        true,
-	"feedback":          true, // situation-level dashboard thumbs (M8, see 00026)
+	"feedback":          true, // situation-level dashboard thumbs (M8, see 00036)
 }
 
 // InteractionExists reports whether row id exists in a WHITELISTED
@@ -1593,7 +1593,7 @@ func (db *DB) SetMemoryInteractionFloor(id int64) error {
 
 // MemorySituationFeedbackFloor returns the interaction-ingest floor over
 // feedback(entity_type='situation') — the dashboard's situation-level thumbs
-// (M8, see 00026). A sibling of MemoryInteractionFloor with the same
+// (M8, see 00036). A sibling of MemoryInteractionFloor with the same
 // discipline: read at step start, advanced only after the step's vault commit
 // and aggregate writes succeed. A fresh workspace reads as 0.
 func (db *DB) MemorySituationFeedbackFloor() (int64, error) {
@@ -1623,7 +1623,7 @@ func (db *DB) SetMemorySituationFeedbackFloor(id int64) error {
 // upsert precedent. The interaction-ingest step applies its per-run bumps
 // atomically through BumpEngagements (all-or-nothing); this single-bump variant
 // is the direct seam tests exercise. Runtime state: MEM-02-exempt like
-// memory_entity_hints, survives DropMemoryIndex (see 00032, resolved ambiguity #3).
+// memory_entity_hints, survives DropMemoryIndex (see 00042, resolved ambiguity #3).
 func (db *DB) BumpEngagement(nodeID string, engaged bool, at string) error {
 	stmt := `INSERT INTO memory_engagement (node_id, dismissed_count, last_interaction_at)
 		VALUES (?, 1, ?)
@@ -1760,7 +1760,7 @@ func (db *DB) ListInteractionFeedback(floor int64) ([]InteractionFeedback, error
 // ListSituationFeedback returns feedback(entity_type='situation') rows with id
 // strictly above the situation-feedback floor, oldest id first — the dashboard's
 // situation-level 👍/👎, the interaction ingest's SECOND floor-driven source
-// (M8, see 00026): since bda8032 the Desktop persists the owner's primary
+// (M8, see 00036): since bda8032 the Desktop persists the owner's primary
 // rating gesture here on both the Swift fast path and the CLI path, never to
 // inbox_feedback. Projected into the same InteractionFeedback shape (the
 // situation id parsed from entity_id; a non-numeric entity_id yields
@@ -2068,7 +2068,7 @@ func (db *DB) DropMemoryIndex() (err error) {
 	return nil
 }
 
-// DigestShadowRow mirrors one row of memory_digest_shadow (see 00024) — the
+// DigestShadowRow mirrors one row of memory_digest_shadow (see 00034) — the
 // dark digest_compare render's telemetry, keyed by (channel_id, period_from,
 // period_to). Memory-owned compare telemetry, never the legacy
 // digests/digest_topics tables (MEM-05/MEM-14); never read by any UI.
@@ -2152,7 +2152,7 @@ func (db *DB) HasFreshDigestShadow(channelID string, periodFrom, periodTo float6
 }
 
 // MemoryRetrieveShadowRow mirrors one row of memory_retrieve_shadow (see
-// 00029) — Slice B's dark retrieval-compare telemetry, one row per live
+// 00039) — Slice B's dark retrieval-compare telemetry, one row per live
 // surface comparison (recall/briefing/meeting_prep). Append-only, no FK onto
 // memory_nodes: pure telemetry that must survive the compared node's later
 // eviction/deletion.

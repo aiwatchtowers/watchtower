@@ -10,8 +10,8 @@
 -- or always-owner-authored — no discriminating value there). No
 -- migration-time backfill — memory_provenance is fully vault-derived and
 -- converges via Reconcile/`watchtower memory reindex` (the importance_score
--- 00027 precedent). Additive, no CHECK constraint — a plain ADD COLUMN
--- suffices (the 00017/00026/00027 ALTER TABLE precedent).
+-- 00037 precedent). Additive, no CHECK constraint — a plain ADD COLUMN
+-- suffices (the 00017/00036/00037 ALTER TABLE precedent).
 ALTER TABLE memory_provenance ADD COLUMN sender_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX idx_memory_provenance_sender ON memory_provenance(sender_id);
 
