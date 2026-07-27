@@ -536,6 +536,14 @@ struct GeneralSettings: View {
 
                 Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
                     .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
+            } else if !Constants.gmailOAuthAvailable {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                    Text("Temporarily unavailable (pending Google verification) — use IMAP with an app password instead.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 HStack {
                     Image(systemName: "envelope.badge")

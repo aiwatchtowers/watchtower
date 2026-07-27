@@ -10,9 +10,10 @@ struct GoogleConnectOptionsView: View {
     /// Whether to offer the Gmail toggle at all — the Calendar tab's connect
     /// screen is calendar-only and must never request the Gmail scope, even
     /// though it shares this view (and `flow`) with the Inbox banner, which
-    /// does want Gmail offered. Defaults to true for the Inbox banner's call
-    /// site.
-    var showGmail: Bool = true
+    /// otherwise wants Gmail offered. Defaults to
+    /// `Constants.gmailOAuthAvailable` so every call site automatically
+    /// respects that flag without having to remember to pass it.
+    var showGmail: Bool = Constants.gmailOAuthAvailable
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

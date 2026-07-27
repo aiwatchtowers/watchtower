@@ -106,6 +106,13 @@ struct AddEmailAccountView: View {
                         Spacer()
                         Button("Cancel") { google.gmail.cancelConnect() }
                     }
+                } else if !Constants.gmailOAuthAvailable {
+                    Label(
+                        "Temporarily unavailable (pending Google verification) — use IMAP with an app password instead.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 } else {
                     Button("Connect Gmail") {
                         google.gmail.connect()
