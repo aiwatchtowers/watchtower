@@ -23,10 +23,20 @@ struct CalendarEventsView: View {
     @State private var userNotes: String = ""
     @State private var mode: CalendarMode = .events
     @State private var showAddEmailAccountSheet = false
+    @State private var showAddCalendarAccountSheet = false
+
+    /// True once ANY calendar source is connected — Google OAuth OR at least
+    /// one healthy CalDAV/ICS account — so connecting only e.g. an iCloud
+    /// calendar (without ever touching Google) unlocks the events UI too.
+    /// Mirrors InboxFeedView.hasEmailSource.
+    private var hasCalendarSource: Bool {
+        google.calendar.isConnected
+            || (appState.calendarAccountsViewModel?.accounts.contains { $0.isOK } ?? false)
+    }
 
     var body: some View {
         Group {
-            if google.calendar.isConnected, !google.isRunning, let calVM = appState.calendarViewModel {
+            if hasCalendarSource, !google.isRunning, let calVM = appState.calendarViewModel {
                 VStack(spacing: 0) {
                     Picker("", selection: $mode) {
                         ForEach(CalendarMode.allCases, id: \.self) { m in
@@ -374,20 +384,17 @@ struct CalendarEventsView: View {
     }
 
     private var notConnectedView: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Image(systemName: "calendar.badge.exclamationmark")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            Text("Google not connected")
+            Text("No calendar connected")
                 .font(.headline)
-            Text("Choose what to connect — Google will show a single approval "
-                + "screen listing exactly the selected access.")
+            Text("Connect a calendar to see your meetings, prep, and briefings here.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
-
-            GoogleConnectOptionsView(flow: google, showGmail: false)
 
             if google.isRunning {
                 ProgressView("Connecting Google...")
@@ -398,14 +405,28 @@ struct CalendarEventsView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             } else {
+                // Two equally-visible paths — a barely-there caption link is
+                // not discoverable enough for the primary alternative.
                 Button {
+                    google.includeGmail = false
+                    google.includeCalendar = true
                     google.connect()
                 } label: {
-                    Label("Connect Google", systemImage: "calendar.badge.plus")
+                    Label("Connect Google Calendar", systemImage: "calendar.badge.plus")
+                        .frame(width: 280)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!google.hasSelection)
+                .controlSize(.large)
                 .padding(.top, 4)
+
+                Button {
+                    showAddCalendarAccountSheet = true
+                } label: {
+                    Label("Connect iCloud / CalDAV / ICS calendar", systemImage: "link.badge.plus")
+                        .frame(width: 280)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
 
             if let err = google.error {
@@ -420,12 +441,19 @@ struct CalendarEventsView: View {
             .buttonStyle(.plain)
             .font(.caption)
             .foregroundStyle(.secondary)
-            .padding(.top, 8)
+            .padding(.top, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { google.refresh() }
+        .onAppear {
+            google.refresh()
+            appState.calendarAccountsViewModel?.refresh()
+        }
         .sheet(isPresented: $showAddEmailAccountSheet) {
             AddEmailAccountView()
+                .environment(appState)
+        }
+        .sheet(isPresented: $showAddCalendarAccountSheet) {
+            AddCalendarAccountView()
                 .environment(appState)
         }
     }

@@ -1082,6 +1082,17 @@ enum TestDatabase {
         created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS calendar_accounts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider       TEXT NOT NULL CHECK(provider IN ('caldav','ics')),
+        username       TEXT NOT NULL DEFAULT '',
+        url            TEXT NOT NULL DEFAULT '',
+        label          TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'ok',
+        error          TEXT NOT NULL DEFAULT '',
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
     CREATE TABLE IF NOT EXISTS imap_messages (
         account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
         uid            INTEGER NOT NULL,
@@ -1659,6 +1670,30 @@ enum TestDatabase {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             arguments: [provider, emailAddress, host, port, security, folder, label, status, error, createdAt, createdAt]
+        )
+        return db.lastInsertedRowID
+    }
+
+    // MARK: - Calendar Account Fixtures
+
+    @discardableResult
+    static func insertCalendarAccount(
+        _ db: Database,
+        provider: String = "caldav",
+        username: String = "me@example.com",
+        url: String = "https://caldav.example.com",
+        label: String = "",
+        status: String = "ok",
+        error: String = "",
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO calendar_accounts
+                    (provider, username, url, label, status, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [provider, username, url, label, status, error, createdAt, createdAt]
         )
         return db.lastInsertedRowID
     }

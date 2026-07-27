@@ -104,7 +104,7 @@ func TestAllTablesExist(t *testing.T) {
 		"track_events", "situations", "situation_signals",
 		"feed_items", "feed_state", "meeting_transcripts",
 		"gmail_messages", "gmail_auth_state",
-		"email_accounts", "imap_messages",
+		"email_accounts", "imap_messages", "calendar_accounts",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
 		"memory_entity_hints", "memory_dispute_flags",
 	}
