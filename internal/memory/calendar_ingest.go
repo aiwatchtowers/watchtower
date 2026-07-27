@@ -211,9 +211,17 @@ func (p *Pipeline) buildOneCalendarEpisode(ev db.CalendarExtractEvent, calReg *p
 		dirty[epNode.ID] = true
 	}
 
-	// Entity back-links: each attendee (by Slack user id when present, else
-	// email) plus, for a recurring instance, its series entity.
-	link := "- [[" + epNode.ID + "|" + linkLabel(title) + "]]\n"
+	if lerr := p.linkCalendarEventEntities(ev, attendees, epNode.ID, title, byID, order, dirty); lerr != nil {
+		return false, false, lerr
+	}
+	return true, changed, nil
+}
+
+// linkCalendarEventEntities back-links the episode to each attendee (by Slack
+// user id when present, else email) plus, for a recurring instance, its
+// series entity.
+func (p *Pipeline) linkCalendarEventEntities(ev db.CalendarExtractEvent, attendees []calAttendee, epNodeID, title string, byID map[string]*Node, order *[]string, dirty map[string]bool) error {
+	link := "- [[" + epNodeID + "|" + linkLabel(title) + "]]\n"
 	refs := attendeeEntityRefs(attendees)
 	if ev.IsRecurring {
 		if series := parseRecurringEventID(ev.RawJSON); series != "" {
@@ -222,10 +230,10 @@ func (p *Pipeline) buildOneCalendarEpisode(ev db.CalendarExtractEvent, calReg *p
 	}
 	for _, entRef := range refs {
 		if lerr := linkEntity(p, byID, order, dirty, entRef, link); lerr != nil {
-			return false, false, lerr
+			return lerr
 		}
 	}
-	return true, changed, nil
+	return nil
 }
 
 // linkEntity appends the episode back-link to the entity that entRef resolves
