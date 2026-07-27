@@ -172,21 +172,8 @@ func (p *Pipeline) buildJiraEpisodes(runID int64, jiraReg *provenanceRegistry, i
 		// Entity back-links: the project entity (seeded by seedJiraProjects,
 		// aliased by its bare key) + assignee/reporter person entities via
 		// their Slack ids — structural, no model judgment.
-		link := "- [[" + epNode.ID + "|" + linkLabel(title) + "]]\n"
-		refs := []string{is.ProjectKey}
-		if sid := strings.TrimSpace(is.AssigneeSlackID); sid != "" {
-			refs = append(refs, sid)
-		}
-		if sid := strings.TrimSpace(is.ReporterSlackID); sid != "" {
-			refs = append(refs, sid)
-		}
-		for _, entRef := range refs {
-			if entRef == "" {
-				continue
-			}
-			if lerr := linkEntity(p, byID, &order, dirty, entRef, link); lerr != nil {
-				return 0, 0, 0, lerr
-			}
+		if lerr := linkJiraIssueEntities(p, byID, &order, dirty, is, epNode, title); lerr != nil {
+			return 0, 0, 0, lerr
 		}
 	}
 
@@ -194,6 +181,30 @@ func (p *Pipeline) buildJiraEpisodes(runID int64, jiraReg *provenanceRegistry, i
 		return 0, 0, 0, lerr
 	}
 	return built, failed, maxUpdated, nil
+}
+
+// linkJiraIssueEntities back-links epNode into the issue's project entity
+// (seeded by seedJiraProjects, aliased by its bare key) plus assignee/
+// reporter person entities via their Slack ids — structural, no model
+// judgment. Pure code move out of buildJiraEpisodes, no behavior change.
+func linkJiraIssueEntities(p *Pipeline, byID map[string]*Node, order *[]string, dirty map[string]bool, is db.JiraExtractIssue, epNode Node, title string) error {
+	link := "- [[" + epNode.ID + "|" + linkLabel(title) + "]]\n"
+	refs := []string{is.ProjectKey}
+	if sid := strings.TrimSpace(is.AssigneeSlackID); sid != "" {
+		refs = append(refs, sid)
+	}
+	if sid := strings.TrimSpace(is.ReporterSlackID); sid != "" {
+		refs = append(refs, sid)
+	}
+	for _, entRef := range refs {
+		if entRef == "" {
+			continue
+		}
+		if lerr := linkEntity(p, byID, order, dirty, entRef, link); lerr != nil {
+			return lerr
+		}
+	}
+	return nil
 }
 
 // jiraEpisodeNode returns the episode node for one issue: fresh when the
