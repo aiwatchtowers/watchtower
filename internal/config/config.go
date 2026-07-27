@@ -106,6 +106,15 @@ type GmailConfig struct {
 	AccountEmail       string `mapstructure:"account_email"`         // connected account's email, written at login; identity fallback when Slack is absent
 }
 
+// ImapConfig holds settings shared by every connected IMAP/Outlook mailbox
+// (individual accounts themselves live in the email_accounts table, not
+// here — this only tunes how each one syncs).
+type ImapConfig struct {
+	InitialHistoryDays int `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync per account
+	MaxMessagesPerSync int `mapstructure:"max_messages_per_sync"` // per-cycle, per-account cap
+	MaxBodyBytes       int `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
+}
+
 // JiraFeatureToggles controls which Jira features are enabled for the user.
 type JiraFeatureToggles struct {
 	MyIssuesInBriefing   bool `mapstructure:"my_issues_in_briefing" json:"my_issues_in_briefing"`
@@ -232,6 +241,7 @@ type Config struct {
 	Tracks          TracksConfig                `mapstructure:"tracks"`
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
 	Gmail           GmailConfig                 `mapstructure:"gmail"`
+	Imap            ImapConfig                  `mapstructure:"imap"`
 	Jira            JiraConfig                  `mapstructure:"jira"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
@@ -298,6 +308,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("gmail.initial_history_days", DefaultGmailInitialHistoryDays)
 	v.SetDefault("gmail.max_messages_per_sync", DefaultGmailMaxMessagesPerSync)
 	v.SetDefault("gmail.max_body_bytes", DefaultGmailMaxBodyBytes)
+	v.SetDefault("imap.initial_history_days", DefaultImapInitialHistoryDays)
+	v.SetDefault("imap.max_messages_per_sync", DefaultImapMaxMessagesPerSync)
+	v.SetDefault("imap.max_body_bytes", DefaultImapMaxBodyBytes)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
