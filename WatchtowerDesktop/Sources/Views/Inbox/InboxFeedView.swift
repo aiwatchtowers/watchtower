@@ -104,12 +104,20 @@ struct InboxFeedView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
             } else {
-                Button("Connect") { showConnectOptions = true }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .popover(isPresented: $showConnectOptions) {
-                        connectOptionsPopover
-                    }
+                Button("Connect") {
+                    // The Calendar tab's connect screen shares this same
+                    // `google` singleton and forces includeGmail off (it's
+                    // calendar-only) — restore Gmail's default here so a
+                    // stale false from Calendar doesn't silently drop Gmail
+                    // from this banner's own "Connect Google" request.
+                    google.includeGmail = true
+                    showConnectOptions = true
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .popover(isPresented: $showConnectOptions) {
+                    connectOptionsPopover
+                }
             }
 
             if let err = google.error {

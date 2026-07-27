@@ -7,6 +7,12 @@ import SwiftUI
 /// so the selection happens here).
 struct GoogleConnectOptionsView: View {
     @Bindable var flow: GoogleConnectFlow
+    /// Whether to offer the Gmail toggle at all — the Calendar tab's connect
+    /// screen is calendar-only and must never request the Gmail scope, even
+    /// though it shares this view (and `flow`) with the Inbox banner, which
+    /// does want Gmail offered. Defaults to true for the Inbox banner's call
+    /// site.
+    var showGmail: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -20,7 +26,7 @@ struct GoogleConnectOptionsView: View {
                     }
                 }
             }
-            if !flow.gmail.isConnected {
+            if showGmail && !flow.gmail.isConnected {
                 Toggle(isOn: $flow.includeGmail) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Gmail")
@@ -32,5 +38,10 @@ struct GoogleConnectOptionsView: View {
             }
         }
         .toggleStyle(.checkbox)
+        // `flow` is a shared singleton (GoogleConnectFlow.shared) reused by
+        // both call sites — force includeGmail off here so a calendar-only
+        // "Connect Google" tap can never silently request the Gmail scope,
+        // regardless of whatever the OTHER call site last left it as.
+        .onAppear { if !showGmail { flow.includeGmail = false } }
     }
 }
