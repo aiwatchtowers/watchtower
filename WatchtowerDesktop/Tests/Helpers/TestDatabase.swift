@@ -1093,6 +1093,40 @@ enum TestDatabase {
         flagged_at  TEXT NOT NULL,
         reason      TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS email_accounts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider       TEXT NOT NULL CHECK(provider IN ('imap','outlook')),
+        email_address  TEXT NOT NULL DEFAULT '',
+        host           TEXT NOT NULL DEFAULT '',
+        port           INTEGER NOT NULL DEFAULT 0,
+        security       TEXT NOT NULL DEFAULT 'ssl' CHECK(security IN ('ssl','starttls','none')),
+        folder         TEXT NOT NULL DEFAULT 'INBOX',
+        label          TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'ok',
+        error          TEXT NOT NULL DEFAULT '',
+        last_uid       INTEGER NOT NULL DEFAULT 0,
+        uidvalidity    INTEGER NOT NULL DEFAULT 0,
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS imap_messages (
+        account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+        uid            INTEGER NOT NULL,
+        uidvalidity    INTEGER NOT NULL DEFAULT 0,
+        from_email     TEXT NOT NULL DEFAULT '',
+        from_name      TEXT NOT NULL DEFAULT '',
+        to_json        TEXT NOT NULL DEFAULT '[]',
+        cc_json        TEXT NOT NULL DEFAULT '[]',
+        subject        TEXT NOT NULL DEFAULT '',
+        snippet        TEXT NOT NULL DEFAULT '',
+        body_text      TEXT NOT NULL DEFAULT '',
+        internal_date  TEXT NOT NULL DEFAULT '',
+        is_unread      INTEGER NOT NULL DEFAULT 0,
+        permalink      TEXT NOT NULL DEFAULT '',
+        synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        PRIMARY KEY (account_id, uidvalidity, uid)
+    );
     """
 
     // MARK: - Briefing Fixtures
@@ -1670,5 +1704,32 @@ enum TestDatabase {
             INSERT INTO memory_dispute_flags (node_id, flagged_at, reason)
             VALUES (?, '2026-07-17T00:00:00Z', ?)
             """, arguments: [nodeID, reason])
+    }
+
+    // MARK: - Email Account Fixtures
+
+    @discardableResult
+    static func insertEmailAccount(
+        _ db: Database,
+        provider: String = "imap",
+        emailAddress: String = "me@example.com",
+        host: String = "imap.example.com",
+        port: Int = 993,
+        security: String = "ssl",
+        folder: String = "INBOX",
+        label: String = "",
+        status: String = "ok",
+        error: String = "",
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO email_accounts
+                    (provider, email_address, host, port, security, folder, label, status, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [provider, emailAddress, host, port, security, folder, label, status, error, createdAt, createdAt]
+        )
+        return db.lastInsertedRowID
     }
 }

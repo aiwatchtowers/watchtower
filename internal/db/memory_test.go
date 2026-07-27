@@ -1569,7 +1569,7 @@ func TestMemoryMigrationDownUpCycle(t *testing.T) {
 }
 
 // TestMemoryGmailWatermarkRoundTrip: the Gmail episode-extraction watermark
-// (Task 3, migration 00022) defaults to 0 on a fresh workspace and persists
+// (Task 3, migration 00032) defaults to 0 on a fresh workspace and persists
 // after SetMemoryGmailWatermark, mirroring MemoryWatermark/SetMemoryWatermark
 // — a THIRD, independent watermark alongside gmail_last_internal_date (Gmail
 // sync) and memory_last_extracted_ts (Slack episode extraction), resolved
@@ -1753,7 +1753,7 @@ func TestTrackIDsForTarget(t *testing.T) {
 }
 
 // TestMemoryInteractionFloorRoundTrip: the 5D interaction-ingest floor (Task
-// 3, migration 00022) defaults to 0 on a fresh workspace and persists after
+// 3, migration 00032) defaults to 0 on a fresh workspace and persists after
 // SetMemoryInteractionFloor, mirroring MemoryChatTurnFloor/
 // SetMemoryChatTurnFloor.
 func TestMemoryInteractionFloorRoundTrip(t *testing.T) {

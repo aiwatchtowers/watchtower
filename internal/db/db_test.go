@@ -104,6 +104,7 @@ func TestAllTablesExist(t *testing.T) {
 		"track_events", "situations", "situation_signals",
 		"feed_items", "feed_state", "meeting_transcripts",
 		"gmail_messages", "gmail_auth_state",
+		"email_accounts", "imap_messages",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
 		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",
 		"memory_provenance", "memory_digest_shadow", "memory_retrieve_shadow",
@@ -522,11 +523,11 @@ func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-// TestMigration00022MemoryPhase5Slice1 covers Task 3's three additive
+// TestMigration00032MemoryPhase5Slice1 (renumbered from 00022 past main's email_accounts) covers Task 3's three additive
 // changes: the Gmail episode-extraction watermark and interaction-ingest
 // floor on workspace (both default 0), and the memory_engagement side table
 // (defaults ” / 0 / 0, keyed on memory_nodes.id).
-func TestMigration00022MemoryPhase5Slice1(t *testing.T) {
+func TestMigration00032MemoryPhase5Slice1(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
@@ -573,7 +574,7 @@ func TestMigration00022MemoryPhase5Slice1(t *testing.T) {
 	}
 }
 
-// TestMemoryPhase5Slice1MigrationDownUpCycle: 00022's Down drops its
+// TestMemoryPhase5Slice1MigrationDownUpCycle: 00032's Down drops its
 // ALTER-added columns and the memory_engagement table (precedent: 00017-19's
 // Down), so a down;up cycle is clean.
 func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
@@ -636,7 +637,7 @@ func TestMigration00023MemoryPhase5Slice2(t *testing.T) {
 }
 
 // TestMemoryPhase5Slice2MigrationDownUpCycle: 00023's Down drops its
-// ALTER-added column (precedent: 00017-19, 00022's Down), so a down;up cycle is
+// ALTER-added column (precedent: 00017-19, 00032's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "phase5-slice2-cycle.db")
@@ -710,7 +711,7 @@ func TestMigration00024MemoryDigestCompare(t *testing.T) {
 }
 
 // TestMemoryPhase5Slice3MigrationDownUpCycle: 00024's Down drops both
-// additive CREATE TABLEs (precedent: 00017-19, 00022-23's Down), so a down;up cycle is
+// additive CREATE TABLEs (precedent: 00017-19, 00032/00023's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice3MigrationDownUpCycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "phase5-slice3-cycle.db")

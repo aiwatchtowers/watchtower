@@ -18,8 +18,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
     memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
     memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0,  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
-    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00022)
-    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00022)
+    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00032)
+    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00032)
     memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00023)
     memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last jira issue fully folded into an episode by the jira issue extractor; a fifth independent memory watermark (see 00030)
     memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00026, M8)
@@ -1077,6 +1077,47 @@ CREATE TABLE IF NOT EXISTS gmail_auth_state (
 );
 INSERT OR IGNORE INTO gmail_auth_state (id, status, error) VALUES (1, 'ok', '');
 
+-- Multi-account IMAP/Outlook email source: one row per connected mailbox
+-- (email_accounts) plus its synced messages (imap_messages). status/error
+-- live directly on email_accounts, replacing the job gmail_auth_state's
+-- separate table does for Gmail's single-account model.
+CREATE TABLE IF NOT EXISTS email_accounts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider       TEXT NOT NULL CHECK(provider IN ('imap','outlook')),
+    email_address  TEXT NOT NULL DEFAULT '',
+    host           TEXT NOT NULL DEFAULT '',
+    port           INTEGER NOT NULL DEFAULT 0,
+    security       TEXT NOT NULL DEFAULT 'ssl' CHECK(security IN ('ssl','starttls','none')),
+    folder         TEXT NOT NULL DEFAULT 'INBOX',
+    label          TEXT NOT NULL DEFAULT '',      -- user-facing display name
+    status         TEXT NOT NULL DEFAULT 'ok',    -- ok | error | revoked
+    error          TEXT NOT NULL DEFAULT '',
+    last_uid       INTEGER NOT NULL DEFAULT 0,    -- sync watermark: highest IMAP UID synced
+    uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY; a change means last_uid must reset
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS imap_messages (
+    account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+    uid            INTEGER NOT NULL,              -- IMAP UID; unique within (account_id, uidvalidity, uid)
+    uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY epoch this uid was assigned under
+    from_email     TEXT NOT NULL DEFAULT '',
+    from_name      TEXT NOT NULL DEFAULT '',
+    to_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (To)
+    cc_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (Cc)
+    subject        TEXT NOT NULL DEFAULT '',
+    snippet        TEXT NOT NULL DEFAULT '',
+    body_text      TEXT NOT NULL DEFAULT '',      -- full plain-text body (truncated at sync)
+    internal_date  TEXT NOT NULL DEFAULT '',      -- ISO8601 message time
+    is_unread      INTEGER NOT NULL DEFAULT 0,
+    permalink      TEXT NOT NULL DEFAULT '',
+    synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (account_id, uidvalidity, uid)
+);
+CREATE INDEX IF NOT EXISTS idx_imap_messages_synced ON imap_messages(synced_at);
+
 -- Jira releases (fix versions)
 CREATE TABLE IF NOT EXISTS jira_releases (
     id INTEGER NOT NULL,
@@ -1266,7 +1307,7 @@ CREATE TABLE IF NOT EXISTS memory_dispute_flags (
     reason      TEXT NOT NULL DEFAULT ''
 );
 
--- Phase-5 slice-1 per-entity engagement aggregates (see 00022): the
+-- Phase-5 slice-1 per-entity engagement aggregates (see 00032): the
 -- retention-importance input Phase-3's RetentionInputs/RetentionScore
 -- stubbed out, fed by the mechanical interaction-ingest step
 -- (memory.sources.actions) from inbox_feedback/situation transitions/

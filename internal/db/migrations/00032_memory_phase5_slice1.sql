@@ -1,4 +1,7 @@
 -- +goose Up
+-- NOTE: renumbered 00022 -> 00032 (2026-07-27) past main's 00022_email_accounts
+-- (the transcriber-renumber precedent). Dev DBs that applied the old 22 need
+-- their goose_db_version reconciled by hand: delete the old 22 row, insert 32.
 -- Secretary memory Phase 5 slice-1, Task 3: the Gmail episode-extraction
 -- watermark, the 5D interaction-ingest floor, and the memory_engagement
 -- runtime side table. See

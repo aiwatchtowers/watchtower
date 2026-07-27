@@ -1185,7 +1185,7 @@ func (db *DB) CountMemoryLinksIn(id string) (int, error) {
 // fully folded into an episode by the Gmail thread->episode extractor
 // (memory.sources.gmail), mirroring MemoryWatermark. Deliberately a THIRD,
 // independent watermark alongside gmail_last_internal_date (Gmail sync) and
-// memory_last_extracted_ts (Slack episode extraction) — see 00022, resolved
+// memory_last_extracted_ts (Slack episode extraction) — see 00032, resolved
 // ambiguity #7. A fresh workspace without its singleton row reads as 0.
 func (db *DB) MemoryGmailWatermark() (float64, error) {
 	var ts float64
@@ -1623,7 +1623,7 @@ func (db *DB) SetMemorySituationFeedbackFloor(id int64) error {
 // upsert precedent. The interaction-ingest step applies its per-run bumps
 // atomically through BumpEngagements (all-or-nothing); this single-bump variant
 // is the direct seam tests exercise. Runtime state: MEM-02-exempt like
-// memory_entity_hints, survives DropMemoryIndex (see 00022, resolved ambiguity #3).
+// memory_entity_hints, survives DropMemoryIndex (see 00032, resolved ambiguity #3).
 func (db *DB) BumpEngagement(nodeID string, engaged bool, at string) error {
 	stmt := `INSERT INTO memory_engagement (node_id, dismissed_count, last_interaction_at)
 		VALUES (?, 1, ?)
