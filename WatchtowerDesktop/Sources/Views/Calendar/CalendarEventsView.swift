@@ -387,7 +387,7 @@ struct CalendarEventsView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
 
-            GoogleConnectOptionsView(flow: google)
+            GoogleConnectOptionsView(flow: google, showGmail: false)
 
             if google.isRunning {
                 ProgressView("Connecting Google...")
