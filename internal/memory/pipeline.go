@@ -238,116 +238,14 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	// after the owner-edit commit + Reconcile (above) so a focus.md edit is
 	// already committed and the index already fresh, and before every
 	// consumer of importance (seeding, ingestion, extraction, semantic).
-	// Source-isolated like calendar/mirrors/jira below: a focus-step error is
-	// logged, never fatal, and never blocks the rest of the run. Gate OFF
-	// still runs runFocusDisable (final-review Fix 1) so a workspace that had
-	// focus on at some point doesn't keep a stale ×2.0/×0.5 skew forever —
-	// its own fingerprint-driven fast path keeps a never-enabled workspace
-	// byte-identical.
-	focusSteps := 0
-	if p.cfg.Focus.Enabled {
-		n, ferr := p.runFocus(runID, 0, &stats)
-		if ferr != nil {
-			p.logf("memory: focus: %v", ferr)
-		}
-		focusSteps = n
-	} else {
-		n, ferr := p.runFocusDisable(runID, 0, &stats)
-		if ferr != nil {
-			p.logf("memory: focus-disable: %v", ferr)
-		}
-		focusSteps = n
-	}
+	focusSteps := p.runFocusStep(runID, &stats)
 
-	// (2) Mechanical entity seeding (no AI). Gmail-sender seeding is gated on
-	// memory.sources.gmail so the source is literally dark when off.
-	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail, Calendar: p.cfg.Sources.Calendar})
+	// (2)-(4c): mechanical entity seeding, situation ingest, the calendar/
+	// mirror/jira mechanical source builders, and Slack/Gmail/interaction
+	// extraction — see runMechanicalAndExtraction.
+	batchSteps, actStaged, err := p.runMechanicalAndExtraction(ctx, runID, focusSteps, acc, &stats)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
-	}
-
-	// (3) Situations → episode nodes (mechanical).
-	stats.Ingested, err = IngestSituations(p.vault, p.db, p.checkMsg, p.logf)
-	if err != nil {
-		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
-	}
-
-	// (3b) Mechanical calendar past-event → episode builder (dark behind
-	// memory.sources.calendar). Runs after seeding (participants + series must be
-	// seeded first) and before Slack extraction. No AI call. Source-isolated: a
-	// calendar-step error is logged, never fatal, and never touches another
-	// watermark. Its pipeline_steps row numbers first, so the Slack extraction
-	// batches number after it.
-	calSteps := 0
-	if p.cfg.Sources.Calendar {
-		n, cerr := p.runCalendarIngest(runID, focusSteps, &stats)
-		if cerr != nil {
-			p.logf("memory: calendar ingest: %v", cerr)
-		}
-		calSteps = n
-	}
-
-	// (3c) Mechanical target/track entity mirrors (dark behind
-	// memory.sources.operational). Runs after situation ingest (its situation:<id>
-	// episodes must exist for the conversion cross-links) and calendar 3b, before
-	// Slack extraction, so the mirror aliases exist before the same run's chat
-	// ingest / belief pass resolves them. No AI call. A read/resolve error fails the
-	// step (logged, MirrorsFailed) but is never fatal to the run (source isolation).
-	mirrorSteps := 0
-	if p.cfg.Sources.Operational {
-		n, merr := p.runOperationalMirrors(runID, focusSteps+calSteps, &stats)
-		if merr != nil {
-			p.logf("memory: operational mirrors: %v", merr)
-		}
-		mirrorSteps = n
-	}
-
-	// (3d) Mechanical Jira issue → episode builder (dark behind
-	// memory.sources.jira, owner scope-B: all issues, watermark-bounded, no
-	// backfill). Runs after mirrors and before Slack extraction. No AI call.
-	// Source-isolated: a jira-step error is logged, never fatal, and never
-	// touches another watermark.
-	jiraSteps := 0
-	if p.cfg.Sources.Jira {
-		n, jerr := p.runJiraIngest(runID, focusSteps+calSteps+mirrorSteps, &stats)
-		if jerr != nil {
-			p.logf("memory: jira ingest: %v", jerr)
-		}
-		jiraSteps = n
-	}
-
-	// (4) Episode extraction from raw text.
-	slackSteps, err := p.runExtract(ctx, runID, focusSteps+calSteps+mirrorSteps+jiraSteps, acc, &stats)
-	if err != nil {
-		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
-	}
-	batchSteps := focusSteps + calSteps + mirrorSteps + jiraSteps + slackSteps
-
-	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
-	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
-	// isolation contract as Slack extraction: a per-batch failure freezes only
-	// that batch's threads and never fails the run — so a Gmail-step error is
-	// logged, not fatal, leaving the Slack extraction watermark and committed work
-	// untouched.
-	if p.cfg.Sources.Gmail {
-		gmailSteps, gerr := p.runGmailExtract(ctx, runID, batchSteps, acc, &stats)
-		if gerr != nil {
-			p.logf("memory: gmail extract: %v", gerr)
-		}
-		batchSteps += gmailSteps
-	}
-
-	// (4c) Mechanical interaction ingest (dark behind memory.sources.actions):
-	// its OWN Run step, gated ONLY on Sources.Actions and independent of the
-	// semantic tier — the annotations + engagement aggregates have value without
-	// the belief pass. It stages act: refs for the belief pass; when the semantic
-	// tier is off those staged refs are simply unused (the annotations + engagement
-	// still land).
-	var actStaged *stagedChat
-	if p.cfg.Sources.Actions {
-		var n int
-		actStaged, n = p.runInteractionIngest(runID, batchSteps, &stats)
-		batchSteps += n
 	}
 
 	// (5) Semantic tier (Phase 3) — dark behind memory.semantic.enabled. Each
@@ -359,19 +257,8 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		p.runSemantic(ctx, runID, batchSteps, actStaged, acc, &stats)
 	}
 
-	// (6) Renders. index.md is the mechanical full listing (always, when memory
-	// is enabled); map.md is the strong-tier hot summary when the semantic tier
-	// is on and within budget, else a mechanical fallback so MCP always has a
-	// map.md to read. Both are derived state — non-fatal and re-rendered next run.
-	if err := p.renderIndex(runID); err != nil {
-		p.logf("memory: render index: %v", err)
-	}
-	strongMap := semanticEnabled && !p.outputBudgetExceeded(acc)
-	mapUsage, err := p.renderMap(ctx, runID, strongMap)
-	if err != nil {
-		p.logf("memory: render map: %v", err)
-	}
-	acc.add(mapUsage)
+	// (6) Renders — see runRenders.
+	p.runRenders(ctx, runID, semanticEnabled, acc)
 
 	// (7) Dark digest compare-mode (behind memory.renders.digest_compare): render
 	// each recently legacy-digested channel window from the memory episodes that
@@ -396,6 +283,147 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
 		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected, stats.FocusMatched, stats.FocusSwept, stats.FocusFailed)
 	return stats, nil
+}
+
+// runFocusStep runs Run step 1b: focus salience when memory.focus.enabled, or
+// its disable counterpart when the gate is off (a workspace that had focus on
+// at some point must not keep a stale ×2.0/×0.5 skew forever — its own
+// fingerprint-driven fast path keeps a never-enabled workspace byte-identical,
+// final-review Fix 1). Source-isolated like calendar/mirrors/jira: a
+// focus-step error is logged, never fatal, and never blocks the rest of the
+// run. Returns the step count for numbering everything after it.
+func (p *Pipeline) runFocusStep(runID int64, stats *RunStats) int {
+	if p.cfg.Focus.Enabled {
+		n, ferr := p.runFocus(runID, 0, stats)
+		if ferr != nil {
+			p.logf("memory: focus: %v", ferr)
+		}
+		return n
+	}
+	n, ferr := p.runFocusDisable(runID, 0, stats)
+	if ferr != nil {
+		p.logf("memory: focus-disable: %v", ferr)
+	}
+	return n
+}
+
+// runMechanicalAndExtraction runs Run steps 2 through 4c: mechanical entity
+// seeding, situation ingest, the calendar/mirror/jira mechanical source
+// builders (each dark behind its own memory.sources.* gate, run in that
+// dependency order — mirrors need situation episodes + calendar's series
+// entities, jira runs after mirrors), Slack episode extraction, Gmail episode
+// extraction, and mechanical interaction ingest. Seeding, situation ingest,
+// and Slack extraction are fatal to the run on error, matching Run's original
+// contract; every gated source step (calendar/mirrors/jira/gmail/actions) is
+// source-isolated — logged, never fatal, and never touches another source's
+// watermark. Returns the total step count recorded (the semantic tier's step
+// numbering base) and the staged interaction act: refs for the belief pass
+// (nil when memory.sources.actions is off).
+func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, focusSteps int, acc *usageAccumulator, stats *RunStats) (batchSteps int, actStaged *stagedChat, err error) {
+	// (2) Mechanical entity seeding (no AI). Gmail-sender seeding is gated on
+	// memory.sources.gmail so the source is literally dark when off.
+	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail, Calendar: p.cfg.Sources.Calendar})
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// (3) Situations → episode nodes (mechanical).
+	stats.Ingested, err = IngestSituations(p.vault, p.db, p.checkMsg, p.logf)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// (3b) Mechanical calendar past-event → episode builder (dark behind
+	// memory.sources.calendar). Runs after seeding (participants + series must be
+	// seeded first) and before Slack extraction. No AI call. Its pipeline_steps
+	// row numbers first, so the Slack extraction batches number after it.
+	calSteps := 0
+	if p.cfg.Sources.Calendar {
+		n, cerr := p.runCalendarIngest(runID, focusSteps, stats)
+		if cerr != nil {
+			p.logf("memory: calendar ingest: %v", cerr)
+		}
+		calSteps = n
+	}
+
+	// (3c) Mechanical target/track entity mirrors (dark behind
+	// memory.sources.operational). Runs after situation ingest (its situation:<id>
+	// episodes must exist for the conversion cross-links) and calendar 3b, before
+	// Slack extraction, so the mirror aliases exist before the same run's chat
+	// ingest / belief pass resolves them. No AI call. A read/resolve error fails the
+	// step (logged, MirrorsFailed) but is never fatal to the run (source isolation).
+	mirrorSteps := 0
+	if p.cfg.Sources.Operational {
+		n, merr := p.runOperationalMirrors(runID, focusSteps+calSteps, stats)
+		if merr != nil {
+			p.logf("memory: operational mirrors: %v", merr)
+		}
+		mirrorSteps = n
+	}
+
+	// (3d) Mechanical Jira issue → episode builder (dark behind
+	// memory.sources.jira, owner scope-B: all issues, watermark-bounded, no
+	// backfill). Runs after mirrors and before Slack extraction. No AI call.
+	jiraSteps := 0
+	if p.cfg.Sources.Jira {
+		n, jerr := p.runJiraIngest(runID, focusSteps+calSteps+mirrorSteps, stats)
+		if jerr != nil {
+			p.logf("memory: jira ingest: %v", jerr)
+		}
+		jiraSteps = n
+	}
+
+	// (4) Episode extraction from raw text.
+	slackSteps, err := p.runExtract(ctx, runID, focusSteps+calSteps+mirrorSteps+jiraSteps, acc, stats)
+	if err != nil {
+		return 0, nil, err
+	}
+	batchSteps = focusSteps + calSteps + mirrorSteps + jiraSteps + slackSteps
+
+	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
+	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
+	// isolation contract as Slack extraction: a per-batch failure freezes only
+	// that batch's threads and never fails the run — so a Gmail-step error is
+	// logged, not fatal, leaving the Slack extraction watermark and committed work
+	// untouched.
+	if p.cfg.Sources.Gmail {
+		gmailSteps, gerr := p.runGmailExtract(ctx, runID, batchSteps, acc, stats)
+		if gerr != nil {
+			p.logf("memory: gmail extract: %v", gerr)
+		}
+		batchSteps += gmailSteps
+	}
+
+	// (4c) Mechanical interaction ingest (dark behind memory.sources.actions):
+	// its OWN Run step, gated ONLY on Sources.Actions and independent of the
+	// semantic tier — the annotations + engagement aggregates have value without
+	// the belief pass. It stages act: refs for the belief pass; when the semantic
+	// tier is off those staged refs are simply unused (the annotations + engagement
+	// still land).
+	if p.cfg.Sources.Actions {
+		var n int
+		actStaged, n = p.runInteractionIngest(runID, batchSteps, stats)
+		batchSteps += n
+	}
+
+	return batchSteps, actStaged, nil
+}
+
+// runRenders re-renders index.md (the mechanical full listing, always run
+// when memory is enabled) and map.md (the strong-tier hot summary when the
+// semantic tier is on and within budget, else a mechanical fallback so MCP
+// always has a map.md to read). Both are derived state — non-fatal, logged,
+// and re-rendered next run.
+func (p *Pipeline) runRenders(ctx context.Context, runID int64, semanticEnabled bool, acc *usageAccumulator) {
+	if err := p.renderIndex(runID); err != nil {
+		p.logf("memory: render index: %v", err)
+	}
+	strongMap := semanticEnabled && !p.outputBudgetExceeded(acc)
+	mapUsage, err := p.renderMap(ctx, runID, strongMap)
+	if err != nil {
+		p.logf("memory: render map: %v", err)
+	}
+	acc.add(mapUsage)
 }
 
 // semanticEvictScoreThreshold is the retention-score cutoff below which a cold
