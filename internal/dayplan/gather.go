@@ -62,26 +62,7 @@ func (p *Pipeline) gatherMemoryOpenLoops() string {
 		if n.Type != "entity" || n.Status != "active" {
 			continue
 		}
-		node, err := vault.ReadNode(n.ID)
-		if err != nil {
-			// Index/vault drift (a file removed since indexing): skip this node,
-			// don't fail the gather — but log it (guarded; dayplan.New does not
-			// normalize a nil logger) so real drift is not swallowed silently.
-			if p.logger != nil {
-				p.logger.Printf("dayplan: reading memory node %s for open loops: %v", n.ID, err)
-			}
-			continue
-		}
-		title := strings.TrimSpace(node.Title)
-		if title == "" {
-			title = node.ID
-		}
-		for _, bullet := range memory.SectionBullets(node.Body, "Open loops") {
-			lines = append(lines, "- "+title+": "+bullet)
-			if len(lines) >= maxMemoryOpenLoops {
-				break
-			}
-		}
+		lines = p.appendNodeOpenLoops(vault, n, lines)
 		if len(lines) >= maxMemoryOpenLoops {
 			break
 		}
@@ -91,6 +72,31 @@ func (p *Pipeline) gatherMemoryOpenLoops() string {
 		return noMemoryOpenLoops
 	}
 	return strings.Join(lines, "\n")
+}
+
+// appendNodeOpenLoops reads one active entity node's "## Open loops" bullets
+// and appends "- <entity title>: <loop bullet>" lines to lines, capped at
+// maxMemoryOpenLoops. Index/vault drift (a file removed since indexing) is
+// logged and skipped, not a fatal gather error.
+func (p *Pipeline) appendNodeOpenLoops(vault *memory.Vault, n db.MemoryNodeRow, lines []string) []string {
+	node, err := vault.ReadNode(n.ID)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Printf("dayplan: reading memory node %s for open loops: %v", n.ID, err)
+		}
+		return lines
+	}
+	title := strings.TrimSpace(node.Title)
+	if title == "" {
+		title = node.ID
+	}
+	for _, bullet := range memory.SectionBullets(node.Body, "Open loops") {
+		lines = append(lines, "- "+title+": "+bullet)
+		if len(lines) >= maxMemoryOpenLoops {
+			break
+		}
+	}
+	return lines
 }
 
 // gatherTargets returns active targets (todo, in_progress, blocked), ordered by priority.
