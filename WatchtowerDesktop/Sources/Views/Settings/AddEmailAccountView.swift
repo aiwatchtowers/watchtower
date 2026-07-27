@@ -27,6 +27,13 @@ struct AddEmailAccountView: View {
     @State private var isConnectingIMAP = false
     @State private var imapError: String?
 
+    // MARK: - Setup assistant state
+
+    @State private var showAssistant = false
+    @State private var setupChatVM: EmailSetupChatViewModel?
+    @State private var showAssistantFilledNote = false
+    @State private var assistantFilledNoteToken = 0
+
     // MARK: - Outlook form state
 
     @State private var outlookLabel = ""
@@ -55,27 +62,41 @@ struct AddEmailAccountView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Add Email Account")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                Spacer()
-                Button("Close") { dismiss() }
-                    .buttonStyle(.plain)
-            }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    gmailCard
-                    outlookCard
-                    imapCard
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("Add Email Account")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    Spacer()
+                    Button("Close") { dismiss() }
+                        .buttonStyle(.plain)
                 }
-                .padding(.bottom, 8)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        gmailCard
+                        outlookCard
+                        imapCard
+                    }
+                    .padding(.bottom, 8)
+                }
+            }
+            .frame(width: 440)
+
+            if showAssistant, let chatVM = setupChatVM {
+                Divider()
+                    .padding(.leading, 16)
+                EmailSetupAssistantPanel(
+                    chatVM: chatVM,
+                    makeSnapshot: { formSnapshot() },
+                    onClose: { withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false } }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .padding(20)
-        .frame(width: 480, height: 640)
+        .frame(width: showAssistant ? 860 : 480, height: 640)
         .onAppear {
             google.refresh()
         }
@@ -184,6 +205,15 @@ struct AddEmailAccountView: View {
                     Text("IMAP")
                         .font(.headline)
                     Spacer()
+                    Button {
+                        toggleAssistant()
+                    } label: {
+                        Label("Help me set this up", systemImage: "sparkles")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Chat with an assistant that fills in these settings for you")
                 }
                 Text("Any IMAP mailbox — host, port, and folder configured manually.")
                     .font(.caption)
@@ -233,16 +263,94 @@ struct AddEmailAccountView: View {
                     .disabled(!canConnectIMAP || isConnectingIMAP)
                 }
 
+                if showAssistantFilledNote {
+                    Label("Assistant filled in the settings", systemImage: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                        .transition(.opacity)
+                }
+
                 if let err = imapError {
                     Text(err)
                         .font(.caption)
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
+                    if !showAssistant {
+                        Button {
+                            askAssistantAboutError(err)
+                        } label: {
+                            Label("Ask the assistant about this error", systemImage: "sparkles")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.link)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(4)
         }
+    }
+
+    // MARK: - Setup assistant wiring
+
+    /// What the assistant is allowed to see. PRIVACY: `ImapFormSnapshot` has
+    /// no password slot — only `hasPassword` — so the SecureField's value can
+    /// never reach a prompt from here.
+    private func formSnapshot() -> ImapFormSnapshot {
+        ImapFormSnapshot(
+            host: host,
+            portText: portText,
+            security: security.rawValue,
+            username: username,
+            folder: folder,
+            label: label,
+            hasPassword: !password.isEmpty,
+            lastConnectionError: imapError
+        )
+    }
+
+    private func toggleAssistant() {
+        if showAssistant {
+            withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false }
+        } else {
+            openAssistant()
+        }
+    }
+
+    private func openAssistant() {
+        if setupChatVM == nil {
+            let vm = EmailSetupChatViewModel()
+            vm.onApplySettings = { patch in applyAssistantSettings(patch) }
+            setupChatVM = vm
+        }
+        setupChatVM?.seedGreetingIfNeeded()
+        withAnimation(.easeInOut(duration: 0.2)) { showAssistant = true }
+    }
+
+    /// Writes an assistant patch into the form fields. The patch type has no
+    /// password field, so the SecureField stays 100% manual.
+    private func applyAssistantSettings(_ patch: ImapSettingsPatch) {
+        if let value = patch.host { host = value }
+        if let value = patch.port { portText = String(value) }
+        if let value = patch.security, let parsed = IMAPSecurity(rawValue: value) { security = parsed }
+        if let value = patch.username { username = value }
+        if let value = patch.folder { folder = value }
+        if let value = patch.label { label = value }
+
+        assistantFilledNoteToken += 1
+        let token = assistantFilledNoteToken
+        withAnimation { showAssistantFilledNote = true }
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if token == assistantFilledNoteToken {
+                withAnimation { showAssistantFilledNote = false }
+            }
+        }
+    }
+
+    private func askAssistantAboutError(_ error: String) {
+        openAssistant()
+        setupChatVM?.sendConnectionError(error, snapshot: formSnapshot())
     }
 
     private func connectIMAP() {
@@ -269,7 +377,95 @@ struct AddEmailAccountView: View {
                 dismiss()
             } else {
                 imapError = vm.error
+                // With the assistant open, hand it the failure right away so
+                // it can explain the error in plain words (snapshot only —
+                // never the password value).
+                if showAssistant, let err = imapError, let chatVM = setupChatVM {
+                    chatVM.sendConnectionError(err, snapshot: formSnapshot())
+                }
             }
+        }
+    }
+}
+
+// MARK: - EmailSetupAssistantPanel
+
+/// Compact chat panel docked to the right of the Add Email Account cards while
+/// the setup assistant is open: header, scrollable message list (house chat
+/// bubbles), and a `ChatInput` at the bottom. The input lives OUTSIDE the
+/// message ScrollView (nested-NSScrollView collapse — same placement rule as
+/// `SituationDiscussInputBar`).
+private struct EmailSetupAssistantPanel: View {
+    @Bindable var chatVM: EmailSetupChatViewModel
+    let makeSnapshot: () -> ImapFormSnapshot
+    let onClose: () -> Void
+
+    private let bottomAnchor = "setup-chat-bottom"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            messageList
+            if let err = chatVM.errorMessage {
+                Label(err, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+            }
+            ChatInput(
+                text: $chatVM.inputText,
+                isStreaming: chatVM.isStreaming,
+                onSend: { chatVM.send(snapshot: makeSnapshot()) },
+                onStop: { chatVM.cancelStream() },
+                placeholder: "e.g. \"my mail is on Yahoo\""
+            )
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(Color.accentColor)
+            Text("Setup Assistant")
+                .font(.headline)
+            Spacer()
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Close the assistant")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    private var messageList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(chatVM.messages) { msg in
+                        MessageBubble(message: msg)
+                    }
+                    Color.clear.frame(height: 1).id(bottomAnchor)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            }
+            .onChange(of: chatVM.messages.count) { scrollToBottom(proxy) }
+            .onChange(of: chatVM.messages.last?.text) { scrollToBottom(proxy) }
+        }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
         }
     }
 }
