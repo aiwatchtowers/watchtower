@@ -47,6 +47,11 @@ const (
 	DefaultGmailMaxMessagesPerSync = 100
 	DefaultGmailMaxBodyBytes       = 51200
 
+	// IMAP defaults (shared by every connected email_accounts row)
+	DefaultImapInitialHistoryDays = 7
+	DefaultImapMaxMessagesPerSync = 100
+	DefaultImapMaxBodyBytes       = 51200
+
 	// Jira defaults
 	DefaultJiraEnabled          = false
 	DefaultJiraSyncIntervalMins = 15

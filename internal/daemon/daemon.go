@@ -14,6 +14,7 @@ import (
 
 	gosync "sync"
 	"watchtower/internal/briefing"
+	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/dayplan"
@@ -22,6 +23,7 @@ import (
 	"watchtower/internal/feed"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
+	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
 	"watchtower/internal/memory"
@@ -65,7 +67,9 @@ type Daemon struct {
 	nextStepPipe     *targets.Pipeline
 	customTracksPipe *customtracks.Pipeline
 	calendarSyncer   *calendar.Syncer
+	calDAVSyncers    []*caldav.Syncer
 	gmailSyncer      *gmail.Syncer
+	imapSyncers      []*imap.Syncer
 	jiraSyncer       *jira.Syncer
 	dayPlanPipeline  DayPlanRunner
 	lastJira         time.Time
@@ -149,9 +153,24 @@ func (d *Daemon) SetCalendarSyncer(s *calendar.Syncer) {
 	d.calendarSyncer = s
 }
 
+// SetCalDAVSyncers sets the per-account CalDAV/ICS calendar syncers — one
+// per connected calendar_accounts row, unlike Google Calendar's single
+// syncer, since a workspace can have any number of connected calendar
+// sources (mirrors SetImapSyncers).
+func (d *Daemon) SetCalDAVSyncers(s []*caldav.Syncer) {
+	d.calDAVSyncers = s
+}
+
 // SetGmailSyncer sets the Gmail syncer for post-sync mail fetch.
 func (d *Daemon) SetGmailSyncer(s *gmail.Syncer) {
 	d.gmailSyncer = s
+}
+
+// SetImapSyncers sets the per-account IMAP/Outlook syncers for post-sync mail
+// fetch — one per connected email_accounts row, unlike Gmail's single syncer,
+// since a workspace can have any number of connected mailboxes.
+func (d *Daemon) SetImapSyncers(s []*imap.Syncer) {
+	d.imapSyncers = s
 }
 
 // SetJiraSyncer sets the Jira syncer for periodic sync.
@@ -235,7 +254,9 @@ func (d *Daemon) wakeChannel() <-chan struct{} {
 func (d *Daemon) runSync(ctx context.Context) {
 	syncErr := d.phaseSlackSync(ctx)
 	d.phaseCalendarSync(ctx)
+	d.phaseCalDAVSync(ctx)
 	d.phaseGmailSync(ctx)
+	d.phaseImapSync(ctx)
 	d.phaseJiraSync(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
@@ -353,6 +374,21 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 	}
 }
 
+// phaseCalDAVSync pulls calendar events for every connected CalDAV/ICS
+// account. Lightweight, runs every cycle. Like phaseImapSync, this loops
+// over one syncer per account — a per-account failure is logged and skipped
+// rather than aborting the rest of the accounts.
+func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
+	for _, s := range d.calDAVSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("caldav sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("caldav: %d events synced", n)
+		}
+	}
+}
+
 // phaseGmailSync pulls Gmail inbox messages. Lightweight, runs every cycle.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
 	if d.gmailSyncer == nil {
@@ -363,6 +399,21 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 		d.logger.Printf("gmail sync error: %v", err)
 	} else if n > 0 {
 		d.logger.Printf("gmail: %d messages synced", n)
+	}
+}
+
+// phaseImapSync pulls new mail for every connected IMAP/Outlook account.
+// Lightweight, runs every cycle. Unlike phaseGmailSync's single nil-check,
+// this loops over one syncer per account — a per-account failure is logged
+// and skipped rather than aborting the rest of the accounts.
+func (d *Daemon) phaseImapSync(ctx context.Context) {
+	for _, s := range d.imapSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("imap sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("imap: %d messages synced", n)
+		}
 	}
 }
 

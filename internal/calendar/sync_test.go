@@ -58,3 +58,15 @@ func TestCalendarInfo_Fields(t *testing.T) {
 	assert.True(t, ci.Primary)
 	assert.Equal(t, "#4285f4", ci.Color)
 }
+
+// TestDropNonGoogleCalendarIDs guards the multi-source split: CalDAV/ICS
+// accounts (internal/caldav) register calendar_calendars rows scoped
+// "caldav:<id>"/"ics:<id>", and those ids must never enter the Google
+// syncer's fetch or stale-delete loops.
+func TestDropNonGoogleCalendarIDs(t *testing.T) {
+	got := dropNonGoogleCalendarIDs([]string{"primary", "caldav:3", "team@group.calendar.google.com", "ics:7"})
+	assert.Equal(t, []string{"primary", "team@group.calendar.google.com"}, got)
+
+	assert.Empty(t, dropNonGoogleCalendarIDs([]string{"caldav:1"}))
+	assert.Empty(t, dropNonGoogleCalendarIDs(nil))
+}

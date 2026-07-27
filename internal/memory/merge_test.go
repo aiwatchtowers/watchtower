@@ -187,3 +187,46 @@ func TestAppendToLinksDeduplicates(t *testing.T) {
 	plain := appendToLinks("# Bare\n", line)
 	assert.Equal(t, plain, appendToLinks(plain, line))
 }
+
+// TestUpsertIndexNodeComputesImportance: upsertIndexNode (the non-Reconcile
+// index-write path used by eviction/dedupe/concepts/beliefs/aging/mirrors/
+// ingest/reflect/seed) must compute a real importance_score via the same
+// ComputeImportance logic Reconcile uses, not silently persist 0 (Slice A
+// follow-up, added 2026-07-18: upsertIndexNode previously clobbered any
+// prior importance_score to 0 via UpsertMemoryNode's unconditional
+// ON CONFLICT SET).
+func TestUpsertIndexNodeComputesImportance(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	linker := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5UI1", "entity", "Linker")
+	target := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5UI2", "entity", "Target")
+	linker.Body = "# Linker\n\nSee [[ent_01ARZ3NDEKTSV4RRFFQ69G5UI2]] for background.\n"
+	writeNodes(t, v, linker, target)
+	_, err := Reconcile(v, d, t.Logf)
+	require.NoError(t, err)
+
+	// target now has LinksIn == 1 in the index. Re-write it via
+	// upsertIndexNode directly (the non-Reconcile path) and confirm the
+	// persisted importance_score reflects that link, not a reset to 0.
+	require.NoError(t, upsertIndexNode(d, v.OwnerEdited, target, "2026-07-18T00:00:00Z"))
+
+	row, err := d.GetMemoryNode(target.ID)
+	require.NoError(t, err)
+	want := ComputeImportance(ImportanceInputs{LinksIn: 1})
+	assert.Equal(t, want, row.ImportanceScore, "upsertIndexNode must compute importance like Reconcile, not persist 0")
+}
+
+// TestUpsertIndexNodeImportanceOverrideWins: an ImportanceOverride short-
+// circuits upsertIndexNode's computation exactly as it does in Reconcile.
+func TestUpsertIndexNodeImportanceOverrideWins(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	override := 9.0
+	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5UI3", "entity", "Overridden")
+	n.ImportanceOverride = &override
+
+	require.NoError(t, upsertIndexNode(d, v.OwnerEdited, n, "2026-07-18T00:00:00Z"))
+
+	row, err := d.GetMemoryNode(n.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 9.0, row.ImportanceScore)
+}

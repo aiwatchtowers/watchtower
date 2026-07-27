@@ -45,10 +45,12 @@ const (
 	InboxSituationCard         = "inbox.situation_card"
 	MemoryExtractEpisodes      = "memory.extract_episodes"
 	MemoryExtractEpisodesBatch = "memory.extract_episodes_batch"
+	MemoryExtractEmailEpisodes = "memory.extract_email_episodes"
 	MemoryEntityRewrite        = "memory.entity_rewrite"
 	MemoryReviseBeliefs        = "memory.revise_beliefs"
 	MemoryRenderMap            = "memory.render_map"
 	MemoryReflect              = "memory.reflect"
+	MemoryRenderChannelDigest  = "memory.render_channel_digest"
 )
 
 // Store loads, caches, and persists prompt templates.

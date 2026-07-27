@@ -74,6 +74,9 @@ final class AppState {
     /// Catch-Up ViewModel — persists across tab switches.
     private(set) var catchUpViewModel: CatchUpViewModel?
 
+    /// Memory browser ViewModel — persists across tab switches.
+    private(set) var memoryViewModel: MemoryViewModel?
+
     /// Dashboard ViewModel — persists across tab switches so an in-flight
     /// "Generate" run (and its `isGenerating` flag) survives navigating away
     /// from and back to the Dashboard tab, instead of being orphaned when a
@@ -92,6 +95,18 @@ final class AppState {
     /// Sidebar badge counts — created during initialize() before the splash hides,
     /// so badges are visible the moment the main UI appears.
     private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
+
+    /// Email Accounts ViewModel (multi-account IMAP/Outlook) — persists across
+    /// tab switches so an in-flight connect (Outlook OAuth or IMAP add) survives
+    /// navigating away from the Settings window. Gmail keeps its own separate
+    /// single-account flow (`GoogleConnectFlow.shared`) and is not covered here.
+    private(set) var emailAccountsViewModel: EmailAccountsViewModel?
+
+    /// Calendar Accounts ViewModel (multi-account CalDAV/ICS) — persists across
+    /// tab switches so an in-flight connect survives navigating away from the
+    /// Settings window. Google Calendar keeps its own separate single-account
+    /// flow (`GoogleConnectFlow.shared`) and is not covered here.
+    private(set) var calendarAccountsViewModel: CalendarAccountsViewModel?
 
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
@@ -255,8 +270,11 @@ final class AppState {
                 initCalendar(dbPool: manager.dbPool)
                 initDayPlan(dbPool: manager.dbPool)
                 initCatchUp(dbPool: manager.dbPool)
+                initMemory(dbPool: manager.dbPool)
                 initDashboard(dbManager: manager)
                 initSecretaryProfile(dbManager: manager)
+                initEmailAccounts(dbPool: manager.dbPool)
+                initCalendarAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -379,6 +397,10 @@ final class AppState {
         catchUpViewModel = CatchUpViewModel(dbPool: dbPool)
     }
 
+    private func initMemory(dbPool: DatabasePool) {
+        memoryViewModel = MemoryViewModel(dbPool: dbPool)
+    }
+
     /// Not marked `private` (unlike its siblings above) so XCTest can call it directly via
     /// `@testable import` to prove `dashboardViewModel` identity persists across accesses,
     /// without going through the real-filesystem/CLI-subprocess machinery in `initialize()`.
@@ -396,6 +418,18 @@ final class AppState {
     /// identity persists across accesses.
     func initSecretaryProfile(dbManager: DatabaseManager) {
         secretaryProfileViewModel = SecretaryProfileViewModel(dbManager: dbManager)
+    }
+
+    func initEmailAccounts(dbPool: DatabasePool) {
+        let vm = EmailAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        emailAccountsViewModel = vm
+    }
+
+    func initCalendarAccounts(dbPool: DatabasePool) {
+        let vm = CalendarAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        calendarAccountsViewModel = vm
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

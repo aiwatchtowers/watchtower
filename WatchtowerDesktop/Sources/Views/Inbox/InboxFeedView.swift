@@ -14,6 +14,7 @@ struct InboxFeedView: View {
     @State private var tab: Tab = .feed
     private let google = GoogleConnectFlow.shared
     @State private var showConnectOptions = false
+    @State private var showAddEmailAccountSheet = false
 
     /// The dashboard VM is owned by `AppState` (survives tab switches so an
     /// in-flight "Generate" run isn't orphaned on navigation) rather than
@@ -33,7 +34,7 @@ struct InboxFeedView: View {
             case .feed:
                 if let dashboardVM, let feedVM {
                     VStack(spacing: 0) {
-                        if !google.fullyConnected || google.isRunning {
+                        if !sourcesFullyConnected || google.isRunning {
                             connectSourcesBanner
                             Divider()
                         }
@@ -56,16 +57,31 @@ struct InboxFeedView: View {
             dashboardVM?.refresh()
             feedVM?.refresh()
             google.refresh()
+            appState.emailAccountsViewModel?.refresh()
         }
     }
 
     // MARK: - Connect Sources Banner
 
-    /// Names of the disconnected Google sources, for the banner text.
+    /// True once an email source is connected — Gmail OR at least one HEALTHY
+    /// IMAP/Outlook mailbox, so connecting only an IMAP account (without ever
+    /// touching Gmail) satisfies the email leg of the connect check too. An
+    /// account stuck in "error"/"revoked" must not count — otherwise its mere
+    /// presence in the list would hide the banner even though nothing syncs.
+    private var hasEmailSource: Bool {
+        google.gmail.isConnected || (appState.emailAccountsViewModel?.accounts.contains { $0.isOK } ?? false)
+    }
+
+    /// Whether both the calendar and email legs are connected.
+    private var sourcesFullyConnected: Bool {
+        google.calendar.isConnected && hasEmailSource
+    }
+
+    /// Names of the disconnected sources, for the banner text.
     private var missingSources: [String] {
         var missing: [String] = []
         if !google.calendar.isConnected { missing.append("Google Calendar") }
-        if !google.gmail.isConnected { missing.append("Gmail") }
+        if !hasEmailSource { missing.append("Email") }
         return missing
     }
 
@@ -88,12 +104,20 @@ struct InboxFeedView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
             } else {
-                Button("Connect") { showConnectOptions = true }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .popover(isPresented: $showConnectOptions) {
-                        connectOptionsPopover
-                    }
+                Button("Connect") {
+                    // The Calendar tab's connect screen shares this same
+                    // `google` singleton and forces includeGmail off (it's
+                    // calendar-only) — restore Gmail's default here so a
+                    // stale false from Calendar doesn't silently drop Gmail
+                    // from this banner's own "Connect Google" request.
+                    google.includeGmail = true
+                    showConnectOptions = true
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .popover(isPresented: $showConnectOptions) {
+                    connectOptionsPopover
+                }
             }
 
             if let err = google.error {
@@ -125,9 +149,23 @@ struct InboxFeedView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!google.hasSelection)
+
+            Divider()
+
+            Button("Add an IMAP or Outlook mailbox instead…") {
+                showConnectOptions = false
+                showAddEmailAccountSheet = true
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(16)
         .frame(width: 320)
+        .sheet(isPresented: $showAddEmailAccountSheet) {
+            AddEmailAccountView()
+                .environment(appState)
+        }
     }
 
     // MARK: - Toolbar (Tracks-style: title + count badge + tab picker)

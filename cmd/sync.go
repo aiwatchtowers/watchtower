@@ -18,6 +18,7 @@ import (
 
 	"encoding/json"
 	"watchtower/internal/briefing"
+	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/customtracks"
@@ -28,6 +29,7 @@ import (
 	"watchtower/internal/feed"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
+	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
 	"watchtower/internal/prompts"
@@ -320,6 +322,10 @@ func runSync(cmd *cobra.Command, args []string) error {
 		wireCalendarSyncer(ctx, d, cfg, database, logger)
 		// Wire gmail syncer if token exists.
 		wireGmailSyncer(ctx, d, cfg, database, logger)
+		// Wire one IMAP/Outlook syncer per connected email_accounts row.
+		wireImapSyncers(ctx, d, cfg, database, logger)
+		// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
+		wireCalDAVSyncers(d, cfg, database, logger)
 		return d.Run(ctx)
 	}
 
@@ -498,6 +504,122 @@ func wireGmailSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 		return
 	}
 	d.SetGmailSyncer(gmail.NewSyncer(gmClient, database, cfg, logger))
+}
+
+// wireImapSyncers wires one imap.Syncer per connected email_accounts row.
+// Unlike wireGmailSyncer's single token check, this iterates every account;
+// a broken mailbox records its own auth-state error (imap.Syncer.Sync) rather
+// than aborting the wiring step for the others.
+func wireImapSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	accounts, err := database.ListEmailAccounts()
+	if err != nil {
+		logger.Printf("imap: failed to list accounts: %v", err)
+		return
+	}
+	var syncers []*imap.Syncer
+	for _, acct := range accounts {
+		accountCfg := imap.AccountConfig{
+			Host: acct.Host, Port: acct.Port,
+			Security: imap.Security(acct.Security), Folder: acct.Folder,
+		}
+
+		var auth imap.Authenticator
+		switch acct.Provider {
+		case "imap":
+			store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
+			creds, err := store.Load()
+			if err != nil {
+				logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
+				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
+				}
+				continue
+			}
+			auth = imap.PasswordAuth{Username: acct.EmailAddress, Password: creds.Password}
+		case "outlook":
+			auth = outlookAuthenticator(ctx, cfg, database, acct, logger)
+			if auth == nil {
+				continue
+			}
+		default:
+			logger.Printf("imap: account %d: unknown provider %q, skipping", acct.ID, acct.Provider)
+			continue
+		}
+
+		syncers = append(syncers, imap.NewSyncer(acct, accountCfg, auth, database, cfg, logger))
+	}
+	d.SetImapSyncers(syncers)
+}
+
+// wireCalDAVSyncers wires one caldav.Syncer per connected calendar_accounts
+// row — the exact calendar analog of wireImapSyncers. A broken account
+// records its own auth-state error rather than aborting the wiring step for
+// the others; an account whose credential file can't be loaded is marked
+// status='error' immediately so the Desktop UI shows the problem instead of
+// a silently-dead account.
+func wireCalDAVSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	accounts, err := database.ListCalendarAccounts()
+	if err != nil {
+		logger.Printf("caldav: failed to list accounts: %v", err)
+		return
+	}
+	var syncers []*caldav.Syncer
+	for _, acct := range accounts {
+		store := caldav.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
+		creds, err := store.Load()
+		if err != nil {
+			logger.Printf("caldav: account %d: failed to load credentials: %v", acct.ID, err)
+			if dbErr := database.SetCalendarAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+				logger.Printf("caldav: account %d: record auth state: %v", acct.ID, dbErr)
+			}
+			continue
+		}
+		syncers = append(syncers, caldav.NewSyncer(acct, creds, database, cfg, logger))
+	}
+	d.SetCalDAVSyncers(syncers)
+}
+
+// outlookAuthenticator builds a RefreshingXOAUTH2Auth for one Outlook
+// account: RefreshFunc loads the stored refresh token, exchanges it for a
+// fresh access token on every Authenticate() call (i.e. every Dial(), i.e.
+// every Sync() cycle — see imap.RefreshingXOAUTH2Auth), and re-persists the
+// credential store whenever Microsoft rotates the refresh token. Returns nil
+// if the account's credentials can't be loaded, in which case the caller
+// skips wiring a syncer for it (mirroring the imap-provider branch above).
+func outlookAuthenticator(_ context.Context, cfg *config.Config, database *db.DB, acct db.EmailAccount, logger *log.Logger) imap.Authenticator {
+	store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
+	if _, err := store.Load(); err != nil {
+		logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
+		if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+			logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
+		}
+		return nil
+	}
+
+	msCfg := resolveMicrosoftOAuthConfig()
+	return imap.RefreshingXOAUTH2Auth{
+		Username: acct.EmailAddress,
+		RefreshFunc: func(ctx context.Context) (string, error) {
+			creds, err := store.Load()
+			if err != nil {
+				return "", fmt.Errorf("loading outlook credentials for account %d: %w", acct.ID, err)
+			}
+			accessToken, newRefreshToken, err := imap.RefreshAccessToken(ctx, msCfg, creds.RefreshToken)
+			if err != nil {
+				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
+				}
+				return "", fmt.Errorf("refreshing outlook token for account %d: %w", acct.ID, err)
+			}
+			if newRefreshToken != "" && newRefreshToken != creds.RefreshToken {
+				creds.RefreshToken = newRefreshToken
+				if err := store.Save(creds); err != nil {
+					logger.Printf("imap: account %d: failed to persist rotated refresh token: %v", acct.ID, err)
+				}
+			}
+			return accessToken, nil
+		},
+	}
 }
 
 var progressLines atomic.Int32

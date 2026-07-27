@@ -2,7 +2,24 @@ import Foundation
 import Yams
 
 enum Constants {
-    static let configPath = NSString("~/.config/watchtower/config.yaml").expandingTildeInPath
+    /// `WATCHTOWER_CONFIG_PATH` lets a dev/verification run point the app at
+    /// an isolated config.yaml instead of the real one, without touching it —
+    /// mirrors ConfigService's existing test-friendly `init(configPath:)`.
+    static let configPath = ProcessInfo.processInfo.environment["WATCHTOWER_CONFIG_PATH"]
+        ?? NSString("~/.config/watchtower/config.yaml").expandingTildeInPath
+
+    /// Whether the app should offer *new* Gmail OAuth connections. Gmail's
+    /// `gmail.readonly` scope is a Google "restricted" scope, gated behind a
+    /// CASA security assessment for the OAuth app to leave Testing status —
+    /// while that's pending, new Gmail OAuth grants can fail for anyone not
+    /// already on the app's test-user list. Flip back to `true` once CASA
+    /// passes. An already-connected Gmail account keeps working either way —
+    /// this only hides the "Connect Gmail" entry points, never disconnects
+    /// or hides status for an existing connection. IMAP (e.g. a Gmail app
+    /// password via imap.gmail.com) is unaffected — it's a different auth
+    /// mechanism, not subject to this restriction.
+    static let gmailOAuthAvailable = false
+
     static let databasePath = NSString("~/.local/share/watchtower").expandingTildeInPath
     static let bundleID = "com.watchtower.desktop"
     static let configDir = NSString("~/.config/watchtower").expandingTildeInPath

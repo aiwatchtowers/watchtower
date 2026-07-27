@@ -186,8 +186,9 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged, drop
 			return n, flagged, dropped, usage, werr
 		}
 		nowStr := time.Now().UTC().Format(time.RFC3339)
+		mem := newOwnerEditedMemo(p.vault)
 		for _, nd := range noteNodes {
-			if ierr := upsertIndexNode(p.db, nd, nowStr); ierr != nil {
+			if ierr := upsertIndexNode(p.db, mem.lookup, nd, nowStr); ierr != nil {
 				return n, flagged, dropped, usage, ierr // reconcile self-heals next run
 			}
 		}

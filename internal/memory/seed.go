@@ -2,6 +2,7 @@ package memory
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,8 +13,40 @@ import (
 
 // SeedConfig bounds the mechanical entity seeding pass.
 type SeedConfig struct {
-	MinMessages int // people need at least this many messages in the window
-	WindowDays  int // activity lookback for people and channels
+	MinMessages int  // people/senders need at least this many messages in the window
+	WindowDays  int  // activity lookback for people and channels
+	Gmail       bool // seed Gmail senders as person entities (memory.sources.gmail)
+	Calendar    bool // seed recurring calendar series as entities (memory.sources.calendar)
+}
+
+// machineSenderLocalParts are the local-part substrings that mark an email
+// address as an automated/no-reply sender rather than a human worth a person
+// entity. Matched case-insensitively against the address's local part. A code
+// const (not config): the list is a definitional noise filter, not a tuning
+// knob.
+var machineSenderLocalParts = []string{
+	"no-reply", "noreply", "do-not-reply", "donotreply",
+	"notifications", "mailer-daemon", "postmaster", "bounce",
+}
+
+// gmailSenderMinMessages is the email-specific seeding floor: a human
+// correspondent who sent >=3 emails in the 30-day window earns a person
+// entity. Deliberately much lower than the Slack SeedConfig.MinMessages floor
+// (chat and email volumes differ by an order of magnitude).
+const gmailSenderMinMessages = 3
+
+// isMachineSender reports whether an email's local part looks automated —
+// dropped before seeding. Patterns match as a PREFIX of the local part (or the
+// whole part), not a substring, so a human like jbouncer@ is not swept up by
+// "bounce".
+func isMachineSender(email string) bool {
+	local := strings.ToLower(emailLocalPart(email))
+	for _, m := range machineSenderLocalParts {
+		if local == m || strings.HasPrefix(local, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // seedCandidate is one entity the seeding pass may create: a display name,
@@ -37,7 +70,7 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 
 	var candidates []seedCandidate
 	for _, load := range []func(*db.DB, SeedConfig, float64) ([]seedCandidate, error){
-		seedPeople, seedChannels, seedJiraProjects,
+		seedPeople, seedChannels, seedJiraProjects, seedGmailSenders, seedCalendarSeries,
 	} {
 		batch, err := load(database, cfg, since)
 		if err != nil {
@@ -46,9 +79,21 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 		candidates = append(candidates, batch...)
 	}
 
+	// claimed tracks the aliases already taken by nodes accepted THIS run
+	// (lower-cased for the COLLATE NOCASE alias grammar). The DB idempotency
+	// check (LookupMemoryAlias) only sees committed nodes — this run's new nodes
+	// are not mirrored into the index until the commit loop below — so without
+	// this set two candidates that share an alias (a Gmail sender whose email is
+	// also a Slack person's email, seeded together on a fresh workspace's first
+	// run) would both be created and collide on the UNIQUE alias constraint. The
+	// set makes identity stitching hold WITHIN a run, not only across runs.
+	claimed := make(map[string]bool)
 	var nodes []Node
 	var ids []string
 	for _, c := range candidates {
+		if claimed[strings.ToLower(c.aliases[0])] {
+			continue // stitched to an entity already accepted this run
+		}
 		_, err := database.LookupMemoryAlias(c.aliases[0])
 		if err == nil {
 			continue // already seeded (or manually created) — idempotency
@@ -66,6 +111,9 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 			Body:    entitySkeletonBody(c.title, c.what),
 		}
 		n.Refs.PeopleCard = c.peopleCard
+		for _, a := range c.aliases {
+			claimed[strings.ToLower(a)] = true
+		}
 		nodes = append(nodes, n)
 		ids = append(ids, n.ID)
 	}
@@ -83,8 +131,9 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 		return 0, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
 	for _, n := range nodes {
-		if err := upsertIndexNode(database, n, now); err != nil {
+		if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
 			return 0, err
 		}
 	}
@@ -195,6 +244,135 @@ func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate
 		out = append(out, seedCandidate{title: key, aliases: []string{key}})
 	}
 	return out, rows.Err()
+}
+
+// seedGmailSenders returns one candidate per distinct from_email that sent at
+// least gmailSenderMinMessages gmail messages inside the window (internal_date
+// unix > since), titled from from_name (falling back to the email's
+// local-part), aliased by the lower-cased email address. It is a no-op unless
+// cfg.Gmail (memory.sources.gmail) is on — the source seeds no senders when
+// dark, so the "independently dark" contract is literally true.
+//
+// Two noise gates keep the person graph from filling with automated traffic:
+//   - a min-message threshold (gmailSenderMinMessages, NOT the Slack-calibrated
+//     SeedConfig.MinMessages: 20 chat messages/month is normal, 20 emails from
+//     one human correspondent is not — a Slack floor would leave email seeding
+//     effectively inert; convergence-review calibration, 2026-07-16);
+//   - a machine-sender pattern filter (isMachineSender): no-reply@, notifications@,
+//     mailer-daemon@ and friends are dropped no matter how high their volume.
+//
+// Identity stitching is free (resolved ambiguity, §5A): SeedEntities's
+// LookupMemoryAlias(aliases[0]) idempotency check unifies a sender whose email
+// already aliases a seeded Slack person (seedPeople carries the users.email as
+// an alias, and memory_aliases is COLLATE NOCASE), so no duplicate entity is
+// minted — a genuinely external sender becomes a new person.
+//
+// internal_date is stored as an RFC3339 string by the Gmail sync (not the raw
+// ms-epoch API value), so strftime('%s', internal_date) yields its whole-second
+// unix time for the window comparison. gmail_messages is a migration-guaranteed
+// base table, so a query failure propagates rather than being masked.
+func seedGmailSenders(database *db.DB, cfg SeedConfig, since float64) ([]seedCandidate, error) {
+	if !cfg.Gmail {
+		return nil, nil // source dark — seed no senders
+	}
+	rows, err := database.Query(`
+		SELECT lower(from_email) AS email, MAX(from_name) AS name
+		FROM gmail_messages
+		WHERE from_email != '' AND internal_date != ''
+		  AND CAST(strftime('%s', internal_date) AS INTEGER) > ?
+		GROUP BY lower(from_email)
+		HAVING COUNT(*) >= ?
+		ORDER BY email`, since, gmailSenderMinMessages)
+	if err != nil {
+		return nil, fmt.Errorf("memory: seed gmail senders query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []seedCandidate
+	for rows.Next() {
+		var email, name string
+		if err := rows.Scan(&email, &name); err != nil {
+			return nil, fmt.Errorf("memory: seed gmail senders scan: %w", err)
+		}
+		if isMachineSender(email) {
+			continue // automated/no-reply sender — never a person entity
+		}
+		out = append(out, seedCandidate{
+			title:   firstNonEmpty(name, emailLocalPart(email)),
+			aliases: []string{email},
+		})
+	}
+	return out, rows.Err()
+}
+
+// calendarSeriesAliasPrefix marks an entity as a recurring calendar series
+// ("calseries:<recurringEventId>") — the idempotency key that unifies every
+// instance of one Google recurring event under a single series entity.
+const calendarSeriesAliasPrefix = "calseries:"
+
+// seedCalendarSeries returns one candidate per distinct Google recurringEventId
+// among currently-synced recurring events (is_recurring=1), the id parsed from
+// raw_json (the JSON key recurringEventId). Title is the series' event title
+// (any instance's, first by id); alias is "calseries:<recurringEventId>". It is
+// a no-op unless cfg.Calendar (memory.sources.calendar) — the source seeds no
+// series when dark. A non-recurring event, or a recurring event whose raw_json
+// carries no recurringEventId, yields no series candidate; a malformed raw_json
+// is skipped (the Gmail internal_date defensive-skip precedent), never an error.
+// Identity stitching is free (SeedEntities's LookupMemoryAlias idempotency + the
+// within-run claimed set).
+func seedCalendarSeries(database *db.DB, cfg SeedConfig, _ float64) ([]seedCandidate, error) {
+	if !cfg.Calendar {
+		return nil, nil // source dark — seed no series
+	}
+	rows, err := database.Query(`
+		SELECT title, raw_json FROM calendar_events
+		WHERE is_recurring = 1 AND raw_json != ''
+		ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("memory: seed calendar series query: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]bool)
+	var out []seedCandidate
+	for rows.Next() {
+		var title, rawJSON string
+		if err := rows.Scan(&title, &rawJSON); err != nil {
+			return nil, fmt.Errorf("memory: seed calendar series scan: %w", err)
+		}
+		recurringID := parseRecurringEventID(rawJSON)
+		if recurringID == "" || seen[recurringID] {
+			continue // not a series instance, malformed json, or already claimed
+		}
+		seen[recurringID] = true
+		out = append(out, seedCandidate{
+			title:   firstNonEmpty(title, recurringID),
+			aliases: []string{calendarSeriesAliasPrefix + recurringID},
+		})
+	}
+	return out, rows.Err()
+}
+
+// parseRecurringEventID extracts the Google recurringEventId from an event's
+// raw_json. A malformed raw_json (or one with no recurringEventId) yields "" —
+// a skip, never an error (the seedCalendarSeries defensive-skip contract).
+func parseRecurringEventID(rawJSON string) string {
+	var probe struct {
+		RecurringEventID string `json:"recurringEventId"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &probe); err != nil {
+		return ""
+	}
+	return probe.RecurringEventID
+}
+
+// emailLocalPart returns the part of an email address before the first '@',
+// the display fallback for a sender with no from_name.
+func emailLocalPart(email string) string {
+	if i := strings.IndexByte(email, '@'); i >= 0 {
+		return email[:i]
+	}
+	return email
 }
 
 // firstNonEmpty returns the first non-empty string.

@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,13 @@ var provenanceHeadingRe = regexp.MustCompile(`(?m)^## Provenance[ \t]*$`)
 // id wins (ULIDs sort by creation time, so the lexicographically smaller id is
 // older): Merge(loser=newer, winner=older) tombstones the newer and the
 // resolver chases it back. Closed/long/tombstone episodes are out of scope.
+//
+// This pass is Slack-SCOPED: a Gmail episode carries a unique mail:<message_id>
+// as its first provenance ref, so two runs' extractions of one thread never
+// share a bucket here. Gmail thread idempotency is instead guaranteed at WRITE
+// time by the stable "gmailthread:<thread_id>" alias (buildGmailEpisodeNodes
+// updates the existing episode in place), so a mail-ref episode is deliberately
+// skipped — it can never be a retry duplicate needing a mechanical merge.
 // maxMerges caps merges per run; <= 0 means unlimited. A per-node read failure
 // is skipped-and-logged (the package quarantine convention) so one corrupted
 // candidate never stops the pass.
@@ -34,6 +42,17 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 	if err != nil {
 		return 0, err
 	}
+	// Situation mirrors are excluded entirely — winner AND loser (M2): two
+	// situations can share an inbox signal, so their mirrors legitimately share
+	// a provenance ref while being DIFFERENT stories; a merge makes the
+	// situations-ingest refresh ping-pong the merged node's content every run.
+	// A mirror's identity is its situation: alias, not ref overlap (the
+	// gmailthread:/calevent: alias-keyed idempotency precedent).
+	sitMirrors, err := database.SituationMirrorNodeIDs()
+	if err != nil {
+		return 0, err
+	}
+	mem := newOwnerEditedMemo(v)
 
 	// Collect candidate episodes grouped by channel. ListMemoryNodes already
 	// orders by id, so within each channel the slice stays oldest-first.
@@ -41,6 +60,9 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 	for _, row := range rows {
 		if row.Type != "episode" || row.Tier != "short" || row.Status != "active" {
 			continue
+		}
+		if sitMirrors[row.ID] {
+			continue // situation mirror — alias-keyed identity, never dedupe-merged (M2)
 		}
 		n, rerr := v.ReadNode(row.ID)
 		if rerr != nil {
@@ -52,6 +74,9 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 			continue // no provenance key to match on
 		}
 		ch := refs[0].ChannelID
+		if schemeOf(ch) == "mail" {
+			continue // Gmail thread idempotency is alias-keyed, not dedupe-keyed (Slack-scoped)
+		}
 		byChannel[ch] = append(byChannel[ch], newEpCandidate(row.ID, refs))
 	}
 
@@ -75,7 +100,7 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 				// loser-only provenance refs into the winner BEFORE the merge (the
 				// tombstone stub Merge writes for the loser drops its body), so a
 				// partial-overlap merge never thins provenance (MEM-07).
-				if err := unionProvenance(v, database, eps[i].id, eps[j].id); err != nil {
+				if err := unionProvenance(v, database, mem.lookup, eps[i].id, eps[j].id); err != nil {
 					return merged, err
 				}
 				if err := Merge(v, database, eps[j].id, eps[i].id); err != nil {
@@ -100,7 +125,7 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 // a partial-overlap dedupe merge never loses a ref (MEM-07: provenance never
 // thins). Identical ref sets — the common retry-duplicate case — are a no-op:
 // the winner already holds every ref, so nothing is written or committed.
-func unionProvenance(v *Vault, database *db.DB, winnerID, loserID string) error {
+func unionProvenance(v *Vault, database *db.DB, ownerEdited func(rel string) (bool, error), winnerID, loserID string) error {
 	winner, err := v.ReadNode(winnerID)
 	if err != nil {
 		return err
@@ -136,7 +161,7 @@ func unionProvenance(v *Vault, database *db.DB, winnerID, loserID string) error 
 	if _, err := v.WriteNodes([]Node{winner}, msg); err != nil {
 		return err
 	}
-	return upsertIndexNode(database, winner, time.Now().UTC().Format(time.RFC3339))
+	return upsertIndexNode(database, ownerEdited, winner, time.Now().UTC().Format(time.RFC3339))
 }
 
 // epCandidate is one episode's dedupe key: its provenance ref set within a
@@ -197,4 +222,105 @@ func parseProvenance(body string) []episodeRef {
 		refs = append(refs, episodeRef{ChannelID: fields[0], TS: fields[1]})
 	}
 	return refs
+}
+
+// senderResolver resolves a provenance ref's per-message sender id for
+// memory_provenance.sender_id (Slice B of the memory-retrieval redesign) —
+// mirrors the messageChecker/mailChecker seam (provenance.go) so a resolver
+// can be faked in tests without a live database. Only Slack (scheme "") and
+// Gmail (scheme "mail") refs have a genuine per-message sender;
+// provenanceRows never calls this for any other scheme.
+type senderResolver interface {
+	SlackSender(channelID, ts string) (string, error)
+	MailSender(messageID string) (string, error)
+}
+
+// dbSenderResolver is the production senderResolver, backed directly by
+// *db.DB. Every real caller of provenanceRows already carries a *db.DB, so
+// each call site wraps it inline (dbSenderResolver{database}) — no
+// standalone constructor needed.
+type dbSenderResolver struct{ db *db.DB }
+
+func (r dbSenderResolver) SlackSender(channelID, ts string) (string, error) {
+	return r.db.MessageSender(channelID, ts)
+}
+
+func (r dbSenderResolver) MailSender(messageID string) (string, error) {
+	return r.db.GmailMessageSender(messageID)
+}
+
+// provenanceRows builds the db-layer memory_provenance index rows for a node
+// from its ## Provenance section — the single parse site the derived
+// provenance index flows through (parseProvenance → classify scheme →
+// decode ts → resolve sender), keeping the db layer a dumb store (one parse
+// site in memory, one write site in db.UpsertMemoryNode, one transaction).
+// Each ref is classified by schemeOf (a bare Slack channel_id is scheme "",
+// mail:/cal:/chat:/act: carry their prefix) and its ts decoded to a unix
+// float for windowed lookup; a ref whose ts is not numeric cannot be
+// windowed and is skipped (logged when logf is non-nil). Refs are deduped by
+// (channel_id, ts_raw) so the wholesale insert cannot collide on the
+// memory_provenance primary key. A node with no ## Provenance section (every
+// non-episode/rollup type) yields nil.
+//
+// resolver populates SenderID (Slice B) for Slack/Gmail refs only; a nil
+// resolver (or a lookup miss/error) leaves SenderID "" for that ref WITHOUT
+// dropping it or failing the row — this runs strictly after MEM-01's
+// write-time validation already accepted the ref, so a miss here just means
+// the source row was deleted afterward, never that the ref was invented.
+func provenanceRows(n Node, resolver senderResolver, logf func(string, ...any)) []db.ProvenanceRow {
+	refs := parseProvenance(n.Body)
+	if len(refs) == 0 {
+		return nil
+	}
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	seen := make(map[string]bool, len(refs))
+	var rows []db.ProvenanceRow
+	for _, r := range refs {
+		key := r.ChannelID + "\x00" + r.TS
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		tsUnix, err := strconv.ParseFloat(strings.TrimSpace(r.TS), 64)
+		if err != nil {
+			logf("memory: provenance ref %s %s on %s skipped (non-numeric ts, not windowable)", r.ChannelID, r.TS, n.ID)
+			continue
+		}
+		scheme := schemeOf(r.ChannelID)
+		rows = append(rows, db.ProvenanceRow{
+			NodeID:    n.ID,
+			Scheme:    scheme,
+			ChannelID: r.ChannelID,
+			TSRaw:     r.TS,
+			TSUnix:    tsUnix,
+			SenderID:  resolveSenderID(resolver, scheme, r, logf, n.ID),
+		})
+	}
+	return rows
+}
+
+// resolveSenderID looks up the per-message sender for a Slack or Gmail ref
+// (Slice B, memory_provenance.sender_id); every other scheme stays "" and
+// never calls resolver. See provenanceRows's doc for the not-fatal policy.
+func resolveSenderID(resolver senderResolver, scheme string, r episodeRef, logf func(string, ...any), nodeID string) string {
+	if resolver == nil {
+		return ""
+	}
+	var sender string
+	var err error
+	switch scheme {
+	case "":
+		sender, err = resolver.SlackSender(r.ChannelID, r.TS)
+	case "mail":
+		sender, err = resolver.MailSender(strings.TrimPrefix(r.ChannelID, mailRefPrefix))
+	default:
+		return ""
+	}
+	if err != nil {
+		logf("memory: provenance ref %s %s on %s: sender lookup: %v (left empty)", r.ChannelID, r.TS, nodeID, err)
+		return ""
+	}
+	return sender
 }

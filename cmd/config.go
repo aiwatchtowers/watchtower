@@ -214,6 +214,15 @@ var knownConfigKeys = map[string]bool{
 	"memory.surfaces.briefing":             true,
 	"memory.surfaces.disputes":             true,
 	"memory.surfaces.reflection":           true,
+	"memory.sources.gmail":                 true,
+	"memory.sources.actions":               true,
+	"memory.sources.calendar":              true,
+	"memory.sources.chats":                 true,
+	"memory.renders.digest_compare":        true,
+	"memory.sources.operational":           true,
+	"memory.surfaces.day_plan":             true,
+	"memory.surfaces.meeting_prep":         true,
+	"memory.semantic.preferences":          true,
 	"claude_path":                          true,
 }
 

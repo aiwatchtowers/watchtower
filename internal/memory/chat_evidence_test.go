@@ -228,6 +228,45 @@ func TestMemory09_OwnerRankOnlyFromAuthoredTurns(t *testing.T) {
 		assert.Empty(t, kept2, "an assistant turn is never owner rank (MEM-09)")
 		assert.Equal(t, 1, chatDropped)
 	})
+
+	// Slice-2 MEM-09 extension: owner rank now also mints from a target/track
+	// role='user' turn — but ONLY when memory.sources.chats is on (the context-
+	// type set widens the resolver's authenticity check in lockstep). With the
+	// flag off the set is {"situation"} exactly, so a target/track turn resolves
+	// to nothing and no owner rank is minted (MEM-09 byte-unchanged when off).
+	// Still code-minted: the model names no rank; newEvidenceLines elevates a
+	// resolver-confirmed chat ref, whatever its context type.
+	t.Run("target/track owner turn mints owner rank only when memory.sources.chats is on", func(t *testing.T) {
+		v, d := newTestVault(t), newTestDB(t)
+		createChatTables(t, d)
+		track := seedChatConversation(t, d, "track", "7")
+		seedChatMessage(t, d, track, "user", "remember this: the track slipped a week", 1720000000.0)
+		ref := episodeRef{ChannelID: fmt.Sprintf("chat:%d", track), TS: "1720000000"}
+
+		// Flag ON: the context-type set includes "track", so the owner turn
+		// resolves and code mints exactly one owner-rank line (no other rank).
+		on := NewPipeline(d, v, &fakeGen{}, chatsSourceConfig(), t.Logf)
+		kept, dropped := on.validateChatRefs([]episodeRef{ref})
+		require.Len(t, kept, 1, "flag on: a track owner turn resolves")
+		assert.Zero(t, dropped)
+		ev := newEvidenceLines(kept, opRetire)
+		require.Len(t, ev, 1, "exactly one evidence line for the one ref")
+		assert.Equal(t, rankOwner, ev[0].Rank, "MEM-09: code elevates a validated track chat ref to owner rank")
+
+		// Flag OFF: the set is {"situation"} exactly (Phase-4 byte-identical), so
+		// the same track ref is dropped-and-counted and never owner-minted.
+		off := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
+		keptOff, droppedOff := off.validateChatRefs([]episodeRef{ref})
+		assert.Empty(t, keptOff, "flag off: a track owner turn does not resolve (MEM-09 unchanged)")
+		assert.Equal(t, 1, droppedOff)
+
+		// An assistant target/track turn is never owner rank, even with the flag on.
+		seedChatMessage(t, d, track, "assistant", "secretary reply", 1720000100.0)
+		asst := episodeRef{ChannelID: fmt.Sprintf("chat:%d", track), TS: "1720000100"}
+		keptA, droppedA := on.validateChatRefs([]episodeRef{asst})
+		assert.Empty(t, keptA, "an assistant track turn is not an owner turn (MEM-09)")
+		assert.Equal(t, 1, droppedA)
+	})
 }
 
 // TestReviseBeliefsOwnerChatRetires drives the full belief pass: a staged owner

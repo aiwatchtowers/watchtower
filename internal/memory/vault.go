@@ -242,6 +242,84 @@ func (v *Vault) OwnerEdited(rel string) (bool, error) {
 	return found, nil
 }
 
+// OwnerEditedFiles returns the set of vault-relative paths ever touched by a
+// memory(owner-edit) commit, across the FULL history — ONE walk, computing
+// the exact same "was this file ever owner-edited" fact OwnerEdited answers
+// per-call, but for every file at once. Reconcile's bulk pass memoizes
+// against this set (see index.go's reconcilePass.ownerEdited) instead of
+// paying OwnerEdited's per-file FileName-filtered log walk once per node,
+// now that computeNodeImportance runs on every write through ~16+ call
+// sites (Task 5b), not just the small bounded eviction-candidate set
+// OwnerEdited itself stays scoped for (whole-branch review follow-up, added
+// 2026-07-18, MEM-16). The vault history is linear (single author, no
+// merges — same invariant LogMemoryCommits relies on), so commit.Stats()'s
+// first-parent tree diff is exact, not an approximation.
+func (v *Vault) OwnerEditedFiles() (map[string]bool, error) {
+	iter, err := v.repo.Log(&git.LogOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("memory: owner-edited files log: %w", err)
+	}
+	defer iter.Close()
+
+	files := make(map[string]bool)
+	err = iter.ForEach(func(c *object.Commit) error {
+		if !strings.HasPrefix(c.Message, "memory(owner-edit)") {
+			return nil
+		}
+		stats, serr := c.Stats()
+		if serr != nil {
+			return serr
+		}
+		for _, fs := range stats {
+			files[fs.Name] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: owner-edited files walk: %w", err)
+	}
+	return files, nil
+}
+
+// ownerEditedMemo lazily memoizes ONE Vault.OwnerEditedFiles() call, reused
+// by every upsertIndexNode call made within a single batch-writing function
+// invocation — the reconcilePass.ownerEdited pattern (Task 5d-ii),
+// generalized so every production caller that writes more than one node per
+// call gets it, not just Reconcile's bulk pass (second whole-branch review
+// follow-up, 2026-07-19, MEM-16 addendum: every real upsertIndexNode call
+// site turns out to loop over more than one node). A load failure is cached
+// too, so every subsequent lookup in the same batch fails the same way
+// instead of repeating a failing walk — each caller already handles the
+// error via its existing log-and-continue/quarantine path.
+type ownerEditedMemo struct {
+	v      *Vault
+	files  map[string]bool
+	err    error
+	loaded bool
+}
+
+// newOwnerEditedMemo returns a fresh memo scoped to ONE batch-writing call.
+// Constructing it does no I/O — the walk happens lazily, on the first
+// lookup — so a batch that ends up writing zero nodes never pays for it.
+func newOwnerEditedMemo(v *Vault) *ownerEditedMemo {
+	return &ownerEditedMemo{v: v}
+}
+
+// lookup resolves the owner-touch signal for rel, loading
+// v.OwnerEditedFiles() at most once per memo instance. Pass m.lookup wherever
+// computeNodeImportance (via upsertIndexNode) needs its
+// ownerEdited func(string) (bool, error) parameter.
+func (m *ownerEditedMemo) lookup(rel string) (bool, error) {
+	if !m.loaded {
+		m.files, m.err = m.v.OwnerEditedFiles()
+		m.loaded = true
+	}
+	if m.err != nil {
+		return false, m.err
+	}
+	return m.files[rel], nil
+}
+
 // MemoryCommit is one machine memory commit summarized for the weekly
 // reflection pass: the op parsed from its "memory(<op>)" subject, the summary
 // text, the node ids it touched (from the Nodes: line), and its author time.

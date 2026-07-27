@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -133,9 +134,9 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	episodes := p.subjectEpisodes(rewrittenSubjects)
 	inputSet := episodeRefSet(episodes)
 
-	// Admit the staged owner chat refs into the input set so a model op citing
-	// one validates (Task 3) instead of being dropped as invented (MEM-08); the
-	// verbatim statements render into the prompt's OWNER SAID block.
+	// Admit the staged owner chat + act refs into the input set so a model op
+	// citing one validates (Task 3 / MEM-15) instead of being dropped as invented
+	// (MEM-08); the verbatim statements render into the prompt's OWNER SAID block.
 	var statements []ownerStatement
 	if staged != nil {
 		for ref := range staged.refs {
@@ -144,7 +145,18 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 		statements = staged.statements
 	}
 
-	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, knownSubjects, episodes, statements)
+	// OWNER ACTIONS (Phase-5 5D, dark behind memory.semantic.preferences): the
+	// staged mechanical owner interactions plus per-subject engagement aggregates,
+	// so the model can form preference beliefs. The block is built only when the
+	// gate is on AND actions were staged — otherwise ownerActions is nil and the
+	// prompt is byte-identical to the pre-preferences behavior (the block is
+	// absent, not empty-rendered).
+	var ownerActions *ownerActionsBlock
+	if p.cfg.Semantic.Preferences && staged != nil && len(staged.actions) > 0 {
+		ownerActions = p.buildOwnerActionsBlock(staged.actions)
+	}
+
+	system, user := buildReviseBeliefsPrompt(p.getPrompt(prompts.MemoryReviseBeliefs), p.Language, candidates, knownSubjects, episodes, statements, ownerActions)
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reviseSource), system, user, "")
 	usage = u // single call — the reply's usage is the step's usage
 	if gerr != nil {
@@ -195,8 +207,9 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 		return 0, rejected, capHit, usage, err
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(p.vault)
 	for _, n := range nodes {
-		if err := upsertIndexNode(p.db, n, nowStr); err != nil {
+		if err := upsertIndexNode(p.db, mem.lookup, n, nowStr); err != nil {
 			// Index-mirror consistency: return the error so the step is recorded
 			// as error; reconcile self-heals the missed mirror next run.
 			return touched, rejected, capHit, usage, err
@@ -341,87 +354,65 @@ func isChatRef(channelID string) bool {
 	return strings.HasPrefix(channelID, chatRefPrefix)
 }
 
+// isActRef reports whether an evidence ref points at a mechanical owner
+// interaction ("act:<table>:<row_id>", Phase-5 5D) — the seam that carries an
+// owner-action-rank data point into the belief math.
+func isActRef(channelID string) bool {
+	return strings.HasPrefix(channelID, actRefPrefix)
+}
+
 // newEvidenceLines turns validated model refs into stored evidence lines.
 // Support direction follows the op (confirm/propose-new support the belief, the
-// rest weigh against). Rank is minted by CODE, never the model (MEM-08/09): an
-// episode ref is observed rank; a chat: ref is owner rank — but a chat: ref only
-// reaches here after validateChatRefs confirmed it resolves to a role='user'
-// Discuss turn, so the elevation is authored by the code path, not the model.
+// rest weigh against). Rank is minted by CODE, never the model (MEM-08/09/15):
+// an episode ref (bare channel or mail:) is observed rank; a chat: ref is owner
+// rank; an act: ref is owner-action rank — but a chat:/act: ref only reaches
+// here after validateChatRefs confirmed it resolves (a role='user' Discuss turn
+// / a real whitelisted interaction row), so the elevation is authored by the
+// code path keyed on the ref scheme, never named by the model (the op JSON
+// carries no rank field).
 func newEvidenceLines(refs []episodeRef, op beliefOp) []beliefEvidence {
 	support := op == opConfirm || op == opProposeNew
 	out := make([]beliefEvidence, len(refs))
 	for i, r := range refs {
 		rank := rankObserved
-		if isChatRef(r.ChannelID) {
+		switch {
+		case isChatRef(r.ChannelID):
 			rank = rankOwner // MEM-09: validated owner Discuss turn
+		case isActRef(r.ChannelID):
+			rank = rankOwnerAction // MEM-15: validated owner interaction row
 		}
 		out[i] = beliefEvidence{Rank: rank, Support: support, ChannelID: r.ChannelID, TS: r.TS}
 	}
 	return out
 }
 
-// validateChatRefs enforces the MEM-09 owner-authenticity check on chat:
-// evidence refs. Episode refs pass through untouched. A chat: ref
-// ("chat:<conversation_id>") is kept only if it resolves to a role='user'
-// Discuss turn in a situation conversation (OwnerChatTurnExists) — otherwise it
-// is dropped and counted exactly like an invented episode ref (MEM-01
-// discipline). A chat ref never resolves when the Swift-owned chat tables are
-// absent (headless daemon), when the conversation/ts does not match, when the
-// turn was an assistant reply, or when the conversation is not a situation. The
-// check is non-fatal: a lookup error drops that ref and keeps the pass alive,
-// never freezing the run (the chat surface is a soft owner-writeback, re-scanned
-// next run — unlike the episode extractor's fatal MEM-01 lookup freeze).
+// validateChatRefs enforces the write-time authenticity check on the belief
+// pass's SURFACE refs — chat: (MEM-09 owner-authenticity) and act: (MEM-15
+// owner-interaction existence). Episode refs (bare channel / mail:) pass through
+// untouched — they were already validated against the model's input set
+// (validateMarkers, MEM-08) and carry no authenticity claim. A chat: ref is kept
+// only if it resolves to a role='user' situation Discuss turn; an act: ref only
+// if it points at a real whitelisted interaction row — otherwise each is dropped
+// and counted exactly like an invented episode ref (MEM-01 discipline), so
+// newEvidenceLines can only ever mint owner/owner-action rank for a
+// resolver-confirmed ref. The check is non-fatal: a lookup error drops that ref
+// and keeps the pass alive, never freezing the run (these surfaces are soft
+// owner-writebacks re-scanned next run — unlike the episode extractor's fatal
+// MEM-01 lookup freeze).
 func (p *Pipeline) validateChatRefs(refs []episodeRef) (kept []episodeRef, dropped int) {
-	// Fast path: no chat refs → no DB work, so the episode-only belief pass and
-	// its tests never touch the chat tables.
-	hasChat := false
+	p.chatChecker.reset() // one ChatTablesPresent round-trip per call, not per chat ref
 	for _, r := range refs {
-		if isChatRef(r.ChannelID) {
-			hasChat = true
-			break
-		}
-	}
-	if !hasChat {
-		return refs, 0
-	}
-
-	present, presenceErr := p.db.ChatTablesPresent()
-	if presenceErr != nil {
-		p.logf("memory: beliefs: chat tables presence check failed: %v — chat refs dropped this run", presenceErr)
-	}
-	for _, r := range refs {
-		if !isChatRef(r.ChannelID) {
+		if !isChatRef(r.ChannelID) && !isActRef(r.ChannelID) {
 			kept = append(kept, r)
 			continue
 		}
-		convID, ts, ok := parseChatRef(r.ChannelID, r.TS)
-		if !ok {
+		// The resolver's existence check IS the authenticity check; a lookup error
+		// is a soft drop (a soft owner-writeback, re-scanned next run — never a
+		// run-freezing MEM-01 error). registered is always true here (chat:/act:
+		// are registered schemes).
+		ok, _, err := p.registry.Validate(r)
+		if err != nil || !ok {
 			dropped++
-			p.logf("memory: beliefs: chat ref %s %s dropped (unparseable ref, MEM-09)", r.ChannelID, r.TS)
-			continue
-		}
-		// Distinguish a presence-check DB error from genuine table absence: the
-		// former is a transient failure, not evidence the tables do not exist, so
-		// it must never be logged as "tables absent" (P5/style-m3).
-		if presenceErr != nil {
-			dropped++
-			p.logf("memory: beliefs: chat ref %s %s dropped (presence check errored: %v, MEM-09)", r.ChannelID, r.TS, presenceErr)
-			continue
-		}
-		if !present {
-			dropped++
-			p.logf("memory: beliefs: chat ref %s %s dropped (chat tables absent — headless daemon, MEM-09)", r.ChannelID, r.TS)
-			continue
-		}
-		owner, cerr := p.db.OwnerChatTurnExists(convID, ts)
-		if cerr != nil {
-			p.logf("memory: beliefs: chat ref %s %s lookup: %v — dropped", r.ChannelID, r.TS, cerr)
-			dropped++
-			continue
-		}
-		if !owner {
-			dropped++
-			p.logf("memory: beliefs: chat ref %s %s is not an owner (role='user') situation turn — dropped (MEM-09)", r.ChannelID, r.TS)
 			continue
 		}
 		kept = append(kept, r)
@@ -506,12 +497,50 @@ func (p *Pipeline) subjectEpisodes(subjects []string) []Node {
 	return eps
 }
 
+// ownerActionsBlock is the prebuilt OWNER ACTIONS render for the belief pass
+// (Phase-5 5D): one line per staged owner interaction and one engagement
+// aggregate per distinct subject. Built only behind memory.semantic.preferences;
+// a nil block renders nothing (gate-off byte-identity).
+type ownerActionsBlock struct {
+	lines      []string // "act:<table>:<id> <ts>: <bullet> (re <subject ids>)"
+	engagement []string // "<subject id>: engaged N, dismissed M"
+}
+
+// buildOwnerActionsBlock renders the staged owner actions plus per-subject
+// engagement aggregates (p.db.GetEngagement) for the OWNER ACTIONS prompt block.
+// Subjects are gathered in first-seen order across the actions; a GetEngagement
+// error drops that subject's aggregate line (logged) and never fails the pass.
+func (p *Pipeline) buildOwnerActionsBlock(actions []stagedAction) *ownerActionsBlock {
+	oab := &ownerActionsBlock{}
+	seen := map[string]bool{}
+	var subjects []string
+	for _, a := range actions {
+		oab.lines = append(oab.lines, fmt.Sprintf("%s %d: %s (re %s)", a.ref, a.tsUnix, a.text, strings.Join(a.subjects, ", ")))
+		for _, s := range a.subjects {
+			if !seen[s] {
+				seen[s] = true
+				subjects = append(subjects, s)
+			}
+		}
+	}
+	for _, s := range subjects {
+		engaged, dismissed, err := p.db.GetEngagement(s)
+		if err != nil {
+			p.logf("memory: beliefs: owner-actions engagement %s: %v — line dropped", s, err)
+			continue
+		}
+		oab.engagement = append(oab.engagement, fmt.Sprintf("%s: engaged %d, dismissed %d", s, engaged, dismissed))
+	}
+	return oab
+}
+
 // buildReviseBeliefsPrompt renders the belief pass call: the language directive
 // fills the template's single %s slot; the user message digests the existing
 // beliefs (id/statement/confidence/evidence), the known subjects a propose-new
 // op may name, then the new episodes. It never opens with a "-"/"--" line (the
-// claude-CLI argv gotcha).
-func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, knownSubjects, episodes []Node, statements []ownerStatement) (system, user string) {
+// claude-CLI argv gotcha). ownerActions is nil unless memory.semantic.preferences
+// staged an OWNER ACTIONS block — nil renders nothing (gate-off byte-identity).
+func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, knownSubjects, episodes []Node, statements []ownerStatement, ownerActions *ownerActionsBlock) (system, user string) {
 	system = fmt.Sprintf(tmpl, prompts.Directive(lang))
 
 	var b strings.Builder
@@ -545,6 +574,24 @@ func buildReviseBeliefsPrompt(tmpl, lang string, beliefs, knownSubjects, episode
 		for _, s := range statements {
 			fmt.Fprintf(&b, "chat:%d %d: %s\n", s.conversationID, s.turnTS, s.text)
 		}
+	}
+	// OWNER ACTIONS: this run's mechanical owner interactions (Phase-5 5D, dark
+	// behind memory.semantic.preferences). These are ranked owner-action — weaker
+	// than the owner's own words — so the code mints owner-action rank for a cited
+	// `act:<table>:<id> <ts>` ref; the model only chooses the direction. A nil
+	// block renders nothing, keeping gate-off output byte-identical.
+	if ownerActions != nil {
+		b.WriteString("\nOWNER ACTIONS (this run's mechanical owner interactions, ranked owner-action — weaker than the owner's words; cite as `act:<table>:<id> <ts>` to weigh a belief):\n\n")
+		for _, l := range ownerActions.lines {
+			b.WriteString(l + "\n")
+		}
+		if len(ownerActions.engagement) > 0 {
+			b.WriteString("\nEngagement so far (per subject — trend context the single actions cannot carry):\n")
+			for _, e := range ownerActions.engagement {
+				b.WriteString(e + "\n")
+			}
+		}
+		b.WriteString("\nForming a preference belief about the owner (\"the owner does / does not …\") is an ordinary propose-new: its `subject` MUST be one of the EXACT Known-subject ids above, copied verbatim. Do NOT over-read a single dismissal — prefer patterns the engagement counts support.\n")
 	}
 	b.WriteString("\nNew episodes:\n\n")
 	for _, ep := range episodes {
@@ -624,6 +671,124 @@ func ParseHistory(body string) []HistoryBullet {
 	return out
 }
 
+// RevisionNotability is NotableRevision's result: the rendered journal line
+// and the magnitude to feed RankByImportance's Relevance (Slice B of the
+// memory-retrieval redesign) — a status transition is unconditionally
+// maximal relevance (1.0); otherwise the summed |confidence delta|, already
+// >= confidenceNotableDelta by construction whenever ok is true.
+type RevisionNotability struct {
+	Line      string
+	Magnitude float64
+}
+
+// confidenceNotableDelta is the |confidence| move within the window that
+// makes a non-status revision worth surfacing. Beliefs move in 0.1 steps, so
+// this is two net steps in one direction. Relocated verbatim from
+// internal/briefing/memory_revisions.go (Slice B) — internal/briefing
+// already imports internal/memory (OpenExistingVault, Node, ParseHistory,
+// HistoryBullet); internal/memory must never import internal/briefing, so
+// this shared notability logic lives here and briefing calls in, not the
+// reverse.
+const confidenceNotableDelta = 0.2
+
+// NotableRevision inspects one belief's ## History for entries dated on or
+// after since and, when the aggregate change is notable, renders a single
+// journal line:
+//
+//	<belief title> — <what changed> — because <evidence digest>
+//
+// Notability (code-side filter, UNCHANGED by Slice B — MEM-11, this slice
+// never revisits what counts as notable): any status transition
+// (shake/retire) or belief creation always qualifies; otherwise a summed
+// |confidence| move of >=0.2 across the window's confirm/weaken entries
+// qualifies. Returns ok=false when no in-window entry is notable.
+//
+// Relocated verbatim from internal/briefing/memory_revisions.go's
+// notableRevision (Slice B) — briefing's gatherMemoryRevisions now calls
+// this exported version and reads .Line for its exact prior behavior;
+// .Magnitude is new, consumed only by RetrieveRevisions (retrieve.go).
+func NotableRevision(node Node, since time.Time) (RevisionNotability, bool) {
+	entries := historyEntriesSince(node.Body, since)
+	if len(entries) == 0 {
+		return RevisionNotability{}, false
+	}
+
+	statusNotable := false
+	confDelta := 0.0
+	for _, e := range entries {
+		switch e.Cause {
+		case "shake", "retire", "created", "propose-new":
+			statusNotable = true
+		case "confirm":
+			confDelta += 0.1
+		case "weaken":
+			confDelta -= 0.1
+		}
+	}
+
+	if !statusNotable && math.Abs(confDelta) < confidenceNotableDelta {
+		return RevisionNotability{}, false
+	}
+
+	tail := entries[len(entries)-1]
+	title := strings.TrimSpace(node.Title)
+	if title == "" {
+		title = node.ID
+	}
+	digest := tail.Rationale
+	if digest == "" {
+		digest = "recent evidence"
+	}
+	magnitude := 1.0 // a status transition is unconditionally maximal relevance
+	if !statusNotable {
+		magnitude = math.Abs(confDelta)
+	}
+	return RevisionNotability{
+		Line:      title + " — " + describeChange(tail.Cause, confDelta) + " — because " + digest,
+		Magnitude: magnitude,
+	}, true
+}
+
+// historyEntriesSince returns the belief ## History bullets dated on or
+// after since, in file order (oldest first). Relocated verbatim from
+// internal/briefing/memory_revisions.go (Slice B).
+func historyEntriesSince(body string, since time.Time) []HistoryBullet {
+	sinceDate := since.Format("2006-01-02")
+	var entries []HistoryBullet
+	for _, b := range ParseHistory(body) {
+		if b.Date >= sinceDate {
+			entries = append(entries, b)
+		}
+	}
+	return entries
+}
+
+// describeChange renders the human "what changed" clause for a journal
+// line. Relocated verbatim from internal/briefing/memory_revisions.go
+// (Slice B).
+func describeChange(cause string, confDelta float64) string {
+	switch cause {
+	case "shake":
+		return "belief shaken — evidence now conflicts"
+	case "retire":
+		return "belief retired"
+	case "created", "propose-new":
+		return "new belief formed"
+	case "confirm":
+		return "confidence strengthened"
+	case "weaken":
+		return "confidence weakened"
+	default:
+		if confDelta > 0 {
+			return "confidence strengthened"
+		}
+		if confDelta < 0 {
+			return "confidence weakened"
+		}
+		return "belief revised"
+	}
+}
+
 // splitCauseRationale splits "cause — rationale" (em dash) into the op cause and
 // its digest, stripping a trailing " (downgraded)" so a downgraded op is still
 // classified by its base op. A cause without a dash has an empty rationale.
@@ -653,6 +818,8 @@ func rankName(r evidenceRank) string {
 	switch r {
 	case rankOwner:
 		return "owner"
+	case rankOwnerAction:
+		return "owner-action"
 	case rankObserved:
 		return "observed"
 	default:

@@ -108,6 +108,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 		Manual:            formatManualSection(manual),
 		Previous:          formatPreviousPlanSection(prev, prevItems),
 		Feedback:          feedbackOrInitial(opts.Feedback),
+		MemoryOpenLoops:   p.gatherMemoryOpenLoops(),
 	}
 
 	systemPrompt, promptVer := p.buildPrompt(inputs)

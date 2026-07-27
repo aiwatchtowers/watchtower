@@ -25,6 +25,20 @@ func seedInboxItem(t *testing.T, d *db.DB, channelID, messageTS string) int {
 	return int(id)
 }
 
+// seedTriggerInboxItem inserts an inbox item with an explicit trigger_type
+// and sender, for signals that are not the plain "mention" shape seedInboxItem
+// hardcodes — in particular a jira-detector signal, whose channel_id carries
+// the issue key rather than a Slack channel id. Returns its ID.
+func seedTriggerInboxItem(t *testing.T, d *db.DB, channelID, messageTS, senderUserID, triggerType string) int {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type)
+		VALUES (?, ?, ?, ?)`, channelID, messageTS, senderUserID, triggerType)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return int(id)
+}
+
 // ingestTSSeq keeps signal message timestamps unique across
 // seedIngestSituation calls (inbox_items is UNIQUE(channel_id, message_ts)).
 var ingestTSSeq int
@@ -407,4 +421,59 @@ func TestIngestCorruptedEpisodeFileSkipsSituation(t *testing.T) {
 	assert.Equal(t, 1, stats.Created, "healthy situation still ingested")
 	_, err = d.LookupMemoryAlias(fmt.Sprintf("situation:%d", healthyID))
 	require.NoError(t, err)
+}
+
+// TestIngestSituationJiraSignalMintsJiraRef: a situation carrying a
+// jira-detector signal (trigger_type jira_*, channel_id = the issue key) mints
+// a validated jira:<KEY> ref into the episode's ## Provenance instead of
+// dropping it against the messages table; the entity hint is the PROJECT key.
+func TestIngestSituationJiraSignalMintsJiraRef(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedJiraIssueExtract(t, d, "CEX-7413", "CEX", "webhook fix", "", "In Progress", "in_progress", "", "2026-07-22T10:00:00.000+0000", "")
+
+	// A project entity so the hint resolves.
+	proj := vaultTestNode("ent_00000000000000000000000cex", "entity", "CEX")
+	proj.Aliases = []string{"CEX"}
+	writeAndIndex(t, v, d, proj)
+
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "Webhook broken", Summary: "s", Chronology: "c"})
+	require.NoError(t, err)
+	item := seedTriggerInboxItem(t, d, "CEX-7413", "2026-07-22T10:00:00.000+0000", "CEX-7413", "jira_assigned")
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{item}))
+
+	stats, err := IngestSituations(v, d, d, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, IngestStats{Created: 1}, stats)
+
+	wantUnix, ok := db.ParseJiraTime("2026-07-22T10:00:00.000+0000")
+	require.True(t, ok, "test time failed to parse")
+
+	n, err := Resolve(v, d, fmt.Sprintf("situation:%d", sitID))
+	require.NoError(t, err)
+	assert.Contains(t, n.Body, fmt.Sprintf("- jira:CEX-7413 %d", wantUnix), "episode carries the validated jira: ref, ts rendered as parsed unix seconds")
+
+	en, err := Resolve(v, d, "CEX")
+	require.NoError(t, err)
+	assert.Contains(t, en.Body, "|Webhook broken]]", "the project entity got the back-link (hint resolved to CEX, not CEX-7413)")
+}
+
+// TestIngestSituationJiraSignalMissingIssueDrops: the jira ref of a ghost
+// issue is dropped-and-counted, never written (MEM-01 discipline unchanged).
+func TestIngestSituationJiraSignalMissingIssueDrops(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "Ghost", Summary: "s", Chronology: "c"})
+	require.NoError(t, err)
+	item := seedTriggerInboxItem(t, d, "CEX-404", "2026-07-22T10:00:00.000+0000", "CEX-404", "jira_assigned")
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{item}))
+
+	var logs []string
+	stats, err := IngestSituations(v, d, d, func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) })
+	require.NoError(t, err)
+	assert.Equal(t, IngestStats{Created: 1}, stats)
+
+	n, err := Resolve(v, d, fmt.Sprintf("situation:%d", sitID))
+	require.NoError(t, err)
+	assert.NotContains(t, n.Body, "jira:CEX-404", "ghost jira ref must never be written")
+	assert.Contains(t, strings.Join(logs, "\n"), fmt.Sprintf("ingest situation %d: refs_rejected=1 (MEM-01)", sitID), "the drop is logged")
 }

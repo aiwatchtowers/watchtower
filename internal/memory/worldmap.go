@@ -32,7 +32,7 @@ const (
 	// 56 KB-at-447-entities miss), so the render is truncated at a line boundary.
 	mapByteCap = 2048
 	// mapTopEntities bounds the entity candidate set fed to the strong render
-	// (ranked by links-in, a cheap importance proxy).
+	// (ranked by importance_score).
 	mapTopEntities = 12
 	// mapMaxBeliefs bounds the active beliefs fed to the strong render.
 	mapMaxBeliefs = 12
@@ -53,6 +53,7 @@ var (
 // mapEntry is one entity line in the mechanical index.
 type mapEntry struct {
 	id, title, what string
+	importance      float64
 }
 
 // renderIndex is the mechanical full world listing (formerly renderMap): counts
@@ -81,7 +82,7 @@ func (p *Pipeline) renderIndex(runID int64) error {
 				p.logf("memory: index: read %s: %v", row.ID, err)
 				continue
 			}
-			e := mapEntry{id: row.ID, title: row.Title, what: whatExcerpt(n.Body)}
+			e := mapEntry{id: row.ID, title: row.Title, what: whatExcerpt(n.Body), importance: row.ImportanceScore}
 			switch classifyEntity(n) {
 			case "people":
 				people = append(people, e)
@@ -155,7 +156,7 @@ func (p *Pipeline) renderMap(ctx context.Context, runID int64, strong bool) (*di
 }
 
 // strongMapContent asks the strong model for the hot summary from the top
-// entities (by links-in), open episodes, and active beliefs.
+// entities (by importance), open episodes, and active beliefs.
 func (p *Pipeline) strongMapContent(ctx context.Context) (string, *digest.Usage, error) {
 	entities, open, beliefs, err := p.mapInputs()
 	if err != nil {
@@ -176,7 +177,7 @@ type beliefEntry struct {
 }
 
 // mapInputs gathers the cheap retention-ordered inputs for the strong render:
-// the top entities by links-in with their ## Current excerpts, the newest open
+// the top entities by importance with their ## Current excerpts, the newest open
 // episodes, and the active beliefs with confidence.
 func (p *Pipeline) mapInputs() (entities []mapEntry, open []string, beliefs []beliefEntry, err error) {
 	rows, err := p.db.ListMemoryNodes()
@@ -185,7 +186,6 @@ func (p *Pipeline) mapInputs() (entities []mapEntry, open []string, beliefs []be
 	}
 	var (
 		entries  []mapEntry
-		entIDs   []string
 		openRows []db.MemoryNodeRow
 	)
 	for _, row := range rows {
@@ -202,8 +202,12 @@ func (p *Pipeline) mapInputs() (entities []mapEntry, open []string, beliefs []be
 				p.logf("memory: map: read %s: %v", row.ID, rerr)
 				continue
 			}
-			entries = append(entries, mapEntry{id: row.ID, title: row.Title, what: sectionFirstLine(n.Body, "## Current")})
-			entIDs = append(entIDs, row.ID)
+			entries = append(entries, mapEntry{
+				id:         row.ID,
+				title:      row.Title,
+				what:       sectionFirstLine(n.Body, "## Current"),
+				importance: row.ImportanceScore,
+			})
 		case "episode":
 			if row.Status == "active" {
 				openRows = append(openRows, row)
@@ -220,31 +224,17 @@ func (p *Pipeline) mapInputs() (entities []mapEntry, open []string, beliefs []be
 		}
 	}
 
-	// One grouped links-in query for every entity (avoids the per-entity N+1).
-	linkCounts, err := p.db.CountMemoryLinksInBulk(entIDs)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	type ranked struct {
-		e     mapEntry
-		links int
-	}
-	cand := make([]ranked, len(entries))
-	for i, e := range entries {
-		cand[i] = ranked{e, linkCounts[e.id]}
-	}
-
-	sort.Slice(cand, func(a, b int) bool {
-		if cand[a].links != cand[b].links {
-			return cand[a].links > cand[b].links
+	sort.Slice(entries, func(a, b int) bool {
+		if entries[a].importance != entries[b].importance {
+			return entries[a].importance > entries[b].importance
 		}
-		return cand[a].e.id < cand[b].e.id
+		return entries[a].id < entries[b].id
 	})
-	for i, c := range cand {
+	for i, e := range entries {
 		if i >= mapTopEntities {
 			break
 		}
-		entities = append(entities, c.e)
+		entities = append(entities, e)
 	}
 
 	sort.Slice(openRows, func(a, b int) bool { return openRows[a].ID > openRows[b].ID })
@@ -338,6 +328,9 @@ func writeMapSection(b *strings.Builder, heading string, entries []mapEntry) {
 		fmt.Fprintf(b, "- [[%s|%s]]", e.id, linkLabel(e.title))
 		if e.what != "" {
 			b.WriteString(" — " + e.what)
+		}
+		if e.importance != 0 {
+			fmt.Fprintf(b, " (importance %.1f)", e.importance)
 		}
 		b.WriteString("\n")
 	}

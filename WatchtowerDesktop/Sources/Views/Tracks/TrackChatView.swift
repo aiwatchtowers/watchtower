@@ -293,8 +293,34 @@ final class TrackChatViewModel {
         }
     }
 
+    /// This track's subjects for the MEMORY block: its own channels, every
+    /// participant's user id, and the three scalar assignee/owner/requester
+    /// user ids — mirroring Go's TrackSubjectRefs (internal/db/memory.go),
+    /// reimplemented directly against the same tables since this is a cheap,
+    /// simple local read. Also includes the literal alias "track:<id>" so the
+    /// track's own memory-mirror entity page (if one exists, Phase 5 slice 4)
+    /// can itself surface as a connected entity — mirroring trackMirrorAlias's
+    /// prepend on the Go write side (chat_ingest.go).
+    nonisolated static func trackMemorySubjects(track: Track) -> [String] {
+        var subjects = Set<String>()
+        subjects.insert("track:\(track.id)")
+        for channelID in track.decodedChannelIDs where !channelID.isEmpty {
+            subjects.insert(channelID)
+        }
+        for participant in track.decodedParticipants {
+            if let userID = participant.userID, !userID.isEmpty { subjects.insert(userID) }
+        }
+        for userID in [track.assigneeUserID, track.ownerUserID, track.requesterUserID] where !userID.isEmpty {
+            subjects.insert(userID)
+        }
+        return Array(subjects)
+    }
+
     nonisolated static func buildSystemPrompt(
-        track: Track, dbPool: DatabasePool
+        track: Track,
+        dbPool: DatabasePool,
+        memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
+        memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
         let schema = (try? dbPool.read { db in
             try ChatViewModel.fetchSchema(db)
@@ -311,6 +337,18 @@ final class TrackChatViewModel {
         let channelIDs = track.decodedChannelIDs
         let channelList = channelIDs.isEmpty ? "none" : channelIDs.joined(separator: ", ")
         let channelInClause = channelIDs.joined(separator: "','")
+
+        // memoryChatEnabled/memoryVaultDir default to the config-derived values
+        // in production; tests inject them explicitly — the same pattern
+        // SituationChatViewModel's buildSystemPrompt already uses. On the
+        // disabled path the block is an empty string, so the prompt is
+        // byte-identical to pre-Slice-C output — no memory read runs.
+        let memoryBlock = memoryChatEnabled
+            ? renderMemorySection(
+                hotMap: hotMap(vaultDir: memoryVaultDir),
+                context: relevantMemoryContext(subjects: trackMemorySubjects(track: track), dbPool: dbPool)
+              ) + "\n\n"
+            : ""
 
         return """
         You are Watchtower, an AI assistant helping the user understand a specific track \
@@ -329,7 +367,7 @@ final class TrackChatViewModel {
         Created: \(track.createdAt)
         Updated: \(track.updatedAt)
 
-        === CAPABILITIES ===
+        \(memoryBlock)=== CAPABILITIES ===
         You can query the database to find related messages, threads, and people involved.
 
         === DATABASE ===
@@ -340,6 +378,21 @@ final class TrackChatViewModel {
         Slack team ID: \(teamID)
         Slack web domain: \(domain).slack.com
 
+        \(Self.queryAndLinkingGuidance(teamID: teamID, domain: domain, channelInClause: channelInClause))
+        """
+    }
+
+    /// QUERY TIPS / LINKING RULES / RESPONSE STYLE guidance shared by
+    /// buildSystemPrompt's returned prompt. Extracted purely to keep
+    /// buildSystemPrompt under the function-body-length limit — no behavior
+    /// change, the interpolated result is byte-identical to the inline text
+    /// it replaced.
+    nonisolated private static func queryAndLinkingGuidance(
+        teamID: String,
+        domain: String,
+        channelInClause: String
+    ) -> String {
+        """
         === QUERY TIPS ===
         - Always SELECT m.thread_ts alongside m.ts so you can build correct links for threaded messages.
         - Find messages in track channels:

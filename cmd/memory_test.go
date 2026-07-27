@@ -16,8 +16,19 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/memory"
 )
+
+// cmdMemFakeGen is a scripted digest.Generator for CLI memory tests: every call
+// returns the same reply and a fixed usage.
+type cmdMemFakeGen struct{ reply string }
+
+func (g cmdMemFakeGen) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+	return g.reply, &digest.Usage{InputTokens: 10, OutputTokens: 5, Model: "haiku"}, "", nil
+}
+
+func cmdFakeGen(reply string) digest.Generator { return cmdMemFakeGen{reply: reply} }
 
 // setupMemoryTestEnv creates a temp HOME with a config file (memory.enabled
 // as given, seed_min_messages lowered to 1 so tiny fixtures qualify) and a
@@ -114,7 +125,7 @@ func TestCLI_MemoryCommandRegistered(t *testing.T) {
 			for _, sub := range c.Commands() {
 				subs[sub.Name()] = true
 			}
-			for _, want := range []string{"status", "reindex", "open", "recall", "consolidate", "seed"} {
+			for _, want := range []string{"status", "reindex", "open", "recall", "consolidate", "seed", "digest-compare"} {
 				assert.True(t, subs[want], "memory %s subcommand should be registered", want)
 			}
 		}
@@ -311,6 +322,92 @@ func TestCLI_MemoryConsolidateOnce_RunsPipeline(t *testing.T) {
 func TestCLI_MemoryConsolidate_OnceFlagRemoved(t *testing.T) {
 	assert.Nil(t, memoryConsolidateCmd.Flags().Lookup("once"), "the --once flag is gone")
 	assert.Error(t, memoryConsolidateCmd.Flags().Set("once", "true"), "--once is now an unknown flag")
+}
+
+// TestCLI_MemoryDigestCompare_Disabled: with memory.enabled=false the command
+// prints a clear message, exits 0, and writes no report.
+func TestCLI_MemoryDigestCompare_Disabled(t *testing.T) {
+	setupMemoryTestEnv(t, false)
+	outPath := filepath.Join(t.TempDir(), "report.md")
+	require.NoError(t, memoryDigestCompareCmd.Flags().Set("out", outPath))
+	t.Cleanup(func() { _ = memoryDigestCompareCmd.Flags().Set("out", "docs/specs/memory-digest-compare-report.md") })
+
+	var buf bytes.Buffer
+	memoryDigestCompareCmd.SetOut(&buf)
+	require.NoError(t, memoryDigestCompareCmd.RunE(memoryDigestCompareCmd, nil))
+	assert.Contains(t, buf.String(), "disabled")
+
+	_, err := os.Stat(outPath)
+	assert.True(t, os.IsNotExist(err), "disabled compare must not write a report")
+}
+
+// TestCLI_MemoryDigestCompare_RunsAndWritesReport: the enabled path renders a
+// legacy channel digest's window from its episodes (via the factory seam with a
+// scripted generator), writes a shadow row, and emits the markdown report.
+func TestCLI_MemoryDigestCompare_RunsAndWritesReport(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, true)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+
+	// One message + a legacy channel digest over its window.
+	base := time.Now().Add(-time.Hour).Unix()
+	ts := fmt.Sprintf("%d.000100", base)
+	require.NoError(t, database.UpsertMessage(db.Message{ChannelID: "C001", TS: ts, UserID: "U001", Text: "the deploy failed"}))
+	from, to := float64(base)-1, float64(base+1)
+	digestID, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C001", Type: "channel", PeriodFrom: from, PeriodTo: to,
+		Summary: "legacy", MessageCount: 1, Model: "haiku",
+	})
+	require.NoError(t, err)
+	require.NoError(t, database.InsertDigestTopics(digestID, []db.DigestTopic{
+		{Title: "Rollout", Summary: "broke", KeyMessages: `["` + ts + `"]`, Decisions: "[]"},
+	}))
+
+	// An episode covering that message, reconciled so memory_provenance is populated.
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	ep := memory.Node{
+		ID: memory.NewID("episode"), Type: "episode", Tier: "short", Status: "active",
+		Title: "Rollout incident",
+		Body:  fmt.Sprintf("# Rollout incident\n\n## Story\nThe deploy broke.\n\n## Outcome\nRolled back.\n\n## Provenance\n- C001 %s\n", ts),
+	}
+	_, err = vault.WriteNodes([]memory.Node{ep}, memory.CommitMsg{Op: "extract", Summary: "ep", Cause: "seed"})
+	require.NoError(t, err)
+	_, err = memory.Reconcile(vault, database, t.Logf)
+	require.NoError(t, err)
+	database.Close()
+
+	oldFactory := newMemoryPipelineFactory
+	t.Cleanup(func() { newMemoryPipelineFactory = oldFactory })
+	newMemoryPipelineFactory = func(d *db.DB, v *memory.Vault, cfg *config.Config, logf func(string, ...any)) *memory.Pipeline {
+		return memory.NewPipeline(d, v, cmdFakeGen(fmt.Sprintf(
+			`{"summary":"rendered","topics":[{"title":"Rollout","summary":"broke","decisions":[],"action_items":[],"situations":[],"key_messages":["%s"]}]}`, ts)),
+			cfg.Memory, logf)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "report.md")
+	require.NoError(t, memoryDigestCompareCmd.Flags().Set("out", outPath))
+	t.Cleanup(func() { _ = memoryDigestCompareCmd.Flags().Set("out", "docs/specs/memory-digest-compare-report.md") })
+
+	var buf bytes.Buffer
+	memoryDigestCompareCmd.SetOut(&buf)
+	require.NoError(t, memoryDigestCompareCmd.RunE(memoryDigestCompareCmd, nil))
+	assert.Contains(t, buf.String(), "1 channel(s) shadowed")
+
+	reportBytes, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	report := string(reportBytes)
+	assert.Contains(t, report, "Digest compare report")
+	assert.Contains(t, report, "C001")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	rows, err := database.ListDigestShadow("1970-01-01T00:00:00Z")
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "C001", rows[0].ChannelID)
 }
 
 // TestCLI_MemorySeedDryRun verifies seed --dry-run lists what would be

@@ -106,6 +106,15 @@ type GmailConfig struct {
 	AccountEmail       string `mapstructure:"account_email"`         // connected account's email, written at login; identity fallback when Slack is absent
 }
 
+// ImapConfig holds settings shared by every connected IMAP/Outlook mailbox
+// (individual accounts themselves live in the email_accounts table, not
+// here — this only tunes how each one syncs).
+type ImapConfig struct {
+	InitialHistoryDays int `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync per account
+	MaxMessagesPerSync int `mapstructure:"max_messages_per_sync"` // per-cycle, per-account cap
+	MaxBodyBytes       int `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
+}
+
 // JiraFeatureToggles controls which Jira features are enabled for the user.
 type JiraFeatureToggles struct {
 	MyIssuesInBriefing   bool `mapstructure:"my_issues_in_briefing" json:"my_issues_in_briefing"`
@@ -189,6 +198,10 @@ type MemoryConfig struct {
 	BatchMaxMessages     int                  `mapstructure:"batch_max_messages"`      // max total messages grouped into one extraction call (default: 1500)
 	Semantic             MemorySemanticConfig `mapstructure:"semantic"`                // Phase-3 semantic tier (belief/rewrite/dedupe/evict/concept steps), dark by default
 	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/disputes/reflection), each dark by default
+	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // Phase-5 slice-1 sources (gmail/actions), each dark by default
+	Renders              MemoryRendersConfig  `mapstructure:"renders"`                 // Phase-5 slice-3 renders (digest_compare), dark by default
+	Retrieve             MemoryRetrieveConfig `mapstructure:"retrieve"`                // Phase-5 Slice B dark retrieval-compare (recall/briefing/meeting_prep), each dark by default
+	Focus                MemoryFocusConfig    `mapstructure:"focus"`                   // focus-salience Run step (fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep), dark by default
 }
 
 // MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
@@ -207,16 +220,69 @@ type MemorySemanticConfig struct {
 	ConceptMinEpisodes int  `mapstructure:"concept_min_episodes"` // distinct-episode recurrence before a hint is promoted (default: 5)
 	ConceptMaxCreate   int  `mapstructure:"concept_max_create"`   // max concept entities created per run (default: 10)
 	OutputBudget       int  `mapstructure:"output_budget"`        // stop launching further strong-tier AI steps once the run's output tokens exceed this (default: 200000)
+	Preferences        bool `mapstructure:"preferences"`          // Phase-5 slice-4: gate the OWNER ACTIONS block in the belief pass, forming preference beliefs from staged owner-action evidence (default: false)
 }
 
 // MemorySurfacesConfig gates the four Phase-4 memory surfaces independently —
 // each is a no-op when its flag is off, so the four have independent blast
 // radii. All default false (dark by default).
 type MemorySurfacesConfig struct {
-	Chat       bool `mapstructure:"chat"`       // Discuss chat MEMORY block + ingestChatStatements owner-evidence minting (default: false)
-	Briefing   bool `mapstructure:"briefing"`   // daily briefing "Memory revisions" journal block (default: false)
-	Disputes   bool `mapstructure:"disputes"`   // inbox watchtower detector surfaces dispute_pending beliefs as dashboard situations (default: false)
-	Reflection bool `mapstructure:"reflection"` // weekly strong-tier reflection pass over vault git history (default: false)
+	Chat        bool `mapstructure:"chat"`         // Discuss chat MEMORY block + ingestChatStatements owner-evidence minting (default: false)
+	Briefing    bool `mapstructure:"briefing"`     // daily briefing "Memory revisions" journal block (default: false)
+	Disputes    bool `mapstructure:"disputes"`     // inbox watchtower detector surfaces dispute_pending beliefs as dashboard situations (default: false)
+	Reflection  bool `mapstructure:"reflection"`   // weekly strong-tier reflection pass over vault git history (default: false)
+	DayPlan     bool `mapstructure:"day_plan"`     // Phase-5 slice-4: day plan reads open loops from memory entity mirrors (default: false)
+	MeetingPrep bool `mapstructure:"meeting_prep"` // Phase-5 slice-4: meeting prep reads attendee entity pages + beliefs from memory (default: false)
+}
+
+// MemorySourcesConfig gates the two Phase-5 slice-1 memory sources
+// independently — each gated path is a byte-identical no-op when its flag is
+// off, and the two flags have independent blast radii from each other AND from
+// Semantic.Enabled/Surfaces.*. This independence is literal: Gmail gates BOTH the
+// thread->episode extractor AND sender->person seeding, and Actions runs the
+// mechanical interaction ingest as its OWN Run step (not a semantic sub-step), so
+// its annotations + engagement land even with the semantic tier off (the staged
+// act: refs are simply unused then). All default false (dark by default).
+type MemorySourcesConfig struct {
+	Gmail       bool `mapstructure:"gmail"`       // Gmail thread->episode extractor + sender->person seeding (default: false)
+	Actions     bool `mapstructure:"actions"`     // mechanical interaction ingest (owner-action evidence, engagement aggregates), its own Run step (default: false)
+	Calendar    bool `mapstructure:"calendar"`    // Phase-5 slice-2: mechanical past-event->episode builder + recurring-series seeding (default: false)
+	Chats       bool `mapstructure:"chats"`       // Phase-5 slice-2: generalizes internal-dialogs ingest to target/track Discuss chats + the "remember this" command (default: false)
+	Operational bool `mapstructure:"operational"` // Phase-5 slice-4: mechanical target/track entity mirrors in the vault (target:<id>/track:<id>), its own Run step (default: false)
+	Jira        bool `mapstructure:"jira"`        // mechanical jira issue->episode builder + jira: provenance scheme, its own Run step (default: false)
+}
+
+// MemoryRendersConfig gates the Phase-5 slice-3 render-inversion steps
+// independently. Each is a no-op when its flag is off. All default false
+// (dark by default).
+type MemoryRendersConfig struct {
+	DigestCompare bool `mapstructure:"digest_compare"` // dark compare-mode: render channel digests from memory episodes and diff against the legacy digest pipeline (default: false)
+}
+
+// MemoryRetrieveConfig gates the Phase-5 Slice-B dark retrieval-compare mode
+// independently per surface — each is a no-op when its flag is off, mirroring
+// Renders.DigestCompare's precedent. All default false (dark by default).
+// Unlike Renders.DigestCompare (one daemon-tail batch job), these three run
+// inline at each surface's own live call site (memory_recall's MCP handler,
+// briefing's gatherMemoryRevisions, meeting-prep's gatherMemoryContext) —
+// there is no cost concern requiring a daemon-cycle gate, since none of the
+// three retrieval functions makes an AI call.
+type MemoryRetrieveConfig struct {
+	RecallCompare      bool `mapstructure:"recall_compare"`       // memory_recall MCP tool also runs RetrieveByQuery and shadow-diffs against the legacy FTS ranking (default: false)
+	BriefingCompare    bool `mapstructure:"briefing_compare"`     // briefing's Memory revisions journal also runs RetrieveRevisions and shadow-diffs against the legacy notable-revision order (default: false)
+	MeetingPrepCompare bool `mapstructure:"meeting_prep_compare"` // meeting-prep's attendee memory context also runs RetrieveBySubject and shadow-diffs against the legacy confidence-ordered belief selection (default: false)
+}
+
+// MemoryFocusConfig gates the focus-salience Run step independently. When
+// Enabled is false, focus.md (internal/memory/focus.go) is never parsed —
+// but the gate-off path still runs runFocusDisable, which neutralizes any
+// residual memory_focus_matches rows / boosted importance_scores left over
+// from a prior enabled run whenever the stored fingerprint is non-empty; it
+// is a fast no-op (no DB write at all) only once that fingerprint is already
+// empty, i.e. a workspace that never had focus enabled, or one already
+// neutralized by an earlier disabled run. Default false (dark by default).
+type MemoryFocusConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable the focus-salience Run step: fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep (default: false)
 }
 
 type Config struct {
@@ -232,6 +298,7 @@ type Config struct {
 	Tracks          TracksConfig                `mapstructure:"tracks"`
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
 	Gmail           GmailConfig                 `mapstructure:"gmail"`
+	Imap            ImapConfig                  `mapstructure:"imap"`
 	Jira            JiraConfig                  `mapstructure:"jira"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
@@ -298,6 +365,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("gmail.initial_history_days", DefaultGmailInitialHistoryDays)
 	v.SetDefault("gmail.max_messages_per_sync", DefaultGmailMaxMessagesPerSync)
 	v.SetDefault("gmail.max_body_bytes", DefaultGmailMaxBodyBytes)
+	v.SetDefault("imap.initial_history_days", DefaultImapInitialHistoryDays)
+	v.SetDefault("imap.max_messages_per_sync", DefaultImapMaxMessagesPerSync)
+	v.SetDefault("imap.max_body_bytes", DefaultImapMaxBodyBytes)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
@@ -328,6 +398,19 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.surfaces.briefing", false)
 	v.SetDefault("memory.surfaces.disputes", false)
 	v.SetDefault("memory.surfaces.reflection", false)
+	v.SetDefault("memory.sources.gmail", false) // Phase-5 slice-1 sources dark by default
+	v.SetDefault("memory.sources.actions", false)
+	v.SetDefault("memory.sources.calendar", false) // Phase-5 slice-2 sources dark by default
+	v.SetDefault("memory.sources.chats", false)
+	v.SetDefault("memory.renders.digest_compare", false) // Phase-5 slice-3 renders dark by default
+	v.SetDefault("memory.sources.operational", false)    // Phase-5 slice-4 gates dark by default
+	v.SetDefault("memory.surfaces.day_plan", false)
+	v.SetDefault("memory.surfaces.meeting_prep", false)
+	v.SetDefault("memory.semantic.preferences", false)
+	v.SetDefault("memory.retrieve.recall_compare", false) // Slice B dark retrieval-compare, dark by default
+	v.SetDefault("memory.retrieve.briefing_compare", false)
+	v.SetDefault("memory.retrieve.meeting_prep_compare", false)
+	v.SetDefault("memory.focus.enabled", false) // focus-salience Run step dark by default
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)

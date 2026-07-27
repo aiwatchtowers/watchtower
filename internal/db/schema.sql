@@ -17,7 +17,13 @@ CREATE TABLE IF NOT EXISTS workspace (
     gmail_last_internal_date REAL NOT NULL DEFAULT 0,  -- Unix timestamp watermark for Gmail sync (see 00016)
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
     memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
-    memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
+    memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0,  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
+    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00042)
+    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00042)
+    memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00033)
+    memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last jira issue fully folded into an episode by the jira issue extractor; a fifth independent memory watermark (see 00040)
+    memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00036, M8)
+    memory_focus_fingerprint TEXT NOT NULL DEFAULT ''  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00041)
 );
 
 -- Users
@@ -552,7 +558,7 @@ CREATE INDEX IF NOT EXISTS idx_catchup_themes_session ON catchup_themes(session_
 -- Feedback on AI-generated content (thumbs up/down)
 CREATE TABLE IF NOT EXISTS feedback (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'target', 'inbox', 'catchup_theme')),
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'target', 'inbox', 'catchup_theme', 'situation')),
     entity_id   TEXT NOT NULL,       -- digest.id, tracks.id, or "digest_id:decision_idx"
     rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),  -- -1 = bad, +1 = good
     comment     TEXT NOT NULL DEFAULT '',
@@ -1071,6 +1077,65 @@ CREATE TABLE IF NOT EXISTS gmail_auth_state (
 );
 INSERT OR IGNORE INTO gmail_auth_state (id, status, error) VALUES (1, 'ok', '');
 
+-- Multi-account IMAP/Outlook email source: one row per connected mailbox
+-- (email_accounts) plus its synced messages (imap_messages). status/error
+-- live directly on email_accounts, replacing the job gmail_auth_state's
+-- separate table does for Gmail's single-account model.
+CREATE TABLE IF NOT EXISTS email_accounts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider       TEXT NOT NULL CHECK(provider IN ('imap','outlook')),
+    email_address  TEXT NOT NULL DEFAULT '',
+    host           TEXT NOT NULL DEFAULT '',
+    port           INTEGER NOT NULL DEFAULT 0,
+    security       TEXT NOT NULL DEFAULT 'ssl' CHECK(security IN ('ssl','starttls','none')),
+    folder         TEXT NOT NULL DEFAULT 'INBOX',
+    label          TEXT NOT NULL DEFAULT '',      -- user-facing display name
+    status         TEXT NOT NULL DEFAULT 'ok',    -- ok | error | revoked
+    error          TEXT NOT NULL DEFAULT '',
+    last_uid       INTEGER NOT NULL DEFAULT 0,    -- sync watermark: highest IMAP UID synced
+    uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY; a change means last_uid must reset
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS imap_messages (
+    account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+    uid            INTEGER NOT NULL,              -- IMAP UID; unique within (account_id, uidvalidity, uid)
+    uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY epoch this uid was assigned under
+    from_email     TEXT NOT NULL DEFAULT '',
+    from_name      TEXT NOT NULL DEFAULT '',
+    to_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (To)
+    cc_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (Cc)
+    subject        TEXT NOT NULL DEFAULT '',
+    snippet        TEXT NOT NULL DEFAULT '',
+    body_text      TEXT NOT NULL DEFAULT '',      -- full plain-text body (truncated at sync)
+    internal_date  TEXT NOT NULL DEFAULT '',      -- ISO8601 message time
+    is_unread      INTEGER NOT NULL DEFAULT 0,
+    permalink      TEXT NOT NULL DEFAULT '',
+    synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (account_id, uidvalidity, uid)
+);
+CREATE INDEX IF NOT EXISTS idx_imap_messages_synced ON imap_messages(synced_at);
+
+-- Multi-account open-protocol calendar sources: one row per connected CalDAV
+-- server or secret ICS feed (the calendar analog of email_accounts). Events
+-- land in the shared calendar_events table scoped by calendar_id =
+-- 'caldav:<id>' / 'ics:<id>'. For provider='ics' the url column stays empty:
+-- the secret feed URL is a credential and lives in the per-account
+-- credential file, never the DB.
+CREATE TABLE IF NOT EXISTS calendar_accounts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider   TEXT NOT NULL CHECK(provider IN ('caldav','ics')),
+    username   TEXT NOT NULL DEFAULT '',
+    url        TEXT NOT NULL DEFAULT '',      -- CalDAV server base URL ONLY; empty for provider='ics'
+    label      TEXT NOT NULL DEFAULT '',      -- user-facing display name
+    status     TEXT NOT NULL DEFAULT 'ok',    -- ok | error | revoked
+    error      TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 -- Jira releases (fix versions)
 CREATE TABLE IF NOT EXISTS jira_releases (
     id INTEGER NOT NULL,
@@ -1213,7 +1278,8 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     content_hash  TEXT NOT NULL,                -- sha256 of file bytes at last index
     indexed_at    TEXT NOT NULL,
     subject       TEXT NOT NULL DEFAULT '',     -- belief subject entity id, '' for non-beliefs; file-derived (see 00019)
-    confidence    REAL NOT NULL DEFAULT 0       -- belief confidence 0..1, 0 for non-beliefs; file-derived (see 00019)
+    confidence    REAL NOT NULL DEFAULT 0,      -- belief confidence 0..1, 0 for non-beliefs; file-derived (see 00019)
+    importance_score REAL NOT NULL DEFAULT 0    -- merged override-or-computed importance snapshot, refreshed by Reconcile/Rebuild (see 00037, MEM-16)
 );
 
 -- Alias → node lookup (natural keys like slack IDs, 'situation:<id>', names).
@@ -1257,4 +1323,84 @@ CREATE TABLE IF NOT EXISTS memory_dispute_flags (
     node_id     TEXT PRIMARY KEY REFERENCES memory_nodes(id),
     flagged_at  TEXT NOT NULL,
     reason      TEXT NOT NULL DEFAULT ''
+);
+
+-- Phase-5 slice-1 per-entity engagement aggregates (see 00042): the
+-- retention-importance input Phase-3's RetentionInputs/RetentionScore
+-- stubbed out, fed by the mechanical interaction-ingest step
+-- (memory.sources.actions) from inbox_feedback/situation transitions/
+-- conversions. A dedicated side table — not memory_nodes columns, not
+-- memory_node_stats (which stays write-dead in this slice). Runtime state
+-- derived from interaction rows: MEM-02-exempt like memory_entity_hints
+-- (NOT like memory_node_stats) — it must survive DropMemoryIndex/reindex
+-- because the interaction floor may already have stepped past the rows that
+-- produced these aggregates.
+CREATE TABLE IF NOT EXISTS memory_engagement (
+    node_id             TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+    engaged_count       INTEGER NOT NULL DEFAULT 0,
+    dismissed_count     INTEGER NOT NULL DEFAULT 0,
+    last_interaction_at TEXT NOT NULL DEFAULT ''
+);
+
+-- Phase-5 slice-3 (see 00034): derived index of each episode/rollup node's
+-- `## Provenance` refs, so a channel+window lookup does not require a full
+-- vault body re-scan. Rebuildable from vault files — INSIDE the MEM-02
+-- reindex-equivalence set (an extension, not a weakening; owner-review
+-- flagged). scheme='' for bare Slack channel_id refs; mail:/cal:/chat:/act:
+-- prefixed refs carry their scheme, naturally excluded from a Slack channel
+-- window query.
+CREATE TABLE IF NOT EXISTS memory_provenance (
+    node_id     TEXT NOT NULL REFERENCES memory_nodes(id),
+    scheme      TEXT NOT NULL DEFAULT '',
+    channel_id  TEXT NOT NULL,
+    ts_raw      TEXT NOT NULL,
+    ts_unix     REAL NOT NULL,
+    sender_id   TEXT NOT NULL DEFAULT '',    -- per-message sender (Slack user_id / Gmail from_email); '' for cal:/chat:/act: schemes (see 00038, Slice B)
+    PRIMARY KEY (node_id, channel_id, ts_raw)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix);
+CREATE INDEX IF NOT EXISTS idx_memory_provenance_sender ON memory_provenance(sender_id);
+
+-- Phase-5 slice-3 (see 00034): dark compare-mode telemetry
+-- (memory.renders.digest_compare) — memory-owned, never the legacy
+-- digests/digest_topics tables (MEM-05/MEM-14). Not a memory_nodes child;
+-- not vault-derived, so DropMemoryIndex leaves it alone. Never read by any
+-- UI; a pure reader of digests/digest_topics/messages writes here.
+CREATE TABLE IF NOT EXISTS memory_digest_shadow (
+    id                   INTEGER PRIMARY KEY,
+    channel_id           TEXT NOT NULL,
+    period_from          REAL NOT NULL,
+    period_to            REAL NOT NULL,
+    legacy_digest_id     INTEGER NOT NULL DEFAULT 0,
+    rendered_json        TEXT NOT NULL,
+    coverage             REAL NOT NULL DEFAULT 0,
+    render_refs_rejected INTEGER NOT NULL DEFAULT 0,
+    model                TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    UNIQUE(channel_id, period_from, period_to)
+);
+
+-- Slice B Task 7 (see 00039): dark retrieval-compare telemetry
+-- (memory.retrieve.{recall_compare,briefing_compare,meeting_prep_compare}) —
+-- append-only, no FK onto memory_nodes (a shadow row is pure telemetry that
+-- must survive independently of the compared node's later eviction).
+CREATE TABLE IF NOT EXISTS memory_retrieve_shadow (
+    id                INTEGER PRIMARY KEY,
+    surface           TEXT NOT NULL CHECK (surface IN ('recall','briefing','meeting_prep')),
+    query_key         TEXT NOT NULL DEFAULT '',
+    old_result_json   TEXT NOT NULL,
+    new_result_json   TEXT NOT NULL,
+    diff_metrics_json TEXT NOT NULL,
+    ts                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surface, ts);
+
+-- Focus salience (see 00041): mechanically-matched node set (state 'now' or
+-- 'cooled'), rewritten wholesale on every fingerprint change. Runtime state:
+-- rebuilt from focus.md + the index, cleared and rewritten by the pipeline.
+-- No FK (a match may outlive its node briefly between runs; reads join
+-- against live nodes).
+CREATE TABLE IF NOT EXISTS memory_focus_matches (
+    node_id TEXT PRIMARY KEY,
+    state   TEXT NOT NULL CHECK (state IN ('now','cooled'))
 );

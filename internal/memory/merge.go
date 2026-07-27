@@ -73,8 +73,9 @@ func Merge(v *Vault, database *db.DB, loserID, winnerID string) error {
 	// Mirror both nodes into the index. Loser first: its alias rows must be
 	// cleared before the same aliases are inserted for the winner.
 	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
 	for _, n := range []Node{stub, winner} {
-		if err := upsertIndexNode(database, n, now); err != nil {
+		if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
 			return err
 		}
 	}
@@ -133,27 +134,38 @@ func appendToLinks(body, line string) string {
 
 // upsertIndexNode mirrors a just-written node into the SQLite index, hashing
 // the same rendered bytes that WriteNodes put on disk (so a later Reconcile
-// sees the file as unchanged).
-func upsertIndexNode(database *db.DB, n Node, indexedAt string) error {
+// sees the file as unchanged). ownerEdited resolves the owner-touch signal
+// for computeNodeImportance: every real caller of this function loops over
+// more than one node per invocation (second whole-branch review follow-up,
+// 2026-07-19, MEM-16 addendum — the "single-node, nothing to memoize" case
+// 5d-ii's design assumed does not exist in production code), so every caller
+// passes a per-call ownerEditedMemo's lookup method, never v.OwnerEdited
+// directly.
+func upsertIndexNode(database *db.DB, ownerEdited func(rel string) (bool, error), n Node, indexedAt string) error {
 	rel, err := nodeRelPath(n.ID)
 	if err != nil {
 		return err
 	}
+	importance, err := computeNodeImportance(database, ownerEdited, n, rel)
+	if err != nil {
+		return fmt.Errorf("memory: computing importance for %s: %w", n.ID, err)
+	}
 	sum := sha256.Sum256(n.Render())
 	row := db.MemoryNodeRow{
-		ID:          n.ID,
-		Type:        n.Type,
-		Tier:        n.Tier,
-		Status:      n.Status,
-		RedirectTo:  n.RedirectTo,
-		Title:       n.Title,
-		Path:        rel,
-		ContentHash: hex.EncodeToString(sum[:]),
-		IndexedAt:   indexedAt,
-		Subject:     n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
-		Confidence:  n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
+		ID:              n.ID,
+		Type:            n.Type,
+		Tier:            n.Tier,
+		Status:          n.Status,
+		RedirectTo:      n.RedirectTo,
+		Title:           n.Title,
+		Path:            rel,
+		ContentHash:     hex.EncodeToString(sum[:]),
+		IndexedAt:       indexedAt,
+		Subject:         n.Subject,    // file-derived (belief-only; "" otherwise), see 00019
+		Confidence:      n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
+		ImportanceScore: importance,
 	}
-	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases); err != nil {
+	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, dbSenderResolver{database}, nil)...); err != nil {
 		return fmt.Errorf("memory: index %s: %w", n.ID, err)
 	}
 	return nil

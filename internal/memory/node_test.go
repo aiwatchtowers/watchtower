@@ -150,6 +150,56 @@ func TestParseNodeRejectsRedirectOnNonTombstone(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestParseNodeImportanceOverrideRoundTrip(t *testing.T) {
+	raw := "---\nid: ent_x\ntype: entity\ntier: long\nstatus: active\nimportance_override: 4.5\n---\n# X\n"
+	n, err := ParseNode([]byte(raw))
+	require.NoError(t, err)
+	require.NotNil(t, n.ImportanceOverride)
+	assert.Equal(t, 4.5, *n.ImportanceOverride)
+
+	rendered := n.Render()
+	assert.Contains(t, string(rendered), "importance_override: 4.5\n")
+
+	again, err := ParseNode(rendered)
+	require.NoError(t, err)
+	assert.Equal(t, n, again)
+}
+
+// TestParseNodeImportanceOverrideZeroIsNotUnset: 0 is a legitimate override
+// ("this matters least") and must stay distinguishable from "unset" — unlike
+// Confidence/Stability, which collapse to concrete zero values.
+func TestParseNodeImportanceOverrideZeroIsNotUnset(t *testing.T) {
+	raw := "---\nid: ent_x\ntype: entity\ntier: long\nstatus: active\nimportance_override: 0\n---\n# X\n"
+	n, err := ParseNode([]byte(raw))
+	require.NoError(t, err)
+	require.NotNil(t, n.ImportanceOverride, "an explicit 0 must not collapse to unset (nil)")
+	assert.Zero(t, *n.ImportanceOverride)
+}
+
+func TestParseNodeImportanceOverrideAbsentIsNil(t *testing.T) {
+	raw := "---\nid: ent_x\ntype: entity\ntier: long\nstatus: active\n---\n# X\n"
+	n, err := ParseNode([]byte(raw))
+	require.NoError(t, err)
+	assert.Nil(t, n.ImportanceOverride)
+}
+
+func TestParseNodeRejectsNegativeImportanceOverride(t *testing.T) {
+	raw := "---\nid: ent_x\ntype: entity\ntier: long\nstatus: active\nimportance_override: -1\n---\n# X\n"
+	_, err := ParseNode([]byte(raw))
+	require.Error(t, err)
+}
+
+// TestParseNodeImportanceOverrideLegalOnBelief: no belief-only gate — unlike
+// confidence/stability/subject, importance_override is legal on any type,
+// belief included.
+func TestParseNodeImportanceOverrideLegalOnBelief(t *testing.T) {
+	raw := "---\nid: bel_x\ntype: belief\ntier: long\nstatus: active\nconfidence: 0.5\nstability: 0\nsubject: ent_y\nimportance_override: 2\n---\n# B\n"
+	n, err := ParseNode([]byte(raw))
+	require.NoError(t, err)
+	require.NotNil(t, n.ImportanceOverride)
+	assert.Equal(t, 2.0, *n.ImportanceOverride)
+}
+
 func TestLinks(t *testing.T) {
 	n := Node{Body: "# T\n\nSee [[ep_a|the kickoff]] and [[ent_b]].\n\n- [[sum_c|Q3 rollup]]\n"}
 	links := n.Links()
