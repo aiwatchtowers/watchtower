@@ -33,7 +33,7 @@ struct InboxFeedView: View {
             case .feed:
                 if let dashboardVM, let feedVM {
                     VStack(spacing: 0) {
-                        if !google.fullyConnected || google.isRunning {
+                        if !sourcesFullyConnected || google.isRunning {
                             connectSourcesBanner
                             Divider()
                         }
@@ -56,16 +56,31 @@ struct InboxFeedView: View {
             dashboardVM?.refresh()
             feedVM?.refresh()
             google.refresh()
+            appState.emailAccountsViewModel?.refresh()
         }
     }
 
     // MARK: - Connect Sources Banner
 
-    /// Names of the disconnected Google sources, for the banner text.
+    /// True once an email source is connected — Gmail OR at least one HEALTHY
+    /// IMAP/Outlook mailbox, so connecting only an IMAP account (without ever
+    /// touching Gmail) satisfies the email leg of the connect check too. An
+    /// account stuck in "error"/"revoked" must not count — otherwise its mere
+    /// presence in the list would hide the banner even though nothing syncs.
+    private var hasEmailSource: Bool {
+        google.gmail.isConnected || (appState.emailAccountsViewModel?.accounts.contains { $0.isOK } ?? false)
+    }
+
+    /// Whether both the calendar and email legs are connected.
+    private var sourcesFullyConnected: Bool {
+        google.calendar.isConnected && hasEmailSource
+    }
+
+    /// Names of the disconnected sources, for the banner text.
     private var missingSources: [String] {
         var missing: [String] = []
         if !google.calendar.isConnected { missing.append("Google Calendar") }
-        if !google.gmail.isConnected { missing.append("Gmail") }
+        if !hasEmailSource { missing.append("Email") }
         return missing
     }
 

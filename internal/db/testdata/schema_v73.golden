@@ -83,6 +83,9 @@ CREATE INDEX idx_gmail_messages_synced ON gmail_messages(synced_at)
 index	idx_gmail_messages_thread
 CREATE INDEX idx_gmail_messages_thread ON gmail_messages(thread_id)
 
+index	idx_imap_messages_synced
+CREATE INDEX idx_imap_messages_synced ON imap_messages(synced_at)
+
 index	idx_inbox_feedback_item
 CREATE INDEX idx_inbox_feedback_item ON inbox_feedback(inbox_item_id)
 
@@ -565,6 +568,24 @@ running_summary TEXT NOT NULL DEFAULT '', -- JSON running context for next diges
 UNIQUE(channel_id, type, period_from, period_to)
 )
 
+table	email_accounts
+CREATE TABLE email_accounts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+provider TEXT NOT NULL CHECK(provider IN ('imap','outlook')),
+email_address TEXT NOT NULL DEFAULT '',
+host TEXT NOT NULL DEFAULT '',
+port INTEGER NOT NULL DEFAULT 0,
+security TEXT NOT NULL DEFAULT 'ssl' CHECK(security IN ('ssl','starttls','none')),
+folder TEXT NOT NULL DEFAULT 'INBOX',
+label TEXT NOT NULL DEFAULT '', -- user-facing display name
+status TEXT NOT NULL DEFAULT 'ok', -- ok | error | revoked
+error TEXT NOT NULL DEFAULT '',
+last_uid INTEGER NOT NULL DEFAULT 0, -- sync watermark: highest IMAP UID synced
+uidvalidity INTEGER NOT NULL DEFAULT 0, -- IMAP UIDVALIDITY; a change means last_uid must reset
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
 table	feed_items
 CREATE TABLE feed_items (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -647,6 +668,26 @@ cost_usd REAL NOT NULL DEFAULT 0,
 prompt_version INTEGER NOT NULL DEFAULT 0,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 UNIQUE(period_from, period_to)
+)
+
+table	imap_messages
+CREATE TABLE imap_messages (
+account_id INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+uid INTEGER NOT NULL, -- IMAP UID; unique within (account_id, uidvalidity, uid)
+uidvalidity INTEGER NOT NULL DEFAULT 0, -- IMAP UIDVALIDITY epoch this uid was assigned under
+from_email TEXT NOT NULL DEFAULT '',
+from_name TEXT NOT NULL DEFAULT '',
+to_json TEXT NOT NULL DEFAULT '[]', -- JSON array of recipient emails (To)
+cc_json TEXT NOT NULL DEFAULT '[]', -- JSON array of recipient emails (Cc)
+subject TEXT NOT NULL DEFAULT '',
+snippet TEXT NOT NULL DEFAULT '',
+body_text TEXT NOT NULL DEFAULT '', -- full plain-text body (truncated at sync)
+internal_date TEXT NOT NULL DEFAULT '', -- ISO8601 message time
+is_unread INTEGER NOT NULL DEFAULT 0,
+permalink TEXT NOT NULL DEFAULT '',
+synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+PRIMARY KEY (account_id, uidvalidity, uid)
 )
 
 table	inbox_feedback
@@ -1655,6 +1696,22 @@ END
 18	situations	TEXT	notnull=1	dflt='[]'	pk=0
 19	running_summary	TEXT	notnull=1	dflt=''	pk=0
 
+## email_accounts
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	provider	TEXT	notnull=1	dflt=NULL	pk=0
+2	email_address	TEXT	notnull=1	dflt=''	pk=0
+3	host	TEXT	notnull=1	dflt=''	pk=0
+4	port	INTEGER	notnull=1	dflt=0	pk=0
+5	security	TEXT	notnull=1	dflt='ssl'	pk=0
+6	folder	TEXT	notnull=1	dflt='INBOX'	pk=0
+7	label	TEXT	notnull=1	dflt=''	pk=0
+8	status	TEXT	notnull=1	dflt='ok'	pk=0
+9	error	TEXT	notnull=1	dflt=''	pk=0
+10	last_uid	INTEGER	notnull=1	dflt=0	pk=0
+11	uidvalidity	INTEGER	notnull=1	dflt=0	pk=0
+12	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+13	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
 ## feed_items
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	item_type	TEXT	notnull=1	dflt=NULL	pk=0
@@ -1722,6 +1779,23 @@ END
 8	cost_usd	REAL	notnull=1	dflt=0	pk=0
 9	prompt_version	INTEGER	notnull=1	dflt=0	pk=0
 10	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## imap_messages
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	uid	INTEGER	notnull=1	dflt=NULL	pk=3
+2	uidvalidity	INTEGER	notnull=1	dflt=0	pk=2
+3	from_email	TEXT	notnull=1	dflt=''	pk=0
+4	from_name	TEXT	notnull=1	dflt=''	pk=0
+5	to_json	TEXT	notnull=1	dflt='[]'	pk=0
+6	cc_json	TEXT	notnull=1	dflt='[]'	pk=0
+7	subject	TEXT	notnull=1	dflt=''	pk=0
+8	snippet	TEXT	notnull=1	dflt=''	pk=0
+9	body_text	TEXT	notnull=1	dflt=''	pk=0
+10	internal_date	TEXT	notnull=1	dflt=''	pk=0
+11	is_unread	INTEGER	notnull=1	dflt=0	pk=0
+12	permalink	TEXT	notnull=1	dflt=''	pk=0
+13	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+14	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## inbox_feedback
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

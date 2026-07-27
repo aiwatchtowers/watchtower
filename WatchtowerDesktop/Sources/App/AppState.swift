@@ -93,6 +93,12 @@ final class AppState {
     /// so badges are visible the moment the main UI appears.
     private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
 
+    /// Email Accounts ViewModel (multi-account IMAP/Outlook) — persists across
+    /// tab switches so an in-flight connect (Outlook OAuth or IMAP add) survives
+    /// navigating away from the Settings window. Gmail keeps its own separate
+    /// single-account flow (`GoogleConnectFlow.shared`) and is not covered here.
+    private(set) var emailAccountsViewModel: EmailAccountsViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -257,6 +263,7 @@ final class AppState {
                 initCatchUp(dbPool: manager.dbPool)
                 initDashboard(dbManager: manager)
                 initSecretaryProfile(dbManager: manager)
+                initEmailAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -396,6 +403,12 @@ final class AppState {
     /// identity persists across accesses.
     func initSecretaryProfile(dbManager: DatabaseManager) {
         secretaryProfileViewModel = SecretaryProfileViewModel(dbManager: dbManager)
+    }
+
+    func initEmailAccounts(dbPool: DatabasePool) {
+        let vm = EmailAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        emailAccountsViewModel = vm
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {
