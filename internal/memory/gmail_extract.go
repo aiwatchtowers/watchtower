@@ -394,33 +394,43 @@ func (p *Pipeline) buildGmailEpisodeNodes(label string, kept []extractedEpisode,
 			ids = append(ids, n.ID)
 		}
 
-		link := "- [[" + nodes[nodeIdx].ID + "|" + linkLabel(title) + "]]\n"
-		for _, hint := range ep.EntityHints {
-			en, rerr := Resolve(p.vault, p.db, hint)
-			if rerr != nil {
-				p.logf("memory: gmail extract [%s]: entity hint %q unresolved", label, hint)
-				if norm := strings.ToLower(strings.TrimSpace(hint)); norm != "" {
-					unresolved = append(unresolved, db.EntityHint{Hint: norm, EpisodeID: nodes[nodeIdx].ID})
-				}
-				continue
-			}
-			if en.Type != "entity" || en.Status != "active" {
-				continue
-			}
-			idx, seen := entityIdx[en.ID]
-			if !seen {
-				idx = len(nodes)
-				entityIdx[en.ID] = idx
-				nodes = append(nodes, en)
-				ids = append(ids, en.ID)
-			}
-			nodes[idx].Body = appendToLinks(nodes[idx].Body, link)
-		}
+		nodes, ids, unresolved = p.linkGmailEntityHints(label, ep, nodes, ids, nodes[nodeIdx].ID, title, entityIdx, unresolved)
 	}
 	if err := p.db.RecordEntityHints(unresolved); err != nil {
 		p.logf("memory: record entity hints [%s]: %v", label, err)
 	}
 	return nodes, ids, nil
+}
+
+// linkGmailEntityHints resolves one episode's entity hints and appends the
+// episode back-link to each resolved active entity node, accumulating
+// unresolved hints for RecordEntityHints. entityIdx dedupes an entity across
+// episodes in this batch so it is appended to nodes/ids once and every
+// episode's link folds onto that same in-memory node.
+func (p *Pipeline) linkGmailEntityHints(label string, ep extractedEpisode, nodes []Node, ids []string, epNodeID, title string, entityIdx map[string]int, unresolved []db.EntityHint) ([]Node, []string, []db.EntityHint) {
+	link := "- [[" + epNodeID + "|" + linkLabel(title) + "]]\n"
+	for _, hint := range ep.EntityHints {
+		en, rerr := Resolve(p.vault, p.db, hint)
+		if rerr != nil {
+			p.logf("memory: gmail extract [%s]: entity hint %q unresolved", label, hint)
+			if norm := strings.ToLower(strings.TrimSpace(hint)); norm != "" {
+				unresolved = append(unresolved, db.EntityHint{Hint: norm, EpisodeID: epNodeID})
+			}
+			continue
+		}
+		if en.Type != "entity" || en.Status != "active" {
+			continue
+		}
+		idx, seen := entityIdx[en.ID]
+		if !seen {
+			idx = len(nodes)
+			entityIdx[en.ID] = idx
+			nodes = append(nodes, en)
+			ids = append(ids, en.ID)
+		}
+		nodes[idx].Body = appendToLinks(nodes[idx].Body, link)
+	}
+	return nodes, ids, unresolved
 }
 
 // gmailEpisodeNode builds the episode node for one thread: a fresh node when the
