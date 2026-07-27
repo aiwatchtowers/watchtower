@@ -15,34 +15,66 @@ struct GoogleConnectOptionsView: View {
     /// respects that flag without having to remember to pass it.
     var showGmail: Bool = Constants.gmailOAuthAvailable
 
+    private var showCalendarOption: Bool { !flow.calendar.isConnected }
+    private var showGmailOption: Bool { showGmail && !flow.gmail.isConnected }
+
+    /// A checkbox only makes sense when there's an actual choice — one item
+    /// out of several to opt out of. With exactly one item visible (the
+    /// common case right now, since Gmail is hidden while
+    /// `Constants.gmailOAuthAvailable` is false) there is nothing to choose:
+    /// render it as plain, non-interactive info and force it selected,
+    /// instead of a checkbox the user could confusingly uncheck to disable
+    /// the very thing this screen exists to connect.
+    private var singleOption: Bool {
+        (showCalendarOption ? 1 : 0) + (showGmailOption ? 1 : 0) == 1
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !flow.calendar.isConnected {
-                Toggle(isOn: $flow.includeCalendar) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Google Calendar")
-                        Text("Upcoming meetings, prep, and briefings")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            if showCalendarOption {
+                optionRow(
+                    title: "Google Calendar",
+                    subtitle: "Upcoming meetings, prep, and briefings",
+                    isOn: $flow.includeCalendar
+                )
             }
-            if showGmail && !flow.gmail.isConnected {
-                Toggle(isOn: $flow.includeGmail) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Gmail")
-                        Text("Inbox emails in the secretary feed")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            if showGmailOption {
+                optionRow(
+                    title: "Gmail",
+                    subtitle: "Inbox emails in the secretary feed",
+                    isOn: $flow.includeGmail
+                )
             }
         }
         .toggleStyle(.checkbox)
-        // `flow` is a shared singleton (GoogleConnectFlow.shared) reused by
-        // both call sites — force includeGmail off here so a calendar-only
-        // "Connect Google" tap can never silently request the Gmail scope,
-        // regardless of whatever the OTHER call site last left it as.
-        .onAppear { if !showGmail { flow.includeGmail = false } }
+        .onAppear {
+            // `flow` is a shared singleton (GoogleConnectFlow.shared) reused
+            // by both call sites — force includeGmail off here so a
+            // calendar-only "Connect Google" tap can never silently request
+            // the Gmail scope, regardless of whatever the OTHER call site
+            // last left it as.
+            if !showGmail { flow.includeGmail = false }
+            // A single visible option is implicitly wanted — force it on
+            // rather than leaving it opt-out-able via a pointless checkbox.
+            if singleOption {
+                if showCalendarOption { flow.includeCalendar = true }
+                if showGmailOption { flow.includeGmail = true }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func optionRow(title: String, subtitle: String, isOn: Binding<Bool>) -> some View {
+        let label = VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        if singleOption {
+            label
+        } else {
+            Toggle(isOn: isOn) { label }
+        }
     }
 }
