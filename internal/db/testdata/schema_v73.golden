@@ -326,6 +326,19 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 UNIQUE(user_id, date)
 )
 
+table	calendar_accounts
+CREATE TABLE calendar_accounts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+provider TEXT NOT NULL CHECK(provider IN ('caldav','ics')),
+username TEXT NOT NULL DEFAULT '',
+url TEXT NOT NULL DEFAULT '', -- CalDAV server base URL ONLY; empty for provider='ics'
+label TEXT NOT NULL DEFAULT '', -- user-facing display name
+status TEXT NOT NULL DEFAULT 'ok', -- ok | error | revoked
+error TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
 table	calendar_attendee_map
 CREATE TABLE calendar_attendee_map (
 email TEXT PRIMARY KEY,
@@ -1548,6 +1561,17 @@ END
 14	prompt_version	INTEGER	notnull=1	dflt=0	pk=0
 15	read_at	TEXT	notnull=0	dflt=NULL	pk=0
 16	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## calendar_accounts
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	provider	TEXT	notnull=1	dflt=NULL	pk=0
+2	username	TEXT	notnull=1	dflt=''	pk=0
+3	url	TEXT	notnull=1	dflt=''	pk=0
+4	label	TEXT	notnull=1	dflt=''	pk=0
+5	status	TEXT	notnull=1	dflt='ok'	pk=0
+6	error	TEXT	notnull=1	dflt=''	pk=0
+7	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+8	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## calendar_attendee_map
 0	email	TEXT	notnull=0	dflt=NULL	pk=1

@@ -1,71 +1,60 @@
 import SwiftUI
 
-/// Sheet for connecting a new email source, presented from the Settings →
-/// Email Accounts section. Three provider cards:
-///  - Gmail: the EXISTING single-account OAuth flow (`GoogleConnectFlow.shared.gmail`),
-///    reused as-is — this view adds no Gmail logic of its own.
-///  - Outlook: OAuth via `EmailAccountsViewModel.connectOutlook`, same loopback-
-///    browser flow shape as Gmail but multi-account.
-///  - IMAP: a host/port/credentials form; the password is written to the
-///    `imap add` subprocess's stdin, never passed as a flag.
-struct AddEmailAccountView: View {
+/// Sheet for connecting a new calendar source, presented from the Settings →
+/// Calendar Accounts section and the Calendar tab's not-connected screen.
+/// Three provider cards:
+///  - Google: the EXISTING single-account OAuth flow (`GoogleConnectFlow.shared`),
+///    calendar-only — this view adds no Google logic of its own.
+///  - CalDAV: a server URL/credentials form; the app password is written to the
+///    `caldav add` subprocess's stdin, never passed as a flag.
+///  - ICS: a secret feed link (e.g. Google Calendar's "Secret address in iCal
+///    format"); the link is a credential — stdin only, never argv, never in
+///    any assistant snapshot.
+struct AddCalendarAccountView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
     private var google: GoogleConnectFlow { GoogleConnectFlow.shared }
-    private var vm: EmailAccountsViewModel? { appState.emailAccountsViewModel }
+    private var vm: CalendarAccountsViewModel? { appState.calendarAccountsViewModel }
 
-    // MARK: - IMAP form state
+    // MARK: - CalDAV form state
 
-    @State private var host = ""
-    @State private var portText = "993"
-    @State private var security: IMAPSecurity = .ssl
+    @State private var caldavURL = ""
     @State private var username = ""
     @State private var password = ""
-    @State private var folder = "INBOX"
-    @State private var label = ""
-    @State private var isConnectingIMAP = false
-    @State private var imapError: String?
+    @State private var caldavLabel = ""
+    @State private var isConnectingCalDAV = false
+    @State private var caldavError: String?
+
+    // MARK: - ICS form state
+
+    @State private var feedURL = ""
+    @State private var icsLabel = ""
+    @State private var isConnectingICS = false
+    @State private var icsError: String?
 
     // MARK: - Setup assistant state
 
     @State private var showAssistant = false
-    @State private var setupChatVM: EmailSetupChatViewModel?
+    @State private var setupChatVM: CalendarSetupChatViewModel?
     @State private var showAssistantFilledNote = false
     @State private var assistantFilledNoteToken = 0
 
-    // MARK: - Outlook form state
-
-    @State private var outlookLabel = ""
-
-    enum IMAPSecurity: String, CaseIterable, Identifiable {
-        case ssl, starttls, none
-
-        var id: String { rawValue }
-
-        var displayLabel: String {
-            switch self {
-            case .ssl: return "SSL"
-            case .starttls: return "STARTTLS"
-            case .none: return "None"
-            }
-        }
-    }
-
-    private var port: Int? { Int(portText) }
-
-    private var canConnectIMAP: Bool {
-        !host.trimmingCharacters(in: .whitespaces).isEmpty
+    private var canConnectCalDAV: Bool {
+        !caldavURL.trimmingCharacters(in: .whitespaces).isEmpty
             && !username.trimmingCharacters(in: .whitespaces).isEmpty
             && !password.isEmpty
-            && port != nil
+    }
+
+    private var canConnectICS: Bool {
+        !feedURL.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Text("Add Email Account")
+                    Text("Add Calendar")
                         .font(.title2)
                         .fontWeight(.bold)
                     Spacer()
@@ -75,9 +64,9 @@ struct AddEmailAccountView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        gmailCard
-                        outlookCard
-                        imapCard
+                        googleCard
+                        caldavCard
+                        icsCard
                     }
                     .padding(.bottom, 8)
                 }
@@ -87,7 +76,7 @@ struct AddEmailAccountView: View {
             if showAssistant, let chatVM = setupChatVM {
                 Divider()
                     .padding(.leading, 16)
-                EmailSetupAssistantPanel(
+                CalendarSetupAssistantPanel(
                     chatVM: chatVM,
                     makeSnapshot: { formSnapshot() },
                     onClose: { withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false } }
@@ -102,46 +91,46 @@ struct AddEmailAccountView: View {
         }
     }
 
-    // MARK: - Gmail card
+    // MARK: - Google card
 
-    private var gmailCard: some View {
+    private var googleCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Image(systemName: "envelope.fill")
-                    Text("Gmail")
+                    Image(systemName: "calendar")
+                    Text("Google Calendar")
                         .font(.headline)
                     Spacer()
                 }
-                Text("Google's own OAuth flow — a single Gmail account.")
+                Text("Google's own OAuth flow — a single Google account.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if google.gmail.isConnected {
+                if google.calendar.isConnected {
                     Label("Connected", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                } else if google.gmail.isAuthenticating {
+                } else if google.isRunning {
                     HStack {
                         ProgressView().controlSize(.small)
                         Text("Connecting...")
                         Spacer()
-                        Button("Cancel") { google.gmail.cancelConnect() }
+                        Button("Cancel") { google.cancel() }
                     }
-                } else if !Constants.gmailOAuthAvailable {
-                    Label(
-                        "Temporarily unavailable (pending Google verification) — use IMAP with an app password instead.",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 } else {
-                    Button("Connect Gmail") {
-                        google.gmail.connect()
+                    Button("Connect Google Calendar") {
+                        google.includeGmail = false
+                        google.includeCalendar = true
+                        google.connect()
                     }
                     .buttonStyle(.borderedProminent)
                 }
 
-                if let err = google.gmail.error {
+                Text("No Google sign-in? The ICS card below works with Google Calendar's "
+                    + "\"Secret address in iCal format\" — no OAuth needed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let err = google.error {
                     Text(err)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -152,57 +141,14 @@ struct AddEmailAccountView: View {
         }
     }
 
-    // MARK: - Outlook card
+    // MARK: - CalDAV card
 
-    private var outlookCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: "envelope.badge.fill")
-                    Text("Outlook")
-                        .font(.headline)
-                    Spacer()
-                }
-                Text("Microsoft OAuth — supports multiple Outlook accounts.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                TextField("Label (optional)", text: $outlookLabel)
-                    .textFieldStyle(.roundedBorder)
-
-                if vm?.isRunning == true {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text("Connecting...")
-                        Spacer()
-                        Button("Cancel") { vm?.cancelConnect() }
-                    }
-                } else {
-                    Button("Connect Outlook") {
-                        vm?.connectOutlook(label: outlookLabel)
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
-                if let err = vm?.error {
-                    Text(err)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(4)
-        }
-    }
-
-    // MARK: - IMAP card
-
-    private var imapCard: some View {
+    private var caldavCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Image(systemName: "server.rack")
-                    Text("IMAP")
+                    Text("CalDAV")
                         .font(.headline)
                     Spacer()
                     Button {
@@ -215,41 +161,25 @@ struct AddEmailAccountView: View {
                     .controlSize(.small)
                     .help("Chat with an assistant that fills in these settings for you")
                 }
-                Text("Any IMAP mailbox — host, port, and folder configured manually.")
+                Text("iCloud, Fastmail, Yandex, Nextcloud, or any CalDAV server — "
+                    + "username plus an app password.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                TextField("Host", text: $host, prompt: Text("imap.example.com"))
+                TextField("Server URL", text: $caldavURL, prompt: Text("https://caldav.icloud.com"))
                     .textFieldStyle(.roundedBorder)
-
-                HStack {
-                    TextField("Port", text: $portText, prompt: Text("993"))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-
-                    Picker("", selection: $security) {
-                        ForEach(IMAPSecurity.allCases) { option in
-                            Text(option.displayLabel).tag(option)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                }
 
                 TextField("Username", text: $username, prompt: Text("you@example.com"))
                     .textFieldStyle(.roundedBorder)
 
-                SecureField("Password", text: $password)
+                SecureField("App password", text: $password)
                     .textFieldStyle(.roundedBorder)
 
-                TextField("Folder", text: $folder, prompt: Text("INBOX"))
-                    .textFieldStyle(.roundedBorder)
-
-                TextField("Label (optional)", text: $label)
+                TextField("Label (optional)", text: $caldavLabel)
                     .textFieldStyle(.roundedBorder)
 
                 HStack {
-                    if isConnectingIMAP {
+                    if isConnectingCalDAV {
                         ProgressView().controlSize(.small)
                         Text("Connecting...")
                             .font(.caption)
@@ -257,10 +187,10 @@ struct AddEmailAccountView: View {
                     }
                     Spacer()
                     Button("Test and Connect") {
-                        connectIMAP()
+                        connectCalDAV()
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canConnectIMAP || isConnectingIMAP)
+                    .disabled(!canConnectCalDAV || isConnectingCalDAV)
                 }
 
                 if showAssistantFilledNote {
@@ -270,7 +200,67 @@ struct AddEmailAccountView: View {
                         .transition(.opacity)
                 }
 
-                if let err = imapError {
+                if let err = caldavError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                    if !showAssistant {
+                        Button {
+                            askAssistantAboutError(err)
+                        } label: {
+                            Label("Ask the assistant about this error", systemImage: "sparkles")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.link)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        }
+    }
+
+    // MARK: - ICS card
+
+    private var icsCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "link")
+                    Text("ICS link")
+                        .font(.headline)
+                    Spacer()
+                }
+                Text("Paste the private iCal/ICS address of your calendar — "
+                    + "e.g. Google Calendar's \"Secret address in iCal format\".")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                // The feed URL is a credential: it goes to the CLI via stdin
+                // and NEVER enters an assistant snapshot (only hasFeedURL does).
+                TextField("Secret feed URL", text: $feedURL, prompt: Text("https://calendar.google.com/calendar/ical/…"))
+                    .textFieldStyle(.roundedBorder)
+
+                TextField("Label (optional)", text: $icsLabel)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    if isConnectingICS {
+                        ProgressView().controlSize(.small)
+                        Text("Connecting...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Connect") {
+                        connectICS()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canConnectICS || isConnectingICS)
+                }
+
+                if let err = icsError {
                     Text(err)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -293,19 +283,17 @@ struct AddEmailAccountView: View {
 
     // MARK: - Setup assistant wiring
 
-    /// What the assistant is allowed to see. PRIVACY: `ImapFormSnapshot` has
-    /// no password slot — only `hasPassword` — so the SecureField's value can
-    /// never reach a prompt from here.
-    private func formSnapshot() -> ImapFormSnapshot {
-        ImapFormSnapshot(
-            host: host,
-            portText: portText,
-            security: security.rawValue,
+    /// What the assistant is allowed to see. PRIVACY: `CalendarFormSnapshot`
+    /// has no password slot and no feed-URL slot — only `hasPassword` /
+    /// `hasFeedURL` — so neither credential can ever reach a prompt from here.
+    private func formSnapshot() -> CalendarFormSnapshot {
+        CalendarFormSnapshot(
+            caldavURL: caldavURL,
             username: username,
-            folder: folder,
-            label: label,
+            label: caldavLabel,
             hasPassword: !password.isEmpty,
-            lastConnectionError: imapError
+            hasFeedURL: !feedURL.isEmpty,
+            lastConnectionError: caldavError ?? icsError
         )
     }
 
@@ -319,7 +307,7 @@ struct AddEmailAccountView: View {
 
     private func openAssistant() {
         if setupChatVM == nil {
-            let vm = EmailSetupChatViewModel()
+            let vm = CalendarSetupChatViewModel()
             vm.onApplySettings = { patch in applyAssistantSettings(patch) }
             setupChatVM = vm
         }
@@ -327,15 +315,12 @@ struct AddEmailAccountView: View {
         withAnimation(.easeInOut(duration: 0.2)) { showAssistant = true }
     }
 
-    /// Writes an assistant patch into the form fields. The patch type has no
-    /// password field, so the SecureField stays 100% manual.
-    private func applyAssistantSettings(_ patch: ImapSettingsPatch) {
-        if let value = patch.host { host = value }
-        if let value = patch.port { portText = String(value) }
-        if let value = patch.security, let parsed = IMAPSecurity(rawValue: value) { security = parsed }
+    /// Writes an assistant patch into the CalDAV form fields. The patch type
+    /// carries only url/username, so the SecureField and the ICS feed field
+    /// stay 100% manual.
+    private func applyAssistantSettings(_ patch: CalendarSettingsPatch) {
+        if let value = patch.url { caldavURL = value }
         if let value = patch.username { username = value }
-        if let value = patch.folder { folder = value }
-        if let value = patch.label { label = value }
 
         assistantFilledNoteToken += 1
         let token = assistantFilledNoteToken
@@ -353,34 +338,52 @@ struct AddEmailAccountView: View {
         setupChatVM?.sendConnectionError(error, snapshot: formSnapshot())
     }
 
-    private func connectIMAP() {
-        guard let port, let vm else { return }
-        isConnectingIMAP = true
-        imapError = nil
-        let hostValue = host.trimmingCharacters(in: .whitespaces)
+    private func connectCalDAV() {
+        guard let vm else { return }
+        isConnectingCalDAV = true
+        caldavError = nil
+        let urlValue = caldavURL.trimmingCharacters(in: .whitespaces)
         let usernameValue = username.trimmingCharacters(in: .whitespaces)
-        let folderValue = folder.trimmingCharacters(in: .whitespaces)
-        let labelValue = label.trimmingCharacters(in: .whitespaces)
+        let labelValue = caldavLabel.trimmingCharacters(in: .whitespaces)
         let passwordValue = password
         Task {
-            let success = await vm.addImapAccount(
-                host: hostValue,
-                port: port,
+            let success = await vm.addCalDAV(
+                url: urlValue,
                 username: usernameValue,
                 password: passwordValue,
-                folder: folderValue.isEmpty ? "INBOX" : folderValue,
-                security: security.rawValue,
                 label: labelValue
             )
-            isConnectingIMAP = false
+            isConnectingCalDAV = false
             if success {
                 dismiss()
             } else {
-                imapError = vm.error
+                caldavError = vm.error
                 // With the assistant open, hand it the failure right away so
                 // it can explain the error in plain words (snapshot only —
                 // never the password value).
-                if showAssistant, let err = imapError, let chatVM = setupChatVM {
+                if showAssistant, let err = caldavError, let chatVM = setupChatVM {
+                    chatVM.sendConnectionError(err, snapshot: formSnapshot())
+                }
+            }
+        }
+    }
+
+    private func connectICS() {
+        guard let vm else { return }
+        isConnectingICS = true
+        icsError = nil
+        let feedValue = feedURL.trimmingCharacters(in: .whitespaces)
+        let labelValue = icsLabel.trimmingCharacters(in: .whitespaces)
+        Task {
+            let success = await vm.addICS(feedURL: feedValue, label: labelValue)
+            isConnectingICS = false
+            if success {
+                dismiss()
+            } else {
+                icsError = vm.error
+                // Snapshot only — the secret feed URL itself never reaches
+                // the assistant, just the fact that the field is filled.
+                if showAssistant, let err = icsError, let chatVM = setupChatVM {
                     chatVM.sendConnectionError(err, snapshot: formSnapshot())
                 }
             }
@@ -388,16 +391,16 @@ struct AddEmailAccountView: View {
     }
 }
 
-// MARK: - EmailSetupAssistantPanel
+// MARK: - CalendarSetupAssistantPanel
 
-/// Compact chat panel docked to the right of the Add Email Account cards while
-/// the setup assistant is open: header, scrollable message list (house chat
+/// Compact chat panel docked to the right of the Add Calendar cards while the
+/// setup assistant is open: header, scrollable message list (house chat
 /// bubbles), and a `ChatInput` at the bottom. The input lives OUTSIDE the
 /// message ScrollView (nested-NSScrollView collapse — same placement rule as
-/// `SituationDiscussInputBar`).
-private struct EmailSetupAssistantPanel: View {
-    @Bindable var chatVM: EmailSetupChatViewModel
-    let makeSnapshot: () -> ImapFormSnapshot
+/// `SituationDiscussInputBar`). Deliberate copy of `EmailSetupAssistantPanel`.
+private struct CalendarSetupAssistantPanel: View {
+    @Bindable var chatVM: CalendarSetupChatViewModel
+    let makeSnapshot: () -> CalendarFormSnapshot
     let onClose: () -> Void
 
     private let bottomAnchor = "setup-chat-bottom"
@@ -420,7 +423,7 @@ private struct EmailSetupAssistantPanel: View {
                 isStreaming: chatVM.isStreaming,
                 onSend: { chatVM.send(snapshot: makeSnapshot()) },
                 onStop: { chatVM.cancelStream() },
-                placeholder: "e.g. \"my mail is on Yahoo\""
+                placeholder: "e.g. \"my calendar is on iCloud\""
             )
         }
     }

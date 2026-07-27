@@ -53,6 +53,8 @@ struct GeneralSettings: View {
     @State private var jiraAuth = JiraAuthService()
     @State private var showAddEmailAccountSheet = false
     @State private var accountPendingRemoval: EmailAccount?
+    @State private var showAddCalendarAccountSheet = false
+    @State private var calendarAccountPendingRemoval: CalendarAccount?
 
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
@@ -73,6 +75,7 @@ struct GeneralSettings: View {
             dayPlanSection
             aiSection
             calendarSettingsSection
+            calendarAccountsSection
             gmailSettingsSection
             emailAccountsSection
             transcriptionSection
@@ -106,6 +109,7 @@ struct GeneralSettings: View {
             jiraAuth.checkStatus()
             slackAuth.checkStatus()
             appState.emailAccountsViewModel?.refresh()
+            appState.calendarAccountsViewModel?.refresh()
         }
     }
 
@@ -536,6 +540,14 @@ struct GeneralSettings: View {
 
                 Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
                     .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
+            } else if !Constants.gmailOAuthAvailable {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                    Text("Temporarily unavailable (pending Google verification) — use IMAP with an app password instead.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 HStack {
                     Image(systemName: "envelope.badge")
@@ -650,6 +662,83 @@ struct GeneralSettings: View {
         if account.isOK { return .green }
         if account.isRevoked { return .orange }
         return .red
+    }
+
+    /// Calendar Accounts section — the multi-account CalDAV/ICS connections,
+    /// distinct from Google Calendar's single-account section above. Each row
+    /// is a DB row (`calendar_accounts`), so status can be ok/error per
+    /// account rather than a single connected/disconnected flag.
+    private var calendarAccountsSection: some View {
+        Section("Calendar Accounts") {
+            if let vm = appState.calendarAccountsViewModel {
+                if vm.accounts.isEmpty {
+                    Text("No CalDAV or ICS calendars connected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.accounts) { account in
+                        HStack {
+                            Image(systemName: account.isICS ? "link" : "server.rack")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(account.displayName)
+                                Text(account.isICS ? "ICS feed" : "CalDAV \u{00B7} \(account.url)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(account.isOK ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Button("Remove") {
+                                calendarAccountPendingRemoval = account
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button("Add Calendar") {
+                    showAddCalendarAccountSheet = true
+                }
+            } else {
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $showAddCalendarAccountSheet) {
+            AddCalendarAccountView()
+                .environment(appState)
+        }
+        .confirmationDialog(
+            "Remove \(calendarAccountPendingRemoval?.displayName ?? "this calendar")?",
+            isPresented: Binding(
+                get: { calendarAccountPendingRemoval != nil },
+                set: { if !$0 { calendarAccountPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Calendar", role: .destructive) {
+                if let account = calendarAccountPendingRemoval {
+                    Task { await appState.calendarAccountsViewModel?.remove(account) }
+                }
+                calendarAccountPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Removes the connection and stops syncing this calendar. "
+                    + "Already-synced events and AI products built on them are kept."
+            )
+        }
     }
 
     private var transcriptionSection: some View {

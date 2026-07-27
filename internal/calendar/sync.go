@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	"watchtower/internal/config"
@@ -73,15 +74,19 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		}
 	}
 
-	// Determine which calendars to sync.
-	calendarIDs := s.cfg.Calendar.SelectedCalendars
+	// Determine which calendars to sync. CalDAV/ICS accounts (internal/caldav)
+	// register their own calendar_calendars rows scoped "caldav:<id>"/"ics:<id>";
+	// those must never enter this Google syncer's fetch loop (the Google API
+	// doesn't know them) nor its stale-delete loop (which would wipe another
+	// source's freshly-synced events).
+	calendarIDs := dropNonGoogleCalendarIDs(s.cfg.Calendar.SelectedCalendars)
 	if len(calendarIDs) == 0 {
 		// Use selected calendars from DB.
 		dbIDs, err := s.db.GetSelectedCalendarIDs()
 		if err != nil {
 			s.logger.Printf("calendar: failed to get selected calendars from DB, falling back to primary: %v", err)
 			calendarIDs = []string{"primary"}
-		} else if len(dbIDs) == 0 {
+		} else if dbIDs = dropNonGoogleCalendarIDs(dbIDs); len(dbIDs) == 0 {
 			calendarIDs = []string{"primary"}
 		} else {
 			calendarIDs = dbIDs
@@ -148,6 +153,20 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 
 	return count, nil
+}
+
+// dropNonGoogleCalendarIDs filters out calendar ids owned by the CalDAV/ICS
+// multi-account source ("caldav:<id>"/"ics:<id>" — db.CalendarAccountCalendarID),
+// which share the calendar_calendars table but are synced by internal/caldav.
+func dropNonGoogleCalendarIDs(ids []string) []string {
+	out := ids[:0:0]
+	for _, id := range ids {
+		if strings.HasPrefix(id, "caldav:") || strings.HasPrefix(id, "ics:") {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 // recordAuthResult persists the calendar auth state. Pass err=nil to mark auth as healthy.
