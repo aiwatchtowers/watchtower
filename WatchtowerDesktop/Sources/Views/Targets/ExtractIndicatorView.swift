@@ -3,14 +3,18 @@ import SwiftUI
 /// Global bottom-trailing capsule reflecting `TargetExtractCenter` state, so an
 /// in-flight "Extract with AI" run — and its finished result — is visible and
 /// actionable from every screen and survives navigation. Hidden when idle.
+///
+/// The `.failed` phase (Retry/Show-details capsule) renders via
+/// `ExtractFailedCapsuleView.swift` — split out to keep this file's own
+/// structural fan-out under the god-file gate.
 struct ExtractIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var showPreview = false
-    @State private var showDetails = false
+    @State var showDetails = false
 
     var body: some View {
         let center = appState.targetExtractCenter
-        content(center)
+        renderPhase(center)
             // Sit above the recording indicator when both are visible.
             .padding(16)
             .padding(.bottom, 72)
@@ -28,7 +32,7 @@ struct ExtractIndicatorView: View {
     }
 
     @ViewBuilder
-    private func content(_ center: TargetExtractCenter) -> some View {
+    private func renderPhase(_ center: TargetExtractCenter) -> some View {
         switch center.phase {
         case .idle:
             EmptyView()
@@ -61,29 +65,7 @@ struct ExtractIndicatorView: View {
         }
     }
 
-    private func failedCapsule(_ center: TargetExtractCenter, message: String, canRetry: Bool) -> some View {
-        capsule {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(message).font(.callout.weight(.medium))
-                if showDetails, let raw = center.lastRawError {
-                    Text(raw).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(4)
-                } else if center.lastRawError != nil {
-                    Button("Show details") { showDetails = true }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if canRetry {
-                Button("Retry") { showDetails = false; center.retry() }
-                    .controlSize(.small)
-            }
-            Button("Dismiss") { center.dismiss() }
-                .controlSize(.small)
-        }
-        .frame(maxWidth: 420)
-    }
-
-    private func capsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    func capsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         HStack(spacing: 10) { content() }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
