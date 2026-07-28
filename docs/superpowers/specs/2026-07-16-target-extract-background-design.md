@@ -18,9 +18,9 @@ Two things are wrong:
 1. **Presentation.** The user sees a stack of Go error wrappers. It communicates neither *what
    happened* nor *what to do*. The failure is shown either inline (red text in the open sheet) or as
    an alert "Extraction failed" whose only button is **OK** — no retry, no recovery.
-2. **Root cause.** The claude CLI did not finish within the **45 s** timeout
+2. **Root cause.** The claude CLI did not finish within the **90 s** timeout
    (`config.DefaultTargetsExtractTimeoutSeconds`). This is almost always transient (API overload,
-   cold start, longer text). A hard 45 s ceiling on a foreground-blocking call turns a slow-but-fine
+   cold start, longer text). A hard ceiling on a foreground-blocking call turns a slow-but-fine
    run into a hard failure.
 
 There is also a latent bug: today the extraction `Task` is owned by the sheet's button action, and
@@ -36,7 +36,7 @@ operation** that:
 - survives navigation and sheet dismissal (never drops its result),
 - shows live status and completion from anywhere in the app via a floating capsule,
 - never shows raw Go error chains — only human-readable messages with a clear next action,
-- is stoppable by the user (Cancel) rather than by a short timeout.
+- runs with **no timeout at all** — the only way it stops early is the user pressing Cancel.
 
 This is the same surviving-state pattern already used by `MeetingRecorderCenter` /
 `RecordingIndicatorView` and matches the project lesson: async operations must have navigation-surviving
@@ -125,10 +125,16 @@ The center maps the CLI stderr into a human message (never the raw chain). Exten
 
 ## Go change
 
-Raise `DefaultTargetsExtractTimeoutSeconds` from **45** to **~600** in
-`internal/config/defaults.go`. This is a zombie-process safety ceiling, not a UX deadline — with the
-capsule's Cancel, the user controls stopping. The config key `targets.extract.timeout_seconds`
-remains overridable. No pipeline logic changes; the `targets extract --json` contract is unchanged.
+Make extraction run with **no deadline**. Today `internal/targets/pipeline.go` always wraps the AI
+call in `context.WithTimeout` (config `targets.extract.timeout_seconds`, default 90). Change the
+semantics so a value `<= 0` means *no timeout* — use the parent context directly
+(`context.WithCancel`) instead of `WithTimeout`, and set `DefaultTargetsExtractTimeoutSeconds = 0` in
+`internal/config/defaults.go`. The config key remains overridable for anyone who wants a ceiling, but
+the default (and the Desktop flow) run without one.
+
+The only stop mechanism is the user's **Cancel** in the capsule: Swift `Process.terminate()` kills
+the `watchtower` CLI, whose `exec.CommandContext` in turn kills the claude subprocess. No pipeline
+logic beyond the timeout wrapping changes; the `targets extract --json` contract is unchanged.
 
 ## Testing
 
@@ -141,6 +147,8 @@ remains overridable. No pipeline logic changes; the `targets extract --json` con
 - **Error mapping:** each stderr condition maps to the right message and `canRetry` value; raw chain
   never surfaces except behind "Show details".
 - **Retry:** `.failed(canRetry: true)` → Retry re-runs with the remembered text.
+- **Go no-timeout semantics:** `targets.extract.timeout_seconds <= 0` uses the parent context (no
+  deadline); a positive value still applies a `WithTimeout` ceiling.
 - Check `docs/inventory/` for any target-extract contract before touching; do not weaken guard tests.
 
 ## Files touched (anticipated)
@@ -149,5 +157,6 @@ remains overridable. No pipeline logic changes; the `targets extract --json` con
 - `WatchtowerDesktop/Sources/Views/.../ExtractIndicatorView.swift` — **new** capsule.
 - `WatchtowerDesktop/Sources/WatchtowerApp.swift` — mount capsule + app-level `ExtractPreviewSheet` host.
 - `WatchtowerDesktop/Sources/Views/Targets/CreateTargetSheet.swift` — hand off Task ownership to the center; keep auto-open-when-open behavior.
-- `internal/config/defaults.go` — timeout 45 → ~600.
+- `internal/targets/pipeline.go` — `<= 0` timeout means no deadline (use parent context).
+- `internal/config/defaults.go` — `DefaultTargetsExtractTimeoutSeconds` 90 → 0 (no timeout by default).
 - Tests in `WatchtowerDesktop/Tests/…`.

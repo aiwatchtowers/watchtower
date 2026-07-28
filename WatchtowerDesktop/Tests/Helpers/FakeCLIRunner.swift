@@ -6,6 +6,9 @@ import Foundation
 final class FakeCLIRunner: CLIRunnerProtocol {
     private let stdoutData: Data
     var shouldThrow: Error?
+    /// When true, `run` suspends until the awaiting Task is cancelled, then
+    /// throws `CancellationError` — models a long extraction the user cancels.
+    var blockUntilCancelled = false
     private(set) var invocations: [[String]] = []
 
     init(stdout: Data = Data(), error: Error? = nil) {
@@ -15,6 +18,10 @@ final class FakeCLIRunner: CLIRunnerProtocol {
 
     func run(args: [String]) async throws -> Data {
         invocations.append(args)
+        if blockUntilCancelled {
+            // Sleeps effectively forever; cancellation throws CancellationError.
+            try await Task.sleep(nanoseconds: .max)
+        }
         if let shouldThrow { throw shouldThrow }
         return stdoutData
     }

@@ -71,6 +71,9 @@ struct WatchtowerApp: App {
                 .overlay(alignment: .bottomTrailing) {
                     RecordingIndicatorView()
                 }
+                .overlay(alignment: .bottomTrailing) {
+                    ExtractIndicatorView()
+                }
                 .background(OpaqueWindowBackground())
                 // `.environment` must wrap the overlay too: the overlay attaches as a
                 // sibling outside any environment applied deeper on NavigationRoot, so

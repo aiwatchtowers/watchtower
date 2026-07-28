@@ -63,18 +63,28 @@ struct ProcessCLIRunner: CLIRunnerProtocol {
             throw CLIRunnerError.launchFailed(underlying: error)
         }
 
-        // Read pipe data BEFORE waitUntilExit to prevent deadlock when output exceeds 64 KB.
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        // Terminate the subprocess if the awaiting Task is cancelled (the user
+        // pressed Cancel in the extraction capsule). `readDataToEndOfFile` /
+        // `waitUntilExit` run on the calling cooperative-pool thread (this
+        // method is a nonisolated async call, so it never blocks the main
+        // actor); terminate() from the cancel handler unblocks the wait.
+        return try await withTaskCancellationHandler {
+            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
 
-        let exitCode = process.terminationStatus
-        if exitCode != 0 {
-            let stderr = String(data: stderrData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            throw CLIRunnerError.nonZeroExit(code: exitCode, stderr: stderr)
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            let exitCode = process.terminationStatus
+            if exitCode != 0 {
+                let stderr = String(data: stderrData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                throw CLIRunnerError.nonZeroExit(code: exitCode, stderr: stderr)
+            }
+            return stdoutData
+        } onCancel: {
+            process.terminate()
         }
-
-        return stdoutData
     }
 }
