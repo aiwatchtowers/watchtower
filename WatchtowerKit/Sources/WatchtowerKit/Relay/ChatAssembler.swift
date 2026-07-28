@@ -80,7 +80,7 @@ public actor ChatAssembler: ChatChunkAssembling {
     public init(
         transport: any CloudSyncTransport,
         store: ReplicaStore,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.store = store

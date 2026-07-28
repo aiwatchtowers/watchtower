@@ -32,7 +32,7 @@ public struct InboxConversationMessage: Identifiable, Equatable {
 
 // MARK: - InboxItem
 
-public struct InboxItem: FetchableRecord, Identifiable, Equatable {
+public struct InboxItem: FetchableRecord, Identifiable, Equatable, Sendable {
     public let id: Int
     public let channelID: String
     public let messageTS: String

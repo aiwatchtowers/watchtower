@@ -79,7 +79,7 @@ public actor DirectAPIAgent: MobileAgentBackend {
         apiKey: @escaping @Sendable () -> String?,
         model: @escaping @Sendable () -> AgentModel,
         clientFactory: @escaping @Sendable (String) -> any AnthropicStreaming = { AnthropicClient(apiKey: $0) },
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.assembler = assembler
         self.store = store

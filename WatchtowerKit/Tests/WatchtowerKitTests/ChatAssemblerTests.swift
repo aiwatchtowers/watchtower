@@ -455,6 +455,7 @@ final class ChatAssemblerTests: XCTestCase {
 
     // MARK: - ValueObservation over the chat tables
 
+    @MainActor
     func testObservationFiresOnChunkApply() async throws {
         let f = try makeFixtures()
         let (sessionID, messageID) = try await f.assembler.send(text: "hi", sessionID: nil)

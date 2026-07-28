@@ -488,6 +488,7 @@ final class ReplicaTests: XCTestCase {
 
     // MARK: - DatabasePool (production mechanism) path
 
+    @MainActor
     func testHydrateAndObserveOnDatabasePoolPath() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("replica-pool-\(UUID().uuidString)")
