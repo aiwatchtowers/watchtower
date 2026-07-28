@@ -1,8 +1,10 @@
 import Foundation
 
 /// `TargetExtractCenter`'s lifecycle: starting/cancelling/retrying/dismissing
-/// an extraction, and the CLI-driving run loop itself. Split into its own
-/// file so `TargetExtractCenter.swift` stays a thin state/init shell.
+/// an extraction. Split into its own file so `TargetExtractCenter.swift`
+/// stays a thin state/init shell; the CLI-driving run loop itself lives in
+/// `TargetExtractRunLoop.swift` (also split out — combined with these four
+/// methods it re-tripped the god-file gate on its own).
 extension TargetExtractCenter {
     /// Starts an extraction in the background. No-op while one is already
     /// running (single-slot guard) — the runner is not even invoked.
@@ -44,31 +46,5 @@ extension TargetExtractCenter {
         task = nil
         phase = .idle
         result = nil
-    }
-
-    func run(text: String, sourceRef: String, runner: CLIRunnerProtocol) async {
-        do {
-            let extracted = try await TargetExtractService(runner: runner)
-                .extract(text: text, sourceRef: sourceRef)
-            if Task.isCancelled { return }
-            if extracted.extracted.isEmpty {
-                phase = .empty
-                notificationService.sendTargetExtractFailedNotification(reason: "No targets found in this text")
-            } else {
-                result = extracted
-                phase = .ready(count: extracted.extracted.count)
-                notificationService.sendTargetExtractReadyNotification(count: extracted.extracted.count)
-            }
-        } catch is CancellationError {
-            // Cancelled by the user: `cancel()` already reset phase to .idle.
-            return
-        } catch {
-            if Task.isCancelled { return }
-            let raw = Self.rawText(for: error)
-            lastRawError = raw
-            let friendly = Self.friendlyMessage(for: raw)
-            phase = .failed(message: friendly.text, canRetry: friendly.canRetry)
-            notificationService.sendTargetExtractFailedNotification(reason: friendly.text)
-        }
     }
 }
