@@ -26,7 +26,7 @@ final class MeetingChatViewModel {
 
     /// Characters of transcript inlined into the system prompt; the rest is
     /// fetched by the model on demand via get_transcript.
-    static let transcriptExcerptLimit = 12_000
+    nonisolated static let transcriptExcerptLimit = 12_000
 
     init(
         transcript: MeetingTranscript,
