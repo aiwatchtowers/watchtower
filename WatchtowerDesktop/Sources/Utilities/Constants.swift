@@ -9,16 +9,16 @@ enum Constants {
         ?? NSString("~/.config/watchtower/config.yaml").expandingTildeInPath
 
     /// Whether the app should offer *new* Gmail OAuth connections. Gmail's
-    /// `gmail.readonly` scope is a Google "restricted" scope, gated behind a
-    /// CASA security assessment for the OAuth app to leave Testing status —
-    /// while that's pending, new Gmail OAuth grants can fail for anyone not
-    /// already on the app's test-user list. Flip back to `true` once CASA
-    /// passes. An already-connected Gmail account keeps working either way —
-    /// this only hides the "Connect Gmail" entry points, never disconnects
-    /// or hides status for an existing connection. IMAP (e.g. a Gmail app
-    /// password via imap.gmail.com) is unaffected — it's a different auth
-    /// mechanism, not subject to this restriction.
-    static let gmailOAuthAvailable = false
+    /// `gmail.readonly` scope is a Google "restricted" scope — a *public*
+    /// OAuth app needs a CASA security assessment to leave Testing status,
+    /// and while that's pending new Gmail OAuth grants can fail for anyone
+    /// not on the test-user list. The build now ships with an *internal*
+    /// (single-Workspace-org) OAuth app, which needs no verification, so the
+    /// entry points are back on. An already-connected Gmail account keeps
+    /// working either way — this only shows/hides the "Connect Gmail" entry
+    /// points, never disconnects or hides status for an existing connection.
+    /// IMAP (e.g. a Gmail app password via imap.gmail.com) is unaffected.
+    static let gmailOAuthAvailable = true
 
     static let databasePath = NSString("~/.local/share/watchtower").expandingTildeInPath
     static let bundleID = "com.watchtower.desktop"
