@@ -60,9 +60,14 @@ machinery:
 
 ### 3. What this buys
 
-- **Memory:** peak bounded by one ~20 s window (hundreds of MB instead of
-  ~6 GB per 10 min). No explicit `GPU.clearCache()` unless implementation
-  measurement shows MLX cache growth across windows matters.
+- **Memory:** peak bounded by one ~20 s window. Measurement (10-min clip,
+  32 windows) showed the MLX buffer cache DOES grow without bound across
+  windows (3.9→8.2 GB; snapped windows vary in shape so cached buffers are
+  never reused), so the decode closure clears the cache per window
+  (`GPU.clearCache()`, Qwen3-private). Post-fix: cache 0 MB flat,
+  process footprint 1.8 GB and GPU peak ~2.0 GB regardless of clip length
+  (vs 6.1 GB GPU peak full-clip at 10 min), and the run got ~3× faster
+  (18 s vs 52 s — cache thrash was costing time too).
 - **Live:** `supportsLive → true`, `makeLiveSession` returns a session running
   the same windower; finalized window chunks appear in
   `RecordingIndicatorView`'s panel. The Settings capability caption updates by
