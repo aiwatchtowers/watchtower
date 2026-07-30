@@ -108,6 +108,11 @@ final class AppState {
     /// flow (`GoogleConnectFlow.shared`) and is not covered here.
     private(set) var calendarAccountsViewModel: CalendarAccountsViewModel?
 
+    /// Google Accounts ViewModel (multi-account Calendar/Gmail) — persists
+    /// across tab switches so an in-flight OAuth connect survives navigating
+    /// away from the Settings window.
+    private(set) var googleAccountsViewModel: GoogleAccountsViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -275,6 +280,7 @@ final class AppState {
                 initSecretaryProfile(dbManager: manager)
                 initEmailAccounts(dbPool: manager.dbPool)
                 initCalendarAccounts(dbPool: manager.dbPool)
+                initGoogleAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -430,6 +436,12 @@ final class AppState {
         let vm = CalendarAccountsViewModel(dbPool: dbPool)
         vm.refresh()
         calendarAccountsViewModel = vm
+    }
+
+    func initGoogleAccounts(dbPool: DatabasePool) {
+        let vm = GoogleAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        googleAccountsViewModel = vm
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {
