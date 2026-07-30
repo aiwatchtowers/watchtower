@@ -52,8 +52,12 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 	timeMax := now.Add(time.Duration(daysAhead) * 24 * time.Hour)
 
-	// Sync calendar list first.
+	// Sync calendar list first. realPrimaryID captures this account's actual
+	// primary calendar id (its own email) so a later "primary" fallback can
+	// resolve to a per-account-unique id instead of the literal string
+	// "primary", which every account would otherwise collide on.
 	calInfos, err := s.client.FetchCalendars(ctx)
+	var realPrimaryID string
 	if err != nil {
 		s.recordAuthResult(err)
 		if errors.Is(err, ErrAuthRevoked) {
@@ -63,6 +67,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		// Continue with selected calendars from config if available.
 	} else {
 		for _, ci := range calInfos {
+			if ci.Primary {
+				realPrimaryID = ci.ID
+			}
 			cal := db.CalendarCalendar{
 				ID:         ci.ID,
 				Name:       ci.Summary,
@@ -90,14 +97,30 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if s.accountID == 1 {
 		calendarIDs = dropNonGoogleCalendarIDs(s.cfg.Calendar.SelectedCalendars)
 	}
+	// skipStaleDelete marks calendar ids in this run's calendarIDs that had to
+	// fall back to the literal "primary" placeholder because realPrimaryID
+	// couldn't be resolved this cycle (calendar-list fetch failed, or came
+	// back with no calendar flagged primary). Every account falls back to the
+	// same literal id in that case, so cleaning it up here could delete
+	// another account's freshly-synced events under the same bucket —
+	// skip the stale-delete pass for it instead; events still sync fine.
+	skipStaleDelete := map[string]bool{}
+	primaryFallback := func() string {
+		if realPrimaryID != "" {
+			return realPrimaryID
+		}
+		s.logger.Printf("calendar: real primary calendar id unresolved this cycle, using literal \"primary\" and skipping its stale-event cleanup")
+		skipStaleDelete["primary"] = true
+		return "primary"
+	}
 	if len(calendarIDs) == 0 {
 		// Use selected calendars from DB.
 		dbIDs, err := s.db.GetSelectedCalendarIDs(s.accountID)
 		if err != nil {
 			s.logger.Printf("calendar: failed to get selected calendars from DB, falling back to primary: %v", err)
-			calendarIDs = []string{"primary"}
+			calendarIDs = []string{primaryFallback()}
 		} else if dbIDs = dropNonGoogleCalendarIDs(dbIDs); len(dbIDs) == 0 {
-			calendarIDs = []string{"primary"}
+			calendarIDs = []string{primaryFallback()}
 		} else {
 			calendarIDs = dbIDs
 		}
@@ -156,6 +179,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 
 	// Cleanup stale events per calendar (synced before this run).
 	for _, calID := range calendarIDs {
+		if skipStaleDelete[calID] {
+			continue
+		}
 		if n, err := s.db.DeleteStaleCalendarEvents(calID, syncedAt); err != nil {
 			s.logger.Printf("calendar: failed to cleanup stale events for %s: %v", calID, err)
 		} else if n > 0 {

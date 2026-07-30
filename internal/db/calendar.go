@@ -9,6 +9,16 @@ import (
 // <= 0 writes a NULL account_id — the shape caldav/ics calendars need, since
 // those rows must never enter the Google syncer's fetch/stale-delete loops
 // (see dropNonGoogleCalendarIDs in internal/calendar).
+//
+// calendar_calendars.id is a shared keyspace: a public/shared Google calendar
+// subscribed by two different accounts syncs to the SAME row. On conflict
+// this never steals ownership — an already-claimed (non-NULL account_id) row
+// keeps its original owner regardless of which account syncs it next; only a
+// NULL account_id (unclaimed, or a legacy row stamped by migration 00043) can
+// be claimed. Combined with GetSelectedCalendarIDs filtering by account_id,
+// a shared calendar is synced (and stale-cleaned) by whichever account
+// connected it first — the other account simply never selects it, so it can
+// neither duplicate nor cross-delete that calendar's events.
 func (db *DB) UpsertCalendar(accountID int64, cal CalendarCalendar) error {
 	var accountArg any
 	if accountID > 0 {
@@ -16,7 +26,8 @@ func (db *DB) UpsertCalendar(accountID int64, cal CalendarCalendar) error {
 	}
 	_, err := db.Exec(`INSERT INTO calendar_calendars (id, name, is_primary, is_selected, color, synced_at, account_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, is_primary=excluded.is_primary, color=excluded.color, synced_at=excluded.synced_at, account_id=excluded.account_id`,
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, is_primary=excluded.is_primary, color=excluded.color, synced_at=excluded.synced_at,
+			account_id = CASE WHEN calendar_calendars.account_id IS NULL THEN excluded.account_id ELSE calendar_calendars.account_id END`,
 		cal.ID, cal.Name, cal.IsPrimary, cal.IsSelected, cal.Color, cal.SyncedAt, accountArg)
 	if err != nil {
 		return fmt.Errorf("upserting calendar %s: %w", cal.ID, err)
