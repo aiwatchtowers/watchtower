@@ -442,6 +442,12 @@ final class AppState {
         let vm = GoogleAccountsViewModel(dbPool: dbPool)
         vm.refresh()
         googleAccountsViewModel = vm
+        // GoogleConnectFlow.shared is a singleton constructed before any
+        // dbPool exists (Navigation.swift / SidebarView.swift reference its
+        // `calendar` service directly) — wire it here, the same point its
+        // sibling VM above gets its pool, so isConnected reads google_accounts
+        // instead of staying permanently false.
+        GoogleConnectFlow.shared.configure(dbPool: dbPool)
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

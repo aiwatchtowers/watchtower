@@ -73,4 +73,39 @@ final class GoogleAccountQueriesTests: XCTestCase {
         XCTAssertEqual(withEmail.displayName, "me@gmail.com")
         XCTAssertEqual(bare.displayName, "Google account #\(idBare)")
     }
+
+    // MARK: - hasConnectedCalendarAccount / hasConnectedGmailAccount
+
+    func testHasConnectedCalendarAccountFalseWhenNoAccounts() throws {
+        let pool = try makePool()
+        XCTAssertFalse(try pool.read { db in try GoogleAccountQueries.hasConnectedCalendarAccount(db) })
+    }
+
+    func testHasConnectedCalendarAccountTrueOnlyForEnabledAndOK() throws {
+        let pool = try makePool()
+        try pool.write { db in
+            // calendar_enabled but status is error — must not count.
+            try TestDatabase.insertGoogleAccount(db, email: "broken@gmail.com", calendarEnabled: true, status: "error")
+        }
+        XCTAssertFalse(try pool.read { db in try GoogleAccountQueries.hasConnectedCalendarAccount(db) })
+
+        try pool.write { db in
+            try TestDatabase.insertGoogleAccount(db, email: "ok@gmail.com", calendarEnabled: true, status: "ok")
+        }
+        XCTAssertTrue(try pool.read { db in try GoogleAccountQueries.hasConnectedCalendarAccount(db) })
+    }
+
+    func testHasConnectedGmailAccountIndependentOfCalendar() throws {
+        let pool = try makePool()
+        try pool.write { db in
+            // Calendar-only account, healthy — must not count for Gmail.
+            try TestDatabase.insertGoogleAccount(db, email: "cal-only@gmail.com", calendarEnabled: true, gmailEnabled: false, status: "ok")
+        }
+        XCTAssertFalse(try pool.read { db in try GoogleAccountQueries.hasConnectedGmailAccount(db) })
+
+        try pool.write { db in
+            try TestDatabase.insertGoogleAccount(db, email: "gmail-only@gmail.com", calendarEnabled: false, gmailEnabled: true, status: "ok")
+        }
+        XCTAssertTrue(try pool.read { db in try GoogleAccountQueries.hasConnectedGmailAccount(db) })
+    }
 }

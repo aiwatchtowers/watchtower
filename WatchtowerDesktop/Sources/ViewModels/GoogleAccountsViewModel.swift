@@ -73,14 +73,21 @@ final class GoogleAccountsViewModel {
     /// matching `clientSecret` is NEVER passed as a flag/argv — it's written
     /// to the subprocess's stdin pipe (plus a trailing newline), same as the
     /// IMAP password / CalDAV credential pattern.
-    func addAccount(label: String, calendar: Bool, gmail: Bool, clientID: String, clientSecret: String) {
+    ///
+    /// Returns whether a connect attempt actually started — `false` from
+    /// either early-return guard below means `isConnecting` never flips
+    /// true→false for THIS call, so a caller gating on that transition (e.g.
+    /// `AddGoogleAccountView`'s auto-dismiss-on-success `onChange`) must not
+    /// arm itself when this returns `false`.
+    @discardableResult
+    func addAccount(label: String, calendar: Bool, gmail: Bool, clientID: String, clientSecret: String) -> Bool {
         guard !isConnecting else {
             error = "Another connection is already in progress."
-            return
+            return false
         }
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"
-            return
+            return false
         }
 
         isConnecting = true
@@ -119,6 +126,7 @@ final class GoogleAccountsViewModel {
                 }
             }
         }
+        return true
     }
 
     // MARK: - Re-login

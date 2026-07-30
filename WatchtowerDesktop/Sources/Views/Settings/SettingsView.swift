@@ -75,6 +75,7 @@ struct GeneralSettings: View {
             calendarSettingsSection
             googleAccountsSection
             calendarAccountsSection
+            calendarSelectionSection
             gmailSettingsSection
             emailAccountsSection
             transcriptionSection
@@ -749,6 +750,59 @@ struct GeneralSettings: View {
                 "Removes the connection and stops syncing this calendar. "
                     + "Already-synced events and AI products built on them are kept."
             )
+        }
+    }
+
+    /// Per-calendar sync selection — the Desktop twin of `watchtower calendar
+    /// select <id>`. Grouped under one Section per connected Google account
+    /// (using `GoogleAccountsViewModel.accounts` for the header label) plus a
+    /// trailing group for CalDAV/ICS calendars (`account_id IS NULL`), so a
+    /// multi-account workspace can tell which calendar belongs to which
+    /// connection. `@ViewBuilder` because the group count varies with how
+    /// many accounts have synced calendars — unlike this file's other
+    /// section properties, which always render exactly one `Section`.
+    @ViewBuilder
+    private var calendarSelectionSection: some View {
+        if let calVM = appState.calendarViewModel, !calVM.calendars.isEmpty {
+            ForEach(appState.googleAccountsViewModel?.accounts ?? []) { account in
+                let calendars = calVM.calendars.filter { $0.accountID == account.id }
+                if !calendars.isEmpty {
+                    Section("Calendars \u{00B7} \(account.displayName)") {
+                        calendarSelectionRows(calendars, calVM: calVM)
+                    }
+                }
+            }
+            let otherCalendars = calVM.calendars.filter { $0.accountID == nil }
+            if !otherCalendars.isEmpty {
+                Section("Calendars \u{00B7} CalDAV/ICS") {
+                    calendarSelectionRows(otherCalendars, calVM: calVM)
+                }
+            }
+        } else {
+            Section("Synced Calendars") {
+                Text("No calendars synced yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func calendarSelectionRows(_ calendars: [CalendarCalendarItem], calVM: CalendarViewModel) -> some View {
+        ForEach(calendars) { cal in
+            Toggle(isOn: Binding(
+                get: { cal.isSelected },
+                set: { calVM.setCalendarSelected(cal.id, selected: $0) }
+            )) {
+                HStack(spacing: 4) {
+                    Text(cal.name)
+                    if cal.isPrimary {
+                        Text("Primary")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
 

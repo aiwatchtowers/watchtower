@@ -13,10 +13,13 @@ struct SidebarView: View {
     /// Held in @State so hide/show re-renders; persisted to UserDefaults.
     @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
 
-    /// Token-file check for the "connect" badge on the Calendar item.
-    /// Re-checked on every selection change (cheap file stat) so the badge
-    /// clears right after the user connects from any screen.
-    @State private var googleAuth = GoogleAuthService()
+    /// DB-derived connection check for the "connect" badge on the Calendar
+    /// item — reuses `GoogleConnectFlow.shared.calendar` (wired to a dbPool
+    /// by `AppState.initGoogleAccounts`) rather than a locally-constructed
+    /// `GoogleAuthService()`, which would have no DB access. Re-checked on
+    /// every selection change so the badge clears right after the user
+    /// connects from any screen.
+    private let googleAuth = GoogleConnectFlow.shared.calendar
 
     private static func storageKey(_ section: SidebarSection) -> String {
         "sidebar.section.\(section.id).collapsed"

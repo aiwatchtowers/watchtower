@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 
 @MainActor
 @Observable
@@ -8,8 +9,18 @@ final class GoogleAuthService {
     var error: String?
 
     private var authProcess: Process?
+    private var dbPool: DatabasePool?
 
-    init() {
+    init() {}
+
+    /// Wires DB access once AppState's pool is available. This service can be
+    /// constructed before the pool exists — `GoogleConnectFlow.shared` (whose
+    /// `calendar` property is this class) is a `static let` singleton built
+    /// at first access, before `AppState.initialize()` has necessarily run —
+    /// so `isConnected` stays `false` until this fires. Immediately re-checks
+    /// status. Called from `AppState.initGoogleAccounts`.
+    func configure(dbPool: DatabasePool) {
+        self.dbPool = dbPool
         checkStatus()
     }
 
@@ -41,8 +52,11 @@ final class GoogleAuthService {
                 self.authProcess = nil
                 self.isAuthenticating = false
                 if result.exitCode == 0 {
-                    self.isConnected = true
                     self.error = nil
+                    // Re-read from the DB rather than assuming — the CLI
+                    // writes the google_accounts row before exiting, so this
+                    // reflects exactly what got granted.
+                    Task { await self.checkStatusAsync() }
                     // Re-wire the daemon so the first sync + AI cycle runs now.
                     Task { await DaemonManager.restart() }
                 } else if result.exitCode == 15 || result.exitCode == 9 {
@@ -67,29 +81,28 @@ final class GoogleAuthService {
 
     // MARK: - Status
 
+    /// Fire-and-forget status refresh — DB-derived (any `google_accounts` row
+    /// with `calendar_enabled=1 AND status='ok'`), unlike the old per-
+    /// account-#1 token-file stat, which only ever reflected a single
+    /// account and couldn't distinguish Calendar from Gmail.
     func checkStatus() {
-        let fm = FileManager.default
-        // Multi-account Google (Task 1-10): both Calendar and Gmail access for
-        // account #1 share one token file, google_token_1.json — the legacy
-        // single-account google_token.json is migrated to it in place by
-        // ensureLegacyGoogleAccount (cmd/google_legacy.go), which the daemon
-        // runs on every sync, so this stays accurate moments after a fresh
-        // install's first sync completes. This service only reflects account
-        // #1; a second+ account is a `GoogleAccountsViewModel` row.
-        //
-        // Only the ACTIVE workspace's token counts — logout deletes the token
-        // there, and a stale token in an old workspace must not read as connected.
-        if let dir = Constants.activeWorkspaceDir() {
-            isConnected = fm.fileExists(atPath: "\(dir)/google_token_1.json")
-            return
-        }
-        // No active workspace configured — fall back to scanning all workspaces.
-        let basePath = Constants.databasePath
-        guard let contents = try? fm.contentsOfDirectory(atPath: basePath) else {
+        Task { await checkStatusAsync() }
+    }
+
+    /// The awaitable body of `checkStatus()` — callers that need the fresh
+    /// DB-derived value before continuing (e.g. `GoogleConnectFlow.
+    /// finishConnect` deciding what was actually granted) must await this
+    /// directly instead of racing the fire-and-forget `checkStatus()`.
+    func checkStatusAsync() async {
+        guard let dbPool else {
             isConnected = false
             return
         }
-        isConnected = contents.contains { fm.fileExists(atPath: "\(basePath)/\($0)/google_token_1.json") }
+        do {
+            isConnected = try await dbPool.read { db in try GoogleAccountQueries.hasConnectedCalendarAccount(db) }
+        } catch {
+            isConnected = false
+        }
     }
 
     // MARK: - CLI Helper

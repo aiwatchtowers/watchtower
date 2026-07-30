@@ -23,9 +23,18 @@ struct AddGoogleAccountView: View {
     /// while this one happens to still be around).
     @State private var connectAttempted = false
 
+    /// Custom-client fields must be BOTH empty or BOTH set — a secret typed
+    /// with no client ID would otherwise be silently dropped: `addAccount`
+    /// only treats the pair as a custom client when `clientID` is non-empty
+    /// (`hasCustomClient = !clientID.isEmpty`), so a lone secret gets thrown
+    /// away and the account connects with the build-time default OAuth
+    /// client instead, with no signal to the user that their secret was ignored.
+    private var customClientFieldsConsistent: Bool {
+        clientID.isEmpty == clientSecret.isEmpty
+    }
+
     private var canConnect: Bool {
-        (wantCalendar || wantGmail)
-            && (clientID.isEmpty || !clientSecret.isEmpty)
+        (wantCalendar || wantGmail) && customClientFieldsConsistent
     }
 
     var body: some View {
@@ -51,6 +60,11 @@ struct AddGoogleAccountView: View {
                         .textFieldStyle(.roundedBorder)
                     SecureField("Client secret", text: $clientSecret)
                         .textFieldStyle(.roundedBorder)
+                    if !clientSecret.isEmpty && clientID.isEmpty {
+                        Text("Client ID is required when a secret is provided.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                     Text("Needed when this account belongs to a different Google Workspace org than the built-in app.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -108,13 +122,17 @@ struct AddGoogleAccountView: View {
     }
 
     private func connect() {
-        connectAttempted = true
-        vm?.addAccount(
+        // Only arm the auto-dismiss guard when addAccount() actually started
+        // a connection — its own early-return guards (already connecting, no
+        // CLI found) return false without ever flipping isConnecting, so the
+        // onChange below would otherwise wait for a true→false transition
+        // that will never come from this attempt.
+        connectAttempted = vm?.addAccount(
             label: label.trimmingCharacters(in: .whitespaces),
             calendar: wantCalendar,
             gmail: wantGmail,
             clientID: clientID.trimmingCharacters(in: .whitespaces),
             clientSecret: clientSecret
-        )
+        ) ?? false
     }
 }

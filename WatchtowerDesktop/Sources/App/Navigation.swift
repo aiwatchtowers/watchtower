@@ -45,7 +45,12 @@ struct SplashView: View {
 struct MainNavigationView: View {
     @Environment(AppState.self) private var appState
     @State private var showMenu = true
-    @State private var googleAuth = GoogleAuthService()
+    /// Reuses `GoogleConnectFlow.shared.calendar` (rather than a locally-
+    /// constructed `GoogleAuthService()`) so this reconnect flow gets its
+    /// DB-derived `isConnected` from the same wiring — `AppState.
+    /// initGoogleAccounts` calls `GoogleConnectFlow.shared.configure(dbPool:)`
+    /// — instead of a second instance with no DB access.
+    private let googleAuth = GoogleConnectFlow.shared.calendar
     @State private var dismissedAuthTimestamp: String = UserDefaults.standard.string(forKey: "dismissedCalendarAuthAt") ?? ""
 
     /// Show the reconnect popup when the daemon has flagged the calendar auth as broken

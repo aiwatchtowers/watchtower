@@ -1452,12 +1452,13 @@ enum TestDatabase {
         id: String = "primary",
         name: String = "Primary",
         isPrimary: Bool = true,
-        isSelected: Bool = true
+        isSelected: Bool = true,
+        accountID: Int64? = nil
     ) throws {
         try db.execute(sql: """
-            INSERT OR IGNORE INTO calendar_calendars (id, name, is_primary, is_selected)
-            VALUES (?, ?, ?, ?)
-            """, arguments: [id, name, isPrimary ? 1 : 0, isSelected ? 1 : 0])
+            INSERT OR IGNORE INTO calendar_calendars (id, name, is_primary, is_selected, account_id)
+            VALUES (?, ?, ?, ?, ?)
+            """, arguments: [id, name, isPrimary ? 1 : 0, isSelected ? 1 : 0, accountID])
     }
 
     static func insertCalendarEvent(
