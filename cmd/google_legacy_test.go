@@ -104,3 +104,32 @@ func TestEnsureLegacyGoogleAccount_CalendarOnlyLeavesGmailDisabled(t *testing.T)
 	assert.True(t, acct.CalendarEnabled)
 	assert.False(t, acct.GmailEnabled)
 }
+
+func TestEnsureLegacyGoogleAccount_GmailOnlyMigratesAndLeavesCalendarDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	database := db.OpenTestDB(t)
+
+	require.NoFileExists(t, filepath.Join(cfg.WorkspaceDir(), "google_token.json"))
+	require.NoError(t, gmail.NewTokenStore(cfg.WorkspaceDir()).Save(&gmail.OAuthToken{RefreshToken: "gmail-only"}))
+
+	id, err := ensureLegacyGoogleAccount(context.Background(), cfg, database, quietTestLogger())
+	require.NoError(t, err)
+	require.NotZero(t, id)
+
+	acct, err := database.GetGoogleAccount(id)
+	require.NoError(t, err)
+	assert.False(t, acct.CalendarEnabled)
+	assert.True(t, acct.GmailEnabled)
+
+	// Legacy gmail token renamed to the shared per-account file (no
+	// calendar file to prefer, since this workspace never connected
+	// Calendar).
+	assert.NoFileExists(t, gmail.NewTokenStore(cfg.WorkspaceDir()).Path())
+	assert.FileExists(t, calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id).Path())
+
+	token, err := gmail.NewAccountTokenStore(cfg.WorkspaceDir(), id).Load()
+	require.NoError(t, err)
+	assert.Equal(t, "gmail-only", token.RefreshToken)
+}
