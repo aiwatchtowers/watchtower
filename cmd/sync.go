@@ -503,7 +503,7 @@ func wireGmailSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 		}
 		return
 	}
-	d.SetGmailSyncer(gmail.NewSyncer(gmClient, database, cfg, logger))
+	d.SetGmailSyncer(gmail.NewSyncer(gmClient, database, cfg, logger, stubGoogleAccountID))
 }
 
 // wireImapSyncers wires one imap.Syncer per connected email_accounts row.

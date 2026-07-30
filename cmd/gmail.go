@@ -198,7 +198,7 @@ func runGmailSync(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	syncer := gmail.NewSyncer(client, database, cfg, nil)
+	syncer := gmail.NewSyncer(client, database, cfg, nil, stubGoogleAccountID)
 	count, err := syncer.Sync(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("syncing gmail: %w", err)

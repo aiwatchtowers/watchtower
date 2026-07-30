@@ -3,6 +3,7 @@ package gmail
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -44,7 +45,8 @@ func TestSyncFiltersAndUpserts(t *testing.T) {
 	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
 		t.Fatalf("seeding workspace: %v", err)
 	}
-	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"}); err != nil {
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
 		t.Fatalf("seeding google account: %v", err)
 	}
 	cfg := &config.Config{}
@@ -53,7 +55,7 @@ func TestSyncFiltersAndUpserts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	s := NewSyncer(c, database, cfg, nil)
+	s := NewSyncer(c, database, cfg, nil, accountID)
 	n, err := s.Sync(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +63,7 @@ func TestSyncFiltersAndUpserts(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("want 1 synced (promotions skipped), got %d", n)
 	}
-	rows, err := database.GmailMessagesSyncedAfter(1, "2000-01-01T00:00:00Z")
+	rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -107,7 +109,8 @@ func TestSyncPaginatesWithoutLoss(t *testing.T) {
 	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
 		t.Fatalf("seeding workspace: %v", err)
 	}
-	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"}); err != nil {
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
 		t.Fatalf("seeding google account: %v", err)
 	}
 	cfg := &config.Config{}
@@ -116,7 +119,7 @@ func TestSyncPaginatesWithoutLoss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	s := NewSyncer(c, database, cfg, nil)
+	s := NewSyncer(c, database, cfg, nil, accountID)
 	n, err := s.Sync(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +130,7 @@ func TestSyncPaginatesWithoutLoss(t *testing.T) {
 	if sawPageToken != "tok2" {
 		t.Fatalf("second list request did not carry pageToken from first page, got %q", sawPageToken)
 	}
-	rows, err := database.GmailMessagesSyncedAfter(1, "2000-01-01T00:00:00Z")
+	rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -173,7 +176,8 @@ func TestSyncCapProcessesOldestFirst(t *testing.T) {
 	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
 		t.Fatalf("seeding workspace: %v", err)
 	}
-	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"}); err != nil {
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
 		t.Fatalf("seeding google account: %v", err)
 	}
 	cfg := &config.Config{}
@@ -182,7 +186,7 @@ func TestSyncCapProcessesOldestFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	s := NewSyncer(c, database, cfg, nil)
+	s := NewSyncer(c, database, cfg, nil, accountID)
 	n, err := s.Sync(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -193,14 +197,14 @@ func TestSyncCapProcessesOldestFirst(t *testing.T) {
 	if newFetched {
 		t.Fatal("newer message was fetched despite the cap — should process oldest first only")
 	}
-	rows, err := database.GmailMessagesSyncedAfter(1, "2000-01-01T00:00:00Z")
+	rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if len(rows) != 1 || rows[0].ID != "mOld" {
 		t.Fatalf("expected only the oldest message stored, got: %+v", rows)
 	}
-	watermark, err := database.GetGmailAccountWatermark(1)
+	watermark, err := database.GetGmailAccountWatermark(accountID)
 	if err != nil {
 		t.Fatalf("watermark: %v", err)
 	}
@@ -276,7 +280,8 @@ func TestSyncNoLossWhenBacklogExceedsCap(t *testing.T) {
 	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
 		t.Fatalf("seeding workspace: %v", err)
 	}
-	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"}); err != nil {
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
 		t.Fatalf("seeding google account: %v", err)
 	}
 	cfg := &config.Config{}
@@ -287,7 +292,7 @@ func TestSyncNoLossWhenBacklogExceedsCap(t *testing.T) {
 	}
 	var logBuf strings.Builder
 	logger := log.New(&logBuf, "", 0)
-	s := NewSyncer(c, database, cfg, logger)
+	s := NewSyncer(c, database, cfg, logger, accountID)
 
 	// First sync: backlog of 3 exceeds MaxMessagesPerSync=2. Oldest two
 	// (m1, m2) must be stored; m3 must NOT be fetched this cycle (it's the
@@ -306,7 +311,7 @@ func TestSyncNoLossWhenBacklogExceedsCap(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "exceed cap") {
 		t.Fatalf("first sync: expected truncation log, got log output: %q", logBuf.String())
 	}
-	watermark, err := database.GetGmailAccountWatermark(1)
+	watermark, err := database.GetGmailAccountWatermark(accountID)
 	if err != nil {
 		t.Fatalf("watermark: %v", err)
 	}
@@ -328,14 +333,14 @@ func TestSyncNoLossWhenBacklogExceedsCap(t *testing.T) {
 		t.Fatal("second sync: m3 should have been fetched now")
 	}
 
-	rows, err := database.GmailMessagesSyncedAfter(1, "2000-01-01T00:00:00Z")
+	rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if len(rows) != 3 {
 		t.Fatalf("want all 3 messages eventually stored across both syncs, got %d: %+v", len(rows), rows)
 	}
-	finalWatermark, err := database.GetGmailAccountWatermark(1)
+	finalWatermark, err := database.GetGmailAccountWatermark(accountID)
 	if err != nil {
 		t.Fatalf("final watermark: %v", err)
 	}
@@ -393,7 +398,8 @@ func TestSyncTruncatesBodyOnRuneBoundary(t *testing.T) {
 	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
 		t.Fatalf("seeding workspace: %v", err)
 	}
-	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"}); err != nil {
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
 		t.Fatalf("seeding google account: %v", err)
 	}
 	cfg := &config.Config{}
@@ -402,11 +408,11 @@ func TestSyncTruncatesBodyOnRuneBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	s := NewSyncer(c, database, cfg, nil)
+	s := NewSyncer(c, database, cfg, nil, accountID)
 	if _, err := s.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := database.GmailMessagesSyncedAfter(1, "2000-01-01T00:00:00Z")
+	rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -444,10 +450,11 @@ func TestSyncNarrowsQueryWithAfterOnceWatermarkIsSet(t *testing.T) {
 	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
 		t.Fatalf("seeding workspace: %v", err)
 	}
-	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"}); err != nil {
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
 		t.Fatalf("seeding google account: %v", err)
 	}
-	if err := database.SetGmailAccountWatermark(1, 1700000000); err != nil {
+	if err := database.SetGmailAccountWatermark(accountID, 1700000000); err != nil {
 		t.Fatalf("seeding watermark: %v", err)
 	}
 	cfg := &config.Config{}
@@ -456,7 +463,7 @@ func TestSyncNarrowsQueryWithAfterOnceWatermarkIsSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	s := NewSyncer(c, database, cfg, nil)
+	s := NewSyncer(c, database, cfg, nil, accountID)
 	if _, err := s.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -465,5 +472,150 @@ func TestSyncNarrowsQueryWithAfterOnceWatermarkIsSet(t *testing.T) {
 	}
 	if strings.Contains(sawQuery, "newer_than:") {
 		t.Fatalf("query = %q, should not fall back to newer_than: once a watermark exists", sawQuery)
+	}
+}
+
+// TestSyncTwoAccountsIsolated proves per-account isolation: syncing account A
+// must not touch account B's watermark, and every message A's sync stores
+// must carry account_id = A (enforced here by scoping the read through
+// GmailMessagesSyncedAfter(accountID, ...), which filters on account_id).
+func TestSyncTwoAccountsIsolated(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"messages":[{"id":"m1"}]}`)
+	})
+	mux.HandleFunc("/users/me/messages/m1", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":"m1","threadId":"t1","labelIds":["INBOX"],"snippet":"s",
+          "internalDate":"1720519200000","payload":{"headers":[{"name":"Subject","value":"Hi"}]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"at"}`)
+	}))
+	defer tokenSrv.Close()
+	oldBase, oldTok := gmailAPIBase, googleTokenEndpoint
+	gmailAPIBase, googleTokenEndpoint = srv.URL, tokenSrv.URL
+	defer func() { gmailAPIBase, googleTokenEndpoint = oldBase, oldTok }()
+
+	database := db.OpenTestDB(t)
+	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	accountA, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
+		t.Fatalf("seeding google account A: %v", err)
+	}
+	accountB, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "b@x.com", Label: "B"})
+	if err != nil {
+		t.Fatalf("seeding google account B: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.Gmail = config.GmailConfig{Enabled: true, InitialHistoryDays: 7, MaxMessagesPerSync: 100, MaxBodyBytes: 51200}
+	c, err := NewClient(context.Background(), "refresh", GoogleOAuthConfig{ClientID: "cid"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	s := NewSyncer(c, database, cfg, nil, accountA)
+	n, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 synced for account A, got %d", n)
+	}
+
+	bWatermark, err := database.GetGmailAccountWatermark(accountB)
+	if err != nil {
+		t.Fatalf("account B watermark: %v", err)
+	}
+	if bWatermark != 0 {
+		t.Fatalf("account B watermark = %v, want 0 (untouched by A's sync)", bWatermark)
+	}
+
+	aRows, err := database.GmailMessagesSyncedAfter(accountA, "2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("account A query: %v", err)
+	}
+	if len(aRows) != 1 || aRows[0].ID != "m1" {
+		t.Fatalf("account A rows: %+v", aRows)
+	}
+
+	bRows, err := database.GmailMessagesSyncedAfter(accountB, "2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("account B query: %v", err)
+	}
+	if len(bRows) != 0 {
+		t.Fatalf("account B rows should be empty (A's sync must not leak into B), got: %+v", bRows)
+	}
+}
+
+// TestSyncAuthErrorMarksOnlyOwnAccount proves an auth failure syncing account
+// A records revoked status only on A's google_accounts row, leaving B's
+// status untouched.
+func TestSyncAuthErrorMarksOnlyOwnAccount(t *testing.T) {
+	tokenCalls := 0
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
+		if tokenCalls == 1 {
+			// NewClient's initial token exchange must succeed so the Syncer
+			// can be constructed; the failure is simulated on Sync's
+			// mid-request re-auth below.
+			fmt.Fprint(w, `{"access_token":"at"}`)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"invalid_grant"}`)
+	}))
+	defer tokenSrv.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	oldBase, oldTok := gmailAPIBase, googleTokenEndpoint
+	gmailAPIBase, googleTokenEndpoint = srv.URL, tokenSrv.URL
+	defer func() { gmailAPIBase, googleTokenEndpoint = oldBase, oldTok }()
+
+	database := db.OpenTestDB(t)
+	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	accountA, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
+		t.Fatalf("seeding google account A: %v", err)
+	}
+	accountB, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "b@x.com", Label: "B"})
+	if err != nil {
+		t.Fatalf("seeding google account B: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.Gmail = config.GmailConfig{Enabled: true, InitialHistoryDays: 7, MaxMessagesPerSync: 100, MaxBodyBytes: 51200}
+	c, err := NewClient(context.Background(), "refresh", GoogleOAuthConfig{ClientID: "cid"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	s := NewSyncer(c, database, cfg, nil, accountA)
+	_, err = s.Sync(context.Background())
+	if !errors.Is(err, ErrAuthRevoked) {
+		t.Fatalf("Sync error = %v, want ErrAuthRevoked", err)
+	}
+
+	accA, err := database.GetGoogleAccount(accountA)
+	if err != nil {
+		t.Fatalf("get account A: %v", err)
+	}
+	if accA.Status != "revoked" {
+		t.Fatalf("account A status = %q, want %q", accA.Status, "revoked")
+	}
+
+	accB, err := database.GetGoogleAccount(accountB)
+	if err != nil {
+		t.Fatalf("get account B: %v", err)
+	}
+	if accB.Status != "ok" {
+		t.Fatalf("account B status = %q, want %q (untouched by A's auth failure)", accB.Status, "ok")
 	}
 }
