@@ -441,3 +441,20 @@ func resolveGoogleOAuthConfig() calendar.GoogleOAuthConfig {
 		ClientSecret: clientSecret,
 	}
 }
+
+// resolveGoogleOAuthConfigForAccount returns accountID's own OAuth client
+// credentials (google_credentials_<id>.json) when the account brought its
+// own Google Cloud project, falling back to resolveGoogleOAuthConfig's
+// env/build defaults otherwise.
+func resolveGoogleOAuthConfigForAccount(workspaceDir string, accountID int64) calendar.GoogleOAuthConfig {
+	store := calendar.NewCredentialStore(workspaceDir, accountID)
+	if store.Exists() {
+		if creds, err := store.Load(); err == nil && creds.ClientID != "" {
+			return calendar.GoogleOAuthConfig{
+				ClientID:     creds.ClientID,
+				ClientSecret: creds.ClientSecret,
+			}
+		}
+	}
+	return resolveGoogleOAuthConfig()
+}

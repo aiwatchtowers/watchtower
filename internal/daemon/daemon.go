@@ -66,9 +66,9 @@ type Daemon struct {
 	feedPipe         *feed.Pipeline
 	nextStepPipe     *targets.Pipeline
 	customTracksPipe *customtracks.Pipeline
-	calendarSyncer   *calendar.Syncer
+	calendarSyncers  []*calendar.Syncer
 	calDAVSyncers    []*caldav.Syncer
-	gmailSyncer      *gmail.Syncer
+	gmailSyncers     []*gmail.Syncer
 	imapSyncers      []*imap.Syncer
 	jiraSyncer       *jira.Syncer
 	dayPlanPipeline  DayPlanRunner
@@ -148,9 +148,11 @@ func (d *Daemon) SetCustomTracksPipeline(p *customtracks.Pipeline) {
 	d.customTracksPipe = p
 }
 
-// SetCalendarSyncer sets the calendar syncer for post-sync calendar fetch.
-func (d *Daemon) SetCalendarSyncer(s *calendar.Syncer) {
-	d.calendarSyncer = s
+// SetCalendarSyncers sets the per-account Google Calendar syncers — one per
+// connected google_accounts row with calendar enabled and a live token
+// (mirrors SetCalDAVSyncers/SetImapSyncers).
+func (d *Daemon) SetCalendarSyncers(s []*calendar.Syncer) {
+	d.calendarSyncers = s
 }
 
 // SetCalDAVSyncers sets the per-account CalDAV/ICS calendar syncers — one
@@ -161,9 +163,11 @@ func (d *Daemon) SetCalDAVSyncers(s []*caldav.Syncer) {
 	d.calDAVSyncers = s
 }
 
-// SetGmailSyncer sets the Gmail syncer for post-sync mail fetch.
-func (d *Daemon) SetGmailSyncer(s *gmail.Syncer) {
-	d.gmailSyncer = s
+// SetGmailSyncers sets the per-account Gmail syncers — one per connected
+// google_accounts row with gmail enabled and a live token (mirrors
+// SetCalendarSyncers/SetImapSyncers).
+func (d *Daemon) SetGmailSyncers(s []*gmail.Syncer) {
+	d.gmailSyncers = s
 }
 
 // SetImapSyncers sets the per-account IMAP/Outlook syncers for post-sync mail
@@ -361,16 +365,19 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) error {
 	return syncErr
 }
 
-// phaseCalendarSync pulls Google Calendar events. Lightweight, runs every cycle.
+// phaseCalendarSync pulls Google Calendar events for every connected
+// google_accounts row with calendar enabled. Lightweight, runs every cycle.
+// Like phaseCalDAVSync/phaseImapSync, this loops over one syncer per
+// account — a per-account failure is logged and skipped rather than
+// aborting the rest of the accounts.
 func (d *Daemon) phaseCalendarSync(ctx context.Context) {
-	if d.calendarSyncer == nil {
-		return
-	}
-	n, err := d.calendarSyncer.Sync(ctx)
-	if err != nil {
-		d.logger.Printf("calendar sync error: %v", err)
-	} else if n > 0 {
-		d.logger.Printf("calendar: %d events synced", n)
+	for _, s := range d.calendarSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("calendar sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("calendar: %d events synced", n)
+		}
 	}
 }
 
@@ -389,16 +396,19 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 	}
 }
 
-// phaseGmailSync pulls Gmail inbox messages. Lightweight, runs every cycle.
+// phaseGmailSync pulls Gmail inbox messages for every connected
+// google_accounts row with gmail enabled. Lightweight, runs every cycle.
+// Like phaseCalDAVSync/phaseImapSync, this loops over one syncer per
+// account — a per-account failure is logged and skipped rather than
+// aborting the rest of the accounts.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
-	if d.gmailSyncer == nil {
-		return
-	}
-	n, err := d.gmailSyncer.Sync(ctx)
-	if err != nil {
-		d.logger.Printf("gmail sync error: %v", err)
-	} else if n > 0 {
-		d.logger.Printf("gmail: %d messages synced", n)
+	for _, s := range d.gmailSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("gmail sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("gmail: %d messages synced", n)
+		}
 	}
 }
 
