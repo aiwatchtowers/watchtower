@@ -65,34 +65,6 @@ final class GoogleAuthService {
         isAuthenticating = false
     }
 
-    // MARK: - Disconnect
-
-    func disconnect() {
-        guard let cliPath = Constants.findCLIPath() else {
-            error = "Watchtower CLI not found"
-            return
-        }
-
-        Task.detached {
-            let result = await Self.runCLI(
-                path: cliPath,
-                arguments: ["calendar", "logout"]
-            )
-            await MainActor.run {
-                if result.exitCode == 0 {
-                    self.isConnected = false
-                    self.error = nil
-                    // Restart so the daemon drops the disconnected syncer.
-                    Task { await DaemonManager.restart() }
-                } else {
-                    self.error = result.stderr.isEmpty
-                        ? "Disconnect failed (exit \(result.exitCode))"
-                        : String(result.stderr.prefix(200))
-                }
-            }
-        }
-    }
-
     // MARK: - Status
 
     func checkStatus() {
@@ -121,18 +93,6 @@ final class GoogleAuthService {
     }
 
     // MARK: - CLI Helper
-
-    nonisolated private static func runCLI(
-        path: String,
-        arguments: [String]
-    ) async -> (exitCode: Int32, stdout: String, stderr: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
-        process.currentDirectoryURL = Constants.processWorkingDirectory()
-        return await runProcess(process)
-    }
 
     /// Runs a pre-configured Process, reading pipe data before waitUntilExit to avoid deadlock.
     nonisolated private static func runProcess(

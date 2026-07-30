@@ -16,6 +16,12 @@ struct AddGoogleAccountView: View {
     @State private var showAdvanced = false
     @State private var clientID = ""
     @State private var clientSecret = ""
+    /// Set when Connect is tapped from THIS sheet, cleared on Cancel or once
+    /// consumed by `onChange` below — guards the auto-dismiss so it only
+    /// fires for a connect attempt this sheet actually started, not some
+    /// unrelated `isConnecting` flip (e.g. another sheet's attempt finishing
+    /// while this one happens to still be around).
+    @State private var connectAttempted = false
 
     private var canConnect: Bool {
         (wantCalendar || wantGmail)
@@ -61,7 +67,13 @@ struct AddGoogleAccountView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Cancel") { vm?.cancelConnect() }
+                    Button("Cancel") {
+                        // Clear the flag first so the onChange below sees this
+                        // as a user-cancelled attempt and does NOT auto-dismiss
+                        // — Cancel means "let me adjust the form", not "close it".
+                        connectAttempted = false
+                        vm?.cancelConnect()
+                    }
                 } else {
                     Spacer()
                     Button("Connect") {
@@ -81,9 +93,22 @@ struct AddGoogleAccountView: View {
         }
         .padding(20)
         .frame(width: 480, height: 420)
+        .onChange(of: vm?.isConnecting) { oldValue, newValue in
+            // addAccount() is fire-and-forget (unlike addCalDAV/addICS/
+            // addImapAccount, which are awaited and dismiss() directly on
+            // success) — isConnecting flipping true -> false is the only
+            // completion signal, so mirror those siblings' "dismiss on
+            // success, stay open with the error otherwise" behavior here.
+            guard connectAttempted, oldValue == true, newValue == false else { return }
+            connectAttempted = false
+            if vm?.error == nil {
+                dismiss()
+            }
+        }
     }
 
     private func connect() {
+        connectAttempted = true
         vm?.addAccount(
             label: label.trimmingCharacters(in: .whitespaces),
             calendar: wantCalendar,
