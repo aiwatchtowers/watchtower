@@ -98,6 +98,7 @@ done
 # metallib in Contents/MacOS is NOT an option: codesign --strict treats it as an
 # unsigned subcomponent and verification fails.
 echo "==> Building MLX metallib..."
+# BUILD_DIR here is scoped to the child script only (speech-swift's script reads it); the outer $BUILD_DIR is untouched.
 BUILD_DIR="$DESKTOP_DIR/.build" bash "$DESKTOP_DIR/.build/checkouts/speech-swift/scripts/build_mlx_metallib.sh" release
 MLX_BUNDLE="$APP_BUNDLE/Contents/Resources/mlx-swift_Cmlx.bundle"
 mkdir -p "$MLX_BUNDLE"

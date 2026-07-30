@@ -221,4 +221,23 @@ final class Qwen3WindowerTests: XCTestCase {
         XCTAssertEqual(counter.n, 1, "no further windows may be decoded after cancel")
         XCTAssertEqual(out.segments.count, 1)
     }
+
+    /// Valid-but-degenerate input: a recording shorter than one window is a
+    /// single truncated last window, not a dropped recording.
+    func testShorterThanOneWindowIsSingleTruncatedWindow() async throws {
+        let samples = makeSamples(seconds: 0.7)   // windowSec is 2.0 in `config`
+        final class Box: @unchecked Sendable { var sizes: [Int] = [] }
+        let box = Box()
+        let windower = Qwen3Windower(config: config) { window in
+            box.sizes.append(window.count)
+            return "short"
+        }
+        let out = try await windower.run(samples: batchStream(samples), windowTotal: 1,
+                                         progress: { _, _ in }, onChunk: { _ in })
+        XCTAssertEqual(box.sizes, [samples.count])
+        XCTAssertEqual(out.text, "short")
+        XCTAssertEqual(out.segments.count, 1)
+        XCTAssertEqual(out.segments[0].startSec, 0, accuracy: 1e-9)
+        XCTAssertEqual(out.segments[0].endSec, Double(samples.count) / 16_000, accuracy: 1e-9)
+    }
 }
