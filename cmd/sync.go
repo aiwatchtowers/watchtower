@@ -474,7 +474,7 @@ func wireCalendarSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Confi
 		}
 		return
 	}
-	d.SetCalendarSyncer(calendar.NewSyncer(calClient, database, cfg, logger))
+	d.SetCalendarSyncer(calendar.NewSyncer(calClient, database, cfg, logger, stubGoogleAccountID))
 }
 
 // wireGmailSyncer wires the Gmail syncer onto the daemon if a token exists,

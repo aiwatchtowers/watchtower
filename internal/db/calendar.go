@@ -82,7 +82,7 @@ func (db *DB) UpsertCalendarEvent(ev CalendarEvent, syncedAt ...string) error {
 		ev.ID, ev.CalendarID, ev.Title, ev.Description, ev.Location,
 		ev.StartTime, ev.EndTime, ev.OrganizerEmail, ev.Attendees,
 		ev.IsRecurring, ev.IsAllDay, ev.EventStatus, ev.EventType,
-		ev.HTMLLink, ev.RawJSON,
+		ev.HTMLLink, ev.RawJSON, ev.ICalUID,
 	}
 	if len(syncedAt) > 0 && syncedAt[0] != "" {
 		sa = "?"
@@ -92,8 +92,8 @@ func (db *DB) UpsertCalendarEvent(ev CalendarEvent, syncedAt ...string) error {
 	_, err := db.Exec(`INSERT OR REPLACE INTO calendar_events
 		(id, calendar_id, title, description, location, start_time, end_time,
 		 organizer_email, attendees, is_recurring, is_all_day, event_status,
-		 event_type, html_link, raw_json, synced_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sa+`, ?)`,
+		 event_type, html_link, raw_json, ical_uid, synced_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sa+`, ?)`,
 		args...)
 	if err != nil {
 		return fmt.Errorf("upserting calendar event %s: %w", ev.ID, err)
@@ -116,12 +116,12 @@ func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 		_, err := tx.Exec(`INSERT OR REPLACE INTO calendar_events
 			(id, calendar_id, title, description, location, start_time, end_time,
 			 organizer_email, attendees, is_recurring, is_all_day, event_status,
-			 event_type, html_link, raw_json, synced_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)`,
+			 event_type, html_link, raw_json, ical_uid, synced_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)`,
 			ev.ID, ev.CalendarID, ev.Title, ev.Description, ev.Location,
 			ev.StartTime, ev.EndTime, ev.OrganizerEmail, ev.Attendees,
 			ev.IsRecurring, ev.IsAllDay, ev.EventStatus, ev.EventType,
-			ev.HTMLLink, ev.RawJSON, ev.UpdatedAt)
+			ev.HTMLLink, ev.RawJSON, ev.ICalUID, ev.UpdatedAt)
 		if err != nil {
 			return fmt.Errorf("upserting calendar event %s: %w", ev.ID, err)
 		}
@@ -137,7 +137,7 @@ func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 func (db *DB) GetCalendarEvents(filter CalendarEventFilter) ([]CalendarEvent, error) {
 	query := `SELECT id, calendar_id, title, description, location, start_time, end_time,
 		organizer_email, attendees, is_recurring, is_all_day, event_status,
-		event_type, html_link, raw_json, synced_at, updated_at
+		event_type, html_link, raw_json, ical_uid, synced_at, updated_at
 		FROM calendar_events WHERE 1=1`
 	var args []any
 
@@ -172,7 +172,7 @@ func (db *DB) GetCalendarEventsForDate(date string) ([]CalendarEvent, error) {
 func (db *DB) GetCalendarEventByID(id string) (*CalendarEvent, error) {
 	query := `SELECT id, calendar_id, title, description, location, start_time, end_time,
 		organizer_email, attendees, is_recurring, is_all_day, event_status,
-		event_type, html_link, raw_json, synced_at, updated_at
+		event_type, html_link, raw_json, ical_uid, synced_at, updated_at
 		FROM calendar_events WHERE id = ?`
 	events, err := db.queryCalendarEvents(query, id)
 	if err != nil {
@@ -189,7 +189,7 @@ func (db *DB) GetNextEvent() (*CalendarEvent, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	query := `SELECT id, calendar_id, title, description, location, start_time, end_time,
 		organizer_email, attendees, is_recurring, is_all_day, event_status,
-		event_type, html_link, raw_json, synced_at, updated_at
+		event_type, html_link, raw_json, ical_uid, synced_at, updated_at
 		FROM calendar_events WHERE end_time >= ? AND is_all_day = 0
 		ORDER BY start_time LIMIT 1`
 	events, err := db.queryCalendarEvents(query, now)
@@ -309,7 +309,7 @@ func (db *DB) queryCalendarEvents(query string, args ...any) ([]CalendarEvent, e
 		if err := rows.Scan(&e.ID, &e.CalendarID, &e.Title, &e.Description, &e.Location,
 			&e.StartTime, &e.EndTime, &e.OrganizerEmail, &e.Attendees,
 			&e.IsRecurring, &e.IsAllDay, &e.EventStatus, &e.EventType,
-			&e.HTMLLink, &e.RawJSON, &e.SyncedAt, &e.UpdatedAt); err != nil {
+			&e.HTMLLink, &e.RawJSON, &e.ICalUID, &e.SyncedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning calendar event: %w", err)
 		}
 		events = append(events, e)

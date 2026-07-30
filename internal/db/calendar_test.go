@@ -109,6 +109,7 @@ func TestUpsertAndGetCalendarEvents(t *testing.T) {
 		EventType:      "default",
 		HTMLLink:       "https://calendar.google.com/event?id=evt1",
 		RawJSON:        `{"id":"evt1"}`,
+		ICalUID:        "evt1@google.com",
 		UpdatedAt:      "2026-04-01T12:00:00Z",
 	}
 
@@ -125,6 +126,7 @@ func TestUpsertAndGetCalendarEvents(t *testing.T) {
 	assert.Equal(t, "alice@example.com", got.OrganizerEmail)
 	assert.True(t, got.IsRecurring)
 	assert.Equal(t, "default", got.EventType)
+	assert.Equal(t, "evt1@google.com", got.ICalUID)
 }
 
 func TestGetCalendarEventByID_NotFound(t *testing.T) {

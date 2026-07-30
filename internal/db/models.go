@@ -636,6 +636,7 @@ type CalendarEvent struct {
 	EventType      string
 	HTMLLink       string
 	RawJSON        string
+	ICalUID        string // dedup enabler across accounts/providers
 	SyncedAt       string
 	UpdatedAt      string
 }

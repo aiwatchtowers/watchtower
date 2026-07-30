@@ -258,7 +258,7 @@ func runCalendarSync(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	syncer := calendar.NewSyncer(client, database, cfg, nil)
+	syncer := calendar.NewSyncer(client, database, cfg, nil, stubGoogleAccountID)
 	count, err := syncer.Sync(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("syncing calendar: %w", err)

@@ -22,6 +22,7 @@ type CalendarEvent struct {
 	EventType      string // e.g. "default", "focusTime", "outOfOffice"
 	UpdatedAt      string // ISO8601 from Google API
 	RawJSON        string // original JSON (populated during sync)
+	ICalUID        string // stable dedup key across accounts/providers
 }
 
 // Attendee represents a calendar event attendee.
