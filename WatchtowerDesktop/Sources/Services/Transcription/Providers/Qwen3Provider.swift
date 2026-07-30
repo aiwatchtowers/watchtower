@@ -118,7 +118,7 @@ final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
             continuation.finish()
         }
         return try await windower(config: config)
-            .run(samples: stream, windowTotal: total, progress: progress, onChunk: { _ in })
+            .run(samples: stream, windowTotal: total, progress: progress) { _ in }
     }
 
     func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? {
