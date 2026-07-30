@@ -88,6 +88,90 @@ func TestEnsureLegacyGoogleAccount_MigratesLegacyCalendarAndGmailTokens(t *testi
 	assert.Equal(t, "cal-refresh", token.RefreshToken)
 }
 
+// TestEnsureLegacyGoogleAccount_SeededRowStillMigratesTokenFiles reproduces
+// the exact state a real upgrading install is in *after* migration 00043 has
+// run and *before* ensureLegacyGoogleAccount gets its chance:
+//
+//   - google_accounts row #1 exists, seeded BY THE MIGRATION (empty email,
+//     calendar_enabled=1) because the install had synced Google calendars.
+//   - the legacy token file google_token.json is still on disk, because only
+//     Go can rename it.
+//
+// The old row-existence guard (`if len(accounts) > 0 { return accounts[0].ID
+// }`) made the rename below unreachable for every such install — the spec
+// promises this install migrates in place with "no re-sync required", which
+// requires wireGoogleSyncers to find a usable google_token_<id>.json.
+func TestEnsureLegacyGoogleAccount_SeededRowStillMigratesTokenFiles(t *testing.T) {
+	stubGoogleAccountEmailFetcher(t, noEmailFetcher)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	database := db.OpenTestDB(t)
+
+	// What migration 00043 step 2 does on an install with legacy Google data.
+	seededID, err := database.CreateGoogleAccount(db.GoogleAccount{
+		Email:           "",
+		CalendarEnabled: true,
+		GmailEnabled:    true,
+	})
+	require.NoError(t, err)
+
+	// The legacy token files the migration cannot touch.
+	require.NoError(t, calendar.NewTokenStore(cfg.WorkspaceDir()).Save(&calendar.OAuthToken{RefreshToken: "cal-refresh"}))
+	require.NoError(t, gmail.NewTokenStore(cfg.WorkspaceDir()).Save(&gmail.OAuthToken{RefreshToken: "gmail-refresh"}))
+
+	id, err := ensureLegacyGoogleAccount(context.Background(), cfg, database, quietTestLogger())
+	require.NoError(t, err)
+	assert.Equal(t, seededID, id)
+
+	accountTokenPath := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id).Path()
+
+	// THE CONTRACT: after the seed step the account must own a usable token,
+	// because wireGoogleSyncers skips any account whose token store is absent.
+	assert.FileExists(t, accountTokenPath,
+		"account %d has no google_token_%d.json -> wireGoogleSyncers skips it -> Calendar+Gmail sync silently stops", id, id)
+	assert.NoFileExists(t, calendar.NewTokenStore(cfg.WorkspaceDir()).Path(),
+		"legacy google_token.json should have been renamed away")
+	assert.NoFileExists(t, gmail.NewTokenStore(cfg.WorkspaceDir()).Path(),
+		"legacy gmail_token.json should have been deleted (spec)")
+
+	// And the exact predicate wireGoogleSyncers uses.
+	assert.True(t, calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id).Exists(),
+		"store.Exists() is the guard in wireGoogleSyncers; false means the syncer is never wired")
+}
+
+// TestEnsureLegacyGoogleAccount_RenameFailureRetriesOnNextCall proves the
+// guard is retry-able: a token file that shows up only after a first,
+// legacy-token-less call must still get migrated on a later call, since the
+// guard is "does the account own its token file", not "does the row exist".
+func TestEnsureLegacyGoogleAccount_RenameFailureRetriesOnNextCall(t *testing.T) {
+	stubGoogleAccountEmailFetcher(t, noEmailFetcher)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	database := db.OpenTestDB(t)
+
+	seededID, err := database.CreateGoogleAccount(db.GoogleAccount{CalendarEnabled: true})
+	require.NoError(t, err)
+
+	// First call: row exists, but no legacy token file has landed yet
+	// (e.g. a partial upgrade, or this ran before the token file was
+	// written) — must stay a clean no-op, not an error.
+	id, err := ensureLegacyGoogleAccount(context.Background(), cfg, database, quietTestLogger())
+	require.NoError(t, err)
+	assert.Equal(t, seededID, id)
+	assert.NoFileExists(t, calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id).Path())
+
+	// The legacy token file shows up later.
+	require.NoError(t, calendar.NewTokenStore(cfg.WorkspaceDir()).Save(&calendar.OAuthToken{RefreshToken: "cal-refresh"}))
+
+	// A later call (e.g. the next daemon cycle) must pick it up.
+	id2, err := ensureLegacyGoogleAccount(context.Background(), cfg, database, quietTestLogger())
+	require.NoError(t, err)
+	assert.Equal(t, seededID, id2)
+	assert.FileExists(t, calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id2).Path())
+}
+
 func TestEnsureLegacyGoogleAccount_NoLegacyTokenIsNoop(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

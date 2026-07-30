@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -253,34 +254,68 @@ func runGoogleRemove(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	if err := database.DeleteGoogleAccount(id); err != nil {
+	removed, err := removeGoogleAccount(cmd.Context(), cfg, database, id, cmd.ErrOrStderr())
+	if err != nil {
 		return fmt.Errorf("removing account: %w", err)
 	}
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Removed account %d.\n", id)
-
-	var removed []string
-	tokenStore := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id)
-	if tokenStore.Exists() {
-		if err := tokenStore.Delete(); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to remove token file: %v\n", err)
-		} else {
-			removed = append(removed, "token file")
-		}
-	}
-	credStore := calendar.NewCredentialStore(cfg.WorkspaceDir(), id)
-	if credStore.Exists() {
-		if err := credStore.Delete(); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to remove credentials file: %v\n", err)
-		} else {
-			removed = append(removed, "credentials file")
-		}
-	}
 	if len(removed) > 0 {
 		fmt.Fprintf(out, "Deleted: %s\n", strings.Join(removed, ", "))
 	}
 	return nil
+}
+
+// removeGoogleAccount revokes id's OAuth grant at Google (best-effort — a
+// revoke failure is logged and swallowed, since a stale grant on Google's
+// side never blocks the local removal), deletes id's google_accounts row
+// (cascading its calendars/events/messages), then deletes its token and
+// credentials files. It also deletes any lingering legacy
+// google_token.json/gmail_token.json (belt-and-braces: after the C1 fix to
+// ensureLegacyGoogleAccount these shouldn't exist once any account is
+// connected, but a leftover legacy file must never keep granting silent
+// access after the account it was migrated into is removed).
+func removeGoogleAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, warnOut io.Writer) ([]string, error) {
+	tokenStore := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id)
+	if token, loadErr := tokenStore.Load(); loadErr == nil && token.RefreshToken != "" {
+		if revokeErr := calendar.Revoke(ctx, token.RefreshToken); revokeErr != nil {
+			fmt.Fprintf(warnOut, "warning: could not revoke the grant at Google: %v\n", revokeErr)
+		}
+	}
+
+	if err := database.DeleteGoogleAccount(id); err != nil {
+		return nil, err
+	}
+
+	var removed []string
+	removed = append(removed, deleteFileStore(tokenStore, "token file", warnOut)...)
+	removed = append(removed, deleteFileStore(calendar.NewCredentialStore(cfg.WorkspaceDir(), id), "credentials file", warnOut)...)
+	removed = append(removed, deleteFileStore(calendar.NewTokenStore(cfg.WorkspaceDir()), "legacy calendar token", warnOut)...)
+	removed = append(removed, deleteFileStore(gmail.NewTokenStore(cfg.WorkspaceDir()), "legacy gmail token", warnOut)...)
+	return removed, nil
+}
+
+// fileStore is the common shape of calendar.TokenStore/CredentialStore and
+// gmail.TokenStore — enough to delete one on-disk file generically.
+type fileStore interface {
+	Exists() bool
+	Delete() error
+}
+
+// deleteFileStore deletes store's file if present, returning []string{label}
+// on success (for the caller's "Deleted: ..." summary) or nil otherwise — a
+// missing file is a silent no-op, a delete error is logged to warnOut and
+// swallowed (matches the house no-op/best-effort pattern for cleanup steps).
+func deleteFileStore(store fileStore, label string, warnOut io.Writer) []string {
+	if !store.Exists() {
+		return nil
+	}
+	if err := store.Delete(); err != nil {
+		fmt.Fprintf(warnOut, "warning: failed to remove %s: %v\n", label, err)
+		return nil
+	}
+	return []string{label}
 }
 
 // resolveAccountOneForLogin resolves the legacy "account #1" — the single
@@ -402,6 +437,16 @@ func rollbackGoogleAccount(database *db.DB, workspaceDir string, accountID int64
 // silently break it too. Once both are false the token file is deleted as
 // housekeeping, but the account row stays — `google remove` deletes the
 // account itself.
+//
+// "Account #1" here means accounts[0] — the oldest surviving row
+// (ListGoogleAccounts orders by id ASC), NOT literally the row whose id
+// column equals 1. This is deliberate and matches resolveAccountOneForLogin
+// (used by `google login`/`gmail login`/`calendar login` without --account):
+// that function also resolves to whatever ensureLegacyGoogleAccount reports,
+// which is likewise the first row by id. So if id=1 is ever removed via
+// `google remove 1`, the next-oldest remaining account transparently becomes
+// the new "account #1" for every one of these aliases — consistent, not a
+// bug, even though no code enforces id==1 anywhere.
 func disconnectGoogleService(cmd *cobra.Command, cfg *config.Config, database *db.DB, service string) error {
 	accounts, err := database.ListGoogleAccounts()
 	if err != nil {

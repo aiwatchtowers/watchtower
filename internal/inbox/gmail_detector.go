@@ -13,12 +13,17 @@ import (
 // DetectGmailAccounts scans gmail_messages synced after sinceTS across every
 // connected google_accounts row with Gmail enabled, and creates one inbox
 // item per message that involves that account's own mailbox address.
-// Mirrors DetectImapAccounts: an account with Gmail disabled or an
-// unresolved (empty) email is skipped cleanly. Trigger type is
-// email_received when the account's own email is a To recipient, otherwise
-// email_cc (Cc only); a message FROM the account's own address (sent by the
-// owner, not received) mints nothing. Each message is deduplicated on
-// (channel_id, message_id, trigger_type) so repeated calls are idempotent.
+// Mirrors DetectImapAccounts: an account with Gmail disabled is skipped
+// cleanly regardless of its email. A Gmail-enabled account whose email is
+// still unresolved (empty — the profile lookup hasn't completed yet) is an
+// error, not a clean skip: DetectGmailAccounts errors always freeze the
+// inbox watermark (INBOX-09), and this is exactly the case where mail is
+// sitting in gmail_messages unexamined — advancing over it would skip it
+// forever once the email does resolve. Trigger type is email_received when
+// the account's own email is a To recipient, otherwise email_cc (Cc only); a
+// message FROM the account's own address (sent by the owner, not received)
+// mints nothing. Each message is deduplicated on (channel_id, message_id,
+// trigger_type) so repeated calls are idempotent.
 func DetectGmailAccounts(ctx context.Context, database *db.DB, sinceTS time.Time) (int, error) {
 	accounts, err := database.ListGoogleAccounts()
 	if err != nil {
@@ -28,8 +33,11 @@ func DetectGmailAccounts(ctx context.Context, database *db.DB, sinceTS time.Time
 
 	created := 0
 	for _, acct := range accounts {
-		if !acct.GmailEnabled || acct.Email == "" {
+		if !acct.GmailEnabled {
 			continue
+		}
+		if acct.Email == "" {
+			return created, fmt.Errorf("gmail_detector: account %d: gmail enabled but email still unresolved", acct.ID)
 		}
 		n, err := detectGmailAccount(database, acct, sinceISO)
 		if err != nil {

@@ -472,6 +472,14 @@ func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config
 	for _, acct := range accounts {
 		store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if !store.Exists() {
+			// Only flip a currently-"ok" account to "error" — an account
+			// already flagged error/revoked stays as-is, so this doesn't
+			// churn the status/updated_at on every daemon cycle.
+			if acct.Status == "ok" {
+				if err := database.SetGoogleAccountAuthState(acct.ID, "error", "no token file — re-login required"); err != nil {
+					logger.Printf("google: account %d: record auth state: %v", acct.ID, err)
+				}
+			}
 			continue
 		}
 		token, err := store.Load()

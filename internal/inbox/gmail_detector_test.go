@@ -3,6 +3,7 @@ package inbox
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,10 +83,9 @@ func TestDetectGmailAccounts_ReceivedVsCC(t *testing.T) {
 // TestDetectGmailAccounts_PerAccountScoping seeds two google accounts
 // (a@x.com / b@x.com) and asserts: matching is per source account's own
 // email (a message To a@x.com sitting in account B's mailbox still mints
-// from B, keyed on B's channel_id), own-message suppression is scoped per
-// account (a message FROM a@x.com in A's mailbox mints nothing, but the
-// same FromEmail in B's mailbox is just an ordinary sender), and an account
-// with an empty email is skipped entirely without error.
+// from B, keyed on B's channel_id), and own-message suppression is scoped
+// per account (a message FROM a@x.com in A's mailbox mints nothing, but the
+// same FromEmail in B's mailbox is just an ordinary sender).
 func TestDetectGmailAccounts_PerAccountScoping(t *testing.T) {
 	database := testDB(t)
 	syncedAt := "2026-07-09T10:00:00Z"
@@ -97,11 +97,6 @@ func TestDetectGmailAccounts_PerAccountScoping(t *testing.T) {
 	acctB, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "b@x.com", Label: "B", GmailEnabled: true})
 	if err != nil {
 		t.Fatalf("seed account B: %v", err)
-	}
-	// Degenerate case: connected account with no resolved email yet — must
-	// be skipped cleanly (no error, no panic on empty-string matching).
-	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "", Label: "Pending", GmailEnabled: true}); err != nil {
-		t.Fatalf("seed empty-email account: %v", err)
 	}
 
 	// In account A's own mailbox: a message FROM a@x.com (A's own address)
@@ -145,5 +140,51 @@ func TestDetectGmailAccounts_PerAccountScoping(t *testing.T) {
 	received := queryInboxByTrigger(t, database, "email_received")
 	if len(received) != 1 || received[0].ChannelID != fmt.Sprintf("gmail:%d:tb2", acctB) {
 		t.Fatalf("want 1 email_received item for gmail:%d:tb2, got %+v", acctB, received)
+	}
+}
+
+// TestDetectGmailAccounts_GmailEnabledWithEmptyEmailReturnsError covers the
+// case where the account's email hasn't resolved yet (the profile lookup
+// hasn't completed) but Gmail is enabled and messages are already syncing:
+// this must error, naming the account, rather than skip cleanly — a clean
+// skip would let the inbox watermark advance (INBOX-09 only freezes on a
+// detector error) over mail that was never actually examined.
+func TestDetectGmailAccounts_GmailEnabledWithEmptyEmailReturnsError(t *testing.T) {
+	database := testDB(t)
+
+	acctID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "", Label: "Pending", GmailEnabled: true})
+	if err != nil {
+		t.Fatalf("seed pending account: %v", err)
+	}
+
+	since := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
+	_, err = DetectGmailAccounts(context.Background(), database, since)
+	if err == nil {
+		t.Fatal("want error for gmail-enabled account with unresolved email, got nil")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("account %d", acctID)) {
+		t.Errorf("error %q does not name account %d", err.Error(), acctID)
+	}
+}
+
+// TestDetectGmailAccounts_GmailDisabledAccountSkippedCleanly covers the
+// distinct degenerate case: an account with Gmail disabled must be skipped
+// with no error regardless of whether its email is resolved yet, since
+// there's nothing unexamined to worry about — the account isn't syncing mail
+// at all.
+func TestDetectGmailAccounts_GmailDisabledAccountSkippedCleanly(t *testing.T) {
+	database := testDB(t)
+
+	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "", Label: "Disabled", GmailEnabled: false}); err != nil {
+		t.Fatalf("seed disabled account: %v", err)
+	}
+
+	since := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
+	n, err := DetectGmailAccounts(context.Background(), database, since)
+	if err != nil {
+		t.Fatalf("want clean skip for gmail-disabled account, got error: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("want 0 items, got %d", n)
 	}
 }

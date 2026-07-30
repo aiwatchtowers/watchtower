@@ -273,6 +273,19 @@ func Revoke(ctx context.Context, token string) error {
 	return nil
 }
 
+// SetGoogleRevokeEndpointForTest overrides the Google token-revocation
+// endpoint for the life of a test and returns a restore func. googleRevokeEndpoint
+// is package-private and swapped directly by this package's own tests
+// (auth_test.go); this exported seam exists for callers OUTSIDE this
+// package (e.g. cmd's `google remove`) that need to exercise Revoke's real
+// HTTP round trip against an httptest.Server rather than mocking Revoke
+// itself.
+func SetGoogleRevokeEndpointForTest(url string) (restore func()) {
+	prev := googleRevokeEndpoint
+	googleRevokeEndpoint = url
+	return func() { googleRevokeEndpoint = prev }
+}
+
 // callbackResult is sent from the HTTP callback handler to the Login goroutine.
 type callbackResult struct {
 	code  string

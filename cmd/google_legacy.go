@@ -16,12 +16,26 @@ import (
 // gmail_token.json for Gmail — either or both may exist, since a legacy
 // install could have connected just one service via `google login
 // --calendar`/`--gmail` alone). It migrates whichever legacy token file(s)
-// exist in place to become the new account's shared google_token_<id>.json
+// exist in place to become the first account's shared google_token_<id>.json
 // (calendar and gmail token stores resolve to the same path for a given
-// account ID), so wireGoogleSyncers picks it up without a re-login. A no-op
-// once any google_accounts row exists — the returned ID is then the first
-// row's, the stable "legacy" account this workspace has always used. Also a
-// no-op, returning (0, nil), when neither legacy token file is present.
+// account ID), so wireGoogleSyncers picks it up without a re-login.
+//
+// The migration guard is file existence, not row existence: migration 00043
+// itself seeds account #1's row (from calendar_calendars/gmail_messages
+// evidence) whenever a real upgrading install has legacy Google data, so by
+// the time this Go step runs the row usually already exists — only the
+// token-file rename is still outstanding, since SQL can't touch files. A
+// row-existence guard would make that rename unreachable forever for every
+// such install; keying on "does this account already own a
+// google_token_<id>.json" instead makes the step naturally retry-able too —
+// if a previous rename attempt failed partway (e.g. permission error), a
+// later call sees the account file still missing and tries again.
+//
+// A DB that never had any Google connection (no row, no legacy token file)
+// is a no-op returning (0, nil). Once a row exists (seeded by the migration,
+// created here, or created by any other caller), it's returned regardless of
+// whether a rename happened — the "legacy" account this workspace has always
+// used.
 //
 // Either way, before returning a nonzero id it makes a best-effort attempt to
 // fill in the account's email via the Gmail profile API when the row doesn't
@@ -33,45 +47,50 @@ func ensureLegacyGoogleAccount(ctx context.Context, cfg *config.Config, database
 	if err != nil {
 		return 0, err
 	}
-	if len(accounts) > 0 {
-		fillLegacyAccountEmail(ctx, cfg, database, accounts[0].ID, logger)
-		return accounts[0].ID, nil
-	}
 
 	calStore := calendar.NewTokenStore(cfg.WorkspaceDir())
 	gmStore := gmail.NewTokenStore(cfg.WorkspaceDir())
 	calExists := calStore.Exists()
 	gmExists := gmStore.Exists()
-	if !calExists && !gmExists {
-		return 0, nil
-	}
 
-	id, err := database.CreateGoogleAccount(db.GoogleAccount{
-		CalendarEnabled: calExists,
-		GmailEnabled:    gmExists,
-	})
-	if err != nil {
-		return 0, err
+	var id int64
+	if len(accounts) > 0 {
+		id = accounts[0].ID
+	} else {
+		if !calExists && !gmExists {
+			return 0, nil
+		}
+		id, err = database.CreateGoogleAccount(db.GoogleAccount{
+			CalendarEnabled: calExists,
+			GmailEnabled:    gmExists,
+		})
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	// Materialize the shared per-account token file from whichever legacy
 	// file exists — calendar's wins when both are present (same OAuth
-	// grant; the other is then a redundant copy and gets deleted).
+	// grant; the other is then a redundant copy and gets deleted). Skipped
+	// once the account already owns its token file (nothing left to
+	// migrate) or no legacy file remains.
 	accountStore := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), id)
-	if calExists {
-		if err := os.Rename(calStore.Path(), accountStore.Path()); err != nil {
-			logger.Printf("google: failed to migrate legacy calendar token: %v", err)
-			return id, err
-		}
-		if gmExists {
-			if err := gmStore.Delete(); err != nil {
-				logger.Printf("google: failed to remove legacy gmail token: %v", err)
+	if !accountStore.Exists() && (calExists || gmExists) {
+		if calExists {
+			if err := os.Rename(calStore.Path(), accountStore.Path()); err != nil {
+				logger.Printf("google: failed to migrate legacy calendar token: %v", err)
+				return id, err
 			}
-		}
-	} else {
-		if err := os.Rename(gmStore.Path(), accountStore.Path()); err != nil {
-			logger.Printf("google: failed to migrate legacy gmail token: %v", err)
-			return id, err
+			if gmExists {
+				if err := gmStore.Delete(); err != nil {
+					logger.Printf("google: failed to remove legacy gmail token: %v", err)
+				}
+			}
+		} else {
+			if err := os.Rename(gmStore.Path(), accountStore.Path()); err != nil {
+				logger.Printf("google: failed to migrate legacy gmail token: %v", err)
+				return id, err
+			}
 		}
 	}
 

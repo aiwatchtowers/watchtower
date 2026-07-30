@@ -14,8 +14,10 @@ type Credentials struct {
 }
 
 // CredentialStore persists one account's OAuth2 client credentials as JSON.
-// This is not secret (client_id is public), but stored separately from tokens
-// for organizational clarity. File mode is 0600 for consistency with TokenStore.
+// client_id is public, but client_secret is NOT — the struct holds both, so
+// this file is stored separately from tokens for organizational clarity, not
+// because its contents are non-secret. File mode is 0600 for consistency
+// with TokenStore.
 type CredentialStore struct {
 	path string // ~/.local/share/watchtower/{workspace}/google_credentials_{accountID}.json
 }
