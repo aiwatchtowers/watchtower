@@ -1,5 +1,6 @@
 import Foundation
 import Qwen3ASR
+import MLX
 
 /// Adapts soniqo/speech-swift's `Qwen3ASRModel` (MLX, Metal + Apple Neural Engine)
 /// to the pluggable `TranscriptionProvider` contract. The package's public
@@ -95,7 +96,13 @@ final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
         // (see the package's `generateText`), so with no forced language the
         // model auto-detects per window and no tag reaches the text.
         return Qwen3Windower(config: config) { window in
-            model.transcribe(audio: window, sampleRate: 16_000, language: forced)
+            // Silence-snapped windows vary in shape, so MLX's buffer cache
+            // almost never reuses them and grows without bound across a long
+            // recording (measured: 3.9→8.2 GB over 32 windows of a 10-min
+            // clip). Clearing per window keeps the whole run near the
+            // single-window peak; the realloc cost is noise next to decode.
+            defer { GPU.clearCache() }
+            return model.transcribe(audio: window, sampleRate: 16_000, language: forced)
         }
     }
 
