@@ -67,6 +67,14 @@ func NewTokenStore(workspaceDir string) *TokenStore {
 	}
 }
 
+// NewAccountTokenStore creates a TokenStore for the given workspace directory and account ID.
+// Note: Both calendar and gmail packages use the same google_token_{id}.json file.
+func NewAccountTokenStore(workspaceDir string, accountID int64) *TokenStore {
+	return &TokenStore{
+		path: filepath.Join(workspaceDir, fmt.Sprintf("google_token_%d.json", accountID)),
+	}
+}
+
 // Path returns the token file path.
 func (s *TokenStore) Path() string {
 	return s.path

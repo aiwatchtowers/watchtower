@@ -74,6 +74,13 @@ func NewTokenStore(workspaceDir string) *TokenStore {
 	}
 }
 
+// NewAccountTokenStore creates a TokenStore for the given workspace directory and account ID.
+func NewAccountTokenStore(workspaceDir string, accountID int64) *TokenStore {
+	return &TokenStore{
+		path: filepath.Join(workspaceDir, fmt.Sprintf("google_token_%d.json", accountID)),
+	}
+}
+
 // Path returns the token file path.
 func (s *TokenStore) Path() string {
 	return s.path

@@ -478,6 +478,14 @@ func TestOAuthToken_JSONShape(t *testing.T) {
 	}
 }
 
+func TestAccountTokenStore_Path(t *testing.T) {
+	dir := t.TempDir()
+	store := NewAccountTokenStore(dir, 3)
+
+	path := store.Path()
+	assert.Equal(t, filepath.Join(dir, "google_token_3.json"), path)
+}
+
 // mustTime parses an RFC3339 timestamp or fails the test setup at compile time.
 func mustTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339, s)
