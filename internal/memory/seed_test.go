@@ -201,20 +201,35 @@ func TestSeedIdempotentSecondRun(t *testing.T) {
 	assert.Equal(t, len(nodesAfterFirst), len(nodesAfterSecond), "node count unchanged")
 }
 
-// seedGmailMessage inserts a gmail_messages row under stubGoogleAccountID
-// (the account id the Gmail extractor reads until it is threaded per-account,
-// multi-account plan Task 9), seeding that google_accounts row first (idempotent
-// via INSERT OR IGNORE) since gmail_messages.account_id is a NOT NULL FK.
+// gmailTestAccountID is the account id single-account Gmail extraction tests
+// seed their messages under — the test-only replacement for the deleted
+// production stubGoogleAccountID (multi-account plan Task 9: the extractor
+// itself no longer hardcodes an account id, it loops db.ListGoogleAccounts).
+const gmailTestAccountID = int64(1)
+
+// seedGmailMessage inserts a gmail_messages row under gmailTestAccountID —
+// the single-account convenience wrapper most Gmail extraction tests use.
 // internalDateISO is the RFC3339 message time (what the Gmail sync stores —
 // NOT the raw ms-epoch API value).
 func seedGmailMessage(t *testing.T, d *db.DB, id, threadID, fromEmail, fromName, subject, body, internalDateISO string) {
 	t.Helper()
-	_, err := d.Exec(`INSERT OR IGNORE INTO google_accounts (id, email, label) VALUES (?, 'stub@x.com', 'Stub')`, stubGoogleAccountID)
+	seedGmailMessageForAccount(t, d, gmailTestAccountID, id, threadID, fromEmail, fromName, subject, body, internalDateISO)
+}
+
+// seedGmailMessageForAccount is seedGmailMessage generalized to an explicit
+// account id, seeding that google_accounts row first (idempotent, Gmail
+// enabled) since gmail_messages.account_id is a NOT NULL FK — the
+// multi-account Gmail-extraction tests (Task 9) seed two accounts this way to
+// prove their watermarks advance independently.
+func seedGmailMessageForAccount(t *testing.T, d *db.DB, accountID int64, id, threadID, fromEmail, fromName, subject, body, internalDateISO string) {
+	t.Helper()
+	_, err := d.Exec(`INSERT INTO google_accounts (id, email, label, gmail_enabled) VALUES (?, ?, 'Stub', 1)
+		ON CONFLICT(id) DO UPDATE SET gmail_enabled = 1`, accountID, fmt.Sprintf("stub%d@x.com", accountID))
 	require.NoError(t, err)
 	_, err = d.Exec(`INSERT INTO gmail_messages
 		(account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		stubGoogleAccountID, id, threadID, fromEmail, fromName, subject, body, internalDateISO)
+		accountID, id, threadID, fromEmail, fromName, subject, body, internalDateISO)
 	require.NoError(t, err)
 }
 

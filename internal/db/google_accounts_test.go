@@ -136,6 +136,17 @@ func TestGoogleAccount_MemoryGmailWatermark_MissingRowReturnsZero(t *testing.T) 
 	assert.Zero(t, ts)
 }
 
+// TestGoogleAccount_SetMemoryGmailWatermark_MissingRow mirrors
+// TestGoogleAccount_SetAuthState_MissingRow's RowsAffected()==0 error shape
+// (a deferred gap from Task 2, closed here since SetMemoryGmailWatermark
+// gained per-account callers in Task 9).
+func TestGoogleAccount_SetMemoryGmailWatermark_MissingRow(t *testing.T) {
+	d := openTestDB(t)
+
+	err := d.SetMemoryGmailWatermark(999, 123.0)
+	require.Error(t, err)
+}
+
 // TestGoogleAccount_DeleteGoogleAccount_ScopedToOwnCalendars mirrors
 // DeleteCalendarAccount's transaction shape (calendar_accounts.go:90):
 // deleting one account's calendars + events must leave another account's

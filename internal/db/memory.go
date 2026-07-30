@@ -1205,8 +1205,12 @@ func (db *DB) MemoryGmailWatermark(accountID int64) (float64, error) {
 // behind fully-committed thread batches (MEM-04), never past an unextracted
 // thread.
 func (db *DB) SetMemoryGmailWatermark(accountID int64, ts float64) error {
-	if _, err := db.Exec(`UPDATE google_accounts SET memory_gmail_last_extracted_ts = ? WHERE id = ?`, ts, accountID); err != nil {
+	res, err := db.Exec(`UPDATE google_accounts SET memory_gmail_last_extracted_ts = ? WHERE id = ?`, ts, accountID)
+	if err != nil {
 		return fmt.Errorf("setting memory gmail watermark for account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting memory gmail watermark: no google_accounts row %d", accountID)
 	}
 	return nil
 }
