@@ -90,6 +90,31 @@ for bundle in "$RESOURCE_BUNDLE_DIR"/*.bundle; do
     fi
 done
 
+# Build MLX's Metal kernel library and ship it as the SwiftPM resource bundle
+# MLX searches at runtime (Contents/Resources/mlx-swift_Cmlx.bundle/default.metallib
+# — what an Xcode build would have produced). SwiftPM CLI builds cannot compile
+# Metal shaders (mlx-swift README), so without this any MLX inference (Qwen3
+# engine) aborts the app with "Failed to load the default metallib". A bare
+# metallib in Contents/MacOS is NOT an option: codesign --strict treats it as an
+# unsigned subcomponent and verification fails.
+echo "==> Building MLX metallib..."
+# BUILD_DIR here is scoped to the child script only (speech-swift's script reads it); the outer $BUILD_DIR is untouched.
+BUILD_DIR="$DESKTOP_DIR/.build" bash "$DESKTOP_DIR/.build/checkouts/speech-swift/scripts/build_mlx_metallib.sh" release
+MLX_BUNDLE="$APP_BUNDLE/Contents/Resources/mlx-swift_Cmlx.bundle"
+mkdir -p "$MLX_BUNDLE"
+cp "$DESKTOP_DIR/.build/release/mlx.metallib" "$MLX_BUNDLE/default.metallib"
+cat > "$MLX_BUNDLE/Info.plist" << 'MLXPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+</dict>
+</plist>
+MLXPLIST
+echo "    Bundled default.metallib ($(du -h "$MLX_BUNDLE/default.metallib" | cut -f1))"
+
 # Copy Go CLI into bundle
 cp "$BUILD_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
 
