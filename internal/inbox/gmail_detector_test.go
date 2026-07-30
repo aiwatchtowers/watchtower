@@ -12,27 +12,34 @@ func TestDetectGmailReceivedVsCC(t *testing.T) {
 	database := testDB(t)
 	syncedAt := "2026-07-09T10:00:00Z"
 
+	// DetectGmail reads via stubGoogleAccountID (1) until it is threaded
+	// per-account (multi-account plan Task 8).
+	acctID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me"})
+	if err != nil {
+		t.Fatalf("seed google account: %v", err)
+	}
+
 	// m1: myEmail in To → email_received
-	if err := database.UpsertGmailMessage(db.GmailMessage{
+	if err := database.UpsertGmailMessage(acctID, db.GmailMessage{
 		ID: "m1", ThreadID: "t1", FromEmail: "a@x.com", Subject: "Direct",
 		Snippet: "hello", ToJSON: `["me@x.com"]`, CcJSON: `[]`,
-		InternalDate: "2026-07-09T09:00:00Z", Permalink: "p1",
-	}, syncedAt); err != nil {
+		InternalDate: "2026-07-09T09:00:00Z", Permalink: "p1", SyncedAt: syncedAt,
+	}); err != nil {
 		t.Fatalf("seed m1: %v", err)
 	}
 	// m2: myEmail only in Cc → email_cc
-	if err := database.UpsertGmailMessage(db.GmailMessage{
+	if err := database.UpsertGmailMessage(acctID, db.GmailMessage{
 		ID: "m2", ThreadID: "t2", FromEmail: "b@x.com", Subject: "Copied",
 		Snippet: "fyi", ToJSON: `["other@x.com"]`, CcJSON: `["me@x.com"]`,
-		InternalDate: "2026-07-09T09:30:00Z", Permalink: "p2",
-	}, syncedAt); err != nil {
+		InternalDate: "2026-07-09T09:30:00Z", Permalink: "p2", SyncedAt: syncedAt,
+	}); err != nil {
 		t.Fatalf("seed m2: %v", err)
 	}
 	// m3: myEmail nowhere → skipped
-	if err := database.UpsertGmailMessage(db.GmailMessage{
+	if err := database.UpsertGmailMessage(acctID, db.GmailMessage{
 		ID: "m3", ThreadID: "t3", FromEmail: "c@x.com", Subject: "None",
-		ToJSON: `["x@x.com"]`, CcJSON: `[]`, InternalDate: "2026-07-09T09:40:00Z",
-	}, syncedAt); err != nil {
+		ToJSON: `["x@x.com"]`, CcJSON: `[]`, InternalDate: "2026-07-09T09:40:00Z", SyncedAt: syncedAt,
+	}); err != nil {
 		t.Fatalf("seed m3: %v", err)
 	}
 

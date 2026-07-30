@@ -33,6 +33,11 @@ const gmailThreadAliasPrefix = "gmailthread:"
 
 func gmailThreadAlias(threadID string) string { return gmailThreadAliasPrefix + threadID }
 
+// stubGoogleAccountID is a placeholder google_accounts id used until Gmail
+// extraction is threaded per-account (multi-account plan Task 9) —
+// single-account installs always seed/migrate account id 1.
+const stubGoogleAccountID = 1
+
 // gmailExtractMsg is one message line of a thread fed to the email extractor.
 type gmailExtractMsg struct {
 	messageID string
@@ -185,11 +190,11 @@ func (p *Pipeline) runGmailExtract(ctx context.Context, runID int64, stepOffset 
 	if p.generator == nil {
 		return 0, nil
 	}
-	wm, err := p.db.MemoryGmailWatermark()
+	wm, err := p.db.MemoryGmailWatermark(stubGoogleAccountID)
 	if err != nil {
 		return 0, err
 	}
-	msgs, err := p.db.ListGmailThreadsForExtract(wm, orDefault(p.cfg.MaxChunkMessages, 2000))
+	msgs, err := p.db.ListGmailThreadsForExtract(stubGoogleAccountID, wm, orDefault(p.cfg.MaxChunkMessages, 2000))
 	if err != nil {
 		return 0, err
 	}
@@ -259,7 +264,7 @@ func (p *Pipeline) advanceGmailWatermark(windows []runWindow, done []bool, curre
 	if !ok || safe <= current {
 		return current
 	}
-	if err := p.db.SetMemoryGmailWatermark(safe); err != nil {
+	if err := p.db.SetMemoryGmailWatermark(stubGoogleAccountID, safe); err != nil {
 		p.logf("memory: set gmail watermark: %v", err)
 		return current
 	}

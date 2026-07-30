@@ -621,7 +621,12 @@ func TestRunFastDetectionPicksUpGmail(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "U1")
 
-	require.NoError(t, d.UpsertGmailMessage(db.GmailMessage{
+	// DetectGmail reads via stubGoogleAccountID (1) until it is threaded
+	// per-account (multi-account plan Task 8).
+	acctID, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.UpsertGmailMessage(acctID, db.GmailMessage{
 		ID:           "g1",
 		ThreadID:     "th1",
 		FromEmail:    "a@x.com",
@@ -629,7 +634,8 @@ func TestRunFastDetectionPicksUpGmail(t *testing.T) {
 		ToJSON:       `["me@x.com"]`,
 		CcJSON:       `[]`,
 		InternalDate: "2026-07-09T09:00:00Z",
-	}, time.Now().UTC().Format(time.RFC3339)))
+		SyncedAt:     time.Now().UTC().Format(time.RFC3339),
+	}))
 
 	p := New(d, testConfig(), nil, log.Default())
 	p.SetCurrentUser("U1", "me@x.com")

@@ -97,10 +97,10 @@ func TestRunCalendarList_WithCalendars(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "primary", Name: "Main", IsPrimary: true, IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z",
 	}))
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "work@x.com", Name: "Work", IsSelected: false, SyncedAt: "2026-04-01T00:00:00Z",
 	}))
 
@@ -197,7 +197,7 @@ func TestRunCalendarSelect_TogglesSelection(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "primary", Name: "Main", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z",
 	}))
 

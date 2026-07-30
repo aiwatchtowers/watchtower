@@ -10,12 +10,12 @@ import (
 func TestUpsertAndGetCalendars(t *testing.T) {
 	db := openTestDB(t)
 
-	err := db.UpsertCalendar(CalendarCalendar{
+	err := db.UpsertCalendar(0, CalendarCalendar{
 		ID: "primary", Name: "Main", IsPrimary: true, IsSelected: true, Color: "#4285f4", SyncedAt: "2026-04-01T00:00:00Z",
 	})
 	require.NoError(t, err)
 
-	err = db.UpsertCalendar(CalendarCalendar{
+	err = db.UpsertCalendar(0, CalendarCalendar{
 		ID: "work@example.com", Name: "Work", IsPrimary: false, IsSelected: true, Color: "#0b8043", SyncedAt: "2026-04-01T00:00:00Z",
 	})
 	require.NoError(t, err)
@@ -32,10 +32,10 @@ func TestUpsertAndGetCalendars(t *testing.T) {
 func TestUpsertCalendar_UpdatesOnConflict(t *testing.T) {
 	db := openTestDB(t)
 
-	err := db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "Old Name", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"})
+	err := db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "Old Name", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"})
 	require.NoError(t, err)
 
-	err = db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "New Name", IsSelected: true, SyncedAt: "2026-04-02T00:00:00Z"})
+	err = db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "New Name", IsSelected: true, SyncedAt: "2026-04-02T00:00:00Z"})
 	require.NoError(t, err)
 
 	cals, err := db.GetCalendars()
@@ -48,11 +48,16 @@ func TestUpsertCalendar_UpdatesOnConflict(t *testing.T) {
 func TestGetSelectedCalendarIDs(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C1", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"}))
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal2", Name: "C2", IsSelected: false, SyncedAt: "2026-04-01T00:00:00Z"}))
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal3", Name: "C3", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"}))
+	acctID, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@x.com", Label: "A"})
+	require.NoError(t, err)
 
-	ids, err := db.GetSelectedCalendarIDs()
+	require.NoError(t, db.UpsertCalendar(acctID, CalendarCalendar{ID: "cal1", Name: "C1", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(acctID, CalendarCalendar{ID: "cal2", Name: "C2", IsSelected: false, SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(acctID, CalendarCalendar{ID: "cal3", Name: "C3", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"}))
+	// A NULL-account (caldav/ics) selected calendar must never show up.
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "caldav:1", Name: "CalDAV", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"}))
+
+	ids, err := db.GetSelectedCalendarIDs(acctID)
 	require.NoError(t, err)
 	assert.Len(t, ids, 2)
 	assert.Contains(t, ids, "cal1")
@@ -62,19 +67,22 @@ func TestGetSelectedCalendarIDs(t *testing.T) {
 func TestSetCalendarSelected(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C1", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"}))
-
-	err := db.SetCalendarSelected("cal1", false)
+	acctID, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@x.com", Label: "A"})
 	require.NoError(t, err)
 
-	ids, err := db.GetSelectedCalendarIDs()
+	require.NoError(t, db.UpsertCalendar(acctID, CalendarCalendar{ID: "cal1", Name: "C1", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z"}))
+
+	err = db.SetCalendarSelected("cal1", false)
+	require.NoError(t, err)
+
+	ids, err := db.GetSelectedCalendarIDs(acctID)
 	require.NoError(t, err)
 	assert.Empty(t, ids)
 
 	err = db.SetCalendarSelected("cal1", true)
 	require.NoError(t, err)
 
-	ids, err = db.GetSelectedCalendarIDs()
+	ids, err = db.GetSelectedCalendarIDs(acctID)
 	require.NoError(t, err)
 	assert.Len(t, ids, 1)
 }
@@ -83,7 +91,7 @@ func TestUpsertAndGetCalendarEvents(t *testing.T) {
 	db := openTestDB(t)
 
 	// Need a calendar first (foreign key).
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
 
 	ev := CalendarEvent{
 		ID:             "evt1",
@@ -130,8 +138,8 @@ func TestGetCalendarEventByID_NotFound(t *testing.T) {
 func TestGetCalendarEvents_Filter(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C1", SyncedAt: "2026-04-01T00:00:00Z"}))
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal2", Name: "C2", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "C1", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "cal2", Name: "C2", SyncedAt: "2026-04-01T00:00:00Z"}))
 
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e1", CalendarID: "cal1", Title: "Morning", StartTime: "2026-04-02T08:00:00Z", EndTime: "2026-04-02T09:00:00Z"}))
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e2", CalendarID: "cal1", Title: "Afternoon", StartTime: "2026-04-02T14:00:00Z", EndTime: "2026-04-02T15:00:00Z"}))
@@ -165,7 +173,7 @@ func TestGetCalendarEvents_Filter(t *testing.T) {
 func TestGetCalendarEventsForDate(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
 
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e1", CalendarID: "primary", Title: "Today", StartTime: "2026-04-02T10:00:00Z", EndTime: "2026-04-02T11:00:00Z"}))
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e2", CalendarID: "primary", Title: "Tomorrow", StartTime: "2026-04-03T10:00:00Z", EndTime: "2026-04-03T11:00:00Z"}))
@@ -179,7 +187,7 @@ func TestGetCalendarEventsForDate(t *testing.T) {
 func TestGetNextEvent(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
 
 	// Event in the far future (should be returned).
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "future", CalendarID: "primary", Title: "Future Event", StartTime: "2099-01-01T10:00:00Z", EndTime: "2099-01-01T11:00:00Z"}))
@@ -193,7 +201,7 @@ func TestGetNextEvent(t *testing.T) {
 func TestUpsertCalendarEvents_Batch(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
 
 	events := []CalendarEvent{
 		{ID: "b1", CalendarID: "primary", Title: "Event 1", StartTime: "2026-04-02T08:00:00Z", EndTime: "2026-04-02T09:00:00Z"},
@@ -211,7 +219,7 @@ func TestUpsertCalendarEvents_Batch(t *testing.T) {
 func TestDeleteStaleCalendarEvents(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
 
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "old", CalendarID: "primary", Title: "Old", StartTime: "2026-04-02T08:00:00Z", EndTime: "2026-04-02T09:00:00Z"}))
 
@@ -228,7 +236,7 @@ func TestDeleteStaleCalendarEvents(t *testing.T) {
 func TestClearCalendarEvents(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e1", CalendarID: "primary", Title: "E1", StartTime: "2026-04-02T08:00:00Z", EndTime: "2026-04-02T09:00:00Z"}))
 	require.NoError(t, db.UpsertAttendeeMap("alice@example.com", "U123"))
 

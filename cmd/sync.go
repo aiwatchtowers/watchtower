@@ -469,7 +469,7 @@ func wireCalendarSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Confi
 		if errors.Is(err, calendar.ErrAuthRevoked) {
 			status = "revoked"
 		}
-		if dbErr := database.SetCalendarAuthState(status, err.Error()); dbErr != nil {
+		if dbErr := database.SetGoogleAccountAuthState(stubGoogleAccountID, status, err.Error()); dbErr != nil {
 			logger.Printf("calendar: failed to record auth state: %v", dbErr)
 		}
 		return
@@ -498,7 +498,7 @@ func wireGmailSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 		if errors.Is(err, gmail.ErrAuthRevoked) {
 			status = "revoked"
 		}
-		if dbErr := database.SetGmailAuthState(status, err.Error()); dbErr != nil {
+		if dbErr := database.SetGoogleAccountAuthState(stubGoogleAccountID, status, err.Error()); dbErr != nil {
 			logger.Printf("gmail: failed to record auth state: %v", dbErr)
 		}
 		return

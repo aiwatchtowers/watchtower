@@ -88,7 +88,7 @@ func TestGmailExtract_ThreadBecomesOneEpisode(t *testing.T) {
 	assert.Contains(t, epBody, "mail:m1")
 	assert.Contains(t, epBody, "mail:m2")
 
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(stubGoogleAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(u2), wm, "watermark at the newest thread message")
 
@@ -126,7 +126,7 @@ func TestGmailExtract_ShapeDegenerateFreezesWatermark(t *testing.T) {
 	assert.Equal(t, 1, stats.GmailThreadsFailed)
 
 	// Watermark == thr-1's newest message, never past the failed thr-2.
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(stubGoogleAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(u1), wm)
 }
@@ -148,7 +148,7 @@ func TestGmailExtract_GateOffNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, stats.GmailEpisodes)
 
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(stubGoogleAccountID)
 	require.NoError(t, err)
 	assert.Zero(t, wm, "gmail watermark unmoved when the source is dark")
 }
@@ -228,7 +228,7 @@ func TestMemory_GmailThreadIdempotent_ReplyArrives(t *testing.T) {
 	assert.Contains(t, node.Body, "mail:m2")
 	assert.Contains(t, node.Body, "mail:m3", "run-2 reply ref unioned in")
 
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(stubGoogleAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(u3), wm, "watermark trails the reply")
 }
@@ -266,7 +266,7 @@ func TestMemory_GmailThreadIdempotent_ChunkCapStraddle(t *testing.T) {
 	assert.Contains(t, node.Body, "mail:m1")
 	assert.Contains(t, node.Body, "mail:m2")
 
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(stubGoogleAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(u2), wm)
 }
@@ -303,7 +303,7 @@ func TestMemory_GmailPoisonThreadTruncated(t *testing.T) {
 
 	// The watermark still trails EVERY loaded message (incl. the truncated older ones).
 	_, uLast := gmailMsgTime((total - 1) * 10)
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(stubGoogleAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(uLast), wm, "watermark covers the dropped older messages too")
 }
@@ -319,7 +319,7 @@ func TestListGmailThreadsForExtract_BoundaryDrain(t *testing.T) {
 	seedGmailMessage(t, d, "m2", "t2", "b@example.com", "B", "s", "b", iso)
 	seedGmailMessage(t, d, "m3", "t3", "c@example.com", "C", "s", "b", iso)
 
-	msgs, err := d.ListGmailThreadsForExtract(0, 2) // limit cuts inside the second
+	msgs, err := d.ListGmailThreadsForExtract(stubGoogleAccountID, 0, 2) // limit cuts inside the second
 	require.NoError(t, err)
 	assert.Len(t, msgs, 3, "boundary second drained past the limit")
 }

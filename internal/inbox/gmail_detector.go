@@ -10,6 +10,11 @@ import (
 	"watchtower/internal/db"
 )
 
+// stubGoogleAccountID is a placeholder google_accounts id used until this
+// detector is threaded per-account (multi-account plan Task 8) —
+// single-account installs always seed/migrate account id 1.
+const stubGoogleAccountID = 1
+
 // DetectGmail scans gmail_messages synced after sinceTS and creates one inbox
 // item per message that involves myEmail. Trigger type is email_received when
 // myEmail is a To recipient, otherwise email_cc (Cc only). Each message is
@@ -24,7 +29,7 @@ func DetectGmail(ctx context.Context, database *db.DB, myEmail string, sinceTS t
 	// GmailMessagesSyncedAfter fully drains its rows into a slice before we
 	// issue any dedup/insert query below — required for in-memory SQLite with
 	// MaxOpenConns(1) (see calendar_detector.go).
-	msgs, err := database.GmailMessagesSyncedAfter(sinceISO)
+	msgs, err := database.GmailMessagesSyncedAfter(stubGoogleAccountID, sinceISO)
 	if err != nil {
 		return 0, fmt.Errorf("gmail_detector: query messages: %w", err)
 	}

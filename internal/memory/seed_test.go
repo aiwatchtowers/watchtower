@@ -201,14 +201,20 @@ func TestSeedIdempotentSecondRun(t *testing.T) {
 	assert.Equal(t, len(nodesAfterFirst), len(nodesAfterSecond), "node count unchanged")
 }
 
-// seedGmailMessage inserts a gmail_messages row. internalDateISO is the RFC3339
-// message time (what the Gmail sync stores — NOT the raw ms-epoch API value).
+// seedGmailMessage inserts a gmail_messages row under stubGoogleAccountID
+// (the account id the Gmail extractor reads until it is threaded per-account,
+// multi-account plan Task 9), seeding that google_accounts row first (idempotent
+// via INSERT OR IGNORE) since gmail_messages.account_id is a NOT NULL FK.
+// internalDateISO is the RFC3339 message time (what the Gmail sync stores —
+// NOT the raw ms-epoch API value).
 func seedGmailMessage(t *testing.T, d *db.DB, id, threadID, fromEmail, fromName, subject, body, internalDateISO string) {
 	t.Helper()
-	_, err := d.Exec(`INSERT INTO gmail_messages
-		(id, thread_id, from_email, from_name, subject, body_text, internal_date)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, threadID, fromEmail, fromName, subject, body, internalDateISO)
+	_, err := d.Exec(`INSERT OR IGNORE INTO google_accounts (id, email, label) VALUES (?, 'stub@x.com', 'Stub')`, stubGoogleAccountID)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO gmail_messages
+		(account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		stubGoogleAccountID, id, threadID, fromEmail, fromName, subject, body, internalDateISO)
 	require.NoError(t, err)
 }
 
@@ -386,7 +392,7 @@ func seedCalendarEvent(t *testing.T, d *db.DB, ev calEvent) {
 	if ev.calendarID == "" {
 		ev.calendarID = "cal1"
 	}
-	require.NoError(t, d.UpsertCalendar(db.CalendarCalendar{ID: ev.calendarID, Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{ID: ev.calendarID, Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
 	attendees := ev.attendeesJSON
 	if attendees == "" {
 		attendees = "[]"

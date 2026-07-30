@@ -1571,13 +1571,11 @@ func TestMemoryMigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-// NOTE: TestMemoryGmailWatermarkRoundTrip was removed by migration 00043
-// (google_accounts): MemoryGmailWatermark/SetMemoryGmailWatermark target
-// workspace.memory_gmail_last_extracted_ts, which 00043 drops in favor of a
-// per-account column on google_accounts. The accessors are left in place —
-// internal/memory still calls them, so they keep compiling — but they now
-// fail at runtime; Task 2 of the multi-account plan rewrites them to take an
-// account id and will need a fresh test for the new signature.
+// TestMemoryGmailWatermarkRoundTrip (MemoryGmailWatermark/
+// SetMemoryGmailWatermark) moved onto a per-account google_accounts column by
+// migration 00043 — see
+// TestGoogleAccount_MemoryGmailWatermark_RoundTrip/TestGoogleAccount_MemoryGmailWatermark_MissingRowReturnsZero
+// in google_accounts_test.go.
 
 // TestMemoryCalendarWatermarkRoundTrip: the calendar episode-build watermark
 // (Task 2, migration 00033) defaults to 0 on a fresh workspace and persists
@@ -1614,7 +1612,7 @@ func TestMemoryCalendarWatermarkRoundTrip(t *testing.T) {
 // an unknown one.
 func TestCalendarEventExists(t *testing.T) {
 	db := openTestDB(t)
-	if err := db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}); err != nil {
+	if err := db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}); err != nil {
 		t.Fatalf("UpsertCalendar: %v", err)
 	}
 	if err := db.UpsertCalendarEvent(CalendarEvent{
@@ -1659,7 +1657,7 @@ func TestCalendarEventExistsAbsentTablePropagates(t *testing.T) {
 // first; future events and events below the re-scan floor are excluded.
 func TestListCalendarEventsForExtract(t *testing.T) {
 	db := openTestDB(t)
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
 	now := time.Now().UTC()
 	mk := func(id string, endOffset time.Duration) {
 		start := now.Add(endOffset - time.Hour)

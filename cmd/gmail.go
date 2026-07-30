@@ -89,7 +89,7 @@ func runGmailLogin(cmd *cobra.Command, _ []string) error {
 
 	// Clear any previously recorded auth failure so the Desktop popup dismisses.
 	if database, dbErr := db.Open(cfg.DBPath()); dbErr == nil {
-		_ = database.SetGmailAuthState("ok", "")
+		_ = database.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", "")
 		database.Close()
 	}
 
@@ -163,7 +163,7 @@ func runGmailLogout(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 
 	// Clear auth state — user intentionally disconnected, not a token failure.
-	_ = database.SetGmailAuthState("ok", "")
+	_ = database.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", "")
 
 	fmt.Fprintln(cmd.OutOrStdout(), "Gmail disconnected. Token removed.")
 	return nil

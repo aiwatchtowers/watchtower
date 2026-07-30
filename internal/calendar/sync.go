@@ -22,6 +22,11 @@ type Syncer struct {
 	logger *log.Logger
 }
 
+// stubGoogleAccountID is a placeholder google_accounts id used until this
+// Syncer is threaded with its real connected account (multi-account plan
+// Task 5) — single-account installs always seed/migrate account id 1.
+const stubGoogleAccountID = 1
+
 // NewSyncer creates a calendar syncer.
 // If logger is nil, a no-op logger is used.
 func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.Logger) *Syncer {
@@ -68,7 +73,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 				Color:      ci.Color,
 				SyncedAt:   syncedAt,
 			}
-			if err := s.db.UpsertCalendar(cal); err != nil {
+			if err := s.db.UpsertCalendar(stubGoogleAccountID, cal); err != nil {
 				s.logger.Printf("calendar: failed to upsert calendar %s: %v", ci.ID, err)
 			}
 		}
@@ -82,7 +87,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	calendarIDs := dropNonGoogleCalendarIDs(s.cfg.Calendar.SelectedCalendars)
 	if len(calendarIDs) == 0 {
 		// Use selected calendars from DB.
-		dbIDs, err := s.db.GetSelectedCalendarIDs()
+		dbIDs, err := s.db.GetSelectedCalendarIDs(stubGoogleAccountID)
 		if err != nil {
 			s.logger.Printf("calendar: failed to get selected calendars from DB, falling back to primary: %v", err)
 			calendarIDs = []string{"primary"}
@@ -176,7 +181,7 @@ func (s *Syncer) recordAuthResult(err error) {
 		return
 	}
 	if err == nil {
-		if dbErr := s.db.SetCalendarAuthState("ok", ""); dbErr != nil {
+		if dbErr := s.db.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", ""); dbErr != nil {
 			s.logger.Printf("calendar: failed to clear auth state: %v", dbErr)
 		}
 		return
@@ -185,7 +190,7 @@ func (s *Syncer) recordAuthResult(err error) {
 	if errors.Is(err, ErrAuthRevoked) {
 		status = "revoked"
 	}
-	if dbErr := s.db.SetCalendarAuthState(status, err.Error()); dbErr != nil {
+	if dbErr := s.db.SetGoogleAccountAuthState(stubGoogleAccountID, status, err.Error()); dbErr != nil {
 		s.logger.Printf("calendar: failed to record auth state: %v", dbErr)
 	}
 }

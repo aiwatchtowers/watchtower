@@ -1,18 +1,23 @@
 package db
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 )
 
-// UpsertCalendar inserts or updates a Google Calendar.
-func (db *DB) UpsertCalendar(cal CalendarCalendar) error {
-	_, err := db.Exec(`INSERT INTO calendar_calendars (id, name, is_primary, is_selected, color, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, is_primary=excluded.is_primary, color=excluded.color, synced_at=excluded.synced_at`,
-		cal.ID, cal.Name, cal.IsPrimary, cal.IsSelected, cal.Color, cal.SyncedAt)
+// UpsertCalendar inserts or updates a Google Calendar for accountID. accountID
+// <= 0 writes a NULL account_id — the shape caldav/ics calendars need, since
+// those rows must never enter the Google syncer's fetch/stale-delete loops
+// (see dropNonGoogleCalendarIDs in internal/calendar).
+func (db *DB) UpsertCalendar(accountID int64, cal CalendarCalendar) error {
+	var accountArg any
+	if accountID > 0 {
+		accountArg = accountID
+	}
+	_, err := db.Exec(`INSERT INTO calendar_calendars (id, name, is_primary, is_selected, color, synced_at, account_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, is_primary=excluded.is_primary, color=excluded.color, synced_at=excluded.synced_at, account_id=excluded.account_id`,
+		cal.ID, cal.Name, cal.IsPrimary, cal.IsSelected, cal.Color, cal.SyncedAt, accountArg)
 	if err != nil {
 		return fmt.Errorf("upserting calendar %s: %w", cal.ID, err)
 	}
@@ -38,9 +43,11 @@ func (db *DB) GetCalendars() ([]CalendarCalendar, error) {
 	return cals, rows.Err()
 }
 
-// GetSelectedCalendarIDs returns IDs of calendars marked as selected.
-func (db *DB) GetSelectedCalendarIDs() ([]string, error) {
-	rows, err := db.Query(`SELECT id FROM calendar_calendars WHERE is_selected = 1`)
+// GetSelectedCalendarIDs returns IDs of accountID's calendars marked as
+// selected. caldav:/ics: calendars carry a NULL account_id, so they never
+// match here regardless of accountID.
+func (db *DB) GetSelectedCalendarIDs(accountID int64) ([]string, error) {
+	rows, err := db.Query(`SELECT id FROM calendar_calendars WHERE is_selected = 1 AND account_id = ?`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("querying selected calendars: %w", err)
 	}
@@ -285,41 +292,6 @@ func (db *DB) DeleteMeetingPrepCache(eventID string) error {
 	_, err := db.Exec(`DELETE FROM meeting_prep_cache WHERE event_id = ?`, eventID)
 	if err != nil {
 		return fmt.Errorf("deleting meeting prep cache for %s: %w", eventID, err)
-	}
-	return nil
-}
-
-// CalendarAuthState reflects whether the Google refresh token is still valid.
-type CalendarAuthState struct {
-	Status    string // "ok" | "revoked" | "error"
-	Error     string
-	UpdatedAt string
-}
-
-// GetCalendarAuthState returns the current calendar auth state.
-// If the row is missing, a zero-value state with Status="ok" is returned.
-func (db *DB) GetCalendarAuthState() (CalendarAuthState, error) {
-	var s CalendarAuthState
-	err := db.QueryRow(`SELECT status, error, updated_at FROM calendar_auth_state WHERE id = 1`).
-		Scan(&s.Status, &s.Error, &s.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return CalendarAuthState{Status: "ok"}, nil
-		}
-		return CalendarAuthState{}, fmt.Errorf("reading calendar_auth_state: %w", err)
-	}
-	return s, nil
-}
-
-// SetCalendarAuthState upserts the auth state. status is one of "ok", "revoked", "error".
-func (db *DB) SetCalendarAuthState(status, errMsg string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.Exec(`INSERT INTO calendar_auth_state (id, status, error, updated_at)
-		VALUES (1, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET status = excluded.status, error = excluded.error, updated_at = excluded.updated_at`,
-		status, errMsg, now)
-	if err != nil {
-		return fmt.Errorf("upserting calendar_auth_state: %w", err)
 	}
 	return nil
 }

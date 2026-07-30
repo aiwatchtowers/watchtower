@@ -176,7 +176,7 @@ func TestTranscriptSaveEventLinkedWritesMeetingRecaps(t *testing.T) {
 
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{ID: "primary", Name: "Primary", IsPrimary: true, IsSelected: true}))
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{ID: "primary", Name: "Primary", IsPrimary: true, IsSelected: true}))
 	require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{
 		ID:         "evt-1",
 		CalendarID: "primary",
@@ -228,7 +228,7 @@ func TestTranscriptSaveEventWithExistingRecapKeepsIt(t *testing.T) {
 
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{ID: "primary", Name: "Primary", IsPrimary: true, IsSelected: true}))
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{ID: "primary", Name: "Primary", IsPrimary: true, IsSelected: true}))
 	require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{
 		ID:         "evt-recap",
 		CalendarID: "primary",

@@ -7,14 +7,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// NOTE: TestCalendarAuthState_DefaultsToOK, TestCalendarAuthState_RoundTrip,
-// and TestCalendarAuthState_Overwrites were removed by migration 00043
-// (google_accounts): Get/SetCalendarAuthState target the calendar_auth_state
-// singleton, which 00043 drops in favor of per-account status/error columns
-// on google_accounts. The accessors are left in place — cmd and
-// internal/calendar still call them, so they keep compiling — but they now
-// fail at runtime; Task 2 of the multi-account plan rewrites them to take an
-// account id and will need fresh tests for the new signatures.
+// TestCalendarAuthState_DefaultsToOK, TestCalendarAuthState_RoundTrip, and
+// TestCalendarAuthState_Overwrites (Get/SetCalendarAuthState, the
+// calendar_auth_state singleton) were retired by migration 00043
+// (google_accounts) in favor of per-account status/error columns — see
+// TestGoogleAccount_SetAuthState_RoundTrip/TestGoogleAccount_SetAuthState_MissingRow
+// in google_accounts_test.go.
 
 func TestMeetingPrepCache_RoundTrip(t *testing.T) {
 	db := openTestDB(t)

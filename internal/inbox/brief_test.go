@@ -30,7 +30,7 @@ func TestBuildSecretaryBrief_AllSections(t *testing.T) {
 	}
 
 	// One calendar event for today (2026-07-05).
-	if err := d.UpsertCalendar(db.CalendarCalendar{ID: "cal1", Name: "Main", SyncedAt: "2026-07-01T00:00:00Z"}); err != nil {
+	if err := d.UpsertCalendar(0, db.CalendarCalendar{ID: "cal1", Name: "Main", SyncedAt: "2026-07-01T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.UpsertCalendarEvent(db.CalendarEvent{

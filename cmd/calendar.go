@@ -166,7 +166,7 @@ func runCalendarLogin(cmd *cobra.Command, _ []string) error {
 
 	// Clear any previously recorded auth failure so the Desktop popup dismisses.
 	if database, dbErr := db.Open(cfg.DBPath()); dbErr == nil {
-		_ = database.SetCalendarAuthState("ok", "")
+		_ = database.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", "")
 		database.Close()
 	}
 
@@ -222,7 +222,7 @@ func runCalendarLogout(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Clear auth state — user intentionally disconnected, not a token failure.
-	_ = database.SetCalendarAuthState("ok", "")
+	_ = database.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", "")
 
 	fmt.Fprintln(cmd.OutOrStdout(), "Google Calendar disconnected. Token and events removed.")
 	return nil

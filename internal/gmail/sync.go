@@ -22,6 +22,11 @@ type Syncer struct {
 	logger *log.Logger
 }
 
+// stubGoogleAccountID is a placeholder google_accounts id used until this
+// Syncer is threaded with its real connected account (multi-account plan
+// Task 4) — single-account installs always seed/migrate account id 1.
+const stubGoogleAccountID = 1
+
 // NewSyncer creates a Gmail syncer.
 // If logger is nil, a no-op logger is used.
 func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.Logger) *Syncer {
@@ -50,7 +55,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		maxBody = config.DefaultGmailMaxBodyBytes
 	}
 
-	watermark, err := s.db.GetGmailLastInternalDate()
+	watermark, err := s.db.GetGmailAccountWatermark(stubGoogleAccountID)
 	if err != nil {
 		return 0, fmt.Errorf("reading gmail watermark: %w", err)
 	}
@@ -127,7 +132,8 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			BodyText: body, InternalDate: m.InternalDate, LabelsJSON: string(labelsJSON),
 			IsUnread: m.IsUnread, Permalink: m.Permalink,
 		}
-		if err := s.db.UpsertGmailMessage(row, syncedAt); err != nil {
+		row.SyncedAt = syncedAt
+		if err := s.db.UpsertGmailMessage(stubGoogleAccountID, row); err != nil {
 			s.logger.Printf("gmail: upsert %s: %v", m.ID, err)
 			continue
 		}
@@ -138,7 +144,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 
 	if maxSeen > watermark {
-		if err := s.db.SetGmailLastInternalDate(maxSeen); err != nil {
+		if err := s.db.SetGmailAccountWatermark(stubGoogleAccountID, maxSeen); err != nil {
 			s.logger.Printf("gmail: advancing watermark: %v", err)
 		}
 	}
@@ -152,7 +158,7 @@ func (s *Syncer) recordAuthResult(err error) {
 		return
 	}
 	if err == nil {
-		if dbErr := s.db.SetGmailAuthState("ok", ""); dbErr != nil {
+		if dbErr := s.db.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", ""); dbErr != nil {
 			s.logger.Printf("gmail: clear auth state: %v", dbErr)
 		}
 		return
@@ -161,7 +167,7 @@ func (s *Syncer) recordAuthResult(err error) {
 	if errors.Is(err, ErrAuthRevoked) {
 		status = "revoked"
 	}
-	if dbErr := s.db.SetGmailAuthState(status, err.Error()); dbErr != nil {
+	if dbErr := s.db.SetGoogleAccountAuthState(stubGoogleAccountID, status, err.Error()); dbErr != nil {
 		s.logger.Printf("gmail: record auth state: %v", dbErr)
 	}
 }

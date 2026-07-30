@@ -193,7 +193,7 @@ func TestCLI_DayPlanCheckConflicts(t *testing.T) {
 	}))
 
 	// Calendar parent required by FK.
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "c1", Name: "Primary", IsPrimary: true,
 	}))
 

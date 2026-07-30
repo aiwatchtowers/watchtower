@@ -11,6 +11,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// stubGoogleAccountID is a placeholder google_accounts id used across cmd's
+// Google-related commands until they thread a real connected account
+// (multi-account plan Task 7) — single-account installs always seed/migrate
+// account id 1.
+const stubGoogleAccountID = 1
+
 var googleCmd = &cobra.Command{
 	Use:   "google",
 	Short: "Google account integration",
@@ -83,7 +89,7 @@ func runGoogleLogin(cmd *cobra.Command, _ []string) error {
 				return fmt.Errorf("saving calendar token: %w", err)
 			}
 			if database, dbErr := db.Open(cfg.DBPath()); dbErr == nil {
-				_ = database.SetCalendarAuthState("ok", "")
+				_ = database.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", "")
 				database.Close()
 			}
 			fmt.Fprintln(out, "Google Calendar: connected")
@@ -105,7 +111,7 @@ func runGoogleLogin(cmd *cobra.Command, _ []string) error {
 				return fmt.Errorf("saving gmail token: %w", err)
 			}
 			if database, dbErr := db.Open(cfg.DBPath()); dbErr == nil {
-				_ = database.SetGmailAuthState("ok", "")
+				_ = database.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", "")
 				database.Close()
 			}
 			persistGmailAccountEmail(cmd.Context(), token.RefreshToken)
