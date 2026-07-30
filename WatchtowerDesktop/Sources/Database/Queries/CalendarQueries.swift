@@ -126,6 +126,12 @@ enum CalendarQueries {
     // MARK: - Auth State
 
     struct AuthState: Equatable {
+        /// The specific google_accounts row this state describes — required
+        /// so the reconnect flow can target THIS account (`google login
+        /// --account <id>`) rather than falling back to the CLI's generic
+        /// "account #1" alias, which may be a different, healthy account in
+        /// a multi-account workspace (N2).
+        let accountID: Int
         let status: String   // "ok" | "revoked" | "error"
         let error: String
         let updatedAt: String
@@ -143,7 +149,7 @@ enum CalendarQueries {
         let row = try Row.fetchOne(
             db,
             sql: """
-                SELECT status, error, updated_at FROM google_accounts
+                SELECT id, status, error, updated_at FROM google_accounts
                 WHERE calendar_enabled = 1 AND status IN ('error', 'revoked')
                 ORDER BY updated_at DESC
                 LIMIT 1
@@ -151,6 +157,7 @@ enum CalendarQueries {
         )
         guard let row else { return nil }
         return AuthState(
+            accountID: row["id"] ?? 0,
             status: row["status"] ?? "ok",
             error: row["error"] ?? "",
             updatedAt: row["updated_at"] ?? ""

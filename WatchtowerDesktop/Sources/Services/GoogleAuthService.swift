@@ -26,7 +26,18 @@ final class GoogleAuthService {
 
     // MARK: - Connect
 
-    func connect() {
+    /// Runs the Calendar OAuth (re-)consent flow. With `accountID` (the
+    /// reconnect-alert path — see `Navigation.swift`'s
+    /// `reconnectAndRestartDaemon`), targets that SPECIFIC account via
+    /// `watchtower google login --account <id>` (re-requests exactly its
+    /// currently-enabled services — `calendar login`'s own alias semantics,
+    /// just pinned to a known-broken account instead of the CLI's generic
+    /// "account #1"). Without one, falls back to the generic `calendar
+    /// login`, which resolves to whichever account the CLI treats as #1
+    /// (`resolveAccountOneForLogin`) — reconnecting a healthy account #1
+    /// while a DIFFERENT account is the one that's actually broken is
+    /// exactly the bug `accountID` exists to prevent (N2).
+    func connect(accountID: Int? = nil) {
         guard !isAuthenticating else { return }
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"
@@ -41,7 +52,11 @@ final class GoogleAuthService {
         process.executableURL = URL(fileURLWithPath: cliPath)
         // --app-return: the success page redirects to watchtower-auth:// so
         // macOS brings the app back to the foreground after the browser step.
-        process.arguments = ["calendar", "login", "--app-return"]
+        if let accountID {
+            process.arguments = ["google", "login", "--account", String(accountID), "--app-return"]
+        } else {
+            process.arguments = ["calendar", "login", "--app-return"]
+        }
         process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process

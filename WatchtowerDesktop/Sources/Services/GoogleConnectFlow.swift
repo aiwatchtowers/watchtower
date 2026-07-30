@@ -27,6 +27,15 @@ final class GoogleConnectFlow {
     var error: String?
 
     private var loginProcess: Process?
+    /// Handle to the in-flight `connect()` Task — `cancel()` cancels this
+    /// directly, closing the window between `connect()` starting and
+    /// `loginProcess` actually being assigned (the account lookup below
+    /// awaits a DB read before any process exists to terminate). Without
+    /// this, a cancel() during that window found nothing to terminate, reset
+    /// `isRunning` anyway, and let the in-flight Task launch the OAuth
+    /// subprocess completely uncancellably — worse, the reset `isRunning`
+    /// let a second `connect()` start a second, PARALLEL OAuth flow (N1).
+    private var connectTask: Task<Void, Never>?
     private var dbPool: DatabasePool?
 
     var fullyConnected: Bool { calendar.isConnected && gmail.isConnected }
@@ -92,13 +101,29 @@ final class GoogleConnectFlow {
         isRunning = true
         error = nil
 
-        Task {
+        connectTask = Task {
+            // cancel() may already have fired before this task body even
+            // started running (Task{} only schedules, it doesn't execute
+            // inline) — bail before touching the DB or the CLI.
+            guard !Task.isCancelled else { return }
+
             let accounts: [GoogleAccount]
             if let dbPool = self.dbPool {
                 accounts = (try? await dbPool.read { db in try GoogleAccountQueries.fetchAll(db) }) ?? []
             } else {
                 accounts = []
             }
+
+            // cancel() may also have fired during the DB read above — its
+            // only await point before the process launches. Re-check here,
+            // before constructing/launching the subprocess: MainActor's
+            // serial executor can't interleave a cancel() call between this
+            // check and `self.loginProcess = process` right below (no
+            // further await in between), so either this sees the
+            // cancellation and bails, or cancel() runs strictly after
+            // loginProcess is set and terminates the live process instead.
+            guard !Task.isCancelled else { return }
+
             let args = Self.connectArgs(accounts: accounts, wantCalendar: wantCalendar, wantGmail: wantGmail)
 
             let process = Process()
@@ -110,6 +135,16 @@ final class GoogleConnectFlow {
 
             let result = await Self.runProcess(process)
             self.loginProcess = nil
+            self.connectTask = nil
+
+            // A cancelled attempt (cancel() already reset isRunning/
+            // loginProcess and, if the process had started, terminated it —
+            // result here is just that termination's exit code, e.g.
+            // SIGTERM) must never reach finishConnect: it writes config
+            // (enableSync) and would stomp isRunning back to false a second
+            // time on top of whatever a subsequent connect() attempt set it to.
+            guard !Task.isCancelled else { return }
+
             await self.finishConnect(
                 exitCode: result.exitCode,
                 stderr: result.stderr,
@@ -120,6 +155,13 @@ final class GoogleConnectFlow {
     }
 
     func cancel() {
+        // Marks the in-flight Task cancelled FIRST — this is what stops it
+        // from ever launching the subprocess if cancel() lands during the
+        // pre-launch DB-read window (see connectTask's doc comment above),
+        // not the process-termination below, which only covers the case
+        // where a process already exists.
+        connectTask?.cancel()
+        connectTask = nil
         if let process = loginProcess, process.isRunning {
             process.terminate()
         }

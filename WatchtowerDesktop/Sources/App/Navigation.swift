@@ -139,9 +139,13 @@ struct MainNavigationView: View {
     }
 
     /// Runs the OAuth flow and, on success, restarts the daemon so the in-memory
-    /// refresh token is replaced with the freshly saved one.
+    /// refresh token is replaced with the freshly saved one. Targets the
+    /// SPECIFIC account `authState` flagged as broken (N2) — without this,
+    /// `connect()` falls back to the CLI's generic "account #1" alias, which
+    /// in a multi-account workspace may be a completely different, healthy
+    /// account, leaving the actually-broken one (and the alert) stuck forever.
     private func reconnectAndRestartDaemon() {
-        googleAuth.connect()
+        googleAuth.connect(accountID: appState.calendarViewModel?.authState?.accountID)
         Task {
             while googleAuth.isAuthenticating {
                 try? await Task.sleep(for: .milliseconds(250))

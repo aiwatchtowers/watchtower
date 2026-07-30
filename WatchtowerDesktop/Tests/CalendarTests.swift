@@ -532,16 +532,36 @@ struct CalendarQueriesTests {
     @Test("fetchAuthState returns a revoked Calendar-enabled account")
     func fetchAuthStateReturnsRevokedCalendarEnabledAccount() throws {
         let dbQueue = try TestDatabase.create()
-        try dbQueue.write { db in
+        let accountID = try dbQueue.write { db in
             try TestDatabase.insertGoogleAccount(
                 db, email: "broken@gmail.com", calendarEnabled: true, gmailEnabled: false,
                 status: "revoked", error: "refresh token revoked", createdAt: "2026-05-01T00:00:00Z"
             )
         }
         let auth = try #require(try dbQueue.read { db in try CalendarQueries.fetchAuthState(db) })
+        #expect(auth.accountID == Int(accountID))
         #expect(auth.status == "revoked")
         #expect(auth.error == "refresh token revoked")
         #expect(auth.updatedAt == "2026-05-01T00:00:00Z")
+    }
+
+    @Test("fetchAuthState identifies the broken account, not account #1, in a multi-account workspace")
+    func fetchAuthStateIdentifiesCorrectAccountAmongMultiple() throws {
+        // N2: account #1 healthy, account #2 revoked — the reconnect flow
+        // must target #2, not fall back to the CLI's "account #1" alias.
+        let dbQueue = try TestDatabase.create()
+        let brokenID = try dbQueue.write { db in
+            _ = try TestDatabase.insertGoogleAccount(
+                db, email: "healthy@gmail.com", calendarEnabled: true, status: "ok", createdAt: "2026-05-01T00:00:00Z"
+            )
+            return try TestDatabase.insertGoogleAccount(
+                db, email: "broken@gmail.com", calendarEnabled: true,
+                status: "revoked", error: "refresh token revoked", createdAt: "2026-05-02T00:00:00Z"
+            )
+        }
+        let auth = try #require(try dbQueue.read { db in try CalendarQueries.fetchAuthState(db) })
+        #expect(auth.accountID == Int(brokenID))
+        #expect(auth.accountID != 1)
     }
 
     @Test("fetchAuthState ignores a Calendar-disabled account even if broken")

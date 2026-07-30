@@ -63,4 +63,25 @@ final class GoogleConnectFlowTests: XCTestCase {
 
         XCTAssertEqual(args, ["google", "login", "--account", "5", "--app-return", "--calendar", "--gmail"])
     }
+
+    // MARK: - cancel() state machine (N1)
+    //
+    // connect()'s actual race (cancel() landing in the window between
+    // isRunning=true and loginProcess being assigned, while an in-flight
+    // Task is mid-DB-read) isn't unit-testable here: it needs a real CLI
+    // process launch (`Constants.findCLIPath()`, environment-dependent —
+    // see GoogleAccountsViewModelTests' equivalent reentrancy tests, which
+    // for the same reason only ever exercise the "already busy" guard, never
+    // the path that reaches the CLI) and real async timing to land inside a
+    // one-await-point window. What IS testable without either: cancel()'s
+    // safety on the "nothing in flight" edge, which exercises the new
+    // `connectTask?.cancel()` line's nil-optional path.
+    func testCancelWithNoActiveConnectIsSafeNoop() {
+        let flow = GoogleConnectFlow()
+        flow.cancel()
+        XCTAssertFalse(flow.isRunning)
+        // Calling it twice must also be safe (connectTask already nil).
+        flow.cancel()
+        XCTAssertFalse(flow.isRunning)
+    }
 }
