@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"path/filepath"
 	"testing"
 
 	"github.com/pressly/goose/v3"
@@ -159,5 +160,100 @@ func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
 	}
 	if scopeKey != "channel:gmail:1:th1" {
 		t.Errorf("inbox_learned_rules.scope_key = %q, want channel:gmail:1:th1", scopeKey)
+	}
+}
+
+// TestMigration00043DownUpCycle: 00043's Down restores the pre-migration
+// shape byte-for-byte (precedent: TestMemoryPhase5Slice1MigrationDownUpCycle
+// and its siblings), so a down;up cycle on a seeded post-00043 database is
+// clean. This also covers the Down-block gap the reviewer flagged: Down
+// recreates calendar_auth_state but must reseed its default row exactly like
+// it already does for gmail_auth_state — asserted directly below.
+func TestMigration00043DownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "google-accounts-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	// Seed the post-00043 shape: one account, a gmail message and a calendar
+	// scoped to it, and Gmail-derived inbox rows already in the rewritten
+	// gmail:1:<thread> form.
+	if _, err := d.Exec(`INSERT INTO google_accounts (id, email, label, gmail_last_internal_date, memory_gmail_last_extracted_ts)
+		VALUES (1, 'a@x.com', 'A', 555.0, 777.0)`); err != nil {
+		t.Fatalf("seed google_accounts: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id) VALUES (1, 'm1', 'th1')`); err != nil {
+		t.Fatalf("seed gmail_messages: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO calendar_calendars (id, name, account_id) VALUES ('cal1', 'Cal', 1)`); err != nil {
+		t.Fatalf("seed calendar_calendars: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type)
+		VALUES ('gmail:1:th1', '1.0', 'U1', 'email_received')`); err != nil {
+		t.Fatalf("seed inbox_items: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', 'channel:gmail:1:th1', 1.0, 'user_rule', '2026-07-30T00:00:00Z')`); err != nil {
+		t.Fatalf("seed inbox_learned_rules: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+
+	// Down: channel id / scope key un-rewritten...
+	var channelID string
+	if err := d.QueryRow(`SELECT channel_id FROM inbox_items WHERE trigger_type = 'email_received'`).Scan(&channelID); err != nil {
+		t.Fatalf("read inbox_items.channel_id after down: %v", err)
+	}
+	if channelID != "th1" {
+		t.Errorf("channel_id after down = %q, want th1", channelID)
+	}
+	var scopeKey string
+	if err := d.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE source = 'user_rule'`).Scan(&scopeKey); err != nil {
+		t.Fatalf("read scope_key after down: %v", err)
+	}
+	if scopeKey != "channel:th1" {
+		t.Errorf("scope_key after down = %q, want channel:th1", scopeKey)
+	}
+	// ...watermarks restored onto workspace...
+	var gmailTS, extractedTS float64
+	if err := d.QueryRow(`SELECT gmail_last_internal_date, memory_gmail_last_extracted_ts FROM workspace WHERE id = 'T1'`).Scan(&gmailTS, &extractedTS); err != nil {
+		t.Fatalf("read workspace watermarks after down: %v", err)
+	}
+	if gmailTS != 555.0 || extractedTS != 777.0 {
+		t.Errorf("workspace watermarks after down = (%v, %v), want (555, 777)", gmailTS, extractedTS)
+	}
+	// ...and calendar_auth_state exists with its default row (the gap the
+	// reviewer flagged: Down previously recreated the table but never
+	// reseeded it, unlike gmail_auth_state).
+	var authStatus string
+	if err := d.QueryRow(`SELECT status FROM calendar_auth_state WHERE id = 1`).Scan(&authStatus); err != nil {
+		t.Fatalf("calendar_auth_state row missing after down: %v", err)
+	}
+	if authStatus != "ok" {
+		t.Errorf("calendar_auth_state.status = %q, want ok", authStatus)
+	}
+	assertTableGone(t, d, "google_accounts")
+
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	// Up again: the re-migrated shape is restored.
+	assertTableExists(t, d, "google_accounts")
+	assertTableGone(t, d, "calendar_auth_state")
+	assertTableGone(t, d, "gmail_auth_state")
+	var accountCount int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM google_accounts`).Scan(&accountCount); err != nil {
+		t.Fatalf("count google_accounts after re-up: %v", err)
+	}
+	if accountCount != 1 {
+		t.Fatalf("google_accounts count after re-up = %d, want 1", accountCount)
 	}
 }

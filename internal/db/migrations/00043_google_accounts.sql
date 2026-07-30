@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS calendar_auth_state (
     error TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+INSERT OR IGNORE INTO calendar_auth_state (id, status, error) VALUES (1, 'ok', '');
 CREATE TABLE IF NOT EXISTS gmail_auth_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     status TEXT NOT NULL DEFAULT 'ok',
