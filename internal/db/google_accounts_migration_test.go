@@ -117,7 +117,7 @@ func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
 
 	var accountCount int
 	var gmailEnabled int
-	var watermark, extractedTs float64
+	var watermark, extractedTS float64
 	if err := raw.QueryRow(`SELECT COUNT(*) FROM google_accounts`).Scan(&accountCount); err != nil {
 		t.Fatalf("count google_accounts: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
 		t.Fatalf("google_accounts count = %d, want 1", accountCount)
 	}
 	if err := raw.QueryRow(`SELECT gmail_enabled, gmail_last_internal_date, memory_gmail_last_extracted_ts
-		FROM google_accounts WHERE id = 1`).Scan(&gmailEnabled, &watermark, &extractedTs); err != nil {
+		FROM google_accounts WHERE id = 1`).Scan(&gmailEnabled, &watermark, &extractedTS); err != nil {
 		t.Fatalf("read google_accounts: %v", err)
 	}
 	if gmailEnabled != 1 {
@@ -134,8 +134,8 @@ func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
 	if watermark != 12345.0 {
 		t.Errorf("gmail_last_internal_date = %v, want 12345.0", watermark)
 	}
-	if extractedTs != 6789.0 {
-		t.Errorf("memory_gmail_last_extracted_ts = %v, want 6789.0", extractedTs)
+	if extractedTS != 6789.0 {
+		t.Errorf("memory_gmail_last_extracted_ts = %v, want 6789.0", extractedTS)
 	}
 
 	var msgAccountID int

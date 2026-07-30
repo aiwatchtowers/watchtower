@@ -164,6 +164,17 @@ func runGoogleAdd(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
+	// Seed account #1 from a pre-multi-account legacy token file, if one
+	// exists and no account row does yet — closes the narrow window where an
+	// onboarding entry point could call `google add` before the daemon/CLI
+	// has ever run the same seed, creating a duplicate for the same login.
+	// This only SEEDS legacy state; `google add` always creates a NEW account
+	// below regardless of whether a seed happened.
+	logger := log.New(cmd.ErrOrStderr(), "[google] ", log.LstdFlags)
+	if _, err := ensureLegacyGoogleAccount(cmd.Context(), cfg, database, logger); err != nil {
+		logger.Printf("failed to seed legacy account: %v", err)
+	}
+
 	id, err := database.CreateGoogleAccount(db.GoogleAccount{Label: label, ClientID: clientID})
 	if err != nil {
 		return fmt.Errorf("creating account: %w", err)

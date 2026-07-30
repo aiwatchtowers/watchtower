@@ -458,7 +458,9 @@ func wireJiraSyncer(d *daemon.Daemon, cfg *config.Config, database *db.DB, logge
 // account's own OAuth client credentials when it brought one. A broken
 // account records its own auth-state error (e.g. revoked grants) rather than
 // aborting the wiring step for the others — the calendar/gmail analog of
-// wireImapSyncers/wireCalDAVSyncers.
+// wireImapSyncers/wireCalDAVSyncers. The global cfg.Calendar.Enabled /
+// cfg.Gmail.Enabled toggles gate the corresponding syncer kind across every
+// account, matching every other daemon phase's global on/off switch.
 func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
 	accounts, err := database.ListGoogleAccounts()
 	if err != nil {
@@ -478,7 +480,7 @@ func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config
 			continue
 		}
 		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
-		if acct.CalendarEnabled {
+		if cfg.Calendar.Enabled && acct.CalendarEnabled {
 			calClient, err := calendar.NewClient(ctx, token.RefreshToken, googleCfg)
 			if err != nil {
 				recordGoogleWireError(database, logger, acct.ID, "calendar", err, errors.Is(err, calendar.ErrAuthRevoked))
@@ -486,7 +488,7 @@ func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config
 				calSyncers = append(calSyncers, calendar.NewSyncer(calClient, database, cfg, logger, acct.ID))
 			}
 		}
-		if acct.GmailEnabled {
+		if cfg.Gmail.Enabled && acct.GmailEnabled {
 			gmClient, err := gmail.NewClient(ctx, token.RefreshToken,
 				gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
 			if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -488,8 +489,12 @@ func TestIngestInteractions_VerdictStableKeyOnUpdatedAtMove(t *testing.T) {
 	require.Equal(t, 1, folded)
 	require.Equal(t, 1, bumped)
 
-	// AttachSignal-style bump of updated_at, verdict UNCHANGED.
-	_, err = d.Exec(`UPDATE situations SET updated_at = '2026-07-16T12:00:00Z' WHERE id = ?`, sitID)
+	// AttachSignal-style bump of updated_at, verdict UNCHANGED. The moved
+	// timestamp is derived from time.Now() (not hardcoded) so it always sits
+	// well inside interactionRescanWindowDays regardless of what day the
+	// suite runs on.
+	movedAt := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	_, err = d.Exec(`UPDATE situations SET updated_at = ? WHERE id = ?`, movedAt, sitID)
 	require.NoError(t, err)
 	_, folded, bumped, _, _, err = p.ingestInteractions(0, 0)
 	require.NoError(t, err)
