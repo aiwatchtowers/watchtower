@@ -5,7 +5,7 @@ final class Qwen3ProviderTests: XCTestCase {
     func testMetadata() throws {
         let p = Qwen3Provider()
         XCTAssertEqual(type(of: p).id, "qwen3")
-        XCTAssertFalse(p.supportsLive)
+        XCTAssertTrue(p.supportsLive)
         if Qwen3Provider.isAppleSilicon {
             XCTAssertEqual(p.availability(), .available)
         } else {

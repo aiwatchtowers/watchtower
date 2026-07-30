@@ -2,10 +2,12 @@ import Foundation
 import Qwen3ASR
 
 /// Adapts soniqo/speech-swift's `Qwen3ASRModel` (MLX, Metal + Apple Neural Engine)
-/// to the pluggable `TranscriptionProvider` contract. Batch-only — the package's
-/// public `Qwen3ASRModel.transcribe` call is a plain synchronous batch API with no
-/// streaming/session surface, so `supportsLive` is false and `makeLiveSession`
-/// always returns nil.
+/// to the pluggable `TranscriptionProvider` contract. The package's public
+/// `Qwen3ASRModel.transcribe` is a plain synchronous whole-buffer call whose
+/// memory grows with clip length (~0.6 GB GPU peak per audio minute), so both
+/// batch and live decode through `Qwen3Windower` — WindowPlanner windows,
+/// one bounded `transcribe` call each. Live input is our own loop (speech-swift
+/// 0.0.7 has no live-input API; its StreamingASR takes a complete buffer).
 ///
 /// Pinned to speech-swift **0.0.7** exactly: it is the newest tag that still
 /// declares `.macOS(.v14)` (0.0.8+ requires macOS 15, via MLXState) and predates
@@ -18,7 +20,7 @@ struct Qwen3Provider: TranscriptionProvider {
     var models: [TranscriptionModelOption] {
         [.init(id: "Qwen3-ASR-0.6B", label: "Qwen3-ASR 0.6B")]
     }
-    var supportsLive: Bool { false }
+    var supportsLive: Bool { true }
 
     /// `Qwen3ASRModel` runs its encoder/decoder on MLX (Metal + Apple Neural
     /// Engine); mlx-swift itself is documented as Apple-Silicon-only (no CPU/Intel
@@ -74,35 +76,57 @@ struct Qwen3Provider: TranscriptionProvider {
     }
 }
 
-/// Wraps a loaded `Qwen3ASRModel`. `Qwen3ASRModel.transcribe(audio:sampleRate:)`
-/// performs its own internal mel-feature extraction and audio encoding over the
-/// full clip (no chunked/sliding-window API is exposed), so this wrapper does NOT
-/// window like `WindowedTranscriber` — it hands the full 16 kHz buffer to the SDK
-/// in one call, same as `ParakeetTranscriber`.
-/// `@unchecked Sendable` is sound here: one instance is created per recording and its
-/// `transcribe` is awaited once from a single detached task, never shared concurrently
-/// (same single-use invariant as `WhisperKitEngine`; the Qwen3 model is documented
-/// upstream as not thread-safe, which this usage respects).
+/// Wraps a loaded `Qwen3ASRModel` behind `Qwen3Windower`: batch wraps the full
+/// buffer in a single-yield stream, live runs the recorder's real stream —
+/// one code path, so batch and live cannot drift. Each ~20 s window is one
+/// bounded `transcribe` call instead of the whole clip in one shot.
+/// `@unchecked Sendable` is sound here: one instance is created per recording,
+/// decode calls are serial inside one windower run, never shared concurrently
+/// (same single-use invariant as `WhisperKitEngine`; the Qwen3 model is
+/// documented upstream as not thread-safe, which this usage respects).
 final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
     private let model: Qwen3ASRModel
     init(model: Qwen3ASRModel) { self.model = model }
+
+    private func windower(config: TranscriptionConfig) -> Qwen3Windower {
+        let model = self.model
+        let forced = config.forcedLanguage
+        // `transcribe` strips any auto-detected "language XX" prefix internally
+        // (see the package's `generateText`), so with no forced language the
+        // model auto-detects per window and no tag reaches the text.
+        return Qwen3Windower(config: config) { window in
+            model.transcribe(audio: window, sampleRate: 16_000, language: forced)
+        }
+    }
 
     func transcribe(
         _ samples: [Float],
         config: TranscriptionConfig,
         progress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> TranscriptionOutput {
-        progress(0, 1)
-        // `transcribe` is a synchronous (blocking) MLX decode call — no async
-        // overload is exposed, so we call it directly from this async context.
-        let text = model.transcribe(audio: samples, sampleRate: 16_000)
-        progress(1, 1)
-        // Qwen3ASRModel strips any auto-detected "language XX" prefix internally
-        // before returning (see the package's `generateText`), so no per-utterance
-        // language tag reaches callers — langStats stays empty, best-effort per
-        // the pluggable-provider contract.
-        return TranscriptionOutput(text: text, langStats: [:])
+        let planner = WindowPlanner(config: config)
+        let total = planner.planWindows(total: samples.count) { samples[$0] }.count
+        let stream = AsyncStream<[Float]> { continuation in
+            continuation.yield(samples)
+            continuation.finish()
+        }
+        return try await windower(config: config)
+            .run(samples: stream, windowTotal: total, progress: progress, onChunk: { _ in })
     }
 
-    func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? { nil }
+    func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? {
+        Qwen3LiveSession(windower: windower(config: config))
+    }
+}
+
+/// Live session over the same windower (see `Qwen3Transcriber` for the
+/// single-use `@unchecked Sendable` justification).
+final class Qwen3LiveSession: TranscriptionLiveSession, @unchecked Sendable {
+    let windower: Qwen3Windower
+    init(windower: Qwen3Windower) { self.windower = windower }
+
+    func run(samples: AsyncStream<[Float]>,
+             onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
+        try await windower.run(samples: samples, windowTotal: 0, progress: { _, _ in }, onChunk: onChunk)
+    }
 }
