@@ -766,6 +766,8 @@ struct GeneralSettings: View {
                 appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: newValue)
             }
 
+            engineCapabilityCaption
+
             if let supported = TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider)
                 .supportedLanguages(model: transcriptionModel) {
                 let missing = transcriptionLangset.split(separator: ",")
@@ -819,6 +821,28 @@ struct GeneralSettings: View {
                 .help("Set a language code (e.g. ru) to skip detection entirely")
             }
         }
+    }
+
+    /// One-line summary of what the selected engine/model can do, so the
+    /// live-vs-batch difference is visible right where the engine is chosen
+    /// (batch engines show no live panel while recording — that's expected,
+    /// not a bug).
+    private var engineCapabilityCaption: some View {
+        let provider = TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider)
+        var parts = [
+            provider.supportsLive
+                ? "Live transcript while recording"
+                : "No live transcript — text appears after Stop"
+        ]
+        if let langs = provider.supportedLanguages(model: transcriptionModel) {
+            parts.append("\(langs.count) languages")
+        } else {
+            parts.append("any language")
+        }
+        return Label(parts.joined(separator: " · "),
+                     systemImage: provider.supportsLive ? "waveform.badge.mic" : "clock")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     @ViewBuilder
