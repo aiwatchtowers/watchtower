@@ -23,13 +23,18 @@ import (
 // row's, the stable "legacy" account this workspace has always used. Also a
 // no-op, returning (0, nil), when neither legacy token file is present.
 //
-// Task 7 extends this with an email lookup once the account is seeded.
-func ensureLegacyGoogleAccount(_ context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (int64, error) {
+// Either way, before returning a nonzero id it makes a best-effort attempt to
+// fill in the account's email via the Gmail profile API when the row doesn't
+// have one yet and Gmail is enabled — legacy installs never persisted an
+// email onto anything queryable from google_accounts (it lived in
+// gmail.account_email, since retired). Failure there never fails the seed.
+func ensureLegacyGoogleAccount(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (int64, error) {
 	accounts, err := database.ListGoogleAccounts()
 	if err != nil {
 		return 0, err
 	}
 	if len(accounts) > 0 {
+		fillLegacyAccountEmail(ctx, cfg, database, accounts[0].ID, logger)
 		return accounts[0].ID, nil
 	}
 
@@ -69,5 +74,55 @@ func ensureLegacyGoogleAccount(_ context.Context, cfg *config.Config, database *
 			return id, err
 		}
 	}
+
+	fillLegacyAccountEmail(ctx, cfg, database, id, logger)
 	return id, nil
+}
+
+// googleAccountEmailFetcher resolves accountID's email via the Gmail profile
+// API. It is a package var seam so tests can stub out the live network call
+// — fetchGoogleAccountEmail is the real, production implementation.
+var googleAccountEmailFetcher = fetchGoogleAccountEmail
+
+// fetchGoogleAccountEmail opens a Gmail client with refreshToken and returns
+// the authenticated account's email address.
+func fetchGoogleAccountEmail(ctx context.Context, workspaceDir string, accountID int64, refreshToken string) (string, error) {
+	googleCfg := resolveGoogleOAuthConfigForAccount(workspaceDir, accountID)
+	client, err := gmail.NewClient(ctx, refreshToken, gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
+	if err != nil {
+		return "", err
+	}
+	profile, err := client.GetProfile(ctx)
+	if err != nil {
+		return "", err
+	}
+	return profile.EmailAddress, nil
+}
+
+// fillLegacyAccountEmail best-effort fills accountID's email when it is
+// still blank and Gmail is enabled — a no-op (no network call) once the
+// email is already known, Gmail isn't enabled, or no token is on disk yet.
+// Never fails the caller: lookup errors are logged and swallowed.
+func fillLegacyAccountEmail(ctx context.Context, cfg *config.Config, database *db.DB, id int64, logger *log.Logger) {
+	if id == 0 {
+		return
+	}
+	acct, err := database.GetGoogleAccount(id)
+	if err != nil || acct.Email != "" || !acct.GmailEnabled {
+		return
+	}
+	token, err := gmail.NewAccountTokenStore(cfg.WorkspaceDir(), id).Load()
+	if err != nil || token.RefreshToken == "" {
+		return
+	}
+	email, err := googleAccountEmailFetcher(ctx, cfg.WorkspaceDir(), id, token.RefreshToken)
+	if err != nil || email == "" {
+		if err != nil {
+			logger.Printf("google: account %d: failed to resolve email: %v", id, err)
+		}
+		return
+	}
+	if err := database.UpdateGoogleAccountConnection(id, email, acct.CalendarEnabled, acct.GmailEnabled); err != nil {
+		logger.Printf("google: account %d: failed to persist resolved email: %v", id, err)
+	}
 }

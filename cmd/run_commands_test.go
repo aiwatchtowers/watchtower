@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"watchtower/internal/calendar"
 	"watchtower/internal/db"
 
 	"github.com/spf13/cobra"
@@ -64,8 +65,16 @@ func TestRunCalendarStatus_NotConnected(t *testing.T) {
 
 func TestRunCalendarStatus_Connected(t *testing.T) {
 	wsDir := setupTempWorkspace(t)
-	// Create token file so the status check sees it as connected.
-	tokenPath := filepath.Join(wsDir, "google_token.json")
+
+	dbPath := filepath.Join(wsDir, "watchtower.db")
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	id, err := database.CreateGoogleAccount(db.GoogleAccount{CalendarEnabled: true})
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	// Create the per-account token file so the status check sees it as connected.
+	tokenPath := calendar.NewAccountTokenStore(wsDir, id).Path()
 	require.NoError(t, os.WriteFile(tokenPath, []byte(`{"access_token":"x"}`), 0o600))
 
 	c := &cobra.Command{}

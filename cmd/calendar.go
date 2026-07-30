@@ -9,13 +9,13 @@ import (
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/gmail"
 
 	"github.com/spf13/cobra"
 )
 
 var calendarFlagDays int
 var calendarFlagJSON bool
+var calendarSyncFlagAccount int64
 
 var calendarCmd = &cobra.Command{
 	Use:   "calendar",
@@ -25,7 +25,7 @@ var calendarCmd = &cobra.Command{
 
 var calendarLoginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Connect Google Calendar",
+	Short: "Connect Google Calendar (alias for 'google login --calendar' on account #1)",
 	RunE:  runCalendarLogin,
 }
 
@@ -37,7 +37,7 @@ var calendarLogoutCmd = &cobra.Command{
 
 var calendarSyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sync calendar events",
+	Short: "Sync calendar events for every connected account",
 	RunE:  runCalendarSync,
 }
 
@@ -83,6 +83,7 @@ func init() {
 
 	calendarLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
 	calendarLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	calendarSyncCmd.Flags().Int64Var(&calendarSyncFlagAccount, "account", 0, "sync only this account id")
 }
 
 func runCalendar(cmd *cobra.Command, _ []string) error {
@@ -136,6 +137,11 @@ func runCalendar(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// runCalendarLogin is the `calendar login` alias: it targets google_accounts
+// row #1 (creating it if this is the very first Google login ever),
+// requesting Calendar access — plus Gmail too when account #1 already has it
+// enabled, so an existing Gmail grant on the shared token survives the
+// re-consent.
 func runCalendarLogin(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
@@ -148,33 +154,22 @@ func runCalendarLogin(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	googleCfg := resolveGoogleOAuthConfig()
-
-	noOpen, _ := cmd.Flags().GetBool("no-open")
-	appReturn, _ := cmd.Flags().GetBool("app-return")
-	out := cmd.OutOrStdout()
-
-	token, err := calendar.Login(cmd.Context(), googleCfg, out, calendar.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
+	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return fmt.Errorf("google calendar login: %w", err)
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	accountID, isNewRow, err := resolveAccountOneForLogin(cmd, cfg, database)
+	if err != nil {
+		return err
+	}
+	acct, err := database.GetGoogleAccount(accountID)
+	if err != nil {
+		return fmt.Errorf("loading account %d: %w", accountID, err)
 	}
 
-	store := calendar.NewTokenStore(cfg.WorkspaceDir())
-	if err := store.Save(token); err != nil {
-		return fmt.Errorf("saving token: %w", err)
-	}
-
-	// Clear any previously recorded auth failure so the Desktop popup dismisses.
-	if database, dbErr := db.Open(cfg.DBPath()); dbErr == nil {
-		_ = database.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", "")
-		database.Close()
-	}
-
-	fmt.Fprintf(out, "\nGoogle Calendar connected!\n")
-	fmt.Fprintf(out, "Token saved to: %s\n", store.Path())
-	fmt.Fprintf(out, "Run 'watchtower calendar sync' to fetch events.\n")
-
-	return nil
+	return connectGoogleAccount(cmd, cfg, database, accountID, true, acct.GmailEnabled, isNewRow)
 }
 
 func runCalendarLogout(cmd *cobra.Command, _ []string) error {
@@ -189,42 +184,20 @@ func runCalendarLogout(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	store := calendar.NewTokenStore(cfg.WorkspaceDir())
-
-	// Revoke the grant at Google — otherwise the account keeps it and the
-	// next consent screen says "already has some access" instead of listing
-	// permissions. Skip when the Gmail token shares this grant (combined
-	// `google login`): revocation kills the whole grant, not one scope.
-	if token, loadErr := store.Load(); loadErr == nil && token.RefreshToken != "" {
-		sharedWithGmail := false
-		if gmailToken, gErr := gmail.NewTokenStore(cfg.WorkspaceDir()).Load(); gErr == nil {
-			sharedWithGmail = gmailToken.RefreshToken == token.RefreshToken
-		}
-		if sharedWithGmail {
-			fmt.Fprintln(cmd.OutOrStdout(), "Note: Gmail shares this Google grant — not revoking it at Google. Disconnect Gmail to revoke fully.")
-		} else if revokeErr := calendar.Revoke(cmd.Context(), token.RefreshToken); revokeErr != nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "Warning: could not revoke the grant at Google: %v\n", revokeErr)
-		}
-	}
-
-	if err := store.Delete(); err != nil {
-		return fmt.Errorf("deleting token: %w", err)
-	}
-
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
+	if err := disconnectGoogleService(cmd, cfg, database, "calendar"); err != nil {
+		return err
+	}
+
 	if err := database.ClearCalendarEvents(); err != nil {
 		return fmt.Errorf("clearing events: %w", err)
 	}
-
-	// Clear auth state — user intentionally disconnected, not a token failure.
-	_ = database.SetGoogleAccountAuthState(stubGoogleAccountID, "ok", "")
-
-	fmt.Fprintln(cmd.OutOrStdout(), "Google Calendar disconnected. Token and events removed.")
+	fmt.Fprintln(cmd.OutOrStdout(), "Calendar events removed.")
 	return nil
 }
 
@@ -240,31 +213,56 @@ func runCalendarSync(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	store := calendar.NewTokenStore(cfg.WorkspaceDir())
-	token, err := store.Load()
-	if err != nil {
-		return fmt.Errorf("loading Google token: %w (run 'watchtower calendar login' first)", err)
-	}
-
-	googleCfg := resolveGoogleOAuthConfig()
-	client, err := calendar.NewClient(cmd.Context(), token.RefreshToken, googleCfg)
-	if err != nil {
-		return fmt.Errorf("creating calendar client: %w", err)
-	}
-
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
-	syncer := calendar.NewSyncer(client, database, cfg, nil, stubGoogleAccountID)
-	count, err := syncer.Sync(cmd.Context())
+	accounts, err := database.ListGoogleAccounts()
 	if err != nil {
-		return fmt.Errorf("syncing calendar: %w", err)
+		return fmt.Errorf("listing accounts: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Synced %d calendar events.\n", count)
+	out := cmd.OutOrStdout()
+	total, synced := 0, 0
+	for _, acct := range accounts {
+		if !acct.CalendarEnabled {
+			continue
+		}
+		if calendarSyncFlagAccount != 0 && acct.ID != calendarSyncFlagAccount {
+			continue
+		}
+		store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
+		if !store.Exists() {
+			continue
+		}
+		token, err := store.Load()
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: failed to load token: %v\n", acct.ID, err)
+			continue
+		}
+		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
+		client, err := calendar.NewClient(cmd.Context(), token.RefreshToken, googleCfg)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: failed to create client: %v\n", acct.ID, err)
+			continue
+		}
+		syncer := calendar.NewSyncer(client, database, cfg, nil, acct.ID)
+		count, err := syncer.Sync(cmd.Context())
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: sync failed: %v\n", acct.ID, err)
+			continue
+		}
+		total += count
+		synced++
+	}
+
+	if synced == 0 {
+		fmt.Fprintln(out, "No connected calendar accounts to sync. Run 'watchtower calendar login' first.")
+		return nil
+	}
+	fmt.Fprintf(out, "Synced %d calendar events across %d account(s).\n", total, synced)
 	return nil
 }
 
@@ -280,18 +278,39 @@ func runCalendarStatus(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	out := cmd.OutOrStdout()
-	store := calendar.NewTokenStore(cfg.WorkspaceDir())
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
 
-	if store.Exists() {
-		fmt.Fprintln(out, "Google Calendar: connected")
-		fmt.Fprintf(out, "Token file: %s\n", store.Path())
-		fmt.Fprintf(out, "Calendar enabled: %v\n", cfg.Calendar.Enabled)
-		fmt.Fprintf(out, "Sync days ahead: %d\n", cfg.Calendar.SyncDaysAhead)
-	} else {
+	accounts, err := database.ListGoogleAccounts()
+	if err != nil {
+		return fmt.Errorf("listing accounts: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	found := false
+	for _, a := range accounts {
+		if !a.CalendarEnabled {
+			continue
+		}
+		found = true
+		tokenPath := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), a.ID).Path()
+		connected := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), a.ID).Exists()
+		state := "connected"
+		if !connected {
+			state = "token missing"
+		}
+		fmt.Fprintf(out, "#%d %s — %s (%s)\n", a.ID, googleAccountDisplayName(a), a.Status, state)
+		fmt.Fprintf(out, "  Token file: %s\n", tokenPath)
+	}
+	if !found {
 		fmt.Fprintln(out, "Google Calendar: not connected")
 		fmt.Fprintln(out, "Run 'watchtower calendar login' to connect.")
+		return nil
 	}
+	fmt.Fprintf(out, "Sync days ahead: %d\n", cfg.Calendar.SyncDaysAhead)
 	return nil
 }
 

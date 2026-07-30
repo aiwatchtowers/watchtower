@@ -821,10 +821,10 @@ func (d *Daemon) phaseBriefing(ctx context.Context) {
 }
 
 // applyInboxCurrentUser populates the inbox pipeline with the current user's
-// id+email so it can filter mentions/DMs. The email falls back to the Gmail
-// account email from config when there is no Slack identity (no users row) —
-// otherwise the Gmail/Calendar detectors can't match To/Cc/attendees.
-// No-op when DB is unavailable.
+// id+email so it can filter mentions/DMs. The email falls back to the first
+// connected google_accounts row with a resolved email when there is no Slack
+// identity (no users row) — otherwise the Gmail/Calendar detectors can't
+// match To/Cc/attendees. No-op when DB is unavailable.
 func (d *Daemon) applyInboxCurrentUser() {
 	if d.db == nil || d.inboxPipe == nil {
 		return
@@ -839,8 +839,15 @@ func (d *Daemon) applyInboxCurrentUser() {
 			email = u.Email
 		}
 	}
-	if email == "" && d.config != nil {
-		email = d.config.Gmail.AccountEmail
+	if email == "" {
+		if accounts, aerr := d.db.ListGoogleAccounts(); aerr == nil {
+			for _, a := range accounts {
+				if a.Email != "" {
+					email = a.Email
+					break
+				}
+			}
+		}
 	}
 	if uid == "" && email == "" {
 		return
