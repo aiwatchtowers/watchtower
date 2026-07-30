@@ -40,8 +40,9 @@ final class GoogleConnectFlow {
         gmail.checkStatus()
     }
 
-    /// Runs `watchtower google login` with flags for the selected services
-    /// that are still missing — one browser consent for the whole selection.
+    /// Runs `watchtower google add`/`google login` with flags for the
+    /// selected services that are still missing — one browser consent for
+    /// the whole selection.
     func connect() {
         guard !isRunning, hasSelection else { return }
         guard let cliPath = Constants.findCLIPath() else {
@@ -49,11 +50,22 @@ final class GoogleConnectFlow {
             return
         }
 
-        // --app-return: the success page redirects to watchtower-auth:// so
-        // macOS brings the app back to the foreground after the browser step.
-        var args = ["google", "login", "--app-return"]
         let wantCalendar = includeCalendar && !calendar.isConnected
         let wantGmail = includeGmail && !gmail.isConnected
+
+        // --app-return: the success page redirects to watchtower-auth:// so
+        // macOS brings the app back to the foreground after the browser step.
+        // Multi-account Google (Task 1-10): with neither service connected,
+        // this workspace has no Google account yet (from this flow's point of
+        // view — file-stat only, see GoogleAuthService/GmailAuthService), so
+        // `google add` creates the first one outright. Once one service is
+        // already connected, a tap here widens that SAME account's scopes via
+        // `google login` (no --account resolves to it); connecting a second,
+        // independent account is a Settings → Google Accounts action
+        // (AddGoogleAccountView / GoogleAccountsViewModel.addAccount), not this flow.
+        var args = (!calendar.isConnected && !gmail.isConnected)
+            ? ["google", "add", "--app-return"]
+            : ["google", "login", "--app-return"]
         if wantCalendar { args.append("--calendar") }
         if wantGmail { args.append("--gmail") }
 

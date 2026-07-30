@@ -68,11 +68,12 @@ final class GoogleAccountsViewModelTests: XCTestCase {
         XCTAssertTrue(args.contains("--gmail"))
     }
 
-    func testAddArgsIncludesClientFlagsWhenCustomClientSet() {
+    func testAddArgsIncludesClientFlagsWhenCustomClientSet() throws {
         let args = GoogleAccountsViewModel.addArgs(label: "", calendar: true, gmail: false, hasCustomClient: true, clientID: "cid")
 
         XCTAssertTrue(args.contains("--client-id"))
-        XCTAssertEqual(args[args.firstIndex(of: "--client-id")! + 1], "cid")
+        let idIndex = try XCTUnwrap(args.firstIndex(of: "--client-id"))
+        XCTAssertEqual(args[idIndex + 1], "cid")
         XCTAssertTrue(args.contains("--client-secret-stdin"))
     }
 
@@ -169,8 +170,8 @@ final class GoogleAccountsViewModelTests: XCTestCase {
 
     // MARK: - cancelConnect
 
-    func testCancelConnectClearsIsConnectingWithNoInFlightProcess() {
-        let pool = try! makePool()
+    func testCancelConnectClearsIsConnectingWithNoInFlightProcess() throws {
+        let pool = try makePool()
         let vm = GoogleAccountsViewModel(dbPool: pool)
         vm.isConnecting = true
 

@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Sheet for connecting a new email source, presented from the Settings →
 /// Email Accounts section. Three provider cards:
-///  - Gmail: the EXISTING single-account OAuth flow (`GoogleConnectFlow.shared.gmail`),
-///    reused as-is — this view adds no Gmail logic of its own.
+///  - Gmail: redirects to the multi-account `AddGoogleAccountView` sheet
+///    (Settings → Google Accounts) — this view adds no Gmail logic of its own.
 ///  - Outlook: OAuth via `EmailAccountsViewModel.connectOutlook`, same loopback-
 ///    browser flow shape as Gmail but multi-account.
 ///  - IMAP: a host/port/credentials form; the password is written to the
@@ -12,8 +12,9 @@ struct AddEmailAccountView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
-    private var google: GoogleConnectFlow { GoogleConnectFlow.shared }
     private var vm: EmailAccountsViewModel? { appState.emailAccountsViewModel }
+
+    @State private var showAddGoogleAccountSheet = false
 
     // MARK: - IMAP form state
 
@@ -97,9 +98,6 @@ struct AddEmailAccountView: View {
         }
         .padding(20)
         .frame(width: showAssistant ? 860 : 480, height: 640)
-        .onAppear {
-            google.refresh()
-        }
     }
 
     // MARK: - Gmail card
@@ -113,42 +111,21 @@ struct AddEmailAccountView: View {
                         .font(.headline)
                     Spacer()
                 }
-                Text("Google's own OAuth flow — a single Gmail account.")
+                Text("Google's OAuth flow — supports multiple Google accounts.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if google.gmail.isConnected {
-                    Label("Connected", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else if google.gmail.isAuthenticating {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text("Connecting...")
-                        Spacer()
-                        Button("Cancel") { google.gmail.cancelConnect() }
-                    }
-                } else if !Constants.gmailOAuthAvailable {
-                    Label(
-                        "Temporarily unavailable (pending Google verification) — use IMAP with an app password instead.",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                } else {
-                    Button("Connect Gmail") {
-                        google.gmail.connect()
-                    }
-                    .buttonStyle(.borderedProminent)
+                Button("Connect Gmail") {
+                    showAddGoogleAccountSheet = true
                 }
-
-                if let err = google.gmail.error {
-                    Text(err)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
+                .buttonStyle(.borderedProminent)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(4)
+        }
+        .sheet(isPresented: $showAddGoogleAccountSheet) {
+            AddGoogleAccountView()
+                .environment(appState)
         }
     }
 

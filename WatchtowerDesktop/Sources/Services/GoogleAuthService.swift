@@ -97,10 +97,18 @@ final class GoogleAuthService {
 
     func checkStatus() {
         let fm = FileManager.default
+        // Multi-account Google (Task 1-10): both Calendar and Gmail access for
+        // account #1 share one token file, google_token_1.json — the legacy
+        // single-account google_token.json is migrated to it in place by
+        // ensureLegacyGoogleAccount (cmd/google_legacy.go), which the daemon
+        // runs on every sync, so this stays accurate moments after a fresh
+        // install's first sync completes. This service only reflects account
+        // #1; a second+ account is a `GoogleAccountsViewModel` row.
+        //
         // Only the ACTIVE workspace's token counts — logout deletes the token
         // there, and a stale token in an old workspace must not read as connected.
         if let dir = Constants.activeWorkspaceDir() {
-            isConnected = fm.fileExists(atPath: "\(dir)/google_token.json")
+            isConnected = fm.fileExists(atPath: "\(dir)/google_token_1.json")
             return
         }
         // No active workspace configured — fall back to scanning all workspaces.
@@ -109,7 +117,7 @@ final class GoogleAuthService {
             isConnected = false
             return
         }
-        isConnected = contents.contains { fm.fileExists(atPath: "\(basePath)/\($0)/google_token.json") }
+        isConnected = contents.contains { fm.fileExists(atPath: "\(basePath)/\($0)/google_token_1.json") }
     }
 
     // MARK: - CLI Helper

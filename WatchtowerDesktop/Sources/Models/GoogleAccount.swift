@@ -28,6 +28,7 @@ struct GoogleAccount: FetchableRecord, Identifiable, Equatable {
     // MARK: - Status predicates
 
     var isOK: Bool { status == "ok" }
+    var isRevoked: Bool { status == "revoked" }
 
     /// Display text for a row: the user-facing label if set, else the Google
     /// account's email, else a positional fallback for a not-yet-consented

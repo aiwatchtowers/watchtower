@@ -46,15 +46,13 @@ struct GeneralSettings: View {
     @State private var slackAuth = SlackAuthService()
     @State private var slackDisconnecting = false
     @State private var showSlackDisconnectConfirm = false
-    // Shared with the Calendar tab / Inbox banner connect flow, so a connect
-    // made anywhere in the app is reflected here immediately.
-    private var googleAuth: GoogleAuthService { GoogleConnectFlow.shared.calendar }
-    private var gmailAuth: GmailAuthService { GoogleConnectFlow.shared.gmail }
     @State private var jiraAuth = JiraAuthService()
     @State private var showAddEmailAccountSheet = false
     @State private var accountPendingRemoval: EmailAccount?
     @State private var showAddCalendarAccountSheet = false
     @State private var calendarAccountPendingRemoval: CalendarAccount?
+    @State private var showAddGoogleAccountSheet = false
+    @State private var googleAccountPendingRemoval: GoogleAccount?
 
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
@@ -75,6 +73,7 @@ struct GeneralSettings: View {
             dayPlanSection
             aiSection
             calendarSettingsSection
+            googleAccountsSection
             calendarAccountsSection
             gmailSettingsSection
             emailAccountsSection
@@ -105,11 +104,11 @@ struct GeneralSettings: View {
         .onAppear {
             // Re-stat tokens/config: a connect or disconnect may have happened
             // outside this window (Calendar tab, Inbox banner, CLI).
-            GoogleConnectFlow.shared.refresh()
             jiraAuth.checkStatus()
             slackAuth.checkStatus()
             appState.emailAccountsViewModel?.refresh()
             appState.calendarAccountsViewModel?.refresh()
+            appState.googleAccountsViewModel?.refresh()
         }
     }
 
@@ -465,120 +464,132 @@ struct GeneralSettings: View {
         }
     }
 
+    /// Global calendar-sync toggles only — connect/disconnect for individual
+    /// Google accounts now lives in `googleAccountsSection` below, since a
+    /// workspace can have more than one Google account granting Calendar
+    /// access.
     private var calendarSettingsSection: some View {
         Section("Google Calendar") {
-            if googleAuth.isConnected {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Connected")
-                    Spacer()
-                    Button("Disconnect") {
-                        googleAuth.disconnect()
-                        config.calendarEnabled = false
-                        saveConfig()
-                    }
-                }
+            Toggle("Enable calendar sync", isOn: $config.calendarEnabled)
+                .onChange(of: config.calendarEnabled) { _, _ in saveConfig() }
 
-                Toggle("Enable calendar sync", isOn: $config.calendarEnabled)
-                    .onChange(of: config.calendarEnabled) { _, _ in saveConfig() }
-
-                Picker("Sync days ahead", selection: $config.calendarSyncDaysAhead) {
-                    Text("2 days").tag(2)
-                    Text("3 days").tag(3)
-                    Text("5 days").tag(5)
-                    Text("7 days").tag(7)
-                    Text("14 days").tag(14)
-                }
-            } else {
-                HStack {
-                    Image(systemName: "calendar.badge.plus")
-                        .foregroundStyle(.secondary)
-                    Text("Not connected")
-                    Spacer()
-
-                    if googleAuth.isAuthenticating {
-                        ProgressView().controlSize(.small)
-                        Button("Cancel") { googleAuth.cancelConnect() }
-                    } else {
-                        Button("Connect") {
-                            googleAuth.connect()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                }
-            }
-
-            if let err = googleAuth.error {
-                Text(err)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-        .onChange(of: googleAuth.isConnected) { _, connected in
-            if connected && !config.calendarEnabled {
-                config.calendarEnabled = true
-                saveConfig()
+            Picker("Sync days ahead", selection: $config.calendarSyncDaysAhead) {
+                Text("2 days").tag(2)
+                Text("3 days").tag(3)
+                Text("5 days").tag(5)
+                Text("7 days").tag(7)
+                Text("14 days").tag(14)
             }
         }
     }
 
+    /// Global Gmail-sync toggle only — connect/disconnect for individual
+    /// Google accounts now lives in `googleAccountsSection` below, since a
+    /// workspace can have more than one Google account granting Gmail access.
     private var gmailSettingsSection: some View {
         Section("Gmail") {
-            if gmailAuth.isConnected {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Connected")
-                    Spacer()
-                    Button("Disconnect") {
-                        gmailAuth.disconnect()
-                        config.gmailEnabled = false
-                        saveConfig()
-                    }
-                }
+            Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
+                .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
+        }
+    }
 
-                Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
-                    .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
-            } else if !Constants.gmailOAuthAvailable {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.secondary)
-                    Text("Temporarily unavailable (pending Google verification) — use IMAP with an app password instead.")
+    /// Google Accounts section — the multi-account Calendar/Gmail
+    /// connections (`google_accounts` table), each independently granting
+    /// Calendar and/or Gmail access via its own OAuth consent. Modeled on
+    /// `emailAccountsSection`/`calendarAccountsSection` below, placed before
+    /// `calendarAccountsSection` since Google usually comes first for a new
+    /// user.
+    private var googleAccountsSection: some View {
+        Section("Google Accounts") {
+            if let vm = appState.googleAccountsViewModel {
+                if vm.accounts.isEmpty {
+                    Text("No Google accounts connected.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-            } else {
-                HStack {
-                    Image(systemName: "envelope.badge")
-                        .foregroundStyle(.secondary)
-                    Text("Not connected")
-                    Spacer()
-
-                    if gmailAuth.isAuthenticating {
-                        ProgressView().controlSize(.small)
-                        Button("Cancel") { gmailAuth.cancelConnect() }
-                    } else {
-                        Button("Connect") {
-                            gmailAuth.connect()
+                } else {
+                    ForEach(vm.accounts) { account in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.displayName)
+                                HStack(spacing: 8) {
+                                    if account.calendarEnabled {
+                                        Label("Calendar", systemImage: "calendar")
+                                    }
+                                    if account.gmailEnabled {
+                                        Label("Gmail", systemImage: "envelope")
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(googleAccountStatusColor(account))
+                                .frame(width: 8, height: 8)
+                                .help(account.isOK ? "Connected" : account.error)
+                            if !account.isOK {
+                                Button("Re-login") {
+                                    vm.relogin(account)
+                                }
+                                .disabled(vm.isConnecting)
+                            }
+                            Button("Remove") {
+                                googleAccountPendingRemoval = account
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                            .disabled(vm.isConnecting)
                         }
-                        .buttonStyle(.borderedProminent)
                     }
                 }
-            }
 
-            if let err = gmailAuth.error {
-                Text(err)
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button("Add Google Account") {
+                    showAddGoogleAccountSheet = true
+                }
+                .disabled(vm.isConnecting)
+            } else {
+                Text("Loading...")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.secondary)
             }
         }
-        .onChange(of: gmailAuth.isConnected) { _, connected in
-            if connected && !config.gmailEnabled {
-                config.gmailEnabled = true
-                saveConfig()
-            }
+        .sheet(isPresented: $showAddGoogleAccountSheet) {
+            AddGoogleAccountView()
+                .environment(appState)
         }
+        .confirmationDialog(
+            "Remove \(googleAccountPendingRemoval?.displayName ?? "this account")?",
+            isPresented: Binding(
+                get: { googleAccountPendingRemoval != nil },
+                set: { if !$0 { googleAccountPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Account", role: .destructive) {
+                if let account = googleAccountPendingRemoval {
+                    Task { await appState.googleAccountsViewModel?.remove(account) }
+                }
+                googleAccountPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Removes the connection and stops syncing this account's Calendar and Gmail data. "
+                    + "Already-synced events/messages and AI products built on them are kept."
+            )
+        }
+    }
+
+    private func googleAccountStatusColor(_ account: GoogleAccount) -> Color {
+        if account.isOK { return .green }
+        if account.isRevoked { return .red }
+        return .orange
     }
 
     /// Email Accounts section — the multi-account IMAP/Outlook connections,

@@ -58,7 +58,7 @@ When a discussion resolves itself (someone else answered and the question was ac
 ### Calendar
 Google Calendar integration showing upcoming events and AI-powered meeting preparation.
 
-**Connecting:** Go to Settings > Google Calendar and click "Connect". This opens the Google OAuth flow via the CLI (`watchtower calendar login`). Once connected, calendar events sync automatically after each Slack sync.
+**Connecting:** Go to Settings > Google Accounts and click "Add Google Account" (or "Connect"/"Connect Google Calendar" from the Calendar tab's empty state or the Add Account sheet). This opens the Google OAuth flow via the CLI (`watchtower google add`/`watchtower calendar login`). Once connected, calendar events sync automatically after each Slack sync. Any number of Google accounts can be connected side by side — see Settings > Google Accounts below.
 
 **Tabs** — When connected, the Calendar screen has an "Events | Recordings" segmented control at the top. **Events** is the schedule + meeting-prep view described below; **Recordings** is the home for all meeting recordings (see "Recordings tab" further down).
 
@@ -76,7 +76,7 @@ Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] 
 
 **Not connected state** — When Google Calendar is not connected, the tab shows a prompt to connect in Settings.
 
-**Settings** — The Google Calendar section in Settings shows connection status and a "Sync days ahead" picker (3/5/7/14 days) when connected. Config field: `calendar.sync_days_ahead` (default: 2).
+**Settings** — The Google Calendar section in Settings has the "Enable calendar sync" toggle and a "Sync days ahead" picker (2/3/5/7/14 days); config field: `calendar.sync_days_ahead` (default: 2). Connecting, re-logging in, and removing individual Google accounts happens in the Google Accounts section (see Settings below).
 
 **Briefing integration** — Today's calendar events appear as "Today's Schedule" at the top of the briefing detail view, before "Needs Attention". Events are also included in the briefing AI prompt for context-aware recommendations.
 
@@ -120,7 +120,7 @@ The detail header has "Link to event…" for ad-hoc recordings and a **Delete** 
 ### Gmail
 Optional integration that syncs your Gmail Inbox so emails are triaged into the AI secretary alongside Slack and Jira.
 
-**Connecting:** Go to Settings > Gmail and click "Connect Gmail". This opens the Google OAuth flow via the CLI (`watchtower gmail login`). Once connected, new Gmail Inbox messages sync automatically after each Slack sync and flow through the same secretary pipeline (triage → situations → situation cards) as Slack.
+**Connecting:** Go to Settings > Google Accounts and click "Add Google Account" (or "Connect Gmail" from the Add Account sheet). This opens the Google OAuth flow via the CLI (`watchtower google add`/`watchtower gmail login`). Once connected, new Gmail Inbox messages sync automatically after each Slack sync and flow through the same secretary pipeline (triage → situations → situation cards) as Slack. Multiple Gmail accounts can be connected side by side — see Settings > Google Accounts.
 
 **In the Inbox tab** — Gmail messages surface as member signals and situations exactly like Slack ones, and Discuss can draft a reply in your voice — but Watchtower never sends email for you; copy the draft and send it from Gmail.
 
@@ -254,8 +254,9 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 ## Settings
 
 **General:** Sync interval, workers, history depth, AI provider (Claude or Codex), digest model/language, briefing hour, Claude CLI path, Codex CLI path (shown when Codex provider is selected, with auto-detection indicator).
-**Google Calendar:** Connect/disconnect Google Calendar, sync days ahead picker (3/5/7/14 days). Connection status indicator (green checkmark when connected).
-**Gmail:** Connect/disconnect Gmail via OAuth. Connection status indicator (green checkmark when connected).
+**Google Calendar:** Enable calendar sync toggle, sync days ahead picker (2/3/5/7/14 days). Connecting/disconnecting individual Google accounts happens in the **Google Accounts** section below.
+**Google Accounts:** The multi-account list of connected Google accounts — any number can be connected side by side, each independently granting Calendar and/or Gmail access. Each row shows the account's name/email, badges for which services it granted (Calendar/Gmail), and a status dot (green connected, orange error, red revoked — hover for the error message). A row whose grant has lapsed gets a **Re-login** button to re-consent without losing the account. **Remove** disconnects an account and stops syncing it (already-synced data and AI products built on it are kept); a confirmation dialog guards against accidental removal. **Add Google Account** opens a sheet: an optional label, Calendar/Gmail toggles (both on by default — untick to grant only one), and an **Advanced: custom OAuth client** section for bringing your own Google Cloud OAuth client id/secret (needed when the account belongs to a different Google Workspace org than Watchtower's built-in app) — the secret is never shown in plain flags, only piped to the CLI. Connecting opens the Google consent screen in your browser; the list refreshes and the daemon restarts once you return.
+**Gmail:** Enable Gmail sync toggle. Connecting/disconnecting individual Google accounts happens in the **Google Accounts** section above.
 **Jira:** Connect/disconnect Jira Cloud via OAuth. Boards selection with toggle switches. Board Profiles — workflow visualization (stage chain), stale threshold sliders, Re-analyze button, health signals, iteration info. User Mapping — matched/unmatched table with manual mapping dropdown. Sync status (last sync time, manual sync button). Jira Features — toggle switches organized by category (Your Work, Team Visibility, Product & Strategy, Automation). Defaults are set by user role on first connection; any toggle can be changed at any time. Jira key patterns (PROJ-123) in Slack messages are automatically detected and linked to issues.
 **Profile:** Your role, team, manager, reports, peers, starred channels/people.
 **Notifications:** Decision alerts, daily summaries, quiet hours.
