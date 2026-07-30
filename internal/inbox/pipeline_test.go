@@ -621,9 +621,7 @@ func TestRunFastDetectionPicksUpGmail(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "U1")
 
-	// DetectGmail reads via stubGoogleAccountID (1) until it is threaded
-	// per-account (multi-account plan Task 8).
-	acctID, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me"})
+	acctID, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me", GmailEnabled: true})
 	require.NoError(t, err)
 
 	require.NoError(t, d.UpsertGmailMessage(acctID, db.GmailMessage{

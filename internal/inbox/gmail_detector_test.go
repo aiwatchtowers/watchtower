@@ -2,19 +2,18 @@ package inbox
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"watchtower/internal/db"
 )
 
-func TestDetectGmailReceivedVsCC(t *testing.T) {
+func TestDetectGmailAccounts_ReceivedVsCC(t *testing.T) {
 	database := testDB(t)
 	syncedAt := "2026-07-09T10:00:00Z"
 
-	// DetectGmail reads via stubGoogleAccountID (1) until it is threaded
-	// per-account (multi-account plan Task 8).
-	acctID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me"})
+	acctID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me", GmailEnabled: true})
 	if err != nil {
 		t.Fatalf("seed google account: %v", err)
 	}
@@ -44,7 +43,7 @@ func TestDetectGmailReceivedVsCC(t *testing.T) {
 	}
 
 	since := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
-	n, err := DetectGmail(context.Background(), database, "me@x.com", since)
+	n, err := DetectGmailAccounts(context.Background(), database, since)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,16 +52,16 @@ func TestDetectGmailReceivedVsCC(t *testing.T) {
 	}
 
 	received := queryInboxByTrigger(t, database, "email_received")
-	if len(received) != 1 || received[0].ChannelID != "t1" {
-		t.Errorf("want 1 email_received item for t1, got %+v", received)
+	if len(received) != 1 || received[0].ChannelID != fmt.Sprintf("gmail:%d:t1", acctID) {
+		t.Errorf("want 1 email_received item for gmail:%d:t1, got %+v", acctID, received)
 	}
 	if received[0].Snippet != "Direct — hello" {
 		t.Errorf("m1 snippet = %q, want %q", received[0].Snippet, "Direct — hello")
 	}
 
 	cc := queryInboxByTrigger(t, database, "email_cc")
-	if len(cc) != 1 || cc[0].ChannelID != "t2" {
-		t.Errorf("want 1 email_cc item for t2, got %+v", cc)
+	if len(cc) != 1 || cc[0].ChannelID != fmt.Sprintf("gmail:%d:t2", acctID) {
+		t.Errorf("want 1 email_cc item for gmail:%d:t2, got %+v", acctID, cc)
 	}
 
 	// m3 shouldn't have created anything under any trigger.
@@ -71,11 +70,80 @@ func TestDetectGmailReceivedVsCC(t *testing.T) {
 	}
 
 	// Idempotent: second run creates nothing.
-	n2, err := DetectGmail(context.Background(), database, "me@x.com", since)
+	n2, err := DetectGmailAccounts(context.Background(), database, since)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n2 != 0 {
 		t.Fatalf("want 0 on re-run, got %d", n2)
+	}
+}
+
+// TestDetectGmailAccounts_PerAccountScoping seeds two google accounts
+// (a@x.com / b@x.com) and asserts: matching is per source account's own
+// email (a message To a@x.com sitting in account B's mailbox still mints
+// from B, keyed on B's channel_id), own-message suppression is scoped per
+// account (a message FROM a@x.com in A's mailbox mints nothing, but the
+// same FromEmail in B's mailbox is just an ordinary sender), and an account
+// with an empty email is skipped entirely without error.
+func TestDetectGmailAccounts_PerAccountScoping(t *testing.T) {
+	database := testDB(t)
+	syncedAt := "2026-07-09T10:00:00Z"
+
+	acctA, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A", GmailEnabled: true})
+	if err != nil {
+		t.Fatalf("seed account A: %v", err)
+	}
+	acctB, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "b@x.com", Label: "B", GmailEnabled: true})
+	if err != nil {
+		t.Fatalf("seed account B: %v", err)
+	}
+	// Degenerate case: connected account with no resolved email yet — must
+	// be skipped cleanly (no error, no panic on empty-string matching).
+	if _, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "", Label: "Pending", GmailEnabled: true}); err != nil {
+		t.Fatalf("seed empty-email account: %v", err)
+	}
+
+	// In account A's own mailbox: a message FROM a@x.com (A's own address)
+	// must mint nothing even though it's also To a@x.com — own-message
+	// suppression.
+	if err := database.UpsertGmailMessage(acctA, db.GmailMessage{
+		ID: "ma1", ThreadID: "ta1", FromEmail: "a@x.com", Subject: "Self",
+		ToJSON: `["a@x.com"]`, CcJSON: `[]`, InternalDate: "2026-07-09T09:00:00Z", SyncedAt: syncedAt,
+	}); err != nil {
+		t.Fatalf("seed ma1: %v", err)
+	}
+
+	// In account B's mailbox: a message To a@x.com (NOT b@x.com) — should
+	// NOT mint from B, since matching is per source account's own email.
+	if err := database.UpsertGmailMessage(acctB, db.GmailMessage{
+		ID: "mb1", ThreadID: "tb1", FromEmail: "c@x.com", Subject: "Wrong recipient",
+		ToJSON: `["a@x.com"]`, CcJSON: `[]`, InternalDate: "2026-07-09T09:10:00Z", SyncedAt: syncedAt,
+	}); err != nil {
+		t.Fatalf("seed mb1: %v", err)
+	}
+
+	// In account B's mailbox: a message FROM a@x.com (an ordinary external
+	// sender from B's perspective) To b@x.com — must mint from B, since
+	// suppression only applies to the source account's own address.
+	if err := database.UpsertGmailMessage(acctB, db.GmailMessage{
+		ID: "mb2", ThreadID: "tb2", FromEmail: "a@x.com", Subject: "From A to B",
+		ToJSON: `["b@x.com"]`, CcJSON: `[]`, InternalDate: "2026-07-09T09:20:00Z", SyncedAt: syncedAt,
+	}); err != nil {
+		t.Fatalf("seed mb2: %v", err)
+	}
+
+	since := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
+	n, err := DetectGmailAccounts(context.Background(), database, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 item (only mb2), got %d", n)
+	}
+
+	received := queryInboxByTrigger(t, database, "email_received")
+	if len(received) != 1 || received[0].ChannelID != fmt.Sprintf("gmail:%d:tb2", acctB) {
+		t.Fatalf("want 1 email_received item for gmail:%d:tb2, got %+v", acctB, received)
 	}
 }

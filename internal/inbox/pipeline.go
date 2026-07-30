@@ -517,7 +517,7 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 	} else {
 		cal = n
 	}
-	if n, e := DetectGmail(ctx, p.db, p.currentUserEmail, sinceTime); e != nil {
+	if n, e := DetectGmailAccounts(ctx, p.db, sinceTime); e != nil {
 		p.logger.Printf("inbox: gmail detect error: %v", e)
 		errs = append(errs, fmt.Errorf("gmail: %w", e))
 	} else {
