@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-30
 **Branch:** `feature/multi-account`
-**Status:** approved by owner (chat, 2026-07-30)
+**Status:** implemented (Tasks 1–12 complete, 2026-07-30)
 
 Sub-project 1 of 3 of the multi-account initiative (Google → Slack → Jira). This
 sub-project also establishes the cross-cutting conventions the later two reuse:
@@ -191,6 +191,13 @@ schema (known drift trap).
   default; missing file falls back.
 - Schema: `TestAllTablesExist`, schema golden regen, Swift `TestDatabase.swift`
   mirror.
+
+## Implementation deviations
+
+Two owner-approved changes from this design landed during implementation:
+
+- **Task 5 (calendar accounts): "first owner + real primary id" replaces a shared `calendar_id` keyspace.** Review of Task 5 found a Critical defect: two Google accounts syncing the same shared calendar (e.g. a company calendar both accounts can see) would collide on `calendar_calendars`' `calendar_id` primary key, since the design as written let a later account's `UpsertCalendar` steal `account_id` ownership of a row the first account already owned. The owner's fix (no new migration): `UpsertCalendar` never re-parents an existing row's `account_id` — whichever account syncs a shared calendar first keeps it. The literal string `'primary'` id (used as a fallback for the primary calendar before its real id was known) is replaced by the real primary calendar id resolved from the calendarList call, and stale-calendar deletion is skipped whenever that resolution is unavailable (better to leave a stale row than delete a calendar out from under the wrong account).
+- **Task 8 (inbox/identity): own-message suppression is NEW behavior, not a carry-over.** The design's Inbox section states own-message suppression "becomes per-account… strictly better than today's single global `gmail.account_email`" — phrasing that reads as if a global version already existed. It did not: pre-multi-account Gmail detection had no owner-sent-message filter at all. The per-account suppression (comparing a message's sender against the *source account's own* email) shipped in Task 8 as new behavior, confirmed spec-mandated and owner-approved (design §4), not scope creep — see the SDD ledger for Task 8.
 
 ## Rollout
 
