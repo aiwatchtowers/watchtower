@@ -44,8 +44,8 @@ New table `google_accounts` — the Google analog of `email_accounts`:
 | `client_id TEXT NOT NULL DEFAULT ''` | non-secret half of a custom OAuth client; empty = use the build-time default |
 | `calendar_enabled / gmail_enabled INTEGER NOT NULL` | set from the scopes actually granted; re-login can widen |
 | `status TEXT NOT NULL DEFAULT 'ok'` + `error TEXT` | replaces the `calendar_auth_state` / `gmail_auth_state` singletons |
-| `gmail_last_internal_date INTEGER NOT NULL DEFAULT 0` | per-account Gmail watermark (moves off the `workspace` row) |
-| `memory_gmail_last_extracted_ts TEXT NOT NULL DEFAULT ''` | per-account memory-extraction watermark (moves off `workspace`) |
+| `gmail_last_internal_date REAL NOT NULL DEFAULT 0` | per-account Gmail watermark (moves off the `workspace` row) |
+| `memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0` | per-account memory-extraction watermark (moves off `workspace`) |
 | `created_at` | |
 
 Changed tables:
@@ -135,9 +135,11 @@ schema (known drift trap).
 
 - **Gmail detector**: inbox `channel_id` changes from bare `thread_id` to
   `gmail:<accountID>:<threadID>` (the `imap:<acct>:...` precedent). The
-  migration rewrites existing `inbox_items.channel_id` and the
-  `sender:`/`channel:` mute-scope keys and learned-rule references to
-  `gmail:1:...` — otherwise existing mutes silently stop matching.
+  migration rewrites existing `inbox_items.channel_id` and the `channel:`
+  mute-scope keys and learned-rule references to `gmail:1:...` — otherwise
+  existing channel-scoped mutes silently stop matching. `sender:` mute-scope
+  keys need no rewrite: they're keyed on the raw sender address (unaffected
+  by the channel_id reshape), not on `channel_id`.
 - **Own-message suppression** becomes per-account: compare sender against the
   *source account's* email (strictly better than today's single global
   `gmail.account_email`).
