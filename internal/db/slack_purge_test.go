@@ -17,8 +17,8 @@ func TestClearSlackData(t *testing.T) {
 	}
 
 	// Raw Slack data.
-	exec(`INSERT INTO workspace (id, name, synced_at, search_last_date, inbox_last_processed_ts, compose_last_run_ts, gmail_last_internal_date)
-		VALUES ('T1', 'ws', '2026-07-01T00:00:00Z', '2026-07-01', 100, 200, 300)`)
+	exec(`INSERT INTO workspace (id, name, synced_at, search_last_date, inbox_last_processed_ts, compose_last_run_ts)
+		VALUES ('T1', 'ws', '2026-07-01T00:00:00Z', '2026-07-01', 100, 200)`)
 	exec(`INSERT INTO users (id, name) VALUES ('U1', 'alice')`)
 	exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
 	exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1.1', 'U1', 'hello world')`)
@@ -49,7 +49,8 @@ func TestClearSlackData(t *testing.T) {
 	exec(`INSERT INTO feed_items (item_type, source_id, event_ts) VALUES ('situation', '11', '2026-07-01T00:00:00Z')`)
 
 	// Data from other sources must survive.
-	exec(`INSERT INTO gmail_messages (id, thread_id, subject) VALUES ('g1', 'th1', 'mail')`)
+	exec(`INSERT INTO google_accounts (email, label) VALUES ('a@x.com', 'A')`)
+	exec(`INSERT INTO gmail_messages (account_id, id, thread_id, subject) VALUES (1, 'g1', 'th1', 'mail')`)
 	exec(`INSERT INTO targets (text, period_start, period_end) VALUES ('my target', '2026-07-01', '2026-07-31')`)
 
 	// A memory dispute item (channel_id='memory', trigger_type='decision_made')
@@ -88,15 +89,14 @@ func TestClearSlackData(t *testing.T) {
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM targets`))
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM inbox_items WHERE channel_id='memory' AND trigger_type='decision_made'`))
 
-	// Slack watermarks reset; the Gmail watermark stays.
+	// Slack watermarks reset.
 	var syncedAt *string
 	var searchLast string
-	var inboxTS, composeTS, gmailTS float64
-	require.NoError(t, db.QueryRow(`SELECT synced_at, search_last_date, inbox_last_processed_ts, compose_last_run_ts, gmail_last_internal_date FROM workspace`).
-		Scan(&syncedAt, &searchLast, &inboxTS, &composeTS, &gmailTS))
+	var inboxTS, composeTS float64
+	require.NoError(t, db.QueryRow(`SELECT synced_at, search_last_date, inbox_last_processed_ts, compose_last_run_ts FROM workspace`).
+		Scan(&syncedAt, &searchLast, &inboxTS, &composeTS))
 	assert.Nil(t, syncedAt)
 	assert.Empty(t, searchLast)
 	assert.Zero(t, inboxTS)
 	assert.Zero(t, composeTS)
-	assert.Equal(t, 300.0, gmailTS)
 }

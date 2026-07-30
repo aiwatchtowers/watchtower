@@ -14,11 +14,9 @@ CREATE TABLE IF NOT EXISTS workspace (
     style_profile TEXT NOT NULL DEFAULT '',  -- AI-distilled, user-editable communication style (see 00013)
     style_profile_updated_at TEXT NOT NULL DEFAULT '',
     compose_last_run_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last situation composer run
-    gmail_last_internal_date REAL NOT NULL DEFAULT 0,  -- Unix timestamp watermark for Gmail sync (see 00016)
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
     memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
     memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0,  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
-    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last gmail thread message fully folded into an episode by the Gmail extractor; distinct from gmail_last_internal_date (sync) and memory_last_extracted_ts (Slack extraction) (see 00042)
     memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00042)
     memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00033)
     memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last jira issue fully folded into an episode by the jira issue extractor; a fifth independent memory watermark (see 00040)
@@ -838,7 +836,8 @@ CREATE TABLE IF NOT EXISTS calendar_calendars (
     is_primary  INTEGER NOT NULL DEFAULT 0,
     is_selected INTEGER NOT NULL DEFAULT 1,
     color       TEXT NOT NULL DEFAULT '',
-    synced_at   TEXT NOT NULL DEFAULT ''
+    synced_at   TEXT NOT NULL DEFAULT '',
+    account_id  INTEGER REFERENCES google_accounts(id)  -- NULL for caldav:/ics: rows (see 00043)
 );
 
 -- Calendar events (synced from Google Calendar)
@@ -858,6 +857,7 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     event_type      TEXT NOT NULL DEFAULT '',
     html_link       TEXT NOT NULL DEFAULT '',
     raw_json        TEXT NOT NULL DEFAULT '{}',
+    ical_uid        TEXT NOT NULL DEFAULT '',  -- dedup enabler across accounts/providers (see 00043)
     synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT ''
 );
@@ -1038,18 +1038,12 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
 
--- Calendar auth state (tracks whether the Google refresh token is still valid)
-CREATE TABLE IF NOT EXISTS calendar_auth_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    status TEXT NOT NULL DEFAULT 'ok',
-    error TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
-INSERT OR IGNORE INTO calendar_auth_state (id, status, error) VALUES (1, 'ok', '');
-
--- Gmail messages (synced inbox items from Gmail)
+-- Gmail messages (synced inbox items from Gmail). account_id + composite PK
+-- scope messages per Google account (see 00043); calendar_auth_state/
+-- gmail_auth_state singletons are retired in favor of google_accounts below.
 CREATE TABLE IF NOT EXISTS gmail_messages (
-    id             TEXT PRIMARY KEY,              -- Gmail message ID
+    account_id     INTEGER NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+    id             TEXT NOT NULL,                 -- Gmail message ID
     thread_id      TEXT NOT NULL DEFAULT '',
     from_email     TEXT NOT NULL DEFAULT '',
     from_name      TEXT NOT NULL DEFAULT '',
@@ -1063,24 +1057,34 @@ CREATE TABLE IF NOT EXISTS gmail_messages (
     is_unread      INTEGER NOT NULL DEFAULT 0,
     permalink      TEXT NOT NULL DEFAULT '',
     synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
 
--- Gmail auth state (tracks whether the Gmail OAuth token is still valid)
-CREATE TABLE IF NOT EXISTS gmail_auth_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    status TEXT NOT NULL DEFAULT 'ok',
-    error TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+-- Multi-account Google source: one row per connected Google account (Gmail
+-- and/or Calendar). Replaces the calendar_auth_state / gmail_auth_state
+-- singletons — status/error/watermarks now live per account here (see 00043).
+CREATE TABLE IF NOT EXISTS google_accounts (
+    id                             INTEGER PRIMARY KEY AUTOINCREMENT,
+    email                          TEXT NOT NULL DEFAULT '',
+    label                          TEXT NOT NULL DEFAULT '',
+    client_id                      TEXT NOT NULL DEFAULT '',  -- non-secret half of a custom OAuth client; '' = build-time default
+    calendar_enabled               INTEGER NOT NULL DEFAULT 0,
+    gmail_enabled                  INTEGER NOT NULL DEFAULT 0,
+    status                         TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked
+    error                          TEXT NOT NULL DEFAULT '',
+    gmail_last_internal_date       REAL NOT NULL DEFAULT 0,   -- per-account Gmail sync watermark
+    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,   -- per-account memory extraction watermark
+    created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
-INSERT OR IGNORE INTO gmail_auth_state (id, status, error) VALUES (1, 'ok', '');
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
 -- (email_accounts) plus its synced messages (imap_messages). status/error
--- live directly on email_accounts, replacing the job gmail_auth_state's
--- separate table does for Gmail's single-account model.
+-- live directly on email_accounts, the same pattern google_accounts uses
+-- for Gmail's multi-account model.
 CREATE TABLE IF NOT EXISTS email_accounts (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     provider       TEXT NOT NULL CHECK(provider IN ('imap','outlook')),

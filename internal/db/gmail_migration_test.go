@@ -2,22 +2,16 @@ package db
 
 import "testing"
 
+// TestMigration00018GmailSource originally also asserted the gmail_auth_state
+// table and workspace.gmail_last_internal_date column, both retired by
+// migration 00043 (google_accounts) in favor of per-account columns on
+// google_accounts — see TestMigration00043GoogleAccounts for the current
+// assertions on those. The gmail_messages table and email_received
+// trigger_type it introduced are still current, so those checks remain.
 func TestMigration00018GmailSource(t *testing.T) {
 	database := openTestDB(t) // existing helper that runs migrations on a fresh DB
 
-	// gmail tables exist
-	for _, tbl := range []string{"gmail_messages", "gmail_auth_state"} {
-		var name string
-		err := database.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, tbl).Scan(&name)
-		if err != nil {
-			t.Fatalf("table %s missing: %v", tbl, err)
-		}
-	}
-
-	// workspace watermark column present
-	if _, err := database.Exec(`UPDATE workspace SET gmail_last_internal_date = 123.0`); err != nil {
-		t.Fatalf("gmail_last_internal_date column missing: %v", err)
-	}
+	assertTableExists(t, database, "gmail_messages")
 
 	// new trigger_type accepted
 	_, err := database.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type)

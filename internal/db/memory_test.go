@@ -1147,7 +1147,10 @@ func TestMessageSender(t *testing.T) {
 
 func TestGmailMessageSender(t *testing.T) {
 	d := openTestDB(t)
-	if _, err := d.Exec(`INSERT INTO gmail_messages (id, from_email) VALUES ('gm1', 'sender@example.com')`); err != nil {
+	if _, err := d.Exec(`INSERT INTO google_accounts (email, label) VALUES ('a@x.com', 'A')`); err != nil {
+		t.Fatalf("seeding google account: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO gmail_messages (account_id, id, from_email) VALUES (1, 'gm1', 'sender@example.com')`); err != nil {
 		t.Fatalf("seeding gmail message: %v", err)
 	}
 
@@ -1568,37 +1571,13 @@ func TestMemoryMigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-// TestMemoryGmailWatermarkRoundTrip: the Gmail episode-extraction watermark
-// (Task 3, migration 00042) defaults to 0 on a fresh workspace and persists
-// after SetMemoryGmailWatermark, mirroring MemoryWatermark/SetMemoryWatermark
-// — a THIRD, independent watermark alongside gmail_last_internal_date (Gmail
-// sync) and memory_last_extracted_ts (Slack episode extraction), resolved
-// ambiguity #7.
-func TestMemoryGmailWatermarkRoundTrip(t *testing.T) {
-	db := openTestDB(t)
-
-	ts, err := db.MemoryGmailWatermark()
-	if err != nil {
-		t.Fatalf("MemoryGmailWatermark on fresh workspace: %v", err)
-	}
-	if ts != 0 {
-		t.Errorf("initial watermark = %v, want 0", ts)
-	}
-
-	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
-		t.Fatalf("seeding workspace: %v", err)
-	}
-	if err := db.SetMemoryGmailWatermark(1700000000); err != nil {
-		t.Fatalf("SetMemoryGmailWatermark: %v", err)
-	}
-	ts, err = db.MemoryGmailWatermark()
-	if err != nil {
-		t.Fatalf("MemoryGmailWatermark after set: %v", err)
-	}
-	if ts != 1700000000 {
-		t.Errorf("watermark after set = %v, want 1700000000", ts)
-	}
-}
+// NOTE: TestMemoryGmailWatermarkRoundTrip was removed by migration 00043
+// (google_accounts): MemoryGmailWatermark/SetMemoryGmailWatermark target
+// workspace.memory_gmail_last_extracted_ts, which 00043 drops in favor of a
+// per-account column on google_accounts. The accessors are left in place —
+// internal/memory still calls them, so they keep compiling — but they now
+// fail at runtime; Task 2 of the multi-account plan rewrites them to take an
+// account id and will need a fresh test for the new signature.
 
 // TestMemoryCalendarWatermarkRoundTrip: the calendar episode-build watermark
 // (Task 2, migration 00033) defaults to 0 on a fresh workspace and persists
