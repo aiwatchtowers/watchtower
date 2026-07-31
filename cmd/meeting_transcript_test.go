@@ -92,11 +92,13 @@ func writeTranscriptFile(t *testing.T, content string) string {
 // transcriptEnvelope mirrors the frozen stdout contract consumed by the Swift
 // TranscriptSaveService.
 type transcriptEnvelope struct {
-	TranscriptID int64  `json:"transcript_id"`
-	EventID      string `json:"event_id"`
-	Title        string `json:"title"`
-	RecapOK      bool   `json:"recap_ok"`
-	RecapError   string `json:"recap_error"`
+	TranscriptID  int64  `json:"transcript_id"`
+	EventID       string `json:"event_id"`
+	Title         string `json:"title"`
+	RecapOK       bool   `json:"recap_ok"`
+	RecapError    string `json:"recap_error"`
+	SegmentsOK    bool   `json:"segments_ok"`
+	SegmentsError string `json:"segments_error"`
 }
 
 func findPipelineRun(t *testing.T, database *db.DB, pipeline string) *db.PipelineRun {
@@ -322,6 +324,8 @@ func TestTranscriptSaveWithSegmentsPersistsColumn(t *testing.T) {
 	var env transcriptEnvelope
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
 	assert.True(t, env.RecapOK)
+	assert.True(t, env.SegmentsOK, "a valid segments file must report segments_ok=true")
+	assert.Equal(t, "", env.SegmentsError)
 
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
@@ -350,6 +354,8 @@ func TestTranscriptSaveWithoutSegmentsLeavesColumnNULL(t *testing.T) {
 
 	var env transcriptEnvelope
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.SegmentsOK, "no segments attempted → nothing dropped, segments_ok=true")
+	assert.Equal(t, "", env.SegmentsError)
 
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
@@ -389,6 +395,8 @@ func TestTranscriptSaveMalformedSegmentsStillPersistsTranscript(t *testing.T) {
 			var env transcriptEnvelope
 			require.NoError(t, json.Unmarshal(out.Bytes(), &env))
 			assert.Greater(t, env.TranscriptID, int64(0))
+			assert.False(t, env.SegmentsOK, "a dropped segments file must be visible in the envelope, not stderr-only")
+			assert.NotEmpty(t, env.SegmentsError, "segments_error must carry the drop reason")
 
 			database, err := openDBFromConfig()
 			require.NoError(t, err)
@@ -420,6 +428,8 @@ func TestTranscriptSaveMissingSegmentsFileStillPersistsTranscript(t *testing.T) 
 
 	var env transcriptEnvelope
 	require.NoError(t, json.Unmarshal(out.Bytes(), &env))
+	assert.False(t, env.SegmentsOK, "an unreadable segments file counts as dropped")
+	assert.Contains(t, env.SegmentsError, "reading segments file")
 
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
@@ -490,6 +500,7 @@ func TestTranscriptRecapRetry(t *testing.T) {
 	assert.Equal(t, id, env.TranscriptID)
 	assert.True(t, env.RecapOK)
 	assert.Equal(t, "", env.RecapError)
+	assert.True(t, env.SegmentsOK, "the recap retry never touches segments — segments_ok must be true")
 
 	database, err = openDBFromConfig()
 	require.NoError(t, err)

@@ -166,12 +166,13 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		title = "Recording " + time.Now().Local().Format("2006-01-02 15:04")
 	}
 
+	segments, segmentsErr := loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr())
 	tr := db.MeetingTranscript{
 		Title:          title,
 		DurationSec:    transcriptSaveFlagDuration,
 		LangStats:      transcriptSaveFlagLangStats,
 		TranscriptText: text,
-		SegmentsJSON:   loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr()),
+		SegmentsJSON:   segments,
 	}
 	if transcriptSaveFlagEventID != "" {
 		tr.EventID = sql.NullString{String: transcriptSaveFlagEventID, Valid: true}
@@ -196,34 +197,40 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		_, chaptersErr := generateAndStoreTranscriptChapters(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
 		chaptersOutcome = &chaptersErr
 	}
-	return printTranscriptEnvelope(cmd, database, id, recapErr, chaptersOutcome)
+	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, chaptersOutcome)
 }
 
 // loadTranscriptSegments reads and validates the optional --segments-file for
-// save. Any problem — missing flag (old callers, batch fallback failures),
-// unreadable file, malformed JSON, or a render that does not reproduce the
-// transcript text (the transcript_text = render(segments) invariant) — yields
-// a NULL column with a stderr warning; the transcript save itself must still
-// succeed (exit-0 envelope semantics are preserved).
-func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) sql.NullString {
+// save. Any problem — unreadable file, malformed JSON, or a render that does
+// not reproduce the transcript text (the transcript_text = render(segments)
+// invariant) — yields a NULL column with a stderr warning AND a non-nil error
+// surfaced through the envelope's segments_ok/segments_error (the recap_ok
+// precedent: stderr alone is discarded by ProcessCLIRunner on exit 0, and a
+// render-mismatch drift between the Go and Swift renderers must not degrade
+// invisibly). A missing flag (old callers, batch fallback failures) is not an
+// error — nothing was attempted. The transcript save itself always succeeds
+// (exit-0 envelope semantics are preserved).
+func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) (sql.NullString, error) {
 	if path == "" {
-		return sql.NullString{}
+		return sql.NullString{}, nil
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(errOut, "warning: reading segments file (saving transcript without segments): %v\n", err)
-		return sql.NullString{}
+		err = fmt.Errorf("reading segments file: %v", err)
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
+		return sql.NullString{}, err
 	}
 	utterances, err := meeting.ParseTranscriptSegments(raw)
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
-		return sql.NullString{}
+		return sql.NullString{}, err
 	}
 	if rendered := meeting.RenderTranscriptSegments(utterances); rendered != transcriptText {
-		fmt.Fprintf(errOut, "warning: segments do not render to the transcript text (saving transcript without segments)\n")
-		return sql.NullString{}
+		err = fmt.Errorf("segments do not render to the transcript text")
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
+		return sql.NullString{}, err
 	}
-	return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}
+	return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}, nil
 }
 
 func runTranscriptRecap(cmd *cobra.Command, args []string) error {
@@ -245,7 +252,10 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 	}
 
 	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
-	return printTranscriptEnvelope(cmd, database, id, recapErr, nil)
+	// The recap retry never touches segments — nothing attempted, nothing
+	// dropped, so segments_ok is honestly true. Chapters are likewise not
+	// attempted here (chaptersErr nil ⇒ no chapters keys in the envelope).
+	return printTranscriptEnvelope(cmd, database, id, recapErr, nil, nil)
 }
 
 // generateAndStoreTranscriptRecap runs the AI recap for a saved transcript and
@@ -321,23 +331,32 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 }
 
 // printTranscriptEnvelope emits the frozen stdout contract consumed by the
-// Swift TranscriptSaveService: transcript_id / recap_ok / recap_error (plus
-// event_id and title for display). chaptersErr is nil when chapter generation
-// was not attempted (no segments, or the recap-only retry command); when
-// non-nil the envelope additionally reports chapters_ok / chapters_error —
-// additive keys, safe for the frozen Swift decoder. A failed post-save
-// refetch must NOT flip the exit code — the row IS persisted (exit 1 only
-// when nothing was persisted) — so it degrades to a minimal envelope built
-// from what is known, logging the refetch problem to stderr.
-func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr error, chaptersErr *error) error {
+// Swift TranscriptSaveService: transcript_id / recap_ok / recap_error /
+// segments_ok / segments_error (plus event_id and title for display).
+// segments_ok=false means a provided --segments-file was dropped (the column
+// stayed NULL) — the caller-visible tripwire for Go↔Swift renderer drift.
+// chaptersErr is nil when chapter generation was not attempted (no segments,
+// or the recap-only retry command); when non-nil the envelope additionally
+// reports chapters_ok / chapters_error — additive keys, safe for the frozen
+// Swift decoder. A failed post-save refetch must NOT flip the exit code — the
+// row IS persisted (exit 1 only when nothing was persisted) — so it degrades
+// to a minimal envelope built from what is known, logging the refetch problem
+// to stderr.
+func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr, segmentsErr error, chaptersErr *error) error {
 	recapErrMsg := ""
 	if recapErr != nil {
 		recapErrMsg = recapErr.Error()
 	}
+	segmentsErrMsg := ""
+	if segmentsErr != nil {
+		segmentsErrMsg = segmentsErr.Error()
+	}
 	envelope := map[string]any{
-		"transcript_id": id,
-		"recap_ok":      recapErr == nil,
-		"recap_error":   recapErrMsg,
+		"transcript_id":  id,
+		"recap_ok":       recapErr == nil,
+		"recap_error":    recapErrMsg,
+		"segments_ok":    segmentsErr == nil,
+		"segments_error": segmentsErrMsg,
 	}
 	if chaptersErr != nil {
 		chaptersErrMsg := ""

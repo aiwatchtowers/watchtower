@@ -1358,6 +1358,15 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(center.phase, .idle)
         XCTAssertEqual(decodeCalls, 1, "the roles post-pass decodes the file exactly once")
         XCTAssertEqual(runner.savedTranscripts.first, "[Speaker 1] live text")
+
+        // The live single-pass save must carry the structured utterances too —
+        // live is the dominant real path, and dropping them there would fall
+        // back to a legacy segment-less row for every live-transcribed meeting.
+        let savedSegments = try XCTUnwrap(runner.savedSegments.first ?? nil,
+                                          "the live single-pass save must pass --segments-file")
+        let utterances = try XCTUnwrap(TranscriptSegments.decode(savedSegments))
+        XCTAssertEqual(TranscriptSegments.render(utterances), "[Speaker 1] live text",
+                       "invariant at the source: transcript_text = render(segments)")
     }
 
     func testRetryAfterSaveFailureKeepsRolesFlagInNotification() async throws {
@@ -1470,5 +1479,47 @@ final class MeetingRecorderCenterTests: XCTestCase {
                        "the retried save must carry the same utterances from the sidecar")
         XCTAssertEqual(runner.savedTranscripts.count, 2)
         XCTAssertEqual(runner.savedTranscripts[0], runner.savedTranscripts[1])
+    }
+
+    func testRetryFromPreSegmentsSidecarSavesWithoutSegments() async throws {
+        // Back-compat: a sidecar written BEFORE the segments work (no
+        // "utterances" key at all) must still decode and short-circuit the
+        // retry to a segment-less save — this is the crash-recovery path the
+        // sidecar exists for, and a Codable change that broke it would strand
+        // every in-flight failed save from an older build.
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let base = audio.deletingPathExtension()
+        try "[Я] привет".write(to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
+        // Exact old-format payload: durationSec + langStats only.
+        try Data(#"{"durationSec":42,"langStats":{"ru":42}}"#.utf8)
+            .write(to: base.appendingPathExtension("json"))
+
+        let defaults = try isolatedDefaults()
+        defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
+        defaults.set("Old build", forKey: MeetingRecorderCenter.pendingTitleKey)
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        var engineLoads = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in engineLoads += 1; return TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 4800),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: defaults
+        )
+
+        center.restorePendingOnLaunch()
+        XCTAssertEqual(center.pendingAudioURL, audio)
+        await center.retryTranscription(config: threeWindowConfig())
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(engineLoads, 0, "the old-format sidecar must still short-circuit re-transcription")
+        XCTAssertEqual(runner.savedTranscripts, ["[Я] привет"])
+        XCTAssertEqual(runner.savedSegments.count, 1)
+        XCTAssertNil(runner.savedSegments[0], "a pre-segments sidecar retries as a segment-less save")
     }
 }
