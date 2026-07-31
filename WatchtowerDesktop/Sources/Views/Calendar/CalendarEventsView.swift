@@ -22,6 +22,9 @@ struct CalendarEventsView: View {
     @State private var expandedEventID: String?
     @State private var userNotes: String = ""
     @State private var mode: CalendarMode = .events
+    /// Hoisted Recordings-tab selection so the Events tab can deep-link into
+    /// a specific recording (expanded event row → Recordings section tap).
+    @State private var selectedRecordingID: Int64?
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
 
@@ -52,7 +55,15 @@ struct CalendarEventsView: View {
                     case .events:
                         eventsSplitView(calVM)
                     case .recordings:
-                        RecordingsView()
+                        RecordingsView(
+                            externalSelection: $selectedRecordingID,
+                            onOpenEvent: { eventID in
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    mode = .events
+                                    expandedEventID = eventID
+                                }
+                            }
+                        )
                     }
                 }
             } else {
@@ -343,6 +354,15 @@ struct CalendarEventsView: View {
                         .font(.caption)
                 }
                 .padding(.top, 2)
+            }
+
+            // Linked recordings (hidden when the event has none): tapping a
+            // row deep-links into the Recordings tab with it selected.
+            EventRecordingsSection(eventID: event.id) { recordingID in
+                selectedRecordingID = recordingID
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    mode = .recordings
+                }
             }
         }
         .padding(.vertical, 4)
