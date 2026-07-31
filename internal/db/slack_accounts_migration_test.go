@@ -164,3 +164,88 @@ func TestMigration00044_UpgradesLegacySingleAccount(t *testing.T) {
 		t.Errorf("inbox_items.channel_id (gmail) = %q, want unchanged gmail:1:th1, the '1:' rewrite guard failed", gmailChannelID)
 	}
 }
+
+// TestMigration00044DownUpCycle replays goose up to 00043 on a raw
+// connection, seeds bare (pre-namespacing) inbox_learned_rules scope_key
+// rows, applies 00044 (asserting the namespaced form), then applies 00044's
+// own Down block and asserts the ORIGINAL bare scope_key is restored
+// exactly — the substr off-by-one in the Down block (substr(scope_key, 9)
+// for "sender:1:" and substr(scope_key, 10) for "channel:1:", each one
+// short of past the second colon) produced 'sender::U1'/'channel::C1'
+// instead of 'sender:U1'/'channel:C1' and slipped through because no
+// existing test exercised 00044's own Down path with a plain (non-gmail)
+// scope_key. Then re-applies Up and asserts re-namespacing.
+func TestMigration00044DownUpCycle(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpTo(raw, "migrations", 43); err != nil {
+		t.Fatalf("migrate to v43: %v", err)
+	}
+
+	if _, err := raw.Exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', 'sender:U1', 1.0, 'user_rule', '2026-07-30T00:00:00Z')`); err != nil {
+		t.Fatalf("seed sender scope_key: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', 'channel:C1', 1.0, 'user_rule', '2026-07-30T00:00:00Z')`); err != nil {
+		t.Fatalf("seed channel scope_key: %v", err)
+	}
+
+	if err := goose.UpByOne(raw, "migrations"); err != nil {
+		t.Fatalf("apply 00044: %v", err)
+	}
+
+	var senderKey, channelKey string
+	if err := raw.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE scope_key LIKE 'sender:%'`).Scan(&senderKey); err != nil {
+		t.Fatalf("read sender scope_key after up: %v", err)
+	}
+	if senderKey != "sender:1:U1" {
+		t.Fatalf("sender scope_key after up = %q, want sender:1:U1", senderKey)
+	}
+	if err := raw.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE scope_key LIKE 'channel:%'`).Scan(&channelKey); err != nil {
+		t.Fatalf("read channel scope_key after up: %v", err)
+	}
+	if channelKey != "channel:1:C1" {
+		t.Fatalf("channel scope_key after up = %q, want channel:1:C1", channelKey)
+	}
+
+	if err := goose.DownTo(raw, "migrations", 43); err != nil {
+		t.Fatalf("goose down to 43: %v", err)
+	}
+
+	if err := raw.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE scope_key LIKE 'sender:%'`).Scan(&senderKey); err != nil {
+		t.Fatalf("read sender scope_key after down: %v", err)
+	}
+	if senderKey != "sender:U1" {
+		t.Errorf("sender scope_key after down = %q, want sender:U1 (original bare form)", senderKey)
+	}
+	if err := raw.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE scope_key LIKE 'channel:%'`).Scan(&channelKey); err != nil {
+		t.Fatalf("read channel scope_key after down: %v", err)
+	}
+	if channelKey != "channel:C1" {
+		t.Errorf("channel scope_key after down = %q, want channel:C1 (original bare form)", channelKey)
+	}
+
+	if err := goose.UpByOne(raw, "migrations"); err != nil {
+		t.Fatalf("re-apply 00044: %v", err)
+	}
+	if err := raw.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE scope_key LIKE 'sender:%'`).Scan(&senderKey); err != nil {
+		t.Fatalf("read sender scope_key after re-up: %v", err)
+	}
+	if senderKey != "sender:1:U1" {
+		t.Errorf("sender scope_key after re-up = %q, want sender:1:U1", senderKey)
+	}
+	if err := raw.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE scope_key LIKE 'channel:%'`).Scan(&channelKey); err != nil {
+		t.Fatalf("read channel scope_key after re-up: %v", err)
+	}
+	if channelKey != "channel:1:C1" {
+		t.Errorf("channel scope_key after re-up = %q, want channel:1:C1", channelKey)
+	}
+}

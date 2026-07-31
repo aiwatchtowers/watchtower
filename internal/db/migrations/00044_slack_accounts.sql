@@ -46,6 +46,12 @@ UPDATE tracks SET assignee_user_id = '1:' || assignee_user_id WHERE assignee_use
 UPDATE tracks SET ball_on = '1:' || ball_on WHERE ball_on != '';
 UPDATE tracks SET owner_user_id = '1:' || owner_user_id WHERE owner_user_id != '';
 UPDATE tracks SET requester_user_id = '1:' || requester_user_id WHERE requester_user_id != '';
+UPDATE track_states SET ball_on = '1:' || ball_on WHERE ball_on != '';
+UPDATE track_states SET owner_user_id = '1:' || owner_user_id WHERE owner_user_id != '';
+UPDATE track_states SET requester_user_id = '1:' || requester_user_id WHERE requester_user_id != '';
+UPDATE targets SET ball_on = '1:' || ball_on WHERE ball_on != '';
+UPDATE pipeline_steps SET channel_id = '1:' || channel_id WHERE channel_id != '';
+UPDATE memory_digest_shadow SET channel_id = '1:' || channel_id WHERE channel_id != '';
 UPDATE inbox_items SET channel_id = '1:' || channel_id
   WHERE channel_id != '' AND channel_id NOT LIKE 'gmail:%' AND channel_id NOT LIKE 'imap:%';
 UPDATE inbox_items SET sender_user_id = '1:' || sender_user_id
@@ -91,10 +97,16 @@ UPDATE people_cards SET user_id = substr(user_id, 3) WHERE user_id LIKE '1:%';
 UPDATE communication_guides SET user_id = substr(user_id, 3) WHERE user_id LIKE '1:%';
 UPDATE user_profile SET manager = substr(manager, 3) WHERE manager LIKE '1:%';
 UPDATE user_profile SET slack_user_id = substr(slack_user_id, 3) WHERE slack_user_id LIKE '1:%';
-UPDATE inbox_learned_rules SET scope_key = 'sender:' || substr(scope_key, 9) WHERE scope_key LIKE 'sender:1:%';
-UPDATE inbox_learned_rules SET scope_key = 'channel:' || substr(scope_key, 10) WHERE scope_key LIKE 'channel:1:%';
+UPDATE inbox_learned_rules SET scope_key = 'sender:' || substr(scope_key, 10) WHERE scope_key LIKE 'sender:1:%';
+UPDATE inbox_learned_rules SET scope_key = 'channel:' || substr(scope_key, 11) WHERE scope_key LIKE 'channel:1:%';
 UPDATE inbox_items SET sender_user_id = substr(sender_user_id, 3) WHERE sender_user_id LIKE '1:%';
 UPDATE inbox_items SET channel_id = substr(channel_id, 3) WHERE channel_id LIKE '1:%';
+UPDATE memory_digest_shadow SET channel_id = substr(channel_id, 3) WHERE channel_id LIKE '1:%';
+UPDATE pipeline_steps SET channel_id = substr(channel_id, 3) WHERE channel_id LIKE '1:%';
+UPDATE targets SET ball_on = substr(ball_on, 3) WHERE ball_on LIKE '1:%';
+UPDATE track_states SET requester_user_id = substr(requester_user_id, 3) WHERE requester_user_id LIKE '1:%';
+UPDATE track_states SET owner_user_id = substr(owner_user_id, 3) WHERE owner_user_id LIKE '1:%';
+UPDATE track_states SET ball_on = substr(ball_on, 3) WHERE ball_on LIKE '1:%';
 UPDATE tracks SET requester_user_id = substr(requester_user_id, 3) WHERE requester_user_id LIKE '1:%';
 UPDATE tracks SET owner_user_id = substr(owner_user_id, 3) WHERE owner_user_id LIKE '1:%';
 UPDATE tracks SET ball_on = substr(ball_on, 3) WHERE ball_on LIKE '1:%';
