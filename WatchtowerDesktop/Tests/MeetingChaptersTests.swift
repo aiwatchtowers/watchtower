@@ -113,56 +113,125 @@ final class MeetingChaptersTests: XCTestCase {
         XCTAssertNil(MeetingChapters.firstUtteranceIdx(in: [], atOrAfter: 0))
     }
 
-    // MARK: - Converted-item write round-trip
+    // MARK: - Action item → Target conversion (atomic query-layer write)
 
-    func testSetActionItemConvertedRoundTrip() throws {
+    private func targetCount(_ db: DatabaseQueue) throws -> Int {
+        try db.read { conn in
+            try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM targets") ?? 0
+        }
+    }
+
+    func testConvertActionItemCreatesTargetAndStampsInOneTransaction() throws {
         let db = try TestDatabase.create()
         try db.write { conn in
             try TestDatabase.insertMeetingTranscript(
-                conn, id: 5, transcriptText: "text", chaptersJSON: fullJSON)
-            try MeetingTranscriptQueries.setActionItemConverted(
-                conn, id: 5, chapterIdx: 0, itemIdx: 0, targetID: 101)
+                conn, id: 5, title: "Roadmap", transcriptText: "text", chaptersJSON: fullJSON)
+        }
+        let targetID = try db.write { conn in
+            try MeetingTranscriptQueries.convertActionItemToTarget(
+                conn, transcriptID: 5, chapterIdx: 0, itemIdx: 0)
         }
         try db.read { conn in
             let row = try XCTUnwrap(MeetingTranscriptQueries.fetch(conn, id: 5))
             let chapters = try XCTUnwrap(row.parsedChapters)
-            XCTAssertEqual(chapters.chapters[0].actionItems[0].convertedTargetID, 101)
+            XCTAssertEqual(chapters.chapters[0].actionItems[0].convertedTargetID, targetID)
             // The sibling item's pre-existing conversion is untouched, and the
             // item itself stays in the chapter (link, not delete).
             XCTAssertEqual(chapters.chapters[0].actionItems[1].convertedTargetID, 42)
             XCTAssertEqual(chapters.chapters[0].actionItems.count, 2)
+
+            let target = try XCTUnwrap(TargetQueries.fetchByID(conn, id: Int(targetID)))
+            XCTAssertEqual(target.text, "Alice preps changelog")
+            XCTAssertEqual(target.sourceID, "meeting_chapter:5:0:0")
+            XCTAssertTrue(target.intent.contains("Roadmap"), "intent must carry the meeting context")
+            XCTAssertTrue(target.intent.contains("Rollout"), "intent must carry the chapter title")
         }
     }
 
-    func testSetActionItemConvertedUnknownIndicesIsNoOp() throws {
-        // Degenerate but valid: stale UI indices must never corrupt the JSON.
+    func testConvertActionItemStaleIndicesThrowsAndInsertsNoTarget() throws {
+        // Stale UI indices must abort the whole transaction: no Target row,
+        // JSON untouched (the old silent no-op could orphan a Target).
         let db = try TestDatabase.create()
         try db.write { conn in
             try TestDatabase.insertMeetingTranscript(
                 conn, id: 6, transcriptText: "text", chaptersJSON: fullJSON)
-            try MeetingTranscriptQueries.setActionItemConverted(
-                conn, id: 6, chapterIdx: 9, itemIdx: 0, targetID: 101)
-            try MeetingTranscriptQueries.setActionItemConverted(
-                conn, id: 6, chapterIdx: 0, itemIdx: 9, targetID: 101)
-            try MeetingTranscriptQueries.setActionItemConverted(
-                conn, id: 999, chapterIdx: 0, itemIdx: 0, targetID: 101)
         }
+        for (chapterIdx, itemIdx, transcriptID) in [(9, 0, Int64(6)), (0, 9, 6), (0, 0, 999)] {
+            XCTAssertThrowsError(try db.write { conn in
+                try MeetingTranscriptQueries.convertActionItemToTarget(
+                    conn, transcriptID: transcriptID, chapterIdx: chapterIdx, itemIdx: itemIdx)
+            }) { error in
+                XCTAssertEqual(
+                    error as? MeetingTranscriptQueries.ActionItemConversionError, .staleChapters)
+            }
+        }
+        XCTAssertEqual(try targetCount(db), 0, "a failed stamp must never leave a Target behind")
         try db.read { conn in
             let row = try XCTUnwrap(MeetingTranscriptQueries.fetch(conn, id: 6))
-            XCTAssertEqual(row.chaptersJSON, self.fullJSON, "unknown indices must leave the JSON untouched")
+            XCTAssertEqual(row.chaptersJSON, self.fullJSON, "stale indices must leave the JSON untouched")
         }
     }
 
-    func testSetActionItemConvertedWithoutChaptersIsNoOp() throws {
+    func testConvertActionItemWithoutChaptersThrows() throws {
         let db = try TestDatabase.create()
         try db.write { conn in
             try TestDatabase.insertMeetingTranscript(conn, id: 7, transcriptText: "text")
-            try MeetingTranscriptQueries.setActionItemConverted(
-                conn, id: 7, chapterIdx: 0, itemIdx: 0, targetID: 101)
         }
+        XCTAssertThrowsError(try db.write { conn in
+            try MeetingTranscriptQueries.convertActionItemToTarget(
+                conn, transcriptID: 7, chapterIdx: 0, itemIdx: 0)
+        })
+        XCTAssertEqual(try targetCount(db), 0)
+    }
+
+    func testConvertActionItemDoubleConversionThrowsWithoutDuplicate() throws {
+        let db = try TestDatabase.create()
+        try db.write { conn in
+            try TestDatabase.insertMeetingTranscript(
+                conn, id: 8, transcriptText: "text", chaptersJSON: fullJSON)
+        }
+        let firstID = try db.write { conn in
+            try MeetingTranscriptQueries.convertActionItemToTarget(
+                conn, transcriptID: 8, chapterIdx: 0, itemIdx: 0)
+        }
+        // Second click on the same item: guard fires, no second Target.
+        XCTAssertThrowsError(try db.write { conn in
+            try MeetingTranscriptQueries.convertActionItemToTarget(
+                conn, transcriptID: 8, chapterIdx: 0, itemIdx: 0)
+        }) { error in
+            XCTAssertEqual(
+                error as? MeetingTranscriptQueries.ActionItemConversionError,
+                .alreadyConverted(targetID: firstID))
+        }
+        XCTAssertEqual(try targetCount(db), 1, "double conversion must never mint a duplicate Target")
+    }
+
+    func testConvertActionItemReusesExistingTargetForSameSourceRef() throws {
+        // Idempotency repair: a Target minted by a pre-fix run whose stamp
+        // was dropped (same source ref, same text) is re-linked, not
+        // duplicated.
+        let db = try TestDatabase.create()
+        let existingID: Int = try db.write { conn in
+            try TestDatabase.insertMeetingTranscript(
+                conn, id: 9, transcriptText: "text", chaptersJSON: fullJSON)
+            return try TargetQueries.create(
+                conn,
+                text: "Alice preps changelog",
+                periodStart: "2026-01-01",
+                periodEnd: "2026-01-01",
+                sourceType: "manual",
+                sourceID: "meeting_chapter:9:0:0")
+        }
+        let targetID = try db.write { conn in
+            try MeetingTranscriptQueries.convertActionItemToTarget(
+                conn, transcriptID: 9, chapterIdx: 0, itemIdx: 0)
+        }
+        XCTAssertEqual(targetID, Int64(existingID))
+        XCTAssertEqual(try targetCount(db), 1, "matching source ref + text must be reused, not duplicated")
         try db.read { conn in
-            let row = try XCTUnwrap(MeetingTranscriptQueries.fetch(conn, id: 7))
-            XCTAssertNil(row.chaptersJSON)
+            let row = try XCTUnwrap(MeetingTranscriptQueries.fetch(conn, id: 9))
+            XCTAssertEqual(
+                row.parsedChapters?.chapters[0].actionItems[0].convertedTargetID, targetID)
         }
     }
 }

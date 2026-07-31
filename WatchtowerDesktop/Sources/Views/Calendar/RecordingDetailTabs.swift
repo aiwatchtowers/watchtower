@@ -23,6 +23,8 @@ struct RecordingRecapTab: View {
     let onConvertActionItem: (_ chapterIdx: Int, _ itemIdx: Int) -> Void
     let onFollowup: (_ chapterIdx: Int?) -> Void
 
+    @State private var showRegenerateConfirm = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
@@ -153,16 +155,46 @@ struct RecordingRecapTab: View {
                 .font(.caption)
                 .foregroundStyle(.red)
         }
-        Button {
-            onGenerateChapters()
-        } label: {
-            Label("Re-generate chapters",
-                  systemImage: isGeneratingChapters ? "hourglass" : "arrow.triangle.2.circlepath")
-                .font(.caption)
+        HStack(spacing: 8) {
+            // Destructive-ish: regeneration replaces the chapters wholesale.
+            // Target links are re-keyed onto matching action items by the CLI
+            // (CarryConvertedTargets), but items whose text changed lose the
+            // link marker — hence the confirmation.
+            Button {
+                showRegenerateConfirm = true
+            } label: {
+                Label("Re-generate chapters",
+                      systemImage: isGeneratingChapters ? "hourglass" : "arrow.triangle.2.circlepath")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isGeneratingChapters)
+            .confirmationDialog(
+                "Re-generate chapters?",
+                isPresented: $showRegenerateConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Re-generate", role: .destructive) { onGenerateChapters() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The current chapters are replaced. Links to created Targets are kept for action items whose text is unchanged; the Targets themselves are never deleted.")
+            }
+
+            // Recap regeneration must stay reachable once chapters exist —
+            // the chapters view replaces the flat recap (with its retry
+            // button), and for ad-hoc recordings this is the only path.
+            Button {
+                onRetryRecap()
+            } label: {
+                Label(recapContent == nil ? "Generate recap" : "Re-generate recap",
+                      systemImage: isRetrying ? "hourglass" : "arrow.triangle.2.circlepath")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isRetrying)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(isGeneratingChapters)
     }
 
     // MARK: Legacy flat recap

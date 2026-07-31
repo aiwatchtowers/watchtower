@@ -581,6 +581,14 @@ func generateAndStoreTranscriptChapters(ctx context.Context, database *db.DB, cf
 		completeRun(0, 0, 0, 0, err.Error())
 		return "", err
 	}
+	// Regeneration must not silently wipe Action-item→Target links: stamps
+	// from the previous chapters are re-keyed onto matching items in the new
+	// ones (the Target rows themselves always survive).
+	if tr.ChaptersJSON.Valid {
+		if old, parseErr := meeting.ParseChapters([]byte(tr.ChaptersJSON.String)); parseErr == nil {
+			meeting.CarryConvertedTargets(old, res)
+		}
+	}
 	chaptersJSON, err := json.Marshal(res)
 	if err != nil {
 		completeRun(0, 0, 0, 0, err.Error())
@@ -628,6 +636,11 @@ func runTranscriptFollowup(cmd *cobra.Command, args []string) error {
 	id, err := strconv.ParseInt(args[0], 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid transcript id %q: %w", args[0], err)
+	}
+	// -1 is the "whole meeting" sentinel (flag default); any other negative
+	// is a caller bug, not a request for a whole-meeting draft.
+	if transcriptFollowupChapter < -1 {
+		return fmt.Errorf("invalid --chapter %d: use a 0-based chapter index, or omit the flag for a whole-meeting draft", transcriptFollowupChapter)
 	}
 
 	cfg, database, err := transcriptEnv()

@@ -7,13 +7,19 @@ import Foundation
 /// recap failed — check `recapOK`/`recapError` for the AI outcome.
 /// `segmentsOK == false` means the CLI dropped a provided segments file (the
 /// column stayed NULL) — the visible tripwire for Go↔Swift renderer drift.
-/// Optional so envelopes from an older CLI still decode.
+/// `chaptersOK == false` means auto-chapter generation after save failed
+/// (chapters_json stayed NULL — retry via the in-UI "Generate chapters"
+/// button); nil means chapters were not attempted (no segments, or the
+/// recap-retry command). Optional so envelopes from an older CLI still
+/// decode.
 struct TranscriptSaveResult: Decodable, Equatable {
     let transcriptID: Int64
     let recapOK: Bool
     let recapError: String
     let segmentsOK: Bool?
     let segmentsError: String?
+    let chaptersOK: Bool?
+    let chaptersError: String?
 
     enum CodingKeys: String, CodingKey {
         case transcriptID = "transcript_id"
@@ -21,6 +27,8 @@ struct TranscriptSaveResult: Decodable, Equatable {
         case recapError = "recap_error"
         case segmentsOK = "segments_ok"
         case segmentsError = "segments_error"
+        case chaptersOK = "chapters_ok"
+        case chaptersError = "chapters_error"
     }
 }
 

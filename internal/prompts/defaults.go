@@ -1158,7 +1158,7 @@ Rules:
 - Be faithful to the transcript; never invent facts, owners, or dates.
 - Merge near-duplicates; keep it scannable.`
 
-const defaultMeetingChapters = `You segment a meeting into chapters based on an automatic audio transcript with [mm:ss] timecodes and speaker labels (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). Speakers are labeled "Я" (the recording owner) or "Speaker N" unless real names were assigned.
+const defaultMeetingChapters = `You segment a meeting into chapters based on an automatic audio transcript with [m:ss] timecodes and speaker labels (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). Speakers are labeled "Я" (the recording owner) or "Speaker N" unless real names were assigned.
 
 === EVENT ===
 Title: %s

@@ -195,6 +195,48 @@ func normalizeChapters(res *ChaptersResult, durationSec int) error {
 	return nil
 }
 
+// CarryConvertedTargets re-keys converted_target_id stamps from a previous
+// ChaptersResult onto a freshly generated one, so regenerating chapters never
+// silently wipes Action-item→Target links (the Target rows always survive —
+// regeneration never deletes Targets). Chapter/item indices shift across
+// regenerations, so items are matched by normalized (trimmed, case-folded)
+// action-item text, in document order; each old stamp is consumed at most
+// once. A converted item whose text no longer appears in the new chapters
+// loses its stamp — the link has nothing left to attach to.
+func CarryConvertedTargets(old, fresh *ChaptersResult) {
+	if old == nil || fresh == nil {
+		return
+	}
+	normalize := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+	stamps := make(map[string][]*int64)
+	for _, ch := range old.Chapters {
+		for _, it := range ch.ActionItems {
+			if it.ConvertedTargetID != nil {
+				key := normalize(it.Text)
+				stamps[key] = append(stamps[key], it.ConvertedTargetID)
+			}
+		}
+	}
+	if len(stamps) == 0 {
+		return
+	}
+	for ci := range fresh.Chapters {
+		items := fresh.Chapters[ci].ActionItems
+		for ii := range items {
+			if items[ii].ConvertedTargetID != nil {
+				continue
+			}
+			key := normalize(items[ii].Text)
+			queue := stamps[key]
+			if len(queue) == 0 {
+				continue
+			}
+			items[ii].ConvertedTargetID = queue[0]
+			stamps[key] = queue[1:]
+		}
+	}
+}
+
 func (p *Pipeline) loadChaptersPrompt() string {
 	if p.promptStore != nil {
 		if tmpl, _, err := p.promptStore.Get(prompts.MeetingChapters); err == nil && tmpl != "" {

@@ -264,6 +264,28 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         XCTAssertEqual(result.segmentsOK, false)
         XCTAssertEqual(result.segmentsError, "segments do not render to the transcript text")
+        XCTAssertNil(result.chaptersOK, "no chapters keys → chapters not attempted")
+        XCTAssertNil(result.chaptersError)
+    }
+
+    func test_saveDecodesFailedChaptersEnvelope() async throws {
+        // Auto-chapters failure after save is envelope-only (the spec'd
+        // channel) — the decoder must surface it so the notification can.
+        let payload = """
+        {"transcript_id":7,"event_id":"","title":"Ad hoc","recap_ok":true,"recap_error":"",\
+        "segments_ok":true,"segments_error":"","chapters_ok":false,"chapters_error":"AI generation: boom"}
+        """
+        let fake = FakeCLIRunner(stdout: Data(payload.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        let result = try await svc.save(
+            transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
+            eventID: nil, title: "Ad hoc", langStatsJSON: "{}"
+        )
+
+        XCTAssertTrue(result.recapOK)
+        XCTAssertEqual(result.chaptersOK, false)
+        XCTAssertEqual(result.chaptersError, "AI generation: boom")
     }
 
     // MARK: - save: error propagation

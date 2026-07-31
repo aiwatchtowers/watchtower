@@ -117,7 +117,7 @@ struct MeetingChapter: Codable, Equatable {
 
 /// One action item inside a chapter. `convertedTargetID` is stamped when the
 /// item is converted into a Target — a link, not a delete (DASH-03 spirit);
-/// see `MeetingTranscriptQueries.setActionItemConverted`. Decodes from both
+/// see `MeetingTranscriptQueries.convertActionItemToTarget`. Decodes from both
 /// the persisted object form and a bare string (mirrors Go's
 /// `ChapterActionItem.UnmarshalJSON`).
 struct ChapterActionItem: Codable, Equatable {

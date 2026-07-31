@@ -270,3 +270,92 @@ func TestChaptersJSONRoundTripPreservesConvertedTargetID(t *testing.T) {
 		t.Errorf("converted_target_id lost in round trip: %+v", got)
 	}
 }
+
+func TestCarryConvertedTargetsReKeysByText(t *testing.T) {
+	id1, id2 := int64(101), int64(202)
+	old := &ChaptersResult{Chapters: []MeetingChapter{
+		{Title: "A", ActionItems: []ChapterActionItem{
+			{Text: "Ship the release", ConvertedTargetID: &id1},
+			{Text: "unconverted item"},
+		}},
+		{Title: "B", ActionItems: []ChapterActionItem{
+			{Text: "  book the review  ", ConvertedTargetID: &id2},
+		}},
+	}}
+	// Regenerated chapters: different split, shifted indices, case/space
+	// drift in the texts.
+	fresh := &ChaptersResult{Chapters: []MeetingChapter{
+		{Title: "Merged", ActionItems: []ChapterActionItem{
+			{Text: "Book the review"},
+			{Text: "a brand new item"},
+			{Text: "ship the release"},
+		}},
+	}}
+	CarryConvertedTargets(old, fresh)
+
+	items := fresh.Chapters[0].ActionItems
+	if items[0].ConvertedTargetID == nil || *items[0].ConvertedTargetID != id2 {
+		t.Errorf("'Book the review' stamp not carried: %+v", items[0])
+	}
+	if items[1].ConvertedTargetID != nil {
+		t.Errorf("new item must not inherit a stamp: %+v", items[1])
+	}
+	if items[2].ConvertedTargetID == nil || *items[2].ConvertedTargetID != id1 {
+		t.Errorf("'ship the release' stamp not carried: %+v", items[2])
+	}
+}
+
+func TestCarryConvertedTargetsDuplicateTextsConsumeInOrder(t *testing.T) {
+	id1, id2 := int64(1), int64(2)
+	old := &ChaptersResult{Chapters: []MeetingChapter{
+		{Title: "A", ActionItems: []ChapterActionItem{
+			{Text: "follow up", ConvertedTargetID: &id1},
+			{Text: "follow up", ConvertedTargetID: &id2},
+		}},
+	}}
+	fresh := &ChaptersResult{Chapters: []MeetingChapter{
+		{Title: "A", ActionItems: []ChapterActionItem{
+			{Text: "follow up"},
+			{Text: "follow up"},
+			{Text: "follow up"},
+		}},
+	}}
+	CarryConvertedTargets(old, fresh)
+	items := fresh.Chapters[0].ActionItems
+	if items[0].ConvertedTargetID == nil || *items[0].ConvertedTargetID != id1 {
+		t.Errorf("first duplicate must take the first stamp: %+v", items[0])
+	}
+	if items[1].ConvertedTargetID == nil || *items[1].ConvertedTargetID != id2 {
+		t.Errorf("second duplicate must take the second stamp: %+v", items[1])
+	}
+	if items[2].ConvertedTargetID != nil {
+		t.Errorf("third duplicate must stay unstamped (each stamp consumed once): %+v", items[2])
+	}
+}
+
+func TestCarryConvertedTargetsDegenerateInputs(t *testing.T) {
+	// Degenerate but valid: nils and no stamps at all must be no-ops.
+	CarryConvertedTargets(nil, nil)
+	id := int64(5)
+	fresh := &ChaptersResult{Chapters: []MeetingChapter{
+		{Title: "A", ActionItems: []ChapterActionItem{{Text: "x", ConvertedTargetID: &id}}},
+	}}
+	CarryConvertedTargets(nil, fresh)
+	CarryConvertedTargets(&ChaptersResult{}, fresh)
+	if *fresh.Chapters[0].ActionItems[0].ConvertedTargetID != 5 {
+		t.Errorf("pre-existing fresh stamp must never be overwritten")
+	}
+
+	// Old stamps with no textual match in the new chapters are dropped —
+	// the Target row survives; only the marker has nothing to attach to.
+	old := &ChaptersResult{Chapters: []MeetingChapter{
+		{Title: "A", ActionItems: []ChapterActionItem{{Text: "vanished item", ConvertedTargetID: &id}}},
+	}}
+	target := &ChaptersResult{Chapters: []MeetingChapter{
+		{Title: "A", ActionItems: []ChapterActionItem{{Text: "different"}}},
+	}}
+	CarryConvertedTargets(old, target)
+	if target.Chapters[0].ActionItems[0].ConvertedTargetID != nil {
+		t.Errorf("non-matching text must not be stamped")
+	}
+}

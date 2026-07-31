@@ -316,49 +316,28 @@ struct RecordingDetailView: View {
         tab = .transcript
     }
 
-    /// Action item → Target: creates the Target and stamps
-    /// converted_target_id inside chapters_json in ONE write transaction
-    /// (link, not delete — DASH-03 spirit), then reloads so the recap tab
+    /// Action item → Target: one query-layer call
+    /// (`MeetingTranscriptQueries.convertActionItemToTarget`) creates the
+    /// Target and stamps converted_target_id inside chapters_json in ONE
+    /// write transaction (link, not delete — DASH-03 spirit; any stamp
+    /// failure rolls the Target insert back), then reloads so the recap tab
     /// shows the converted state.
     private func convertActionItem(chapterIdx: Int, itemIdx: Int) {
-        guard let db = appState.databaseManager,
-              let transcript,
-              let chapters,
-              chapters.chapters.indices.contains(chapterIdx),
-              chapters.chapters[chapterIdx].actionItems.indices.contains(itemIdx) else { return }
-        let chapter = chapters.chapters[chapterIdx]
-        let item = chapter.actionItems[itemIdx]
-        guard item.convertedTargetID == nil else { return }
-
-        // Target description = chapter context (chapter summary + meeting
-        // title + date), the spec'd conversion payload.
-        let date = TranscriptFormatting.formattedDate(transcript.createdAt)
-        var context = "From meeting \"\(transcript.title)\" (\(date)), chapter \"\(chapter.title)\""
-        if !chapter.summary.isEmpty {
-            context += ": \(chapter.summary)"
-        }
+        guard let db = appState.databaseManager else { return }
         do {
             try db.dbPool.write { conn in
-                let today = TargetQueries.todayDateString()
-                let targetID = try TargetQueries.create(
-                    conn,
-                    text: item.text,
-                    intent: context,
-                    level: "day",
-                    periodStart: today,
-                    periodEnd: today,
-                    sourceType: "manual",
-                    sourceID: "meeting_chapter:\(transcriptID):\(chapterIdx):\(itemIdx)"
-                )
-                try MeetingTranscriptQueries.setActionItemConverted(
-                    conn, id: transcriptID,
-                    chapterIdx: chapterIdx, itemIdx: itemIdx,
-                    targetID: Int64(targetID))
+                try MeetingTranscriptQueries.convertActionItemToTarget(
+                    conn, transcriptID: transcriptID,
+                    chapterIdx: chapterIdx, itemIdx: itemIdx)
             }
             onChanged()
             Task { await load() }
+        } catch MeetingTranscriptQueries.ActionItemConversionError.alreadyConverted {
+            // Benign double-click / stale view — reload to show the stamp.
+            Task { await load() }
         } catch {
             errorMessage = error.localizedDescription
+            Task { await load() }
         }
     }
 

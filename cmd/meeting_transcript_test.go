@@ -1005,3 +1005,131 @@ func TestTranscriptFollowupAIFailureExitsNonZero(t *testing.T) {
 	require.NotNil(t, run)
 	assert.Equal(t, "error", run.Status)
 }
+
+func TestTranscriptChaptersRegenerationPreservesConvertedStamps(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	// Regenerated split: same "a1" item at a shifted position plus a new one.
+	regenerated := `{"overall_summary":"o2","chapters":[{"title":"Renamed","start_sec":0,"end_sec":5,"participants":["Я"],"summary":"s2","decisions":[],"action_items":["brand new item","a1"],"open_questions":[]}]}`
+	stubTranscriptGenerator(t, &transcriptMockGen{response: regenerated})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapterTestTranscript(t, database)
+	// Previous chapters with "a1" already converted to Target 77.
+	converted := `{"overall_summary":"o","chapters":[{"title":"Intro","start_sec":0,"end_sec":5,"participants":["Я"],"summary":"s","decisions":["d1"],"action_items":[{"text":"a1","converted_target_id":77}],"open_questions":[]}]}`
+	require.NoError(t, database.SetMeetingTranscriptChapters(id, converted))
+	database.Close()
+
+	require.NoError(t, transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{fmt.Sprint(id)}))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	require.True(t, tr.ChaptersJSON.Valid)
+	chapters, err := meeting.ParseChapters([]byte(tr.ChaptersJSON.String))
+	require.NoError(t, err)
+	items := chapters.Chapters[0].ActionItems
+	require.Len(t, items, 2)
+	assert.Nil(t, items[0].ConvertedTargetID, "a new action item must not inherit a stamp")
+	require.NotNil(t, items[1].ConvertedTargetID, "the surviving 'a1' item must keep its Target link across regeneration")
+	assert.Equal(t, int64(77), *items[1].ConvertedTargetID)
+}
+
+func TestTranscriptSaveRecapFailsChaptersSucceed(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	// Recap AI returns garbage; chapters succeed — pins that a recap error
+	// cannot short-circuit auto-chapters (no early return between them).
+	stubTranscriptGenerator(t, &transcriptMockGen{responses: []string{`not json`, transcriptMockChaptersJSON}})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagTitle = "Recap fails, chapters fine"
+	transcriptSaveFlagDuration = 5
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env chaptersEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.False(t, env.RecapOK)
+	assert.NotEqual(t, "", env.RecapError)
+	require.NotNil(t, env.ChaptersOK)
+	assert.True(t, *env.ChaptersOK, "a recap failure must not disable auto-chapters")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.True(t, tr.ChaptersJSON.Valid, "chapters must persist even when the recap failed")
+	assert.False(t, tr.SummaryJSON.Valid, "failed recap must not write summary_json")
+}
+
+func TestTranscriptFollowupNegativeChapterFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: "draft"}
+	stubTranscriptGenerator(t, mock)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapteredTranscript(t, database)
+	database.Close()
+
+	// -1 is the whole-meeting sentinel; any other negative is rejected
+	// instead of silently meaning "whole meeting".
+	transcriptFollowupChapter = -3
+	err = transcriptFollowupCmd.RunE(transcriptFollowupCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --chapter")
+	assert.Equal(t, "", mock.lastUserMessage, "the AI must not be called for an invalid --chapter")
+}
+
+func TestFollowupInputWholeMeetingUnionAcrossChapters(t *testing.T) {
+	// Two chapters sharing a participant: the whole-meeting union must merge
+	// every category across chapters and deduplicate participant labels —
+	// pins that a Chapters[:1] refactor or dropped dedupe cannot pass.
+	chapters := &meeting.ChaptersResult{Chapters: []meeting.MeetingChapter{
+		{
+			Title:         "One",
+			Participants:  []string{"Я", "Speaker 1"},
+			Decisions:     []string{"d1"},
+			ActionItems:   []meeting.ChapterActionItem{{Text: "a1"}},
+			OpenQuestions: []string{"q1"},
+		},
+		{
+			Title:         "Two",
+			Participants:  []string{"Speaker 1", "Speaker 2"},
+			Decisions:     []string{"d2"},
+			ActionItems:   []meeting.ChapterActionItem{{Text: "a2"}},
+			OpenQuestions: []string{"q2"},
+		},
+	}}
+	tr := &db.MeetingTranscript{Title: "Sync", CreatedAt: "2026-01-15T10:00:00Z"}
+
+	input, err := followupInput(tr, chapters, -1)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-01-15", input.MeetingDate)
+	assert.Equal(t, []string{"Я", "Speaker 1", "Speaker 2"}, input.Participants,
+		"shared participants must be deduplicated, union preserved")
+	assert.Equal(t, []string{"d1", "d2"}, input.Decisions)
+	assert.Equal(t, []string{"a1", "a2"}, input.ActionItems)
+	assert.Equal(t, []string{"q1", "q2"}, input.OpenQuestions)
+
+	// Single-chapter selection stays scoped to that chapter only.
+	single, err := followupInput(tr, chapters, 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Speaker 1", "Speaker 2"}, single.Participants)
+	assert.Equal(t, []string{"d2"}, single.Decisions)
+	assert.Equal(t, []string{"a2"}, single.ActionItems)
+	assert.Equal(t, []string{"q2"}, single.OpenQuestions)
+}
