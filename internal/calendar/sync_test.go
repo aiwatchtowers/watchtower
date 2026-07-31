@@ -2,6 +2,7 @@ package calendar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -314,4 +315,46 @@ func TestSync_PrimaryFallbackSkipsStaleDeleteWhenUnresolved(t *testing.T) {
 	survivor, err := database.GetCalendarEventByID("other-account-evt")
 	require.NoError(t, err)
 	require.NotNil(t, survivor, "stale-delete must be skipped for the unresolved literal \"primary\" bucket")
+}
+
+// TestRecordAuthResultSkipsCancelledContext guards the daemon-shutdown path:
+// when the sync's own context is cancelled (SIGTERM), the resulting HTTP
+// error is a shutdown artifact, not an auth problem, and must not flip a
+// healthy account into "error".
+func TestRecordAuthResultSkipsCancelledContext(t *testing.T) {
+	database := db.OpenTestDB(t)
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	require.NoError(t, err)
+	s := NewSyncer(nil, database, &config.Config{}, nil, accountID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.recordAuthResult(ctx, errors.New("calendar GET /calendars: terminated signal received"))
+
+	acc, err := database.GetGoogleAccount(accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acc.Status, "cancelled ctx must not flip auth state")
+	assert.Empty(t, acc.Error)
+}
+
+// TestRecordAuthResultLiveContext pins the existing behavior on a live
+// context: a generic error records "error", and a subsequent nil result
+// clears it back to "ok".
+func TestRecordAuthResultLiveContext(t *testing.T) {
+	database := db.OpenTestDB(t)
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	require.NoError(t, err)
+	s := NewSyncer(nil, database, &config.Config{}, nil, accountID)
+
+	s.recordAuthResult(context.Background(), errors.New("boom"))
+	acc, err := database.GetGoogleAccount(accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "error", acc.Status)
+	assert.Contains(t, acc.Error, "boom")
+
+	s.recordAuthResult(context.Background(), nil)
+	acc, err = database.GetGoogleAccount(accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acc.Status)
+	assert.Empty(t, acc.Error)
 }

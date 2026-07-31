@@ -72,13 +72,13 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	// processing phase (GetMessage/upsert), after sorting oldest-first.
 	ids, err := s.client.ListInboxMessageIDs(ctx, query, 0)
 	if err != nil {
-		s.recordAuthResult(err)
+		s.recordAuthResult(ctx, err)
 		if errors.Is(err, ErrAuthRevoked) {
 			return 0, err
 		}
 		return 0, fmt.Errorf("listing gmail messages: %w", err)
 	}
-	s.recordAuthResult(nil)
+	s.recordAuthResult(ctx, nil)
 
 	// Gmail returns newest-first; reverse so we process oldest-first. This
 	// matters when we're capped below: the watermark then advances only to
@@ -150,7 +150,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 
 // recordAuthResult persists the gmail auth state. Pass err=nil to mark auth as healthy.
 // Errors writing to the DB are logged but not returned — auth state is best-effort telemetry.
-func (s *Syncer) recordAuthResult(err error) {
+// A cancelled ctx means daemon shutdown, not an auth problem, so the state is left untouched —
+// the guard is ctx-based because Go's signal-cancel cause does not unwrap to context.Canceled.
+func (s *Syncer) recordAuthResult(ctx context.Context, err error) {
 	if s.db == nil {
 		return
 	}
@@ -158,6 +160,10 @@ func (s *Syncer) recordAuthResult(err error) {
 		if dbErr := s.db.SetGoogleAccountAuthState(s.accountID, "ok", ""); dbErr != nil {
 			s.logger.Printf("gmail: clear auth state: %v", dbErr)
 		}
+		return
+	}
+	if ctx.Err() != nil {
+		s.logger.Printf("gmail: sync cancelled, leaving auth state untouched: %v", err)
 		return
 	}
 	status := "error"
