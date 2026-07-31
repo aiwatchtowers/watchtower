@@ -25,6 +25,9 @@ struct CalendarEventsView: View {
     /// Hoisted Recordings-tab selection so the Events tab can deep-link into
     /// a specific recording (expanded event row → Recordings section tap).
     @State private var selectedRecordingID: Int64?
+    /// Event id the events list should scroll to on next appearance/change —
+    /// set by the recording→event deep link, consumed once.
+    @State private var scrollTargetEventID: String?
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
 
@@ -57,12 +60,7 @@ struct CalendarEventsView: View {
                     case .recordings:
                         RecordingsView(
                             externalSelection: $selectedRecordingID,
-                            onOpenEvent: { eventID in
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    mode = .events
-                                    expandedEventID = eventID
-                                }
-                            }
+                            onOpenEvent: { link in openLinkedEvent(link, in: calVM) }
                         )
                     }
                 }
@@ -70,6 +68,29 @@ struct CalendarEventsView: View {
                 notConnectedView
             }
         }
+    }
+
+    /// Recording→event deep link ("Linked to:" header tap). The linked event
+    /// may be outside the default today..+7d window in EITHER direction —
+    /// sync retains ~24h back and calendar.sync_days_ahead is configurable —
+    /// so first pin its day into the rendered window (synchronous reload),
+    /// then switch to Events with the row expanded and scrolled into view.
+    private func openLinkedEvent(_ link: CalendarQueries.EventLink, in vm: CalendarViewModel) {
+        if let start = link.startDate {
+            vm.ensureVisible(date: start)
+        }
+        // An all-day event renders inside a collapsed chip — expand its day
+        // too, or the expanded detail would stay hidden.
+        if let day = vm.dailyEvents.first(where: { day in
+            day.events.contains { $0.id == link.id && $0.isAllDay }
+        }) {
+            expandedAllDayDates.insert(day.id)
+        }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            mode = .events
+            expandedEventID = link.id
+        }
+        scrollTargetEventID = link.id
     }
 
     private func eventsSplitView(_ vm: CalendarViewModel) -> some View {
@@ -99,19 +120,33 @@ struct CalendarEventsView: View {
     }
 
     private func eventsList(_ vm: CalendarViewModel) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
 
-                ForEach(vm.dailyEvents) { day in
-                    daySection(day: day, isToday: day.label == "Today")
-                }
+                    ForEach(vm.dailyEvents) { day in
+                        daySection(day: day, isToday: day.label == "Today")
+                    }
 
-                if vm.dailyEvents.isEmpty {
-                    emptyState
+                    if vm.dailyEvents.isEmpty {
+                        emptyState
+                    }
                 }
+                .padding()
             }
-            .padding()
+            // Deep-link scroll: the target is set before the mode switch
+            // (onAppear) or while the list is already visible (onChange).
+            .onAppear { scrollToTargetIfNeeded(proxy) }
+            .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
+        }
+    }
+
+    private func scrollToTargetIfNeeded(_ proxy: ScrollViewProxy) {
+        guard let target = scrollTargetEventID else { return }
+        scrollTargetEventID = nil
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(target, anchor: .center)
         }
     }
 
@@ -302,6 +337,8 @@ struct CalendarEventsView: View {
                     .padding(.leading, 88)
             }
         }
+        // Scroll anchor for the recording→event deep link.
+        .id(event.id)
     }
 
     // MARK: - Event Detail

@@ -35,6 +35,29 @@ final class EventRecordingsSectionTests: XCTestCase {
         XCTAssertTrue(texts.contains(TranscriptFormatting.formatDuration(65)))
     }
 
+    func test_recapBadgeLightsFromEventRecapAlone() throws {
+        // The documented recap-collision dual path: the recap may live in
+        // meeting_recaps while the transcript's own summary_json stays nil —
+        // hasEventRecap alone must light the badge (kills a ||→&& mutation).
+        let view = EventRecordingRows(
+            transcripts: [makeTranscript(id: 1, summaryJSON: nil)],
+            hasEventRecap: true
+        ) { _ in }
+        let images = try view.inspect().findAll(ViewType.Image.self)
+            .map { try $0.actualImage().name() }
+        XCTAssertTrue(images.contains("sparkles"))
+    }
+
+    func test_noRecapBadgeWhenNeitherSourceHasOne() throws {
+        let view = EventRecordingRows(
+            transcripts: [makeTranscript(id: 1, summaryJSON: nil)],
+            hasEventRecap: false
+        ) { _ in }
+        let images = try view.inspect().findAll(ViewType.Image.self)
+            .map { try $0.actualImage().name() }
+        XCTAssertFalse(images.contains("sparkles"))
+    }
+
     func test_tapReportsRecordingID() throws {
         var opened: Int64?
         let view = EventRecordingRows(

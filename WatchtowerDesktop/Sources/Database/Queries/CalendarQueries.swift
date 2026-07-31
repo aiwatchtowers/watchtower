@@ -91,6 +91,13 @@ enum CalendarQueries {
             title = row["title"] ?? ""
             startTime = row["start_time"] ?? ""
         }
+
+        /// Parsed start time; nil for a malformed/empty `start_time` (such an
+        /// event can't be placed on any day list, so deep-link callers just
+        /// skip the window pin).
+        var startDate: Date? {
+            CalendarQueries.iso8601Formatter.date(from: startTime)
+        }
     }
 
     /// Lightweight title/date resolution for a recording's linked event.

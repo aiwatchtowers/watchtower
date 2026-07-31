@@ -23,8 +23,10 @@ struct RecordingDetailView: View {
     let onDeleted: () -> Void
     let onChanged: () -> Void
     /// Navigate to the Events tab with the given event expanded (linked-event
-    /// header tap). nil = no navigation affordance available from this host.
-    var onOpenEvent: ((String) -> Void)?
+    /// header tap); the link carries the start time so the host can pin the
+    /// event's day into the rendered window first. nil = no navigation
+    /// affordance available from this host.
+    var onOpenEvent: ((CalendarQueries.EventLink) -> Void)?
 
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
@@ -169,24 +171,7 @@ struct RecordingDetailView: View {
             // into the Events tab; event row pruned by sync retention → plain
             // informational label (never an error, never navigation).
             if transcript.eventID != nil {
-                if let linkedEvent {
-                    Button {
-                        onOpenEvent?(linkedEvent.id)
-                    } label: {
-                        Label(
-                            "Linked to: \(linkedEvent.title) · \(TranscriptFormatting.formattedDate(linkedEvent.startTime))",
-                            systemImage: "calendar")
-                            .font(.caption)
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.blue)
-                    .help("Show this event in the Events tab")
-                } else {
-                    Label("Linked to a past event", systemImage: "calendar")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                LinkedEventHeader(linkedEvent: linkedEvent, onOpenEvent: onOpenEvent)
             }
 
             // Audio playback (single-slot app-wide center; hidden once the

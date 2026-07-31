@@ -10,13 +10,15 @@ struct RecordingsView: View {
     var externalSelection: Binding<Int64?>?
     /// Navigate to the Events tab with this event expanded (the recording
     /// header's "Linked to:" tap); nil hides the navigation affordance.
-    var onOpenEvent: ((String) -> Void)?
+    var onOpenEvent: ((CalendarQueries.EventLink) -> Void)?
 
     @Environment(AppState.self) private var appState
     @State private var items: [RecordingListItem] = []
     @State private var localSelectedID: Int64?
 
-    private var selectedID: Binding<Int64?> {
+    /// External binding wins (Events-tab deep link), local state otherwise.
+    /// Internal (not private) so tests can pin the write-back direction.
+    var selectedID: Binding<Int64?> {
         externalSelection ?? $localSelectedID
     }
 
@@ -55,7 +57,9 @@ struct RecordingsView: View {
                 try MeetingTranscriptQueries.fetchRecordingList(conn)
             }
         } catch {
-            // Silent: table may not exist yet on older DB schema versions.
+            // Render-nothing on failure, but never silently: an empty list and
+            // a failed read must be distinguishable in the logs.
+            print("RecordingsView load failed: \(error)")
         }
     }
 }

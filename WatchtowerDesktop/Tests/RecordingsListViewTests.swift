@@ -35,6 +35,22 @@ final class RecordingsListViewTests: XCTestCase {
         XCTAssertTrue(texts.contains { $0.contains("No recordings") })
     }
 
+    func test_rowTapWritesThroughSuppliedBinding() throws {
+        // The list writes selection through whatever binding the host hands
+        // it — the same path serves the plain tab (local @State) and the
+        // Events-tab deep link (hoisted external binding).
+        var selected: Int64?
+        let binding = Binding(get: { selected }, set: { selected = $0 })
+        let view = RecordingsListView(items: [makeItem(id: 7)], selectedID: binding)
+
+        try view.inspect().find(ViewType.Button.self).tap()
+        XCTAssertEqual(selected, 7)
+
+        // Second tap on the now-selected row toggles it off.
+        try view.inspect().find(ViewType.Button.self).tap()
+        XCTAssertNil(selected)
+    }
+
     func test_linkedEventSubtitleShownOnlyWhenPresent() throws {
         let view = RecordingsListView(
             items: [

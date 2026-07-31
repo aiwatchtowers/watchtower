@@ -18,6 +18,12 @@ struct EventRecordingsSection: View {
             transcripts: transcripts, hasEventRecap: hasEventRecap, onOpen: onOpen
         )
         .onAppear(perform: load)
+        // The record button lives in the SAME expanded row, so a run started
+        // and stopped here must surface without collapse/re-expand — reload
+        // when the recorder settles (mirrors RecordingsView).
+        .onChange(of: appState.meetingRecorderCenter.phase) { _, phase in
+            if case .idle = phase { load() }
+        }
     }
 
     private func load() {
@@ -28,7 +34,9 @@ struct EventRecordingsSection: View {
                  try MeetingRecapQueries.fetch(conn, eventID: eventID) != nil)
             }
         } catch {
-            // Silent: table may not exist yet on older DB schema versions.
+            // Render-nothing on failure, but never silently: a hidden section
+            // and a failed read must be distinguishable in the logs.
+            print("EventRecordingsSection load failed: \(error)")
         }
     }
 }
