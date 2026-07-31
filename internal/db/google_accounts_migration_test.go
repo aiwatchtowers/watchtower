@@ -95,6 +95,21 @@ func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
 		t.Fatalf("migrate to v42: %v", err)
 	}
 
+	seedLegacySingleAccountFixture(t, raw)
+
+	if err := goose.UpByOne(raw, "migrations"); err != nil {
+		t.Fatalf("apply 00043: %v", err)
+	}
+
+	assertUpgradedSingleAccountFixture(t, raw)
+}
+
+// seedLegacySingleAccountFixture seeds the pre-00043 legacy shape: a
+// workspace row carrying the Gmail watermarks that 00043 must copy onto the
+// minted account, a bare-thread Gmail message, and matching inbox_items /
+// inbox_learned_rules rows still keyed by the un-rewritten thread id.
+func seedLegacySingleAccountFixture(t *testing.T, raw *sql.DB) {
+	t.Helper()
 	if _, err := raw.Exec(`INSERT INTO workspace (id, name, gmail_last_internal_date, memory_gmail_last_extracted_ts)
 		VALUES ('T1', 'test', 12345.0, 6789.0)`); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -110,11 +125,15 @@ func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
 		VALUES ('source_mute', 'channel:th1', 1.0, 'user_rule', '2026-07-30T00:00:00Z')`); err != nil {
 		t.Fatalf("seed inbox_learned_rules: %v", err)
 	}
+}
 
-	if err := goose.UpByOne(raw, "migrations"); err != nil {
-		t.Fatalf("apply 00043: %v", err)
-	}
-
+// assertUpgradedSingleAccountFixture asserts 00043's in-place data
+// migration of the seedLegacySingleAccountFixture shape: one google_accounts
+// row minted with the copied watermark and gmail_enabled=1, gmail_messages
+// re-keyed under account_id=1, and the inbox_items/inbox_learned_rules
+// channel ids rewritten to the account-scoped 'gmail:1:<thread>' form.
+func assertUpgradedSingleAccountFixture(t *testing.T, raw *sql.DB) {
+	t.Helper()
 	var accountCount int
 	var gmailEnabled int
 	var watermark, extractedTS float64
@@ -177,9 +196,24 @@ func TestMigration00043DownUpCycle(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Seed the post-00043 shape: one account, a gmail message and a calendar
-	// scoped to it, and Gmail-derived inbox rows already in the rewritten
-	// gmail:1:<thread> form.
+	seedPostMigrationFixture(t, d)
+
+	if err := goose.Down(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	assertDownMigrationRestoredLegacyShape(t, d)
+
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+	assertUpMigrationReappliedShape(t, d)
+}
+
+// seedPostMigrationFixture seeds the post-00043 shape: one account, a gmail
+// message and a calendar scoped to it, and Gmail-derived inbox rows already
+// in the rewritten gmail:1:<thread> form.
+func seedPostMigrationFixture(t *testing.T, d *DB) {
+	t.Helper()
 	if _, err := d.Exec(`INSERT INTO google_accounts (id, email, label, gmail_last_internal_date, memory_gmail_last_extracted_ts)
 		VALUES (1, 'a@x.com', 'A', 555.0, 777.0)`); err != nil {
 		t.Fatalf("seed google_accounts: %v", err)
@@ -201,12 +235,15 @@ func TestMigration00043DownUpCycle(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
 		t.Fatalf("seed workspace: %v", err)
 	}
+}
 
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-
-	// Down: channel id / scope key un-rewritten...
+// assertDownMigrationRestoredLegacyShape asserts 00043's Down restores the
+// pre-migration shape byte-for-byte: channel id / scope key un-rewritten,
+// watermarks restored onto workspace, and calendar_auth_state recreated
+// with its default row (the gap the reviewer flagged: Down previously
+// recreated the table but never reseeded it, unlike gmail_auth_state).
+func assertDownMigrationRestoredLegacyShape(t *testing.T, d *DB) {
+	t.Helper()
 	var channelID string
 	if err := d.QueryRow(`SELECT channel_id FROM inbox_items WHERE trigger_type = 'email_received'`).Scan(&channelID); err != nil {
 		t.Fatalf("read inbox_items.channel_id after down: %v", err)
@@ -221,7 +258,6 @@ func TestMigration00043DownUpCycle(t *testing.T) {
 	if scopeKey != "channel:th1" {
 		t.Errorf("scope_key after down = %q, want channel:th1", scopeKey)
 	}
-	// ...watermarks restored onto workspace...
 	var gmailTS, extractedTS float64
 	if err := d.QueryRow(`SELECT gmail_last_internal_date, memory_gmail_last_extracted_ts FROM workspace WHERE id = 'T1'`).Scan(&gmailTS, &extractedTS); err != nil {
 		t.Fatalf("read workspace watermarks after down: %v", err)
@@ -229,9 +265,6 @@ func TestMigration00043DownUpCycle(t *testing.T) {
 	if gmailTS != 555.0 || extractedTS != 777.0 {
 		t.Errorf("workspace watermarks after down = (%v, %v), want (555, 777)", gmailTS, extractedTS)
 	}
-	// ...and calendar_auth_state exists with its default row (the gap the
-	// reviewer flagged: Down previously recreated the table but never
-	// reseeded it, unlike gmail_auth_state).
 	var authStatus string
 	if err := d.QueryRow(`SELECT status FROM calendar_auth_state WHERE id = 1`).Scan(&authStatus); err != nil {
 		t.Fatalf("calendar_auth_state row missing after down: %v", err)
@@ -240,12 +273,12 @@ func TestMigration00043DownUpCycle(t *testing.T) {
 		t.Errorf("calendar_auth_state.status = %q, want ok", authStatus)
 	}
 	assertTableGone(t, d, "google_accounts")
+}
 
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
-
-	// Up again: the re-migrated shape is restored.
+// assertUpMigrationReappliedShape asserts that re-applying 00043 after Down
+// restores the re-migrated shape.
+func assertUpMigrationReappliedShape(t *testing.T, d *DB) {
+	t.Helper()
 	assertTableExists(t, d, "google_accounts")
 	assertTableGone(t, d, "calendar_auth_state")
 	assertTableGone(t, d, "gmail_auth_state")

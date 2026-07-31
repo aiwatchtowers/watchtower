@@ -339,18 +339,10 @@ func resolveAccountOneForLogin(cmd *cobra.Command, cfg *config.Config, database 
 	return id, true, nil
 }
 
-// connectGoogleAccount runs the OAuth consent flow for accountID and records
-// the result: which services actually got granted, the account's email
-// (best-effort via the Gmail profile API when Gmail access was granted), and
-// auth state. When isNewRow is true and the flow fails, the just-created row
-// (and any credentials file) is rolled back — mirrors
-// createEmailAccountWithCredentials (cmd/imap.go): a caller-visible account
-// id must never be created and then left un-loginable.
-func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, wantCalendar, wantGmail, isNewRow bool) error {
-	out := cmd.OutOrStdout()
-	noOpen, _ := cmd.Flags().GetBool("no-open")
-	appReturn, _ := cmd.Flags().GetBool("app-return")
-
+// buildGoogleOAuthScopes returns the OAuth scopes to request for the
+// selected services, calendar before gmail — the order Google's consent
+// screen lists the per-service checkboxes in.
+func buildGoogleOAuthScopes(wantCalendar, wantGmail bool) []string {
 	var scopes []string
 	if wantCalendar {
 		scopes = append(scopes, calendar.ScopeCalendarReadonly)
@@ -358,8 +350,16 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 	if wantGmail {
 		scopes = append(scopes, gmail.ScopeGmailReadonly)
 	}
+	return scopes
+}
 
-	googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), accountID)
+// loginAndSaveGoogleToken runs the OAuth consent flow for accountID and
+// persists the resulting token. When isNewRow is true, either failure rolls
+// back the just-created row (and any credentials file) — mirrors
+// createEmailAccountWithCredentials (cmd/imap.go): a caller-visible account
+// id must never be created and then left un-loginable.
+func loginAndSaveGoogleToken(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, googleCfg calendar.GoogleOAuthConfig, scopes []string, noOpen, appReturn, isNewRow bool) (*calendar.OAuthToken, error) {
+	out := cmd.OutOrStdout()
 	token, err := calendar.Login(cmd.Context(), googleCfg, out, calendar.LoginOptions{
 		SkipBrowserOpen: noOpen,
 		Scopes:          scopes,
@@ -369,7 +369,7 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 		if isNewRow {
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
 		}
-		return fmt.Errorf("google login: %w", err)
+		return nil, fmt.Errorf("google login: %w", err)
 	}
 
 	store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), accountID)
@@ -377,27 +377,37 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 		if isNewRow {
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
 		}
-		return fmt.Errorf("saving token: %w", err)
+		return nil, fmt.Errorf("saving token: %w", err)
 	}
+	return token, nil
+}
 
-	calEnabled := wantCalendar && token.GrantsScope(calendar.ScopeCalendarReadonly)
-	gmEnabled := wantGmail && token.GrantsScope(gmail.ScopeGmailReadonly)
-
-	email := ""
-	if gmEnabled {
-		if client, cErr := gmail.NewClient(cmd.Context(), token.RefreshToken,
-			gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret}); cErr == nil {
-			if profile, pErr := client.GetProfile(cmd.Context()); pErr == nil {
-				email = profile.EmailAddress
-			}
-		}
+// resolveGoogleConnectionResult derives which of the requested services
+// actually got granted from token's scopes and, when Gmail was granted,
+// best-effort fetches the account's email via the Gmail profile API — any
+// lookup failure just leaves email blank, it never fails the connect.
+func resolveGoogleConnectionResult(ctx context.Context, googleCfg calendar.GoogleOAuthConfig, token *calendar.OAuthToken, wantCalendar, wantGmail bool) (calEnabled, gmEnabled bool, email string) {
+	calEnabled = wantCalendar && token.GrantsScope(calendar.ScopeCalendarReadonly)
+	gmEnabled = wantGmail && token.GrantsScope(gmail.ScopeGmailReadonly)
+	if !gmEnabled {
+		return calEnabled, gmEnabled, ""
 	}
-
-	if err := database.UpdateGoogleAccountConnection(accountID, email, calEnabled, gmEnabled); err != nil {
-		return fmt.Errorf("recording connection: %w", err)
+	client, cErr := gmail.NewClient(ctx, token.RefreshToken,
+		gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
+	if cErr != nil {
+		return calEnabled, gmEnabled, ""
 	}
-	_ = database.SetGoogleAccountAuthState(accountID, "ok", "")
+	profile, pErr := client.GetProfile(ctx)
+	if pErr != nil {
+		return calEnabled, gmEnabled, ""
+	}
+	return calEnabled, gmEnabled, profile.EmailAddress
+}
 
+// printGoogleConnectionResult reports which of the requested services
+// actually got granted — a partial consent leaves one unapproved on the
+// consent screen — plus the account id.
+func printGoogleConnectionResult(out io.Writer, wantCalendar, wantGmail, calEnabled, gmEnabled bool, accountID int64) {
 	fmt.Fprintln(out)
 	if wantCalendar {
 		if calEnabled {
@@ -414,6 +424,32 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 		}
 	}
 	fmt.Fprintf(out, "Account id: %d\n", accountID)
+}
+
+// connectGoogleAccount runs the OAuth consent flow for accountID and records
+// the result: which services actually got granted, the account's email
+// (best-effort via the Gmail profile API when Gmail access was granted), and
+// auth state.
+func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, wantCalendar, wantGmail, isNewRow bool) error {
+	out := cmd.OutOrStdout()
+	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
+
+	googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), accountID)
+	scopes := buildGoogleOAuthScopes(wantCalendar, wantGmail)
+	token, err := loginAndSaveGoogleToken(cmd, cfg, database, accountID, googleCfg, scopes, noOpen, appReturn, isNewRow)
+	if err != nil {
+		return err
+	}
+
+	calEnabled, gmEnabled, email := resolveGoogleConnectionResult(cmd.Context(), googleCfg, token, wantCalendar, wantGmail)
+
+	if err := database.UpdateGoogleAccountConnection(accountID, email, calEnabled, gmEnabled); err != nil {
+		return fmt.Errorf("recording connection: %w", err)
+	}
+	_ = database.SetGoogleAccountAuthState(accountID, "ok", "")
+
+	printGoogleConnectionResult(out, wantCalendar, wantGmail, calEnabled, gmEnabled, accountID)
 	return nil
 }
 
