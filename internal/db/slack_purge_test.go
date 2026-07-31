@@ -17,8 +17,8 @@ func TestClearSlackData(t *testing.T) {
 	}
 
 	// Raw Slack data.
-	exec(`INSERT INTO workspace (id, name, synced_at, search_last_date, inbox_last_processed_ts, compose_last_run_ts)
-		VALUES ('T1', 'ws', '2026-07-01T00:00:00Z', '2026-07-01', 100, 200)`)
+	exec(`INSERT INTO workspace (id, name, synced_at, inbox_last_processed_ts, compose_last_run_ts)
+		VALUES ('T1', 'ws', '2026-07-01T00:00:00Z', 100, 200)`)
 	exec(`INSERT INTO users (id, name) VALUES ('U1', 'alice')`)
 	exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
 	exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1.1', 'U1', 'hello world')`)
@@ -91,12 +91,10 @@ func TestClearSlackData(t *testing.T) {
 
 	// Slack watermarks reset.
 	var syncedAt *string
-	var searchLast string
 	var inboxTS, composeTS float64
-	require.NoError(t, db.QueryRow(`SELECT synced_at, search_last_date, inbox_last_processed_ts, compose_last_run_ts FROM workspace`).
-		Scan(&syncedAt, &searchLast, &inboxTS, &composeTS))
+	require.NoError(t, db.QueryRow(`SELECT synced_at, inbox_last_processed_ts, compose_last_run_ts FROM workspace`).
+		Scan(&syncedAt, &inboxTS, &composeTS))
 	assert.Nil(t, syncedAt)
-	assert.Empty(t, searchLast)
 	assert.Zero(t, inboxTS)
 	assert.Zero(t, composeTS)
 }

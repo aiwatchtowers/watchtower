@@ -818,8 +818,8 @@ func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 		Name:   "test-ws",
 		Domain: "test-ws",
 	}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	cfg.DayPlan = config.DayPlanConfig{Enabled: true, Hour: 0}
 
 	fp := &fakeDayPlanRunner{database: database}
@@ -857,8 +857,8 @@ func TestDaemon_DayPlanConflictPhase(t *testing.T) {
 		Name:   "test-ws",
 		Domain: "test-ws",
 	}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	// Insert a plan so conflict phase has something to work on.
 	testDate := "2026-04-23"
 	plan := &db.DayPlan{
@@ -925,7 +925,8 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{
 		ID: "T024BE7LD", Name: "test-ws", Domain: "test-ws",
 	}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.EnsureChannel("C1", "general", "public", ""))
 	require.NoError(t, database.UpsertMessage(db.Message{
 		ChannelID: "C1", TS: "1700000000.000001", TSUnix: 1700000000.000001,

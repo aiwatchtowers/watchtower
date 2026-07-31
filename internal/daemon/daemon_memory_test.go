@@ -57,7 +57,8 @@ func TestDaemon_MemoryPhaseRunsBetweenInboxAndNextStep(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{
 		ID: "T024BE7LD", Name: "test-ws", Domain: "test-ws",
 	}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.EnsureChannel("C1", "general", "public", ""))
 	require.NoError(t, database.UpsertMessage(db.Message{
 		ChannelID: "C1", TS: "1700000000.000001", TSUnix: 1700000000.000001,

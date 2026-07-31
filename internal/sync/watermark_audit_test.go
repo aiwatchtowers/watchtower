@@ -80,12 +80,16 @@ func TestSearchSync_PartialPaginationKeepsWatermark(t *testing.T) {
 
 	ts := newTestSetup(t, searchAuditMux(http.HandlerFunc(search)))
 	require.NoError(t, ts.db.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test", Domain: "test"}))
-	require.NoError(t, ts.db.SetSearchLastDate("2020-01-01"))
+	// Seed slack_accounts account #1 — the search watermark now lives there
+	// (see internal/db/slack_accounts.go); Task 4 threads a real accountID.
+	_, err := ts.db.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	require.NoError(t, ts.db.SetSlackAccountSearchWatermark(1, "2020-01-01"))
 
-	err := ts.orch.Run(context.Background(), SyncOptions{})
+	err = ts.orch.Run(context.Background(), SyncOptions{})
 	require.NoError(t, err)
 
-	got, err := ts.db.GetSearchLastDate()
+	got, err := ts.db.GetSlackAccountSearchWatermark(1)
 	require.NoError(t, err)
 	assert.Equal(t, "2020-01-01", got,
 		"interrupted pagination must leave search_last_date untouched to avoid dropping unfetched pages")

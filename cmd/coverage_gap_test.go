@@ -574,10 +574,9 @@ func TestRunProfile_WithWorkspaceSetup(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{
-		ID:            "T001",
-		Name:          "test-ws",
-		Domain:        "test-ws",
-		CurrentUserID: "U001",
+		ID:     "T001",
+		Name:   "test-ws",
+		Domain: "test-ws",
 	}))
 	database.Close()
 

@@ -110,6 +110,10 @@ func TestSyncEmojiErrorNonFatal(t *testing.T) {
 	// Pre-populate workspace so we take the search path
 	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"})
 	require.NoError(t, err)
+	// Seed slack_accounts account #1 — the search watermark now lives there
+	// (see internal/db/slack_accounts.go); Task 4 threads a real accountID.
+	_, err = ts.db.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
 
 	// Should not fail even though emoji.list errors — emoji sync is non-fatal
 	err = ts.orch.Run(context.Background(), SyncOptions{})
@@ -146,13 +150,18 @@ func TestSyncCurrentUserSuccess(t *testing.T) {
 	})
 
 	ts := newTestSetup(t, mux)
-	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
+	// Seed slack_accounts account #1 — syncCurrentUser now writes there
+	// (see internal/db/slack_accounts.go); Task 4 threads a real accountID.
+	_, err := ts.db.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+
+	err = ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
 	// Verify current user was saved
-	ws, err := ts.db.GetWorkspace()
+	userID, err := ts.db.GetCurrentUserID()
 	require.NoError(t, err)
-	assert.Equal(t, "U001", ws.CurrentUserID)
+	assert.Equal(t, "1:U001", userID)
 }
 
 func TestSyncCurrentUserAuthTestError(t *testing.T) {
@@ -187,9 +196,9 @@ func TestSyncCurrentUserAuthTestError(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	ws, err := ts.db.GetWorkspace()
+	userID, err := ts.db.GetCurrentUserID()
 	require.NoError(t, err)
-	assert.Empty(t, ws.CurrentUserID) // auth.test failed, no current user
+	assert.Empty(t, userID) // auth.test failed, no current user
 }
 
 func TestSyncCurrentUserRetryOnCachedWorkspace(t *testing.T) {
@@ -217,14 +226,18 @@ func TestSyncCurrentUserRetryOnCachedWorkspace(t *testing.T) {
 	// Pre-populate workspace WITHOUT current_user_id (simulating previous auth.test failure)
 	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"})
 	require.NoError(t, err)
+	// Seed slack_accounts account #1 — syncCurrentUser now writes there
+	// (see internal/db/slack_accounts.go); Task 4 threads a real accountID.
+	_, err = ts.db.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
 
 	err = ts.orch.Run(context.Background(), SyncOptions{})
 	require.NoError(t, err)
 
 	// Should have retried auth.test and saved user
-	ws, err := ts.db.GetWorkspace()
+	userID, err := ts.db.GetCurrentUserID()
 	require.NoError(t, err)
-	assert.Equal(t, "U001", ws.CurrentUserID)
+	assert.Equal(t, "1:U001", userID)
 }
 
 // --- ensureWorkspace (cached path) ---
@@ -518,6 +531,10 @@ func TestRunSearchSyncZeroChannelsFallback(t *testing.T) {
 
 	// Pre-populate workspace with no channels in DB
 	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test", Domain: "test"})
+	require.NoError(t, err)
+	// Seed slack_accounts account #1 — the search watermark now lives there
+	// (see internal/db/slack_accounts.go); Task 4 threads a real accountID.
+	_, err = ts.db.CreateSlackAccount(db.SlackAccount{})
 	require.NoError(t, err)
 
 	// Search finds 0 channels + DB has 0 channels = fallback to full sync

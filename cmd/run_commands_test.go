@@ -148,8 +148,8 @@ func TestRunBriefingList_NoBriefings(t *testing.T) {
 
 	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
-	require.NoError(t, database.SetCurrentUserID("U123"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U123"})
+	require.NoError(t, acctErr)
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetOut(&buf)
@@ -168,8 +168,8 @@ func TestRunBriefingList_WithBriefings(t *testing.T) {
 
 	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
-	require.NoError(t, database.SetCurrentUserID("U123"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U123"})
+	require.NoError(t, acctErr)
 	id, err := database.UpsertBriefing(db.Briefing{
 		UserID:       "U123",
 		Date:         "2026-04-02",
@@ -335,8 +335,8 @@ func TestRunDayPlanCheckConflicts_NoPlan(t *testing.T) {
 
 	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
-	require.NoError(t, database.SetCurrentUserID("U123"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U123"})
+	require.NoError(t, acctErr)
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetOut(&buf)
@@ -367,8 +367,8 @@ func TestRunBriefing_NoBriefingForToday(t *testing.T) {
 
 	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
-	require.NoError(t, database.SetCurrentUserID("U1"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetOut(&buf)

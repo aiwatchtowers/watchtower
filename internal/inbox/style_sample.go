@@ -47,15 +47,15 @@ func capStyleSample(msgs []db.StyleSampleMessage, perChannel, total int) []db.St
 // strong-tier AI call, and persists it to workspace.style_profile. An empty
 // sample or AI failure leaves the stored profile untouched.
 func (p *Pipeline) GenerateStyleProfile(ctx context.Context) error {
-	ws, err := p.db.GetWorkspace()
+	userID, err := p.db.GetCurrentUserID()
 	if err != nil {
-		return fmt.Errorf("style sample: workspace: %w", err)
+		return fmt.Errorf("style sample: current user id: %w", err)
 	}
-	if ws == nil || ws.CurrentUserID == "" {
+	if userID == "" {
 		return fmt.Errorf("style sample: no current user id — run a sync first")
 	}
 
-	raw, err := p.db.ListStyleSampleMessages(ws.CurrentUserID, 1000)
+	raw, err := p.db.ListStyleSampleMessages(userID, 1000)
 	if err != nil {
 		return fmt.Errorf("style sample: %w", err)
 	}
@@ -65,7 +65,7 @@ func (p *Pipeline) GenerateStyleProfile(ctx context.Context) error {
 	}
 
 	analystNote := ""
-	if card, cErr := p.db.GetLatestPeopleCard(ws.CurrentUserID); cErr == nil && card != nil {
+	if card, cErr := p.db.GetLatestPeopleCard(userID); cErr == nil && card != nil {
 		analystNote = strings.TrimSpace(card.CommunicationStyle)
 	}
 

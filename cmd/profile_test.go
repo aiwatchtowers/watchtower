@@ -37,7 +37,8 @@ func TestRunProfile_NoProfile(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	database.Close()
 
 	buf := new(bytes.Buffer)
@@ -55,7 +56,8 @@ func TestRunProfile_WithProfile(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUserProfile(db.UserProfile{
 		SlackUserID:         "U001",
 		Role:                "Engineering Manager",
@@ -94,7 +96,8 @@ func TestRunProfile_PartialProfile(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUserProfile(db.UserProfile{
 		SlackUserID: "U001",
 		Role:        "IC",

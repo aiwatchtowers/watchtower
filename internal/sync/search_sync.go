@@ -37,8 +37,9 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		days = 30
 	}
 
-	// Determine search start date
-	lastDate, err := o.db.GetSearchLastDate()
+	// Determine search start date.
+	// TODO(Task 4): pin to account #1 — Orchestrator becomes per-account.
+	lastDate, err := o.db.GetSlackAccountSearchWatermark(1)
 	if err != nil {
 		return fmt.Errorf("getting search_last_date: %w", err)
 	}
@@ -195,7 +196,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	// messages are lost forever.
 	if completed {
 		today := time.Now().Format("2006-01-02")
-		if err := o.db.SetSearchLastDate(today); err != nil {
+		if err := o.db.SetSlackAccountSearchWatermark(1, today); err != nil {
 			return fmt.Errorf("saving search_last_date: %w", err)
 		}
 	} else {

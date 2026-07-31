@@ -101,7 +101,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 		o.logger.Printf("workspace: %s (%s) [cached]", ws.Name, ws.ID)
 		// Retry syncCurrentUser if it failed on a previous run (e.g. auth.test error).
 		// Required for action items pipeline which needs current_user_id.
-		if ws.CurrentUserID == "" {
+		// TODO(Task 4): pin to account #1 — Orchestrator becomes per-account.
+		userID, err := o.db.GetCurrentUserID()
+		if err != nil {
+			o.logger.Printf("warning: checking current user: %v", err)
+		} else if userID == "" {
 			o.syncCurrentUser(ctx)
 		}
 	}
@@ -379,14 +383,20 @@ func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
 }
 
 // syncCurrentUser calls auth.test to identify the token owner and stores
-// the user_id in the workspace record. Errors are logged but non-fatal.
+// the user_id on slack_accounts. Errors are logged but non-fatal.
+// TODO(Task 4): pin to account #1 — Orchestrator becomes per-account.
 func (o *Orchestrator) syncCurrentUser(ctx context.Context) {
 	authResp, err := o.slackClient.AuthTest(ctx)
 	if err != nil {
 		o.logger.Printf("warning: auth.test failed: %v", err)
 		return
 	}
-	if err := o.db.SetCurrentUserID(authResp.UserID); err != nil {
+	ws, wErr := o.db.GetWorkspace()
+	teamID, teamName, teamDomain := "", "", ""
+	if wErr == nil && ws != nil {
+		teamID, teamName, teamDomain = ws.ID, ws.Name, ws.Domain
+	}
+	if err := o.db.UpdateSlackAccountConnection(1, teamID, teamName, teamDomain, "1:"+authResp.UserID); err != nil {
 		o.logger.Printf("warning: saving current user: %v", err)
 		return
 	}

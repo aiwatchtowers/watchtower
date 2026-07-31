@@ -273,6 +273,10 @@ func TestRunSearchSync(t *testing.T) {
 	// Pre-populate workspace so Run() takes the search path (not first-sync full)
 	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"})
 	require.NoError(t, err)
+	// Seed slack_accounts account #1 — the search watermark now lives there
+	// (see internal/db/slack_accounts.go); Task 4 threads a real accountID.
+	_, err = ts.db.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
 
 	err = ts.orch.Run(context.Background(), SyncOptions{})
 	require.NoError(t, err)
@@ -300,7 +304,7 @@ func TestRunSearchSync(t *testing.T) {
 	assert.GreaterOrEqual(t, len(msgs), 1, "search sync should save messages")
 
 	// Verify search_last_date was saved
-	lastDate, err := ts.db.GetSearchLastDate()
+	lastDate, err := ts.db.GetSlackAccountSearchWatermark(1)
 	require.NoError(t, err)
 	assert.NotEmpty(t, lastDate, "search_last_date should be set after search sync")
 }

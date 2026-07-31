@@ -81,8 +81,10 @@ func (db *DB) ClearSlackData() error {
 		`DELETE FROM jira_user_map`,
 		`DELETE FROM meeting_prep_cache`,
 
-		// Slack sync watermarks; the Gmail watermark stays.
-		`UPDATE workspace SET synced_at = NULL, search_last_date = '',
+		// Slack sync watermarks; the Gmail watermark stays. Per-account
+		// search_last_date now lives on slack_accounts — untouched here (see
+		// docs/superpowers/plans/2026-07-31-slack-multi-account.md).
+		`UPDATE workspace SET synced_at = NULL,
 			inbox_last_processed_ts = 0, compose_last_run_ts = 0`,
 	}
 	for _, stmt := range stmts {
