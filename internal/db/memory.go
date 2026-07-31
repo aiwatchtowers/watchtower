@@ -1183,28 +1183,34 @@ func (db *DB) CountMemoryLinksIn(id string) (int, error) {
 
 // MemoryGmailWatermark returns the unix ts of the last gmail thread message
 // fully folded into an episode by the Gmail thread->episode extractor
-// (memory.sources.gmail), mirroring MemoryWatermark. Deliberately a THIRD,
-// independent watermark alongside gmail_last_internal_date (Gmail sync) and
-// memory_last_extracted_ts (Slack episode extraction) — see 00042, resolved
-// ambiguity #7. A fresh workspace without its singleton row reads as 0.
-func (db *DB) MemoryGmailWatermark() (float64, error) {
+// (memory.sources.gmail) for accountID, mirroring MemoryWatermark. Deliberately
+// a THIRD, independent watermark alongside gmail_last_internal_date (Gmail
+// sync) and memory_last_extracted_ts (Slack episode extraction) — see 00042,
+// resolved ambiguity #7. Moved onto google_accounts by migration 00043 (one
+// per connected account); a missing account reads as 0.
+func (db *DB) MemoryGmailWatermark(accountID int64) (float64, error) {
 	var ts float64
-	err := db.QueryRow(`SELECT COALESCE(memory_gmail_last_extracted_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	err := db.QueryRow(`SELECT memory_gmail_last_extracted_ts FROM google_accounts WHERE id = ?`, accountID).Scan(&ts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("getting memory gmail watermark: %w", err)
+		return 0, fmt.Errorf("getting memory gmail watermark for account %d: %w", accountID, err)
 	}
 	return ts, nil
 }
 
-// SetMemoryGmailWatermark advances the Gmail episode-extraction watermark
-// (see MemoryGmailWatermark). The Gmail extractor advances this only behind
-// fully-committed thread batches (MEM-04), never past an unextracted thread.
-func (db *DB) SetMemoryGmailWatermark(ts float64) error {
-	if _, err := db.Exec(`UPDATE workspace SET memory_gmail_last_extracted_ts = ?`, ts); err != nil {
-		return fmt.Errorf("setting memory gmail watermark: %w", err)
+// SetMemoryGmailWatermark advances the Gmail episode-extraction watermark for
+// accountID (see MemoryGmailWatermark). The Gmail extractor advances this only
+// behind fully-committed thread batches (MEM-04), never past an unextracted
+// thread.
+func (db *DB) SetMemoryGmailWatermark(accountID int64, ts float64) error {
+	res, err := db.Exec(`UPDATE google_accounts SET memory_gmail_last_extracted_ts = ? WHERE id = ?`, ts, accountID)
+	if err != nil {
+		return fmt.Errorf("setting memory gmail watermark for account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting memory gmail watermark: no google_accounts row %d", accountID)
 	}
 	return nil
 }
@@ -1466,30 +1472,31 @@ type GmailExtractMessage struct {
 // normalizes any timezone offset to UTC.
 const gmailTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
 
-// ListGmailThreadsForExtract returns gmail_messages with internal_date strictly
-// above sinceTS (unix seconds), oldest first, capped at limit — the raw input
-// the Gmail extractor groups into per-thread episodes. It mirrors
-// ListMemoryExtractMessages: a message cap bounds work per run, and a
-// boundary-drain keeps same-second ties safe. internal_date is second-granular
-// (RFC3339), so a LIMIT cut can land inside a same-second group; the caller's
-// watermark advances to a whole-second internal_date and reloads with a strict
-// >, which would permanently skip the unloaded rows of that second — so when the
-// limit cuts inside a second this query extends past the limit to include ALL
-// rows sharing the last loaded second (overshoot at most one second of mail).
+// ListGmailThreadsForExtract returns accountID's gmail_messages with
+// internal_date strictly above sinceTS (unix seconds), oldest first, capped at
+// limit — the raw input the Gmail extractor groups into per-thread episodes.
+// It mirrors ListMemoryExtractMessages: a message cap bounds work per run, and
+// a boundary-drain keeps same-second ties safe. internal_date is
+// second-granular (RFC3339), so a LIMIT cut can land inside a same-second
+// group; the caller's watermark advances to a whole-second internal_date and
+// reloads with a strict >, which would permanently skip the unloaded rows of
+// that second — so when the limit cuts inside a second this query extends
+// past the limit to include ALL rows sharing the last loaded second (overshoot
+// at most one second of mail).
 //
 // gmail_messages is a migration-guaranteed base table (00016), so a query
 // failure propagates as a genuine error (freezing the Gmail watermark) rather
 // than being masked as an empty read.
-func (db *DB) ListGmailThreadsForExtract(sinceTS float64, limit int) ([]GmailExtractMessage, error) {
+func (db *DB) ListGmailThreadsForExtract(accountID int64, sinceTS float64, limit int) ([]GmailExtractMessage, error) {
 	if limit <= 0 {
 		limit = 2000
 	}
-	out, err := db.queryGmailExtractMessages(">", sinceTS, limit)
+	out, err := db.queryGmailExtractMessages(accountID, ">", sinceTS, limit)
 	if err != nil || len(out) < limit {
 		return out, err
 	}
 	boundary := out[len(out)-1].TSUnix
-	full, err := db.queryGmailExtractMessages("=", boundary, -1) // LIMIT -1: unbounded
+	full, err := db.queryGmailExtractMessages(accountID, "=", boundary, -1) // LIMIT -1: unbounded
 	if err != nil {
 		return nil, err
 	}
@@ -1500,19 +1507,20 @@ func (db *DB) ListGmailThreadsForExtract(sinceTS float64, limit int) ([]GmailExt
 	return append(out[:i], full...), nil
 }
 
-// queryGmailExtractMessages runs the gmail-extract select with the given
-// comparison operator (">" or "="; never user input) against the decoded
-// internal_date. The ORDER BY ends in id (the gmail_messages primary key) so the
-// ordering is fully deterministic within a same-second group, which the
-// boundary-drain above relies on. gmail_messages is a migration-guaranteed base
-// table, so a query failure propagates rather than being masked.
-func (db *DB) queryGmailExtractMessages(op string, tsArg float64, limit int) ([]GmailExtractMessage, error) {
+// queryGmailExtractMessages runs the gmail-extract select for accountID with
+// the given comparison operator (">" or "="; never user input) against the
+// decoded internal_date. The ORDER BY ends in id (part of the gmail_messages
+// primary key) so the ordering is fully deterministic within a same-second
+// group, which the boundary-drain above relies on. gmail_messages is a
+// migration-guaranteed base table, so a query failure propagates rather than
+// being masked.
+func (db *DB) queryGmailExtractMessages(accountID int64, op string, tsArg float64, limit int) ([]GmailExtractMessage, error) {
 	rows, err := db.Query(`
 		SELECT id, thread_id, subject, from_email, from_name, body_text, `+gmailTSUnixExpr+`
 		FROM gmail_messages
-		WHERE internal_date != '' AND `+gmailTSUnixExpr+` `+op+` ?
+		WHERE account_id = ? AND internal_date != '' AND `+gmailTSUnixExpr+` `+op+` ?
 		ORDER BY `+gmailTSUnixExpr+`, id
-		LIMIT ?`, tsArg, limit)
+		LIMIT ?`, accountID, tsArg, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing gmail threads for extract: %w", err)
 	}

@@ -157,6 +157,7 @@ type googleEvent struct {
 	RecurringEventID string         `json:"recurringEventId"`
 	EventType        string         `json:"eventType"`
 	Updated          string         `json:"updated"`
+	ICalUID          string         `json:"iCalUID"`
 }
 
 type googleTime struct {
@@ -260,6 +261,7 @@ func convertEvent(item googleEvent, calendarID string) CalendarEvent {
 		EventType:   item.EventType,
 		EventStatus: eventStatus,
 		UpdatedAt:   item.Updated,
+		ICalUID:     item.ICalUID,
 	}
 
 	// Parse start/end times.

@@ -99,11 +99,10 @@ type CalendarConfig struct {
 
 // GmailConfig holds Gmail integration settings.
 type GmailConfig struct {
-	Enabled            bool   `mapstructure:"enabled"`               // enable gmail sync (default: false)
-	InitialHistoryDays int    `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync
-	MaxMessagesPerSync int    `mapstructure:"max_messages_per_sync"` // per-cycle cap
-	MaxBodyBytes       int    `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
-	AccountEmail       string `mapstructure:"account_email"`         // connected account's email, written at login; identity fallback when Slack is absent
+	Enabled            bool `mapstructure:"enabled"`               // enable gmail sync (default: false)
+	InitialHistoryDays int  `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync
+	MaxMessagesPerSync int  `mapstructure:"max_messages_per_sync"` // per-cycle cap
+	MaxBodyBytes       int  `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
 }
 
 // ImapConfig holds settings shared by every connected IMAP/Outlook mailbox

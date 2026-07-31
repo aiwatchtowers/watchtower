@@ -1147,7 +1147,10 @@ func TestMessageSender(t *testing.T) {
 
 func TestGmailMessageSender(t *testing.T) {
 	d := openTestDB(t)
-	if _, err := d.Exec(`INSERT INTO gmail_messages (id, from_email) VALUES ('gm1', 'sender@example.com')`); err != nil {
+	if _, err := d.Exec(`INSERT INTO google_accounts (email, label) VALUES ('a@x.com', 'A')`); err != nil {
+		t.Fatalf("seeding google account: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO gmail_messages (account_id, id, from_email) VALUES (1, 'gm1', 'sender@example.com')`); err != nil {
 		t.Fatalf("seeding gmail message: %v", err)
 	}
 
@@ -1568,37 +1571,11 @@ func TestMemoryMigrationDownUpCycle(t *testing.T) {
 	}
 }
 
-// TestMemoryGmailWatermarkRoundTrip: the Gmail episode-extraction watermark
-// (Task 3, migration 00042) defaults to 0 on a fresh workspace and persists
-// after SetMemoryGmailWatermark, mirroring MemoryWatermark/SetMemoryWatermark
-// — a THIRD, independent watermark alongside gmail_last_internal_date (Gmail
-// sync) and memory_last_extracted_ts (Slack episode extraction), resolved
-// ambiguity #7.
-func TestMemoryGmailWatermarkRoundTrip(t *testing.T) {
-	db := openTestDB(t)
-
-	ts, err := db.MemoryGmailWatermark()
-	if err != nil {
-		t.Fatalf("MemoryGmailWatermark on fresh workspace: %v", err)
-	}
-	if ts != 0 {
-		t.Errorf("initial watermark = %v, want 0", ts)
-	}
-
-	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
-		t.Fatalf("seeding workspace: %v", err)
-	}
-	if err := db.SetMemoryGmailWatermark(1700000000); err != nil {
-		t.Fatalf("SetMemoryGmailWatermark: %v", err)
-	}
-	ts, err = db.MemoryGmailWatermark()
-	if err != nil {
-		t.Fatalf("MemoryGmailWatermark after set: %v", err)
-	}
-	if ts != 1700000000 {
-		t.Errorf("watermark after set = %v, want 1700000000", ts)
-	}
-}
+// TestMemoryGmailWatermarkRoundTrip (MemoryGmailWatermark/
+// SetMemoryGmailWatermark) moved onto a per-account google_accounts column by
+// migration 00043 — see
+// TestGoogleAccount_MemoryGmailWatermark_RoundTrip/TestGoogleAccount_MemoryGmailWatermark_MissingRowReturnsZero
+// in google_accounts_test.go.
 
 // TestMemoryCalendarWatermarkRoundTrip: the calendar episode-build watermark
 // (Task 2, migration 00033) defaults to 0 on a fresh workspace and persists
@@ -1635,7 +1612,7 @@ func TestMemoryCalendarWatermarkRoundTrip(t *testing.T) {
 // an unknown one.
 func TestCalendarEventExists(t *testing.T) {
 	db := openTestDB(t)
-	if err := db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}); err != nil {
+	if err := db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}); err != nil {
 		t.Fatalf("UpsertCalendar: %v", err)
 	}
 	if err := db.UpsertCalendarEvent(CalendarEvent{
@@ -1680,7 +1657,7 @@ func TestCalendarEventExistsAbsentTablePropagates(t *testing.T) {
 // first; future events and events below the re-scan floor are excluded.
 func TestListCalendarEventsForExtract(t *testing.T) {
 	db := openTestDB(t)
-	require.NoError(t, db.UpsertCalendar(CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
 	now := time.Now().UTC()
 	mk := func(id string, endOffset time.Duration) {
 		start := now.Add(endOffset - time.Hour)

@@ -13,7 +13,7 @@ import (
 // DetectImapAccounts scans imap_messages synced after sinceTS across every
 // connected email_accounts row (imap and outlook alike — they share the same
 // message table) and creates one inbox item per message that involves that
-// account's own mailbox address. Mirrors DetectGmail's To/Cc matching and
+// account's own mailbox address. Mirrors DetectGmailAccounts' To/Cc matching and
 // trigger-type logic, but channel_id embeds both the account ID and the
 // message's own UIDVALIDITY epoch ("imap:<accountID>:<uidvalidity>:<folder>")
 // since IMAP UIDs are only unique within one (account, uidvalidity) epoch —

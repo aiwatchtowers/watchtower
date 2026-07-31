@@ -318,10 +318,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 		// Wire Jira syncer if configured and token exists.
 		wireJiraSyncer(d, cfg, database, logger)
-		// Wire calendar syncer if token exists.
-		wireCalendarSyncer(ctx, d, cfg, database, logger)
-		// Wire gmail syncer if token exists.
-		wireGmailSyncer(ctx, d, cfg, database, logger)
+		// Seed google_accounts from a pre-multi-account legacy token file
+		// before wiring, so a single-account install keeps syncing without
+		// a re-login.
+		if _, err := ensureLegacyGoogleAccount(ctx, cfg, database, logger); err != nil {
+			logger.Printf("google: failed to seed legacy account: %v", err)
+		}
+		// Wire one calendar/gmail syncer per connected google_accounts row.
+		wireGoogleSyncers(ctx, d, cfg, database, logger)
 		// Wire one IMAP/Outlook syncer per connected email_accounts row.
 		wireImapSyncers(ctx, d, cfg, database, logger)
 		// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
@@ -449,67 +453,81 @@ func wireJiraSyncer(d *daemon.Daemon, cfg *config.Config, database *db.DB, logge
 	d.SetJiraSyncer(jiraSyncer)
 }
 
-// wireCalendarSyncer wires the Calendar syncer onto the daemon if a token exists,
-// recording auth-state errors (e.g. revoked grants) instead of failing sync startup.
-func wireCalendarSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
-	calendarStore := calendar.NewTokenStore(cfg.WorkspaceDir())
-	if !calendarStore.Exists() {
-		return
-	}
-	googleCfg := resolveGoogleOAuthConfig()
-	calToken, err := calendarStore.Load()
+// wireGoogleSyncers wires one calendar.Syncer and/or gmail.Syncer per
+// connected google_accounts row whose token store exists, using each
+// account's own OAuth client credentials when it brought one. A broken
+// account records its own auth-state error (e.g. revoked grants) rather than
+// aborting the wiring step for the others — the calendar/gmail analog of
+// wireImapSyncers/wireCalDAVSyncers. The global cfg.Calendar.Enabled /
+// cfg.Gmail.Enabled toggles gate the corresponding syncer kind across every
+// account, matching every other daemon phase's global on/off switch.
+func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	accounts, err := database.ListGoogleAccounts()
 	if err != nil {
-		logger.Printf("calendar: failed to load token: %v", err)
+		logger.Printf("google: failed to list accounts: %v", err)
 		return
 	}
-	calClient, err := calendar.NewClient(ctx, calToken.RefreshToken, googleCfg)
-	if err != nil {
-		logger.Printf("calendar: failed to create client: %v", err)
-		status := "error"
-		if errors.Is(err, calendar.ErrAuthRevoked) {
-			status = "revoked"
+	var calSyncers []*calendar.Syncer
+	var gmSyncers []*gmail.Syncer
+	for _, acct := range accounts {
+		store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
+		if !store.Exists() {
+			// Only flip a currently-"ok" account to "error" — an account
+			// already flagged error/revoked stays as-is, so this doesn't
+			// churn the status/updated_at on every daemon cycle.
+			if acct.Status == "ok" {
+				if err := database.SetGoogleAccountAuthState(acct.ID, "error", "no token file — re-login required"); err != nil {
+					logger.Printf("google: account %d: record auth state: %v", acct.ID, err)
+				}
+			}
+			continue
 		}
-		if dbErr := database.SetCalendarAuthState(status, err.Error()); dbErr != nil {
-			logger.Printf("calendar: failed to record auth state: %v", dbErr)
+		token, err := store.Load()
+		if err != nil {
+			logger.Printf("google: account %d: failed to load token: %v", acct.ID, err)
+			continue
 		}
-		return
+		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
+		if cfg.Calendar.Enabled && acct.CalendarEnabled {
+			calClient, err := calendar.NewClient(ctx, token.RefreshToken, googleCfg)
+			if err != nil {
+				recordGoogleWireError(database, logger, acct.ID, "calendar", err, errors.Is(err, calendar.ErrAuthRevoked))
+			} else {
+				calSyncers = append(calSyncers, calendar.NewSyncer(calClient, database, cfg, logger, acct.ID))
+			}
+		}
+		if cfg.Gmail.Enabled && acct.GmailEnabled {
+			gmClient, err := gmail.NewClient(ctx, token.RefreshToken,
+				gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
+			if err != nil {
+				recordGoogleWireError(database, logger, acct.ID, "gmail", err, errors.Is(err, gmail.ErrAuthRevoked))
+			} else {
+				gmSyncers = append(gmSyncers, gmail.NewSyncer(gmClient, database, cfg, logger, acct.ID))
+			}
+		}
 	}
-	d.SetCalendarSyncer(calendar.NewSyncer(calClient, database, cfg, logger))
+	d.SetCalendarSyncers(calSyncers)
+	d.SetGmailSyncers(gmSyncers)
 }
 
-// wireGmailSyncer wires the Gmail syncer onto the daemon if a token exists,
-// recording auth-state errors (e.g. revoked grants) instead of failing sync startup.
-func wireGmailSyncer(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
-	gmailStore := gmail.NewTokenStore(cfg.WorkspaceDir())
-	if !gmailStore.Exists() {
-		return
+// recordGoogleWireError logs a per-account client-creation failure and
+// records its auth-state (revoked vs plain error) so the Desktop UI shows
+// the problem instead of a silently-dead account.
+func recordGoogleWireError(database *db.DB, logger *log.Logger, accountID int64, svc string, err error, revoked bool) {
+	logger.Printf("%s: account %d: failed to create client: %v", svc, accountID, err)
+	status := "error"
+	if revoked {
+		status = "revoked"
 	}
-	gc := resolveGoogleOAuthConfig() // calendar.GoogleOAuthConfig
-	gmailToken, err := gmailStore.Load()
-	if err != nil {
-		logger.Printf("gmail: failed to load token: %v", err)
-		return
+	if dbErr := database.SetGoogleAccountAuthState(accountID, status, err.Error()); dbErr != nil {
+		logger.Printf("%s: account %d: record auth state: %v", svc, accountID, dbErr)
 	}
-	gmClient, err := gmail.NewClient(ctx, gmailToken.RefreshToken,
-		gmail.GoogleOAuthConfig{ClientID: gc.ClientID, ClientSecret: gc.ClientSecret})
-	if err != nil {
-		logger.Printf("gmail: failed to create client: %v", err)
-		status := "error"
-		if errors.Is(err, gmail.ErrAuthRevoked) {
-			status = "revoked"
-		}
-		if dbErr := database.SetGmailAuthState(status, err.Error()); dbErr != nil {
-			logger.Printf("gmail: failed to record auth state: %v", dbErr)
-		}
-		return
-	}
-	d.SetGmailSyncer(gmail.NewSyncer(gmClient, database, cfg, logger))
 }
 
-// wireImapSyncers wires one imap.Syncer per connected email_accounts row.
-// Unlike wireGmailSyncer's single token check, this iterates every account;
-// a broken mailbox records its own auth-state error (imap.Syncer.Sync) rather
-// than aborting the wiring step for the others.
+// wireImapSyncers wires one imap.Syncer per connected email_accounts row —
+// the non-Google mail analog of wireGoogleSyncers. A broken mailbox records
+// its own auth-state error (imap.Syncer.Sync) rather than aborting the
+// wiring step for the others.
 func wireImapSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
 	accounts, err := database.ListEmailAccounts()
 	if err != nil {

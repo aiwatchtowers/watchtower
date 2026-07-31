@@ -216,7 +216,7 @@ func TestRun_DropsTimeblockOverlappingCalendar(t *testing.T) {
 	evEnd := time.Date(now.Year(), now.Month(), now.Day(), 10, 45, 0, 0, time.Local)
 
 	// Seed a calendar with an event 10:00-10:45 local.
-	require.NoError(t, d.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "cal-001", Name: "Primary", IsPrimary: true,
 	}))
 	require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{

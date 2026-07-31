@@ -28,6 +28,9 @@ struct CalendarCalendarItem: FetchableRecord, Identifiable, Equatable {
     let isSelected: Bool
     let color: String
     let syncedAt: String
+    /// The Google account that synced this calendar, or nil for a CalDAV/ICS
+    /// calendar (`caldav:%`/`ics:%` ids), which isn't tied to any account.
+    let accountID: Int?
 
     init(row: Row) {
         id = row["id"]
@@ -36,6 +39,7 @@ struct CalendarCalendarItem: FetchableRecord, Identifiable, Equatable {
         isSelected = (row["is_selected"] as Int? ?? 1) != 0
         color = row["color"] ?? ""
         syncedAt = row["synced_at"] ?? ""
+        accountID = row["account_id"]
     }
 }
 

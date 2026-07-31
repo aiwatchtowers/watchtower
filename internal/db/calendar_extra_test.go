@@ -7,38 +7,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCalendarAuthState_DefaultsToOK(t *testing.T) {
-	db := openTestDB(t)
-
-	state, err := db.GetCalendarAuthState()
-	require.NoError(t, err)
-	assert.Equal(t, "ok", state.Status, "missing row → defaults to ok")
-	assert.Equal(t, "", state.Error)
-}
-
-func TestCalendarAuthState_RoundTrip(t *testing.T) {
-	db := openTestDB(t)
-
-	require.NoError(t, db.SetCalendarAuthState("revoked", "expired"))
-
-	state, err := db.GetCalendarAuthState()
-	require.NoError(t, err)
-	assert.Equal(t, "revoked", state.Status)
-	assert.Equal(t, "expired", state.Error)
-	assert.NotEmpty(t, state.UpdatedAt)
-}
-
-func TestCalendarAuthState_Overwrites(t *testing.T) {
-	db := openTestDB(t)
-
-	require.NoError(t, db.SetCalendarAuthState("error", "first"))
-	require.NoError(t, db.SetCalendarAuthState("ok", ""))
-
-	state, err := db.GetCalendarAuthState()
-	require.NoError(t, err)
-	assert.Equal(t, "ok", state.Status)
-	assert.Equal(t, "", state.Error)
-}
+// TestCalendarAuthState_DefaultsToOK, TestCalendarAuthState_RoundTrip, and
+// TestCalendarAuthState_Overwrites (Get/SetCalendarAuthState, the
+// calendar_auth_state singleton) were retired by migration 00043
+// (google_accounts) in favor of per-account status/error columns — see
+// TestGoogleAccount_SetAuthState_RoundTrip/TestGoogleAccount_SetAuthState_MissingRow
+// in google_accounts_test.go.
 
 func TestMeetingPrepCache_RoundTrip(t *testing.T) {
 	db := openTestDB(t)

@@ -100,7 +100,7 @@ final class EmailAccountsViewModel {
     // MARK: - Outlook
 
     /// Runs `watchtower outlook login --app-return`, same OAuth loopback-browser
-    /// flow shape as `GmailAuthService.connect()`.
+    /// flow shape as `GoogleAuthService.connect()`.
     func connectOutlook(label: String) {
         guard !isRunning else { return }
         guard let cliPath = Constants.findCLIPath() else {

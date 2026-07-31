@@ -1,18 +1,34 @@
 package db
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 )
 
-// UpsertCalendar inserts or updates a Google Calendar.
-func (db *DB) UpsertCalendar(cal CalendarCalendar) error {
-	_, err := db.Exec(`INSERT INTO calendar_calendars (id, name, is_primary, is_selected, color, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, is_primary=excluded.is_primary, color=excluded.color, synced_at=excluded.synced_at`,
-		cal.ID, cal.Name, cal.IsPrimary, cal.IsSelected, cal.Color, cal.SyncedAt)
+// UpsertCalendar inserts or updates a Google Calendar for accountID. accountID
+// <= 0 writes a NULL account_id — the shape caldav/ics calendars need, since
+// those rows must never enter the Google syncer's fetch/stale-delete loops
+// (see dropNonGoogleCalendarIDs in internal/calendar).
+//
+// calendar_calendars.id is a shared keyspace: a public/shared Google calendar
+// subscribed by two different accounts syncs to the SAME row. On conflict
+// this never steals ownership — an already-claimed (non-NULL account_id) row
+// keeps its original owner regardless of which account syncs it next; only a
+// NULL account_id (unclaimed, or a legacy row stamped by migration 00043) can
+// be claimed. Combined with GetSelectedCalendarIDs filtering by account_id,
+// a shared calendar is synced (and stale-cleaned) by whichever account
+// connected it first — the other account simply never selects it, so it can
+// neither duplicate nor cross-delete that calendar's events.
+func (db *DB) UpsertCalendar(accountID int64, cal CalendarCalendar) error {
+	var accountArg any
+	if accountID > 0 {
+		accountArg = accountID
+	}
+	_, err := db.Exec(`INSERT INTO calendar_calendars (id, name, is_primary, is_selected, color, synced_at, account_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, is_primary=excluded.is_primary, color=excluded.color, synced_at=excluded.synced_at,
+			account_id = CASE WHEN calendar_calendars.account_id IS NULL THEN excluded.account_id ELSE calendar_calendars.account_id END`,
+		cal.ID, cal.Name, cal.IsPrimary, cal.IsSelected, cal.Color, cal.SyncedAt, accountArg)
 	if err != nil {
 		return fmt.Errorf("upserting calendar %s: %w", cal.ID, err)
 	}
@@ -38,9 +54,11 @@ func (db *DB) GetCalendars() ([]CalendarCalendar, error) {
 	return cals, rows.Err()
 }
 
-// GetSelectedCalendarIDs returns IDs of calendars marked as selected.
-func (db *DB) GetSelectedCalendarIDs() ([]string, error) {
-	rows, err := db.Query(`SELECT id FROM calendar_calendars WHERE is_selected = 1`)
+// GetSelectedCalendarIDs returns IDs of accountID's calendars marked as
+// selected. caldav:/ics: calendars carry a NULL account_id, so they never
+// match here regardless of accountID.
+func (db *DB) GetSelectedCalendarIDs(accountID int64) ([]string, error) {
+	rows, err := db.Query(`SELECT id FROM calendar_calendars WHERE is_selected = 1 AND account_id = ?`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("querying selected calendars: %w", err)
 	}
@@ -75,7 +93,7 @@ func (db *DB) UpsertCalendarEvent(ev CalendarEvent, syncedAt ...string) error {
 		ev.ID, ev.CalendarID, ev.Title, ev.Description, ev.Location,
 		ev.StartTime, ev.EndTime, ev.OrganizerEmail, ev.Attendees,
 		ev.IsRecurring, ev.IsAllDay, ev.EventStatus, ev.EventType,
-		ev.HTMLLink, ev.RawJSON,
+		ev.HTMLLink, ev.RawJSON, ev.ICalUID,
 	}
 	if len(syncedAt) > 0 && syncedAt[0] != "" {
 		sa = "?"
@@ -85,8 +103,8 @@ func (db *DB) UpsertCalendarEvent(ev CalendarEvent, syncedAt ...string) error {
 	_, err := db.Exec(`INSERT OR REPLACE INTO calendar_events
 		(id, calendar_id, title, description, location, start_time, end_time,
 		 organizer_email, attendees, is_recurring, is_all_day, event_status,
-		 event_type, html_link, raw_json, synced_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sa+`, ?)`,
+		 event_type, html_link, raw_json, ical_uid, synced_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sa+`, ?)`,
 		args...)
 	if err != nil {
 		return fmt.Errorf("upserting calendar event %s: %w", ev.ID, err)
@@ -109,12 +127,12 @@ func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 		_, err := tx.Exec(`INSERT OR REPLACE INTO calendar_events
 			(id, calendar_id, title, description, location, start_time, end_time,
 			 organizer_email, attendees, is_recurring, is_all_day, event_status,
-			 event_type, html_link, raw_json, synced_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)`,
+			 event_type, html_link, raw_json, ical_uid, synced_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)`,
 			ev.ID, ev.CalendarID, ev.Title, ev.Description, ev.Location,
 			ev.StartTime, ev.EndTime, ev.OrganizerEmail, ev.Attendees,
 			ev.IsRecurring, ev.IsAllDay, ev.EventStatus, ev.EventType,
-			ev.HTMLLink, ev.RawJSON, ev.UpdatedAt)
+			ev.HTMLLink, ev.RawJSON, ev.ICalUID, ev.UpdatedAt)
 		if err != nil {
 			return fmt.Errorf("upserting calendar event %s: %w", ev.ID, err)
 		}
@@ -130,7 +148,7 @@ func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 func (db *DB) GetCalendarEvents(filter CalendarEventFilter) ([]CalendarEvent, error) {
 	query := `SELECT id, calendar_id, title, description, location, start_time, end_time,
 		organizer_email, attendees, is_recurring, is_all_day, event_status,
-		event_type, html_link, raw_json, synced_at, updated_at
+		event_type, html_link, raw_json, ical_uid, synced_at, updated_at
 		FROM calendar_events WHERE 1=1`
 	var args []any
 
@@ -165,7 +183,7 @@ func (db *DB) GetCalendarEventsForDate(date string) ([]CalendarEvent, error) {
 func (db *DB) GetCalendarEventByID(id string) (*CalendarEvent, error) {
 	query := `SELECT id, calendar_id, title, description, location, start_time, end_time,
 		organizer_email, attendees, is_recurring, is_all_day, event_status,
-		event_type, html_link, raw_json, synced_at, updated_at
+		event_type, html_link, raw_json, ical_uid, synced_at, updated_at
 		FROM calendar_events WHERE id = ?`
 	events, err := db.queryCalendarEvents(query, id)
 	if err != nil {
@@ -182,7 +200,7 @@ func (db *DB) GetNextEvent() (*CalendarEvent, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	query := `SELECT id, calendar_id, title, description, location, start_time, end_time,
 		organizer_email, attendees, is_recurring, is_all_day, event_status,
-		event_type, html_link, raw_json, synced_at, updated_at
+		event_type, html_link, raw_json, ical_uid, synced_at, updated_at
 		FROM calendar_events WHERE end_time >= ? AND is_all_day = 0
 		ORDER BY start_time LIMIT 1`
 	events, err := db.queryCalendarEvents(query, now)
@@ -289,41 +307,6 @@ func (db *DB) DeleteMeetingPrepCache(eventID string) error {
 	return nil
 }
 
-// CalendarAuthState reflects whether the Google refresh token is still valid.
-type CalendarAuthState struct {
-	Status    string // "ok" | "revoked" | "error"
-	Error     string
-	UpdatedAt string
-}
-
-// GetCalendarAuthState returns the current calendar auth state.
-// If the row is missing, a zero-value state with Status="ok" is returned.
-func (db *DB) GetCalendarAuthState() (CalendarAuthState, error) {
-	var s CalendarAuthState
-	err := db.QueryRow(`SELECT status, error, updated_at FROM calendar_auth_state WHERE id = 1`).
-		Scan(&s.Status, &s.Error, &s.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return CalendarAuthState{Status: "ok"}, nil
-		}
-		return CalendarAuthState{}, fmt.Errorf("reading calendar_auth_state: %w", err)
-	}
-	return s, nil
-}
-
-// SetCalendarAuthState upserts the auth state. status is one of "ok", "revoked", "error".
-func (db *DB) SetCalendarAuthState(status, errMsg string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.Exec(`INSERT INTO calendar_auth_state (id, status, error, updated_at)
-		VALUES (1, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET status = excluded.status, error = excluded.error, updated_at = excluded.updated_at`,
-		status, errMsg, now)
-	if err != nil {
-		return fmt.Errorf("upserting calendar_auth_state: %w", err)
-	}
-	return nil
-}
-
 func (db *DB) queryCalendarEvents(query string, args ...any) ([]CalendarEvent, error) {
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -337,7 +320,7 @@ func (db *DB) queryCalendarEvents(query string, args ...any) ([]CalendarEvent, e
 		if err := rows.Scan(&e.ID, &e.CalendarID, &e.Title, &e.Description, &e.Location,
 			&e.StartTime, &e.EndTime, &e.OrganizerEmail, &e.Attendees,
 			&e.IsRecurring, &e.IsAllDay, &e.EventStatus, &e.EventType,
-			&e.HTMLLink, &e.RawJSON, &e.SyncedAt, &e.UpdatedAt); err != nil {
+			&e.HTMLLink, &e.RawJSON, &e.ICalUID, &e.SyncedAt, &e.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning calendar event: %w", err)
 		}
 		events = append(events, e)

@@ -16,19 +16,21 @@ import (
 
 // Syncer fetches Gmail inbox messages and stores them.
 type Syncer struct {
-	client *Client
-	db     *db.DB
-	cfg    *config.Config
-	logger *log.Logger
+	client    *Client
+	db        *db.DB
+	cfg       *config.Config
+	logger    *log.Logger
+	accountID int64
 }
 
-// NewSyncer creates a Gmail syncer.
+// NewSyncer creates a Gmail syncer for the connected google_accounts row
+// accountID.
 // If logger is nil, a no-op logger is used.
-func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.Logger) *Syncer {
+func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.Logger, accountID int64) *Syncer {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Syncer{client: client, db: database, cfg: cfg, logger: logger}
+	return &Syncer{client: client, db: database, cfg: cfg, logger: logger, accountID: accountID}
 }
 
 // noiseLabels are Gmail categories we skip before AI ever sees them.
@@ -50,7 +52,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		maxBody = config.DefaultGmailMaxBodyBytes
 	}
 
-	watermark, err := s.db.GetGmailLastInternalDate()
+	watermark, err := s.db.GetGmailAccountWatermark(s.accountID)
 	if err != nil {
 		return 0, fmt.Errorf("reading gmail watermark: %w", err)
 	}
@@ -127,7 +129,8 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			BodyText: body, InternalDate: m.InternalDate, LabelsJSON: string(labelsJSON),
 			IsUnread: m.IsUnread, Permalink: m.Permalink,
 		}
-		if err := s.db.UpsertGmailMessage(row, syncedAt); err != nil {
+		row.SyncedAt = syncedAt
+		if err := s.db.UpsertGmailMessage(s.accountID, row); err != nil {
 			s.logger.Printf("gmail: upsert %s: %v", m.ID, err)
 			continue
 		}
@@ -138,7 +141,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 
 	if maxSeen > watermark {
-		if err := s.db.SetGmailLastInternalDate(maxSeen); err != nil {
+		if err := s.db.SetGmailAccountWatermark(s.accountID, maxSeen); err != nil {
 			s.logger.Printf("gmail: advancing watermark: %v", err)
 		}
 	}
@@ -152,7 +155,7 @@ func (s *Syncer) recordAuthResult(err error) {
 		return
 	}
 	if err == nil {
-		if dbErr := s.db.SetGmailAuthState("ok", ""); dbErr != nil {
+		if dbErr := s.db.SetGoogleAccountAuthState(s.accountID, "ok", ""); dbErr != nil {
 			s.logger.Printf("gmail: clear auth state: %v", dbErr)
 		}
 		return
@@ -161,7 +164,7 @@ func (s *Syncer) recordAuthResult(err error) {
 	if errors.Is(err, ErrAuthRevoked) {
 		status = "revoked"
 	}
-	if dbErr := s.db.SetGmailAuthState(status, err.Error()); dbErr != nil {
+	if dbErr := s.db.SetGoogleAccountAuthState(s.accountID, status, err.Error()); dbErr != nil {
 		s.logger.Printf("gmail: record auth state: %v", dbErr)
 	}
 }

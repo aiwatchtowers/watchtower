@@ -16,23 +16,26 @@ import (
 
 // Syncer fetches calendar events and stores them in the database.
 type Syncer struct {
-	client *Client
-	db     *db.DB
-	cfg    *config.Config
-	logger *log.Logger
+	client    *Client
+	db        *db.DB
+	cfg       *config.Config
+	logger    *log.Logger
+	accountID int64
 }
 
-// NewSyncer creates a calendar syncer.
+// NewSyncer creates a calendar syncer for the connected google_accounts row
+// accountID.
 // If logger is nil, a no-op logger is used.
-func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.Logger) *Syncer {
+func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.Logger, accountID int64) *Syncer {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
 	return &Syncer{
-		client: client,
-		db:     database,
-		cfg:    cfg,
-		logger: logger,
+		client:    client,
+		db:        database,
+		cfg:       cfg,
+		logger:    logger,
+		accountID: accountID,
 	}
 }
 
@@ -49,8 +52,12 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 	timeMax := now.Add(time.Duration(daysAhead) * 24 * time.Hour)
 
-	// Sync calendar list first.
+	// Sync calendar list first. realPrimaryID captures this account's actual
+	// primary calendar id (its own email) so a later "primary" fallback can
+	// resolve to a per-account-unique id instead of the literal string
+	// "primary", which every account would otherwise collide on.
 	calInfos, err := s.client.FetchCalendars(ctx)
+	var realPrimaryID string
 	if err != nil {
 		s.recordAuthResult(err)
 		if errors.Is(err, ErrAuthRevoked) {
@@ -60,6 +67,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		// Continue with selected calendars from config if available.
 	} else {
 		for _, ci := range calInfos {
+			if ci.Primary {
+				realPrimaryID = ci.ID
+			}
 			cal := db.CalendarCalendar{
 				ID:         ci.ID,
 				Name:       ci.Summary,
@@ -68,7 +78,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 				Color:      ci.Color,
 				SyncedAt:   syncedAt,
 			}
-			if err := s.db.UpsertCalendar(cal); err != nil {
+			if err := s.db.UpsertCalendar(s.accountID, cal); err != nil {
 				s.logger.Printf("calendar: failed to upsert calendar %s: %v", ci.ID, err)
 			}
 		}
@@ -79,15 +89,38 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	// those must never enter this Google syncer's fetch loop (the Google API
 	// doesn't know them) nor its stale-delete loop (which would wipe another
 	// source's freshly-synced events).
-	calendarIDs := dropNonGoogleCalendarIDs(s.cfg.Calendar.SelectedCalendars)
+	//
+	// The legacy cfg.Calendar.SelectedCalendars config path only ever applied
+	// to the single pre-multi-account install (google_accounts id 1); every
+	// other account goes straight to its own DB selection.
+	var calendarIDs []string
+	if s.accountID == 1 {
+		calendarIDs = dropNonGoogleCalendarIDs(s.cfg.Calendar.SelectedCalendars)
+	}
+	// skipStaleDelete marks calendar ids in this run's calendarIDs that had to
+	// fall back to the literal "primary" placeholder because realPrimaryID
+	// couldn't be resolved this cycle (calendar-list fetch failed, or came
+	// back with no calendar flagged primary). Every account falls back to the
+	// same literal id in that case, so cleaning it up here could delete
+	// another account's freshly-synced events under the same bucket —
+	// skip the stale-delete pass for it instead; events still sync fine.
+	skipStaleDelete := map[string]bool{}
+	primaryFallback := func() string {
+		if realPrimaryID != "" {
+			return realPrimaryID
+		}
+		s.logger.Printf("calendar: real primary calendar id unresolved this cycle, using literal \"primary\" and skipping its stale-event cleanup")
+		skipStaleDelete["primary"] = true
+		return "primary"
+	}
 	if len(calendarIDs) == 0 {
 		// Use selected calendars from DB.
-		dbIDs, err := s.db.GetSelectedCalendarIDs()
+		dbIDs, err := s.db.GetSelectedCalendarIDs(s.accountID)
 		if err != nil {
 			s.logger.Printf("calendar: failed to get selected calendars from DB, falling back to primary: %v", err)
-			calendarIDs = []string{"primary"}
+			calendarIDs = []string{primaryFallback()}
 		} else if dbIDs = dropNonGoogleCalendarIDs(dbIDs); len(dbIDs) == 0 {
-			calendarIDs = []string{"primary"}
+			calendarIDs = []string{primaryFallback()}
 		} else {
 			calendarIDs = dbIDs
 		}
@@ -133,6 +166,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			EventType:      e.EventType,
 			HTMLLink:       e.HTMLLink,
 			RawJSON:        rawJSON,
+			ICalUID:        e.ICalUID,
 			UpdatedAt:      e.UpdatedAt,
 		}
 
@@ -145,6 +179,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 
 	// Cleanup stale events per calendar (synced before this run).
 	for _, calID := range calendarIDs {
+		if skipStaleDelete[calID] {
+			continue
+		}
 		if n, err := s.db.DeleteStaleCalendarEvents(calID, syncedAt); err != nil {
 			s.logger.Printf("calendar: failed to cleanup stale events for %s: %v", calID, err)
 		} else if n > 0 {
@@ -176,7 +213,7 @@ func (s *Syncer) recordAuthResult(err error) {
 		return
 	}
 	if err == nil {
-		if dbErr := s.db.SetCalendarAuthState("ok", ""); dbErr != nil {
+		if dbErr := s.db.SetGoogleAccountAuthState(s.accountID, "ok", ""); dbErr != nil {
 			s.logger.Printf("calendar: failed to clear auth state: %v", dbErr)
 		}
 		return
@@ -185,7 +222,7 @@ func (s *Syncer) recordAuthResult(err error) {
 	if errors.Is(err, ErrAuthRevoked) {
 		status = "revoked"
 	}
-	if dbErr := s.db.SetCalendarAuthState(status, err.Error()); dbErr != nil {
+	if dbErr := s.db.SetGoogleAccountAuthState(s.accountID, status, err.Error()); dbErr != nil {
 		s.logger.Printf("calendar: failed to record auth state: %v", dbErr)
 	}
 }

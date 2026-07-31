@@ -10,44 +10,77 @@ import (
 	"watchtower/internal/db"
 )
 
-// DetectGmail scans gmail_messages synced after sinceTS and creates one inbox
-// item per message that involves myEmail. Trigger type is email_received when
-// myEmail is a To recipient, otherwise email_cc (Cc only). Each message is
-// deduplicated on (thread_id, message_id, trigger_type) so repeated calls are
-// idempotent.
-func DetectGmail(ctx context.Context, database *db.DB, myEmail string, sinceTS time.Time) (int, error) {
-	if myEmail == "" {
-		return 0, nil
+// DetectGmailAccounts scans gmail_messages synced after sinceTS across every
+// connected google_accounts row with Gmail enabled, and creates one inbox
+// item per message that involves that account's own mailbox address.
+// Mirrors DetectImapAccounts: an account with Gmail disabled is skipped
+// cleanly regardless of its email. A Gmail-enabled account whose email is
+// still unresolved (empty — the profile lookup hasn't completed yet) is an
+// error, not a clean skip: DetectGmailAccounts errors always freeze the
+// inbox watermark (INBOX-09), and this is exactly the case where mail is
+// sitting in gmail_messages unexamined — advancing over it would skip it
+// forever once the email does resolve. Trigger type is email_received when
+// the account's own email is a To recipient, otherwise email_cc (Cc only); a
+// message FROM the account's own address (sent by the owner, not received)
+// mints nothing. Each message is deduplicated on (channel_id, message_id,
+// trigger_type) so repeated calls are idempotent.
+func DetectGmailAccounts(ctx context.Context, database *db.DB, sinceTS time.Time) (int, error) {
+	accounts, err := database.ListGoogleAccounts()
+	if err != nil {
+		return 0, fmt.Errorf("gmail_detector: listing accounts: %w", err)
 	}
 	sinceISO := sinceTS.UTC().Format(time.RFC3339)
 
+	created := 0
+	for _, acct := range accounts {
+		if !acct.GmailEnabled {
+			continue
+		}
+		if acct.Email == "" {
+			return created, fmt.Errorf("gmail_detector: account %d: gmail enabled but email still unresolved", acct.ID)
+		}
+		n, err := detectGmailAccount(database, acct, sinceISO)
+		if err != nil {
+			return created, fmt.Errorf("gmail_detector: account %d: %w", acct.ID, err)
+		}
+		created += n
+	}
+	return created, nil
+}
+
+func detectGmailAccount(database *db.DB, acct db.GoogleAccount, sinceISO string) (int, error) {
 	// GmailMessagesSyncedAfter fully drains its rows into a slice before we
 	// issue any dedup/insert query below — required for in-memory SQLite with
 	// MaxOpenConns(1) (see calendar_detector.go).
-	msgs, err := database.GmailMessagesSyncedAfter(sinceISO)
+	msgs, err := database.GmailMessagesSyncedAfter(acct.ID, sinceISO)
 	if err != nil {
-		return 0, fmt.Errorf("gmail_detector: query messages: %w", err)
+		return 0, fmt.Errorf("querying messages: %w", err)
 	}
 
 	created := 0
 	for _, m := range msgs {
+		if strings.EqualFold(m.FromEmail, acct.Email) {
+			continue // sent by this account's own owner, not received
+		}
+
 		var to, cc []string
 		_ = json.Unmarshal([]byte(m.ToJSON), &to)
 		_ = json.Unmarshal([]byte(m.CcJSON), &cc)
 
 		trig := ""
-		if containsEmailFold(to, myEmail) {
+		if containsEmailFold(to, acct.Email) {
 			trig = "email_received"
-		} else if containsEmailFold(cc, myEmail) {
+		} else if containsEmailFold(cc, acct.Email) {
 			trig = "email_cc"
 		}
 		if trig == "" {
-			continue // message doesn't involve me
+			continue // message doesn't involve this account's own address
 		}
 
-		exists, err := gmailInboxExists(database, m.ThreadID, m.ID, trig)
+		channelID := fmt.Sprintf("gmail:%d:%s", acct.ID, m.ThreadID)
+		exists, err := gmailInboxExists(database, channelID, m.ID, trig)
 		if err != nil {
-			return created, fmt.Errorf("gmail_detector: dedup check: %w", err)
+			return created, fmt.Errorf("dedup check: %w", err)
 		}
 		if exists {
 			continue
@@ -58,7 +91,7 @@ func DetectGmail(ctx context.Context, database *db.DB, myEmail string, sinceTS t
 			snippet = m.Subject + " — " + m.Snippet
 		}
 		item := db.InboxItem{
-			ChannelID:    m.ThreadID,
+			ChannelID:    channelID,
 			MessageTS:    m.ID,
 			SenderUserID: m.FromEmail,
 			TriggerType:  trig,
@@ -69,7 +102,7 @@ func DetectGmail(ctx context.Context, database *db.DB, myEmail string, sinceTS t
 			Priority:     "medium",
 		}
 		if _, err := database.CreateInboxItem(item); err != nil {
-			return created, fmt.Errorf("gmail_detector: create inbox item for %s: %w", m.ID, err)
+			return created, fmt.Errorf("create inbox item for %s: %w", m.ID, err)
 		}
 		created++
 	}
@@ -87,13 +120,13 @@ func containsEmailFold(addrs []string, target string) bool {
 	return false
 }
 
-// gmailInboxExists dedups on (thread_id as channel_id, message_id as message_ts, trigger_type).
+// gmailInboxExists dedups on (channel_id, message_id as message_ts, trigger_type).
 // Named uniquely to avoid symbol collisions with other detectors' *InboxExists helpers.
-func gmailInboxExists(database *db.DB, threadID, messageID, triggerType string) (bool, error) {
+func gmailInboxExists(database *db.DB, channelID, messageID, triggerType string) (bool, error) {
 	var count int
 	err := database.QueryRow(`SELECT COUNT(*) FROM inbox_items
         WHERE channel_id = ? AND message_ts = ? AND trigger_type = ?`,
-		threadID, messageID, triggerType).Scan(&count)
+		channelID, messageID, triggerType).Scan(&count)
 	if err != nil {
 		return false, err
 	}

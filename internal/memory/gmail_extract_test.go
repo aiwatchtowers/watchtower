@@ -88,7 +88,7 @@ func TestGmailExtract_ThreadBecomesOneEpisode(t *testing.T) {
 	assert.Contains(t, epBody, "mail:m1")
 	assert.Contains(t, epBody, "mail:m2")
 
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(gmailTestAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(u2), wm, "watermark at the newest thread message")
 
@@ -126,7 +126,7 @@ func TestGmailExtract_ShapeDegenerateFreezesWatermark(t *testing.T) {
 	assert.Equal(t, 1, stats.GmailThreadsFailed)
 
 	// Watermark == thr-1's newest message, never past the failed thr-2.
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(gmailTestAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(u1), wm)
 }
@@ -148,9 +148,113 @@ func TestGmailExtract_GateOffNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, stats.GmailEpisodes)
 
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(gmailTestAccountID)
 	require.NoError(t, err)
 	assert.Zero(t, wm, "gmail watermark unmoved when the source is dark")
+}
+
+// TestGmailExtract_MultiAccount_WatermarksAdvanceIndependently: two connected
+// Gmail-enabled accounts each with their own thread at a different timestamp
+// — every account's memory_gmail_last_extracted_ts advances to ITS OWN
+// newest message, never coupled to the other account's (Task 9).
+func TestGmailExtract_MultiAccount_WatermarksAdvanceIndependently(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	const acctA, acctB = int64(1), int64(2)
+	isoA, uA := gmailMsgTime(0)
+	isoB, uB := gmailMsgTime(180)
+	seedGmailMessageForAccount(t, d, acctA, "a1", "thr-a", "a@example.com", "Ann", "Account A thread", "hi", isoA)
+	seedGmailMessageForAccount(t, d, acctB, "b1", "thr-b", "b@example.com", "Bob", "Account B thread", "yo", isoB)
+
+	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: gmailReplyFor("thread")}
+	p := NewPipeline(d, v, gen, gmailPipelineConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.GmailEpisodes, "one episode per account's own thread")
+
+	wmA, err := d.MemoryGmailWatermark(acctA)
+	require.NoError(t, err)
+	assert.Equal(t, float64(uA), wmA, "account A's watermark trails its own newest message")
+
+	wmB, err := d.MemoryGmailWatermark(acctB)
+	require.NoError(t, err)
+	assert.Equal(t, float64(uB), wmB, "account B's watermark trails its own newest message")
+}
+
+// TestGmailExtract_MultiAccount_OneAccountFailureDoesNotBlockOther: account
+// B's batch fails (simulated generator error) while account A's succeeds —
+// A's watermark still advances, B's stays frozen behind its failed batch, and
+// the run itself never fails (per-account batch isolation, MEM-04 extended to
+// the account loop).
+func TestGmailExtract_MultiAccount_OneAccountFailureDoesNotBlockOther(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	const acctA, acctB = int64(1), int64(2)
+	isoA, uA := gmailMsgTime(0)
+	isoB, _ := gmailMsgTime(180)
+	seedGmailMessageForAccount(t, d, acctA, "a1", "thr-a", "a@example.com", "Ann", "Account A thread", "hi", isoA)
+	seedGmailMessageForAccount(t, d, acctB, "b1", "thr-b", "b@example.com", "Bob", "Account B thread", "yo", isoB)
+
+	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: func(user string) (string, error) {
+		if strings.Contains(user, "Account B thread") {
+			return "", fmt.Errorf("simulated account B failure")
+		}
+		return gmailReplyFor("thread")(user)
+	}}
+	p := NewPipeline(d, v, gen, gmailPipelineConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err, "one account's batch failure never fails the run")
+	assert.Equal(t, 1, stats.GmailEpisodes, "account A's episode committed")
+	assert.Equal(t, 1, stats.GmailThreadsFailed, "account B's thread failed")
+
+	wmA, err := d.MemoryGmailWatermark(acctA)
+	require.NoError(t, err)
+	assert.Equal(t, float64(uA), wmA, "account A's watermark advanced")
+
+	wmB, err := d.MemoryGmailWatermark(acctB)
+	require.NoError(t, err)
+	assert.Zero(t, wmB, "account B's watermark never advances behind its failed batch, and A's success does not leak into it")
+}
+
+// TestGmailExtract_MultiAccount_DisabledAccountSkipped: an account whose
+// gmail_enabled flag is off is skipped entirely by the extraction loop — its
+// generator is never invoked and its watermark is never touched, even though
+// memory.sources.gmail is on and it has messages queued.
+func TestGmailExtract_MultiAccount_DisabledAccountSkipped(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+
+	const acctA, acctDisabled = int64(1), int64(2)
+	isoA, uA := gmailMsgTime(0)
+	isoD, _ := gmailMsgTime(60)
+	seedGmailMessageForAccount(t, d, acctA, "a1", "thr-a", "a@example.com", "Ann", "Account A thread", "hi", isoA)
+	seedGmailMessageForAccount(t, d, acctDisabled, "d1", "thr-d", "d@example.com", "Dan", "Disabled thread", "hi", isoD)
+	_, err := d.Exec(`UPDATE google_accounts SET gmail_enabled = 0 WHERE id = ?`, acctDisabled)
+	require.NoError(t, err)
+
+	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: func(user string) (string, error) {
+		if strings.Contains(user, "Disabled thread") {
+			return "", fmt.Errorf("gmail-disabled account must never reach the generator")
+		}
+		return gmailReplyFor("thread")(user)
+	}}
+	p := NewPipeline(d, v, gen, gmailPipelineConfig(), t.Logf)
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.GmailEpisodes, "only the enabled account's thread extracts")
+
+	wmA, err := d.MemoryGmailWatermark(acctA)
+	require.NoError(t, err)
+	assert.Equal(t, float64(uA), wmA)
+
+	wmDisabled, err := d.MemoryGmailWatermark(acctDisabled)
+	require.NoError(t, err)
+	assert.Zero(t, wmDisabled, "disabled account's watermark never touched")
 }
 
 // liveEpisodeNodes returns the ids of every non-tombstone episode node.
@@ -228,7 +332,7 @@ func TestMemory_GmailThreadIdempotent_ReplyArrives(t *testing.T) {
 	assert.Contains(t, node.Body, "mail:m2")
 	assert.Contains(t, node.Body, "mail:m3", "run-2 reply ref unioned in")
 
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(gmailTestAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(u3), wm, "watermark trails the reply")
 }
@@ -266,7 +370,7 @@ func TestMemory_GmailThreadIdempotent_ChunkCapStraddle(t *testing.T) {
 	assert.Contains(t, node.Body, "mail:m1")
 	assert.Contains(t, node.Body, "mail:m2")
 
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(gmailTestAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(u2), wm)
 }
@@ -303,7 +407,7 @@ func TestMemory_GmailPoisonThreadTruncated(t *testing.T) {
 
 	// The watermark still trails EVERY loaded message (incl. the truncated older ones).
 	_, uLast := gmailMsgTime((total - 1) * 10)
-	wm, err := d.MemoryGmailWatermark()
+	wm, err := d.MemoryGmailWatermark(gmailTestAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(uLast), wm, "watermark covers the dropped older messages too")
 }
@@ -319,7 +423,7 @@ func TestListGmailThreadsForExtract_BoundaryDrain(t *testing.T) {
 	seedGmailMessage(t, d, "m2", "t2", "b@example.com", "B", "s", "b", iso)
 	seedGmailMessage(t, d, "m3", "t3", "c@example.com", "C", "s", "b", iso)
 
-	msgs, err := d.ListGmailThreadsForExtract(0, 2) // limit cuts inside the second
+	msgs, err := d.ListGmailThreadsForExtract(gmailTestAccountID, 0, 2) // limit cuts inside the second
 	require.NoError(t, err)
 	assert.Len(t, msgs, 3, "boundary second drained past the limit")
 }

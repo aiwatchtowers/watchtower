@@ -157,7 +157,7 @@ func TestCalDAVRemove_DeletesAccountCalendarAndEvents(t *testing.T) {
 	id, err := database.CreateCalendarAccount(db.CalendarAccount{Provider: "ics"})
 	require.NoError(t, err)
 	calID := db.CalendarAccountCalendarID("ics", id)
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{ID: calID, Name: "Feed"}))
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{ID: calID, Name: "Feed"}))
 	require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{
 		ID: calID + ":evt-1", CalendarID: calID, Title: "Ghost-to-be",
 		StartTime: "2026-07-27T09:00:00Z", EndTime: "2026-07-27T10:00:00Z",

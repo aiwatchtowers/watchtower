@@ -74,6 +74,13 @@ func NewTokenStore(workspaceDir string) *TokenStore {
 	}
 }
 
+// NewAccountTokenStore creates a TokenStore for the given workspace directory and account ID.
+func NewAccountTokenStore(workspaceDir string, accountID int64) *TokenStore {
+	return &TokenStore{
+		path: filepath.Join(workspaceDir, fmt.Sprintf("google_token_%d.json", accountID)),
+	}
+}
+
 // Path returns the token file path.
 func (s *TokenStore) Path() string {
 	return s.path
@@ -264,6 +271,19 @@ func Revoke(ctx context.Context, token string) error {
 		return fmt.Errorf("revoke failed (%d): %s", resp.StatusCode, body)
 	}
 	return nil
+}
+
+// SetGoogleRevokeEndpointForTest overrides the Google token-revocation
+// endpoint for the life of a test and returns a restore func. googleRevokeEndpoint
+// is package-private and swapped directly by this package's own tests
+// (auth_test.go); this exported seam exists for callers OUTSIDE this
+// package (e.g. cmd's `google remove`) that need to exercise Revoke's real
+// HTTP round trip against an httptest.Server rather than mocking Revoke
+// itself.
+func SetGoogleRevokeEndpointForTest(url string) (restore func()) {
+	prev := googleRevokeEndpoint
+	googleRevokeEndpoint = url
+	return func() { googleRevokeEndpoint = prev }
 }
 
 // callbackResult is sent from the HTTP callback handler to the Login goroutine.

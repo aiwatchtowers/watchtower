@@ -430,6 +430,14 @@ func TestGetOpenBrowserFunc_NotNil(t *testing.T) {
 	assert.NotNil(t, getOpenBrowserFunc())
 }
 
+func TestAccountTokenStore_Path(t *testing.T) {
+	dir := t.TempDir()
+	store := NewAccountTokenStore(dir, 3)
+
+	path := store.Path()
+	assert.Equal(t, filepath.Join(dir, "google_token_3.json"), path)
+}
+
 // Ensure the OAuthToken JSON shape is stable so saved tokens stay loadable.
 func TestOAuthToken_JSONShape(t *testing.T) {
 	tok := OAuthToken{AccessToken: "a", TokenType: "Bearer", RefreshToken: "r", Expiry: "e"}

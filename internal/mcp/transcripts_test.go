@@ -27,7 +27,7 @@ func seedTranscriptsDB(t *testing.T) (*db.DB, [3]int64) {
 		}
 	}
 
-	must(database.UpsertCalendar(db.CalendarCalendar{ID: "cal1", Name: "Work"}))
+	must(database.UpsertCalendar(0, db.CalendarCalendar{ID: "cal1", Name: "Work"}))
 	must(database.UpsertCalendarEvent(db.CalendarEvent{
 		ID: "EV1", CalendarID: "cal1", Title: "Roadmap Sync",
 		StartTime: "2026-07-05T10:00:00Z", EndTime: "2026-07-05T11:00:00Z",

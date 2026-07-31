@@ -3,8 +3,8 @@ import SwiftUI
 /// Sheet for connecting a new calendar source, presented from the Settings →
 /// Calendar Accounts section and the Calendar tab's not-connected screen.
 /// Three provider cards:
-///  - Google: the EXISTING single-account OAuth flow (`GoogleConnectFlow.shared`),
-///    calendar-only — this view adds no Google logic of its own.
+///  - Google: redirects to the multi-account `AddGoogleAccountView` sheet
+///    (Settings → Google Accounts) — this view adds no Google logic of its own.
 ///  - CalDAV: a server URL/credentials form; the app password is written to the
 ///    `caldav add` subprocess's stdin, never passed as a flag.
 ///  - ICS: a secret feed link (e.g. Google Calendar's "Secret address in iCal
@@ -14,8 +14,9 @@ struct AddCalendarAccountView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
-    private var google: GoogleConnectFlow { GoogleConnectFlow.shared }
     private var vm: CalendarAccountsViewModel? { appState.calendarAccountsViewModel }
+
+    @State private var showAddGoogleAccountSheet = false
 
     // MARK: - CalDAV form state
 
@@ -86,9 +87,6 @@ struct AddCalendarAccountView: View {
         }
         .padding(20)
         .frame(width: showAssistant ? 860 : 480, height: 640)
-        .onAppear {
-            google.refresh()
-        }
     }
 
     // MARK: - Google card
@@ -102,42 +100,26 @@ struct AddCalendarAccountView: View {
                         .font(.headline)
                     Spacer()
                 }
-                Text("Google's own OAuth flow — a single Google account.")
+                Text("Google's OAuth flow — supports multiple Google accounts.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if google.calendar.isConnected {
-                    Label("Connected", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else if google.isRunning {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text("Connecting...")
-                        Spacer()
-                        Button("Cancel") { google.cancel() }
-                    }
-                } else {
-                    Button("Connect Google Calendar") {
-                        google.includeGmail = false
-                        google.includeCalendar = true
-                        google.connect()
-                    }
-                    .buttonStyle(.borderedProminent)
+                Button("Connect Google Calendar") {
+                    showAddGoogleAccountSheet = true
                 }
+                .buttonStyle(.borderedProminent)
 
                 Text("No Google sign-in? The ICS card below works with Google Calendar's "
                     + "\"Secret address in iCal format\" — no OAuth needed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                if let err = google.error {
-                    Text(err)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(4)
+        }
+        .sheet(isPresented: $showAddGoogleAccountSheet) {
+            AddGoogleAccountView()
+                .environment(appState)
         }
     }
 

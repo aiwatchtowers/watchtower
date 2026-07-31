@@ -14,6 +14,10 @@ final class CalendarViewModel {
     var nextEvent: CalendarEvent?
     var isConnected: Bool = false
 
+    /// Calendars grouped for the Settings "Synced Calendars" section —
+    /// reloaded together with events on `loadEvents()`.
+    private(set) var calendars: [CalendarCalendarItem] = []
+
     /// Non-nil when the daemon has detected that the Google refresh token is revoked or failing.
     /// The Desktop shows a reconnect popup while this is present.
     var authState: CalendarQueries.AuthState?
@@ -51,7 +55,7 @@ final class CalendarViewModel {
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
 
-        let result = try? dbPool.read { db -> ([DayEvents], CalendarEvent?, CalendarQueries.AuthState?) in
+        let result = try? dbPool.read { db -> ([DayEvents], CalendarEvent?, CalendarQueries.AuthState?, [CalendarCalendarItem]) in
             var days: [DayEvents] = []
             for offset in 0..<self.daysAhead {
                 let dayStart = today.addingTimeInterval(Double(offset) * 86400)
@@ -64,11 +68,13 @@ final class CalendarViewModel {
             }
             let next = try CalendarQueries.fetchNextEvent(db)
             let auth = try? CalendarQueries.fetchAuthState(db)
-            return (days, next, auth)
+            let cals = try CalendarQueries.fetchCalendarsGroupedForSettings(db)
+            return (days, next, auth, cals)
         }
 
         dailyEvents = result?.0 ?? []
         nextEvent = result?.1
+        calendars = result?.3 ?? []
 
         let auth = result?.2
         if let auth, auth.status == "revoked" || auth.status == "error" {
@@ -81,6 +87,18 @@ final class CalendarViewModel {
             try CalendarQueries.eventCount(db) > 0
         }) ?? false
         isConnected = hasEvents
+    }
+
+    /// Flips a single calendar's sync selection (Desktop twin of `watchtower
+    /// calendar select <id>`), then reloads so Settings reflects the new
+    /// state immediately.
+    func setCalendarSelected(_ id: String, selected: Bool) {
+        Task {
+            try? await dbPool.write { db in
+                try CalendarQueries.setCalendarSelected(db, id: id, selected: selected)
+            }
+            loadEvents()
+        }
     }
 
     // MARK: - Helpers

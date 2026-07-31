@@ -561,13 +561,29 @@ enum TestDatabase {
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_feedback_item ON inbox_feedback(inbox_item_id);
 
+    CREATE TABLE IF NOT EXISTS google_accounts (
+        id                             INTEGER PRIMARY KEY AUTOINCREMENT,
+        email                          TEXT NOT NULL DEFAULT '',
+        label                          TEXT NOT NULL DEFAULT '',
+        client_id                      TEXT NOT NULL DEFAULT '',
+        calendar_enabled               INTEGER NOT NULL DEFAULT 0,
+        gmail_enabled                  INTEGER NOT NULL DEFAULT 0,
+        status                         TEXT NOT NULL DEFAULT 'ok',
+        error                          TEXT NOT NULL DEFAULT '',
+        gmail_last_internal_date       REAL NOT NULL DEFAULT 0,
+        memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,
+        created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+
     CREATE TABLE IF NOT EXISTS calendar_calendars (
         id          TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
         is_primary  INTEGER NOT NULL DEFAULT 0,
         is_selected INTEGER NOT NULL DEFAULT 1,
         color       TEXT NOT NULL DEFAULT '',
-        synced_at   TEXT NOT NULL DEFAULT ''
+        synced_at   TEXT NOT NULL DEFAULT '',
+        account_id  INTEGER REFERENCES google_accounts(id)
     );
 
     CREATE TABLE IF NOT EXISTS calendar_events (
@@ -587,7 +603,8 @@ enum TestDatabase {
         html_link       TEXT NOT NULL DEFAULT '',
         raw_json        TEXT NOT NULL DEFAULT '{}',
         synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at      TEXT NOT NULL DEFAULT ''
+        updated_at      TEXT NOT NULL DEFAULT '',
+        ical_uid        TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);
@@ -600,7 +617,8 @@ enum TestDatabase {
     );
 
     CREATE TABLE IF NOT EXISTS gmail_messages (
-        id             TEXT PRIMARY KEY,
+        account_id     INTEGER NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        id             TEXT NOT NULL,
         thread_id      TEXT NOT NULL DEFAULT '',
         from_email     TEXT NOT NULL DEFAULT '',
         from_name      TEXT NOT NULL DEFAULT '',
@@ -614,17 +632,11 @@ enum TestDatabase {
         is_unread      INTEGER NOT NULL DEFAULT 0,
         permalink      TEXT NOT NULL DEFAULT '',
         synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        PRIMARY KEY (account_id, id)
     );
     CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
     CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
-
-    CREATE TABLE IF NOT EXISTS gmail_auth_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        status TEXT NOT NULL DEFAULT 'ok',
-        error TEXT NOT NULL DEFAULT '',
-        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-    );
 
     CREATE TABLE IF NOT EXISTS feedback (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1440,12 +1452,13 @@ enum TestDatabase {
         id: String = "primary",
         name: String = "Primary",
         isPrimary: Bool = true,
-        isSelected: Bool = true
+        isSelected: Bool = true,
+        accountID: Int64? = nil
     ) throws {
         try db.execute(sql: """
-            INSERT OR IGNORE INTO calendar_calendars (id, name, is_primary, is_selected)
-            VALUES (?, ?, ?, ?)
-            """, arguments: [id, name, isPrimary ? 1 : 0, isSelected ? 1 : 0])
+            INSERT OR IGNORE INTO calendar_calendars (id, name, is_primary, is_selected, account_id)
+            VALUES (?, ?, ?, ?, ?)
+            """, arguments: [id, name, isPrimary ? 1 : 0, isSelected ? 1 : 0, accountID])
     }
 
     static func insertCalendarEvent(
@@ -1764,6 +1777,31 @@ enum TestDatabase {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             arguments: [provider, username, url, label, status, error, createdAt, createdAt]
+        )
+        return db.lastInsertedRowID
+    }
+
+    // MARK: - Google Account Fixtures
+
+    @discardableResult
+    static func insertGoogleAccount(
+        _ db: Database,
+        email: String = "",
+        label: String = "",
+        clientID: String = "",
+        calendarEnabled: Bool = false,
+        gmailEnabled: Bool = false,
+        status: String = "ok",
+        error: String = "",
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO google_accounts
+                    (email, label, client_id, calendar_enabled, gmail_enabled, status, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [email, label, clientID, calendarEnabled, gmailEnabled, status, error, createdAt, createdAt]
         )
         return db.lastInsertedRowID
     }

@@ -165,12 +165,14 @@ func TestRunSituationCards_EmailSignalIncludesFullBody(t *testing.T) {
 	// the full gmail body_text, not just the subject+preview Snippet triage
 	// judges on. message_ts on an email inbox item is the Gmail message id.
 	d, p, gen := newComposePipeline(t)
-	require.NoError(t, d.UpsertGmailMessage(db.GmailMessage{
+	acctID, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me"})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertGmailMessage(acctID, db.GmailMessage{
 		ID: "gm1", ThreadID: "thr1", FromEmail: "a@x.com",
 		ToJSON: `["me@x.com"]`, CcJSON: `[]`, Subject: "Contract renewal",
 		Snippet: "preview only", BodyText: "The full contract terms are attached, please review by Friday.",
-		InternalDate: "2026-07-09T10:00:00Z",
-	}, "2026-07-09T10:00:01Z"))
+		InternalDate: "2026-07-09T10:00:00Z", SyncedAt: "2026-07-09T10:00:01Z",
+	}))
 
 	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "contract renewal", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
 	require.NoError(t, err)

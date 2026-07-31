@@ -172,24 +172,70 @@ func oneLine(s string) string {
 }
 
 // runGmailExtract is the Gmail episode-extraction step (Run step 4b, behind
-// memory.sources.gmail). It loads gmail_messages above the Gmail watermark
-// (capped at MaxChunkMessages, boundary-drained for same-second tie safety),
-// groups them into threads, and extracts one episode per thread, batching small
-// threads into one AI call. The watermark advances only behind committed thread
-// batches (MEM-04); a per-batch AI/lookup failure freezes every thread in that
-// batch and re-extracts next run, never failing the run (batch isolation, the
-// Slack extractor's contract). stepOffset is the number of Slack extraction
-// batch rows already recorded, so Gmail batch rows number after them. Returns
-// the number of Gmail batch pipeline_steps rows recorded.
+// memory.sources.gmail), looped over every connected google_accounts row with
+// Gmail enabled (multi-account plan Task 9 — each account carries its own
+// memory_gmail_last_extracted_ts, so a disabled or errored account can never
+// advance, freeze, or otherwise affect another account's watermark). A single
+// account's failure (watermark/list lookup, or a batch's AI/lookup error) is
+// logged and the loop moves on to the next account — never fatal to the run,
+// mirroring the per-batch isolation each account's own extraction already
+// gives its threads. stepOffset is the number of Slack extraction batch rows
+// already recorded; step numbers keep incrementing across accounts so every
+// account's batch rows number after the previous account's. Returns the total
+// number of Gmail batch pipeline_steps rows recorded across every account.
 func (p *Pipeline) runGmailExtract(ctx context.Context, runID int64, stepOffset int, acc *usageAccumulator, stats *RunStats) (int, error) {
 	if p.generator == nil {
 		return 0, nil
 	}
-	wm, err := p.db.MemoryGmailWatermark()
+	accounts, err := p.db.ListGoogleAccounts()
 	if err != nil {
 		return 0, err
 	}
-	msgs, err := p.db.ListGmailThreadsForExtract(wm, orDefault(p.cfg.MaxChunkMessages, 2000))
+
+	// The mail-only provenance registry is built ONCE per run, shared across
+	// every account (not per batch or per account): mail: is the only scheme a
+	// Gmail episode can carry, and GmailMessageExists is deliberately
+	// account-unscoped (a documented v1 limitation — cross-account message-id
+	// collision accepted), so every account's batches validate through the same
+	// instance (MEM-12 scheme scoping).
+	mailReg := newProvenanceRegistry(mailResolver{p.db})
+
+	recorded := 0
+	for _, acct := range accounts {
+		if !acct.GmailEnabled {
+			continue
+		}
+		if ctx.Err() != nil {
+			p.logf("memory: gmail extraction interrupted before account %d", acct.ID)
+			break
+		}
+		n, aerr := p.runGmailExtractAccount(ctx, runID, stepOffset+recorded, mailReg, acct.ID, acc, stats)
+		if aerr != nil {
+			p.logf("memory: gmail extract account %d: %v", acct.ID, aerr)
+		}
+		recorded += n
+	}
+	return recorded, nil
+}
+
+// runGmailExtractAccount runs the Gmail episode-extraction step for ONE
+// connected account (see runGmailExtract for the per-account loop). It loads
+// that account's gmail_messages above ITS OWN Gmail watermark (capped at
+// MaxChunkMessages — a per-account cap since Task 9's multi-account
+// threading; previously a per-run cap when there was only ever one account,
+// which is fine because it bounds one chunk's size, not a cross-account
+// budget), groups them into threads, and extracts one episode per thread,
+// batching small threads into one AI call. The watermark advances only behind
+// committed thread batches (MEM-04); a per-batch AI/lookup failure freezes
+// every thread in that batch and re-extracts next run, never failing the run
+// (batch isolation, the Slack extractor's contract). Returns the number of
+// Gmail batch pipeline_steps rows recorded for this account.
+func (p *Pipeline) runGmailExtractAccount(ctx context.Context, runID int64, stepOffset int, mailReg *provenanceRegistry, accountID int64, acc *usageAccumulator, stats *RunStats) (int, error) {
+	wm, err := p.db.MemoryGmailWatermark(accountID)
+	if err != nil {
+		return 0, err
+	}
+	msgs, err := p.db.ListGmailThreadsForExtract(accountID, wm, orDefault(p.cfg.MaxChunkMessages, 2000))
 	if err != nil {
 		return 0, err
 	}
@@ -197,11 +243,6 @@ func (p *Pipeline) runGmailExtract(ctx context.Context, runID int64, stepOffset 
 		return 0, nil
 	}
 	threads := groupGmailThreads(msgs, orDefault(p.cfg.MaxWindowMessages, 200))
-
-	// The mail-only provenance registry is built ONCE per run (not per batch):
-	// mail: is the only scheme a Gmail episode can carry, so every batch validates
-	// through the same instance (MEM-12 scheme scoping).
-	mailReg := newProvenanceRegistry(mailResolver{p.db})
 
 	// Reuse the Slack extractor's tie-safe batching + watermark helpers by
 	// projecting each thread onto a runWindow (thread_id as the channel bucket,
@@ -227,7 +268,7 @@ func (p *Pipeline) runGmailExtract(ctx context.Context, runID int64, stepOffset 
 	recorded := 0
 	for bi, idxs := range batches {
 		if ctx.Err() != nil {
-			p.logf("memory: gmail extraction interrupted, %d threads left for the next run", remainingWindows(batches[bi:]))
+			p.logf("memory: gmail extraction interrupted, %d threads left for account %d next run", remainingWindows(batches[bi:]), accountID)
 			break
 		}
 		start := time.Now()
@@ -237,13 +278,13 @@ func (p *Pipeline) runGmailExtract(ctx context.Context, runID int64, stepOffset 
 		if werr != nil {
 			status = "error"
 			stats.GmailThreadsFailed += len(idxs)
-			p.logf("memory: gmail extract batch [%s]: %v", batchChannelNames(windows, idxs), werr)
+			p.logf("memory: gmail extract batch [%s] account %d: %v", batchChannelNames(windows, idxs), accountID, werr)
 		} else {
 			for _, i := range idxs {
 				done[i] = true
 			}
 			stats.GmailEpisodes += episodes
-			current = p.advanceGmailWatermark(windows, done, current)
+			current = p.advanceGmailWatermark(accountID, windows, done, current)
 		}
 		p.recordBatchStep(runID, stepOffset+bi+1, stepOffset+len(batches), status, windows, idxs, usage, start)
 		recorded++
@@ -251,16 +292,18 @@ func (p *Pipeline) runGmailExtract(ctx context.Context, runID int64, stepOffset 
 	return recorded, nil
 }
 
-// advanceGmailWatermark moves the Gmail extraction watermark to the highest safe
-// point behind the committed thread batches (MEM-04, the Slack advanceWatermark
-// analog over memory_gmail_last_extracted_ts).
-func (p *Pipeline) advanceGmailWatermark(windows []runWindow, done []bool, current float64) float64 {
+// advanceGmailWatermark moves accountID's Gmail extraction watermark to the
+// highest safe point behind ITS OWN committed thread batches (MEM-04, the
+// Slack advanceWatermark analog over memory_gmail_last_extracted_ts) — every
+// call is scoped to one account's windows/done/current, so one account's
+// advance can never leak into another account's watermark.
+func (p *Pipeline) advanceGmailWatermark(accountID int64, windows []runWindow, done []bool, current float64) float64 {
 	safe, ok := safeWatermark(windows, done)
 	if !ok || safe <= current {
 		return current
 	}
-	if err := p.db.SetMemoryGmailWatermark(safe); err != nil {
-		p.logf("memory: set gmail watermark: %v", err)
+	if err := p.db.SetMemoryGmailWatermark(accountID, safe); err != nil {
+		p.logf("memory: set gmail watermark for account %d: %v", accountID, err)
 		return current
 	}
 	return safe

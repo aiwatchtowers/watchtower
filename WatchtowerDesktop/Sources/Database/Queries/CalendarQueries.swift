@@ -99,22 +99,65 @@ enum CalendarQueries {
         ) ?? 0
     }
 
+    /// Calendars for the Settings "Synced Calendars" section, pre-ordered so
+    /// Google-linked rows are grouped by their owning account and CalDAV/ICS
+    /// rows (`account_id IS NULL`) sort last — the View groups this flat list
+    /// by account (see `SettingsView.calendarSelectionSection`).
+    static func fetchCalendarsGroupedForSettings(_ db: Database) throws -> [CalendarCalendarItem] {
+        try CalendarCalendarItem.fetchAll(
+            db,
+            sql: """
+                SELECT * FROM calendar_calendars
+                ORDER BY (account_id IS NULL), account_id, is_primary DESC, name
+                """
+        )
+    }
+
+    /// Flips ONLY `is_selected` — the Desktop twin of `watchtower calendar
+    /// select <id>` / `SetCalendarSelected` in internal/db/calendar.go: a
+    /// direct single-column write, no side effects.
+    static func setCalendarSelected(_ db: Database, id: String, selected: Bool) throws {
+        try db.execute(
+            sql: "UPDATE calendar_calendars SET is_selected = ? WHERE id = ?",
+            arguments: [selected, id]
+        )
+    }
+
     // MARK: - Auth State
 
     struct AuthState: Equatable {
+        /// The specific google_accounts row this state describes — required
+        /// so the reconnect flow can target THIS account (`google login
+        /// --account <id>`) rather than falling back to the CLI's generic
+        /// "account #1" alias, which may be a different, healthy account in
+        /// a multi-account workspace (N2).
+        let accountID: Int
         let status: String   // "ok" | "revoked" | "error"
         let error: String
         let updatedAt: String
     }
 
-    /// Returns the current calendar auth state, or nil if the table is missing (older schema).
+    /// Returns the Calendar-enabled Google account whose OAuth grant needs
+    /// attention (most-recently-updated row with `status IN ('error',
+    /// 'revoked')`), or nil when every Calendar-enabled account is healthy
+    /// (or there are none). Was `calendar_auth_state`, a single-row table
+    /// DROPPED by migration 00043 in favor of one row per Google account in
+    /// `google_accounts` — nil here means "nothing needs reconnecting", not
+    /// "older schema" (that framing described the pre-multi-account table,
+    /// which no longer exists).
     static func fetchAuthState(_ db: Database) throws -> AuthState? {
         let row = try Row.fetchOne(
             db,
-            sql: "SELECT status, error, updated_at FROM calendar_auth_state WHERE id = 1"
+            sql: """
+                SELECT id, status, error, updated_at FROM google_accounts
+                WHERE calendar_enabled = 1 AND status IN ('error', 'revoked')
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """
         )
         guard let row else { return nil }
         return AuthState(
+            accountID: row["id"] ?? 0,
             status: row["status"] ?? "ok",
             error: row["error"] ?? "",
             updatedAt: row["updated_at"] ?? ""

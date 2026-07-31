@@ -78,7 +78,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	// GOOGLE syncer's calendar selection, and a caldav:/ics: id must never end
 	// up in its fetch/stale-delete loops. The upsert's conflict clause doesn't
 	// touch is_selected, so this only applies on first insert.
-	if err := s.db.UpsertCalendar(db.CalendarCalendar{
+	// accountID 0 (NULL): caldav:/ics: calendars must never carry a
+	// google_accounts id (see dropNonGoogleCalendarIDs in internal/calendar).
+	if err := s.db.UpsertCalendar(0, db.CalendarCalendar{
 		ID:       calID,
 		Name:     s.calendarName(),
 		SyncedAt: syncedAt,
