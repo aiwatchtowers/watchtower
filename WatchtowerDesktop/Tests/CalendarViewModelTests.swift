@@ -77,6 +77,48 @@ struct CalendarViewModelTests {
     // calendar_auth_state isn't in the test schema, so we don't exercise that
     // branch here — coverage for it lives in Go-side tests (internal/db).
 
+    @Test("loadEvents includes past days inside the history window and drops older ones")
+    func loadPastEvents() throws {
+        let pool = try makePool()
+        let cal = Calendar.current
+        let now = Date()
+        let threeDaysAgo = cal.date(byAdding: .day, value: -3, to: now)!
+        let twentyDaysAgo = cal.date(byAdding: .day, value: -20, to: now)!
+
+        try insertEvent(pool, id: "recent-past", title: "Retro", start: threeDaysAgo, end: threeDaysAgo.addingTimeInterval(3600))
+        try insertEvent(pool, id: "deep-past", title: "Ancient", start: twentyDaysAgo, end: twentyDaysAgo.addingTimeInterval(3600))
+        try insertEvent(pool, id: "today", title: "Standup", start: now, end: now.addingTimeInterval(1800))
+
+        let vm = CalendarViewModel(dbPool: pool, historyDays: 14)
+        vm.stopObserving()
+        vm.loadEvents()
+
+        let allIDs = vm.dailyEvents.flatMap(\.events).map(\.id)
+        #expect(allIDs.contains("recent-past"))
+        #expect(!allIDs.contains("deep-past"), "events older than the history window stay hidden")
+        // Date-keyed accessor: today's group is found even with past days first.
+        #expect(vm.todayEvents.contains { $0.id == "today" })
+        // Past groups sort before today.
+        let pastIndex = vm.dailyEvents.firstIndex { $0.events.contains { $0.id == "recent-past" } }
+        let todayIndex = vm.dailyEvents.firstIndex { $0.events.contains { $0.id == "today" } }
+        #expect(pastIndex! < todayIndex!)
+    }
+
+    @Test("degenerate historyDays values clamp to a 1-day floor")
+    func historyDaysClamped() throws {
+        let pool = try makePool()
+        // 0 and negative are valid-but-degenerate config values; the window
+        // must never collapse below one day of history (and never crash).
+        let vmZero = CalendarViewModel(dbPool: pool, historyDays: 0)
+        vmZero.stopObserving()
+        #expect(vmZero.historyDays == 1)
+        let vmNegative = CalendarViewModel(dbPool: pool, historyDays: -7)
+        vmNegative.stopObserving()
+        #expect(vmNegative.historyDays == 1)
+        vmNegative.loadEvents()
+        #expect(vmNegative.dailyEvents.isEmpty)
+    }
+
     @Test("todayEvents accessor returns first day group")
     func todayEventsAccessor() throws {
         let pool = try makePool()

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GRDB
 import UserNotifications
 
 /// Allows notifications to display as banners even when the app is in the foreground,
@@ -25,6 +26,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     ) {
         let userInfo = response.notification.request.content.userInfo
         let type = userInfo["type"] as? String
+        let actionID = response.actionIdentifier
 
         // Bring the running app to front
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -44,12 +46,49 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                 appState?.selectedDestination = .targets
             case "daily_summary":
                 appState?.selectedDestination = .digests
+            case "meeting_reminder":
+                await Self.handleMeetingReminderAction(actionID: actionID, userInfo: userInfo, appState: appState)
+            case "meeting_stop_recording":
+                if actionID == NotificationService.stopRecordingActionID {
+                    await appState?.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
+                } else {
+                    appState?.selectedDestination = .calendar
+                }
             default:
                 break
             }
         }
 
         completionHandler()
+    }
+
+    /// Pre-meeting push actions: Join / Join + Record route through the shared
+    /// `JoinMeetingAction` ("Join + Record" forces recording regardless of the
+    /// auto-record setting); a plain tap navigates to the Calendar tab.
+    @MainActor
+    private static func handleMeetingReminderAction(
+        actionID: String,
+        userInfo: [AnyHashable: Any],
+        appState: AppState?
+    ) async {
+        guard actionID == NotificationService.joinActionID
+            || actionID == NotificationService.joinRecordActionID else {
+            appState?.selectedDestination = .calendar
+            return
+        }
+        let eventID = userInfo["eventId"] as? String
+        if let appState, let pool = appState.databaseManager?.dbPool, let eventID,
+           let event = try? await pool.read({ db in try CalendarQueries.fetchEvent(db, id: eventID) }) {
+            await JoinMeetingAction.join(
+                event: event,
+                center: appState.meetingRecorderCenter,
+                forceRecord: actionID == NotificationService.joinRecordActionID
+            )
+        } else if let urlString = userInfo["conferenceUrl"] as? String,
+                  let url = URL(string: urlString), !urlString.isEmpty {
+            // Event vanished between push and tap — still open the link.
+            NSWorkspace.shared.open(url)
+        }
     }
 }
 
@@ -62,6 +101,7 @@ struct WatchtowerApp: App {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
         UNUserNotificationCenter.current().delegate = notificationDelegate
+        NotificationService.registerMeetingCategories()
     }
 
     var body: some Scene {
@@ -73,6 +113,11 @@ struct WatchtowerApp: App {
                 }
                 .overlay(alignment: .bottomTrailing) {
                     ExtractIndicatorView()
+                }
+                // Separate alignment from the recording/extract indicators'
+                // corner, so the banner and the pills never overlap.
+                .overlay(alignment: .top) {
+                    UpcomingMeetingBannerView()
                 }
                 .background(OpaqueWindowBackground())
                 // `.environment` must wrap the overlay too: the overlay attaches as a

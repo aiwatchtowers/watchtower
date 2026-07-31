@@ -88,20 +88,32 @@ struct CalendarEventsView: View {
     }
 
     private func eventsList(_ vm: CalendarViewModel) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
 
-                ForEach(vm.dailyEvents) { day in
-                    daySection(day: day, isToday: day.label == "Today")
-                }
+                    ForEach(vm.dailyEvents) { day in
+                        daySection(day: day)
+                            .id(day.id)
+                    }
 
-                if vm.dailyEvents.isEmpty {
-                    emptyState
+                    if vm.dailyEvents.isEmpty {
+                        emptyState
+                    }
                 }
+                .padding()
             }
-            .padding()
+            .onAppear { scrollToToday(vm, proxy: proxy) }
         }
+    }
+
+    /// With past days in the list, land on "Today" (or the first future day
+    /// when today has no events) instead of two weeks of history.
+    private func scrollToToday(_ vm: CalendarViewModel, proxy: ScrollViewProxy) {
+        let today = Calendar.current.startOfDay(for: Date())
+        guard let target = vm.dailyEvents.first(where: { $0.id >= today })?.id else { return }
+        proxy.scrollTo(target, anchor: .top)
     }
 
     // MARK: - Header
@@ -179,7 +191,10 @@ struct CalendarEventsView: View {
 
     // MARK: - Day Section
 
-    private func daySection(day: DayEvents, isToday: Bool) -> some View {
+    private func daySection(day: DayEvents) -> some View {
+        let cal = Calendar.current
+        let isToday = cal.isDateInToday(day.id)
+        let isPast = day.id < cal.startOfDay(for: Date())
         let timed = day.events.filter { !$0.isAllDay }
         let allDay = day.events.filter { $0.isAllDay }
 
@@ -196,6 +211,10 @@ struct CalendarEventsView: View {
                 eventRow(event)
             }
         }
+        // Past days are browsable history, visually receded; their events
+        // never carry the upcoming/now highlight anyway (both are start-time
+        // based), so dimming the whole section is enough.
+        .opacity(isPast ? 0.55 : 1)
     }
 
     // MARK: - All-Day Chip

@@ -18,7 +18,7 @@ import (
 // (calendar_accounts row) and stores them. One Syncer per account — mirrors
 // imap.Syncer's per-account shape, but with the Google calendar.Syncer's
 // window-replace discipline instead of a watermark: every cycle re-fetches
-// the whole [now-24h, now+SyncDaysAhead] window, upserts with a single
+// the whole [now-HistoryDays, now+SyncDaysAhead] window, upserts with a single
 // syncedAt stamp, and stale-deletes per calendar_id so events removed
 // upstream disappear while other sources' events stay untouched.
 type Syncer struct {
@@ -55,7 +55,7 @@ func (s *Syncer) CalendarID() string {
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	now := s.now().UTC()
 	syncedAt := now.Format(time.RFC3339)
-	winStart := now.Add(-24 * time.Hour) // past 1 day, mirroring the Google syncer
+	winStart := now.Add(-time.Duration(s.appConfig.Calendar.CalendarHistoryDays()) * 24 * time.Hour) // past history_days, mirroring the Google syncer
 
 	daysAhead := s.appConfig.Calendar.SyncDaysAhead
 	if daysAhead <= 0 {

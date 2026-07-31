@@ -16,10 +16,13 @@ enum JoinMeetingAction {
     static let autoRecordKey = "calendar.autoRecordOnJoin"
 
     /// `openURL` and `defaults` are injectable seams so tests neither drive
-    /// `NSWorkspace` nor read the real preference.
+    /// `NSWorkspace` nor read the real preference. `forceRecord` (the
+    /// notification's "Join + Record" action) starts a recording regardless of
+    /// the auto-record setting — the single-slot recorder guard still applies.
     static func join(
         event: CalendarEvent,
         center: MeetingRecorderCenter,
+        forceRecord: Bool = false,
         defaults: UserDefaults = .standard,
         openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     ) async {
@@ -27,7 +30,7 @@ enum JoinMeetingAction {
         openURL(url)
 
         let autoRecord = defaults.object(forKey: autoRecordKey) as? Bool ?? true
-        guard autoRecord, !center.isBusy else { return }
+        guard forceRecord || autoRecord, !center.isBusy else { return }
         // A start failure surfaces through the Center's own error path
         // (RecordingIndicatorView) — the link has already opened above.
         await center.startRecording(eventID: event.id, title: event.title, config: .fromDefaults())

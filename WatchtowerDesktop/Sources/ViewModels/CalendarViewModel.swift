@@ -25,11 +25,17 @@ final class CalendarViewModel {
     private let dbPool: DatabasePool
     private var observationTask: Task<Void, Never>?
 
-    /// Number of days to display (including today).
+    /// Number of future days to display (including today).
     private let daysAhead = 7
 
-    init(dbPool: DatabasePool) {
+    /// Days of past events to display — `calendar.history_days` from the
+    /// config (the same knob that widens the Go syncers' timeMin), fallback 14.
+    let historyDays: Int
+
+    /// `historyDays` is injectable for tests; nil reads the config file.
+    init(dbPool: DatabasePool, historyDays: Int? = nil) {
         self.dbPool = dbPool
+        self.historyDays = max(1, historyDays ?? ConfigService().calendarHistoryDays)
         loadEvents()
         startObserving()
     }
@@ -41,12 +47,18 @@ final class CalendarViewModel {
 
     // MARK: - Convenience accessors (backward compat)
 
+    /// Keyed by date, not list position — with past days in `dailyEvents`
+    /// the first group is no longer necessarily today.
     var todayEvents: [CalendarEvent] {
-        dailyEvents.first?.events ?? []
+        events(startingAt: Calendar.current.startOfDay(for: Date()))
     }
 
     var tomorrowEvents: [CalendarEvent] {
-        dailyEvents.dropFirst().first?.events ?? []
+        events(startingAt: Calendar.current.startOfDay(for: Date()).addingTimeInterval(86400))
+    }
+
+    private func events(startingAt dayStart: Date) -> [CalendarEvent] {
+        dailyEvents.first { $0.id == dayStart }?.events ?? []
     }
 
     // MARK: - Data Loading
@@ -57,7 +69,7 @@ final class CalendarViewModel {
 
         let result = try? dbPool.read { db -> ([DayEvents], CalendarEvent?, CalendarQueries.AuthState?, [CalendarCalendarItem]) in
             var days: [DayEvents] = []
-            for offset in 0..<self.daysAhead {
+            for offset in -self.historyDays..<self.daysAhead {
                 let dayStart = today.addingTimeInterval(Double(offset) * 86400)
                 let dayEnd = dayStart.addingTimeInterval(86400)
                 let items = try CalendarQueries.fetchEvents(db, from: dayStart, to: dayEnd)
@@ -106,6 +118,7 @@ final class CalendarViewModel {
     private static func label(for date: Date, calendar cal: Calendar) -> String {
         if cal.isDateInToday(date) { return "Today" }
         if cal.isDateInTomorrow(date) { return "Tomorrow" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
         let fmt = DateFormatter()
         fmt.locale = Locale.current
         fmt.dateFormat = "EEEE, d MMM"
