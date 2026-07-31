@@ -28,11 +28,9 @@ done
 VERSION="${VERSION:-0.2.0}"
 
 if $DEV_MODE; then
-    SIGN_IDENTITY="-"
     NOTARIZE_PROFILE=""
-    echo "==> Building Watchtower v$VERSION (arm64) [DEV MODE — no signing/notarization]"
+    echo "==> Building Watchtower v$VERSION (arm64) [DEV MODE — no DMG/ZIP/notarization]"
 else
-    SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
     NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
     echo "==> Building Watchtower v$VERSION (arm64)"
 fi
@@ -186,20 +184,42 @@ if [ -f "$DESKTOP_DIR/Resources/AppIcon.icns" ]; then
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
-# Code sign
-# Even in dev mode: do ad-hoc sign with entitlements so TCC can identify the bundle
-# by its signature. Without a signature, macOS Tahoe (26+) issues TCC prompts for
-# Downloads/Documents/Desktop on every launch via AppIntents/Spotlight preflight.
-if $DEV_MODE; then
-    echo "==> Ad-hoc code signing (dev mode)..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
-elif [ "$SIGN_IDENTITY" != "-" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+# Code sign — one path for dev and release.
+# TCC pins permission grants (mic, system audio) to the app's code signature. An
+# ad-hoc signature has no designated requirement, so the grant keys off the
+# bundle's cdhash — which changes every build (the Go binary embeds
+# BuildDate/Commit via ldflags). New cdhash → "different app" → grant lost.
+# A stable identity keeps grants across rebuilds, so prefer one:
+#   1. explicit $CODESIGN_IDENTITY (must exist in the keychain),
+#   2. else a single auto-detected "Developer ID Application" identity,
+#   3. else ad-hoc (grants will NOT survive rebuilds).
+SIGN_IDENTITY="-"
+if [ -n "${CODESIGN_IDENTITY:-}" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$CODESIGN_IDENTITY"; then
+    SIGN_IDENTITY="$CODESIGN_IDENTITY"
+else
+    if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+        echo "WARNING: CODESIGN_IDENTITY '$CODESIGN_IDENTITY' not found in keychain — trying auto-detect."
+    fi
+    DETECTED_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep "Developer ID Application" \
+        | sed -E 's/^.*"(.+)"[[:space:]]*$/\1/' || true)
+    if [ -n "$DETECTED_IDENTITY" ] && [ "$(printf '%s\n' "$DETECTED_IDENTITY" | wc -l | tr -d ' ')" -eq 1 ]; then
+        SIGN_IDENTITY="$DETECTED_IDENTITY"
+        echo "==> Auto-detected signing identity: $SIGN_IDENTITY"
+    fi
+fi
+
+if [ "$SIGN_IDENTITY" != "-" ]; then
     echo "==> Code signing with: $SIGN_IDENTITY"
     codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
     codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
     echo "==> Ad-hoc code signing..."
+    echo "    WARNING: no \"Developer ID Application\" identity found in the keychain."
+    echo "    Signing ad-hoc: TCC permission grants (microphone, system audio) will"
+    echo "    NOT survive rebuilds — the grant is pinned to the bundle's cdhash,"
+    echo "    which changes every build. Install a Developer ID Application"
+    echo "    certificate or set CODESIGN_IDENTITY for stable grants."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 fi
