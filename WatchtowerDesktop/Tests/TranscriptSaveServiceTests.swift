@@ -87,6 +87,66 @@ final class TranscriptSaveServiceTests: XCTestCase {
         XCTAssertEqual(args[10], "{}")
     }
 
+    // MARK: - save: segments file
+
+    func test_saveWritesSegmentsFileNextToTranscript() async throws {
+        let utterances = [
+            TranscriptUtterance(idx: 0, startSec: 0, endSec: 2, speaker: "Я", text: "привет"),
+            TranscriptUtterance(idx: 1, startSec: 2, endSec: 5, speaker: "Speaker 1", text: "ответ")
+        ]
+        let envelope = Data(envelopeJSON.utf8)
+        var segmentsContentDuringRun: String?
+        var segmentsPathDuringRun: String?
+        let runner = ClosureCLIRunner { args in
+            guard let idx = args.firstIndex(of: "--segments-file"), args.indices.contains(idx + 1) else {
+                XCTFail("--segments-file flag missing")
+                return envelope
+            }
+            // "next to" the transcript file: immediately after its pair.
+            XCTAssertEqual(args.firstIndex(of: "--transcript-file").map { $0 + 2 }, idx)
+            let path = args[idx + 1]
+            segmentsPathDuringRun = path
+            segmentsContentDuringRun = try String(contentsOfFile: path, encoding: .utf8)
+            return envelope
+        }
+        let svc = TranscriptSaveService(runner: runner)
+
+        _ = try await svc.save(
+            transcriptText: "[Я] привет\n[Speaker 1] ответ",
+            utterances: utterances,
+            audioPath: "/tmp/a.wav",
+            durationSec: 5,
+            eventID: nil,
+            title: nil,
+            langStatsJSON: "{}"
+        )
+
+        let content = try XCTUnwrap(segmentsContentDuringRun)
+        XCTAssertEqual(TranscriptSegments.decode(content), utterances,
+                       "the segments file must round-trip the utterances")
+        let path = try XCTUnwrap(segmentsPathDuringRun)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path),
+                       "the temp segments file must be removed after save")
+    }
+
+    func test_saveOmitsSegmentsFileWhenUtterancesNil() async throws {
+        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        _ = try await svc.save(
+            transcriptText: "plain",
+            utterances: nil,
+            audioPath: "/tmp/a.wav",
+            durationSec: 60,
+            eventID: nil,
+            title: nil,
+            langStatsJSON: "{}"
+        )
+
+        let args = try XCTUnwrap(fake.invocations.first)
+        XCTAssertFalse(args.contains("--segments-file"))
+    }
+
     // MARK: - save: temp file lifecycle
 
     func test_saveTranscriptFileExistsDuringRunAndIsRemovedAfter() async throws {

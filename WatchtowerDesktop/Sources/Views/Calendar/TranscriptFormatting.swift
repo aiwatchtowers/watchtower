@@ -12,6 +12,17 @@ enum TranscriptFormatting {
         return minutes > 0 ? "\(minutes)m \(secs)s" : "\(secs)s"
     }
 
+    /// `m:ss` (or `h:mm:ss` past an hour) timecode for an utterance header.
+    static func formatTimecode(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
+            : String(format: "%d:%02d", minutes, secs)
+    }
+
     static func formattedDate(_ iso: String) -> String {
         let parser = ISO8601DateFormatter()
         guard let date = parser.date(from: iso) else { return iso }

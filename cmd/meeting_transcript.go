@@ -22,6 +22,7 @@ import (
 
 var (
 	transcriptSaveFlagFile      string
+	transcriptSaveFlagSegments  string
 	transcriptSaveFlagAudio     string
 	transcriptSaveFlagEventID   string
 	transcriptSaveFlagTitle     string
@@ -85,6 +86,7 @@ func init() {
 	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd)
 
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagFile, "transcript-file", "", "path to the transcript text file (required)")
+	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagSegments, "segments-file", "", "path to the per-utterance segments JSON file (optional)")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagAudio, "audio", "", "path to the recorded audio file")
 	transcriptSaveCmd.Flags().IntVar(&transcriptSaveFlagDuration, "duration", 0, "recording duration in seconds")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagEventID, "event-id", "", "calendar event id to link the transcript to")
@@ -147,6 +149,7 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		DurationSec:    transcriptSaveFlagDuration,
 		LangStats:      transcriptSaveFlagLangStats,
 		TranscriptText: text,
+		SegmentsJSON:   loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr()),
 	}
 	if transcriptSaveFlagEventID != "" {
 		tr.EventID = sql.NullString{String: transcriptSaveFlagEventID, Valid: true}
@@ -163,6 +166,33 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 	// code; it is reported inside the envelope instead.
 	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
 	return printTranscriptEnvelope(cmd, database, id, recapErr)
+}
+
+// loadTranscriptSegments reads and validates the optional --segments-file for
+// save. Any problem — missing flag (old callers, batch fallback failures),
+// unreadable file, malformed JSON, or a render that does not reproduce the
+// transcript text (the transcript_text = render(segments) invariant) — yields
+// a NULL column with a stderr warning; the transcript save itself must still
+// succeed (exit-0 envelope semantics are preserved).
+func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) sql.NullString {
+	if path == "" {
+		return sql.NullString{}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: reading segments file (saving transcript without segments): %v\n", err)
+		return sql.NullString{}
+	}
+	utterances, err := meeting.ParseTranscriptSegments(raw)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
+		return sql.NullString{}
+	}
+	if rendered := meeting.RenderTranscriptSegments(utterances); rendered != transcriptText {
+		fmt.Fprintf(errOut, "warning: segments do not render to the transcript text (saving transcript without segments)\n")
+		return sql.NullString{}
+	}
+	return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}
 }
 
 func runTranscriptRecap(cmd *cobra.Command, args []string) error {

@@ -72,4 +72,47 @@ final class RoleAssignerTests: XCTestCase {
         )
         XCTAssertEqual(text, "[Я] монолог продолжение")
     }
+
+    // MARK: - Structured utterances (assign)
+
+    func testAssignProducesMergedUtterancesWithTimeRanges() throws {
+        let utterances = try XCTUnwrap(RoleAssigner.assign(
+            segments: [seg("привет", 0, 2), seg("как дела", 2, 4), seg("нормально", 5, 7)],
+            speakers: [spk("A", 0, 4.5), spk("B", 4.5, 8)],
+            activity: nil
+        ))
+        XCTAssertEqual(utterances, [
+            TranscriptUtterance(idx: 0, startSec: 0, endSec: 4, speaker: "Speaker 1", text: "привет как дела"),
+            TranscriptUtterance(idx: 1, startSec: 5, endSec: 7, speaker: "Speaker 2", text: "нормально")
+        ])
+    }
+
+    /// Pins the equivalence: the joined string is derived from `assign`'s
+    /// structured utterances via the canonical renderer, and for identical
+    /// input `render(segments→text)` equals the legacy line-joined output
+    /// (asserted verbatim by the tests above).
+    func testRenderEqualsCanonicalRenderOfAssign() throws {
+        let scenarios: [(segments: [TranscriptSegment], speakers: [SpeakerSegment], activity: MicActivity?)] = [
+            ([seg("привет", 0, 2), seg("как дела", 2, 4), seg("нормально", 5, 7)],
+             [spk("A", 0, 4.5), spk("B", 4.5, 8)], nil),
+            ([seg("привет", 0, 2), seg("ответ", 3, 5)],
+             [spk("A", 0, 2.5), spk("B", 2.5, 5)], activity(duration: 5, selfFrom: 0, selfTo: 2.5)),
+            ([seg("раз", 0, 2), seg("два", 10, 11)], [spk("A", 0, 3)], nil),
+            ([seg("монолог", 0, 10), seg("продолжение", 10, 20)],
+             [spk("A", 0, 20)], activity(duration: 20, selfFrom: 0, selfTo: 20))
+        ]
+        for (segments, speakers, activity) in scenarios {
+            let utterances = try XCTUnwrap(RoleAssigner.assign(
+                segments: segments, speakers: speakers, activity: activity))
+            XCTAssertEqual(
+                RoleAssigner.render(segments: segments, speakers: speakers, activity: activity),
+                TranscriptSegments.render(utterances)
+            )
+        }
+    }
+
+    func testAssignEmptyInputsGiveNil() {
+        XCTAssertNil(RoleAssigner.assign(segments: [], speakers: [spk("A", 0, 1)], activity: nil))
+        XCTAssertNil(RoleAssigner.assign(segments: [seg("а", 0, 1)], speakers: [], activity: nil))
+    }
 }

@@ -14,6 +14,22 @@ final class TranscriptFormattingTests: XCTestCase {
         XCTAssertEqual(TranscriptFormatting.formatDuration(0), "0s")
     }
 
+    func test_formatTimecodeUnderAnHour() {
+        XCTAssertEqual(TranscriptFormatting.formatTimecode(0), "0:00")
+        XCTAssertEqual(TranscriptFormatting.formatTimecode(5.9), "0:05")
+        XCTAssertEqual(TranscriptFormatting.formatTimecode(65), "1:05")
+        XCTAssertEqual(TranscriptFormatting.formatTimecode(754.4), "12:34")
+    }
+
+    func test_formatTimecodePastAnHour() {
+        XCTAssertEqual(TranscriptFormatting.formatTimecode(3600), "1:00:00")
+        XCTAssertEqual(TranscriptFormatting.formatTimecode(3725), "1:02:05")
+    }
+
+    func test_formatTimecodeClampsNegative() {
+        XCTAssertEqual(TranscriptFormatting.formatTimecode(-3), "0:00")
+    }
+
     func test_formattedDateParsesISO8601() {
         let result = TranscriptFormatting.formattedDate("2026-07-15T10:30:00Z")
         XCTAssertFalse(result.isEmpty)

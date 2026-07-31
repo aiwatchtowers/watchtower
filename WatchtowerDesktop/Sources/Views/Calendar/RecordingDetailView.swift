@@ -25,6 +25,7 @@ struct RecordingDetailView: View {
 
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
+    @State private var utterances: [TranscriptUtterance]?
     @State private var recapContent: MeetingRecap.Content?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
@@ -73,6 +74,7 @@ struct RecordingDetailView: View {
         .task(id: transcriptID) {
             tab = .recap
             chatVM = nil
+            utterances = nil
             await load()
         }
         .confirmationDialog(
@@ -113,7 +115,10 @@ struct RecordingDetailView: View {
                 generationError: center.lastError[transcriptID],
                 onSave: saveNotes)
         case .transcript:
-            RecordingTranscriptTab(transcriptText: transcript.transcriptText)
+            RecordingTranscriptTab(
+                transcriptText: transcript.transcriptText,
+                utterances: utterances,
+                onSetUtteranceDeleted: setUtteranceDeleted)
         case .chat:
             if let chatVM {
                 RecordingChatTab(chatVM: chatVM)
@@ -173,21 +178,42 @@ struct RecordingDetailView: View {
     private func load() async {
         guard let db = appState.databaseManager else { return }
         do {
-            let (row, recap) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
-                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?) in
+            let (row, recap, decodedUtterances) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
+                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, [TranscriptUtterance]?) in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
                     var recap: MeetingRecap?
                     if let eventID = row?.eventID {
                         recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
                     }
-                    return (row, recap)
+                    return (row, recap, row?.utterances)
                 }
             }.value
             transcript = row
+            // Segments decoded ONCE here (off-main, alongside the fetch),
+            // never in body evaluations or row builders.
+            utterances = decodedUtterances
             // Event recap wins; ad-hoc (or collision-guarded) recap falls back
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
             recapContent = recap?.parsed ?? row?.parsedSummary
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Soft delete / undo for one utterance: the transactional
+    /// `segments_json` + `transcript_text` rewrite (see
+    /// `MeetingTranscriptQueries.setUtteranceDeleted`), then a reload so
+    /// every tab sees the rebuilt text.
+    private func setUtteranceDeleted(idx: Int, deleted: Bool) {
+        guard let db = appState.databaseManager else { return }
+        do {
+            try db.dbPool.write { conn in
+                try MeetingTranscriptQueries.setUtteranceDeleted(
+                    conn, id: transcriptID, idx: idx, deleted: deleted)
+            }
+            onChanged()
+            Task { await load() }
         } catch {
             errorMessage = error.localizedDescription
         }

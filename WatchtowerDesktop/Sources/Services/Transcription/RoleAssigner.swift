@@ -12,12 +12,26 @@ enum RoleAssigner {
     private static let selfShareThreshold = 0.6
 
     /// nil when roles cannot be derived (no segments / no speakers) — the
-    /// caller then keeps the plain transcript text.
+    /// caller then keeps the plain transcript text. The joined string is
+    /// derived from `assign`'s structured utterances via the canonical
+    /// renderer, so the two can never drift.
     static func render(
         segments: [TranscriptSegment],
         speakers: [SpeakerSegment],
         activity: MicActivity?
     ) -> String? {
+        assign(segments: segments, speakers: speakers, activity: activity)
+            .map(TranscriptSegments.render)
+    }
+
+    /// Structured form of `render`: the merged same-speaker utterances with
+    /// their time ranges, ready to persist as `segments_json`. nil under the
+    /// same conditions as `render`.
+    static func assign(
+        segments: [TranscriptSegment],
+        speakers: [SpeakerSegment],
+        activity: MicActivity?
+    ) -> [TranscriptUtterance]? {
         guard !segments.isEmpty, !speakers.isEmpty else { return nil }
 
         // Cluster order by first appearance drives Speaker 1..N numbering.
@@ -56,26 +70,35 @@ enum RoleAssigner {
             }
         }
 
-        // 3. Merge consecutive same-cluster segments into one paragraph.
-        var lines: [String] = []
+        // 3. Merge consecutive same-cluster segments into one utterance.
+        var utterances: [TranscriptUtterance] = []
         var currentCluster: String?
         var currentTexts: [String] = []
+        var currentStart = 0.0
+        var currentEnd = 0.0
         func flush() {
             guard let cluster = currentCluster, !currentTexts.isEmpty else { return }
             // ?? is unreachable (every assigned cluster is seeded into labels
             // via clusterOrder) — it only spares a force unwrap.
-            lines.append("[\(labels[cluster] ?? cluster)] " + currentTexts.joined(separator: " "))
+            utterances.append(TranscriptUtterance(
+                idx: utterances.count,
+                startSec: currentStart,
+                endSec: currentEnd,
+                speaker: labels[cluster] ?? cluster,
+                text: currentTexts.joined(separator: " ")))
         }
         for (segment, cluster) in assigned {
             if cluster != currentCluster {
                 flush()
                 currentCluster = cluster
                 currentTexts = []
+                currentStart = segment.startSec
             }
             currentTexts.append(segment.text)
+            currentEnd = segment.endSec
         }
         flush()
-        return lines.joined(separator: "\n")
+        return utterances
     }
 
     /// The cluster whose speech time is dominated by the mic channel — the

@@ -41,11 +41,14 @@ struct TranscriptSaveService {
     let runner: CLIRunnerProtocol
 
     /// Writes `transcriptText` to a temp file, invokes
-    /// `meeting-prep transcript save --transcript-file <tmp> --audio <p> --duration <n>
-    /// [--event-id <id>] [--title <s>] --lang-stats <json>`,
-    /// and decodes the stdout envelope. The temp file is removed in a defer,
-    /// whether the run succeeds or throws.
+    /// `meeting-prep transcript save --transcript-file <tmp> [--segments-file <tmp>]
+    /// --audio <p> --duration <n> [--event-id <id>] [--title <s>] --lang-stats <json>`,
+    /// and decodes the stdout envelope. The temp files are removed in defers,
+    /// whether the run succeeds or throws. Non-nil `utterances` travel as a
+    /// second temp file next to the transcript; the CLI persists them to
+    /// `segments_json` (nil → the column stays NULL, legacy behavior).
     func save(transcriptText: String,
+              utterances: [TranscriptUtterance]? = nil,
               audioPath: String,
               durationSec: Int,
               eventID: String?,
@@ -56,9 +59,24 @@ struct TranscriptSaveService {
         try transcriptText.write(to: tmpURL, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: tmpURL) }
 
+        var segmentsURL: URL?
+        if let utterances, !utterances.isEmpty,
+           let segmentsJSON = TranscriptSegments.encode(utterances) {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("watchtower-segments-\(UUID().uuidString).json")
+            try segmentsJSON.write(to: url, atomically: true, encoding: .utf8)
+            segmentsURL = url
+        }
+        defer { if let segmentsURL { try? FileManager.default.removeItem(at: segmentsURL) } }
+
         var args = [
             "meeting-prep", "transcript", "save",
-            "--transcript-file", tmpURL.path,
+            "--transcript-file", tmpURL.path
+        ]
+        if let segmentsURL {
+            args += ["--segments-file", segmentsURL.path]
+        }
+        args += [
             "--audio", audioPath,
             "--duration", String(durationSec)
         ]

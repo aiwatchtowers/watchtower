@@ -147,13 +147,16 @@ final class MeetingRecorderCenter {
     /// but is logged and latched into `lastRolesError` so the completion
     /// notification can flag the missing labels (the recap-failure precedent).
     /// `samples` avoids a re-decode when the batch path already has them.
+    /// The returned utterances are the structured form of the same text
+    /// (`text == TranscriptSegments.render(utterances)`); nil whenever roles
+    /// were not rendered — the save then leaves `segments_json` NULL.
     private func renderRoles(
         output: TranscriptionOutput,
         audioURL: URL,
         samples: [Float]?,
         config: TranscriptionConfig
-    ) async -> String {
-        guard config.diarization, !output.segments.isEmpty else { return output.text }
+    ) async -> (text: String, utterances: [TranscriptUtterance]?) {
+        guard config.diarization, !output.segments.isEmpty else { return (output.text, nil) }
         phase = .diarizing
         do {
             let pcm: [Float]
@@ -170,18 +173,18 @@ final class MeetingRecorderCenter {
             // The sidecar parse is a full-file read (~36k lines per hour) —
             // off-main like the decode above.
             let activity = await Task.detached { MicActivity.load(for: audioURL) }.value
-            if let rendered = RoleAssigner.render(segments: output.segments, speakers: speakers, activity: activity) {
-                return rendered
+            if let utterances = RoleAssigner.assign(segments: output.segments, speakers: speakers, activity: activity) {
+                return (TranscriptSegments.render(utterances), utterances)
             }
             // Roles undeterminable (diarizer found no speakers) — flag it like
             // the error path so the notification stays honest.
             print("[MeetingRecorder] diarization found no speakers, saving without labels")
             lastRolesError = "no speakers detected"
-            return output.text
+            return (output.text, nil)
         } catch {
             print("[MeetingRecorder] diarization failed, saving without speaker labels: \(error.localizedDescription)")
             lastRolesError = error.localizedDescription
-            return output.text
+            return (output.text, nil)
         }
     }
 
@@ -303,12 +306,14 @@ final class MeetingRecorderCenter {
             if let liveOutput,
                !liveOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let durationSec = result.durationSec
-                let text = await renderRoles(output: liveOutput, audioURL: result.audioURL,
-                                             samples: nil, config: config)
-                Self.persistTranscript(text: text, durationSec: durationSec,
+                let rendered = await renderRoles(output: liveOutput, audioURL: result.audioURL,
+                                                 samples: nil, config: config)
+                Self.persistTranscript(text: rendered.text, utterances: rendered.utterances,
+                                       durationSec: durationSec,
                                        langStats: liveOutput.langStats, audioURL: result.audioURL)
                 await saveTranscript(
-                    text: text,
+                    text: rendered.text,
+                    utterances: rendered.utterances,
                     durationSec: durationSec,
                     langStats: liveOutput.langStats,
                     audioURL: result.audioURL
@@ -335,6 +340,7 @@ final class MeetingRecorderCenter {
         if let persisted = Self.loadPersistedTranscript(audioURL: url) {
             await saveTranscript(
                 text: persisted.text,
+                utterances: persisted.utterances,
                 durationSec: persisted.durationSec,
                 langStats: persisted.langStats,
                 audioURL: url
@@ -441,13 +447,15 @@ final class MeetingRecorderCenter {
         }
 
         let durationSec = samples.count / TranscriptionConfig.sampleRate
-        let text = await renderRoles(output: output, audioURL: audioURL, samples: samples, config: config)
+        let rendered = await renderRoles(output: output, audioURL: audioURL, samples: samples, config: config)
         // Persist the (role-tagged) transcript next to the audio so a failed
         // save is retried from the file instead of paying for a full
         // re-transcription — or a re-diarization (spec §7).
-        Self.persistTranscript(text: text, durationSec: durationSec, langStats: output.langStats, audioURL: audioURL)
+        Self.persistTranscript(text: rendered.text, utterances: rendered.utterances,
+                               durationSec: durationSec, langStats: output.langStats, audioURL: audioURL)
         await saveTranscript(
-            text: text,
+            text: rendered.text,
+            utterances: rendered.utterances,
             durationSec: durationSec,
             langStats: output.langStats,
             audioURL: audioURL
@@ -457,7 +465,8 @@ final class MeetingRecorderCenter {
     /// Save step: the only place the `watchtower` CLI is needed. Resolves the
     /// runner here — never earlier — so a missing CLI still leaves the recording
     /// stopped, the audio finalized, and the transcript persisted for retry.
-    private func saveTranscript(text: String, durationSec: Int, langStats: [String: Int], audioURL: URL) async {
+    private func saveTranscript(text: String, utterances: [TranscriptUtterance]?,
+                                durationSec: Int, langStats: [String: Int], audioURL: URL) async {
         phase = .summarizing
         guard let runner = runnerResolver() else {
             fail("watchtower CLI not found — the recording and transcript are kept for retry")
@@ -466,6 +475,7 @@ final class MeetingRecorderCenter {
         do {
             let result = try await TranscriptSaveService(runner: runner).save(
                 transcriptText: text,
+                utterances: utterances,
                 audioPath: audioURL.path,
                 durationSec: durationSec,
                 eventID: currentEventID,
@@ -557,14 +567,18 @@ final class MeetingRecorderCenter {
     /// straight from these files instead of re-transcribing.
     private struct PersistedTranscript {
         let text: String
+        let utterances: [TranscriptUtterance]?
         let durationSec: Int
         let langStats: [String: Int]
     }
 
     /// Sidecar `.json` payload accompanying the persisted transcript text.
+    /// `utterances` is optional so sidecars written before the segments work
+    /// still decode (they retry as segment-less saves).
     private struct PersistedTranscriptMeta: Codable {
         let durationSec: Int
         let langStats: [String: Int]
+        var utterances: [TranscriptUtterance]?
     }
 
     private static func transcriptTextURL(for audioURL: URL) -> URL {
@@ -577,9 +591,10 @@ final class MeetingRecorderCenter {
 
     /// Best-effort: a persistence failure only means a later save retry pays
     /// for a full re-transcription, so it is deliberately not surfaced.
-    private static func persistTranscript(text: String, durationSec: Int, langStats: [String: Int], audioURL: URL) {
+    private static func persistTranscript(text: String, utterances: [TranscriptUtterance]?,
+                                          durationSec: Int, langStats: [String: Int], audioURL: URL) {
         try? text.write(to: transcriptTextURL(for: audioURL), atomically: true, encoding: .utf8)
-        let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: langStats)
+        let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: langStats, utterances: utterances)
         if let data = try? JSONEncoder().encode(meta) {
             try? data.write(to: transcriptMetaURL(for: audioURL), options: .atomic)
         }
@@ -594,7 +609,8 @@ final class MeetingRecorderCenter {
               let meta = try? JSONDecoder().decode(PersistedTranscriptMeta.self, from: data) else {
             return nil
         }
-        return PersistedTranscript(text: text, durationSec: meta.durationSec, langStats: meta.langStats)
+        return PersistedTranscript(text: text, utterances: meta.utterances,
+                                   durationSec: meta.durationSec, langStats: meta.langStats)
     }
 
     private static func removePersistedTranscript(audioURL: URL) {

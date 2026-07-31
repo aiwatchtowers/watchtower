@@ -174,6 +174,98 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
+    // MARK: - setUtteranceDeleted (soft delete + undo)
+
+    private let utterancesFixture = [
+        TranscriptUtterance(idx: 0, startSec: 0, endSec: 4, speaker: "Я", text: "привет"),
+        TranscriptUtterance(idx: 1, startSec: 4, endSec: 9, speaker: "Speaker 1", text: "ответ"),
+        TranscriptUtterance(idx: 2, startSec: 9, endSec: 15, speaker: "Я", text: "итог")
+    ]
+
+    private func insertSegmentedTranscript(_ db: Database, id: Int64 = 1) throws {
+        let json = try XCTUnwrap(TranscriptSegments.encode(utterancesFixture))
+        try TestDatabase.insertMeetingTranscript(
+            db, id: id, title: "Segmented",
+            transcriptText: TranscriptSegments.render(utterancesFixture),
+            segmentsJSON: json)
+    }
+
+    func test_setUtteranceDeletedRewritesTextAndSegments() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscript(db)
+            try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 1, idx: 1, deleted: true)
+        }
+        try db.read { db in
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(tr.transcriptText, "[Я] привет\n[Я] итог",
+                           "the rebuilt text must exclude the deleted utterance")
+            let utterances = try XCTUnwrap(tr.utterances)
+            XCTAssertEqual(utterances.count, 3, "soft delete: the utterance stays in the array")
+            XCTAssertTrue(utterances[1].deleted)
+        }
+    }
+
+    func test_undoRestoresByteIdentical() throws {
+        let db = try TestDatabase.create()
+        var jsonBefore = ""
+        var textBefore = ""
+        try db.write { db in
+            try self.insertSegmentedTranscript(db)
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            jsonBefore = try XCTUnwrap(tr.segmentsJSON)
+            textBefore = tr.transcriptText
+            try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 1, idx: 1, deleted: true)
+            try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 1, idx: 1, deleted: false)
+        }
+        try db.read { db in
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(tr.transcriptText, textBefore)
+            XCTAssertEqual(tr.segmentsJSON, jsonBefore, "undo must restore segments_json byte-identically")
+        }
+    }
+
+    func test_deleteAllUtterancesYieldsEmptyValidText() throws {
+        // Degenerate but valid: every utterance soft-deleted → empty
+        // transcript_text, segments intact, no crash.
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscript(db)
+            for idx in 0...2 {
+                try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 1, idx: idx, deleted: true)
+            }
+        }
+        try db.read { db in
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(tr.transcriptText, "")
+            let utterances = try XCTUnwrap(tr.utterances)
+            XCTAssertEqual(utterances.count, 3)
+            XCTAssertTrue(utterances.allSatisfy(\.deleted))
+        }
+    }
+
+    func test_setUtteranceDeletedNoOpsOnLegacyAndUnknownIdx() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            // Legacy row (NULL segments): no-op, text untouched.
+            try TestDatabase.insertMeetingTranscript(db, id: 1, transcriptText: "flat legacy text")
+            try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 1, idx: 0, deleted: true)
+            // Segmented row, unknown idx: no-op.
+            try self.insertSegmentedTranscript(db, id: 2)
+            try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 2, idx: 99, deleted: true)
+            // Missing row: no-op, no throw.
+            try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 999, idx: 0, deleted: true)
+        }
+        try db.read { db in
+            let legacy = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(legacy.transcriptText, "flat legacy text")
+            XCTAssertNil(legacy.segmentsJSON)
+            let segmented = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 2))
+            XCTAssertEqual(segmented.transcriptText, TranscriptSegments.render(self.utterancesFixture))
+            XCTAssertEqual(try XCTUnwrap(segmented.utterances).filter(\.deleted).count, 0)
+        }
+    }
+
     func test_deleteRemovesRowChatAndReturnsAudioPath() throws {
         let db = try TestDatabase.create()
         var returnedPath: String?
