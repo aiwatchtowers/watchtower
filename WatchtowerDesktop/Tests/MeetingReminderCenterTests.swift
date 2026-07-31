@@ -410,6 +410,168 @@ final class MeetingReminderCenterTests: XCTestCase {
         XCTAssertEqual(notifier.stops.count, 2, "re-fires in the next 10-minute window")
     }
 
+    func testQuietHoursSuppressPushButKeepBanner() throws {
+        let pool = try makePool()
+        let base = Date()
+        try insertEvent(pool, event: makeEvent(id: "evt", start: base.addingTimeInterval(3 * 60)))
+
+        let notifier = ReminderFakeNotifier()
+        let defaults = try isolatedDefaults()
+        defaults.set(true, forKey: "quietHoursEnabled")
+        let center = MeetingReminderCenter(
+            dbPool: pool,
+            recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
+            notifier: notifier,
+            defaults: defaults,
+            now: { base }
+        )
+
+        center.poll()
+        XCTAssertTrue(notifier.reminders.isEmpty, "quiet hours gate the pre-meeting push")
+        XCTAssertEqual(center.bannerEvent?.id, "evt", "the in-app banner ignores quiet hours")
+    }
+
+    func testBannerReappearsAfterDismissWhenRescheduled() throws {
+        // Dismiss memory is keyed by event id + start time: moving the event
+        // mints a fresh key, so a dismissed banner comes back.
+        let pool = try makePool()
+        let base = Date()
+        let event = makeEvent(id: "evt", start: base.addingTimeInterval(3 * 60))
+        try insertEvent(pool, event: event)
+
+        let center = MeetingReminderCenter(
+            dbPool: pool,
+            recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
+            notifier: ReminderFakeNotifier(),
+            defaults: try isolatedDefaults(),
+            now: { base }
+        )
+        center.poll()
+        center.dismissBanner(try XCTUnwrap(center.bannerEvent))
+        center.poll()
+        XCTAssertNil(center.bannerEvent)
+
+        // Reschedule: same id, new start time.
+        try pool.write { db in
+            try db.execute(
+                sql: "UPDATE calendar_events SET start_time = ? WHERE id = 'evt'",
+                arguments: [Self.iso.string(from: base.addingTimeInterval(4 * 60))]
+            )
+        }
+        center.poll()
+        XCTAssertEqual(center.bannerEvent?.id, "evt", "a rescheduled event escapes the dismissal memory")
+    }
+
+    func testPreMeetingBodyRoundsFractionalMinutesUp() throws {
+        let pool = try makePool()
+        let base = Date()
+        // 2.5 minutes out → "Starts in 3 min" (rounded up, floored at 1).
+        try insertEvent(pool, event: makeEvent(id: "evt", start: base.addingTimeInterval(150)))
+
+        let notifier = ReminderFakeNotifier()
+        let center = MeetingReminderCenter(
+            dbPool: pool,
+            recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
+            notifier: notifier,
+            defaults: try isolatedDefaults(),
+            now: { base }
+        )
+        center.poll()
+        XCTAssertTrue(notifier.reminders.first?.body.hasPrefix("Starts in 3 min") ?? false,
+                      "body: \(notifier.reminders.first?.body ?? "nil")")
+    }
+
+    // MARK: - Stop push is ALWAYS ON (owner decision)
+
+    func testStopPushFiresWithRemindersToggleOffAndZeroMinutes() async throws {
+        // Owner decision: the stop-recording safety push ignores both the
+        // "Meeting reminders" toggle and the minutes stepper ("Off"). It is
+        // silenced only by quiet hours + the OS permission.
+        let pool = try makePool()
+        let base = Date()
+        try insertEvent(pool, event: makeEvent(id: "evt-stop", title: "Retro",
+                                               start: base.addingTimeInterval(-3600),
+                                               end: base.addingTimeInterval(-5 * 60)))
+
+        let recorderCenter = makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults())
+        await recorderCenter.startRecording(eventID: "evt-stop", title: "Retro")
+        guard case .recording = recorderCenter.phase else {
+            return XCTFail("expected .recording, got \(recorderCenter.phase)")
+        }
+
+        let notifier = ReminderFakeNotifier()
+        let defaults = try isolatedDefaults()
+        defaults.set(false, forKey: MeetingReminderCenter.remindersEnabledKey)
+        defaults.set(0, forKey: MeetingReminderCenter.reminderMinutesKey)
+        let center = MeetingReminderCenter(
+            dbPool: pool,
+            recorderCenter: recorderCenter,
+            notifier: notifier,
+            defaults: defaults,
+            now: { base }
+        )
+
+        center.poll()
+        XCTAssertEqual(notifier.stops.count, 1,
+                       "the stop push fires despite toggle off and minutes = 0")
+        XCTAssertTrue(notifier.reminders.isEmpty, "no pre-meeting push with minutes = 0")
+        XCTAssertNil(center.bannerEvent, "no banner with minutes = 0")
+    }
+
+    func testStopPushSuppressedDuringQuietHours() async throws {
+        let pool = try makePool()
+        let base = Date()
+        try insertEvent(pool, event: makeEvent(id: "evt-stop", title: "Retro",
+                                               start: base.addingTimeInterval(-3600),
+                                               end: base.addingTimeInterval(-5 * 60)))
+
+        let recorderCenter = makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults())
+        await recorderCenter.startRecording(eventID: "evt-stop", title: "Retro")
+        guard case .recording = recorderCenter.phase else {
+            return XCTFail("expected .recording, got \(recorderCenter.phase)")
+        }
+
+        let notifier = ReminderFakeNotifier()
+        let defaults = try isolatedDefaults()
+        defaults.set(true, forKey: "quietHoursEnabled")
+        let center = MeetingReminderCenter(
+            dbPool: pool,
+            recorderCenter: recorderCenter,
+            notifier: notifier,
+            defaults: defaults,
+            now: { base }
+        )
+
+        center.poll()
+        XCTAssertTrue(notifier.stops.isEmpty, "quiet hours silence the stop push")
+    }
+
+    func testStopPushCleanNoOpWhenEventRowDeleted() async throws {
+        // Degenerate clean-exit: the recording references an event that was
+        // deleted mid-recording — a spec-sanctioned no-op, never a crash and
+        // never a push.
+        let pool = try makePool()
+        let base = Date()
+
+        let recorderCenter = makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults())
+        await recorderCenter.startRecording(eventID: "evt-gone", title: "Vanished")
+        guard case .recording = recorderCenter.phase else {
+            return XCTFail("expected .recording, got \(recorderCenter.phase)")
+        }
+
+        let notifier = ReminderFakeNotifier()
+        let center = MeetingReminderCenter(
+            dbPool: pool,
+            recorderCenter: recorderCenter,
+            notifier: notifier,
+            defaults: try isolatedDefaults(),
+            now: { base }
+        )
+
+        center.poll()
+        XCTAssertTrue(notifier.stops.isEmpty, "a missing event row never fires the stop push")
+    }
+
     func testStopPushExemptsAdHocRecording() async throws {
         let pool = try makePool()
         let base = Date()

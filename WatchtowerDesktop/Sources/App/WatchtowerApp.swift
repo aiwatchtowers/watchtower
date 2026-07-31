@@ -50,7 +50,13 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                 await Self.handleMeetingReminderAction(actionID: actionID, userInfo: userInfo, appState: appState)
             case "meeting_stop_recording":
                 if actionID == NotificationService.stopRecordingActionID {
-                    await appState?.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
+                    if let appState {
+                        await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
+                    } else {
+                        // appState not wired yet (tap raced app launch): never
+                        // drop an explicit Stop-recording intent silently.
+                        print("[MeetingReminder] stop-recording action dropped: appState unavailable")
+                    }
                 } else {
                     appState?.selectedDestination = .calendar
                 }
@@ -65,29 +71,49 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// Pre-meeting push actions: Join / Join + Record route through the shared
     /// `JoinMeetingAction` ("Join + Record" forces recording regardless of the
     /// auto-record setting); a plain tap navigates to the Calendar tab.
+    /// `openURL` is an injectable seam (the `JoinMeetingAction` convention);
+    /// internal rather than private so tests can drive the fallback branches.
     @MainActor
-    private static func handleMeetingReminderAction(
+    static func handleMeetingReminderAction(
         actionID: String,
         userInfo: [AnyHashable: Any],
-        appState: AppState?
+        appState: AppState?,
+        openURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     ) async {
         guard actionID == NotificationService.joinActionID
             || actionID == NotificationService.joinRecordActionID else {
             appState?.selectedDestination = .calendar
             return
         }
-        let eventID = userInfo["eventId"] as? String
-        if let appState, let pool = appState.databaseManager?.dbPool, let eventID,
-           let event = try? await pool.read({ db in try CalendarQueries.fetchEvent(db, id: eventID) }) {
+
+        var event: CalendarEvent?
+        if let appState, let pool = appState.databaseManager?.dbPool,
+           let eventID = userInfo["eventId"] as? String {
+            do {
+                event = try await pool.read { db in try CalendarQueries.fetchEvent(db, id: eventID) }
+            } catch {
+                // A DB error must not silently drop an explicit Join(+Record)
+                // tap — log, then fall through to the conferenceUrl fallback.
+                print("[MeetingReminder] action event fetch error: \(error.localizedDescription)")
+            }
+        }
+
+        if let appState, let event {
             await JoinMeetingAction.join(
                 event: event,
                 center: appState.meetingRecorderCenter,
-                forceRecord: actionID == NotificationService.joinRecordActionID
+                forceRecord: actionID == NotificationService.joinRecordActionID,
+                openURL: openURL
             )
         } else if let urlString = userInfo["conferenceUrl"] as? String,
-                  let url = URL(string: urlString), !urlString.isEmpty {
+                  let url = URL(string: urlString) {
             // Event vanished between push and tap — still open the link.
-            NSWorkspace.shared.open(url)
+            // (URL(string:) already rejects the empty string.)
+            _ = openURL(url)
+        } else {
+            // Nothing to join: make the tap do something visible instead of
+            // silently nothing — land the user on the Calendar tab.
+            appState?.selectedDestination = .calendar
         }
     }
 }

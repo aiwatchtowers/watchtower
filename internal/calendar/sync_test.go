@@ -455,14 +455,16 @@ func TestSync_HistoryWindowWidensTimeMin(t *testing.T) {
 	assert.Nil(t, outOfWindow, "a 20-day-old event is not re-fetched and gets stale-deleted")
 }
 
-// TestCalendarHistoryDaysClamp pins the floor: unset (0) and invalid negative
-// values fall back to the default; any value >= 1 is used as-is — including
-// the degenerate minimum of a single day.
+// TestCalendarHistoryDaysClamp pins the floor (spec: default 14, floor 1 —
+// the same clamp CalendarViewModel applies on the Swift side): any value < 1
+// floors to 1, never collapsing the window; any value >= 1 is used as-is.
+// An absent config key gets the 14-day default from viper's SetDefault, not
+// from this clamp.
 func TestCalendarHistoryDaysClamp(t *testing.T) {
-	assert.Equal(t, config.DefaultCalendarHistoryDays, config.CalendarConfig{}.CalendarHistoryDays())
-	assert.Equal(t, config.DefaultCalendarHistoryDays, config.CalendarConfig{HistoryDays: -3}.CalendarHistoryDays())
-	assert.Equal(t, 1, config.CalendarConfig{HistoryDays: 1}.CalendarHistoryDays())
-	assert.Equal(t, 30, config.CalendarConfig{HistoryDays: 30}.CalendarHistoryDays())
+	assert.Equal(t, 1, config.CalendarConfig{}.EffectiveHistoryDays())
+	assert.Equal(t, 1, config.CalendarConfig{HistoryDays: -3}.EffectiveHistoryDays())
+	assert.Equal(t, 1, config.CalendarConfig{HistoryDays: 1}.EffectiveHistoryDays())
+	assert.Equal(t, 30, config.CalendarConfig{HistoryDays: 30}.EffectiveHistoryDays())
 }
 
 // TestRecordAuthResultSkipsCancelledContext guards the daemon-shutdown path:

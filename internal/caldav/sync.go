@@ -55,7 +55,7 @@ func (s *Syncer) CalendarID() string {
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	now := s.now().UTC()
 	syncedAt := now.Format(time.RFC3339)
-	winStart := now.Add(-time.Duration(s.appConfig.Calendar.CalendarHistoryDays()) * 24 * time.Hour) // past history_days, mirroring the Google syncer
+	winStart := now.Add(-time.Duration(s.appConfig.Calendar.EffectiveHistoryDays()) * 24 * time.Hour) // past history_days, mirroring the Google syncer
 
 	daysAhead := s.appConfig.Calendar.SyncDaysAhead
 	if daysAhead <= 0 {

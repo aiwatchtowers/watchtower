@@ -98,14 +98,16 @@ type CalendarConfig struct {
 	HistoryDays       int      `mapstructure:"history_days"`       // days of past events to keep synced (default: 14, floor 1)
 }
 
-// CalendarHistoryDays returns the configured past-events sync window in days,
-// clamped so the window never collapses: an unset/invalid value (< 1) falls
-// back to the default. Both the Google and CalDAV syncers derive timeMin from
-// this, and the per-calendar stale-delete then naturally retains the same
-// window — so widening it here is the single knob for browsable history.
-func (c CalendarConfig) CalendarHistoryDays() int {
+// EffectiveHistoryDays returns the configured past-events sync window in
+// days, floored at 1 so the window never collapses (spec: default 14,
+// floor 1 — the same clamp CalendarViewModel applies on the Swift side; an
+// absent config key gets the 14-day default from viper's SetDefault). Both
+// the Google and CalDAV syncers derive timeMin from this, and the
+// per-calendar stale-delete then naturally retains the same window — so
+// widening it here is the single knob for browsable history.
+func (c CalendarConfig) EffectiveHistoryDays() int {
 	if c.HistoryDays < 1 {
-		return DefaultCalendarHistoryDays
+		return 1
 	}
 	return c.HistoryDays
 }

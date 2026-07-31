@@ -46,6 +46,13 @@ struct NotificationSettings: View {
                 }
                 // Not disabled with the toggle: the minutes window also
                 // drives the in-app banner, which the toggle does not gate.
+
+                // Owner decision: the stop-recording safety push is always
+                // on — neither the toggle above nor "Off" minutes silence
+                // it; only Quiet Hours (and the OS permission) do.
+                Text("The \u{201C}meeting ended — still recording\u{201D} alert is always on and is silenced only by Quiet Hours.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Quiet Hours") {

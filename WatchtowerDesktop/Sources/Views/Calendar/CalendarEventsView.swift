@@ -203,9 +203,9 @@ struct CalendarEventsView: View {
                 eventRow(event)
             }
         }
-        // Past days are browsable history, visually receded; their events
-        // never carry the upcoming/now highlight anyway (both are start-time
-        // based), so dimming the whole section is enough.
+        // Past days are browsable history, visually receded. Edge: a
+        // cross-midnight meeting still running lands in a dimmed past
+        // section WITH the green now-highlight — accepted cosmetic quirk.
         .opacity(isPast ? 0.55 : 1)
     }
 

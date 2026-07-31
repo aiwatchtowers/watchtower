@@ -27,7 +27,10 @@ struct CalendarEventRow: View {
 
             // Relative countdown next to the absolute range for events
             // starting soon; `.relative` keeps it ticking without a timer.
-            if event.isUpcoming {
+            // The extra start > now gate keeps a just-started event from
+            // counting UP until the next observation tick re-evaluates
+            // `isUpcoming`.
+            if event.isUpcoming, event.startDate > Date() {
                 HStack(spacing: 3) {
                     Text("in")
                     Text(event.startDate, style: .relative)

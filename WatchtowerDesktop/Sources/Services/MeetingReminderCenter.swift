@@ -98,10 +98,13 @@ enum MeetingReminderLogic {
 @Observable
 final class MeetingReminderCenter {
     /// `@AppStorage("calendar.reminderMinutes")` in NotificationSettings;
-    /// absent = 5, 0 disables all reminder surfaces.
+    /// absent = 5, 0 disables the pre-meeting surfaces (push + banner) only —
+    /// the stop-recording safety push is deliberately minutes-independent.
     static let reminderMinutesKey = "calendar.reminderMinutes"
     /// `@AppStorage("notifyMeetingReminders")`; absent = true. Gates the
-    /// pushes only — the in-app banner stays on while minutes > 0.
+    /// pre-meeting push only — the in-app banner stays on while minutes > 0,
+    /// and the stop-recording push is always on (owner decision): it respects
+    /// only quiet hours and the OS notification permission.
     static let remindersEnabledKey = "notifyMeetingReminders"
     static let defaultReminderMinutes = 5
 
@@ -118,7 +121,7 @@ final class MeetingReminderCenter {
     private let notifier: MeetingReminderNotifying
     private let defaults: UserDefaults
     /// Injectable clock so tests drive the decision boundaries deterministically.
-    private let now: () -> Date
+    private let clock: () -> Date
 
     init(
         dbPool: DatabasePool,
@@ -131,7 +134,7 @@ final class MeetingReminderCenter {
         self.recorderCenter = recorderCenter
         self.notifier = notifier
         self.defaults = defaults
-        self.now = now
+        self.clock = now
     }
 
     func start() {
@@ -163,54 +166,81 @@ final class MeetingReminderCenter {
         defaults.object(forKey: Self.reminderMinutesKey) as? Int ?? Self.defaultReminderMinutes
     }
 
-    /// Pushes respect the "Meeting reminders" toggle (absent = enabled, the
-    /// DigestWatcher convention) and the existing quiet-hours setting. The
-    /// in-app banner is exempt from both.
-    private var pushesEnabled: Bool {
+    /// The user's quiet-hours setting — the only user setting that also
+    /// silences the stop-recording safety push.
+    private var quietHoursActive: Bool {
+        defaults.bool(forKey: "quietHoursEnabled")
+    }
+
+    /// The pre-meeting push respects the "Meeting reminders" toggle (absent =
+    /// enabled, the DigestWatcher convention) and the quiet-hours setting.
+    /// The in-app banner is exempt from both.
+    private var preMeetingPushesEnabled: Bool {
         let enabled = defaults.object(forKey: Self.remindersEnabledKey) == nil
             || defaults.bool(forKey: Self.remindersEnabledKey)
-        return enabled && !defaults.bool(forKey: "quietHoursEnabled")
+        return enabled && !quietHoursActive
     }
 
     /// One decision tick — called every 30 s and directly from tests.
     func poll() {
-        let now = self.now()
+        let now = clock()
         let minutes = reminderMinutes
 
-        // Candidate events overlapping the near window. fetchEvents matches
-        // start_time <= to AND end_time >= from; the extra lookback covers the
-        // banner's linger past start. The pure logic filters by start time.
-        let horizon = TimeInterval(max(minutes, 1)) * 60
-        let events = (try? dbPool.read { db in
-            try CalendarQueries.fetchEvents(
-                db,
-                from: now.addingTimeInterval(-MeetingReminderLogic.bannerGraceAfterStart),
-                to: now.addingTimeInterval(horizon)
-            )
-        }) ?? []
+        // minutes == 0 ("Off") turns off both pre-meeting surfaces (push +
+        // banner), so the event fetch that feeds them is skipped entirely.
+        // The stop-recording push below is deliberately NOT minutes-gated.
+        if minutes > 0 {
+            do {
+                // Candidate events overlapping the near window. fetchEvents
+                // matches start_time <= to AND end_time >= from; the extra
+                // lookback covers the banner's linger past start. The pure
+                // logic filters by start time.
+                let events = try dbPool.read { db in
+                    try CalendarQueries.fetchEvents(
+                        db,
+                        from: now.addingTimeInterval(-MeetingReminderLogic.bannerGraceAfterStart),
+                        to: now.addingTimeInterval(TimeInterval(minutes) * 60)
+                    )
+                }
 
-        bannerEvent = MeetingReminderLogic.bannerEvent(
-            events: events, now: now, reminderMinutes: minutes, dismissed: dismissedBanners
-        )
+                bannerEvent = MeetingReminderLogic.bannerEvent(
+                    events: events, now: now, reminderMinutes: minutes, dismissed: dismissedBanners
+                )
 
-        guard pushesEnabled else { return }
-
-        for event in MeetingReminderLogic.preMeetingEvents(
-            events: events, now: now, reminderMinutes: minutes, delivered: deliveredPre
-        ) {
-            let key = MeetingReminderLogic.preMeetingDedupKey(event)
-            deliveredPre.insert(key)
-            let minutesLeft = max(1, Int((event.startDate.timeIntervalSince(now) / 60).rounded(.up)))
-            notifier.sendMeetingReminderNotification(
-                eventID: event.id,
-                title: event.title,
-                body: "Starts in \(minutesLeft) min · \(event.formattedTimeRange)",
-                conferenceURL: event.conferenceLink?.absoluteString ?? "",
-                dedupKey: key
-            )
+                if preMeetingPushesEnabled {
+                    for event in MeetingReminderLogic.preMeetingEvents(
+                        events: events, now: now, reminderMinutes: minutes, delivered: deliveredPre
+                    ) {
+                        let key = MeetingReminderLogic.preMeetingDedupKey(event)
+                        deliveredPre.insert(key)
+                        let minutesLeft = max(1, Int((event.startDate.timeIntervalSince(now) / 60).rounded(.up)))
+                        notifier.sendMeetingReminderNotification(
+                            eventID: event.id,
+                            title: event.title,
+                            body: "Starts in \(minutesLeft) min · \(event.formattedTimeRange)",
+                            conferenceURL: event.conferenceLink?.absoluteString ?? "",
+                            dedupKey: key
+                        )
+                    }
+                }
+            } catch {
+                // Transient DB error: log (DigestWatcher convention) and keep
+                // the current banner — never clear a visible banner on a
+                // failed read. The stop reminder below still runs; it does
+                // its own read.
+                print("[MeetingReminder] poll error: \(error.localizedDescription)")
+            }
+        } else {
+            bannerEvent = nil
         }
 
-        pollStopReminder(now: now)
+        // Stop-recording push: ALWAYS ON (owner decision) — independent of
+        // the "Meeting reminders" toggle and the minutes stepper; it respects
+        // only quiet hours here and the OS notification permission inside
+        // NotificationService.
+        if !quietHoursActive {
+            pollStopReminder(now: now)
+        }
     }
 
     /// Stop-recording push: only for an event-linked recording still running
@@ -218,9 +248,21 @@ final class MeetingReminderCenter {
     private func pollStopReminder(now: Date) {
         guard case .recording = recorderCenter.phase,
               let eventID = recorderCenter.currentEventID else { return }
-        guard let event = try? dbPool.read({ db in
-            try CalendarQueries.fetchEvent(db, id: eventID)
-        }) else { return }
+        let fetched: CalendarEvent?
+        do {
+            fetched = try dbPool.read { db in
+                try CalendarQueries.fetchEvent(db, id: eventID)
+            }
+        } catch {
+            // A real DB error, distinct from a missing row: swallowing it
+            // could leave the privacy-relevant "still recording" push
+            // persistently and invisibly dead.
+            print("[MeetingReminder] stop-reminder poll error: \(error.localizedDescription)")
+            return
+        }
+        // Row missing = event deleted mid-recording — a spec-sanctioned
+        // clean no-op (never a crash), not an error.
+        guard let event = fetched else { return }
         guard let key = MeetingReminderLogic.stopRecordingDedupKey(
             eventID: eventID, eventEnd: event.endDate, now: now
         ), !deliveredStop.contains(key) else { return }
