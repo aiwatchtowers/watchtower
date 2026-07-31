@@ -317,6 +317,56 @@ func TestSync_PrimaryFallbackSkipsStaleDeleteWhenUnresolved(t *testing.T) {
 	require.NotNil(t, survivor, "stale-delete must be skipped for the unresolved literal \"primary\" bucket")
 }
 
+// TestSync_ConferenceURLLandsInDB is the end-to-end guard for the Join
+// button's data path: an API event carrying a hangoutLink syncs into
+// calendar_events.conference_url, and one without any link stores "".
+func TestSync_ConferenceURLLandsInDB(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/calendarList", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(calendarListFixture([2]any{"aliceprimary", true})))
+	})
+	mux.HandleFunc("/calendars/aliceprimary/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[
+			{"id":"meet-evt","summary":"With Meet","status":"confirmed",
+			 "hangoutLink":"https://meet.google.com/abc-defg-hij",
+			 "start":{"dateTime":"2026-04-02T09:00:00Z"},"end":{"dateTime":"2026-04-02T10:00:00Z"},
+			 "updated":"2026-04-01T00:00:00Z"},
+			{"id":"plain-evt","summary":"No Link","status":"confirmed",
+			 "start":{"dateTime":"2026-04-02T11:00:00Z"},"end":{"dateTime":"2026-04-02T12:00:00Z"},
+			 "updated":"2026-04-01T00:00:00Z"}
+		]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	prevAPI := calendarAPIBase
+	calendarAPIBase = srv.URL
+	defer func() { calendarAPIBase = prevAPI }()
+
+	database := db.OpenTestDB(t)
+	acctA, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	require.NoError(t, err)
+
+	cfg := &config.Config{}
+	client := &Client{hc: srv.Client(), accessToken: "token-a"}
+
+	count, err := NewSyncer(client, database, cfg, nil, acctA).Sync(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	meetEvt, err := database.GetCalendarEventByID("meet-evt")
+	require.NoError(t, err)
+	require.NotNil(t, meetEvt)
+	assert.Equal(t, "https://meet.google.com/abc-defg-hij", meetEvt.ConferenceURL)
+
+	plainEvt, err := database.GetCalendarEventByID("plain-evt")
+	require.NoError(t, err)
+	require.NotNil(t, plainEvt)
+	assert.Equal(t, "", plainEvt.ConferenceURL)
+}
+
 // TestRecordAuthResultSkipsCancelledContext guards the daemon-shutdown path:
 // when the sync's own context is cancelled (SIGTERM), the resulting HTTP
 // error is a shutdown artifact, not an auth problem, and must not flip a

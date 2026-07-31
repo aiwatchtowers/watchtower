@@ -78,6 +78,63 @@ func TestConvertEvent_NoOrganizer(t *testing.T) {
 	assert.Equal(t, "confirmed", ev.EventStatus)   // default event status
 }
 
+// TestConvertEvent_ConferenceURL covers the meeting-link resolution priority:
+// hangoutLink → first "video" conferenceData entry point → regex fallback over
+// location+description → "".
+func TestConvertEvent_ConferenceURL(t *testing.T) {
+	base := googleEvent{
+		ID:    "conf1",
+		Start: &googleTime{DateTime: "2026-04-02T09:00:00Z"},
+		End:   &googleTime{DateTime: "2026-04-02T10:00:00Z"},
+	}
+
+	t.Run("hangoutLink wins over conferenceData", func(t *testing.T) {
+		item := base
+		item.HangoutLink = "https://meet.google.com/aaa-bbbb-ccc"
+		item.ConferenceData = &googleConferenceData{EntryPoints: []googleEntryPoint{
+			{EntryPointType: "video", URI: "https://meet.google.com/zzz-yyyy-xxx"},
+		}}
+		assert.Equal(t, "https://meet.google.com/aaa-bbbb-ccc", convertEvent(item, "primary").ConferenceURL)
+	})
+
+	t.Run("video entry point when no hangoutLink", func(t *testing.T) {
+		item := base
+		item.ConferenceData = &googleConferenceData{EntryPoints: []googleEntryPoint{
+			{EntryPointType: "phone", URI: "tel:+1-555-0100"},
+			{EntryPointType: "video", URI: "https://company.zoom.us/j/123456"},
+		}}
+		assert.Equal(t, "https://company.zoom.us/j/123456", convertEvent(item, "primary").ConferenceURL)
+	})
+
+	t.Run("non-video entry points alone fall through to regex", func(t *testing.T) {
+		item := base
+		item.ConferenceData = &googleConferenceData{EntryPoints: []googleEntryPoint{
+			{EntryPointType: "phone", URI: "tel:+1-555-0100"},
+		}}
+		item.Location = "https://zoom.us/j/777"
+		assert.Equal(t, "https://zoom.us/j/777", convertEvent(item, "primary").ConferenceURL)
+	})
+
+	t.Run("regex fallback over location", func(t *testing.T) {
+		item := base
+		item.Location = "https://acme.webex.com/meet/room1"
+		assert.Equal(t, "https://acme.webex.com/meet/room1", convertEvent(item, "primary").ConferenceURL)
+	})
+
+	t.Run("regex fallback over HTML description", func(t *testing.T) {
+		item := base
+		item.Description = `<a href="https://teams.microsoft.com/l/meetup-join/19%3am">Join Teams</a>`
+		assert.Equal(t, "https://teams.microsoft.com/l/meetup-join/19%3am", convertEvent(item, "primary").ConferenceURL)
+	})
+
+	t.Run("no link anywhere", func(t *testing.T) {
+		item := base
+		item.Location = "Room 5"
+		item.Description = "Weekly sync"
+		assert.Equal(t, "", convertEvent(item, "primary").ConferenceURL)
+	})
+}
+
 func TestSanitizeTitle(t *testing.T) {
 	assert.Equal(t, "Team Meeting", sanitizeTitle("  Team Meeting  "))
 	assert.Equal(t, "", sanitizeTitle(""))

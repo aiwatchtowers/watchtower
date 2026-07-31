@@ -165,6 +165,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			EventStatus:    e.EventStatus,
 			EventType:      e.EventType,
 			HTMLLink:       e.HTMLLink,
+			ConferenceURL:  e.ConferenceURL,
 			RawJSON:        rawJSON,
 			ICalUID:        e.ICalUID,
 			UpdatedAt:      e.UpdatedAt,

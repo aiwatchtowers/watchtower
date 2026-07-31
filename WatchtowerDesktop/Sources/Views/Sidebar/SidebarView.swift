@@ -103,6 +103,19 @@ struct SidebarView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                    if nextEvt.conferenceLink != nil {
+                        Spacer(minLength: 4)
+                        Button {
+                            Task { await JoinMeetingAction.join(event: nextEvt, center: appState.meetingRecorderCenter) }
+                        } label: {
+                            Label("Join", systemImage: "video")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(Color.accentColor)
+                        .help("Open the meeting link")
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
