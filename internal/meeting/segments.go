@@ -22,8 +22,11 @@ type TranscriptUtterance struct {
 
 // ParseTranscriptSegments decodes and validates a segments_json payload.
 // It rejects anything that is not a non-empty array of utterances with a
-// speaker and text — a malformed file must degrade to a NULL column, never
-// poison the row.
+// speaker, text, and idx equal to the array position — a malformed file must
+// degrade to a NULL column, never poison the row. The idx check matters
+// downstream: Swift uses idx as the Identifiable id (a duplicate breaks
+// ForEach) and as the soft-delete lookup key (a mismatch flips the wrong
+// row); RoleAssigner.assign always produces idx == position.
 func ParseTranscriptSegments(data []byte) ([]TranscriptUtterance, error) {
 	var utterances []TranscriptUtterance
 	if err := json.Unmarshal(data, &utterances); err != nil {
@@ -33,6 +36,9 @@ func ParseTranscriptSegments(data []byte) ([]TranscriptUtterance, error) {
 		return nil, fmt.Errorf("transcript segments array is empty")
 	}
 	for i, u := range utterances {
+		if u.Idx != i {
+			return nil, fmt.Errorf("transcript segment at position %d has idx %d (must equal its array position)", i, u.Idx)
+		}
 		if u.Speaker == "" {
 			return nil, fmt.Errorf("transcript segment %d has no speaker", i)
 		}
