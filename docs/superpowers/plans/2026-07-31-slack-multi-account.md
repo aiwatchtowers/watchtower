@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Branch: `feature/multi-account` (parallel worktree per the initiative plan). Commit messages in English.
+- Branch: `feature/slack-multi-account` (fresh branch off `main`, which already has the Google sub-project merged via PR #48 — the old `feature/multi-account` branch is stale/superseded, do not reuse it). Commit messages in English.
 - New migration number: **00044** (`internal/db/migrations/00044_slack_accounts.sql`). Do NOT bump `CurrentSchemaFormat`.
 - Every schema change must be mirrored in `internal/db/schema.sql`, `WatchtowerDesktop/Tests/Helpers/TestDatabase.swift`, added to `TestAllTablesExist` (`internal/db/db_test.go`) if a new table, and the golden regenerated: `go test ./internal/db/ -run TestSchemaGolden -update`.
 - Table-recreation dances (`sync_state` PK rename is NOT needed — see Task 1 rationale; no table actually needs recreation this time, only `ALTER TABLE ... ADD COLUMN` and data `UPDATE`s) run under a normal transaction; no `PRAGMA foreign_keys = OFF` dance is required because no table's PRIMARY KEY *type* changes, only the *values* in existing TEXT columns.
