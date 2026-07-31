@@ -32,6 +32,38 @@ struct TranscriptNotesResult: Decodable, Equatable {
     }
 }
 
+// MARK: - TranscriptChaptersResult
+
+/// Decoded stdout envelope of `watchtower meeting-prep transcript chapters <id>`.
+/// The CLI exits non-zero on any failure (nothing persisted), so decoding
+/// only happens on success.
+struct TranscriptChaptersResult: Decodable, Equatable {
+    let transcriptID: Int64
+    let chaptersJSON: String
+
+    enum CodingKeys: String, CodingKey {
+        case transcriptID = "transcript_id"
+        case chaptersJSON = "chapters_json"
+    }
+}
+
+// MARK: - TranscriptFollowupResult
+
+/// Decoded stdout envelope of `watchtower meeting-prep transcript followup <id>`.
+/// `chapter` is nil for a whole-meeting draft. The draft is ephemeral —
+/// nothing is persisted or sent.
+struct TranscriptFollowupResult: Decodable, Equatable {
+    let transcriptID: Int64
+    let chapter: Int?
+    let draft: String
+
+    enum CodingKeys: String, CodingKey {
+        case transcriptID = "transcript_id"
+        case chapter
+        case draft
+    }
+}
+
 // MARK: - TranscriptSaveService
 
 /// Bridges the Desktop app to `watchtower meeting-prep transcript`.
@@ -107,5 +139,25 @@ struct TranscriptSaveService {
         let args = ["meeting-prep", "transcript", "notes", String(transcriptID)]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(TranscriptNotesResult.self, from: data)
+    }
+
+    /// `meeting-prep transcript chapters <id>` — generate meeting chapters
+    /// (requires persisted segments). The CLI persists chapters_json itself.
+    func generateChapters(transcriptID: Int64) async throws -> TranscriptChaptersResult {
+        let args = ["meeting-prep", "transcript", "chapters", String(transcriptID)]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(TranscriptChaptersResult.self, from: data)
+    }
+
+    /// `meeting-prep transcript followup <id> [--chapter N]` — draft a
+    /// follow-up message in the owner's voice from one chapter (or, with
+    /// chapter nil, the whole meeting). Nothing is persisted or sent.
+    func generateFollowup(transcriptID: Int64, chapter: Int?) async throws -> TranscriptFollowupResult {
+        var args = ["meeting-prep", "transcript", "followup", String(transcriptID)]
+        if let chapter {
+            args += ["--chapter", String(chapter)]
+        }
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(TranscriptFollowupResult.self, from: data)
     }
 }

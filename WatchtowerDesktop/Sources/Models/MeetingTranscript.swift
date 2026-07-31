@@ -9,6 +9,7 @@ import GRDB
 /// `notesMD` holds user-editable publishable markdown notes. `segmentsJSON`
 /// is the per-utterance segment array (nil for legacy rows); when set, the
 /// invariant `transcriptText = TranscriptSegments.render(non-deleted)` holds.
+/// `chaptersJSON` is the AI chapter breakdown (nil until generated).
 struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "meeting_transcripts"
 
@@ -22,6 +23,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     let summaryJSON: String?
     let notesMD: String?
     let segmentsJSON: String?
+    let chaptersJSON: String?
     let createdAt: String
     let updatedAt: String
 
@@ -39,6 +41,14 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         return TranscriptSegments.decode(segmentsJSON)
     }
 
+    /// Decodes `chaptersJSON`; nil until generated or for a malformed payload
+    /// (the UI then falls back to the flat recap). Decode once per detail
+    /// load — never in row builders.
+    var parsedChapters: MeetingChapters? {
+        guard let chaptersJSON else { return nil }
+        return MeetingChapters.decode(chaptersJSON)
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case eventID = "event_id"
@@ -50,6 +60,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         case summaryJSON = "summary_json"
         case notesMD = "notes_md"
         case segmentsJSON = "segments_json"
+        case chaptersJSON = "chapters_json"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

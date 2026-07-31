@@ -27,12 +27,27 @@ struct RecordingDetailView: View {
     @State private var transcript: MeetingTranscript?
     @State private var utterances: [TranscriptUtterance]?
     @State private var recapContent: MeetingRecap.Content?
+    @State private var chapters: MeetingChapters?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
     @State private var isRetryingRecap = false
     @State private var showDeleteConfirm = false
     @State private var linkTarget: MeetingTranscript?
     @State private var errorMessage: String?
+    @State private var transcriptScrollTarget: Int?
+    @State private var followup: FollowupState?
+
+    /// One in-flight follow-up draft request (sheet-scoped, ephemeral by
+    /// design — the draft is never persisted; dismissing the sheet discards
+    /// it, so no navigation-surviving center is needed).
+    struct FollowupState: Identifiable {
+        let id = UUID()
+        let chapter: Int?
+        let chapterTitle: String?
+        var draft = ""
+        var errorMessage: String?
+        var isLoading = true
+    }
 
     private var notesService: TranscriptSaveService? {
         guard let runner = ProcessCLIRunner.makeDefault() else { return nil }
@@ -75,7 +90,21 @@ struct RecordingDetailView: View {
             tab = .recap
             chatVM = nil
             utterances = nil
+            chapters = nil
+            transcriptScrollTarget = nil
+            followup = nil
             await load()
+        }
+        .sheet(isPresented: Binding(
+            get: { followup != nil },
+            set: { if !$0 { followup = nil } }
+        )) {
+            FollowupDraftSheet(
+                chapterTitle: followup?.chapterTitle,
+                isLoading: followup?.isLoading ?? true,
+                errorMessage: followup?.errorMessage,
+                draft: followup?.draft ?? ""
+            ) { followup = nil }
         }
         .confirmationDialog(
             "Delete this recording?",
@@ -99,13 +128,22 @@ struct RecordingDetailView: View {
     @ViewBuilder
     private func tabContent(_ transcript: MeetingTranscript) -> some View {
         let center = appState.transcriptNotesCenter
+        let chaptersCenter = appState.transcriptChaptersCenter
         switch tab {
         case .recap:
             RecordingRecapTab(
                 transcript: transcript,
                 recapContent: recapContent,
+                chapters: chapters,
+                hasSegments: utterances != nil,
                 onRetryRecap: retryRecap,
-                isRetrying: isRetryingRecap)
+                isRetrying: isRetryingRecap,
+                onGenerateChapters: generateChapters,
+                isGeneratingChapters: chaptersCenter.generating.contains(transcriptID),
+                chaptersError: chaptersCenter.lastError[transcriptID],
+                onOpenChapter: openChapterInTranscript,
+                onConvertActionItem: convertActionItem,
+                onFollowup: generateFollowup)
         case .notes:
             RecordingNotesTab(
                 transcript: transcript,
@@ -118,6 +156,7 @@ struct RecordingDetailView: View {
             RecordingTranscriptTab(
                 transcriptText: transcript.transcriptText,
                 utterances: utterances,
+                scrollTarget: $transcriptScrollTarget,
                 onSetUtteranceDeleted: setUtteranceDeleted)
         case .chat:
             if let chatVM {
@@ -178,20 +217,21 @@ struct RecordingDetailView: View {
     private func load() async {
         guard let db = appState.databaseManager else { return }
         do {
-            let (row, recap, decodedUtterances) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
-                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, [TranscriptUtterance]?) in
+            let (row, recap, decodedUtterances, decodedChapters) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
+                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, [TranscriptUtterance]?, MeetingChapters?) in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
                     var recap: MeetingRecap?
                     if let eventID = row?.eventID {
                         recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
                     }
-                    return (row, recap, row?.utterances)
+                    return (row, recap, row?.utterances, row?.parsedChapters)
                 }
             }.value
             transcript = row
-            // Segments decoded ONCE here (off-main, alongside the fetch),
-            // never in body evaluations or row builders.
+            // Segments and chapters decoded ONCE here (off-main, alongside
+            // the fetch), never in body evaluations or row builders.
             utterances = decodedUtterances
+            chapters = decodedChapters
             // Event recap wins; ad-hoc (or collision-guarded) recap falls back
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
@@ -239,6 +279,103 @@ struct RecordingDetailView: View {
                 onChanged()
             } catch {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func generateChapters() {
+        guard let service = notesService else {
+            errorMessage = "watchtower CLI not found"
+            return
+        }
+        appState.transcriptChaptersCenter.generate(
+            transcriptID: transcriptID, service: service
+        ) {
+            Task { await load() }
+            onChanged()
+        }
+    }
+
+    /// Chapter → transcript jump: scroll target = the first non-deleted
+    /// utterance at or after the chapter start, then switch tabs.
+    private func openChapterInTranscript(_ chapter: MeetingChapter) {
+        if let utterances {
+            transcriptScrollTarget = MeetingChapters.firstUtteranceIdx(
+                in: utterances, atOrAfter: chapter.startSec)
+        }
+        tab = .transcript
+    }
+
+    /// Action item → Target: creates the Target and stamps
+    /// converted_target_id inside chapters_json in ONE write transaction
+    /// (link, not delete — DASH-03 spirit), then reloads so the recap tab
+    /// shows the converted state.
+    private func convertActionItem(chapterIdx: Int, itemIdx: Int) {
+        guard let db = appState.databaseManager,
+              let transcript,
+              let chapters,
+              chapters.chapters.indices.contains(chapterIdx),
+              chapters.chapters[chapterIdx].actionItems.indices.contains(itemIdx) else { return }
+        let chapter = chapters.chapters[chapterIdx]
+        let item = chapter.actionItems[itemIdx]
+        guard item.convertedTargetID == nil else { return }
+
+        // Target description = chapter context (chapter summary + meeting
+        // title + date), the spec'd conversion payload.
+        let date = TranscriptFormatting.formattedDate(transcript.createdAt)
+        var context = "From meeting \"\(transcript.title)\" (\(date)), chapter \"\(chapter.title)\""
+        if !chapter.summary.isEmpty {
+            context += ": \(chapter.summary)"
+        }
+        do {
+            try db.dbPool.write { conn in
+                let today = TargetQueries.todayDateString()
+                let targetID = try TargetQueries.create(
+                    conn,
+                    text: item.text,
+                    intent: context,
+                    level: "day",
+                    periodStart: today,
+                    periodEnd: today,
+                    sourceType: "manual",
+                    sourceID: "meeting_chapter:\(transcriptID):\(chapterIdx):\(itemIdx)"
+                )
+                try MeetingTranscriptQueries.setActionItemConverted(
+                    conn, id: transcriptID,
+                    chapterIdx: chapterIdx, itemIdx: itemIdx,
+                    targetID: Int64(targetID))
+            }
+            onChanged()
+            Task { await load() }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Follow-up draft (per chapter, or whole meeting when chapterIdx nil):
+    /// opens the sheet in its loading state and fills it when the CLI
+    /// returns. The draft is shown copyable only — never auto-sent.
+    private func generateFollowup(chapterIdx: Int?) {
+        guard let service = notesService else {
+            errorMessage = "watchtower CLI not found"
+            return
+        }
+        let title = chapterIdx.flatMap { idx in
+            chapters.flatMap { $0.chapters.indices.contains(idx) ? $0.chapters[idx].title : nil }
+        }
+        let state = FollowupState(chapter: chapterIdx, chapterTitle: title)
+        followup = state
+        Task {
+            do {
+                let result = try await service.generateFollowup(
+                    transcriptID: transcriptID, chapter: chapterIdx)
+                guard followup?.id == state.id else { return } // sheet closed/replaced
+                followup?.draft = result.draft
+                followup?.isLoading = false
+            } catch {
+                guard followup?.id == state.id else { return }
+                followup?.errorMessage = error.localizedDescription
+                followup?.isLoading = false
             }
         }
     }

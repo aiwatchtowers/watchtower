@@ -48,6 +48,9 @@ final class AppState {
     /// navigation-surviving state).
     let transcriptNotesCenter = TranscriptNotesCenter()
 
+    /// Same pattern for "generate chapters" runs (Recap tab).
+    let transcriptChaptersCenter = TranscriptChaptersCenter()
+
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
     /// role-less transcript.

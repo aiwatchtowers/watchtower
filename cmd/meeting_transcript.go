@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ var (
 	transcriptSaveFlagLangStats string
 	transcriptSaveFlagDuration  int
 	transcriptListFlagEventID   string
+	transcriptFollowupChapter   int
 )
 
 // transcriptGeneratorFactory is the seam tests override to inject a mock
@@ -81,9 +83,29 @@ var transcriptNotesCmd = &cobra.Command{
 	RunE: runTranscriptNotes,
 }
 
+var transcriptChaptersCmd = &cobra.Command{
+	Use:   "chapters <id>",
+	Short: "Generate meeting chapters for a saved transcript",
+	Long: "Runs the meeting.chapters AI prompt over the transcript's per-utterance segments (timecodes + speakers) and stores the result in meeting_transcripts.chapters_json. " +
+		"Requires persisted segments. Prints {transcript_id, chapters_json} on success; exits 1 on any failure (nothing is persisted on failure).",
+	Args: cobra.ExactArgs(1),
+	RunE: runTranscriptChapters,
+}
+
+var transcriptFollowupCmd = &cobra.Command{
+	Use:   "followup <id>",
+	Short: "Draft a follow-up message from a transcript's chapters",
+	Long: "Runs the meeting.followup AI prompt (owner's voice via the workspace style profile) over one chapter's — or, without --chapter, the whole meeting's — decisions, action items, and open questions. " +
+		"Requires generated chapters. Prints {transcript_id, chapter, draft}; nothing is ever persisted or sent. Exits 1 on any failure.",
+	Args: cobra.ExactArgs(1),
+	RunE: runTranscriptFollowup,
+}
+
 func init() {
 	meetingPrepCmd.AddCommand(meetingTranscriptCmd)
-	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd)
+	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd, transcriptChaptersCmd, transcriptFollowupCmd)
+
+	transcriptFollowupCmd.Flags().IntVar(&transcriptFollowupChapter, "chapter", -1, "0-based chapter index to draft for (omit for a whole-meeting draft)")
 
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagFile, "transcript-file", "", "path to the transcript text file (required)")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagSegments, "segments-file", "", "path to the per-utterance segments JSON file (optional)")
@@ -162,10 +184,19 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("persisting transcript: %w", err)
 	}
 
-	// The row is saved — from here on a recap failure must NOT flip the exit
-	// code; it is reported inside the envelope instead.
+	// The row is saved — from here on a recap or chapters failure must NOT
+	// flip the exit code; both are reported inside the envelope instead.
 	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
-	return printTranscriptEnvelope(cmd, database, id, recapErr)
+
+	// Chapters are generated automatically only when segments exist (they
+	// carry the timecodes the chapterizer needs). A failure leaves
+	// chapters_json NULL; retry via `transcript chapters <id>`.
+	var chaptersOutcome *error
+	if tr.SegmentsJSON.Valid {
+		_, chaptersErr := generateAndStoreTranscriptChapters(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
+		chaptersOutcome = &chaptersErr
+	}
+	return printTranscriptEnvelope(cmd, database, id, recapErr, chaptersOutcome)
 }
 
 // loadTranscriptSegments reads and validates the optional --segments-file for
@@ -214,7 +245,7 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 	}
 
 	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
-	return printTranscriptEnvelope(cmd, database, id, recapErr)
+	return printTranscriptEnvelope(cmd, database, id, recapErr, nil)
 }
 
 // generateAndStoreTranscriptRecap runs the AI recap for a saved transcript and
@@ -291,11 +322,14 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 
 // printTranscriptEnvelope emits the frozen stdout contract consumed by the
 // Swift TranscriptSaveService: transcript_id / recap_ok / recap_error (plus
-// event_id and title for display). A failed post-save refetch must NOT flip
-// the exit code — the row IS persisted (exit 1 only when nothing was
-// persisted) — so it degrades to a minimal envelope built from what is known,
-// logging the refetch problem to stderr.
-func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr error) error {
+// event_id and title for display). chaptersErr is nil when chapter generation
+// was not attempted (no segments, or the recap-only retry command); when
+// non-nil the envelope additionally reports chapters_ok / chapters_error —
+// additive keys, safe for the frozen Swift decoder. A failed post-save
+// refetch must NOT flip the exit code — the row IS persisted (exit 1 only
+// when nothing was persisted) — so it degrades to a minimal envelope built
+// from what is known, logging the refetch problem to stderr.
+func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr error, chaptersErr *error) error {
 	recapErrMsg := ""
 	if recapErr != nil {
 		recapErrMsg = recapErr.Error()
@@ -304,6 +338,14 @@ func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, reca
 		"transcript_id": id,
 		"recap_ok":      recapErr == nil,
 		"recap_error":   recapErrMsg,
+	}
+	if chaptersErr != nil {
+		chaptersErrMsg := ""
+		if *chaptersErr != nil {
+			chaptersErrMsg = (*chaptersErr).Error()
+		}
+		envelope["chapters_ok"] = *chaptersErr == nil
+		envelope["chapters_error"] = chaptersErrMsg
 	}
 
 	tr, err := database.GetMeetingTranscript(id)
@@ -471,4 +513,205 @@ func runTranscriptNotes(cmd *cobra.Command, args []string) error {
 		"transcript_id": id,
 		"notes_md":      notes,
 	})
+}
+
+// generateAndStoreTranscriptChapters runs the meeting.chapters AI prompt over
+// a transcript's persisted segments and stores the normalized result in
+// chapters_json. Shared by save (auto-generation when segments exist) and the
+// `chapters <id>` retry command. Returns the persisted JSON; on any error
+// nothing is persisted (the mirror of the notes-command contract).
+// Bookkeeping failures (pipeline_runs) are logged to errOut and never affect
+// the result.
+func generateAndStoreTranscriptChapters(ctx context.Context, database *db.DB, cfg *config.Config, id int64, errOut io.Writer) (string, error) {
+	if ctx == nil { // RunE invoked outside cobra's Execute (tests)
+		ctx = context.Background()
+	}
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		return "", err
+	}
+	if tr == nil {
+		return "", fmt.Errorf("transcript %d not found", id)
+	}
+	if !tr.SegmentsJSON.Valid {
+		return "", fmt.Errorf("transcript %d has no segments — chapters need per-utterance timecodes", id)
+	}
+	utterances, err := meeting.ParseTranscriptSegments([]byte(tr.SegmentsJSON.String))
+	if err != nil {
+		return "", err
+	}
+
+	runID, err := database.CreatePipelineRun("meeting_chapters", "cli", "auto")
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: recording meeting_chapters pipeline run: %v\n", err)
+	}
+	completeRun := func(items, in, out, api int, errMsg string) {
+		if err := database.CompletePipelineRun(runID, items, in, out, 0, api, nil, nil, errMsg); err != nil {
+			fmt.Fprintf(errOut, "warning: completing meeting_chapters pipeline run %d: %v\n", runID, err)
+		}
+	}
+	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg), nil)
+	pipe.SetPromptStore(prompts.New(database, nil))
+
+	eventID := ""
+	if tr.EventID.Valid {
+		eventID = tr.EventID.String
+	}
+	res, usage, err := pipe.GenerateTranscriptChapters(ctx, eventID, utterances, tr.DurationSec)
+	if err != nil {
+		completeRun(0, 0, 0, 0, err.Error())
+		return "", err
+	}
+	chaptersJSON, err := json.Marshal(res)
+	if err != nil {
+		completeRun(0, 0, 0, 0, err.Error())
+		return "", fmt.Errorf("marshalling chapters: %w", err)
+	}
+	if err := database.SetMeetingTranscriptChapters(id, string(chaptersJSON)); err != nil {
+		completeRun(0, 0, 0, 0, err.Error())
+		return "", err
+	}
+
+	in, out, api := 0, 0, 0
+	if usage != nil {
+		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+	}
+	completeRun(1, in, out, api, "")
+	return string(chaptersJSON), nil
+}
+
+func runTranscriptChapters(cmd *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid transcript id %q: %w", args[0], err)
+	}
+
+	cfg, database, err := transcriptEnv()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	chaptersJSON, err := generateAndStoreTranscriptChapters(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]any{
+		"transcript_id": id,
+		"chapters_json": chaptersJSON,
+	})
+}
+
+func runTranscriptFollowup(cmd *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid transcript id %q: %w", args[0], err)
+	}
+
+	cfg, database, err := transcriptEnv()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		return err
+	}
+	if tr == nil {
+		return fmt.Errorf("transcript %d not found", id)
+	}
+	if !tr.ChaptersJSON.Valid {
+		return fmt.Errorf("transcript %d has no chapters — generate them first (transcript chapters %d)", id, id)
+	}
+	chapters, err := meeting.ParseChapters([]byte(tr.ChaptersJSON.String))
+	if err != nil {
+		return err
+	}
+
+	input, err := followupInput(tr, chapters, transcriptFollowupChapter)
+	if err != nil {
+		return err
+	}
+
+	runID, err := database.CreatePipelineRun("meeting_followup", "cli", "auto")
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: recording meeting_followup pipeline run: %v\n", err)
+	}
+	completeRun := func(items, in, out, api int, errMsg string) {
+		if err := database.CompletePipelineRun(runID, items, in, out, 0, api, nil, nil, errMsg); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: completing meeting_followup pipeline run %d: %v\n", runID, err)
+		}
+	}
+	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg), nil)
+	pipe.SetPromptStore(prompts.New(database, nil))
+
+	ctx := cmd.Context()
+	if ctx == nil { // RunE invoked outside cobra's Execute (tests)
+		ctx = context.Background()
+	}
+	draft, usage, err := pipe.GenerateFollowupDraft(ctx, input)
+	if err != nil {
+		completeRun(0, 0, 0, 0, err.Error())
+		return err
+	}
+	in, out, api := 0, 0, 0
+	if usage != nil {
+		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+	}
+	completeRun(1, in, out, api, "")
+
+	var chapter any
+	if transcriptFollowupChapter >= 0 {
+		chapter = transcriptFollowupChapter
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]any{
+		"transcript_id": id,
+		"chapter":       chapter,
+		"draft":         draft,
+	})
+}
+
+// followupInput builds the stated-content input for one chapter (chapterIdx
+// >= 0) or the whole meeting (chapterIdx < 0 — the union of every chapter's
+// extractions, deduplicated participant labels). The meeting date comes from
+// the transcript's created_at (its date part).
+func followupInput(tr *db.MeetingTranscript, chapters *meeting.ChaptersResult, chapterIdx int) (meeting.FollowupInput, error) {
+	input := meeting.FollowupInput{
+		MeetingTitle: tr.Title,
+		MeetingDate:  tr.CreatedAt,
+	}
+	if len(tr.CreatedAt) >= 10 {
+		input.MeetingDate = tr.CreatedAt[:10]
+	}
+
+	appendChapter := func(ch meeting.MeetingChapter) {
+		for _, p := range ch.Participants {
+			if !slices.Contains(input.Participants, p) {
+				input.Participants = append(input.Participants, p)
+			}
+		}
+		input.Decisions = append(input.Decisions, ch.Decisions...)
+		for _, it := range ch.ActionItems {
+			input.ActionItems = append(input.ActionItems, it.Text)
+		}
+		input.OpenQuestions = append(input.OpenQuestions, ch.OpenQuestions...)
+	}
+
+	if chapterIdx >= 0 {
+		if chapterIdx >= len(chapters.Chapters) {
+			return input, fmt.Errorf("chapter %d out of range (transcript has %d chapters)", chapterIdx, len(chapters.Chapters))
+		}
+		appendChapter(chapters.Chapters[chapterIdx])
+		return input, nil
+	}
+	for _, ch := range chapters.Chapters {
+		appendChapter(ch)
+	}
+	return input, nil
 }

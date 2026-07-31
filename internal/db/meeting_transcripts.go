@@ -14,6 +14,8 @@ import (
 // is the per-utterance segment array (NULL for legacy rows); when set, the
 // invariant transcript_text = render(segments where !deleted) must hold — see
 // internal/meeting.RenderTranscriptSegments, the canonical Go renderer.
+// ChaptersJSON is the AI-generated chapter breakdown (meeting.chapters
+// prompt); NULL until generated — see internal/meeting.ChaptersResult.
 type MeetingTranscript struct {
 	ID             int64
 	EventID        sql.NullString
@@ -25,6 +27,7 @@ type MeetingTranscript struct {
 	SummaryJSON    sql.NullString
 	NotesMD        sql.NullString
 	SegmentsJSON   sql.NullString
+	ChaptersJSON   sql.NullString
 	CreatedAt      string
 	UpdatedAt      string
 }
@@ -38,12 +41,12 @@ type MeetingTranscriptFilter struct {
 	Limit    int    // 0 = 50
 }
 
-const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, notes_md, segments_json, created_at, updated_at`
+const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, notes_md, segments_json, chapters_json, created_at, updated_at`
 
 func scanMeetingTranscript(row interface{ Scan(...any) error }) (MeetingTranscript, error) {
 	var t MeetingTranscript
 	err := row.Scan(&t.ID, &t.EventID, &t.Title, &t.AudioPath, &t.DurationSec,
-		&t.LangStats, &t.TranscriptText, &t.SummaryJSON, &t.NotesMD, &t.SegmentsJSON, &t.CreatedAt, &t.UpdatedAt)
+		&t.LangStats, &t.TranscriptText, &t.SummaryJSON, &t.NotesMD, &t.SegmentsJSON, &t.ChaptersJSON, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
 
@@ -144,6 +147,20 @@ func (db *DB) SetMeetingTranscriptNotes(id int64, notesMD string) error {
 	`, notesMD, id)
 	if err != nil {
 		return fmt.Errorf("setting meeting transcript %d notes: %w", id, err)
+	}
+	return nil
+}
+
+// SetMeetingTranscriptChapters stores the AI-generated chapters JSON for a
+// transcript and bumps updated_at.
+func (db *DB) SetMeetingTranscriptChapters(id int64, chaptersJSON string) error {
+	_, err := db.Exec(`
+		UPDATE meeting_transcripts
+		SET chapters_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ?
+	`, chaptersJSON, id)
+	if err != nil {
+		return fmt.Errorf("setting meeting transcript %d chapters: %w", id, err)
 	}
 	return nil
 }

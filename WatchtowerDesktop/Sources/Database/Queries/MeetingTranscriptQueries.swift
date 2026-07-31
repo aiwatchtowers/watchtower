@@ -50,9 +50,9 @@ enum MeetingTranscriptQueries {
     /// Recordings master list (ad-hoc + event-linked), newest first. A recap
     /// "exists" when the row has summary_json OR its event has a
     /// meeting_recaps row (the recap collision guard can put it in either).
-    /// Perf guard: the heavy blobs — transcript_text, summary_json and
-    /// segments_json — are NEVER selected here, only a 200-char snippet plus
-    /// booleans.
+    /// Perf guard: the heavy blobs — transcript_text, summary_json,
+    /// segments_json and chapters_json — are NEVER selected here, only a
+    /// 200-char snippet plus booleans.
     static func fetchRecordingList(_ db: Database, limit: Int = 200) throws -> [RecordingListItem] {
         try RecordingListItem.fetchAll(
             db,
@@ -105,6 +105,31 @@ enum MeetingTranscriptQueries {
                 WHERE id = ?
                 """,
             arguments: [updatedJSON, TranscriptSegments.render(utterances), id])
+    }
+
+    /// Stamps `converted_target_id` on one chapter action item after the
+    /// Target was created in the same write transaction — a link, not a
+    /// delete (DASH-03 spirit): the item stays in the chapter, rendered as
+    /// converted. Direct GRDB write (`saveNotes` precedent). No-op when the
+    /// row is missing, has no chapters, or the indices are unknown
+    /// (degenerate-but-valid: a stale UI can never corrupt the JSON).
+    static func setActionItemConverted(
+        _ db: Database, id: Int64, chapterIdx: Int, itemIdx: Int, targetID: Int64
+    ) throws {
+        guard let transcript = try fetch(db, id: id),
+              let chaptersJSON = transcript.chaptersJSON,
+              var chapters = MeetingChapters.decode(chaptersJSON),
+              chapters.chapters.indices.contains(chapterIdx),
+              chapters.chapters[chapterIdx].actionItems.indices.contains(itemIdx) else { return }
+        chapters.chapters[chapterIdx].actionItems[itemIdx].convertedTargetID = targetID
+        guard let updatedJSON = MeetingChapters.encode(chapters) else { return }
+        try db.execute(
+            sql: """
+                UPDATE meeting_transcripts
+                SET chapters_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [updatedJSON, id])
     }
 
     /// Deletes a recording with all its content: the transcript row and its
