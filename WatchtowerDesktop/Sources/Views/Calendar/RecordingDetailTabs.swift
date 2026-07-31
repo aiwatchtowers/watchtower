@@ -207,6 +207,7 @@ struct RecordingTranscriptTab: View {
     let suggestions: [SpeakerSuggestion]
     let isSuggesting: Bool
     let suggestError: String?
+    let suggestNotice: String?
     /// Returns whether the transactional rewrite landed — the toast only
     /// shows (and the undo only clears) on success.
     let onSetUtteranceDeleted: (_ idx: Int, _ deleted: Bool) -> Bool
@@ -258,7 +259,7 @@ struct RecordingTranscriptTab: View {
         }
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                if hasUnnamed || isSuggesting || suggestError != nil {
+                if hasUnnamed || isSuggesting || suggestError != nil || suggestNotice != nil {
                     suggestBar
                 }
                 if visible.isEmpty {
@@ -300,6 +301,13 @@ struct RecordingTranscriptTab: View {
                 Label(suggestError, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .lineLimit(2)
+            } else if let suggestNotice {
+                // A successful run with nothing to confirm is info, not
+                // failure — no red triangle.
+                Label(suggestNotice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
             Spacer()
@@ -353,19 +361,16 @@ struct RecordingTranscriptTab: View {
     /// other speaker label opens the rename picker.
     @ViewBuilder
     private func speakerLabel(_ speaker: String) -> some View {
+        let label = Text(speaker)
+            .font(.caption)
+            .fontWeight(.semibold)
         if speaker == "Я" {
-            Text(speaker)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(Color.accentColor)
+            label.foregroundStyle(Color.accentColor)
         } else {
             Button {
                 renameTarget = SpeakerRenameTarget(speaker: speaker)
             } label: {
-                Text(speaker)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
+                label.foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("Rename this speaker")
@@ -501,6 +506,11 @@ struct SpeakerRenameSheet: View {
                 TextField("Speaker name", text: $freeText)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { confirm(freeText) }
+                if freeTextIsReserved {
+                    Text("«Я» and “Speaker N” are reserved labels")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
 
             HStack {
@@ -508,16 +518,25 @@ struct SpeakerRenameSheet: View {
                 Button("Cancel") { dismiss() }
                 Button("Rename") { confirm(freeText) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(freeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(freeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || freeTextIsReserved)
             }
         }
         .padding(16)
         .frame(minWidth: 320)
     }
 
+    private var freeTextIsReserved: Bool {
+        SpeakerNaming.isReserved(freeText.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     private func confirm(_ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        // Reserved labels («Я» / "Speaker N") never leave the sheet — a
+        // rename to one would merge the cluster into the owner's identity
+        // and poison the voice-print base (also guarded in
+        // MeetingTranscriptQueries.renameSpeaker).
+        guard !trimmed.isEmpty, !SpeakerNaming.isReserved(trimmed) else { return }
         onConfirm(trimmed)
         dismiss()
     }

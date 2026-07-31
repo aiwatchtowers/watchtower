@@ -199,11 +199,17 @@ final class MeetingRecorderCenter {
             ) {
                 // Key the persisted embeddings by the SAME labels the
                 // transcript renders (clusterLabels is what assign used).
+                // A cluster that won zero transcript utterances (e.g. it only
+                // covered silence) is filtered out — its label matches nothing
+                // in the transcript, and shipping it would make the Go save
+                // drop it as an orphan.
                 let labels = RoleAssigner.clusterLabels(
                     speakers: speakers, activity: activity, voiceNames: voiceNames)
+                let usedLabels = Set(utterances.map(\.speaker))
                 let speakerEmbeddings = clusterEmbeddings
-                    .compactMap { cluster, embedding in
-                        labels[cluster].map { SpeakerEmbedding(speaker: $0, embedding: embedding) }
+                    .compactMap { cluster, embedding -> SpeakerEmbedding? in
+                        guard let label = labels[cluster], usedLabels.contains(label) else { return nil }
+                        return SpeakerEmbedding(speaker: label, embedding: embedding)
                     }
                     .sorted { $0.speaker < $1.speaker } // deterministic payload
                 return (TranscriptSegments.render(utterances), utterances,

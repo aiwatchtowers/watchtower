@@ -25,7 +25,20 @@ type SpeakerGuess struct {
 // speakerNumberRe matches the default label of a cluster no voice print
 // claimed — "Speaker 1", "Speaker 2", … Named clusters (voice-matched or
 // manually renamed) never match, so only truly unnamed speakers are guessed.
+// Dual-path with Swift `SpeakerNaming.isUnnamed` (VoicePrint.swift) — the two
+// regexes MUST stay identical (transcriber dual-path convention).
 var speakerNumberRe = regexp.MustCompile(`^Speaker \d+$`)
+
+// reservedSpeakerLabel reports whether a candidate name collides with the
+// reserved labels: the owner's «Я» (any case) or the unnamed "Speaker N"
+// pattern. A rename/suggestion to a reserved label would merge a stranger's
+// cluster into the owner's identity (and mint a voice print whose embedding
+// voice-matches that stranger to «Я» in every future recording) or fake an
+// unnamed cluster — both are rejected at validation, mirroring the Swift
+// guard in SpeakerNaming.isReserved (VoicePrint.swift).
+func reservedSpeakerLabel(name string) bool {
+	return strings.EqualFold(name, "Я") || speakerNumberRe.MatchString(name)
+}
 
 // Caps keeping the cheap-tier call bounded on hour-long meetings.
 const (
@@ -48,7 +61,16 @@ func (p *Pipeline) GenerateSpeakerGuesses(ctx context.Context, eventID string, u
 
 	title, startTime, endTime, attendees := "(ad-hoc recording)", "", "", "[]"
 	if eventID != "" && p.db != nil {
-		if ev, err := p.db.GetCalendarEventByID(eventID); err == nil && ev != nil {
+		// Degrading to ad-hoc context is fine (the model leans on the
+		// transcript alone), but a DB error must not be silently identical
+		// to a legitimately-missing event.
+		ev, err := p.db.GetCalendarEventByID(eventID)
+		switch {
+		case err != nil:
+			p.logf("meeting: loading calendar event %s for speaker guess: %v (using ad-hoc context)", eventID, err)
+		case ev == nil:
+			p.logf("meeting: calendar event %s not found for speaker guess (using ad-hoc context)", eventID)
+		default:
 			title, startTime, endTime = ev.Title, ev.StartTime, ev.EndTime
 			if strings.TrimSpace(ev.Attendees) != "" {
 				attendees = ev.Attendees
@@ -76,9 +98,11 @@ func (p *Pipeline) GenerateSpeakerGuesses(ctx context.Context, eventID string, u
 		return nil, nil, fmt.Errorf("parsing AI response: %w (raw: %.300s)", err, aiResponse)
 	}
 
-	// Validation: an unknown speaker label (not in the unnamed set) or an
-	// empty candidate is dropped, never a crash; confidence is clamped to
-	// [0,1]. At most one suggestion per speaker — the first wins.
+	// Validation: an unknown speaker label (not in the unnamed set), an
+	// empty candidate, or a candidate colliding with a reserved label
+	// («Я» / "Speaker N" — see reservedSpeakerLabel) is dropped, never a
+	// crash; confidence is clamped to [0,1]. At most one suggestion per
+	// speaker — the first wins.
 	known := make(map[string]bool, len(unnamed))
 	for _, s := range unnamed {
 		known[s] = true
@@ -89,7 +113,7 @@ func (p *Pipeline) GenerateSpeakerGuesses(ctx context.Context, eventID string, u
 		g.Speaker = strings.TrimSpace(g.Speaker)
 		g.Candidate = strings.TrimSpace(g.Candidate)
 		g.Evidence = strings.TrimSpace(g.Evidence)
-		if !known[g.Speaker] || g.Candidate == "" || seen[g.Speaker] {
+		if !known[g.Speaker] || g.Candidate == "" || seen[g.Speaker] || reservedSpeakerLabel(g.Candidate) {
 			continue
 		}
 		if g.Confidence < 0 {
@@ -102,6 +126,14 @@ func (p *Pipeline) GenerateSpeakerGuesses(ctx context.Context, eventID string, u
 		out = append(out, g)
 	}
 	return out, usage, nil
+}
+
+// logf logs via the pipeline logger; nil-safe for tests that build the
+// Pipeline as a literal (meeting.New always normalizes the logger).
+func (p *Pipeline) logf(format string, args ...any) {
+	if p.logger != nil {
+		p.logger.Printf(format, args...)
+	}
 }
 
 // unnamedSpeakers returns the distinct "Speaker N" labels among non-deleted

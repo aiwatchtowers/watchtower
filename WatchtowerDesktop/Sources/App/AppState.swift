@@ -258,7 +258,14 @@ final class AppState {
                 // read failure degrades to "no voice prints" (plain Speaker N
                 // labels), never a thrown error.
                 meetingRecorderCenter.voicePrintsLoader = { [dbPool = manager.dbPool] in
-                    (try? await dbPool.read { try VoicePrintQueries.fetchAll($0) }) ?? []
+                    do {
+                        return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
+                    } catch {
+                        // Documented degradation, but never a silent one
+                        // (the renderRoles diagnostics convention).
+                        print("[AppState] voice-print load failed, matching disabled for this run: \(error.localizedDescription)")
+                        return []
+                    }
                 }
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {

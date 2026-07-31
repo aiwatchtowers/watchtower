@@ -12,6 +12,9 @@ import Foundation
 final class SpeakerGuessCenter {
     private(set) var generating: Set<Int64> = []
     private(set) var lastError: [Int64: String] = [:]
+    /// Informational outcome of a successful run that produced nothing to
+    /// confirm — presented as info, never with the failure styling.
+    private(set) var lastNotice: [Int64: String] = [:]
     private(set) var suggestions: [Int64: [SpeakerSuggestion]] = [:]
 
     /// Starts a speaker-guess run for a transcript. No-op when a run for the
@@ -25,12 +28,13 @@ final class SpeakerGuessCenter {
         guard !generating.contains(transcriptID) else { return }
         generating.insert(transcriptID)
         lastError[transcriptID] = nil
+        lastNotice[transcriptID] = nil
         Task {
             do {
                 let result = try await service.speakerGuess(transcriptID: transcriptID)
                 suggestions[transcriptID] = result.suggestions
                 if result.suggestions.isEmpty {
-                    lastError[transcriptID] = "No confident name suggestions for this recording"
+                    lastNotice[transcriptID] = "No confident name suggestions for this recording"
                 }
             } catch {
                 lastError[transcriptID] = error.localizedDescription
@@ -51,5 +55,6 @@ final class SpeakerGuessCenter {
 
     func clearError(transcriptID: Int64) {
         lastError[transcriptID] = nil
+        lastNotice[transcriptID] = nil
     }
 }

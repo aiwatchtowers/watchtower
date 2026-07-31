@@ -446,6 +446,108 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
+    /// A rename to a reserved label — «Я» in any case, or the "Speaker N"
+    /// pattern — must be rejected wholesale: applying it would merge a
+    /// stranger's cluster into the owner's identity and mint a voice print
+    /// (person_key "я") that voice-matches that stranger to «Я» in every
+    /// future recording.
+    func test_renameSpeakerRejectsReservedLabels() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db)
+            let before = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+
+            for reserved in ["Я", "я", " Я ", "Speaker 5"] {
+                let applied = try MeetingTranscriptQueries.renameSpeaker(
+                    db, id: 1, from: "Speaker 1", to: reserved, personKey: reserved.lowercased())
+                XCTAssertFalse(applied, "rename to reserved label \(reserved) must be refused")
+            }
+
+            let after = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(after.transcriptText, before.transcriptText)
+            XCTAssertEqual(after.segmentsJSON, before.segmentsJSON)
+            XCTAssertEqual(after.speakersJSON, before.speakersJSON)
+            XCTAssertEqual(try VoicePrint.fetchCount(db), 0,
+                           "a refused rename must never learn a voice print")
+        }
+    }
+
+    func test_renameSpeakerReturnsTrueOnlyWhenApplied() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db)
+            XCTAssertTrue(try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com"))
+            // The label is gone now — a stale second rename reports false so
+            // the UI can keep the suggestion chip and explain.
+            XCTAssertFalse(try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Петя", personKey: "petya"))
+        }
+    }
+
+    /// Renaming a cluster INTO an existing label (over-split repair: the
+    /// diarizer split one person into two clusters) merges the utterances
+    /// under one label; both embeddings stay in speakers_json under that
+    /// label, and the renamed cluster's embedding is folded into the voice
+    /// print (one sample per confirmed rename).
+    func test_renameSpeakerIntoExistingLabelMergesClusters() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            let utterances = [
+                TranscriptUtterance(idx: 0, startSec: 0, endSec: 1, speaker: "Саша", text: "привет"),
+                TranscriptUtterance(idx: 1, startSec: 1, endSec: 2, speaker: "Speaker 2", text: "ответ"),
+                TranscriptUtterance(idx: 2, startSec: 2, endSec: 3, speaker: "Саша", text: "итог")
+            ]
+            let json = try XCTUnwrap(TranscriptSegments.encode(utterances))
+            let speakersJSON = try XCTUnwrap(SpeakerEmbeddings.encode([
+                SpeakerEmbedding(speaker: "Саша", embedding: [1, 0]),
+                SpeakerEmbedding(speaker: "Speaker 2", embedding: [0, 1])
+            ]))
+            try TestDatabase.insertMeetingTranscript(
+                db, id: 1, title: "Split",
+                transcriptText: TranscriptSegments.render(utterances),
+                segmentsJSON: json, speakersJSON: speakersJSON)
+
+            XCTAssertTrue(try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 2", to: "Саша", personKey: "sasha@corp.com"))
+
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            let merged = try XCTUnwrap(tr.utterances)
+            XCTAssertEqual(merged.map(\.speaker), ["Саша", "Саша", "Саша"],
+                           "the renamed cluster merges into the existing label")
+            // Both cluster embeddings survive under the shared label — the
+            // merge repairs an over-split, it must not discard voice data.
+            let speakers = try XCTUnwrap(tr.speakerEmbeddings)
+            XCTAssertEqual(speakers.map(\.speaker), ["Саша", "Саша"])
+            // Only the RENAMED cluster's embedding was learned (one sample):
+            // the pre-existing "Саша" cluster was never confirmed by this
+            // action.
+            let voicePrint = try XCTUnwrap(VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"))
+            XCTAssertEqual(voicePrint.sampleCount, 1)
+            XCTAssertEqual(voicePrint.embeddingVector[0], 0, accuracy: 1e-5)
+            XCTAssertEqual(voicePrint.embeddingVector[1], 1, accuracy: 1e-5)
+        }
+    }
+
+    /// A later rename of the same person to a corrected spelling refreshes
+    /// the stored display_name on the existing person_key row.
+    func test_voicePrintUpsertRefreshesDisplayName() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db, id: 1)
+            try self.insertSegmentedTranscriptWithSpeakers(db, id: 2)
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 2, from: "Speaker 1", to: "Александр", personKey: "sasha@corp.com")
+
+            let voicePrint = try XCTUnwrap(VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"))
+            XCTAssertEqual(voicePrint.displayName, "Александр",
+                           "the latest confirmed spelling wins")
+            XCTAssertEqual(voicePrint.sampleCount, 2)
+        }
+    }
+
     func test_voicePrintUpsertSkipsDegenerateEmbedding() throws {
         let db = try TestDatabase.create()
         try db.write { db in

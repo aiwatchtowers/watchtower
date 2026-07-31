@@ -58,19 +58,27 @@ enum VoicePrintEmbedding {
 struct SpeakerEmbedding: Codable, Equatable, Sendable {
     var speaker: String
     let embedding: [Float]
-
-    enum CodingKeys: String, CodingKey {
-        case speaker
-        case embedding
-    }
 }
 
 /// Naming helpers shared by the rename picker and the suggestion chips.
 enum SpeakerNaming {
     /// True for the default label of a cluster nobody has named yet
     /// ("Speaker 1", "Speaker 2", …) — the only labels the LLM guess targets.
+    /// Dual-path with Go's `speakerNumberRe` (internal/meeting/speaker_guess.go)
+    /// — the two regexes MUST stay identical (transcriber dual-path convention).
     static func isUnnamed(_ label: String) -> Bool {
         label.range(of: #"^Speaker \d+$"#, options: .regularExpression) != nil
+    }
+
+    /// True when a name collides with a reserved label: the owner's «Я» (any
+    /// case) or the unnamed "Speaker N" pattern. Renaming a cluster to a
+    /// reserved label would merge a stranger into the owner's identity (and
+    /// mint a voice print whose embedding voice-matches that stranger to «Я»
+    /// in every future recording) or fake an unnamed cluster — rejected in
+    /// both the rename sheet and `MeetingTranscriptQueries.renameSpeaker`,
+    /// mirroring Go's `reservedSpeakerLabel` (internal/meeting/speaker_guess.go).
+    static func isReserved(_ label: String) -> Bool {
+        label.caseInsensitiveCompare("Я") == .orderedSame || isUnnamed(label)
     }
 
     /// Derives the `voice_prints.person_key` for a confirmed display name:

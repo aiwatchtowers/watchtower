@@ -1352,6 +1352,39 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(Set(speakers.map(\.speaker)), ["Speaker 1", "Саша"])
     }
 
+    /// A diarized cluster that wins zero transcript utterances (it only
+    /// covered silence) must be filtered out of the shipped --speakers-file:
+    /// its label matches nothing in the transcript, and shipping it would
+    /// make the Go save report it as an orphan.
+    func testClusterWithNoUtterancesIsExcludedFromSpeakersFile() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1]),
+            // Cluster C covers a window past every transcript segment — it
+            // wins zero utterances.
+            SpeakerSegment(speakerID: "C", startSec: 0.26, endSec: 0.3, embedding: [0.6, 0.8])
+        ]
+
+        let (saved, savedSegments, _, _, runner) = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
+        )
+
+        XCTAssertEqual(saved, "[Speaker 1] привет\n[Speaker 2] ответ")
+        let utterances = try XCTUnwrap(TranscriptSegments.decode(try XCTUnwrap(savedSegments)))
+        XCTAssertEqual(utterances.map(\.speaker), ["Speaker 1", "Speaker 2"])
+        // The orphan cluster's embedding is dropped; the others survive.
+        let speakersJSON = try XCTUnwrap(runner.savedSpeakers.first ?? nil)
+        let speakers = try XCTUnwrap(SpeakerEmbeddings.decode(speakersJSON))
+        XCTAssertEqual(Set(speakers.map(\.speaker)), ["Speaker 1", "Speaker 2"],
+                       "a zero-utterance cluster must not ship an orphan embedding")
+    }
+
     /// «Я» (mic dominance) keeps absolute priority over a voice match.
     func testSelfClusterBeatsVoiceMatch() async throws {
         let audio = try makeDummyAudioFile()

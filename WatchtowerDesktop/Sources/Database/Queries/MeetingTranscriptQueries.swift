@@ -1,6 +1,14 @@
 import Foundation
 import GRDB
 
+/// Failures inside `MeetingTranscriptQueries` writes that must roll the
+/// caller's transaction back instead of degrading silently.
+enum MeetingTranscriptQueryError: Error {
+    /// `speakers_json` could not be re-encoded during a rename — writing the
+    /// old JSON would orphan the cluster's embedding under the old label.
+    case speakerEncodeFailed
+}
+
 enum MeetingTranscriptQueries {
     static func fetch(_ db: Database, id: Int64) throws -> MeetingTranscript? {
         try MeetingTranscript.fetchOne(db, key: id)
@@ -117,17 +125,23 @@ enum MeetingTranscriptQueries {
     /// resolve it. When the cluster carries a voice embedding, it is folded
     /// into `voice_prints` (insert or incremental centroid — see
     /// `VoicePrintQueries.upsert`); recordings without embeddings
-    /// (legacy/non-FluidAudio) update the transcript only. No-op when the
-    /// row is missing, has no segments, no utterance carries `from`, or the
-    /// new name is empty/unchanged.
+    /// (legacy/non-FluidAudio) update the transcript only. Returns `false`
+    /// without writing (so callers can surface a stale-state rename instead
+    /// of silently consuming a suggestion chip) when the row is missing, has
+    /// no segments, no utterance carries `from`, or the new name is
+    /// empty/unchanged/reserved («Я» or "Speaker N" —
+    /// `SpeakerNaming.isReserved`: renaming a stranger's cluster to a
+    /// reserved label would corrupt the owner's voice identity).
+    @discardableResult
     static func renameSpeaker(_ db: Database, id: Int64, from: String,
-                              to displayName: String, personKey: String) throws {
+                              to displayName: String, personKey: String) throws -> Bool {
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty, trimmedName != from,
+              !SpeakerNaming.isReserved(trimmedName),
               let transcript = try fetch(db, id: id),
               let segmentsJSON = transcript.segmentsJSON,
               var utterances = TranscriptSegments.decode(segmentsJSON),
-              utterances.contains(where: { $0.speaker == from }) else { return }
+              utterances.contains(where: { $0.speaker == from }) else { return false }
 
         for index in utterances.indices where utterances[index].speaker == from {
             let u = utterances[index]
@@ -135,10 +149,13 @@ enum MeetingTranscriptQueries {
                 idx: u.idx, startSec: u.startSec, endSec: u.endSec,
                 speaker: trimmedName, text: u.text, deleted: u.deleted)
         }
-        guard let updatedJSON = TranscriptSegments.encode(utterances) else { return }
+        guard let updatedJSON = TranscriptSegments.encode(utterances) else { return false }
 
         // Re-key the cluster's persisted embedding to the new label (and keep
-        // it for the voice-print upsert below).
+        // it for the voice-print upsert below). An encode failure aborts the
+        // whole rename (throw → transaction rollback) — falling back to the
+        // old JSON would keep the embedding under the old label, permanently
+        // orphaning it from the renamed cluster.
         var clusterEmbedding: [Float]?
         var speakersJSON: String? = transcript.speakersJSON
         if let json = transcript.speakersJSON, var speakers = SpeakerEmbeddings.decode(json) {
@@ -146,7 +163,10 @@ enum MeetingTranscriptQueries {
                 clusterEmbedding = speakers[index].embedding
                 speakers[index].speaker = trimmedName
             }
-            speakersJSON = SpeakerEmbeddings.encode(speakers) ?? json
+            guard let reencoded = SpeakerEmbeddings.encode(speakers) else {
+                throw MeetingTranscriptQueryError.speakerEncodeFailed
+            }
+            speakersJSON = reencoded
         }
 
         try db.execute(
@@ -162,6 +182,7 @@ enum MeetingTranscriptQueries {
             try VoicePrintQueries.upsert(
                 db, personKey: personKey, displayName: trimmedName, embedding: clusterEmbedding)
         }
+        return true
     }
 
     /// Deletes a recording with all its content: the transcript row and its

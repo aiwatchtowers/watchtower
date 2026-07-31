@@ -123,6 +123,7 @@ struct RecordingDetailView: View {
                 suggestions: appState.speakerGuessCenter.suggestions[transcriptID] ?? [],
                 isSuggesting: appState.speakerGuessCenter.generating.contains(transcriptID),
                 suggestError: appState.speakerGuessCenter.lastError[transcriptID],
+                suggestNotice: appState.speakerGuessCenter.lastNotice[transcriptID],
                 onSetUtteranceDeleted: setUtteranceDeleted,
                 onSuggestNames: suggestSpeakerNames,
                 onRenameSpeaker: renameSpeaker,
@@ -262,12 +263,22 @@ struct RecordingDetailView: View {
     /// `MeetingTranscriptQueries.renameSpeaker`), then a reload so every tab
     /// sees the new labels.
     private func renameSpeaker(from: String, to name: String) {
-        guard let db = appState.databaseManager else { return }
+        guard let db = appState.databaseManager else {
+            errorMessage = "Database not available"
+            return
+        }
         do {
             let personKey = SpeakerNaming.personKey(for: name, attendees: attendees)
-            try db.dbPool.write { conn in
+            let applied = try db.dbPool.write { conn in
                 try MeetingTranscriptQueries.renameSpeaker(
                     conn, id: transcriptID, from: from, to: name, personKey: personKey)
+            }
+            // A stale-state rename (label already gone, reserved name, …)
+            // writes nothing — keep the suggestion chip and say so instead of
+            // silently consuming it.
+            guard applied else {
+                errorMessage = "Could not rename \(from) — the transcript may have changed"
+                return
             }
             appState.speakerGuessCenter.consumeSuggestion(transcriptID: transcriptID, speaker: from)
             onChanged()

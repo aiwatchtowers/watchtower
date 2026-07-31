@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -616,7 +617,10 @@ func runTranscriptSpeakerGuess(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg), nil)
+	// A stderr logger so pipeline diagnostics (e.g. the event-lookup
+	// degradation warning) are visible from the CLI.
+	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg),
+		log.New(cmd.ErrOrStderr(), "", 0))
 	pipe.SetPromptStore(prompts.New(database, nil))
 
 	eventID := ""
