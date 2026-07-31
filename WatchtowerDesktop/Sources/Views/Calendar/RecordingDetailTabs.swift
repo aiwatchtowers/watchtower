@@ -207,7 +207,9 @@ struct RecordingTranscriptTab: View {
     let suggestions: [SpeakerSuggestion]
     let isSuggesting: Bool
     let suggestError: String?
-    let onSetUtteranceDeleted: (_ idx: Int, _ deleted: Bool) -> Void
+    /// Returns whether the transactional rewrite landed — the toast only
+    /// shows (and the undo only clears) on success.
+    let onSetUtteranceDeleted: (_ idx: Int, _ deleted: Bool) -> Bool
     let onSuggestNames: () -> Void
     let onRenameSpeaker: (_ from: String, _ to: String) -> Void
     let onDismissSuggestion: (_ speaker: String) -> Void
@@ -231,11 +233,7 @@ struct RecordingTranscriptTab: View {
                 onRenameSpeaker(target.speaker, newName)
             }
         }
-        .onDisappear {
-            undoDismissTask?.cancel()
-            undoDismissTask = nil
-            undoIdx = nil
-        }
+        .onDisappear { clearUndo() }
     }
 
     private var legacyFlatText: some View {
@@ -326,6 +324,9 @@ struct RecordingTranscriptTab: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .opacity(hoveredIdx == utterance.idx ? 1 : 0)
+                // Invisible must also mean untappable — an opacity-0 button
+                // stays hit-testable otherwise.
+                .allowsHitTesting(hoveredIdx == utterance.idx)
                 .help("Delete utterance")
             }
             if let suggestion {
@@ -340,7 +341,11 @@ struct RecordingTranscriptTab: View {
         .padding(.vertical, 8)
         .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
         .onHover { hovering in
-            hoveredIdx = hovering ? utterance.idx : (hoveredIdx == utterance.idx ? nil : hoveredIdx)
+            if hovering {
+                hoveredIdx = utterance.idx
+            } else if hoveredIdx == utterance.idx {
+                hoveredIdx = nil
+            }
         }
     }
 
@@ -404,10 +409,11 @@ struct RecordingTranscriptTab: View {
                 Text("Utterance deleted")
                     .font(.callout)
                 Button("Undo") {
-                    undoDismissTask?.cancel()
-                    undoDismissTask = nil
-                    undoIdx = nil
-                    onSetUtteranceDeleted(idx, false)
+                    // Keep the toast when the restore write failed, so the
+                    // utterance stays recoverable without reopening the row.
+                    if onSetUtteranceDeleted(idx, false) {
+                        clearUndo()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -421,15 +427,22 @@ struct RecordingTranscriptTab: View {
     }
 
     private func deleteUtterance(_ idx: Int) {
-        onSetUtteranceDeleted(idx, true)
+        // No toast when the write failed — the detail view surfaces the error
+        // and the transcript is unchanged, so "Utterance deleted" would lie.
+        guard onSetUtteranceDeleted(idx, true) else { return }
         undoDismissTask?.cancel()
         undoIdx = idx
         undoDismissTask = Task {
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
-            undoIdx = nil
-            undoDismissTask = nil
+            clearUndo()
         }
+    }
+
+    private func clearUndo() {
+        undoDismissTask?.cancel()
+        undoDismissTask = nil
+        undoIdx = nil
     }
 }
 

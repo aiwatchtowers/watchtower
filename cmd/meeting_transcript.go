@@ -155,14 +155,15 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		title = "Recording " + time.Now().Local().Format("2006-01-02 15:04")
 	}
 
-	segmentsJSON := loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr())
+	segments, segmentsErr := loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr())
+	speakers, speakersErr := loadTranscriptSpeakers(transcriptSaveFlagSpeakers, segments, cmd.ErrOrStderr())
 	tr := db.MeetingTranscript{
 		Title:          title,
 		DurationSec:    transcriptSaveFlagDuration,
 		LangStats:      transcriptSaveFlagLangStats,
 		TranscriptText: text,
-		SegmentsJSON:   segmentsJSON,
-		SpeakersJSON:   loadTranscriptSpeakers(transcriptSaveFlagSpeakers, segmentsJSON, cmd.ErrOrStderr()),
+		SegmentsJSON:   segments,
+		SpeakersJSON:   speakers,
 	}
 	if transcriptSaveFlagEventID != "" {
 		tr.EventID = sql.NullString{String: transcriptSaveFlagEventID, Valid: true}
@@ -178,77 +179,108 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 	// The row is saved — from here on a recap failure must NOT flip the exit
 	// code; it is reported inside the envelope instead.
 	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
-	return printTranscriptEnvelope(cmd, database, id, recapErr)
+	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr)
 }
 
 // loadTranscriptSegments reads and validates the optional --segments-file for
-// save. Any problem — missing flag (old callers, batch fallback failures),
-// unreadable file, malformed JSON, or a render that does not reproduce the
-// transcript text (the transcript_text = render(segments) invariant) — yields
-// a NULL column with a stderr warning; the transcript save itself must still
-// succeed (exit-0 envelope semantics are preserved).
-func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) sql.NullString {
+// save. Any problem — unreadable file, malformed JSON, or a render that does
+// not reproduce the transcript text (the transcript_text = render(segments)
+// invariant) — yields a NULL column with a stderr warning AND a non-nil error
+// surfaced through the envelope's segments_ok/segments_error (the recap_ok
+// precedent: stderr alone is discarded by ProcessCLIRunner on exit 0, and a
+// render-mismatch drift between the Go and Swift renderers must not degrade
+// invisibly). A missing flag (old callers, batch fallback failures) is not an
+// error — nothing was attempted. The transcript save itself always succeeds
+// (exit-0 envelope semantics are preserved).
+func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) (sql.NullString, error) {
 	if path == "" {
-		return sql.NullString{}
+		return sql.NullString{}, nil
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(errOut, "warning: reading segments file (saving transcript without segments): %v\n", err)
-		return sql.NullString{}
+		err = fmt.Errorf("reading segments file: %v", err)
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
+		return sql.NullString{}, err
 	}
 	utterances, err := meeting.ParseTranscriptSegments(raw)
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
-		return sql.NullString{}
+		return sql.NullString{}, err
 	}
 	if rendered := meeting.RenderTranscriptSegments(utterances); rendered != transcriptText {
-		fmt.Fprintf(errOut, "warning: segments do not render to the transcript text (saving transcript without segments)\n")
-		return sql.NullString{}
+		err = fmt.Errorf("segments do not render to the transcript text")
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
+		return sql.NullString{}, err
 	}
-	return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}
+	return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}, nil
 }
 
 // loadTranscriptSpeakers reads and validates the optional --speakers-file for
 // save: the per-cluster voice embeddings the Desktop rename flow later folds
-// into voice_prints. Any problem — missing flag (non-FluidAudio diarizers,
-// old callers), unreadable/malformed file, a segment-less save (labels would
-// dangle), or a label that matches no persisted utterance — yields a NULL
-// column with a stderr warning; the transcript save itself must still succeed
-// (the loadTranscriptSegments contract).
-func loadTranscriptSpeakers(path string, segmentsJSON sql.NullString, errOut io.Writer) sql.NullString {
+// into voice_prints. A whole-file problem — unreadable/malformed file or a
+// segment-less save (labels would dangle) — yields a NULL column with a
+// stderr warning AND a non-nil error surfaced through the envelope's
+// speakers_ok/speakers_error (the segments_ok precedent: stderr alone is
+// discarded by ProcessCLIRunner on exit 0). A label that matches no persisted
+// utterance drops ONLY that orphan entry — the remaining embeddings are kept
+// so one empty cluster never disables voice-print learning for the whole
+// recording; the partial drop is still reported as speakers_ok=false. A
+// missing flag (non-FluidAudio diarizers, old callers) is not an error —
+// nothing was attempted. The transcript save itself always succeeds (the
+// loadTranscriptSegments contract).
+func loadTranscriptSpeakers(path string, segmentsJSON sql.NullString, errOut io.Writer) (sql.NullString, error) {
 	if path == "" {
-		return sql.NullString{}
+		return sql.NullString{}, nil
 	}
 	if !segmentsJSON.Valid {
-		fmt.Fprintf(errOut, "warning: speakers file without persisted segments (saving transcript without speaker embeddings)\n")
-		return sql.NullString{}
+		err := fmt.Errorf("speakers file without persisted segments")
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
+		return sql.NullString{}, err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(errOut, "warning: reading speakers file (saving transcript without speaker embeddings): %v\n", err)
-		return sql.NullString{}
+		err = fmt.Errorf("reading speakers file: %v", err)
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
+		return sql.NullString{}, err
 	}
 	speakers, err := meeting.ParseSpeakerEmbeddings(raw)
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
-		return sql.NullString{}
+		return sql.NullString{}, err
 	}
 	utterances, err := meeting.ParseTranscriptSegments([]byte(segmentsJSON.String))
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
-		return sql.NullString{}
+		return sql.NullString{}, err
 	}
 	labels := make(map[string]bool, len(utterances))
 	for _, u := range utterances {
 		labels[u.Speaker] = true
 	}
+	kept := speakers[:0]
+	var dropped []string
 	for _, s := range speakers {
 		if !labels[s.Speaker] {
-			fmt.Fprintf(errOut, "warning: speaker %q matches no transcript utterance (saving transcript without speaker embeddings)\n", s.Speaker)
-			return sql.NullString{}
+			dropped = append(dropped, s.Speaker)
+			continue
 		}
+		kept = append(kept, s)
 	}
-	return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}
+	if len(dropped) == 0 {
+		return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}, nil
+	}
+	err = fmt.Errorf("dropped speaker embeddings matching no transcript utterance: %s", strings.Join(dropped, ", "))
+	fmt.Fprintf(errOut, "warning: %v\n", err)
+	if len(kept) == 0 {
+		fmt.Fprintf(errOut, "warning: no speaker embeddings left (saving transcript without speaker embeddings)\n")
+		return sql.NullString{}, err
+	}
+	reencoded, encErr := json.Marshal(kept)
+	if encErr != nil {
+		fmt.Fprintf(errOut, "warning: re-encoding speaker embeddings: %v (saving transcript without speaker embeddings)\n", encErr)
+		return sql.NullString{}, err
+	}
+	return sql.NullString{String: string(reencoded), Valid: true}, err
 }
 
 func runTranscriptRecap(cmd *cobra.Command, args []string) error {
@@ -270,7 +302,9 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 	}
 
 	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
-	return printTranscriptEnvelope(cmd, database, id, recapErr)
+	// The recap retry never touches segments or speakers — nothing attempted,
+	// nothing dropped, so segments_ok/speakers_ok are honestly true.
+	return printTranscriptEnvelope(cmd, database, id, recapErr, nil, nil)
 }
 
 // generateAndStoreTranscriptRecap runs the AI recap for a saved transcript and
@@ -346,20 +380,36 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 }
 
 // printTranscriptEnvelope emits the frozen stdout contract consumed by the
-// Swift TranscriptSaveService: transcript_id / recap_ok / recap_error (plus
-// event_id and title for display). A failed post-save refetch must NOT flip
-// the exit code — the row IS persisted (exit 1 only when nothing was
-// persisted) — so it degrades to a minimal envelope built from what is known,
-// logging the refetch problem to stderr.
-func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr error) error {
+// Swift TranscriptSaveService: transcript_id / recap_ok / recap_error /
+// segments_ok / segments_error / speakers_ok / speakers_error (plus event_id
+// and title for display). segments_ok=false means a provided --segments-file
+// was dropped (the column stayed NULL) — the caller-visible tripwire for
+// Go↔Swift renderer drift; speakers_ok=false means a provided --speakers-file
+// was dropped or partially dropped (orphan labels). A
+// failed post-save refetch must NOT flip the exit code — the row IS persisted
+// (exit 1 only when nothing was persisted) — so it degrades to a minimal
+// envelope built from what is known, logging the refetch problem to stderr.
+func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr, segmentsErr, speakersErr error) error {
 	recapErrMsg := ""
 	if recapErr != nil {
 		recapErrMsg = recapErr.Error()
 	}
+	segmentsErrMsg := ""
+	if segmentsErr != nil {
+		segmentsErrMsg = segmentsErr.Error()
+	}
+	speakersErrMsg := ""
+	if speakersErr != nil {
+		speakersErrMsg = speakersErr.Error()
+	}
 	envelope := map[string]any{
-		"transcript_id": id,
-		"recap_ok":      recapErr == nil,
-		"recap_error":   recapErrMsg,
+		"transcript_id":  id,
+		"recap_ok":       recapErr == nil,
+		"recap_error":    recapErrMsg,
+		"segments_ok":    segmentsErr == nil,
+		"segments_error": segmentsErrMsg,
+		"speakers_ok":    speakersErr == nil,
+		"speakers_error": speakersErrMsg,
 	}
 
 	tr, err := database.GetMeetingTranscript(id)

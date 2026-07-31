@@ -220,18 +220,28 @@ struct RecordingDetailView: View {
     /// Soft delete / undo for one utterance: the transactional
     /// `segments_json` + `transcript_text` rewrite (see
     /// `MeetingTranscriptQueries.setUtteranceDeleted`), then a reload so
-    /// every tab sees the rebuilt text.
-    private func setUtteranceDeleted(idx: Int, deleted: Bool) {
-        guard let db = appState.databaseManager else { return }
+    /// every tab sees the rebuilt text. Returns whether the write landed —
+    /// the transcript tab gates its "deleted" toast on it.
+    private func setUtteranceDeleted(idx: Int, deleted: Bool) -> Bool {
+        guard let db = appState.databaseManager else { return false }
         do {
             try db.dbPool.write { conn in
                 try MeetingTranscriptQueries.setUtteranceDeleted(
                     conn, id: transcriptID, idx: idx, deleted: deleted)
             }
+            // The chat VM snapshots the transcript at init (its system-prompt
+            // excerpt is built from that copy) — reset it so the next chat
+            // turn is created over the edited text instead of still carrying
+            // the deleted utterance. It is recreated lazily on the Chat tab
+            // from the reloaded row; the persisted conversation survives.
+            chatVM?.cancelStream()
+            chatVM = nil
             onChanged()
             Task { await load() }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 

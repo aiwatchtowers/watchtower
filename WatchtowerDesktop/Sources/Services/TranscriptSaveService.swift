@@ -5,15 +5,22 @@ import Foundation
 /// Decoded stdout envelope of `watchtower meeting-prep transcript save|recap`.
 /// The CLI exits 0 whenever the transcript row was persisted, even if the
 /// recap failed — check `recapOK`/`recapError` for the AI outcome.
+/// `segmentsOK == false` means the CLI dropped a provided segments file (the
+/// column stayed NULL) — the visible tripwire for Go↔Swift renderer drift.
+/// Optional so envelopes from an older CLI still decode.
 struct TranscriptSaveResult: Decodable, Equatable {
     let transcriptID: Int64
     let recapOK: Bool
     let recapError: String
+    let segmentsOK: Bool?
+    let segmentsError: String?
 
     enum CodingKeys: String, CodingKey {
         case transcriptID = "transcript_id"
         case recapOK = "recap_ok"
         case recapError = "recap_error"
+        case segmentsOK = "segments_ok"
+        case segmentsError = "segments_error"
     }
 }
 
@@ -64,12 +71,18 @@ struct TranscriptSaveService {
         defer { try? FileManager.default.removeItem(at: tmpURL) }
 
         var segmentsURL: URL?
-        if let utterances, !utterances.isEmpty,
-           let segmentsJSON = TranscriptSegments.encode(utterances) {
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("watchtower-segments-\(UUID().uuidString).json")
-            try segmentsJSON.write(to: url, atomically: true, encoding: .utf8)
-            segmentsURL = url
+        if let utterances, !utterances.isEmpty {
+            if let segmentsJSON = TranscriptSegments.encode(utterances) {
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("watchtower-segments-\(UUID().uuidString).json")
+                try segmentsJSON.write(to: url, atomically: true, encoding: .utf8)
+                segmentsURL = url
+            } else {
+                // Should be unreachable for in-memory utterances, but a silent
+                // drop here would be invisible — the save then degrades to a
+                // legacy segment-less row.
+                print("[TranscriptSave] segments encode failed — saving without segments")
+            }
         }
         defer { if let segmentsURL { try? FileManager.default.removeItem(at: segmentsURL) } }
 

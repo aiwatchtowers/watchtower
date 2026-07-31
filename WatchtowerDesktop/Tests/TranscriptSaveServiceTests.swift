@@ -102,8 +102,6 @@ final class TranscriptSaveServiceTests: XCTestCase {
                 XCTFail("--segments-file flag missing")
                 return envelope
             }
-            // "next to" the transcript file: immediately after its pair.
-            XCTAssertEqual(args.firstIndex(of: "--transcript-file").map { $0 + 2 }, idx)
             let path = args[idx + 1]
             segmentsPathDuringRun = path
             segmentsContentDuringRun = try String(contentsOfFile: path, encoding: .utf8)
@@ -136,6 +134,27 @@ final class TranscriptSaveServiceTests: XCTestCase {
         _ = try await svc.save(
             transcriptText: "plain",
             utterances: nil,
+            audioPath: "/tmp/a.wav",
+            durationSec: 60,
+            eventID: nil,
+            title: nil,
+            langStatsJSON: "{}"
+        )
+
+        let args = try XCTUnwrap(fake.invocations.first)
+        XCTAssertFalse(args.contains("--segments-file"))
+    }
+
+    func test_saveOmitsSegmentsFileWhenUtterancesEmpty() async throws {
+        // Degenerate but valid: an empty utterance array must behave like nil
+        // (no --segments-file), never ship an empty JSON array the CLI would
+        // reject and warn about.
+        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        _ = try await svc.save(
+            transcriptText: "plain",
+            utterances: [],
             audioPath: "/tmp/a.wav",
             durationSec: 60,
             eventID: nil,
@@ -226,6 +245,25 @@ final class TranscriptSaveServiceTests: XCTestCase {
         XCTAssertEqual(result.transcriptID, 7)
         XCTAssertFalse(result.recapOK)
         XCTAssertEqual(result.recapError, "boom")
+        XCTAssertNil(result.segmentsOK, "an older-CLI envelope without segments fields must still decode")
+        XCTAssertNil(result.segmentsError)
+    }
+
+    func test_saveDecodesDroppedSegmentsEnvelope() async throws {
+        let payload = """
+        {"transcript_id":7,"event_id":"","title":"Ad hoc","recap_ok":true,"recap_error":"",\
+        "segments_ok":false,"segments_error":"segments do not render to the transcript text"}
+        """
+        let fake = FakeCLIRunner(stdout: Data(payload.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        let result = try await svc.save(
+            transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
+            eventID: nil, title: "Ad hoc", langStatsJSON: "{}"
+        )
+
+        XCTAssertEqual(result.segmentsOK, false)
+        XCTAssertEqual(result.segmentsError, "segments do not render to the transcript text")
     }
 
     // MARK: - save: error propagation

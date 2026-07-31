@@ -57,6 +57,14 @@ func TestParseTranscriptSegmentsRejectsInvalid(t *testing.T) {
 		"empty array":     `[]`,
 		"missing speaker": `[{"idx":0,"start_sec":0,"end_sec":1,"text":"hi","deleted":false}]`,
 		"missing text":    `[{"idx":0,"start_sec":0,"end_sec":1,"speaker":"Я","deleted":false}]`,
+		"duplicate idx": `[
+			{"idx":0,"start_sec":0,"end_sec":1,"speaker":"Я","text":"a","deleted":false},
+			{"idx":0,"start_sec":1,"end_sec":2,"speaker":"Я","text":"b","deleted":false}
+		]`,
+		"idx not array position": `[
+			{"idx":1,"start_sec":0,"end_sec":1,"speaker":"Я","text":"a","deleted":false},
+			{"idx":0,"start_sec":1,"end_sec":2,"speaker":"Я","text":"b","deleted":false}
+		]`,
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {

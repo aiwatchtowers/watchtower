@@ -543,6 +543,12 @@ final class MeetingRecorderCenter {
             Self.removePersistedTranscript(audioURL: audioURL)
             clearPending()
             phase = .idle
+            if result.segmentsOK == false {
+                // The CLI dropped the segments file (render mismatch = Go↔Swift
+                // renderer drift, or a malformed payload). The transcript row is
+                // saved either way; log so the drift is not invisible.
+                print("[MeetingRecorder] CLI dropped segments: \(result.segmentsError ?? "unknown reason")")
+            }
             let title = currentTitle ?? "Recording"
             // Recap/roles failures are non-fatal — the transcript row is saved;
             // flag them in the notification rather than reporting a failure.
