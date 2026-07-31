@@ -1257,6 +1257,21 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , suggested_resolution TEXT NOT NULL DEFAULT '')
 
+table	slack_accounts
+CREATE TABLE slack_accounts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+team_id TEXT NOT NULL DEFAULT '',
+team_name TEXT NOT NULL DEFAULT '',
+team_domain TEXT NOT NULL DEFAULT '',
+label TEXT NOT NULL DEFAULT '',
+current_user_id TEXT NOT NULL DEFAULT '', -- namespaced, e.g. "1:U0123"
+status TEXT NOT NULL DEFAULT 'ok', -- ok | error | revoked | removed
+error TEXT NOT NULL DEFAULT '',
+enabled INTEGER NOT NULL DEFAULT 1,
+search_last_date TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
 table	sync_state
 CREATE TABLE sync_state (
 channel_id TEXT PRIMARY KEY,
@@ -1514,8 +1529,6 @@ id TEXT PRIMARY KEY, -- Slack team_id
 name TEXT NOT NULL,
 domain TEXT NOT NULL DEFAULT '',
 synced_at TEXT, -- ISO8601 timestamp of last sync
-search_last_date TEXT NOT NULL DEFAULT '', -- YYYY-MM-DD of last search sync
-current_user_id TEXT NOT NULL DEFAULT '', -- Slack user_id of the token owner (from auth.test)
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
 , secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0)
 
@@ -2381,6 +2394,19 @@ END
 20	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 21	suggested_resolution	TEXT	notnull=1	dflt=''	pk=0
 
+## slack_accounts
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	team_id	TEXT	notnull=1	dflt=''	pk=0
+2	team_name	TEXT	notnull=1	dflt=''	pk=0
+3	team_domain	TEXT	notnull=1	dflt=''	pk=0
+4	label	TEXT	notnull=1	dflt=''	pk=0
+5	current_user_id	TEXT	notnull=1	dflt=''	pk=0
+6	status	TEXT	notnull=1	dflt='ok'	pk=0
+7	error	TEXT	notnull=1	dflt=''	pk=0
+8	enabled	INTEGER	notnull=1	dflt=1	pk=0
+9	search_last_date	TEXT	notnull=1	dflt=''	pk=0
+10	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
 ## sync_state
 0	channel_id	TEXT	notnull=0	dflt=NULL	pk=1
 1	last_synced_ts	TEXT	notnull=1	dflt=''	pk=0
@@ -2603,19 +2629,17 @@ END
 1	name	TEXT	notnull=1	dflt=NULL	pk=0
 2	domain	TEXT	notnull=1	dflt=''	pk=0
 3	synced_at	TEXT	notnull=0	dflt=NULL	pk=0
-4	search_last_date	TEXT	notnull=1	dflt=''	pk=0
-5	current_user_id	TEXT	notnull=1	dflt=''	pk=0
-6	inbox_last_processed_ts	REAL	notnull=1	dflt=0	pk=0
-7	secretary_profile	TEXT	notnull=1	dflt=''	pk=0
-8	compose_last_run_ts	REAL	notnull=1	dflt=0	pk=0
-9	style_profile	TEXT	notnull=1	dflt=''	pk=0
-10	style_profile_updated_at	TEXT	notnull=1	dflt=''	pk=0
-11	memory_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
-12	memory_last_ingested_situation_id	INTEGER	notnull=1	dflt=0	pk=0
-13	memory_chat_turn_floor	INTEGER	notnull=1	dflt=0	pk=0
-14	memory_calendar_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
-15	memory_last_situation_feedback_id	INTEGER	notnull=1	dflt=0	pk=0
-16	memory_jira_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
-17	memory_focus_fingerprint	TEXT	notnull=1	dflt=''	pk=0
-18	memory_last_interaction_id	INTEGER	notnull=1	dflt=0	pk=0
+4	inbox_last_processed_ts	REAL	notnull=1	dflt=0	pk=0
+5	secretary_profile	TEXT	notnull=1	dflt=''	pk=0
+6	compose_last_run_ts	REAL	notnull=1	dflt=0	pk=0
+7	style_profile	TEXT	notnull=1	dflt=''	pk=0
+8	style_profile_updated_at	TEXT	notnull=1	dflt=''	pk=0
+9	memory_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
+10	memory_last_ingested_situation_id	INTEGER	notnull=1	dflt=0	pk=0
+11	memory_chat_turn_floor	INTEGER	notnull=1	dflt=0	pk=0
+12	memory_calendar_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
+13	memory_last_situation_feedback_id	INTEGER	notnull=1	dflt=0	pk=0
+14	memory_jira_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
+15	memory_focus_fingerprint	TEXT	notnull=1	dflt=''	pk=0
+16	memory_last_interaction_id	INTEGER	notnull=1	dflt=0	pk=0
 
