@@ -167,17 +167,9 @@ struct CalendarEventsView: View {
     /// `JoinMeetingAction`. Prominent while the meeting is imminent/ongoing.
     @ViewBuilder
     private func joinButton(_ event: CalendarEvent) -> some View {
-        let prominent = event.isUpcoming || event.isHappeningNow
-        Button {
-            Task { await JoinMeetingAction.join(event: event, center: appState.meetingRecorderCenter) }
-        } label: {
-            Label("Join", systemImage: "video")
-                .font(.caption)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .tint(prominent ? Color.accentColor : nil)
-        .help("Open the meeting link")
+        JoinButton(event: event,
+                   center: appState.meetingRecorderCenter,
+                   prominent: event.isUpcoming || event.isHappeningNow)
     }
 
     private func stopRecording() {

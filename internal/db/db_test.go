@@ -702,8 +702,11 @@ func TestMigration00044ConferenceURLDownUpCycle(t *testing.T) {
 	}
 	defer d.Close()
 
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
+	// DownTo 43 (not Down): the moment a 00045 lands, a plain Down would
+	// silently stop exercising 00044's Down forever (the DownTo idiom from
+	// TestMigration00043DownUpCycle).
+	if err := goose.DownTo(d.DB, "migrations", 43); err != nil {
+		t.Fatalf("goose down to 43: %v", err)
 	}
 	if err := goose.Up(d.DB, "migrations"); err != nil {
 		t.Fatalf("goose up after down: %v", err)

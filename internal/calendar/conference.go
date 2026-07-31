@@ -1,6 +1,7 @@
 package calendar
 
 import (
+	"html"
 	"regexp"
 	"strings"
 )
@@ -30,6 +31,13 @@ func ExtractConferenceURL(texts ...string) string {
 		if text == "" {
 			continue
 		}
+		// HTML descriptions carry entity-encoded URLs (`&amp;` inside an
+		// href) and NBSP separators — raw U+00A0 or `&nbsp;` — that Go's
+		// ASCII-only `\s` would absorb into the match, breaking the link.
+		// Decode entities first (`&amp;`→`&` stays in the URL; `&lt;`/`&gt;`/
+		// `&quot;` decode to characters the pattern already excludes), then
+		// turn NBSP into a plain space so it bounds the URL.
+		text = strings.ReplaceAll(html.UnescapeString(text), "\u00a0", " ")
 		if m := conferenceURLPattern.FindString(text); m != "" {
 			// A link at the end of a sentence drags trailing punctuation
 			// into the match — trim it so the URL opens cleanly.
