@@ -175,9 +175,10 @@ private final class FakeDiarizer: SpeakerDiarizing, @unchecked Sendable {
     }
 }
 
-/// Reads the files passed via --transcript-file / --segments-file DURING the
-/// CLI invocation (the save service deletes them right after), capturing the
-/// exact saved text and segments JSON (nil when no segments file was passed).
+/// Reads the files passed via --transcript-file / --segments-file /
+/// --speakers-file DURING the CLI invocation (the save service deletes them
+/// right after), capturing the exact saved text, segments JSON and speakers
+/// JSON (nil when the corresponding file was not passed).
 /// `shouldThrow` (cleared by the test for a retry) fails the save AFTER
 /// capturing, mirroring FakeCLIRunner's failure knob.
 private final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
@@ -185,6 +186,7 @@ private final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sen
     var shouldThrow: Error?
     private(set) var savedTranscripts: [String] = []
     private(set) var savedSegments: [String?] = []
+    private(set) var savedSpeakers: [String?] = []
 
     init(stdout: Data) { self.stdoutData = stdout }
 
@@ -198,6 +200,12 @@ private final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sen
             savedSegments.append(json)
         } else {
             savedSegments.append(nil)
+        }
+        if let idx = args.firstIndex(of: "--speakers-file"), idx + 1 < args.count,
+           let json = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
+            savedSpeakers.append(json)
+        } else {
+            savedSpeakers.append(nil)
         }
         if let shouldThrow { throw shouldThrow }
         return stdoutData
@@ -1229,8 +1237,9 @@ final class MeetingRecorderCenterTests: XCTestCase {
         audio: URL,
         diarizer: FakeDiarizer,
         defaults: UserDefaults,
-        rolesEnabled: Bool = true
-    ) async throws -> (savedText: String?, savedSegments: String?, center: MeetingRecorderCenter, notifier: FakeNotifier) {
+        rolesEnabled: Bool = true,
+        voicePrints: [VoicePrint] = []
+    ) async throws -> (savedText: String?, savedSegments: String?, center: MeetingRecorderCenter, notifier: FakeNotifier, runner: TranscriptCapturingRunner) {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
@@ -1244,11 +1253,14 @@ final class MeetingRecorderCenterTests: XCTestCase {
             notifier: notifier,
             defaults: defaults
         )
+        // Always wire a loader (production has one once the DB opens); an
+        // empty array behaves exactly like no voice-print database.
+        center.voicePrintsLoader = { voicePrints }
         var config = threeWindowConfig()
         config.diarization = rolesEnabled
         await center.startRecording(eventID: nil, title: "Roles")
         await center.stopAndProcess(config: config)
-        return (runner.savedTranscripts.first, runner.savedSegments.first ?? nil, center, notifier)
+        return (runner.savedTranscripts.first, runner.savedSegments.first ?? nil, center, notifier, runner)
     }
 
     func testDiarizationRendersRolesIntoSavedText() async throws {
@@ -1263,7 +1275,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
         ]
 
-        let (saved, savedSegments, center, notifier) = try await runDiarizationFlow(
+        let (saved, savedSegments, center, notifier, _) = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
 
@@ -1298,11 +1310,100 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
         ]
 
-        let (saved, _, _, _) = try await runDiarizationFlow(
+        let (saved, _, _, _, _) = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
 
         XCTAssertEqual(saved, "[Я] привет\n[Speaker 1] ответ")
+    }
+
+    // MARK: - Voice identity (Level 1 matching)
+
+    private func voicePrint(_ personKey: String, _ name: String, _ vector: [Float]) -> VoicePrint {
+        VoicePrint(id: nil, personKey: personKey, displayName: name,
+                   embedding: VoicePrintEmbedding.encode(vector),
+                   sampleCount: 1, updatedAt: "")
+    }
+
+    func testVoiceMatchRendersDisplayNameAndShipsSpeakersFile() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let (saved, savedSegments, _, _, runner) = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [voicePrint("sasha@corp.com", "Саша", [0, 1])]
+        )
+
+        XCTAssertEqual(saved, "[Speaker 1] привет\n[Саша] ответ",
+                       "a confident voice match renders the display name instead of Speaker N")
+        let utterances = try XCTUnwrap(TranscriptSegments.decode(try XCTUnwrap(savedSegments)))
+        XCTAssertEqual(utterances.map(\.speaker), ["Speaker 1", "Саша"])
+        // The per-cluster embeddings ship keyed by the FINAL rendered labels.
+        let speakersJSON = try XCTUnwrap(runner.savedSpeakers.first ?? nil)
+        let speakers = try XCTUnwrap(SpeakerEmbeddings.decode(speakersJSON))
+        XCTAssertEqual(Set(speakers.map(\.speaker)), ["Speaker 1", "Саша"])
+    }
+
+    /// «Я» (mic dominance) keeps absolute priority over a voice match.
+    func testSelfClusterBeatsVoiceMatch() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        // Bin 0 (0.0–0.1 s) mic-dominated → cluster A is the owner.
+        try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let (saved, _, _, _, _) = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [
+                voicePrint("owner@corp.com", "Owner Duplicate", [1, 0]),
+                voicePrint("sasha@corp.com", "Саша", [0, 1])
+            ]
+        )
+
+        XCTAssertEqual(saved, "[Я] привет\n[Саша] ответ",
+                       "the owner's cluster stays «Я» even when a voice print matches it")
+    }
+
+    /// Diarizers without embeddings (non-FluidAudio) fully degrade: no voice
+    /// names, no speakers file — byte-identical to the pre-identity behavior.
+    func testNilEmbeddingsDegradeToNumberedSpeakers() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
+        ]
+
+        let (saved, _, _, _, runner) = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [voicePrint("sasha@corp.com", "Саша", [0, 1])]
+        )
+
+        XCTAssertEqual(saved, "[Speaker 1] привет\n[Speaker 2] ответ",
+                       "no embeddings → no matching, even with a populated voice-print DB")
+        XCTAssertNil(runner.savedSpeakers.first ?? nil,
+                     "no embeddings → no --speakers-file, the column stays NULL")
     }
 
     func testDiarizerFailureSavesPlainTranscript() async throws {
@@ -1314,7 +1415,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let diarizer = FakeDiarizer()
         diarizer.error = FakeDiarizer.FakeError()
 
-        let (saved, savedSegments, center, notifier) = try await runDiarizationFlow(
+        let (saved, savedSegments, center, notifier, _) = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
 
@@ -1408,7 +1509,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let diarizer = FakeDiarizer()
         diarizer.segments = [SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.3)]
 
-        let (saved, savedSegments, _, _) = try await runDiarizationFlow(
+        let (saved, savedSegments, _, _, _) = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(), rolesEnabled: false
         )
 

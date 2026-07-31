@@ -26,6 +26,7 @@ struct RecordingDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
     @State private var utterances: [TranscriptUtterance]?
+    @State private var attendees: [EventAttendee] = []
     @State private var recapContent: MeetingRecap.Content?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
@@ -118,7 +119,17 @@ struct RecordingDetailView: View {
             RecordingTranscriptTab(
                 transcriptText: transcript.transcriptText,
                 utterances: utterances,
-                onSetUtteranceDeleted: setUtteranceDeleted)
+                attendees: attendees,
+                suggestions: appState.speakerGuessCenter.suggestions[transcriptID] ?? [],
+                isSuggesting: appState.speakerGuessCenter.generating.contains(transcriptID),
+                suggestError: appState.speakerGuessCenter.lastError[transcriptID],
+                onSetUtteranceDeleted: setUtteranceDeleted,
+                onSuggestNames: suggestSpeakerNames,
+                onRenameSpeaker: renameSpeaker,
+                onDismissSuggestion: { speaker in
+                    appState.speakerGuessCenter.consumeSuggestion(
+                        transcriptID: transcriptID, speaker: speaker)
+                })
         case .chat:
             if let chatVM {
                 RecordingChatTab(chatVM: chatVM)
@@ -178,20 +189,25 @@ struct RecordingDetailView: View {
     private func load() async {
         guard let db = appState.databaseManager else { return }
         do {
-            let (row, recap, decodedUtterances) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
-                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, [TranscriptUtterance]?) in
+            let (row, recap, decodedUtterances, eventAttendees) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
+                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, [TranscriptUtterance]?, [EventAttendee]) in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
                     var recap: MeetingRecap?
+                    var eventAttendees: [EventAttendee] = []
                     if let eventID = row?.eventID {
                         recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
+                        // Attendees feed the rename picker (attendees first,
+                        // free text after); ad-hoc recordings have none.
+                        eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?.parsedAttendees ?? []
                     }
-                    return (row, recap, row?.utterances)
+                    return (row, recap, row?.utterances, eventAttendees)
                 }
             }.value
             transcript = row
             // Segments decoded ONCE here (off-main, alongside the fetch),
             // never in body evaluations or row builders.
             utterances = decodedUtterances
+            attendees = eventAttendees
             // Event recap wins; ad-hoc (or collision-guarded) recap falls back
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
@@ -212,6 +228,38 @@ struct RecordingDetailView: View {
                 try MeetingTranscriptQueries.setUtteranceDeleted(
                     conn, id: transcriptID, idx: idx, deleted: deleted)
             }
+            onChanged()
+            Task { await load() }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// "Suggest speaker names" (LLM content hints for unnamed clusters) —
+    /// runs through the app-wide SpeakerGuessCenter so the in-flight state
+    /// and the returned chips survive navigation.
+    private func suggestSpeakerNames() {
+        guard let service = notesService else {
+            errorMessage = "watchtower CLI not found"
+            return
+        }
+        appState.speakerGuessCenter.suggest(transcriptID: transcriptID, service: service)
+    }
+
+    /// Manual rename / confirmed suggestion: the transactional
+    /// `segments_json` + `transcript_text` + `speakers_json` rewrite plus the
+    /// voice-print upsert (one write transaction, see
+    /// `MeetingTranscriptQueries.renameSpeaker`), then a reload so every tab
+    /// sees the new labels.
+    private func renameSpeaker(from: String, to name: String) {
+        guard let db = appState.databaseManager else { return }
+        do {
+            let personKey = SpeakerNaming.personKey(for: name, attendees: attendees)
+            try db.dbPool.write { conn in
+                try MeetingTranscriptQueries.renameSpeaker(
+                    conn, id: transcriptID, from: from, to: name, personKey: personKey)
+            }
+            appState.speakerGuessCenter.consumeSuggestion(transcriptID: transcriptID, speaker: from)
             onChanged()
             Task { await load() }
         } catch {

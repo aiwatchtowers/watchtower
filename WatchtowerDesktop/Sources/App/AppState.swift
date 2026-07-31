@@ -48,6 +48,11 @@ final class AppState {
     /// navigation-surviving state).
     let transcriptNotesCenter = TranscriptNotesCenter()
 
+    /// App-wide, single-slot-per-transcript registry for "Suggest speaker
+    /// names" runs and their suggestion chips (same surviving-state contract
+    /// as TranscriptNotesCenter).
+    let speakerGuessCenter = SpeakerGuessCenter()
+
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
     /// role-less transcript.
@@ -248,6 +253,13 @@ final class AppState {
                 }.value
                 databaseManager = manager
                 errorMessage = nil
+                // Voice matching needs the DB at diarization time; the Center
+                // is created before the DB opens, so hand it a loader now. A
+                // read failure degrades to "no voice prints" (plain Speaker N
+                // labels), never a thrown error.
+                meetingRecorderCenter.voicePrintsLoader = { [dbPool = manager.dbPool] in
+                    (try? await dbPool.read { try VoicePrintQueries.fetchAll($0) }) ?? []
+                }
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {
                     let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)

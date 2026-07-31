@@ -115,4 +115,60 @@ final class RoleAssignerTests: XCTestCase {
         XCTAssertNil(RoleAssigner.assign(segments: [], speakers: [spk("A", 0, 1)], activity: nil))
         XCTAssertNil(RoleAssigner.assign(segments: [seg("а", 0, 1)], speakers: [], activity: nil))
     }
+
+    // MARK: - Voice-matched names (speaker identity)
+
+    func testVoiceNameRendersInsteadOfSpeakerNumber() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: nil,
+            voiceNames: ["B": "Саша"]
+        )
+        XCTAssertEqual(text, "[Speaker 1] привет\n[Саша] ответ")
+    }
+
+    /// «Я» (mic dominance) has absolute priority: a voice match can never
+    /// claim the owner's cluster.
+    func testSelfClusterKeepsLabelOverVoiceMatch() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0, selfTo: 2.5),
+            voiceNames: ["A": "Alice", "B": "Bob"]
+        )
+        XCTAssertEqual(text, "[Я] привет\n[Bob] ответ")
+    }
+
+    /// Numbering stays dense over the remaining unnamed clusters.
+    func testNumberingSkipsVoiceMatchedClusters() {
+        let text = RoleAssigner.render(
+            segments: [seg("раз", 0, 2), seg("два", 2.5, 4), seg("три", 5, 7)],
+            speakers: [spk("A", 0, 2.4), spk("B", 2.4, 4.5), spk("C", 4.5, 8)],
+            activity: nil,
+            voiceNames: ["A": "Alice"]
+        )
+        XCTAssertEqual(text, "[Alice] раз\n[Speaker 1] два\n[Speaker 2] три")
+    }
+
+    /// Empty voiceNames (nil-embedding diarizers, empty voice-print DB) is
+    /// byte-identical to the pre-identity behavior.
+    func testEmptyVoiceNamesKeepsLegacyLabels() {
+        let segments = [seg("привет", 0, 2), seg("ответ", 3, 5)]
+        let speakers = [spk("A", 0, 2.5), spk("B", 2.5, 5)]
+        XCTAssertEqual(
+            RoleAssigner.render(segments: segments, speakers: speakers, activity: nil, voiceNames: [:]),
+            RoleAssigner.render(segments: segments, speakers: speakers, activity: nil)
+        )
+    }
+
+    func testClusterLabelsMatchAssignedUtteranceLabels() throws {
+        let speakers = [spk("A", 0, 2.5), spk("B", 2.5, 5)]
+        let labels = RoleAssigner.clusterLabels(speakers: speakers, activity: nil, voiceNames: ["B": "Саша"])
+        XCTAssertEqual(labels, ["A": "Speaker 1", "B": "Саша"])
+        let utterances = try XCTUnwrap(RoleAssigner.assign(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: speakers, activity: nil, voiceNames: ["B": "Саша"]))
+        XCTAssertEqual(utterances.map(\.speaker), ["Speaker 1", "Саша"])
+    }
 }

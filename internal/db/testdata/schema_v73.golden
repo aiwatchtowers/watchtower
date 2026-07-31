@@ -931,7 +931,7 @@ transcript_text TEXT NOT NULL,
 summary_json TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, notes_md TEXT, segments_json TEXT)
+, notes_md TEXT, segments_json TEXT, speakers_json TEXT)
 
 table	memory_aliases
 CREATE TABLE memory_aliases (
@@ -1495,6 +1495,16 @@ is_stub INTEGER NOT NULL DEFAULT 0,
 is_bot_override INTEGER DEFAULT NULL, -- NULL=use Slack value, 1=force bot, 0=force not-bot
 is_muted_for_llm INTEGER NOT NULL DEFAULT 0, -- 1=exclude this user's messages from AI analysis
 profile_json TEXT NOT NULL DEFAULT '{}',
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
+table	voice_prints
+CREATE TABLE voice_prints (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+person_key TEXT NOT NULL UNIQUE,
+display_name TEXT NOT NULL,
+embedding BLOB NOT NULL,
+sample_count INTEGER NOT NULL DEFAULT 1,
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
@@ -2094,6 +2104,7 @@ END
 9	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 10	notes_md	TEXT	notnull=0	dflt=NULL	pk=0
 11	segments_json	TEXT	notnull=0	dflt=NULL	pk=0
+12	speakers_json	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## memory_aliases
 0	alias	TEXT	notnull=0	dflt=NULL	pk=1
@@ -2591,6 +2602,14 @@ END
 9	is_muted_for_llm	INTEGER	notnull=1	dflt=0	pk=0
 10	profile_json	TEXT	notnull=1	dflt='{}'	pk=0
 11	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## voice_prints
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	person_key	TEXT	notnull=1	dflt=NULL	pk=0
+2	display_name	TEXT	notnull=1	dflt=NULL	pk=0
+3	embedding	BLOB	notnull=1	dflt=NULL	pk=0
+4	sample_count	INTEGER	notnull=1	dflt=1	pk=0
+5	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## watch_list
 0	entity_type	TEXT	notnull=1	dflt=NULL	pk=1

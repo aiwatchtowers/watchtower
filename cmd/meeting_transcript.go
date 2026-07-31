@@ -23,6 +23,7 @@ import (
 var (
 	transcriptSaveFlagFile      string
 	transcriptSaveFlagSegments  string
+	transcriptSaveFlagSpeakers  string
 	transcriptSaveFlagAudio     string
 	transcriptSaveFlagEventID   string
 	transcriptSaveFlagTitle     string
@@ -81,12 +82,22 @@ var transcriptNotesCmd = &cobra.Command{
 	RunE: runTranscriptNotes,
 }
 
+var transcriptSpeakerGuessCmd = &cobra.Command{
+	Use:   "speaker-guess <id>",
+	Short: "Suggest names for unnamed speakers in a saved transcript",
+	Long: "Runs the meeting.speaker_guess AI prompt over the transcript's per-utterance segments and prints {transcript_id, suggestions}. " +
+		"Suggestions are ephemeral (nothing is persisted — the Desktop renders them as confirm chips); exits 1 on any failure.",
+	Args: cobra.ExactArgs(1),
+	RunE: runTranscriptSpeakerGuess,
+}
+
 func init() {
 	meetingPrepCmd.AddCommand(meetingTranscriptCmd)
-	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd)
+	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd, transcriptSpeakerGuessCmd)
 
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagFile, "transcript-file", "", "path to the transcript text file (required)")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagSegments, "segments-file", "", "path to the per-utterance segments JSON file (optional)")
+	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagSpeakers, "speakers-file", "", "path to the per-cluster speaker embeddings JSON file (optional)")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagAudio, "audio", "", "path to the recorded audio file")
 	transcriptSaveCmd.Flags().IntVar(&transcriptSaveFlagDuration, "duration", 0, "recording duration in seconds")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagEventID, "event-id", "", "calendar event id to link the transcript to")
@@ -144,12 +155,14 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		title = "Recording " + time.Now().Local().Format("2006-01-02 15:04")
 	}
 
+	segmentsJSON := loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr())
 	tr := db.MeetingTranscript{
 		Title:          title,
 		DurationSec:    transcriptSaveFlagDuration,
 		LangStats:      transcriptSaveFlagLangStats,
 		TranscriptText: text,
-		SegmentsJSON:   loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr()),
+		SegmentsJSON:   segmentsJSON,
+		SpeakersJSON:   loadTranscriptSpeakers(transcriptSaveFlagSpeakers, segmentsJSON, cmd.ErrOrStderr()),
 	}
 	if transcriptSaveFlagEventID != "" {
 		tr.EventID = sql.NullString{String: transcriptSaveFlagEventID, Valid: true}
@@ -191,6 +204,49 @@ func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) sql.N
 	if rendered := meeting.RenderTranscriptSegments(utterances); rendered != transcriptText {
 		fmt.Fprintf(errOut, "warning: segments do not render to the transcript text (saving transcript without segments)\n")
 		return sql.NullString{}
+	}
+	return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}
+}
+
+// loadTranscriptSpeakers reads and validates the optional --speakers-file for
+// save: the per-cluster voice embeddings the Desktop rename flow later folds
+// into voice_prints. Any problem — missing flag (non-FluidAudio diarizers,
+// old callers), unreadable/malformed file, a segment-less save (labels would
+// dangle), or a label that matches no persisted utterance — yields a NULL
+// column with a stderr warning; the transcript save itself must still succeed
+// (the loadTranscriptSegments contract).
+func loadTranscriptSpeakers(path string, segmentsJSON sql.NullString, errOut io.Writer) sql.NullString {
+	if path == "" {
+		return sql.NullString{}
+	}
+	if !segmentsJSON.Valid {
+		fmt.Fprintf(errOut, "warning: speakers file without persisted segments (saving transcript without speaker embeddings)\n")
+		return sql.NullString{}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: reading speakers file (saving transcript without speaker embeddings): %v\n", err)
+		return sql.NullString{}
+	}
+	speakers, err := meeting.ParseSpeakerEmbeddings(raw)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
+		return sql.NullString{}
+	}
+	utterances, err := meeting.ParseTranscriptSegments([]byte(segmentsJSON.String))
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
+		return sql.NullString{}
+	}
+	labels := make(map[string]bool, len(utterances))
+	for _, u := range utterances {
+		labels[u.Speaker] = true
+	}
+	for _, s := range speakers {
+		if !labels[s.Speaker] {
+			fmt.Fprintf(errOut, "warning: speaker %q matches no transcript utterance (saving transcript without speaker embeddings)\n", s.Speaker)
+			return sql.NullString{}
+		}
 	}
 	return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}
 }
@@ -470,5 +526,73 @@ func runTranscriptNotes(cmd *cobra.Command, args []string) error {
 	return enc.Encode(map[string]any{
 		"transcript_id": id,
 		"notes_md":      notes,
+	})
+}
+
+func runTranscriptSpeakerGuess(cmd *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid transcript id %q: %w", args[0], err)
+	}
+
+	cfg, database, err := transcriptEnv()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		return err
+	}
+	if tr == nil {
+		return fmt.Errorf("transcript %d not found", id)
+	}
+	if !tr.SegmentsJSON.Valid {
+		return fmt.Errorf("transcript %d has no per-utterance segments (re-transcribe to get speaker clusters)", id)
+	}
+	utterances, err := meeting.ParseTranscriptSegments([]byte(tr.SegmentsJSON.String))
+	if err != nil {
+		return err
+	}
+
+	runID, err := database.CreatePipelineRun("meeting_speaker_guess", "cli", "auto")
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: recording meeting_speaker_guess pipeline run: %v\n", err)
+	}
+	completeRun := func(items, in, out, api int, errMsg string) {
+		if err := database.CompletePipelineRun(runID, items, in, out, 0, api, nil, nil, errMsg); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: completing meeting_speaker_guess pipeline run %d: %v\n", runID, err)
+		}
+	}
+
+	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg), nil)
+	pipe.SetPromptStore(prompts.New(database, nil))
+
+	eventID := ""
+	if tr.EventID.Valid {
+		eventID = tr.EventID.String
+	}
+	ctx := cmd.Context()
+	if ctx == nil { // RunE invoked directly (tests) — cobra sets ctx only via Execute
+		ctx = context.Background()
+	}
+	guesses, usage, err := pipe.GenerateSpeakerGuesses(ctx, eventID, utterances)
+	if err != nil {
+		completeRun(0, 0, 0, 0, err.Error())
+		return err
+	}
+
+	in, out, api := 0, 0, 0
+	if usage != nil {
+		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+	}
+	completeRun(len(guesses), in, out, api, "")
+
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]any{
+		"transcript_id": id,
+		"suggestions":   guesses,
 	})
 }

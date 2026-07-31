@@ -319,4 +319,154 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
             XCTAssertNil(try MeetingTranscriptQueries.delete(db, id: 999))
         }
     }
+
+    // MARK: - renameSpeaker (speaker identity)
+
+    private var speakersFixture: [SpeakerEmbedding] {
+        [
+            SpeakerEmbedding(speaker: "Я", embedding: [0, 1]),
+            SpeakerEmbedding(speaker: "Speaker 1", embedding: [1, 0])
+        ]
+    }
+
+    private func insertSegmentedTranscriptWithSpeakers(_ db: Database, id: Int64 = 1) throws {
+        let json = try XCTUnwrap(TranscriptSegments.encode(utterancesFixture))
+        let speakersJSON = try XCTUnwrap(SpeakerEmbeddings.encode(speakersFixture))
+        try TestDatabase.insertMeetingTranscript(
+            db, id: id, title: "Segmented",
+            transcriptText: TranscriptSegments.render(utterancesFixture),
+            segmentsJSON: json,
+            speakersJSON: speakersJSON)
+    }
+
+    func test_renameSpeakerRewritesSegmentsTextAndSpeakers() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db)
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+        }
+        try db.read { db in
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(tr.transcriptText, "[Я] привет\n[Саша] ответ\n[Я] итог",
+                           "transcript_text must be rebuilt with the new label")
+            let utterances = try XCTUnwrap(tr.utterances)
+            XCTAssertEqual(utterances.map(\.speaker), ["Я", "Саша", "Я"])
+            // The invariant survives the rename.
+            XCTAssertEqual(tr.transcriptText, TranscriptSegments.render(utterances))
+            // speakers_json is re-keyed so later renames still resolve.
+            let speakers = try XCTUnwrap(tr.speakerEmbeddings)
+            XCTAssertEqual(speakers.map(\.speaker).sorted(), ["Саша", "Я"].sorted())
+            // The voice print was learned.
+            let voicePrint = try XCTUnwrap(VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"))
+            XCTAssertEqual(voicePrint.displayName, "Саша")
+            XCTAssertEqual(voicePrint.sampleCount, 1)
+            XCTAssertEqual(voicePrint.embeddingVector, [1, 0])
+        }
+    }
+
+    func test_renameSpeakerRenamesDeletedUtterancesToo() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db)
+            try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 1, idx: 1, deleted: true)
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+        }
+        try db.read { db in
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            let utterances = try XCTUnwrap(tr.utterances)
+            XCTAssertEqual(utterances[1].speaker, "Саша",
+                           "a soft-deleted utterance stays in the array and must be renamed too")
+            XCTAssertTrue(utterances[1].deleted)
+            XCTAssertEqual(tr.transcriptText, "[Я] привет\n[Я] итог",
+                           "deleted utterances stay out of the rendered text")
+        }
+    }
+
+    func test_renameSpeakerSecondRecordingUpdatesCentroid() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db, id: 1)
+            try self.insertSegmentedTranscriptWithSpeakers(db, id: 2)
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 2, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+        }
+        try db.read { db in
+            let voicePrint = try XCTUnwrap(VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"))
+            XCTAssertEqual(voicePrint.sampleCount, 2, "sample_count is monotonic")
+            // Both samples were [1, 0] → the centroid stays [1, 0], normalized.
+            XCTAssertEqual(voicePrint.embeddingVector[0], 1.0, accuracy: 1e-5)
+            XCTAssertEqual(voicePrint.embeddingVector[1], 0.0, accuracy: 1e-5)
+        }
+    }
+
+    func test_renameSpeakerWithoutEmbeddingsUpdatesTranscriptOnly() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            // No speakers_json (legacy / non-FluidAudio diarizer).
+            try self.insertSegmentedTranscript(db)
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+        }
+        try db.read { db in
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(tr.transcriptText, "[Я] привет\n[Саша] ответ\n[Я] итог")
+            XCTAssertNil(try VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"),
+                         "no embedding → no voice print learned")
+        }
+    }
+
+    func test_renameSpeakerNoOpsOnUnknownLabelLegacyRowAndEmptyName() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db)
+            let before = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+
+            // Unknown label.
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 9", to: "Ghost", personKey: "ghost")
+            // Empty / whitespace name.
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "   ", personKey: "blank")
+            // Unchanged name.
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Speaker 1", personKey: "same")
+            // Missing row.
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 999, from: "Speaker 1", to: "Саша", personKey: "sasha")
+
+            let after = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(after.transcriptText, before.transcriptText)
+            XCTAssertEqual(after.segmentsJSON, before.segmentsJSON)
+            XCTAssertEqual(after.speakersJSON, before.speakersJSON)
+            XCTAssertEqual(try VoicePrint.fetchCount(db), 0, "no-ops must not learn voice prints")
+        }
+    }
+
+    func test_voicePrintUpsertSkipsDegenerateEmbedding() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            // Zero-vector embedding: rename applies, print is NOT learned.
+            let utterances = self.utterancesFixture
+            let json = try XCTUnwrap(TranscriptSegments.encode(utterances))
+            let speakersJSON = try XCTUnwrap(SpeakerEmbeddings.encode(
+                [SpeakerEmbedding(speaker: "Speaker 1", embedding: [0, 0])]))
+            try TestDatabase.insertMeetingTranscript(
+                db, id: 1, title: "Zero",
+                transcriptText: TranscriptSegments.render(utterances),
+                segmentsJSON: json, speakersJSON: speakersJSON)
+
+            try MeetingTranscriptQueries.renameSpeaker(
+                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(tr.transcriptText, "[Я] привет\n[Саша] ответ\n[Я] итог",
+                           "the rename itself must still apply")
+            XCTAssertNil(try VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"),
+                         "a zero-vector embedding must never become a voice print")
+        }
+    }
 }

@@ -36,11 +36,19 @@ final class FluidAudioDiarizer: SpeakerDiarizing, @unchecked Sendable {
             let result = try manager.performCompleteDiarization(
                 samples, sampleRate: TranscriptionConfig.sampleRate
             )
+            // Per-speaker centroid embeddings: DiarizationResult.speakerDatabase
+            // is populated only in debugMode, so fall back to the manager's
+            // speaker database (the same source it is built from); a segment's
+            // own embedding is the last resort. Consumers treat nil as
+            // "no voice identity available".
+            let speakerDB = result.speakerDatabase
+                ?? manager.speakerManager.getAllSpeakers().mapValues { $0.currentEmbedding }
             return result.segments.map {
                 SpeakerSegment(
                     speakerID: $0.speakerId,
                     startSec: Double($0.startTimeSeconds),
-                    endSec: Double($0.endTimeSeconds)
+                    endSec: Double($0.endTimeSeconds),
+                    embedding: speakerDB[$0.speakerId] ?? $0.embedding
                 )
             }
         }.value
