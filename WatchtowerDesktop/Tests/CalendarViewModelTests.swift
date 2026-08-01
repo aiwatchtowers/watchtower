@@ -99,8 +99,8 @@ struct CalendarViewModelTests {
         let pool = try makePool()
         let cal = Calendar.current
         // Relative dates only — no hardcoded calendar bombs.
-        let yesterdayNoon = cal.date(byAdding: .day, value: -1,
-                                     to: cal.startOfDay(for: Date()).addingTimeInterval(12 * 3600))!
+        let yesterdayNoon = try #require(cal.date(byAdding: .day, value: -1,
+                                                  to: cal.startOfDay(for: Date()).addingTimeInterval(12 * 3600)))
         try insertEvent(pool, id: "y1", title: "Retro",
                         start: yesterdayNoon, end: yesterdayNoon.addingTimeInterval(3600))
 
@@ -153,14 +153,14 @@ struct CalendarViewModelTests {
         #expect(inWindow.count == 7)
 
         // Past pin: appended and sorted to the front.
-        let yesterday = cal.date(byAdding: .day, value: -1, to: today)!
+        let yesterday = try #require(cal.date(byAdding: .day, value: -1, to: today))
         let past = CalendarViewModel.dayWindow(today: today, daysAhead: 7, pinned: yesterday, calendar: cal)
         #expect(past.count == 8)
         #expect(past.first.map { cal.isDate($0, inSameDayAs: yesterday) } == true)
 
         // Far-future pin (beyond +7d — calendar.sync_days_ahead may exceed
         // the UI's hard-coded window): appended last.
-        let future = cal.date(byAdding: .day, value: 30, to: today)!
+        let future = try #require(cal.date(byAdding: .day, value: 30, to: today))
         let far = CalendarViewModel.dayWindow(today: today, daysAhead: 7, pinned: future, calendar: cal)
         #expect(far.count == 8)
         #expect(far.last.map { cal.isDate($0, inSameDayAs: future) } == true)

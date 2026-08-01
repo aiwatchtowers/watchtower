@@ -16,7 +16,7 @@ final class LinkedEventHeaderTests: XCTestCase {
 
     func test_resolvableLinkRendersTappableButtonPassingTheLink() throws {
         var opened: CalendarQueries.EventLink?
-        let view = LinkedEventHeader(linkedEvent: makeLink(), onOpenEvent: { opened = $0 })
+        let view = LinkedEventHeader(linkedEvent: makeLink()) { opened = $0 }
 
         let button = try view.inspect().find(ViewType.Button.self)
         let texts = try view.inspect().findAll(ViewType.Text.self).map { try $0.string() }
@@ -29,7 +29,7 @@ final class LinkedEventHeaderTests: XCTestCase {
     }
 
     func test_prunedLinkRendersPlainPastEventLabelWithoutButton() throws {
-        let view = LinkedEventHeader(linkedEvent: nil, onOpenEvent: { _ in })
+        let view = LinkedEventHeader(linkedEvent: nil) { _ in }
         let texts = try view.inspect().findAll(ViewType.Text.self).map { try $0.string() }
         XCTAssertTrue(texts.contains("Linked to a past event"))
         XCTAssertThrowsError(try view.inspect().find(ViewType.Button.self),
@@ -47,7 +47,7 @@ final class LinkedEventHeaderTests: XCTestCase {
 
     func test_emptyTitleFallsBackToPlaceholder() throws {
         // Degenerate: schema-default '' title must not render "Linked to:  · <date>".
-        let view = LinkedEventHeader(linkedEvent: makeLink(title: ""), onOpenEvent: { _ in })
+        let view = LinkedEventHeader(linkedEvent: makeLink(title: "")) { _ in }
         let texts = try view.inspect().findAll(ViewType.Text.self).map { try $0.string() }
         XCTAssertTrue(texts.contains { $0.contains("Linked to: (untitled event)") })
     }

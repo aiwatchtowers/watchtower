@@ -58,10 +58,9 @@ struct CalendarEventsView: View {
                     case .events:
                         eventsSplitView(calVM)
                     case .recordings:
-                        RecordingsView(
-                            externalSelection: $selectedRecordingID,
-                            onOpenEvent: { link in openLinkedEvent(link, in: calVM) }
-                        )
+                        RecordingsView(externalSelection: $selectedRecordingID) { link in
+                            openLinkedEvent(link, in: calVM)
+                        }
                     }
                 }
             } else {

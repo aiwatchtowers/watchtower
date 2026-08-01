@@ -58,7 +58,7 @@ final class RecordingsListViewTests: XCTestCase {
                 makeItem(id: 2, title: "AdHoc"),
                 // Degenerate: link kept but the event row was pruned — no
                 // subtitle, no error.
-                makeItem(id: 3, title: "Pruned", eventID: "evt-gone", eventTitle: nil),
+                makeItem(id: 3, title: "Pruned", eventID: "evt-gone", eventTitle: nil)
             ],
             selectedID: .constant(nil))
         let texts = try view.inspect().findAll(ViewType.Text.self).map { try $0.string() }

@@ -43,7 +43,8 @@ final class EventRecordingsSectionTests: XCTestCase {
             transcripts: [makeTranscript(id: 1, summaryJSON: nil)],
             hasEventRecap: true
         ) { _ in }
-        let images = try view.inspect().findAll(ViewType.Image.self)
+        let images = try view.inspect()
+            .findAll(ViewType.Image.self)
             .map { try $0.actualImage().name() }
         XCTAssertTrue(images.contains("sparkles"))
     }
@@ -53,7 +54,8 @@ final class EventRecordingsSectionTests: XCTestCase {
             transcripts: [makeTranscript(id: 1, summaryJSON: nil)],
             hasEventRecap: false
         ) { _ in }
-        let images = try view.inspect().findAll(ViewType.Image.self)
+        let images = try view.inspect()
+            .findAll(ViewType.Image.self)
             .map { try $0.actualImage().name() }
         XCTAssertFalse(images.contains("sparkles"))
     }
