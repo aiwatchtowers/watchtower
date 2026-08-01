@@ -198,10 +198,10 @@ func TestMigration00043DownUpCycle(t *testing.T) {
 
 	seedPostMigrationFixture(t, d)
 
-	// DownTo 42 (not Down): 00043 is no longer the top migration, and this
-	// test's legacy-shape assertions require 00043 itself rolled back — a
-	// plain Down would only revert whatever is on top (the db_test.go:463
-	// DownTo precedent).
+	// DownTo 42 (not a single-step Down): later migrations stack on top of
+	// 00043, and this test's legacy-shape assertions require 00043 itself
+	// rolled back — a plain Down would only revert whatever is on top (the
+	// db_test.go DownTo precedent).
 	if err := goose.DownTo(d.DB, "migrations", 42); err != nil {
 		t.Fatalf("goose down: %v", err)
 	}

@@ -6,7 +6,9 @@ import GRDB
 /// `audioPath` is NULLed by the daemon retention phase once the audio file is
 /// deleted; the transcript text is kept forever. `summaryJSON` holds the recap
 /// for ad-hoc recordings only — event-linked recaps live in `meeting_recaps`.
-/// `notesMD` holds user-editable publishable markdown notes.
+/// `notesMD` holds user-editable publishable markdown notes. `segmentsJSON`
+/// is the per-utterance segment array (nil for legacy rows); when set, the
+/// invariant `transcriptText = TranscriptSegments.render(non-deleted)` holds.
 struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "meeting_transcripts"
 
@@ -19,6 +21,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     let transcriptText: String
     let summaryJSON: String?
     let notesMD: String?
+    let segmentsJSON: String?
     let createdAt: String
     let updatedAt: String
 
@@ -26,6 +29,14 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     var parsedSummary: MeetingRecap.Content? {
         guard let json = summaryJSON, let data = json.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(MeetingRecap.Content.self, from: data)
+    }
+
+    /// Decodes `segmentsJSON` into utterances; nil for legacy rows or a
+    /// malformed payload (the UI then falls back to the flat text). Decode
+    /// once per detail load — never in row builders.
+    var utterances: [TranscriptUtterance]? {
+        guard let segmentsJSON else { return nil }
+        return TranscriptSegments.decode(segmentsJSON)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -38,6 +49,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         case transcriptText = "transcript_text"
         case summaryJSON = "summary_json"
         case notesMD = "notes_md"
+        case segmentsJSON = "segments_json"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

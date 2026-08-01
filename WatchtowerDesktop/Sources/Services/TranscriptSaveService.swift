@@ -5,15 +5,32 @@ import Foundation
 /// Decoded stdout envelope of `watchtower meeting-prep transcript save|recap`.
 /// The CLI exits 0 whenever the transcript row was persisted, even if the
 /// recap failed — check `recapOK`/`recapError` for the AI outcome.
+/// `segmentsOK == false` means the CLI dropped a provided segments file (the
+/// column stayed NULL) — the visible tripwire for Go↔Swift renderer drift.
+/// An older-CLI envelope omits the segments fields; absence is not a failure,
+/// so `segmentsOK` decodes as `true` when the key is missing.
 struct TranscriptSaveResult: Decodable, Equatable {
     let transcriptID: Int64
     let recapOK: Bool
     let recapError: String
+    let segmentsOK: Bool
+    let segmentsError: String?
 
     enum CodingKeys: String, CodingKey {
         case transcriptID = "transcript_id"
         case recapOK = "recap_ok"
         case recapError = "recap_error"
+        case segmentsOK = "segments_ok"
+        case segmentsError = "segments_error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        transcriptID = try container.decode(Int64.self, forKey: .transcriptID)
+        recapOK = try container.decode(Bool.self, forKey: .recapOK)
+        recapError = try container.decode(String.self, forKey: .recapError)
+        segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
+        segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)
     }
 }
 
@@ -41,11 +58,14 @@ struct TranscriptSaveService {
     let runner: CLIRunnerProtocol
 
     /// Writes `transcriptText` to a temp file, invokes
-    /// `meeting-prep transcript save --transcript-file <tmp> --audio <p> --duration <n>
-    /// [--event-id <id>] [--title <s>] --lang-stats <json>`,
-    /// and decodes the stdout envelope. The temp file is removed in a defer,
-    /// whether the run succeeds or throws.
+    /// `meeting-prep transcript save --transcript-file <tmp> [--segments-file <tmp>]
+    /// --audio <p> --duration <n> [--event-id <id>] [--title <s>] --lang-stats <json>`,
+    /// and decodes the stdout envelope. The temp files are removed in defers,
+    /// whether the run succeeds or throws. Non-nil `utterances` travel as a
+    /// second temp file next to the transcript; the CLI persists them to
+    /// `segments_json` (nil → the column stays NULL, legacy behavior).
     func save(transcriptText: String,
+              utterances: [TranscriptUtterance]? = nil,
               audioPath: String,
               durationSec: Int,
               eventID: String?,
@@ -56,9 +76,30 @@ struct TranscriptSaveService {
         try transcriptText.write(to: tmpURL, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: tmpURL) }
 
+        var segmentsURL: URL?
+        if let utterances, !utterances.isEmpty {
+            if let segmentsJSON = TranscriptSegments.encode(utterances) {
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("watchtower-segments-\(UUID().uuidString).json")
+                try segmentsJSON.write(to: url, atomically: true, encoding: .utf8)
+                segmentsURL = url
+            } else {
+                // Should be unreachable for in-memory utterances, but a silent
+                // drop here would be invisible — the save then degrades to a
+                // legacy segment-less row.
+                print("[TranscriptSave] segments encode failed — saving without segments")
+            }
+        }
+        defer { if let segmentsURL { try? FileManager.default.removeItem(at: segmentsURL) } }
+
         var args = [
             "meeting-prep", "transcript", "save",
-            "--transcript-file", tmpURL.path,
+            "--transcript-file", tmpURL.path
+        ]
+        if let segmentsURL {
+            args += ["--segments-file", segmentsURL.path]
+        }
+        args += [
             "--audio", audioPath,
             "--duration", String(durationSec)
         ]

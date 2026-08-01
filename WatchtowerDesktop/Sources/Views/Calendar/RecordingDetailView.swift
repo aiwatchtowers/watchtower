@@ -30,6 +30,7 @@ struct RecordingDetailView: View {
 
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
+    @State private var utterances: [TranscriptUtterance]?
     @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
     @State private var tab: RecordingDetailTab = .recap
@@ -79,6 +80,7 @@ struct RecordingDetailView: View {
         .task(id: transcriptID) {
             tab = .recap
             chatVM = nil
+            utterances = nil
             await load()
         }
         .confirmationDialog(
@@ -119,7 +121,10 @@ struct RecordingDetailView: View {
                 generationError: center.lastError[transcriptID],
                 onSave: saveNotes)
         case .transcript:
-            RecordingTranscriptTab(transcriptText: transcript.transcriptText)
+            RecordingTranscriptTab(
+                transcriptText: transcript.transcriptText,
+                utterances: utterances,
+                onSetUtteranceDeleted: setUtteranceDeleted)
         case .chat:
             if let chatVM {
                 RecordingChatTab(chatVM: chatVM)
@@ -186,8 +191,8 @@ struct RecordingDetailView: View {
     private func load() async {
         guard let db = appState.databaseManager else { return }
         do {
-            let (row, recap, link) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
-                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, CalendarQueries.EventLink?) in
+            let (row, recap, link, decodedUtterances) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
+                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, CalendarQueries.EventLink?, [TranscriptUtterance]?) in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
                     var recap: MeetingRecap?
                     var link: CalendarQueries.EventLink?
@@ -197,17 +202,48 @@ struct RecordingDetailView: View {
                         // row is gone — the header degrades to a plain label.
                         link = try CalendarQueries.fetchEventLink(conn, id: eventID)
                     }
-                    return (row, recap, link)
+                    return (row, recap, link, row?.utterances)
                 }
             }.value
             transcript = row
             linkedEvent = link
+            // Segments decoded ONCE here (off-main, alongside the fetch),
+            // never in body evaluations or row builders.
+            utterances = decodedUtterances
             // Event recap wins; ad-hoc (or collision-guarded) recap falls back
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
             recapContent = recap?.parsed ?? row?.parsedSummary
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Soft delete / undo for one utterance: the transactional
+    /// `segments_json` + `transcript_text` rewrite (see
+    /// `MeetingTranscriptQueries.setUtteranceDeleted`), then a reload so
+    /// every tab sees the rebuilt text. Returns whether the write landed —
+    /// the transcript tab gates its "deleted" toast on it.
+    private func setUtteranceDeleted(idx: Int, deleted: Bool) -> Bool {
+        guard let db = appState.databaseManager else { return false }
+        do {
+            try db.dbPool.write { conn in
+                try MeetingTranscriptQueries.setUtteranceDeleted(
+                    conn, id: transcriptID, idx: idx, deleted: deleted)
+            }
+            // The chat VM snapshots the transcript at init (its system-prompt
+            // excerpt is built from that copy) — reset it so the next chat
+            // turn is created over the edited text instead of still carrying
+            // the deleted utterance. It is recreated lazily on the Chat tab
+            // from the reloaded row; the persisted conversation survives.
+            chatVM?.cancelStream()
+            chatVM = nil
+            onChanged()
+            Task { await load() }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
         }
     }
 

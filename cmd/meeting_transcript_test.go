@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/meeting"
 )
 
 // transcriptMockGen is a mock digest.Generator for transcript CLI tests.
@@ -50,6 +51,7 @@ func resetTranscriptFlags(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		transcriptSaveFlagFile = ""
+		transcriptSaveFlagSegments = ""
 		transcriptSaveFlagAudio = ""
 		transcriptSaveFlagEventID = ""
 		transcriptSaveFlagTitle = ""
@@ -58,6 +60,7 @@ func resetTranscriptFlags(t *testing.T) {
 		transcriptListFlagEventID = ""
 	})
 	transcriptSaveFlagFile = ""
+	transcriptSaveFlagSegments = ""
 	transcriptSaveFlagAudio = ""
 	transcriptSaveFlagEventID = ""
 	transcriptSaveFlagTitle = ""
@@ -77,11 +80,13 @@ func writeTranscriptFile(t *testing.T, content string) string {
 // transcriptEnvelope mirrors the frozen stdout contract consumed by the Swift
 // TranscriptSaveService.
 type transcriptEnvelope struct {
-	TranscriptID int64  `json:"transcript_id"`
-	EventID      string `json:"event_id"`
-	Title        string `json:"title"`
-	RecapOK      bool   `json:"recap_ok"`
-	RecapError   string `json:"recap_error"`
+	TranscriptID  int64  `json:"transcript_id"`
+	EventID       string `json:"event_id"`
+	Title         string `json:"title"`
+	RecapOK       bool   `json:"recap_ok"`
+	RecapError    string `json:"recap_error"`
+	SegmentsOK    bool   `json:"segments_ok"`
+	SegmentsError string `json:"segments_error"`
 }
 
 func findPipelineRun(t *testing.T, database *db.DB, pipeline string) *db.PipelineRun {
@@ -272,6 +277,157 @@ func TestTranscriptSaveEventWithExistingRecapKeepsIt(t *testing.T) {
 	assert.Contains(t, tr.SummaryJSON.String, `"summary":"s"`)
 }
 
+// segmentsFixtureJSON renders to exactly "[Я] привет\n[Speaker 1] ответ" —
+// the transcript text used by the segments save tests (the invariant
+// transcript_text = render(segments) must hold at save time).
+const segmentsFixtureJSON = `[
+	{"idx":0,"start_sec":0,"end_sec":2.5,"speaker":"Я","text":"привет","deleted":false},
+	{"idx":1,"start_sec":2.5,"end_sec":5,"speaker":"Speaker 1","text":"ответ","deleted":false}
+]`
+
+const segmentsFixtureText = "[Я] привет\n[Speaker 1] ответ"
+
+// writeSegmentsFile writes content into a temp segments file and returns its path.
+func writeSegmentsFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "segments.json")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func TestTranscriptSaveWithSegmentsPersistsColumn(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagTitle = "With segments"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.RecapOK)
+	assert.True(t, env.SegmentsOK, "a valid segments file must report segments_ok=true")
+	assert.Equal(t, "", env.SegmentsError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.SegmentsJSON.Valid, "segments_json must be persisted when --segments-file is valid")
+	utterances, err := meeting.ParseTranscriptSegments([]byte(tr.SegmentsJSON.String))
+	require.NoError(t, err)
+	assert.Equal(t, tr.TranscriptText, meeting.RenderTranscriptSegments(utterances),
+		"invariant: transcript_text = render(segments where !deleted)")
+}
+
+func TestTranscriptSaveWithoutSegmentsLeavesColumnNULL(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "plain transcript, old caller")
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.SegmentsOK, "no segments attempted → nothing dropped, segments_ok=true")
+	assert.Equal(t, "", env.SegmentsError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.False(t, tr.SegmentsJSON.Valid, "no --segments-file → NULL column, legacy behavior")
+}
+
+func TestTranscriptSaveMalformedSegmentsStillPersistsTranscript(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	cases := map[string]string{
+		"not json":        `{{{not json`,
+		"empty array":     `[]`,
+		"render mismatch": `[{"idx":0,"start_sec":0,"end_sec":1,"speaker":"Я","text":"другой текст","deleted":false}]`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			resetTranscriptFlags(t)
+			transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+			transcriptSaveFlagSegments = writeSegmentsFile(t, payload)
+			transcriptSaveFlagTitle = "Malformed " + name
+
+			var out, errBuf bytes.Buffer
+			transcriptSaveCmd.SetOut(&out)
+			transcriptSaveCmd.SetErr(&errBuf)
+
+			// Exit-0 envelope semantics preserved: the transcript row saved.
+			require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+			assert.Contains(t, errBuf.String(), "warning:", "a bad segments file must warn on stderr")
+
+			var env transcriptEnvelope
+			require.NoError(t, json.Unmarshal(out.Bytes(), &env))
+			assert.Greater(t, env.TranscriptID, int64(0))
+			assert.False(t, env.SegmentsOK, "a dropped segments file must be visible in the envelope, not stderr-only")
+			assert.NotEmpty(t, env.SegmentsError, "segments_error must carry the drop reason")
+
+			database, err := openDBFromConfig()
+			require.NoError(t, err)
+			defer database.Close()
+			tr, err := database.GetMeetingTranscript(env.TranscriptID)
+			require.NoError(t, err)
+			require.NotNil(t, tr, "transcript must persist despite a bad segments file")
+			assert.Equal(t, segmentsFixtureText, tr.TranscriptText)
+			assert.False(t, tr.SegmentsJSON.Valid, "bad segments file → NULL column")
+		})
+	}
+}
+
+func TestTranscriptSaveMissingSegmentsFileStillPersistsTranscript(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "text without segments")
+	transcriptSaveFlagSegments = filepath.Join(t.TempDir(), "does-not-exist.json")
+
+	var out, errBuf bytes.Buffer
+	transcriptSaveCmd.SetOut(&out)
+	transcriptSaveCmd.SetErr(&errBuf)
+
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+	assert.Contains(t, errBuf.String(), "warning:")
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(out.Bytes(), &env))
+	assert.False(t, env.SegmentsOK, "an unreadable segments file counts as dropped")
+	assert.Contains(t, env.SegmentsError, "reading segments file")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.False(t, tr.SegmentsJSON.Valid)
+}
+
 func TestTranscriptSaveRecapFailureStillPersists(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
@@ -332,6 +488,7 @@ func TestTranscriptRecapRetry(t *testing.T) {
 	assert.Equal(t, id, env.TranscriptID)
 	assert.True(t, env.RecapOK)
 	assert.Equal(t, "", env.RecapError)
+	assert.True(t, env.SegmentsOK, "the recap retry never touches segments — segments_ok must be true")
 
 	database, err = openDBFromConfig()
 	require.NoError(t, err)

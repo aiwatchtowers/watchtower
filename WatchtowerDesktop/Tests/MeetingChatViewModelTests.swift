@@ -68,7 +68,8 @@ final class MeetingChatViewModelTests: XCTestCase {
         let transcript = MeetingTranscript(
             id: 7, eventID: nil, title: "Big meeting", audioPath: nil,
             durationSec: 3600, langStats: "{}", transcriptText: long,
-            summaryJSON: nil, notesMD: nil, createdAt: "2026-07-15T10:00:00Z",
+            summaryJSON: nil, notesMD: nil, segmentsJSON: nil,
+            createdAt: "2026-07-15T10:00:00Z",
             updatedAt: "2026-07-15T10:00:00Z")
         let recap = MeetingRecap.Content(
             summary: "shipped v2", keyDecisions: ["ship"], actionItems: [], openQuestions: [])

@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerDesktop
 
 final class MeetingTranscriptTests: XCTestCase {
-    private func makeTranscript(summaryJSON: String?) -> MeetingTranscript {
+    private func makeTranscript(summaryJSON: String?, segmentsJSON: String? = nil) -> MeetingTranscript {
         MeetingTranscript(
             id: 1,
             eventID: nil,
@@ -13,6 +13,7 @@ final class MeetingTranscriptTests: XCTestCase {
             transcriptText: "text",
             summaryJSON: summaryJSON,
             notesMD: nil,
+            segmentsJSON: segmentsJSON,
             createdAt: "2026-07-13T10:00:00Z",
             updatedAt: "2026-07-13T10:00:00Z"
         )

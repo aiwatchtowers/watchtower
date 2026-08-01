@@ -16,6 +16,7 @@ final class TranscriptAudioControlTests: XCTestCase {
             transcriptText: "hello",
             summaryJSON: nil,
             notesMD: nil,
+            segmentsJSON: nil,
             createdAt: "2026-07-15T10:00:00Z",
             updatedAt: "2026-07-15T10:00:00Z"
         )

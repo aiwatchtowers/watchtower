@@ -1023,7 +1023,10 @@ CREATE TABLE IF NOT EXISTS meeting_recaps (
 -- calendar event. audio_path is NULLed by the daemon retention phase once the
 -- audio file is deleted; transcript_text is kept forever. summary_json holds
 -- the recap for ad-hoc recordings only (event-linked recaps live in
--- meeting_recaps).
+-- meeting_recaps). segments_json is a JSON array of per-utterance segments
+-- ({"idx","start_sec","end_sec","speaker","text","deleted"}); NULL for legacy
+-- rows. Invariant: when non-NULL, transcript_text = render(segments where
+-- !deleted).
 CREATE TABLE IF NOT EXISTS meeting_transcripts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id        TEXT REFERENCES calendar_events(id) ON DELETE SET NULL,
@@ -1034,6 +1037,7 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     transcript_text TEXT NOT NULL,
     summary_json    TEXT,
     notes_md        TEXT,
+    segments_json   TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );

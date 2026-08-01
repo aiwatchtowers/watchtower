@@ -175,11 +175,16 @@ private final class FakeDiarizer: SpeakerDiarizing, @unchecked Sendable {
     }
 }
 
-/// Reads the file passed via --transcript-file DURING the CLI invocation (the
-/// save service deletes it right after), capturing the exact saved text.
+/// Reads the files passed via --transcript-file / --segments-file DURING the
+/// CLI invocation (the save service deletes them right after), capturing the
+/// exact saved text and segments JSON (nil when no segments file was passed).
+/// `shouldThrow` (cleared by the test for a retry) fails the save AFTER
+/// capturing, mirroring FakeCLIRunner's failure knob.
 private final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let stdoutData: Data
+    var shouldThrow: Error?
     private(set) var savedTranscripts: [String] = []
+    private(set) var savedSegments: [String?] = []
 
     init(stdout: Data) { self.stdoutData = stdout }
 
@@ -188,6 +193,13 @@ private final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sen
            let text = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
             savedTranscripts.append(text)
         }
+        if let idx = args.firstIndex(of: "--segments-file"), idx + 1 < args.count,
+           let json = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
+            savedSegments.append(json)
+        } else {
+            savedSegments.append(nil)
+        }
+        if let shouldThrow { throw shouldThrow }
         return stdoutData
     }
 }
@@ -1211,13 +1223,14 @@ final class MeetingRecorderCenterTests: XCTestCase {
     // MARK: - Diarization post-pass
 
     /// Batch-path harness: recording → (empty live) → decode stub → scripted
-    /// engine → fake diarizer → capturing runner. Returns the saved text.
+    /// engine → fake diarizer → capturing runner. Returns the saved text and
+    /// the saved segments JSON (nil when the save carried none).
     private func runDiarizationFlow(
         audio: URL,
         diarizer: FakeDiarizer,
         defaults: UserDefaults,
         rolesEnabled: Bool = true
-    ) async throws -> (savedText: String?, center: MeetingRecorderCenter, notifier: FakeNotifier) {
+    ) async throws -> (savedText: String?, savedSegments: String?, center: MeetingRecorderCenter, notifier: FakeNotifier) {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
@@ -1235,7 +1248,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         config.diarization = rolesEnabled
         await center.startRecording(eventID: nil, title: "Roles")
         await center.stopAndProcess(config: config)
-        return (runner.savedTranscripts.first, center, notifier)
+        return (runner.savedTranscripts.first, runner.savedSegments.first.flatMap { $0 }, center, notifier)
     }
 
     func testDiarizationRendersRolesIntoSavedText() async throws {
@@ -1250,7 +1263,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
         ]
 
-        let (saved, center, notifier) = try await runDiarizationFlow(
+        let (saved, savedSegments, center, notifier) = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
 
@@ -1258,6 +1271,15 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(saved, "[Speaker 1] привет\n[Speaker 2] ответ")
         XCTAssertEqual(notifier.readyTitles, ["Roles"], "successful roles must not flag the notification")
         XCTAssertEqual(diarizer.calls, 1)
+
+        // The batch path must ship the structured utterances alongside the
+        // text, and they must render to exactly the saved text (the
+        // transcript_text = render(segments) invariant at the source).
+        let utterances = try XCTUnwrap(TranscriptSegments.decode(try XCTUnwrap(savedSegments)))
+        XCTAssertEqual(TranscriptSegments.render(utterances), saved)
+        XCTAssertEqual(utterances.map(\.idx), [0, 1])
+        XCTAssertEqual(utterances.map(\.speaker), ["Speaker 1", "Speaker 2"])
+        XCTAssertTrue(utterances.allSatisfy { $0.endSec > $0.startSec })
     }
 
     func testActivitySidecarLabelsOwnerCluster() async throws {
@@ -1276,7 +1298,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
         ]
 
-        let (saved, _, _) = try await runDiarizationFlow(
+        let (saved, _, _, _) = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
 
@@ -1292,12 +1314,13 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let diarizer = FakeDiarizer()
         diarizer.error = FakeDiarizer.FakeError()
 
-        let (saved, center, notifier) = try await runDiarizationFlow(
+        let (saved, savedSegments, center, notifier) = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
 
         XCTAssertEqual(center.phase, .idle, "a diarization failure must never fail the pipeline")
         XCTAssertEqual(saved, "привет\nответ")
+        XCTAssertNil(savedSegments, "no roles → no segments file, the column stays NULL")
         XCTAssertEqual(notifier.readyTitles, ["Roles — saved without speaker labels"],
                        "the notification must flag the missing labels")
     }
@@ -1335,6 +1358,15 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(center.phase, .idle)
         XCTAssertEqual(decodeCalls, 1, "the roles post-pass decodes the file exactly once")
         XCTAssertEqual(runner.savedTranscripts.first, "[Speaker 1] live text")
+
+        // The live single-pass save must carry the structured utterances too —
+        // live is the dominant real path, and dropping them there would fall
+        // back to a legacy segment-less row for every live-transcribed meeting.
+        let savedSegments = try XCTUnwrap(runner.savedSegments.first.flatMap { $0 },
+                                          "the live single-pass save must pass --segments-file")
+        let utterances = try XCTUnwrap(TranscriptSegments.decode(savedSegments))
+        XCTAssertEqual(TranscriptSegments.render(utterances), "[Speaker 1] live text",
+                       "invariant at the source: transcript_text = render(segments)")
     }
 
     func testRetryAfterSaveFailureKeepsRolesFlagInNotification() async throws {
@@ -1385,11 +1417,109 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let diarizer = FakeDiarizer()
         diarizer.segments = [SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.3)]
 
-        let (saved, _, _) = try await runDiarizationFlow(
+        let (saved, savedSegments, _, _) = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(), rolesEnabled: false
         )
 
         XCTAssertEqual(diarizer.calls, 0, "the toggle must gate the diarizer entirely")
         XCTAssertEqual(saved, "привет\nответ")
+        XCTAssertNil(savedSegments, "diarization off → no segments file")
+    }
+
+    func testRetryAfterSaveFailureResendsSegmentsFromSidecar() async throws {
+        // Roles rendered fine but the save failed → the sidecar persisted the
+        // utterances; the retry short-circuit must re-send them (no
+        // re-transcription, no re-diarization) so segments_json survives a
+        // save failure like the text does.
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
+        ]
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
+        var engineLoads = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["привет", "ответ"]))
+            },
+            diarizerFactory: { diarizer },
+            decode: stubDecode(sampleCount: 4800),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults()
+        )
+        var config = threeWindowConfig()
+        config.diarization = true
+
+        await center.startRecording(eventID: nil, title: "Retry segments")
+        await center.stopAndProcess(config: config)
+        guard case .failed = center.phase else { return XCTFail("expected failed save") }
+        let firstSegments = try XCTUnwrap(runner.savedSegments.first.flatMap { $0 },
+                                          "the failed save must already have carried segments")
+
+        runner.shouldThrow = nil
+        await center.retryTranscription(config: config)
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(engineLoads, 1, "retry must short-circuit to the persisted sidecar")
+        XCTAssertEqual(diarizer.calls, 1, "retry must not re-diarize")
+        XCTAssertEqual(runner.savedSegments.count, 2)
+        let retriedSegments = try XCTUnwrap(runner.savedSegments[1])
+        XCTAssertEqual(TranscriptSegments.decode(retriedSegments), TranscriptSegments.decode(firstSegments),
+                       "the retried save must carry the same utterances from the sidecar")
+        XCTAssertEqual(runner.savedTranscripts.count, 2)
+        XCTAssertEqual(runner.savedTranscripts[0], runner.savedTranscripts[1])
+    }
+
+    func testRetryFromPreSegmentsSidecarSavesWithoutSegments() async throws {
+        // Back-compat: a sidecar written BEFORE the segments work (no
+        // "utterances" key at all) must still decode and short-circuit the
+        // retry to a segment-less save — this is the crash-recovery path the
+        // sidecar exists for, and a Codable change that broke it would strand
+        // every in-flight failed save from an older build.
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let base = audio.deletingPathExtension()
+        try "[Я] привет".write(to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
+        // Exact old-format payload: durationSec + langStats only.
+        try Data(#"{"durationSec":42,"langStats":{"ru":42}}"#.utf8)
+            .write(to: base.appendingPathExtension("json"))
+
+        let defaults = try isolatedDefaults()
+        defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
+        defaults.set("Old build", forKey: MeetingRecorderCenter.pendingTitleKey)
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        var engineLoads = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in engineLoads += 1; return TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 4800),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: defaults
+        )
+
+        center.restorePendingOnLaunch()
+        XCTAssertEqual(center.pendingAudioURL, audio)
+        await center.retryTranscription(config: threeWindowConfig())
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(engineLoads, 0, "the old-format sidecar must still short-circuit re-transcription")
+        XCTAssertEqual(runner.savedTranscripts, ["[Я] привет"])
+        XCTAssertEqual(runner.savedSegments.count, 1)
+        XCTAssertNil(runner.savedSegments[0], "a pre-segments sidecar retries as a segment-less save")
     }
 }
