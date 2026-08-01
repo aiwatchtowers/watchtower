@@ -76,6 +76,41 @@ enum CalendarQueries {
         ) ?? 0
     }
 
+    // MARK: - Linked-Event Stub
+
+    /// Minimal projection for "linked to event X" affordances (recording
+    /// header, list subtitles): deliberately id/title/start_time only so
+    /// resolving a link never deserializes attendees/raw_json blobs.
+    struct EventLink: FetchableRecord, Equatable {
+        let id: String
+        let title: String
+        let startTime: String   // ISO8601
+
+        init(row: Row) {
+            id = row["id"]
+            title = row["title"] ?? ""
+            startTime = row["start_time"] ?? ""
+        }
+
+        /// Parsed start time; nil for a malformed/empty `start_time` (such an
+        /// event can't be placed on any day list, so deep-link callers just
+        /// skip the window pin).
+        var startDate: Date? {
+            CalendarQueries.iso8601Formatter.date(from: startTime)
+        }
+    }
+
+    /// Lightweight title/date resolution for a recording's linked event.
+    /// Returns nil when the event row no longer exists (pruned by sync
+    /// retention) — callers must degrade gracefully, never error.
+    static func fetchEventLink(_ db: Database, id: String) throws -> EventLink? {
+        try EventLink.fetchOne(
+            db,
+            sql: "SELECT id, title, start_time FROM calendar_events WHERE id = ?",
+            arguments: [id]
+        )
+    }
+
     // MARK: - Calendar List
 
     static func fetchCalendars(_ db: Database) throws -> [CalendarCalendarItem] {

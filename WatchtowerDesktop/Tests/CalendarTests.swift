@@ -423,6 +423,31 @@ struct CalendarQueriesTests {
         #expect(evt == nil)
     }
 
+    @Test("fetchEventLink returns title and start time")
+    func fetchEventLink() throws {
+        let dbQueue = try TestDatabase.create()
+        try dbQueue.write { db in
+            try TestDatabase.insertCalendarEvent(
+                db, id: "target", title: "Design Review",
+                startTime: "2026-05-01T09:00:00Z", endTime: "2026-05-01T10:00:00Z")
+        }
+        let link = try #require(try dbQueue.read { db in
+            try CalendarQueries.fetchEventLink(db, id: "target")
+        })
+        #expect(link.id == "target")
+        #expect(link.title == "Design Review")
+        #expect(link.startTime == "2026-05-01T09:00:00Z")
+    }
+
+    @Test("fetchEventLink returns nil for a pruned event row")
+    func fetchEventLinkMissing() throws {
+        let dbQueue = try TestDatabase.create()
+        let link = try dbQueue.read { db in
+            try CalendarQueries.fetchEventLink(db, id: "pruned-by-retention")
+        }
+        #expect(link == nil)
+    }
+
     @Test("eventCount")
     func eventCount() throws {
         let dbQueue = try TestDatabase.create()

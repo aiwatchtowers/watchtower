@@ -8,6 +8,10 @@ import GRDB
 struct RecordingListItem: Decodable, FetchableRecord, Identifiable, Equatable {
     let id: Int64
     let eventID: String?
+    /// Title of the linked calendar event (LEFT JOIN in `fetchRecordingList`);
+    /// nil for ad-hoc recordings and for links whose event row was pruned by
+    /// sync retention.
+    let eventTitle: String?
     let title: String
     let durationSec: Int
     let langStats: String
@@ -19,6 +23,7 @@ struct RecordingListItem: Decodable, FetchableRecord, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id
         case eventID = "event_id"
+        case eventTitle = "event_title"
         case title
         case durationSec = "duration_sec"
         case langStats = "lang_stats"
