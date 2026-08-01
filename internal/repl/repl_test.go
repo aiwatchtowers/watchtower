@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	watchtowerslack "watchtower/internal/slack"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1350,6 +1351,53 @@ func TestRunSyncCommandInvalidSlackAPI(t *testing.T) {
 	// Should fail with some error (invalid auth, network error, etc.)
 	hasError := strings.Contains(output, "failed") || strings.Contains(output, "Error") || strings.Contains(output, "error")
 	assert.True(t, hasError, "Expected error in output, got: %s", output)
+}
+
+// ---------------------------------------------------------------------------
+// runSyncCommand — multi-account fan-out
+// ---------------------------------------------------------------------------
+
+// TestRunSyncCommandNoStoredToken covers an enabled slack_accounts row whose
+// per-account token file was never written (e.g. the token store was wiped
+// out-of-band) — the loop must skip it via `continue` and, once every
+// account has been skipped, report the "no stored token" error distinct
+// from "no Slack account connected".
+func TestRunSyncCommandNoStoredToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	deps := testDeps(t)
+	seedWorkspace(t, deps.DB) // one enabled account, no token file on disk
+
+	ctx := context.Background()
+	output := runSyncCommand(ctx, deps)
+
+	assert.Contains(t, output, "no Slack account has a stored token")
+}
+
+// TestRunSyncCommandFanOutOverAccounts seeds two enabled accounts — one with
+// no stored token (skipped via `continue`) and one with a stored token — so
+// the loop actually iterates multiple accounts and reaches the client/orch
+// construction and error-aggregation branches below it.
+func TestRunSyncCommandFanOutOverAccounts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	deps := testDeps(t)
+	seedWorkspace(t, deps.DB) // account #1, no token file -> skipped
+
+	id2, err := deps.DB.CreateSlackAccount(db.SlackAccount{
+		TeamID: "T5678", TeamName: "Beta Corp", TeamDomain: "beta",
+	})
+	require.NoError(t, err)
+	store := watchtowerslack.NewTokenStore(deps.Config.WorkspaceDir(), id2)
+	require.NoError(t, store.Save(&watchtowerslack.Token{AccessToken: "xoxb-invalid-token-12345"}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	output := runSyncCommand(ctx, deps)
+	// Account #2's invalid token makes the real sync call fail, so the
+	// aggregate result must report the failure (not "no stored token").
+	hasError := strings.Contains(output, "failed") || strings.Contains(output, "Error") || strings.Contains(output, "error")
+	assert.True(t, hasError, "expected error in output, got: %s", output)
+	assert.NotContains(t, output, "no Slack account has a stored token")
 }
 
 // ---------------------------------------------------------------------------
