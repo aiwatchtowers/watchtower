@@ -178,7 +178,10 @@ struct RecordingRecapTab: View {
                 Button("Re-generate", role: .destructive) { onGenerateChapters() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The current chapters are replaced. Links to created Targets are kept for action items whose text is unchanged; the Targets themselves are never deleted.")
+                Text(
+                    "The current chapters are replaced. Links to created Targets are kept for "
+                        + "action items whose text is unchanged; the Targets themselves are never deleted."
+                )
             }
 
             // Recap regeneration must stay reachable once chapters exist —

@@ -264,7 +264,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         XCTAssertFalse(result.segmentsOK)
         XCTAssertEqual(result.segmentsError, "segments do not render to the transcript text")
-        XCTAssertNil(result.chaptersOK, "no chapters keys → chapters not attempted")
+        XCTAssertEqual(result.chapters, .notAttempted, "no chapters keys → chapters not attempted")
         XCTAssertNil(result.chaptersError)
     }
 
@@ -284,7 +284,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
         )
 
         XCTAssertTrue(result.recapOK)
-        XCTAssertEqual(result.chaptersOK, false)
+        XCTAssertEqual(result.chapters, .failed)
         XCTAssertEqual(result.chaptersError, "AI generation: boom")
     }
 

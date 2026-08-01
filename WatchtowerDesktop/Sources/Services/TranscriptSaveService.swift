@@ -9,18 +9,24 @@ import Foundation
 /// column stayed NULL) — the visible tripwire for Go↔Swift renderer drift.
 /// An older-CLI envelope omits the segments fields; absence is not a failure,
 /// so `segmentsOK` decodes as `true` when the key is missing.
-/// `chaptersOK == false` means auto-chapter generation after save failed
+/// `chapters == .failed` means auto-chapter generation after save failed
 /// (chapters_json stayed NULL — retry via the in-UI "Generate chapters"
-/// button); nil means chapters were not attempted (no segments, or the
-/// recap-retry command). Optional so envelopes from an older CLI still
-/// decode.
+/// button); `.notAttempted` covers no-segments saves, the recap-retry
+/// command, and envelopes from an older CLI without the chapters keys.
 struct TranscriptSaveResult: Decodable, Equatable {
+    /// Outcome of the auto-chapter generation the CLI attempts after save.
+    enum ChaptersOutcome: Equatable {
+        case notAttempted
+        case succeeded
+        case failed
+    }
+
     let transcriptID: Int64
     let recapOK: Bool
     let recapError: String
     let segmentsOK: Bool
     let segmentsError: String?
-    let chaptersOK: Bool?
+    let chapters: ChaptersOutcome
     let chaptersError: String?
 
     enum CodingKeys: String, CodingKey {
@@ -40,7 +46,11 @@ struct TranscriptSaveResult: Decodable, Equatable {
         recapError = try container.decode(String.self, forKey: .recapError)
         segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
         segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)
-        chaptersOK = try container.decodeIfPresent(Bool.self, forKey: .chaptersOK)
+        if let chaptersOK = try container.decodeIfPresent(Bool.self, forKey: .chaptersOK) {
+            chapters = chaptersOK ? .succeeded : .failed
+        } else {
+            chapters = .notAttempted
+        }
         chaptersError = try container.decodeIfPresent(String.self, forKey: .chaptersError)
     }
 }

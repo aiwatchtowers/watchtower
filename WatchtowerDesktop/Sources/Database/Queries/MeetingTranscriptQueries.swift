@@ -172,9 +172,8 @@ enum MeetingTranscriptQueries {
         // regeneration the same indices can point at a different item.
         let sourceID = "meeting_chapter:\(transcriptID):\(chapterIdx):\(itemIdx)"
         let targetID: Int64
-        if let existing = try TargetQueries.fetchBySourceRef(
-            db, sourceType: "manual", sourceID: sourceID
-        ).first(where: { $0.text == item.text }) {
+        let priorTargets = try TargetQueries.fetchBySourceRef(db, sourceType: "manual", sourceID: sourceID)
+        if let existing = priorTargets.first(where: { $0.text == item.text }) {
             targetID = Int64(existing.id)
         } else {
             let today = TargetQueries.todayDateString()
