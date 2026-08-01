@@ -547,6 +547,35 @@ func TestResultFromSnapshot(t *testing.T) {
 	assert.Equal(t, "sync failed", result.Error)
 }
 
+func TestResultFromSnapshots(t *testing.T) {
+	// Empty slice → zero result, no error.
+	empty := ResultFromSnapshots(nil, nil)
+	assert.Equal(t, 0, empty.MessagesFetched)
+	assert.Empty(t, empty.Error)
+	assert.True(t, empty.StartedAt.IsZero())
+
+	// Two accounts: messages summed, earliest start wins.
+	early := time.Now().Add(-60 * time.Second)
+	late := time.Now().Add(-20 * time.Second)
+	snaps := []Snapshot{
+		{StartTime: late, MessagesFetched: 100},
+		{StartTime: early, MessagesFetched: 250},
+	}
+	result := ResultFromSnapshots(snaps, nil)
+	assert.Equal(t, 350, result.MessagesFetched)
+	assert.Equal(t, early, result.StartedAt)
+	assert.InDelta(t, 60.0, result.DurationSecs, 2.0)
+	assert.Empty(t, result.Error)
+
+	// First error is propagated.
+	result = ResultFromSnapshots(snaps, fmt.Errorf("account 2 failed"))
+	assert.Equal(t, "account 2 failed", result.Error)
+
+	// Single snapshot matches ResultFromSnapshot's message count.
+	single := ResultFromSnapshots([]Snapshot{{StartTime: early, MessagesFetched: 42}}, nil)
+	assert.Equal(t, 42, single.MessagesFetched)
+}
+
 func TestWriteAndReadSyncResult(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sync_result.json")

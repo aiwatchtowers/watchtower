@@ -237,13 +237,15 @@ func TestRunStatusWithWatchedChannels(t *testing.T) {
 
 func TestRunSyncCommandNoToken(t *testing.T) {
 	deps := testDeps(t)
-	// Remove the token
+	// Multi-account: connectivity is derived from slack_accounts, not the
+	// workspace config token. testDeps seeds no slack_accounts row, so /sync
+	// reports no connected account.
 	deps.Config.Workspaces["test-workspace"].SlackToken = ""
 
 	ctx := context.Background()
 	output := runSyncCommand(ctx, deps)
 
-	assert.Contains(t, output, "Slack token not configured")
+	assert.Contains(t, output, "no Slack account connected")
 }
 
 func TestRunSyncCommandNoActiveWorkspace(t *testing.T) {
@@ -827,8 +829,10 @@ func TestRunSyncCommandWorkspaceNotInConfig(t *testing.T) {
 
 	ctx := context.Background()
 	output := runSyncCommand(ctx, deps)
+	// Multi-account /sync no longer validates the workspace config; it reads
+	// slack_accounts. With no connected account it fails gracefully.
 	assert.Contains(t, output, "Error")
-	assert.Contains(t, output, "missing-workspace")
+	assert.Contains(t, output, "no Slack account connected")
 }
 
 // ---------------------------------------------------------------------------
@@ -987,12 +991,14 @@ func TestRunSyncConfigPaths(t *testing.T) {
 			expectContains: "Error",
 		},
 		{
+			// Multi-account: the workspace token is no longer consulted; with no
+			// slack_accounts row, /sync reports no connected account.
 			name:     "empty token",
 			activeWS: "ws",
 			workspaces: map[string]*config.WorkspaceConfig{
 				"ws": {SlackToken: ""},
 			},
-			expectContains: "Slack token not configured",
+			expectContains: "no Slack account connected",
 		},
 	}
 

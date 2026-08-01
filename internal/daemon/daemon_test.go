@@ -146,7 +146,7 @@ func TestDaemon_RunsInitialSync(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -168,7 +168,7 @@ func TestDaemon_PollTriggersSync(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -191,7 +191,7 @@ func TestDaemon_WakeEventTriggersSync(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	// Inject a fake wake channel.
@@ -224,7 +224,7 @@ func TestDaemon_GracefulShutdown(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -257,7 +257,7 @@ func TestDaemon_SetLogger(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{PollInterval: time.Second},
 	}
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 
 	l := log.New(os.Stderr, "[custom] ", 0)
 	d.SetLogger(l)
@@ -269,7 +269,7 @@ func TestDaemon_SetPipelines(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{PollInterval: time.Second},
 	}
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 
 	// All pipeline setters should store without error.
 	d.SetDigestPipeline(nil)
@@ -286,7 +286,7 @@ func TestDaemon_SetPIDPath(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{PollInterval: time.Second},
 	}
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetPIDPath("/tmp/test.pid")
 	assert.Equal(t, "/tmp/test.pid", d.pidPath)
 }
@@ -305,7 +305,7 @@ func TestDaemon_RunWithPIDFile(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetPIDPath(pidPath)
 
@@ -339,17 +339,66 @@ func testDaemonWithTempHome(t *testing.T) (*sync.Orchestrator, *config.Config, s
 	return orch, cfg, wsDir
 }
 
+// TestPhaseSlackSyncAggregatesAcrossAccounts wires two per-account
+// orchestrators and asserts phaseSlackSync runs both and writes one aggregated
+// last_sync.json (the multi-account fan-out).
+func TestPhaseSlackSyncAggregatesAcrossAccounts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	wsDir := dir + "/.local/share/watchtower/test-ws"
+	require.NoError(t, os.MkdirAll(wsDir, 0o755))
+
+	var count1, count2 atomic.Int32
+	orch1, _ := newTestOrchestrator(t, &count1)
+	orch2, _ := newTestOrchestrator(t, &count2)
+
+	cfg := &config.Config{
+		ActiveWorkspace: "test-ws",
+		Workspaces: map[string]*config.WorkspaceConfig{
+			"test-ws": {SlackToken: "xoxp-test"},
+		},
+		Sync: config.SyncConfig{PollInterval: time.Second},
+	}
+
+	d := New(cfg)
+	d.SetOrchestrators([]*sync.Orchestrator{orch1, orch2})
+	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
+
+	err := d.phaseSlackSync(context.Background())
+	require.NoError(t, err)
+
+	// Both accounts' orchestrators ran (each hit search.messages at least once).
+	assert.GreaterOrEqual(t, count1.Load(), int32(1), "account 1 orchestrator did not run")
+	assert.GreaterOrEqual(t, count2.Load(), int32(1), "account 2 orchestrator did not run")
+
+	// One aggregated last_sync.json was written for the whole fan-out.
+	result, err := sync.ReadSyncResult(wsDir + "/last_sync.json")
+	require.NoError(t, err)
+	assert.Empty(t, result.Error)
+	// Empty history from both accounts → zero messages summed.
+	assert.Equal(t, 0, result.MessagesFetched)
+}
+
+// TestPhaseSlackSyncEmptySlice is the degenerate case: no connected accounts →
+// phaseSlackSync returns nil immediately without touching the workspace dir,
+// matching the retired d.orchestrator == nil early-return.
+func TestPhaseSlackSyncEmptySlice(t *testing.T) {
+	d := newQuietDaemon(t)
+	d.SetOrchestrators(nil)
+	assert.NoError(t, d.phaseSlackSync(context.Background()))
+}
+
 func TestDaemon_SaveLoadPeopleTime(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test] ", 0))
 
 	now := time.Now().Truncate(time.Second)
 	d.lastPeople = now
 	d.saveLastPeople()
 
-	d2 := New(orch, cfg)
+	d2 := newDaemon(orch, cfg)
 	d2.SetLogger(log.New(os.Stderr, "[test2] ", 0))
 	d2.loadLastPeople()
 
@@ -359,7 +408,7 @@ func TestDaemon_SaveLoadPeopleTime(t *testing.T) {
 func TestDaemon_LoadPeopleMissingFile(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test] ", 0))
 	d.loadLastPeople()
 	assert.True(t, d.lastPeople.IsZero())
@@ -370,7 +419,7 @@ func TestDaemon_LoadPeopleInvalidContent(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(wsDir+"/last_people.txt", []byte("not-a-number"), 0o600))
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test] ", 0))
 	d.loadLastPeople()
 	assert.True(t, d.lastPeople.IsZero())
@@ -414,7 +463,7 @@ func TestDaemon_RunSyncWithDigestPipeline(t *testing.T) {
 	gen := &mockGenerator{}
 	pipe := digest.New(database, cfg, gen, log.New(os.Stderr, "[digest-test] ", 0))
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDigestPipeline(pipe)
 
@@ -462,7 +511,7 @@ func TestDaemon_RunSyncWithAllPipelines(t *testing.T) {
 	tracksPipe := tracks.New(database, cfg, gen, l)
 	peoplePipe := guide.New(database, cfg, gen, l)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDigestPipeline(digestPipe)
 	d.SetTracksPipeline(tracksPipe)
@@ -527,7 +576,7 @@ func TestDaemon_AutoMarkReadAfterDigests(t *testing.T) {
 		Digest: config.DigestConfig{Enabled: true, MinMessages: 1},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
@@ -563,7 +612,7 @@ func TestDaemon_RunSyncContextCancelled(t *testing.T) {
 		Digest: config.DigestConfig{Enabled: true, MinMessages: 1},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	// Very short context so runSync hits ctx.Err() != nil branch
@@ -604,7 +653,7 @@ func TestDaemon_RunSyncWithPeopleThrottle(t *testing.T) {
 	l := log.New(os.Stderr, "[test] ", 0)
 	peoplePipe := guide.New(database, cfg, gen, l)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(l)
 	d.SetPeoplePipeline(peoplePipe)
 	// Set lastPeople to recent time — pipeline should be skipped
@@ -628,7 +677,7 @@ func TestDaemon_MinPollInterval(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -686,7 +735,7 @@ func TestDaemon_UnsnoozeExpiredTasks(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
@@ -743,7 +792,7 @@ func TestDaemon_NotifiesDueTargets(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
@@ -827,7 +876,7 @@ func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 
 	fp := &fakeDayPlanRunner{database: database}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-dayplan] ", 0))
 	d.SetDB(database)
 	d.SetDayPlanPipeline(fp)
@@ -876,7 +925,7 @@ func TestDaemon_DayPlanConflictPhase(t *testing.T) {
 
 	fp := &fakeDayPlanRunner{database: database}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-dayplan-conflict] ", 0))
 	d.SetDB(database)
 	d.SetDayPlanPipeline(fp)
@@ -891,7 +940,7 @@ func TestDaemon_DayPlanConflictPhase(t *testing.T) {
 func TestDaemon_DayPlanNilPipeline(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-nil-dayplan] ", 0))
 
 	// Should not panic when pipeline is nil.
@@ -948,7 +997,7 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 	gen := &mockGenerator{}
 	l := log.New(os.Stderr, "[phase-test] ", 0)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(l)
 	d.SetDB(database)
 	d.SetDigestPipeline(digest.New(database, cfg, gen, l))

@@ -250,13 +250,6 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	var orch *sync.Orchestrator
-	if ws.SlackToken != "" {
-		slackClient := watchtowerslack.NewClient(ws.SlackToken)
-		// TODO(Task 5): pin to account #1 — wire one Orchestrator per connected Slack account.
-		orch = sync.NewOrchestrator(database, slackClient, cfg, 1)
-	}
-
 	// Always write logs to watchtower.log; also to stderr when verbose or detached.
 	syncLog := syncLogFilePath(cfg)
 	if err := os.MkdirAll(filepath.Dir(syncLog), 0o755); err != nil {
@@ -274,16 +267,20 @@ func runSync(cmd *cobra.Command, args []string) error {
 		logWriter = io.MultiWriter(logFile, os.Stderr)
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
-	if orch != nil {
-		orch.SetLogger(logger)
-	}
+
+	// TODO(Task 6): seed slack_accounts from a pre-multi-account legacy token
+	// file here (ensureLegacySlackAccount) before wiring, so a single-account
+	// install keeps syncing without a re-login.
+	// Wire one Slack sync orchestrator per connected, enabled slack_accounts row.
+	orchestrators := wireSlackSyncers(database, cfg, logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// Daemon mode: run periodic syncs until interrupted
 	if syncFlagDaemon {
-		d := daemon.New(orch, cfg)
+		d := daemon.New(cfg)
+		d.SetOrchestrators(orchestrators)
 		d.SetLogger(logger)
 		d.SetDB(database)
 		d.SetPIDPath(pidFilePath(cfg))
@@ -334,8 +331,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return d.Run(ctx)
 	}
 
-	// One-shot sync is a Slack sync — nothing to do without a token.
-	if orch == nil {
+	// One-shot sync is a Slack sync — nothing to do without a connected account.
+	if len(orchestrators) == 0 {
 		return fmt.Errorf("slack is not connected for workspace %q; run 'watchtower auth login' first", cfg.ActiveWorkspace)
 	}
 
@@ -353,70 +350,127 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	// In verbose mode: just run sync, logs go to stderr
+	// In verbose mode: just run sync, logs go to stderr. Each connected
+	// account's orchestrator runs in turn; one account's failure is recorded
+	// but does not block the others (the fan-out pattern), and a single
+	// aggregated result is written.
 	if flagVerbose {
-		syncErr := orch.Run(ctx, opts)
-		snap := orch.Progress().Snapshot()
-		if err := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshot(snap, syncErr)); err != nil {
+		var snaps []sync.Snapshot
+		var firstErr error
+		for _, o := range orchestrators {
+			syncErr := o.Run(ctx, opts)
+			snap := o.Progress().Snapshot()
+			snaps = append(snaps, snap)
+			if syncErr != nil && firstErr == nil {
+				firstErr = syncErr
+			}
+			elapsed := time.Since(snap.StartTime).Round(time.Second)
+			fmt.Fprintf(out, "Sync complete in %s: %d messages synced.\n",
+				elapsed, snap.MessagesFetched)
+		}
+		if err := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshots(snaps, firstErr)); err != nil {
 			logger.Printf("warning: failed to write sync result: %v", err)
 		}
-		if syncErr != nil {
-			return fmt.Errorf("sync failed: %w", syncErr)
+		if firstErr != nil {
+			return fmt.Errorf("sync failed: %w", firstErr)
 		}
-		elapsed := time.Since(snap.StartTime).Round(time.Second)
-		fmt.Fprintf(out, "Sync complete in %s: %d messages synced.\n",
-			elapsed, snap.MessagesFetched)
 		if !syncFlagNoPipelines {
 			runPostSyncPipelines(ctx, database, cfg, logger)
 		}
 		return nil
 	}
 
-	// Normal mode: progress display in background
+	// Normal mode: progress display in background. Each connected account's
+	// orchestrator runs in turn with its own progress display; failures are
+	// recorded but do not block the remaining accounts (the fan-out pattern),
+	// and a single aggregated result is written after all accounts finish.
 	progressLines.Store(0)
-	done := make(chan error, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				done <- fmt.Errorf("sync panicked: %v\n%s", r, debug.Stack())
-			}
+	var snaps []sync.Snapshot
+	var firstErr error
+	for _, o := range orchestrators {
+		done := make(chan error, 1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					done <- fmt.Errorf("sync panicked: %v\n%s", r, debug.Stack())
+				}
+			}()
+			done <- o.Run(ctx, opts)
 		}()
-		done <- orch.Run(ctx, opts)
-	}()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case syncErr := <-done:
-			snap := orch.Progress().Snapshot()
-			if syncFlagProgressJSON {
-				printProgressJSON(out, snap, syncErr)
-			} else {
-				printProgress(out, orch.Progress(), cfg.ActiveWorkspace)
-			}
-			if wErr := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshot(snap, syncErr)); wErr != nil {
-				logger.Printf("warning: failed to write sync result: %v", wErr)
-			}
-			if syncErr != nil {
-				return fmt.Errorf("sync failed: %w", syncErr)
-			}
-			// Skip post-sync pipelines in --progress-json mode: the desktop app
-			// runs them independently via BackgroundTaskManager after onboarding.
-			if !syncFlagProgressJSON && !syncFlagNoPipelines {
-				runPostSyncPipelines(ctx, database, cfg, logger)
-			}
-			return nil
-		case <-ticker.C:
-			snap := orch.Progress().Snapshot()
-			if syncFlagProgressJSON {
-				printProgressJSON(out, snap, nil)
-			} else {
-				printProgress(out, orch.Progress(), cfg.ActiveWorkspace)
+		ticker := time.NewTicker(500 * time.Millisecond)
+	accountLoop:
+		for {
+			select {
+			case syncErr := <-done:
+				snap := o.Progress().Snapshot()
+				snaps = append(snaps, snap)
+				if syncFlagProgressJSON {
+					printProgressJSON(out, snap, syncErr)
+				} else {
+					printProgress(out, o.Progress(), cfg.ActiveWorkspace)
+				}
+				if syncErr != nil && firstErr == nil {
+					firstErr = syncErr
+				}
+				ticker.Stop()
+				break accountLoop
+			case <-ticker.C:
+				snap := o.Progress().Snapshot()
+				if syncFlagProgressJSON {
+					printProgressJSON(out, snap, nil)
+				} else {
+					printProgress(out, o.Progress(), cfg.ActiveWorkspace)
+				}
 			}
 		}
 	}
+
+	if wErr := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshots(snaps, firstErr)); wErr != nil {
+		logger.Printf("warning: failed to write sync result: %v", wErr)
+	}
+	if firstErr != nil {
+		return fmt.Errorf("sync failed: %w", firstErr)
+	}
+	// Skip post-sync pipelines in --progress-json mode: the desktop app
+	// runs them independently via BackgroundTaskManager after onboarding.
+	if !syncFlagProgressJSON && !syncFlagNoPipelines {
+		runPostSyncPipelines(ctx, database, cfg, logger)
+	}
+	return nil
+}
+
+// wireSlackSyncers builds one sync.Orchestrator per connected, enabled Slack
+// account (slack_accounts row) whose per-account token file exists. An account
+// with a missing or unreadable token is skipped and logged rather than
+// aborting the rest — the wireImapSyncers/wireGoogleSyncers fan-out pattern.
+// Returns an empty slice when no account is connected (Slack simply doesn't
+// sync; the other sources still run).
+func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) []*sync.Orchestrator {
+	accounts, err := database.ListEnabledSlackAccounts()
+	if err != nil {
+		logger.Printf("slack: failed to list accounts: %v", err)
+		return nil
+	}
+	var orchestrators []*sync.Orchestrator
+	for _, acct := range accounts {
+		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
+		token, err := store.Load()
+		if err != nil {
+			logger.Printf("slack: account %d: failed to load token: %v", acct.ID, err)
+			continue
+		}
+		if token == nil {
+			logger.Printf("slack: account %d: no token file, skipping", acct.ID)
+			continue
+		}
+		client := watchtowerslack.NewClient(token.AccessToken)
+		client.SetLogger(logger)
+		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
+		orch.SetLogger(logger)
+		orchestrators = append(orchestrators, orch)
+	}
+	return orchestrators
 }
 
 // wireJiraSyncer wires the Jira syncer onto the daemon if Jira is configured
