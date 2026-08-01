@@ -58,10 +58,10 @@ enum MeetingTranscriptQueries {
     /// Recordings master list (ad-hoc + event-linked), newest first. A recap
     /// "exists" when the row has summary_json OR its event has a
     /// meeting_recaps row (the recap collision guard can put it in either).
-    /// Perf guard: the heavy blobs — transcript_text, summary_json and
-    /// segments_json — are NEVER selected here, only a 200-char snippet plus
-    /// booleans; the calendar_events LEFT JOIN pulls the linked event's
-    /// title ONLY, no heavy event columns.
+    /// Perf guard: the heavy blobs — transcript_text, summary_json,
+    /// segments_json, speakers_json and chapters_json — are NEVER selected
+    /// here, only a 200-char snippet plus booleans; the calendar_events
+    /// LEFT JOIN pulls the linked event's title ONLY, no heavy event columns.
     static func fetchRecordingList(_ db: Database, limit: Int = 200) throws -> [RecordingListItem] {
         try RecordingListItem.fetchAll(
             db,
@@ -189,6 +189,101 @@ enum MeetingTranscriptQueries {
                 db, personKey: personKey, displayName: trimmedName, embedding: clusterEmbedding)
         }
         return true
+    }
+
+    /// Thrown by `convertActionItemToTarget`. Every case aborts the caller's
+    /// write transaction, so a failed stamp can never leave an orphan Target.
+    enum ActionItemConversionError: Error, LocalizedError, Equatable {
+        /// Row missing, chapters absent/malformed, or stale UI indices.
+        case staleChapters
+        /// The item already carries a Target link (double-click / stale UI).
+        case alreadyConverted(targetID: Int64)
+        /// chapters_json re-encode failed — nothing may be written.
+        case encodeFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .staleChapters:
+                return "Chapters changed underneath — reopen the recording and retry"
+            case .alreadyConverted(let targetID):
+                return "Already converted to Target #\(targetID)"
+            case .encodeFailed:
+                return "Could not update chapters after creating the Target"
+            }
+        }
+    }
+
+    /// Action item → Target conversion, atomic at the query layer: creates
+    /// the Target row AND stamps `converted_target_id` on the chapter action
+    /// item inside the caller's single write transaction. Throws instead of
+    /// silently no-opping — a stale index, missing chapters, or an encode
+    /// failure aborts the whole transaction, so the Target insert rolls back
+    /// with the stamp (no duplicate Targets from a dropped stamp).
+    /// Idempotent: an already-stamped item throws `.alreadyConverted`, and a
+    /// Target already minted for the same source ref with the same text (an
+    /// earlier conversion whose stamp was lost) is re-linked instead of
+    /// duplicated. The item itself always stays in the chapter — a link, not
+    /// a delete (DASH-03 spirit).
+    @discardableResult
+    static func convertActionItemToTarget(
+        _ db: Database, transcriptID: Int64, chapterIdx: Int, itemIdx: Int
+    ) throws -> Int64 {
+        guard let transcript = try fetch(db, id: transcriptID),
+              let chaptersJSON = transcript.chaptersJSON,
+              var chapters = MeetingChapters.decode(chaptersJSON),
+              chapters.chapters.indices.contains(chapterIdx),
+              chapters.chapters[chapterIdx].actionItems.indices.contains(itemIdx) else {
+            throw ActionItemConversionError.staleChapters
+        }
+        let chapter = chapters.chapters[chapterIdx]
+        let item = chapter.actionItems[itemIdx]
+        if let existing = item.convertedTargetID {
+            throw ActionItemConversionError.alreadyConverted(targetID: existing)
+        }
+
+        // Target description = chapter context (meeting title + date part of
+        // created_at — the raw UTC date, matching Go's followup MeetingDate —
+        // + chapter title/summary), the spec'd conversion payload.
+        let date = String(transcript.createdAt.prefix(10))
+        var context = "From meeting \"\(transcript.title)\" (\(date)), chapter \"\(chapter.title)\""
+        if !chapter.summary.isEmpty {
+            context += ": \(chapter.summary)"
+        }
+
+        // Idempotency repair: a Target already minted for this source ref
+        // with the same text (a pre-fix conversion whose stamp was dropped)
+        // is re-linked, never duplicated. Text must match — after a chapters
+        // regeneration the same indices can point at a different item.
+        let sourceID = "meeting_chapter:\(transcriptID):\(chapterIdx):\(itemIdx)"
+        let targetID: Int64
+        let priorTargets = try TargetQueries.fetchBySourceRef(db, sourceType: "manual", sourceID: sourceID)
+        if let existing = priorTargets.first(where: { $0.text == item.text }) {
+            targetID = Int64(existing.id)
+        } else {
+            let today = TargetQueries.todayDateString()
+            targetID = Int64(try TargetQueries.create(
+                db,
+                text: item.text,
+                intent: context,
+                level: "day",
+                periodStart: today,
+                periodEnd: today,
+                sourceType: "manual",
+                sourceID: sourceID))
+        }
+
+        chapters.chapters[chapterIdx].actionItems[itemIdx].convertedTargetID = targetID
+        guard let updatedJSON = MeetingChapters.encode(chapters) else {
+            throw ActionItemConversionError.encodeFailed
+        }
+        try db.execute(
+            sql: """
+                UPDATE meeting_transcripts
+                SET chapters_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [updatedJSON, transcriptID])
+        return targetID
     }
 
     /// Deletes a recording with all its content: the transcript row and its

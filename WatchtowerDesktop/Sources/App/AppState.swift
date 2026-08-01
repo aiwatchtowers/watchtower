@@ -52,6 +52,8 @@ final class AppState {
     /// names" runs and their suggestion chips (same surviving-state contract
     /// as TranscriptNotesCenter).
     let speakerGuessCenter = SpeakerGuessCenter()
+    /// Same pattern for "generate chapters" runs (Recap tab).
+    let transcriptChaptersCenter = TranscriptChaptersCenter()
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a

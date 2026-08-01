@@ -11,6 +11,7 @@ import GRDB
 /// invariant `transcriptText = TranscriptSegments.render(non-deleted)` holds.
 /// `speakersJSON` is the per-cluster voice-embedding array keyed by rendered
 /// speaker label (nil when the diarizer produced no embeddings).
+/// `chaptersJSON` is the AI chapter breakdown (nil until generated).
 struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "meeting_transcripts"
 
@@ -25,6 +26,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     let notesMD: String?
     let segmentsJSON: String?
     let speakersJSON: String?
+    let chaptersJSON: String?
     let createdAt: String
     let updatedAt: String
 
@@ -50,6 +52,14 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         return SpeakerEmbeddings.decode(speakersJSON)
     }
 
+    /// Decodes `chaptersJSON`; nil until generated or for a malformed payload
+    /// (the UI then falls back to the flat recap). Decode once per detail
+    /// load — never in row builders.
+    var parsedChapters: MeetingChapters? {
+        guard let chaptersJSON else { return nil }
+        return MeetingChapters.decode(chaptersJSON)
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case eventID = "event_id"
@@ -62,6 +72,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         case notesMD = "notes_md"
         case segmentsJSON = "segments_json"
         case speakersJSON = "speakers_json"
+        case chaptersJSON = "chapters_json"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

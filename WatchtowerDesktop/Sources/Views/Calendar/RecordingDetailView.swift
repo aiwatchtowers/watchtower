@@ -34,12 +34,27 @@ struct RecordingDetailView: View {
     @State private var attendees: [EventAttendee] = []
     @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
+    @State private var chapters: MeetingChapters?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
     @State private var isRetryingRecap = false
     @State private var showDeleteConfirm = false
     @State private var linkTarget: MeetingTranscript?
     @State private var errorMessage: String?
+    @State private var transcriptScrollTarget: Int?
+    @State private var followup: FollowupState?
+
+    /// One in-flight follow-up draft request (sheet-scoped, ephemeral by
+    /// design — the draft is never persisted; dismissing the sheet discards
+    /// it, so no navigation-surviving center is needed).
+    struct FollowupState: Identifiable {
+        let id = UUID()
+        let chapter: Int?
+        let chapterTitle: String?
+        var draft = ""
+        var errorMessage: String?
+        var isLoading = true
+    }
 
     private var notesService: TranscriptSaveService? {
         guard let runner = ProcessCLIRunner.makeDefault() else { return nil }
@@ -82,7 +97,21 @@ struct RecordingDetailView: View {
             tab = .recap
             chatVM = nil
             utterances = nil
+            chapters = nil
+            transcriptScrollTarget = nil
+            followup = nil
             await load()
+        }
+        .sheet(isPresented: Binding(
+            get: { followup != nil },
+            set: { if !$0 { followup = nil } }
+        )) {
+            FollowupDraftSheet(
+                chapterTitle: followup?.chapterTitle,
+                isLoading: followup?.isLoading ?? true,
+                errorMessage: followup?.errorMessage,
+                draft: followup?.draft ?? ""
+            ) { followup = nil }
         }
         .confirmationDialog(
             "Delete this recording?",
@@ -106,13 +135,22 @@ struct RecordingDetailView: View {
     @ViewBuilder
     private func tabContent(_ transcript: MeetingTranscript) -> some View {
         let center = appState.transcriptNotesCenter
+        let chaptersCenter = appState.transcriptChaptersCenter
         switch tab {
         case .recap:
             RecordingRecapTab(
                 transcript: transcript,
                 recapContent: recapContent,
+                chapters: chapters,
+                hasSegments: utterances != nil,
                 onRetryRecap: retryRecap,
-                isRetrying: isRetryingRecap)
+                isRetrying: isRetryingRecap,
+                onGenerateChapters: generateChapters,
+                isGeneratingChapters: chaptersCenter.generating.contains(transcriptID),
+                chaptersError: chaptersCenter.lastError[transcriptID],
+                onOpenChapter: openChapterInTranscript,
+                onConvertActionItem: convertActionItem,
+                onFollowup: generateFollowup)
         case .notes:
             RecordingNotesTab(
                 transcript: transcript,
@@ -125,6 +163,7 @@ struct RecordingDetailView: View {
             RecordingTranscriptTab(
                 transcriptText: transcript.transcriptText,
                 utterances: utterances,
+                scrollTarget: $transcriptScrollTarget,
                 attendees: attendees,
                 suggestions: appState.speakerGuessCenter.suggestions[transcriptID] ?? [],
                 isSuggesting: appState.speakerGuessCenter.generating.contains(transcriptID),
@@ -208,6 +247,7 @@ struct RecordingDetailView: View {
         var link: CalendarQueries.EventLink?
         var utterances: [TranscriptUtterance]?
         var attendees: [EventAttendee]
+        var chapters: MeetingChapters?
     }
 
     private func load() async {
@@ -229,15 +269,17 @@ struct RecordingDetailView: View {
                         eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?.parsedAttendees ?? []
                     }
                     return LoadedDetail(row: row, recap: recap, link: link,
-                                        utterances: row?.utterances, attendees: eventAttendees)
+                                        utterances: row?.utterances, attendees: eventAttendees,
+                                        chapters: row?.parsedChapters)
                 }
             }.value
             transcript = loaded.row
             linkedEvent = loaded.link
-            // Segments decoded ONCE here (off-main, alongside the fetch),
-            // never in body evaluations or row builders.
+            // Segments and chapters decoded ONCE here (off-main, alongside
+            // the fetch), never in body evaluations or row builders.
             utterances = loaded.utterances
             attendees = loaded.attendees
+            chapters = loaded.chapters
             // Event recap wins; ad-hoc (or collision-guarded) recap falls back
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
@@ -337,6 +379,82 @@ struct RecordingDetailView: View {
                 onChanged()
             } catch {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func generateChapters() {
+        guard let service = notesService else {
+            errorMessage = "watchtower CLI not found"
+            return
+        }
+        appState.transcriptChaptersCenter.generate(
+            transcriptID: transcriptID, service: service
+        ) {
+            Task { await load() }
+            onChanged()
+        }
+    }
+
+    /// Chapter → transcript jump: scroll target = the first non-deleted
+    /// utterance at or after the chapter start, then switch tabs.
+    private func openChapterInTranscript(_ chapter: MeetingChapter) {
+        if let utterances {
+            transcriptScrollTarget = MeetingChapters.firstUtteranceIdx(
+                in: utterances, atOrAfter: chapter.startSec)
+        }
+        tab = .transcript
+    }
+
+    /// Action item → Target: one query-layer call
+    /// (`MeetingTranscriptQueries.convertActionItemToTarget`) creates the
+    /// Target and stamps converted_target_id inside chapters_json in ONE
+    /// write transaction (link, not delete — DASH-03 spirit; any stamp
+    /// failure rolls the Target insert back), then reloads so the recap tab
+    /// shows the converted state.
+    private func convertActionItem(chapterIdx: Int, itemIdx: Int) {
+        guard let db = appState.databaseManager else { return }
+        do {
+            try db.dbPool.write { conn in
+                try MeetingTranscriptQueries.convertActionItemToTarget(
+                    conn, transcriptID: transcriptID,
+                    chapterIdx: chapterIdx, itemIdx: itemIdx)
+            }
+            onChanged()
+            Task { await load() }
+        } catch MeetingTranscriptQueries.ActionItemConversionError.alreadyConverted {
+            // Benign double-click / stale view — reload to show the stamp.
+            Task { await load() }
+        } catch {
+            errorMessage = error.localizedDescription
+            Task { await load() }
+        }
+    }
+
+    /// Follow-up draft (per chapter, or whole meeting when chapterIdx nil):
+    /// opens the sheet in its loading state and fills it when the CLI
+    /// returns. The draft is shown copyable only — never auto-sent.
+    private func generateFollowup(chapterIdx: Int?) {
+        guard let service = notesService else {
+            errorMessage = "watchtower CLI not found"
+            return
+        }
+        let title = chapterIdx.flatMap { idx in
+            chapters.flatMap { $0.chapters.indices.contains(idx) ? $0.chapters[idx].title : nil }
+        }
+        let state = FollowupState(chapter: chapterIdx, chapterTitle: title)
+        followup = state
+        Task {
+            do {
+                let result = try await service.generateFollowup(
+                    transcriptID: transcriptID, chapter: chapterIdx)
+                guard followup?.id == state.id else { return } // sheet closed/replaced
+                followup?.draft = result.draft
+                followup?.isLoading = false
+            } catch {
+                guard followup?.id == state.id else { return }
+                followup?.errorMessage = error.localizedDescription
+                followup?.isLoading = false
             }
         }
     }

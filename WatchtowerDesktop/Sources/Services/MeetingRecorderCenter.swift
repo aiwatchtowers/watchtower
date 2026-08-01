@@ -578,6 +578,11 @@ final class MeetingRecorderCenter {
             // flag them in the notification rather than reporting a failure.
             if !result.recapOK {
                 notifier.sendTranscriptReadyNotification(title: "\(title) — transcript saved, recap needs retry")
+            } else if result.chapters == .failed {
+                // Auto-chapters failed after save (envelope-only signal, like
+                // the recap sibling) — retry via the in-UI "Generate
+                // chapters" button.
+                notifier.sendTranscriptReadyNotification(title: "\(title) — transcript saved, chapters need retry")
             } else if lastRolesError != nil {
                 notifier.sendTranscriptReadyNotification(title: "\(title) — saved without speaker labels")
             } else {

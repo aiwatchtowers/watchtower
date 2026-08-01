@@ -9,12 +9,25 @@ import Foundation
 /// column stayed NULL) — the visible tripwire for Go↔Swift renderer drift.
 /// An older-CLI envelope omits the segments fields; absence is not a failure,
 /// so `segmentsOK` decodes as `true` when the key is missing.
+/// `chapters == .failed` means auto-chapter generation after save failed
+/// (chapters_json stayed NULL — retry via the in-UI "Generate chapters"
+/// button); `.notAttempted` covers no-segments saves, the recap-retry
+/// command, and envelopes from an older CLI without the chapters keys.
 struct TranscriptSaveResult: Decodable, Equatable {
+    /// Outcome of the auto-chapter generation the CLI attempts after save.
+    enum ChaptersOutcome: Equatable {
+        case notAttempted
+        case succeeded
+        case failed
+    }
+
     let transcriptID: Int64
     let recapOK: Bool
     let recapError: String
     let segmentsOK: Bool
     let segmentsError: String?
+    let chapters: ChaptersOutcome
+    let chaptersError: String?
 
     enum CodingKeys: String, CodingKey {
         case transcriptID = "transcript_id"
@@ -22,6 +35,8 @@ struct TranscriptSaveResult: Decodable, Equatable {
         case recapError = "recap_error"
         case segmentsOK = "segments_ok"
         case segmentsError = "segments_error"
+        case chaptersOK = "chapters_ok"
+        case chaptersError = "chapters_error"
     }
 
     init(from decoder: Decoder) throws {
@@ -31,6 +46,12 @@ struct TranscriptSaveResult: Decodable, Equatable {
         recapError = try container.decode(String.self, forKey: .recapError)
         segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
         segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)
+        if let chaptersOK = try container.decodeIfPresent(Bool.self, forKey: .chaptersOK) {
+            chapters = chaptersOK ? .succeeded : .failed
+        } else {
+            chapters = .notAttempted
+        }
+        chaptersError = try container.decodeIfPresent(String.self, forKey: .chaptersError)
     }
 }
 
@@ -46,6 +67,38 @@ struct TranscriptNotesResult: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case transcriptID = "transcript_id"
         case notesMD = "notes_md"
+    }
+}
+
+// MARK: - TranscriptChaptersResult
+
+/// Decoded stdout envelope of `watchtower meeting-prep transcript chapters <id>`.
+/// The CLI exits non-zero on any failure (nothing persisted), so decoding
+/// only happens on success.
+struct TranscriptChaptersResult: Decodable, Equatable {
+    let transcriptID: Int64
+    let chaptersJSON: String
+
+    enum CodingKeys: String, CodingKey {
+        case transcriptID = "transcript_id"
+        case chaptersJSON = "chapters_json"
+    }
+}
+
+// MARK: - TranscriptFollowupResult
+
+/// Decoded stdout envelope of `watchtower meeting-prep transcript followup <id>`.
+/// `chapter` is nil for a whole-meeting draft. The draft is ephemeral —
+/// nothing is persisted or sent.
+struct TranscriptFollowupResult: Decodable, Equatable {
+    let transcriptID: Int64
+    let chapter: Int?
+    let draft: String
+
+    enum CodingKeys: String, CodingKey {
+        case transcriptID = "transcript_id"
+        case chapter
+        case draft
     }
 }
 
@@ -149,6 +202,25 @@ struct TranscriptSaveService {
         return try JSONDecoder().decode(TranscriptNotesResult.self, from: data)
     }
 
+    /// `meeting-prep transcript chapters <id>` — generate meeting chapters
+    /// (requires persisted segments). The CLI persists chapters_json itself.
+    func generateChapters(transcriptID: Int64) async throws -> TranscriptChaptersResult {
+        let args = ["meeting-prep", "transcript", "chapters", String(transcriptID)]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(TranscriptChaptersResult.self, from: data)
+    }
+
+    /// `meeting-prep transcript followup <id> [--chapter N]` — draft a
+    /// follow-up message in the owner's voice from one chapter (or, with
+    /// chapter nil, the whole meeting). Nothing is persisted or sent.
+    func generateFollowup(transcriptID: Int64, chapter: Int?) async throws -> TranscriptFollowupResult {
+        var args = ["meeting-prep", "transcript", "followup", String(transcriptID)]
+        if let chapter {
+            args += ["--chapter", String(chapter)]
+        }
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(TranscriptFollowupResult.self, from: data)
+    }
     /// `meeting-prep transcript speaker-guess <id>` — LLM content hints for
     /// the transcript's unnamed "Speaker N" clusters. Nothing is persisted:
     /// the suggestions render as confirm chips and are only applied through

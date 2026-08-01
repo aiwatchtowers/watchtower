@@ -3,56 +3,264 @@ import AppKit
 
 // MARK: - Recap tab
 
-/// Structured recap (summary / decisions / action items / open questions) —
-/// same plain-Text rendering as MeetingNotesView.recapSection, duplicated
-/// here because the prep pane keeps its own copy (both stay functional).
+/// Structured recap. With generated chapters: overall summary on top, then
+/// chapters as disclosure groups (per-chapter decisions / action items / open
+/// questions, Action item → Target conversion, follow-up drafts). Without:
+/// the legacy flat recap rendering (same plain-Text rendering as
+/// MeetingNotesView.recapSection — a deliberate copy, both stay functional)
+/// plus a "Generate chapters" button when segments exist.
 struct RecordingRecapTab: View {
     let transcript: MeetingTranscript
     let recapContent: MeetingRecap.Content?
+    let chapters: MeetingChapters?
+    let hasSegments: Bool
     let onRetryRecap: () -> Void
     let isRetrying: Bool
+    let onGenerateChapters: () -> Void
+    let isGeneratingChapters: Bool
+    let chaptersError: String?
+    let onOpenChapter: (MeetingChapter) -> Void
+    let onConvertActionItem: (_ chapterIdx: Int, _ itemIdx: Int) -> Void
+    let onFollowup: (_ chapterIdx: Int?) -> Void
+
+    @State private var showRegenerateConfirm = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                if let content = recapContent {
-                    if !content.summary.isEmpty {
-                        Text(content.summary)
-                            .font(.callout)
-                            .textSelection(.enabled)
-                    }
-                    if !content.keyDecisions.isEmpty {
-                        recapSubsection(title: "Decisions", items: content.keyDecisions)
-                    }
-                    if !content.actionItems.isEmpty {
-                        recapSubsection(title: "Action items", items: content.actionItems)
-                    }
-                    if !content.openQuestions.isEmpty {
-                        recapSubsection(title: "Open questions", items: content.openQuestions)
-                    }
+                if let chapters {
+                    chaptersView(chapters)
                 } else {
-                    VStack(spacing: 8) {
-                        Text("No recap yet")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 24)
+                    legacyRecap
                 }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
+    // MARK: Chapters rendering
+
+    @ViewBuilder
+    private func chaptersView(_ chapters: MeetingChapters) -> some View {
+        if !chapters.overallSummary.isEmpty {
+            Text(chapters.overallSummary)
+                .font(.callout)
+                .textSelection(.enabled)
+        }
+        followupButton(chapterIdx: nil, label: "Follow-up draft (whole meeting)")
+
+        ForEach(Array(chapters.chapters.enumerated()), id: \.offset) { idx, chapter in
+            chapterGroup(idx: idx, chapter: chapter)
+        }
+
+        chaptersFooter
+    }
+
+    private func chapterGroup(idx: Int, chapter: MeetingChapter) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 8) {
+                if !chapter.summary.isEmpty {
+                    Text(chapter.summary)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                }
+                if !chapter.decisions.isEmpty {
+                    recapSubsection(title: "Decisions", items: chapter.decisions)
+                }
+                if !chapter.actionItems.isEmpty {
+                    actionItemsSection(chapterIdx: idx, items: chapter.actionItems)
+                }
+                if !chapter.openQuestions.isEmpty {
+                    recapSubsection(title: "Open questions", items: chapter.openQuestions)
+                }
+                followupButton(chapterIdx: idx, label: "Follow-up draft")
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Text(chapter.title)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                // Tapping the time range jumps to the chapter's first
+                // utterance in the Transcript tab.
                 Button {
-                    onRetryRecap()
+                    onOpenChapter(chapter)
                 } label: {
-                    Label(recapContent == nil ? "Generate recap" : "Re-generate",
-                          systemImage: isRetrying ? "hourglass" : "arrow.triangle.2.circlepath")
+                    Text("\(TranscriptFormatting.formatTimecode(chapter.startSec))–\(TranscriptFormatting.formatTimecode(chapter.endSec))")
+                        .font(.caption)
+                        .monospacedDigit()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .help("Show in transcript")
+                if !chapter.participants.isEmpty {
+                    Text(chapter.participants.joined(separator: ", "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    /// Action items with the per-item Target conversion. A converted item
+    /// keeps its row (link, not delete — DASH-03 spirit) and shows the
+    /// created Target instead of the button.
+    private func actionItemsSection(chapterIdx: Int, items: [ChapterActionItem]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Action items")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            ForEach(Array(items.enumerated()), id: \.offset) { itemIdx, item in
+                HStack(alignment: .top, spacing: 6) {
+                    Text("•").foregroundStyle(.secondary)
+                    Text(item.text)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let targetID = item.convertedTargetID {
+                        Label("Target #\(targetID)", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help("Already converted to a Target")
+                    } else {
+                        Button("Target") {
+                            onConvertActionItem(chapterIdx, itemIdx)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .help("Create a Target from this action item")
+                    }
+                }
+            }
+        }
+    }
+
+    private func followupButton(chapterIdx: Int?, label: String) -> some View {
+        Button {
+            onFollowup(chapterIdx)
+        } label: {
+            Label(label, systemImage: "paperplane")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+
+    @ViewBuilder
+    private var chaptersFooter: some View {
+        if let error = chaptersError {
+            Label(error, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+        HStack(spacing: 8) {
+            // Destructive-ish: regeneration replaces the chapters wholesale.
+            // Target links are re-keyed onto matching action items by the CLI
+            // (CarryConvertedTargets), but items whose text changed lose the
+            // link marker — hence the confirmation.
+            Button {
+                showRegenerateConfirm = true
+            } label: {
+                Label("Re-generate chapters",
+                      systemImage: isGeneratingChapters ? "hourglass" : "arrow.triangle.2.circlepath")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isGeneratingChapters)
+            .confirmationDialog(
+                "Re-generate chapters?",
+                isPresented: $showRegenerateConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Re-generate", role: .destructive) { onGenerateChapters() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(
+                    "The current chapters are replaced. Links to created Targets are kept for "
+                        + "action items whose text is unchanged; the Targets themselves are never deleted."
+                )
+            }
+
+            // Recap regeneration must stay reachable once chapters exist —
+            // the chapters view replaces the flat recap (with its retry
+            // button), and for ad-hoc recordings this is the only path.
+            Button {
+                onRetryRecap()
+            } label: {
+                Label(recapContent == nil ? "Generate recap" : "Re-generate recap",
+                      systemImage: isRetrying ? "hourglass" : "arrow.triangle.2.circlepath")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isRetrying)
+        }
+    }
+
+    // MARK: Legacy flat recap
+
+    @ViewBuilder
+    private var legacyRecap: some View {
+        if let content = recapContent {
+            if !content.summary.isEmpty {
+                Text(content.summary)
+                    .font(.callout)
+                    .textSelection(.enabled)
+            }
+            if !content.keyDecisions.isEmpty {
+                recapSubsection(title: "Decisions", items: content.keyDecisions)
+            }
+            if !content.actionItems.isEmpty {
+                recapSubsection(title: "Action items", items: content.actionItems)
+            }
+            if !content.openQuestions.isEmpty {
+                recapSubsection(title: "Open questions", items: content.openQuestions)
+            }
+        } else {
+            VStack(spacing: 8) {
+                Text("No recap yet")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 24)
+        }
+
+        HStack(spacing: 8) {
+            Button {
+                onRetryRecap()
+            } label: {
+                Label(recapContent == nil ? "Generate recap" : "Re-generate",
+                      systemImage: isRetrying ? "hourglass" : "arrow.triangle.2.circlepath")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isRetrying)
+
+            // Chapters need per-utterance timecodes — the button only shows
+            // when segments exist (legacy rows re-transcribe first).
+            if hasSegments {
+                Button {
+                    onGenerateChapters()
+                } label: {
+                    Label("Generate chapters",
+                          systemImage: isGeneratingChapters ? "hourglass" : "sparkles")
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(isRetrying)
+                .disabled(isGeneratingChapters)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
+        if let error = chaptersError {
+            Label(error, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
         }
     }
 
@@ -71,6 +279,75 @@ struct RecordingRecapTab: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Follow-up draft sheet
+
+/// Copyable follow-up draft (per chapter or whole meeting). The draft is
+/// ephemeral: nothing is persisted and nothing is ever auto-sent — the only
+/// exit is Copy or Close.
+struct FollowupDraftSheet: View {
+    let chapterTitle: String?
+    let isLoading: Bool
+    let errorMessage: String?
+    let draft: String
+    let onClose: () -> Void
+
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(chapterTitle.map { "Follow-up: \($0)" } ?? "Follow-up: whole meeting")
+                    .font(.headline)
+                Spacer()
+                Button("Close") { onClose() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            if isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Drafting in your voice…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 120)
+            } else if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+            } else {
+                ScrollView {
+                    Text(draft)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(minHeight: 120, maxHeight: 320)
+                .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+
+                HStack {
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(draft, forType: .string)
+                        copied = true
+                        Task { try? await Task.sleep(for: .seconds(2)); copied = false }
+                    } label: {
+                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(draft.isEmpty)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 440)
     }
 }
 
@@ -203,6 +480,10 @@ struct RecordingNotesTab: View {
 struct RecordingTranscriptTab: View {
     let transcriptText: String
     let utterances: [TranscriptUtterance]?
+    /// One-shot chapter → transcript jump: when set, the utterance list
+    /// scrolls to this utterance idx and clears the binding (RecordingDetailView
+    /// sets it before switching to this tab).
+    @Binding var scrollTarget: Int?
     let attendees: [EventAttendee]
     let suggestions: [SpeakerSuggestion]
     let isSuggesting: Bool
@@ -257,25 +538,36 @@ struct RecordingTranscriptTab: View {
                 chipAnchors[first.idx] = suggestion
             }
         }
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                if hasUnnamed || isSuggesting || suggestError != nil || suggestNotice != nil {
-                    suggestBar
+        return ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if hasUnnamed || isSuggesting || suggestError != nil || suggestNotice != nil {
+                        suggestBar
+                    }
+                    if visible.isEmpty {
+                        // Degenerate but valid: every utterance soft-deleted.
+                        Text("All utterances deleted")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.top, 24)
+                    }
+                    ForEach(visible) { utterance in
+                        utteranceRow(utterance, suggestion: chipAnchors[utterance.idx])
+                            .id(utterance.idx)
+                    }
                 }
-                if visible.isEmpty {
-                    // Degenerate but valid: every utterance soft-deleted.
-                    Text("All utterances deleted")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, 24)
-                }
-                ForEach(visible) { utterance in
-                    utteranceRow(utterance, suggestion: chipAnchors[utterance.idx])
-                }
+                .padding(12)
             }
-            .padding(12)
+            .onAppear { consumeScrollTarget(proxy) }
+            .onChange(of: scrollTarget) { _, _ in consumeScrollTarget(proxy) }
         }
+    }
+
+    private func consumeScrollTarget(_ proxy: ScrollViewProxy) {
+        guard let target = scrollTarget else { return }
+        proxy.scrollTo(target, anchor: .top)
+        scrollTarget = nil
     }
 
     /// "Suggest speaker names" control (visible while any cluster is still an

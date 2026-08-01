@@ -1028,6 +1028,11 @@ CREATE TABLE IF NOT EXISTS meeting_recaps (
 -- rows. Invariant: when non-NULL, transcript_text = render(segments where
 -- !deleted). speakers_json is a JSON array of per-cluster voice embeddings
 -- ({"speaker","embedding"}); NULL when the diarizer produced none.
+-- chapters_json is the AI-generated chapter breakdown
+-- ({"overall_summary", "chapters": [{"title","start_sec","end_sec",
+-- "participants","summary","decisions","action_items","open_questions"}]});
+-- each action item is {"text","converted_target_id"} — converted_target_id
+-- links the Target created from it.
 CREATE TABLE IF NOT EXISTS meeting_transcripts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id        TEXT REFERENCES calendar_events(id) ON DELETE SET NULL,
@@ -1040,6 +1045,7 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     notes_md        TEXT,
     segments_json   TEXT,
     speakers_json   TEXT,
+    chapters_json   TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
