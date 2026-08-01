@@ -372,9 +372,8 @@ final class JoinMeetingActionTests: XCTestCase {
         await JoinMeetingAction.join(
             event: makeEvent(id: "evt-force", conferenceURL: "https://meet.google.com/abc-defg-hij"),
             center: center, forceRecord: true, defaults: defaults,
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
 
         XCTAssertEqual(opened.count, 1)
         XCTAssertEqual(recorder.startCalls, 1, "forceRecord must start recording despite auto-record off")
@@ -399,9 +398,8 @@ final class JoinMeetingActionTests: XCTestCase {
         await JoinMeetingAction.join(
             event: makeEvent(id: "evt-b", conferenceURL: "https://company.zoom.us/j/123"),
             center: center, forceRecord: true, defaults: try isolatedDefaults(),
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
 
         XCTAssertEqual(opened, [URL(string: "https://company.zoom.us/j/123")],
                        "the link must open even when the recorder is busy")

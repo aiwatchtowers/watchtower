@@ -217,7 +217,7 @@ final class NotificationService: Sendable {
             "type": "meeting_reminder",
             "eventId": eventID,
             "eventTitle": title,
-            "conferenceUrl": conferenceURL,
+            "conferenceUrl": conferenceURL
         ]
         if !conferenceURL.isEmpty {
             content.categoryIdentifier = Self.meetingReminderCategoryID

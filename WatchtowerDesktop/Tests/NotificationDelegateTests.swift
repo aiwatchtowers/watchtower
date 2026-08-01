@@ -18,9 +18,8 @@ final class NotificationDelegateTests: XCTestCase {
         await NotificationDelegate.handleMeetingReminderAction(
             actionID: NotificationService.joinActionID,
             userInfo: ["conferenceUrl": "https://meet.google.com/abc-defg-hij"],
-            appState: nil,
-            openURL: { opened.append($0); return true }
-        )
+            appState: nil
+        ) { opened.append($0); return true }
         XCTAssertEqual(opened, [URL(string: "https://meet.google.com/abc-defg-hij")])
     }
 
@@ -31,9 +30,8 @@ final class NotificationDelegateTests: XCTestCase {
         await NotificationDelegate.handleMeetingReminderAction(
             actionID: NotificationService.joinRecordActionID,
             userInfo: ["conferenceUrl": "https://company.zoom.us/j/123"],
-            appState: nil,
-            openURL: { opened.append($0); return true }
-        )
+            appState: nil
+        ) { opened.append($0); return true }
         XCTAssertEqual(opened, [URL(string: "https://company.zoom.us/j/123")])
     }
 
@@ -45,15 +43,13 @@ final class NotificationDelegateTests: XCTestCase {
         await NotificationDelegate.handleMeetingReminderAction(
             actionID: NotificationService.joinActionID,
             userInfo: ["conferenceUrl": ""],
-            appState: nil,
-            openURL: { opened.append($0); return true }
-        )
+            appState: nil
+        ) { opened.append($0); return true }
         await NotificationDelegate.handleMeetingReminderAction(
             actionID: NotificationService.joinActionID,
             userInfo: [:],
-            appState: nil,
-            openURL: { opened.append($0); return true }
-        )
+            appState: nil
+        ) { opened.append($0); return true }
         XCTAssertTrue(opened.isEmpty)
     }
 
@@ -64,9 +60,8 @@ final class NotificationDelegateTests: XCTestCase {
         await NotificationDelegate.handleMeetingReminderAction(
             actionID: "com.apple.UNNotificationDefaultActionIdentifier",
             userInfo: ["conferenceUrl": "https://meet.google.com/abc-defg-hij"],
-            appState: nil,
-            openURL: { opened.append($0); return true }
-        )
+            appState: nil
+        ) { opened.append($0); return true }
         XCTAssertTrue(opened.isEmpty)
     }
 }

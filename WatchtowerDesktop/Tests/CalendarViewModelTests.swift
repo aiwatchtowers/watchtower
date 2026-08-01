@@ -82,8 +82,8 @@ struct CalendarViewModelTests {
         let pool = try makePool()
         let cal = Calendar.current
         let now = Date()
-        let threeDaysAgo = cal.date(byAdding: .day, value: -3, to: now)!
-        let twentyDaysAgo = cal.date(byAdding: .day, value: -20, to: now)!
+        let threeDaysAgo = try #require(cal.date(byAdding: .day, value: -3, to: now))
+        let twentyDaysAgo = try #require(cal.date(byAdding: .day, value: -20, to: now))
 
         try insertEvent(pool, id: "recent-past", title: "Retro", start: threeDaysAgo, end: threeDaysAgo.addingTimeInterval(3600))
         try insertEvent(pool, id: "deep-past", title: "Ancient", start: twentyDaysAgo, end: twentyDaysAgo.addingTimeInterval(3600))
@@ -99,9 +99,9 @@ struct CalendarViewModelTests {
         // Date-keyed accessor: today's group is found even with past days first.
         #expect(vm.todayEvents.contains { $0.id == "today" })
         // Past groups sort before today.
-        let pastIndex = vm.dailyEvents.firstIndex { $0.events.contains { $0.id == "recent-past" } }
-        let todayIndex = vm.dailyEvents.firstIndex { $0.events.contains { $0.id == "today" } }
-        #expect(pastIndex! < todayIndex!)
+        let pastIndex = try #require(vm.dailyEvents.firstIndex { $0.events.contains { $0.id == "recent-past" } })
+        let todayIndex = try #require(vm.dailyEvents.firstIndex { $0.events.contains { $0.id == "today" } })
+        #expect(pastIndex < todayIndex)
     }
 
     @Test("degenerate historyDays values clamp to a 1-day floor")

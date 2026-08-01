@@ -24,11 +24,22 @@ private final class ReminderFakeRecorder: AudioRecording, @unchecked Sendable {
 }
 
 private final class ReminderFakeNotifier: MeetingReminderNotifying, @unchecked Sendable {
-    private(set) var reminders: [(eventID: String, title: String, body: String, conferenceURL: String, dedupKey: String)] = []
+    struct ReminderCall {
+        let eventID: String
+        let title: String
+        let body: String
+        let conferenceURL: String
+        let dedupKey: String
+    }
+
+    private(set) var reminders: [ReminderCall] = []
     private(set) var stops: [(eventID: String, title: String, dedupKey: String)] = []
 
     func sendMeetingReminderNotification(eventID: String, title: String, body: String, conferenceURL: String, dedupKey: String) {
-        reminders.append((eventID, title, body, conferenceURL, dedupKey))
+        reminders.append(ReminderCall(
+            eventID: eventID, title: title, body: body,
+            conferenceURL: conferenceURL, dedupKey: dedupKey
+        ))
     }
 
     func sendStopRecordingNotification(eventID: String, title: String, dedupKey: String) {
@@ -289,7 +300,7 @@ final class MeetingReminderCenterTests: XCTestCase {
                 VALUES (?, 'cal1', ?, '', '', ?, ?, '', '[]', 0, ?, 'confirmed', '', '', ?, '{}', '', '')
                 """, arguments: [
                     event.id, event.title, event.startTime, event.endTime,
-                    event.isAllDay ? 1 : 0, event.conferenceURL,
+                    event.isAllDay ? 1 : 0, event.conferenceURL
                 ])
         }
     }
@@ -316,9 +327,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
             notifier: notifier,
-            defaults: try isolatedDefaults(),
-            now: { base }
-        )
+            defaults: try isolatedDefaults()
+        ) { base }
 
         center.poll()
         center.poll()
@@ -340,9 +350,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
             notifier: ReminderFakeNotifier(),
-            defaults: try isolatedDefaults(),
-            now: { base }
-        )
+            defaults: try isolatedDefaults()
+        ) { base }
 
         center.poll()
         let banner = try XCTUnwrap(center.bannerEvent)
@@ -365,9 +374,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
             notifier: notifier,
-            defaults: defaults,
-            now: { base }
-        )
+            defaults: defaults
+        ) { base }
 
         center.poll()
         XCTAssertTrue(notifier.reminders.isEmpty, "the toggle gates the push")
@@ -396,9 +404,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: recorderCenter,
             notifier: notifier,
-            defaults: try isolatedDefaults(),
-            now: { now }
-        )
+            defaults: try isolatedDefaults()
+        ) { now }
 
         center.poll()
         center.poll()
@@ -422,9 +429,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
             notifier: notifier,
-            defaults: defaults,
-            now: { base }
-        )
+            defaults: defaults
+        ) { base }
 
         center.poll()
         XCTAssertTrue(notifier.reminders.isEmpty, "quiet hours gate the pre-meeting push")
@@ -443,9 +449,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
             notifier: ReminderFakeNotifier(),
-            defaults: try isolatedDefaults(),
-            now: { base }
-        )
+            defaults: try isolatedDefaults()
+        ) { base }
         center.poll()
         center.dismissBanner(try XCTUnwrap(center.bannerEvent))
         center.poll()
@@ -473,9 +478,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: makeRecorderCenter(recorder: ReminderFakeRecorder(), defaults: try isolatedDefaults()),
             notifier: notifier,
-            defaults: try isolatedDefaults(),
-            now: { base }
-        )
+            defaults: try isolatedDefaults()
+        ) { base }
         center.poll()
         XCTAssertTrue(notifier.reminders.first?.body.hasPrefix("Starts in 3 min") ?? false,
                       "body: \(notifier.reminders.first?.body ?? "nil")")
@@ -507,9 +511,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: recorderCenter,
             notifier: notifier,
-            defaults: defaults,
-            now: { base }
-        )
+            defaults: defaults
+        ) { base }
 
         center.poll()
         XCTAssertEqual(notifier.stops.count, 1,
@@ -538,9 +541,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: recorderCenter,
             notifier: notifier,
-            defaults: defaults,
-            now: { base }
-        )
+            defaults: defaults
+        ) { base }
 
         center.poll()
         XCTAssertTrue(notifier.stops.isEmpty, "quiet hours silence the stop push")
@@ -564,9 +566,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: recorderCenter,
             notifier: notifier,
-            defaults: try isolatedDefaults(),
-            now: { base }
-        )
+            defaults: try isolatedDefaults()
+        ) { base }
 
         center.poll()
         XCTAssertTrue(notifier.stops.isEmpty, "a missing event row never fires the stop push")
@@ -587,9 +588,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             dbPool: pool,
             recorderCenter: recorderCenter,
             notifier: notifier,
-            defaults: try isolatedDefaults(),
-            now: { base }
-        )
+            defaults: try isolatedDefaults()
+        ) { base }
 
         center.poll()
         XCTAssertTrue(notifier.stops.isEmpty, "ad-hoc recordings never trigger the stop push")
