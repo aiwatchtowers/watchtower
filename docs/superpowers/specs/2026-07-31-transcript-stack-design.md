@@ -76,6 +76,7 @@
 
 - **Migration:** new table `voice_prints`:
   `id INTEGER PK, person_key TEXT NOT NULL UNIQUE` (attendee email, or normalized display name when no email), `display_name TEXT NOT NULL`, `embedding BLOB NOT NULL` (256 float32, L2-normalized centroid), `sample_count INTEGER NOT NULL DEFAULT 1`, `updated_at TEXT NOT NULL`. Local-only data; add to `TestAllTablesExist`, schema.sql, golden snapshot.
+- **`meeting_transcripts.speakers_json`** (owner-accepted 2026-07-31, same migration): per-cluster embeddings keyed by rendered speaker label, written from Swift via an optional `--speakers-file` save flag (degrades to NULL like `--segments-file`). Required because Level-3 rename needs the cluster embedding at rename time and audio is swept by retention — the DB column is the only durable home. Renames/LLM candidates must never target or collide with reserved labels («Я», `Speaker N`) — validated on both the Go and Swift sides.
 
 ### Level 1 — voice matching (automatic)
 

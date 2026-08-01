@@ -22,10 +22,16 @@ struct RecordingDetailView: View {
     let transcriptID: Int64
     let onDeleted: () -> Void
     let onChanged: () -> Void
+    /// Navigate to the Events tab with the given event expanded (linked-event
+    /// header tap); the link carries the start time so the host can pin the
+    /// event's day into the rendered window first. nil = no navigation
+    /// affordance available from this host.
+    var onOpenEvent: ((CalendarQueries.EventLink) -> Void)?
 
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
     @State private var utterances: [TranscriptUtterance]?
+    @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
@@ -166,6 +172,13 @@ struct RecordingDetailView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
+            // Linked-event affordance: resolvable event → tappable deep link
+            // into the Events tab; event row pruned by sync retention → plain
+            // informational label (never an error, never navigation).
+            if transcript.eventID != nil {
+                LinkedEventHeader(linkedEvent: linkedEvent, onOpenEvent: onOpenEvent)
+            }
+
             // Audio playback (single-slot app-wide center; hidden once the
             // retention phase has swept the file).
             TranscriptAudioControl(transcript: transcript, center: appState.audioPlaybackCenter)
@@ -178,17 +191,22 @@ struct RecordingDetailView: View {
     private func load() async {
         guard let db = appState.databaseManager else { return }
         do {
-            let (row, recap, decodedUtterances) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
-                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, [TranscriptUtterance]?) in
+            let (row, recap, link, decodedUtterances) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
+                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, CalendarQueries.EventLink?, [TranscriptUtterance]?) in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
                     var recap: MeetingRecap?
+                    var link: CalendarQueries.EventLink?
                     if let eventID = row?.eventID {
                         recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
+                        // Lightweight (title + start_time); nil when the event
+                        // row is gone — the header degrades to a plain label.
+                        link = try CalendarQueries.fetchEventLink(conn, id: eventID)
                     }
-                    return (row, recap, row?.utterances)
+                    return (row, recap, link, row?.utterances)
                 }
             }.value
             transcript = row
+            linkedEvent = link
             // Segments decoded ONCE here (off-main, alongside the fetch),
             // never in body evaluations or row builders.
             utterances = decodedUtterances

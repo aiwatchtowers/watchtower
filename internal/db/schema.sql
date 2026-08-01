@@ -856,6 +856,7 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     event_status    TEXT NOT NULL DEFAULT 'confirmed',
     event_type      TEXT NOT NULL DEFAULT '',
     html_link       TEXT NOT NULL DEFAULT '',
+    conference_url  TEXT NOT NULL DEFAULT '',  -- meeting join link (Meet/Zoom/Teams/Webex), '' when none (see 00044)
     raw_json        TEXT NOT NULL DEFAULT '{}',
     ical_uid        TEXT NOT NULL DEFAULT '',  -- dedup enabler across accounts/providers (see 00043)
     synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),

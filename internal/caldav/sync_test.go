@@ -305,3 +305,64 @@ func TestICSSyncSameUIDAcrossAccountsStaysDistinct(t *testing.T) {
 		}
 	}
 }
+
+// TestICSSyncHistoryWindowWidening pins spec §6's "applies to Google and
+// CalDAV syncers alike": history_days drives the CalDAV/ICS window start the
+// same way it drives the Google syncer's timeMin. A first sync with a wide
+// window stores two past events; narrowing history_days to 14 keeps the
+// 10-day-old event and stale-deletes the 20-day-old one (all times relative
+// to now — no hardcoded dates in windowed paths).
+func TestICSSyncHistoryWindowWidening(t *testing.T) {
+	now := time.Now().UTC()
+	old10 := now.Add(-10 * 24 * time.Hour)
+	old20 := now.Add(-20 * 24 * time.Hour)
+
+	body := crlf(fmt.Sprintf(`BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Watchtower Test//EN
+BEGIN:VEVENT
+UID:evt-10d
+DTSTAMP:20260101T000000Z
+DTSTART:%s
+DTEND:%s
+SUMMARY:Ten days ago
+END:VEVENT
+BEGIN:VEVENT
+UID:evt-20d
+DTSTAMP:20260101T000000Z
+DTSTART:%s
+DTEND:%s
+SUMMARY:Twenty days ago
+END:VEVENT
+END:VCALENDAR
+`, old10.Format(instanceTimeFormat), old10.Add(time.Hour).Format(instanceTimeFormat),
+		old20.Format(instanceTimeFormat), old20.Add(time.Hour).Format(instanceTimeFormat)))
+
+	feed := &testFeed{}
+	feed.set(body, http.StatusOK)
+	srv := httptest.NewServer(feed)
+	defer srv.Close()
+	database := db.OpenTestDB(t)
+
+	syncer, _ := newICSSyncer(t, database, srv.URL, "History")
+	syncer.appConfig.Calendar.HistoryDays = 25
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("wide sync: %v", err)
+	}
+	if ids := eventIDs(t, database, syncer.CalendarID()); len(ids) != 2 {
+		t.Fatalf("precondition: want both past events with history_days=25, got %v", ids)
+	}
+
+	// Narrow the window: the 20-day-old event leaves it, is not re-stamped,
+	// and gets stale-deleted. Advance the clock so syncedAt is strictly newer
+	// at RFC3339 second resolution.
+	syncer.appConfig.Calendar.HistoryDays = 14
+	syncer.now = func() time.Time { return time.Now().Add(2 * time.Second) }
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("narrow sync: %v", err)
+	}
+	ids := eventIDs(t, database, syncer.CalendarID())
+	if len(ids) != 1 || !strings.HasSuffix(ids[0], ":evt-10d") {
+		t.Fatalf("want only the 10-day-old event with history_days=14, got %v", ids)
+	}
+}

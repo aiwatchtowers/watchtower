@@ -23,6 +23,10 @@ final class ConfigService {
     var codexPath: String?
     var calendarEnabled: Bool = false
     var calendarSyncDaysAhead: Int = 2
+    /// Days of past events kept synced (`calendar.history_days`), the same
+    /// knob widening the Go syncers' timeMin. Read-only here — `save()`
+    /// preserves whatever is on disk via its merge.
+    var calendarHistoryDays: Int = 14
     var gmailEnabled: Bool = false
     var jiraFeatures: [String: Bool] = [:]
     var dayPlanEnabled: Bool = true
@@ -96,6 +100,7 @@ final class ConfigService {
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? false
                 calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? 2
+                calendarHistoryDays = (calendar["history_days"] as? Int) ?? 14
             }
 
             if let gmail = yaml["gmail"] as? [String: Any] {

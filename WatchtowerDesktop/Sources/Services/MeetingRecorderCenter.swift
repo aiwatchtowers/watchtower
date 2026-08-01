@@ -70,9 +70,19 @@ final class MeetingRecorderCenter {
     /// `liveChunks` once one has started.
     private var liveGeneration = 0
 
-    /// A recording, transcription, or summarization is in flight. `.failed` is
+    /// Latched synchronously at the top of `startRecording`, before its first
+    /// suspension point (`recorder.start`), and cleared when the start attempt
+    /// resolves either way. Without it, two rapid start triggers (the Record
+    /// button plus two Join surfaces share one single-slot Center) could both
+    /// pass the `isBusy` check-then-act across that suspension and double-start,
+    /// orphaning the first recorder as unstoppable capture.
+    private var isStarting = false
+
+    /// A recording, transcription, or summarization is in flight (including a
+    /// start still awaiting the recorder — see `isStarting`). `.failed` is
     /// not busy — a failed run can be retried or dismissed.
     var isBusy: Bool {
+        if isStarting { return true }
         switch phase {
         case .idle, .failed:
             return false
@@ -195,6 +205,11 @@ final class MeetingRecorderCenter {
     /// capture starts so a crash still leaves a recoverable pointer.
     func startRecording(eventID: String?, title: String?, config: TranscriptionConfig = .fromDefaults()) async {
         guard !isBusy else { return }
+        // Close the check-then-act window across `recorder.start`: a second
+        // start arriving while this one is suspended must see busy. Cleared on
+        // every exit — by then `phase` itself carries the busy/failed state.
+        isStarting = true
+        defer { isStarting = false }
 
         currentEventID = eventID
         currentTitle = title

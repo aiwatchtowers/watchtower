@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/calendar"
 	"watchtower/internal/db"
 
 	"github.com/emersion/go-ical"
@@ -199,9 +200,13 @@ func toDBEvent(ev Event, calendarID, attendeesJSON string) db.CalendarEvent {
 		IsAllDay:       ev.IsAllDay,
 		EventStatus:    ev.Status,
 		EventType:      "default",
-		HTMLLink:       "",   // no universal deep-link scheme for CalDAV/ICS events
-		RawJSON:        "{}", // mirrors the Google syncer's empty-raw fallback
-		UpdatedAt:      ev.UpdatedAt,
+		HTMLLink:       "", // no universal deep-link scheme for CalDAV/ICS events
+		// iCalendar has no dedicated conference field the wild agrees on, so a
+		// pasted Meet/Zoom/Teams/Webex link in the location or description is
+		// the only signal — the same regex fallback the Google converter uses.
+		ConferenceURL: calendar.ExtractConferenceURL(ev.Location, ev.Description),
+		RawJSON:       "{}", // mirrors the Google syncer's empty-raw fallback
+		UpdatedAt:     ev.UpdatedAt,
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -315,6 +316,155 @@ func TestSync_PrimaryFallbackSkipsStaleDeleteWhenUnresolved(t *testing.T) {
 	survivor, err := database.GetCalendarEventByID("other-account-evt")
 	require.NoError(t, err)
 	require.NotNil(t, survivor, "stale-delete must be skipped for the unresolved literal \"primary\" bucket")
+}
+
+// TestSync_ConferenceURLLandsInDB is the end-to-end guard for the Join
+// button's data path: an API event carrying a hangoutLink syncs into
+// calendar_events.conference_url, and one without any link stores "".
+func TestSync_ConferenceURLLandsInDB(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/calendarList", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(calendarListFixture([2]any{"aliceprimary", true})))
+	})
+	mux.HandleFunc("/calendars/aliceprimary/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[
+			{"id":"meet-evt","summary":"With Meet","status":"confirmed",
+			 "hangoutLink":"https://meet.google.com/abc-defg-hij",
+			 "start":{"dateTime":"2026-04-02T09:00:00Z"},"end":{"dateTime":"2026-04-02T10:00:00Z"},
+			 "updated":"2026-04-01T00:00:00Z"},
+			{"id":"plain-evt","summary":"No Link","status":"confirmed",
+			 "start":{"dateTime":"2026-04-02T11:00:00Z"},"end":{"dateTime":"2026-04-02T12:00:00Z"},
+			 "updated":"2026-04-01T00:00:00Z"}
+		]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	prevAPI := calendarAPIBase
+	calendarAPIBase = srv.URL
+	defer func() { calendarAPIBase = prevAPI }()
+
+	database := db.OpenTestDB(t)
+	acctA, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	require.NoError(t, err)
+
+	cfg := &config.Config{}
+	client := &Client{hc: srv.Client(), accessToken: "token-a"}
+
+	count, err := NewSyncer(client, database, cfg, nil, acctA).Sync(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	meetEvt, err := database.GetCalendarEventByID("meet-evt")
+	require.NoError(t, err)
+	require.NotNil(t, meetEvt)
+	assert.Equal(t, "https://meet.google.com/abc-defg-hij", meetEvt.ConferenceURL)
+
+	plainEvt, err := database.GetCalendarEventByID("plain-evt")
+	require.NoError(t, err)
+	require.NotNil(t, plainEvt)
+	assert.Equal(t, "", plainEvt.ConferenceURL)
+}
+
+// TestSync_HistoryWindowWidensTimeMin guards the calendar.history_days config:
+// timeMin reaches history_days back, so a 10-day-old event survives the
+// fetch + stale-delete cycle while a 20-day-old one (outside the window) is
+// not re-fetched and gets stale-deleted.
+func TestSync_HistoryWindowWidensTimeMin(t *testing.T) {
+	now := time.Now().UTC()
+	old10 := now.Add(-10 * 24 * time.Hour)
+	old20 := now.Add(-20 * 24 * time.Hour)
+
+	var gotTimeMin time.Time
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/calendarList", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(calendarListFixture([2]any{"aliceprimary", true})))
+	})
+	mux.HandleFunc("/calendars/aliceprimary/events", func(w http.ResponseWriter, r *http.Request) {
+		timeMin, err := time.Parse(time.RFC3339, r.URL.Query().Get("timeMin"))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotTimeMin = timeMin
+		// Serve what Google would: only events inside [timeMin, timeMax].
+		items := ""
+		for _, e := range []struct {
+			id    string
+			start time.Time
+		}{{"evt-10d", old10}, {"evt-20d", old20}} {
+			if e.start.Before(timeMin) {
+				continue
+			}
+			if items != "" {
+				items += ","
+			}
+			items += fmt.Sprintf(`{"id":%q,"summary":%q,"status":"confirmed",`+
+				`"start":{"dateTime":%q},"end":{"dateTime":%q},"updated":%q}`,
+				e.id, e.id,
+				e.start.Format(time.RFC3339), e.start.Add(time.Hour).Format(time.RFC3339),
+				e.start.Format(time.RFC3339))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"items":[%s]}`, items)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	prevAPI := calendarAPIBase
+	calendarAPIBase = srv.URL
+	defer func() { calendarAPIBase = prevAPI }()
+
+	database := db.OpenTestDB(t)
+	acctA, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	require.NoError(t, err)
+
+	// Both events pre-exist from an earlier cycle with an old synced_at stamp,
+	// so anything the new window doesn't re-fetch is subject to stale-delete.
+	require.NoError(t, database.UpsertCalendar(acctA, db.CalendarCalendar{ID: "aliceprimary", Name: "A Primary", IsPrimary: true, IsSelected: true}))
+	for _, e := range []struct {
+		id    string
+		start time.Time
+	}{{"evt-10d", old10}, {"evt-20d", old20}} {
+		require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{
+			ID: e.id, CalendarID: "aliceprimary",
+			StartTime: e.start.Format(time.RFC3339), EndTime: e.start.Add(time.Hour).Format(time.RFC3339),
+		}, "2000-01-01T00:00:00Z"))
+	}
+
+	cfg := &config.Config{Calendar: config.CalendarConfig{HistoryDays: 14}}
+	client := &Client{hc: srv.Client(), accessToken: "token-a"}
+
+	count, err := NewSyncer(client, database, cfg, nil, acctA).Sync(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "only the 10-day-old event is inside the window")
+
+	// timeMin must sit history_days back (small slack for test runtime).
+	wantMin := now.Add(-14 * 24 * time.Hour)
+	assert.WithinDuration(t, wantMin, gotTimeMin, time.Minute)
+
+	inWindow, err := database.GetCalendarEventByID("evt-10d")
+	require.NoError(t, err)
+	require.NotNil(t, inWindow, "a 10-day-old event must survive with history_days=14")
+
+	outOfWindow, err := database.GetCalendarEventByID("evt-20d")
+	require.NoError(t, err)
+	assert.Nil(t, outOfWindow, "a 20-day-old event is not re-fetched and gets stale-deleted")
+}
+
+// TestCalendarHistoryDaysClamp pins the floor (spec: default 14, floor 1 —
+// the same clamp CalendarViewModel applies on the Swift side): any value < 1
+// floors to 1, never collapsing the window; any value >= 1 is used as-is.
+// An absent config key gets the 14-day default from viper's SetDefault, not
+// from this clamp.
+func TestCalendarHistoryDaysClamp(t *testing.T) {
+	assert.Equal(t, 1, config.CalendarConfig{}.EffectiveHistoryDays())
+	assert.Equal(t, 1, config.CalendarConfig{HistoryDays: -3}.EffectiveHistoryDays())
+	assert.Equal(t, 1, config.CalendarConfig{HistoryDays: 1}.EffectiveHistoryDays())
+	assert.Equal(t, 30, config.CalendarConfig{HistoryDays: 30}.EffectiveHistoryDays())
 }
 
 // TestRecordAuthResultSkipsCancelledContext guards the daemon-shutdown path:
