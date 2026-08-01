@@ -135,7 +135,8 @@ func runSyncCommand(ctx context.Context, deps Deps) string {
 	}
 
 	slackClient := watchtowerslack.NewClient(ws.SlackToken)
-	orch := sync.NewOrchestrator(database, slackClient, cfg)
+	// TODO(Task 5): pin to account #1 — wire one Orchestrator per connected Slack account.
+	orch := sync.NewOrchestrator(database, slackClient, cfg, 1)
 	orch.SetLogger(log.New(io.Discard, "", 0))
 
 	opts := sync.SyncOptions{

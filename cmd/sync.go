@@ -253,7 +253,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 	var orch *sync.Orchestrator
 	if ws.SlackToken != "" {
 		slackClient := watchtowerslack.NewClient(ws.SlackToken)
-		orch = sync.NewOrchestrator(database, slackClient, cfg)
+		// TODO(Task 5): pin to account #1 — wire one Orchestrator per connected Slack account.
+		orch = sync.NewOrchestrator(database, slackClient, cfg, 1)
 	}
 
 	// Always write logs to watchtower.log; also to stderr when verbose or detached.

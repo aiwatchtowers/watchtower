@@ -70,9 +70,23 @@ func (o *Orchestrator) syncMessages(ctx context.Context, opts SyncOptions) error
 // buildChannelQueue fetches channels from the DB, applies any --channels filter,
 // assigns priorities based on watch list and membership, and returns a sorted task list.
 func (o *Orchestrator) buildChannelQueue(opts SyncOptions) ([]SyncTask, error) {
-	allChannels, err := o.db.GetChannels(db.ChannelFilter{})
+	// GetChannels is unscoped across every connected account — the channels
+	// table has no account_id column, only the namespaced id prefix. Filter
+	// to this orchestrator's own account here; otherwise a channel borrowed
+	// from another account's row gets queued as a SyncTask, and syncChannel's
+	// SplitAccountID strip would fetch this account's Slack API using that
+	// foreign row's raw id, then write the result back under the foreign
+	// row's namespaced id — the exact cross-account collision namespacing
+	// exists to prevent (caught by TestSyncTwoAccountsNoCollision).
+	unfiltered, err := o.db.GetChannels(db.ChannelFilter{})
 	if err != nil {
 		return nil, fmt.Errorf("fetching channels: %w", err)
+	}
+	allChannels := make([]db.Channel, 0, len(unfiltered))
+	for _, ch := range unfiltered {
+		if acctID, _, ok := watchtowerslack.SplitAccountID(ch.ID); ok && acctID == o.accountID {
+			allChannels = append(allChannels, ch)
+		}
 	}
 
 	// Build a filter set if --channels was specified
@@ -258,6 +272,7 @@ func (o *Orchestrator) syncChannel(ctx context.Context, channelID string, full b
 		previousLastSyncedTS = state.LastSyncedTS
 	}
 
+	_, rawID, _ := watchtowerslack.SplitAccountID(channelID)
 	for {
 		select {
 		case <-ctx.Done():
@@ -266,7 +281,7 @@ func (o *Orchestrator) syncChannel(ctx context.Context, channelID string, full b
 		}
 
 		resp, err := o.slackClient.GetConversationHistory(ctx, watchtowerslack.HistoryOptions{
-			ChannelID: channelID,
+			ChannelID: rawID,
 			Cursor:    cursor,
 			Oldest:    oldest,
 			Limit:     slackPageSize,
@@ -396,7 +411,7 @@ func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Me
 		dbMsgs = append(dbMsgs, db.Message{
 			ChannelID:  channelID,
 			TS:         msg.Timestamp,
-			UserID:     msg.User,
+			UserID:     watchtowerslack.Namespace(o.accountID, msg.User),
 			Text:       msg.Text,
 			ThreadTS:   threadTS,
 			ReplyCount: msg.ReplyCount,
@@ -421,7 +436,7 @@ func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Me
 				reactions = append(reactions, db.Reaction{
 					ChannelID: channelID,
 					MessageTS: msg.Timestamp,
-					UserID:    uid,
+					UserID:    watchtowerslack.Namespace(o.accountID, uid),
 					Emoji:     r.Name,
 				})
 			}

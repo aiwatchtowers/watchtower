@@ -105,6 +105,9 @@ func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestra
 	// Pre-populate workspace so sync takes the incremental (search) path
 	err = database.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "test-workspace", Domain: "test-workspace"})
 	require.NoError(t, err)
+	// Seed slack_accounts account #1 — Orchestrator is now per-account (Task 4).
+	_, err = database.CreateSlackAccount(db.SlackAccount{TeamID: "T024BE7LD", TeamName: "test-workspace", TeamDomain: "test-workspace"})
+	require.NoError(t, err)
 
 	srv := httptest.NewServer(countingMux)
 	t.Cleanup(srv.Close)
@@ -126,7 +129,7 @@ func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestra
 		},
 	}
 
-	orch := sync.NewOrchestrator(database, slackClient, cfg)
+	orch := sync.NewOrchestrator(database, slackClient, cfg, 1)
 	orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
 
 	return orch, srv
