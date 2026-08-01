@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // SlackAccount is one row of slack_accounts — a connected Slack workspace.
@@ -21,6 +22,26 @@ type SlackAccount struct {
 	Enabled        bool
 	SearchLastDate string
 	CreatedAt      string
+}
+
+// FormatConnectedWorkspaces renders "<label1> (<domain1>), <label2> (<domain2>)"
+// for AI system-prompt / status-line display. An account's label is preferred,
+// falling back to its team name; a missing domain drops the parenthetical.
+// Empty slice -> "".
+func FormatConnectedWorkspaces(accounts []SlackAccount) string {
+	parts := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		name := a.Label
+		if name == "" {
+			name = a.TeamName
+		}
+		if a.TeamDomain != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", name, a.TeamDomain))
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // CreateSlackAccount inserts a new connected Slack account and returns its ID.

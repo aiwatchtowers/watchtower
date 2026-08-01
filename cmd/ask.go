@@ -57,13 +57,18 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	ws, err := database.GetWorkspace()
+	accounts, err := database.ListSlackAccounts()
 	if err != nil {
-		return fmt.Errorf("getting workspace: %w", err)
+		return fmt.Errorf("listing slack accounts: %w", err)
 	}
-	if ws == nil {
+	if len(accounts) == 0 {
 		return fmt.Errorf("no workspace data found — run 'watchtower sync' first")
 	}
+	// Connected-workspaces summary for the system prompt; the first account is
+	// the representative for illustrative deep-link examples (per-message
+	// permalinks are resolved per account by the context builder / renderer).
+	wsSummary := db.FormatConnectedWorkspaces(accounts)
+	domain, teamID := accounts[0].TeamDomain, accounts[0].TeamID
 
 	// Parse the query for time hints
 	pq := ai.Parse(question)
@@ -82,7 +87,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Assemble prompt with DB access
 	dbPath := cfg.DBPath()
-	systemPrompt := ai.BuildSystemPrompt(ws.Name, ws.Domain, ws.ID, dbPath, db.Schema, cfg.Digest.Language)
+	systemPrompt := ai.BuildSystemPrompt(wsSummary, domain, teamID, dbPath, db.Schema, cfg.Digest.Language)
 
 	// Inject Jira context if enabled
 	if cfg.Jira.Enabled {
@@ -115,7 +120,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	out := cmd.OutOrStdout()
-	renderer := ai.NewResponseRenderer(database, ws.Domain, ws.ID)
+	renderer := ai.NewResponseRenderer(database, domain, teamID)
 
 	runID, _ := database.CreatePipelineRun("ask", "cli", model)
 

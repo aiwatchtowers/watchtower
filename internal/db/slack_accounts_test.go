@@ -225,3 +225,23 @@ func TestGetCurrentUserID_PinnedToAccountOne(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "1:U1", userID)
 }
+
+func TestFormatConnectedWorkspaces(t *testing.T) {
+	// Empty slice -> "".
+	assert.Equal(t, "", FormatConnectedWorkspaces(nil))
+	assert.Equal(t, "", FormatConnectedWorkspaces([]SlackAccount{}))
+
+	// One account: label present + domain.
+	one := []SlackAccount{
+		{TeamName: "Acme Inc", TeamDomain: "acme", Label: "Work"},
+	}
+	assert.Equal(t, "Work (acme)", FormatConnectedWorkspaces(one))
+
+	// Two accounts: label falls back to team name when empty; a missing
+	// domain drops the parenthetical entirely.
+	two := []SlackAccount{
+		{TeamName: "Acme Inc", TeamDomain: "acme", Label: "Work"},
+		{TeamName: "Beta LLC", TeamDomain: "", Label: ""},
+	}
+	assert.Equal(t, "Work (acme), Beta LLC", FormatConnectedWorkspaces(two))
+}

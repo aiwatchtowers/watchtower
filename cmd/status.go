@@ -46,9 +46,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	ws, err := database.GetWorkspace()
+	accounts, err := database.ListSlackAccounts()
 	if err != nil {
-		return fmt.Errorf("getting workspace: %w", err)
+		return fmt.Errorf("listing slack accounts: %w", err)
 	}
 
 	stats, err := database.GetStats()
@@ -61,11 +61,17 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting last sync time: %w", err)
 	}
 
-	// Workspace line
-	if ws != nil {
-		fmt.Fprintf(out, "Workspace: %s (%s)\n", ws.Name, ws.ID)
-	} else {
+	// One line per connected Slack workspace.
+	if len(accounts) == 0 {
 		fmt.Fprintf(out, "Workspace: %s (not yet synced)\n", cfg.ActiveWorkspace)
+	} else {
+		for _, a := range accounts {
+			name := a.Label
+			if name == "" {
+				name = a.TeamName
+			}
+			fmt.Fprintf(out, "Slack: %s (%s) [%s]\n", name, a.TeamDomain, a.Status)
+		}
 	}
 
 	// Database line

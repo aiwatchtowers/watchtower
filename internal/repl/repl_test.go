@@ -80,6 +80,10 @@ func seedWorkspace(t *testing.T, database *db.DB) {
 		Domain: "acme",
 	})
 	require.NoError(t, err)
+	_, err = database.CreateSlackAccount(db.SlackAccount{
+		TeamID: "T1234", TeamName: "Acme Corp", TeamDomain: "acme",
+	})
+	require.NoError(t, err)
 }
 
 // seedChannel inserts a channel row.
@@ -182,9 +186,8 @@ func TestRunStatusWithWorkspace(t *testing.T) {
 
 	output := runStatus(deps)
 
-	// Should show workspace name and ID
-	assert.Contains(t, output, "Acme Corp")
-	assert.Contains(t, output, "T1234")
+	// Should list the connected Slack workspace (name + domain + status).
+	assert.Contains(t, output, "Slack: Acme Corp (acme) [ok]")
 }
 
 func TestRunStatusWithSyncState(t *testing.T) {
@@ -915,6 +918,8 @@ func TestRunStatusWorkspaceSyncedAtDisplay(t *testing.T) {
 		Domain: "other",
 	})
 	require.NoError(t, err)
+	_, err = deps.DB.CreateSlackAccount(db.SlackAccount{TeamID: "T5678", TeamName: "Other Corp", TeamDomain: "other"})
+	require.NoError(t, err)
 
 	ws, err := deps.DB.GetWorkspace()
 	require.NoError(t, err)
@@ -1046,6 +1051,8 @@ func TestRunStatusNullSyncedAt(t *testing.T) {
 	_, err := deps.DB.Exec(
 		`INSERT INTO workspace (id, name, domain, synced_at) VALUES ('T999', 'NullSync Corp', 'nullsync', NULL)`,
 	)
+	require.NoError(t, err)
+	_, err = deps.DB.CreateSlackAccount(db.SlackAccount{TeamID: "T999", TeamName: "NullSync Corp", TeamDomain: "nullsync"})
 	require.NoError(t, err)
 
 	ws, err := deps.DB.GetWorkspace()

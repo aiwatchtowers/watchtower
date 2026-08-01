@@ -123,18 +123,20 @@ func runREPL(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	ws, err := database.GetWorkspace()
+	accounts, err := database.ListSlackAccounts()
 	if err != nil {
-		return fmt.Errorf("getting workspace: %w", err)
+		return fmt.Errorf("listing slack accounts: %w", err)
 	}
 
 	domain := ""
 	teamID := ""
 	workspace := cfg.ActiveWorkspace
-	if ws != nil {
-		domain = ws.Domain
-		teamID = ws.ID
-		workspace = ws.Name
+	if len(accounts) > 0 {
+		// The first account is the representative for illustrative deep-link
+		// examples; per-message permalinks resolve per account downstream.
+		domain = accounts[0].TeamDomain
+		teamID = accounts[0].TeamID
+		workspace = db.FormatConnectedWorkspaces(accounts)
 	}
 
 	deps := repl.Deps{

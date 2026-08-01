@@ -64,7 +64,7 @@ func runStatus(deps Deps) string {
 	database := deps.DB
 	cfg := deps.Config
 
-	ws, err := database.GetWorkspace()
+	accounts, err := database.ListSlackAccounts()
 	if err != nil {
 		return errorStyle.Render("Error: " + err.Error())
 	}
@@ -81,10 +81,16 @@ func runStatus(deps Deps) string {
 
 	var b strings.Builder
 
-	if ws != nil {
-		b.WriteString(fmt.Sprintf("Workspace: %s (%s)\n", ws.Name, ws.ID))
-	} else {
+	if len(accounts) == 0 {
 		b.WriteString(fmt.Sprintf("Workspace: %s (not yet synced)\n", cfg.ActiveWorkspace))
+	} else {
+		for _, a := range accounts {
+			name := a.Label
+			if name == "" {
+				name = a.TeamName
+			}
+			b.WriteString(fmt.Sprintf("Slack: %s (%s) [%s]\n", name, a.TeamDomain, a.Status))
+		}
 	}
 
 	dbPath := cfg.DBPath()
