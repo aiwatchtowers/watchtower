@@ -341,4 +341,108 @@ final class TranscriptSaveServiceTests: XCTestCase {
             XCTFail("unexpected error type: \(error)")
         }
     }
+
+    // MARK: - speakers file (voice embeddings)
+
+    func test_saveWritesSpeakersFileWhenEmbeddingsPresent() async throws {
+        let speakers = [
+            SpeakerEmbedding(speaker: "Я", embedding: [0, 1]),
+            SpeakerEmbedding(speaker: "Speaker 1", embedding: [1, 0])
+        ]
+        let envelope = Data(envelopeJSON.utf8)
+        var speakersContentDuringRun: String?
+        var speakersPathDuringRun: String?
+        let runner = ClosureCLIRunner { args in
+            guard let idx = args.firstIndex(of: "--speakers-file"), args.indices.contains(idx + 1) else {
+                XCTFail("--speakers-file flag missing")
+                return envelope
+            }
+            let path = args[idx + 1]
+            speakersPathDuringRun = path
+            speakersContentDuringRun = try String(contentsOfFile: path, encoding: .utf8)
+            return envelope
+        }
+        let svc = TranscriptSaveService(runner: runner)
+
+        _ = try await svc.save(
+            transcriptText: "[Я] привет\n[Speaker 1] ответ",
+            utterances: [
+                TranscriptUtterance(idx: 0, startSec: 0, endSec: 2, speaker: "Я", text: "привет"),
+                TranscriptUtterance(idx: 1, startSec: 2, endSec: 5, speaker: "Speaker 1", text: "ответ")
+            ],
+            speakers: speakers,
+            audioPath: "/tmp/a.wav",
+            durationSec: 5,
+            eventID: nil,
+            title: nil,
+            langStatsJSON: "{}"
+        )
+
+        let content = try XCTUnwrap(speakersContentDuringRun)
+        XCTAssertEqual(SpeakerEmbeddings.decode(content), speakers,
+                       "the speakers file must round-trip the embeddings")
+        let path = try XCTUnwrap(speakersPathDuringRun)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path),
+                       "the temp speakers file must be removed after save")
+    }
+
+    func test_saveOmitsSpeakersFileWhenNil() async throws {
+        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        _ = try await svc.save(
+            transcriptText: "hello",
+            audioPath: "/tmp/a.wav",
+            durationSec: 1,
+            eventID: nil,
+            title: nil,
+            langStatsJSON: "{}"
+        )
+
+        let args = try XCTUnwrap(fake.invocations.first)
+        XCTAssertFalse(args.contains("--speakers-file"),
+                       "nil speakers → no flag, legacy behavior")
+    }
+
+    // MARK: - speakerGuess
+
+    func test_speakerGuessInvokesCLIAndDecodesEnvelope() async throws {
+        let mock = FakeCLIRunner(stdout: Data("""
+            {"transcript_id": 7, "suggestions": [
+              {"speaker": "Speaker 2", "candidate": "Саша", "confidence": 0.8, "evidence": "introduced himself"}
+            ]}
+            """.utf8))
+        let service = TranscriptSaveService(runner: mock)
+
+        let result = try await service.speakerGuess(transcriptID: 7)
+
+        XCTAssertEqual(result.transcriptID, 7)
+        XCTAssertEqual(result.suggestions, [
+            SpeakerSuggestion(speaker: "Speaker 2", candidate: "Саша",
+                              confidence: 0.8, evidence: "introduced himself")
+        ])
+        XCTAssertEqual(mock.invocations.first, ["meeting-prep", "transcript", "speaker-guess", "7"])
+    }
+
+    func test_speakerGuessDecodesEmptySuggestions() async throws {
+        let mock = FakeCLIRunner(stdout: Data(#"{"transcript_id": 7, "suggestions": []}"#.utf8))
+        let service = TranscriptSaveService(runner: mock)
+
+        let result = try await service.speakerGuess(transcriptID: 7)
+        XCTAssertTrue(result.suggestions.isEmpty)
+    }
+
+    func test_speakerGuessPropagatesRunnerError() async {
+        let fake = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "no unnamed speakers"))
+        let svc = TranscriptSaveService(runner: fake)
+
+        do {
+            _ = try await svc.speakerGuess(transcriptID: 3)
+            XCTFail("expected throw")
+        } catch CLIRunnerError.nonZeroExit(let code, _) {
+            XCTAssertEqual(code, 1)
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+    }
 }

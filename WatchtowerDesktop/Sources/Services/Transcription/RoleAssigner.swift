@@ -18,19 +18,55 @@ enum RoleAssigner {
     static func render(
         segments: [TranscriptSegment],
         speakers: [SpeakerSegment],
-        activity: MicActivity?
+        activity: MicActivity?,
+        voiceNames: [String: String] = [:]
     ) -> String? {
-        assign(segments: segments, speakers: speakers, activity: activity)
+        assign(segments: segments, speakers: speakers, activity: activity, voiceNames: voiceNames)
             .map(TranscriptSegments.render)
+    }
+
+    /// Final label per cluster ID. Priority per cluster: mic dominance («Я»,
+    /// absolute — a voice match can never claim the owner's cluster) →
+    /// `voiceNames` (display names from confident voice-print matches) →
+    /// dense "Speaker N" numbering over the remaining clusters in
+    /// first-appearance order. Exposed so the save path can key the persisted
+    /// per-cluster embeddings (`speakers_json`) by the same labels the
+    /// transcript renders.
+    static func clusterLabels(
+        speakers: [SpeakerSegment],
+        activity: MicActivity?,
+        voiceNames: [String: String] = [:]
+    ) -> [String: String] {
+        var clusterOrder: [String] = []
+        for s in speakers.sorted(by: { $0.startSec < $1.startSec }) where !clusterOrder.contains(s.speakerID) {
+            clusterOrder.append(s.speakerID)
+        }
+        let selfCluster = detectSelfCluster(speakers: speakers, activity: activity, order: clusterOrder)
+        var labels: [String: String] = [:]
+        var counter = 0
+        for id in clusterOrder {
+            if id == selfCluster {
+                labels[id] = selfLabel
+            } else if let name = voiceNames[id], !name.isEmpty {
+                labels[id] = name
+            } else {
+                counter += 1
+                labels[id] = "Speaker \(counter)"
+            }
+        }
+        return labels
     }
 
     /// Structured form of `render`: the merged same-speaker utterances with
     /// their time ranges, ready to persist as `segments_json`. nil under the
-    /// same conditions as `render`.
+    /// same conditions as `render`. `voiceNames` (cluster ID → display name,
+    /// from voice-print matching) renames matched clusters; the mic-dominated
+    /// «Я» cluster always keeps its label (see `clusterLabels`).
     static func assign(
         segments: [TranscriptSegment],
         speakers: [SpeakerSegment],
-        activity: MicActivity?
+        activity: MicActivity?,
+        voiceNames: [String: String] = [:]
     ) -> [TranscriptUtterance]? {
         guard !segments.isEmpty, !speakers.isEmpty else { return nil }
 
@@ -57,18 +93,8 @@ enum RoleAssigner {
             previous = cluster
         }
 
-        // 2. Labels: the mic-dominated cluster is «Я», the rest are numbered.
-        let selfCluster = detectSelfCluster(speakers: speakers, activity: activity, order: clusterOrder)
-        var labels: [String: String] = [:]
-        var counter = 0
-        for id in clusterOrder {
-            if id == selfCluster {
-                labels[id] = selfLabel
-            } else {
-                counter += 1
-                labels[id] = "Speaker \(counter)"
-            }
-        }
+        // 2. Labels: «Я» → voice-matched names → numbered strangers.
+        let labels = clusterLabels(speakers: speakers, activity: activity, voiceNames: voiceNames)
 
         // 3. Merge consecutive same-cluster segments into one utterance.
         var utterances: [TranscriptUtterance] = []

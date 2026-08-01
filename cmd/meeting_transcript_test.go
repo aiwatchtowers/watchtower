@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,6 +53,7 @@ func resetTranscriptFlags(t *testing.T) {
 	t.Cleanup(func() {
 		transcriptSaveFlagFile = ""
 		transcriptSaveFlagSegments = ""
+		transcriptSaveFlagSpeakers = ""
 		transcriptSaveFlagAudio = ""
 		transcriptSaveFlagEventID = ""
 		transcriptSaveFlagTitle = ""
@@ -61,6 +63,7 @@ func resetTranscriptFlags(t *testing.T) {
 	})
 	transcriptSaveFlagFile = ""
 	transcriptSaveFlagSegments = ""
+	transcriptSaveFlagSpeakers = ""
 	transcriptSaveFlagAudio = ""
 	transcriptSaveFlagEventID = ""
 	transcriptSaveFlagTitle = ""
@@ -87,6 +90,8 @@ type transcriptEnvelope struct {
 	RecapError    string `json:"recap_error"`
 	SegmentsOK    bool   `json:"segments_ok"`
 	SegmentsError string `json:"segments_error"`
+	SpeakersOK    bool   `json:"speakers_ok"`
+	SpeakersError string `json:"speakers_error"`
 }
 
 func findPipelineRun(t *testing.T, database *db.DB, pipeline string) *db.PipelineRun {
@@ -626,4 +631,280 @@ func TestTranscriptNotesUnknownIDFails(t *testing.T) {
 	err := transcriptNotesCmd.RunE(transcriptNotesCmd, []string{"9999"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
+}
+
+// speakersFixtureJSON matches segmentsFixtureJSON's labels ("Я", "Speaker 1").
+const speakersFixtureJSON = `[
+	{"speaker":"Я","embedding":[0.6,0.8]},
+	{"speaker":"Speaker 1","embedding":[1,0]}
+]`
+
+// writeSpeakersFile writes content into a temp speakers file and returns its path.
+func writeSpeakersFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "speakers.json")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func TestTranscriptSaveWithSpeakersPersistsColumn(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagSpeakers = writeSpeakersFile(t, speakersFixtureJSON)
+	transcriptSaveFlagTitle = "With speakers"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.SpeakersOK, "a fully-valid speakers file must report speakers_ok=true")
+	assert.Empty(t, env.SpeakersError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.SpeakersJSON.Valid, "speakers_json must be persisted when --speakers-file is valid")
+	speakers, err := meeting.ParseSpeakerEmbeddings([]byte(tr.SpeakersJSON.String))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Я", "Speaker 1"}, []string{speakers[0].Speaker, speakers[1].Speaker})
+}
+
+// One diarized cluster that won zero transcript utterances must drop ONLY its
+// own embedding — the rest of the payload persists so voice-print learning
+// stays available for the recording; the partial drop is surfaced through
+// speakers_ok=false (stderr alone is discarded by ProcessCLIRunner on exit 0).
+func TestTranscriptSaveOrphanSpeakerDropsOnlyThatEmbedding(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagSpeakers = writeSpeakersFile(t, `[
+		{"speaker":"Я","embedding":[0.6,0.8]},
+		{"speaker":"Speaker 1","embedding":[1,0]},
+		{"speaker":"Speaker 7","embedding":[0,1]}
+	]`)
+	transcriptSaveFlagTitle = "Orphan cluster"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.False(t, env.SpeakersOK, "a partial drop must be visible in the envelope")
+	assert.Contains(t, env.SpeakersError, "Speaker 7")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.SpeakersJSON.Valid,
+		"the surviving embeddings must persist — one orphan label must not disable voice-print learning")
+	speakers, err := meeting.ParseSpeakerEmbeddings([]byte(tr.SpeakersJSON.String))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Я", "Speaker 1"}, []string{speakers[0].Speaker, speakers[1].Speaker})
+}
+
+// A speakers file without a persisted segments column would leave dangling
+// labels — the save must degrade to NULL speakers and still succeed.
+func TestTranscriptSaveSpeakersWithoutSegmentsLeavesColumnNULL(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "plain transcript")
+	transcriptSaveFlagSpeakers = writeSpeakersFile(t, speakersFixtureJSON)
+	transcriptSaveFlagTitle = "Speakers only"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.False(t, tr.SpeakersJSON.Valid, "speakers without segments → NULL column")
+}
+
+func TestTranscriptSaveBadSpeakersStillPersistsTranscript(t *testing.T) {
+	for name, payload := range map[string]string{
+		"malformed json": `{not json`,
+		"empty array":    `[]`,
+		"empty label":    `[{"speaker":"","embedding":[1]}]`,
+		"unknown label":  `[{"speaker":"Speaker 7","embedding":[1,0]}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cleanup := setupWatchTestEnv(t)
+			defer cleanup()
+			resetTranscriptFlags(t)
+			stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+			transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+			transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+			transcriptSaveFlagSpeakers = writeSpeakersFile(t, payload)
+
+			var buf bytes.Buffer
+			transcriptSaveCmd.SetOut(&buf)
+			require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil),
+				"a bad speakers file must never fail the save")
+
+			var env transcriptEnvelope
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+			assert.False(t, env.SpeakersOK, "a dropped speakers file must be visible in the envelope")
+			assert.NotEmpty(t, env.SpeakersError)
+
+			database, err := openDBFromConfig()
+			require.NoError(t, err)
+			defer database.Close()
+			tr, err := database.GetMeetingTranscript(env.TranscriptID)
+			require.NoError(t, err)
+			require.NotNil(t, tr)
+			assert.True(t, tr.SegmentsJSON.Valid, "segments must persist independently of speakers")
+			assert.False(t, tr.SpeakersJSON.Valid, "bad speakers file → NULL column")
+		})
+	}
+}
+
+// An unreadable --speakers-file (here: a directory) degrades exactly like a
+// malformed one: transcript + segments persist, speakers stay NULL,
+// speakers_ok=false.
+func TestTranscriptSaveUnreadableSpeakersFileStillPersistsTranscript(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagSpeakers = t.TempDir() // a directory is not readable as a file
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil),
+		"an unreadable speakers file must never fail the save")
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.False(t, env.SpeakersOK)
+	assert.Contains(t, env.SpeakersError, "reading speakers file")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.True(t, tr.SegmentsJSON.Valid)
+	assert.False(t, tr.SpeakersJSON.Valid)
+}
+
+func TestTranscriptSpeakerGuessEnvelope(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: `[
+		{"speaker":"Speaker 1","candidate":"Саша","confidence":0.9,"evidence":"introduces himself"},
+		{"speaker":"Speaker 9","candidate":"Ghost","confidence":0.9,"evidence":"unknown"}
+	]`})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Guess",
+		TranscriptText: segmentsFixtureText,
+		SegmentsJSON:   sql.NullString{String: segmentsFixtureJSON, Valid: true},
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	var buf bytes.Buffer
+	transcriptSpeakerGuessCmd.SetOut(&buf)
+	require.NoError(t, transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)}))
+
+	var env struct {
+		TranscriptID int64                  `json:"transcript_id"`
+		Suggestions  []meeting.SpeakerGuess `json:"suggestions"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.Equal(t, id, env.TranscriptID)
+	require.Len(t, env.Suggestions, 1, "unknown speaker labels must be dropped")
+	assert.Equal(t, "Speaker 1", env.Suggestions[0].Speaker)
+	assert.Equal(t, "Саша", env.Suggestions[0].Candidate)
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	run := findPipelineRun(t, database, "meeting_speaker_guess")
+	require.NotNil(t, run, "a meeting_speaker_guess pipeline run must be recorded")
+	assert.Equal(t, "done", run.Status)
+}
+
+func TestTranscriptSpeakerGuessWithoutSegmentsFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: `[]`})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Legacy",
+		TranscriptText: "plain text",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	err = transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no per-utterance segments")
+}
+
+func TestTranscriptSpeakerGuessAIFailureExitsNonZero(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{err: errors.New("boom")})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Guess",
+		TranscriptText: segmentsFixtureText,
+		SegmentsJSON:   sql.NullString{String: segmentsFixtureJSON, Valid: true},
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	err = transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	run := findPipelineRun(t, database, "meeting_speaker_guess")
+	require.NotNil(t, run)
+	assert.Equal(t, "error", run.Status)
 }

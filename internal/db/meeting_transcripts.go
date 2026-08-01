@@ -14,6 +14,9 @@ import (
 // is the per-utterance segment array (NULL for legacy rows); when set, the
 // invariant transcript_text = render(segments where !deleted) must hold — see
 // internal/meeting.RenderTranscriptSegments, the canonical Go renderer.
+// SpeakersJSON is the per-cluster voice-embedding array ({"speaker",
+// "embedding"} entries, NULL when the diarizer produced no embeddings) —
+// consumed by the Desktop rename flow to learn voice_prints.
 type MeetingTranscript struct {
 	ID             int64
 	EventID        sql.NullString
@@ -25,6 +28,7 @@ type MeetingTranscript struct {
 	SummaryJSON    sql.NullString
 	NotesMD        sql.NullString
 	SegmentsJSON   sql.NullString
+	SpeakersJSON   sql.NullString
 	CreatedAt      string
 	UpdatedAt      string
 }
@@ -38,12 +42,12 @@ type MeetingTranscriptFilter struct {
 	Limit    int    // 0 = 50
 }
 
-const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, notes_md, segments_json, created_at, updated_at`
+const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, notes_md, segments_json, speakers_json, created_at, updated_at`
 
 func scanMeetingTranscript(row interface{ Scan(...any) error }) (MeetingTranscript, error) {
 	var t MeetingTranscript
 	err := row.Scan(&t.ID, &t.EventID, &t.Title, &t.AudioPath, &t.DurationSec,
-		&t.LangStats, &t.TranscriptText, &t.SummaryJSON, &t.NotesMD, &t.SegmentsJSON, &t.CreatedAt, &t.UpdatedAt)
+		&t.LangStats, &t.TranscriptText, &t.SummaryJSON, &t.NotesMD, &t.SegmentsJSON, &t.SpeakersJSON, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
 
@@ -51,9 +55,9 @@ func scanMeetingTranscript(row interface{ Scan(...any) error }) (MeetingTranscri
 // CreatedAt/UpdatedAt are set by the table defaults.
 func (db *DB) InsertMeetingTranscript(t MeetingTranscript) (int64, error) {
 	res, err := db.Exec(`
-		INSERT INTO meeting_transcripts (event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, segments_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, t.EventID, t.Title, t.AudioPath, t.DurationSec, t.LangStats, t.TranscriptText, t.SummaryJSON, t.SegmentsJSON)
+		INSERT INTO meeting_transcripts (event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, segments_json, speakers_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, t.EventID, t.Title, t.AudioPath, t.DurationSec, t.LangStats, t.TranscriptText, t.SummaryJSON, t.SegmentsJSON, t.SpeakersJSON)
 	if err != nil {
 		return 0, fmt.Errorf("inserting meeting transcript %q: %w", t.Title, err)
 	}

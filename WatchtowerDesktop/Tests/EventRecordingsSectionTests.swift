@@ -14,7 +14,7 @@ final class EventRecordingsSectionTests: XCTestCase {
         MeetingTranscript(
             id: id, eventID: "evt-1", title: "Rec", audioPath: nil,
             durationSec: durationSec, langStats: #"{"ru":3}"#, transcriptText: "text",
-            summaryJSON: summaryJSON, notesMD: notesMD, segmentsJSON: nil,
+            summaryJSON: summaryJSON, notesMD: notesMD, segmentsJSON: nil, speakersJSON: nil,
             createdAt: "2026-07-15T10:00:00Z", updatedAt: "2026-07-15T10:00:00Z")
     }
 

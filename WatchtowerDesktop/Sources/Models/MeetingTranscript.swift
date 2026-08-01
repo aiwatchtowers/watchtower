@@ -9,6 +9,8 @@ import GRDB
 /// `notesMD` holds user-editable publishable markdown notes. `segmentsJSON`
 /// is the per-utterance segment array (nil for legacy rows); when set, the
 /// invariant `transcriptText = TranscriptSegments.render(non-deleted)` holds.
+/// `speakersJSON` is the per-cluster voice-embedding array keyed by rendered
+/// speaker label (nil when the diarizer produced no embeddings).
 struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "meeting_transcripts"
 
@@ -22,6 +24,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     let summaryJSON: String?
     let notesMD: String?
     let segmentsJSON: String?
+    let speakersJSON: String?
     let createdAt: String
     let updatedAt: String
 
@@ -39,6 +42,14 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         return TranscriptSegments.decode(segmentsJSON)
     }
 
+    /// Decodes `speakersJSON` into per-cluster voice embeddings; nil for
+    /// legacy/embedding-less rows or a malformed payload (renames then update
+    /// the transcript only).
+    var speakerEmbeddings: [SpeakerEmbedding]? {
+        guard let speakersJSON else { return nil }
+        return SpeakerEmbeddings.decode(speakersJSON)
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case eventID = "event_id"
@@ -50,6 +61,7 @@ struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         case summaryJSON = "summary_json"
         case notesMD = "notes_md"
         case segmentsJSON = "segments_json"
+        case speakersJSON = "speakers_json"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
