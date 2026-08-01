@@ -190,15 +190,15 @@ struct GeneralSettings: View {
             isPresented: $showSlackDisconnectConfirm,
             titleVisibility: .visible
         ) {
-            Button("Disconnect & Delete Slack Data", role: .destructive) {
+            Button("Disconnect Slack", role: .destructive) {
                 disconnectSlack()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Removes the Slack connection and deletes all synced Slack messages plus the AI products "
-                    + "built on them (digests, tracks, people cards, inbox items, situations). "
-                    + "Gmail, Calendar, and Jira data are kept."
+                "Removes the Slack connection and stops syncing. Already-synced Slack messages and the AI "
+                    + "products built on them (digests, tracks, people cards, inbox items, situations) are kept "
+                    + "and stay queryable. Gmail, Calendar, and Jira data are unaffected."
             )
         }
     }
@@ -206,8 +206,10 @@ struct GeneralSettings: View {
     private func disconnectSlack() {
         slackDisconnecting = true
         Task {
-            // Stop the daemon first so it doesn't rewrite Slack data mid-purge,
-            // then restart it — without a token it skips the Slack phase.
+            // Stop the daemon first so it isn't mid-sync when the token is
+            // removed, then restart it — without a token it skips the Slack
+            // phase. Synced data is kept (non-destructive, matches `slack
+            // remove` / `auth logout` semantics).
             await daemonManager.stopDaemon()
             await slackAuth.disconnect()
             if slackAuth.error == nil {
@@ -505,10 +507,11 @@ struct GeneralSettings: View {
     /// of the sources group since Slack is Watchtower's primary data source.
     ///
     /// The removal confirmation copy explicitly states data is KEPT — unlike
-    /// Google's removal (and the legacy single-account Slack "Disconnect &
-    /// Delete Slack Data" in `workspaceSection`), `slack remove` is
-    /// non-destructive: it drops the token and marks the row removed/disabled
-    /// but leaves already-synced messages, digests, and situations in place.
+    /// Google's removal, `slack remove` is non-destructive: it drops the token
+    /// and marks the row removed/disabled but leaves already-synced messages,
+    /// digests, and situations in place. The legacy single-account Slack
+    /// "Disconnect" in `workspaceSection` now shares the same non-destructive
+    /// semantics (`auth logout` → `removeSlackAccount`).
     private var slackAccountsSection: some View {
         Section("Slack Workspaces") {
             if let vm = appState.slackAccountsViewModel {
