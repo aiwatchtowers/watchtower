@@ -133,4 +133,80 @@ struct CalendarViewModelTests {
             #expect(vm.todayEvents == vm.dailyEvents.first?.events)
         }
     }
+
+    // MARK: - Deep-link window pin (recording → past/far-future event)
+
+    @Test("ensureVisible pins a day beyond the history window and survives reload")
+    func ensureVisiblePinsPastDay() throws {
+        let pool = try makePool()
+        let cal = Calendar.current
+        // Relative dates only — no hardcoded calendar bombs. With the
+        // -historyDays..+daysAhead window, the pin only matters for days
+        // OUTSIDE it: use a 3-day history and an event 5 days back.
+        let pastNoon = try #require(cal.date(byAdding: .day, value: -5,
+                                             to: cal.startOfDay(for: Date()).addingTimeInterval(12 * 3600)))
+        try insertEvent(pool, id: "y1", title: "Retro",
+                        start: pastNoon, end: pastNoon.addingTimeInterval(3600))
+
+        let vm = CalendarViewModel(dbPool: pool, historyDays: 3)
+        vm.stopObserving()
+        vm.loadEvents()
+
+        // The window is -3d..+7d: the 5-days-back event is invisible —
+        // exactly the deep-link dead-end being fixed.
+        #expect(!vm.dailyEvents.flatMap(\.events).contains { $0.id == "y1" })
+
+        vm.ensureVisible(date: pastNoon)
+
+        #expect(vm.dailyEvents.flatMap(\.events).contains { $0.id == "y1" })
+        // The pinned past day sorts before the rest of the window.
+        #expect(vm.dailyEvents.first?.id == cal.startOfDay(for: pastNoon))
+
+        // A plain reload (the 30s observer tick) must not evict the pin
+        // while the user is looking at the day.
+        vm.loadEvents()
+        #expect(vm.dailyEvents.flatMap(\.events).contains { $0.id == "y1" })
+    }
+
+    @Test("ensureVisible with an in-window date does not duplicate the day")
+    func ensureVisibleInWindowIsNoop() throws {
+        let pool = try makePool()
+        let todayNoon = Calendar.current.startOfDay(for: Date()).addingTimeInterval(12 * 3600)
+        try insertEvent(pool, id: "t1", title: "Standup",
+                        start: todayNoon, end: todayNoon.addingTimeInterval(1800))
+
+        let vm = CalendarViewModel(dbPool: pool)
+        vm.stopObserving()
+        vm.ensureVisible(date: todayNoon)
+
+        #expect(vm.dailyEvents.count == 1)
+        #expect(vm.dailyEvents.filter { $0.label == "Today" }.count == 1)
+        #expect(vm.dailyEvents.flatMap(\.events).filter { $0.id == "t1" }.count == 1)
+    }
+
+    @Test("dayWindow unions the pin, dedupes in-window days, sorts a past pin first")
+    func dayWindowPure() throws {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+
+        // No pin: plain 7-day window.
+        #expect(CalendarViewModel.dayWindow(today: today, daysAhead: 7, pinned: nil, calendar: cal).count == 7)
+
+        // In-window pin (today itself): deduped, still 7.
+        let inWindow = CalendarViewModel.dayWindow(today: today, daysAhead: 7, pinned: today, calendar: cal)
+        #expect(inWindow.count == 7)
+
+        // Past pin: appended and sorted to the front.
+        let yesterday = try #require(cal.date(byAdding: .day, value: -1, to: today))
+        let past = CalendarViewModel.dayWindow(today: today, daysAhead: 7, pinned: yesterday, calendar: cal)
+        #expect(past.count == 8)
+        #expect(past.first.map { cal.isDate($0, inSameDayAs: yesterday) } == true)
+
+        // Far-future pin (beyond +7d — calendar.sync_days_ahead may exceed
+        // the UI's hard-coded window): appended last.
+        let future = try #require(cal.date(byAdding: .day, value: 30, to: today))
+        let far = CalendarViewModel.dayWindow(today: today, daysAhead: 7, pinned: future, calendar: cal)
+        #expect(far.count == 8)
+        #expect(far.last.map { cal.isDate($0, inSameDayAs: future) } == true)
+    }
 }
