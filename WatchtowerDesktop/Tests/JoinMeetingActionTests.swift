@@ -160,9 +160,8 @@ final class JoinMeetingActionTests: XCTestCase {
         var opened: [URL] = []
         await JoinMeetingAction.join(
             event: event, center: center, defaults: try isolatedDefaults(),
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
 
         XCTAssertEqual(opened, [URL(string: "https://meet.google.com/abc-defg-hij")])
         XCTAssertEqual(recorder.startCalls, 1)
@@ -186,9 +185,8 @@ final class JoinMeetingActionTests: XCTestCase {
         var opened: [URL] = []
         await JoinMeetingAction.join(
             event: other, center: center, defaults: try isolatedDefaults(),
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
 
         XCTAssertEqual(opened, [URL(string: "https://company.zoom.us/j/123")],
                        "the link must open even while a recording runs")
@@ -212,8 +210,8 @@ final class JoinMeetingActionTests: XCTestCase {
         let firstJoin = Task {
             await JoinMeetingAction.join(
                 event: first, center: center, defaults: defaults,
-                recordingSupported: true, openURL: { _ in true }
-            )
+                recordingSupported: true
+            ) { _ in true }
         }
         for _ in 0..<1000 where recorder.startCalls == 0 { await Task.yield() }
         XCTAssertEqual(recorder.startCalls, 1, "first join must be suspended inside recorder.start")
@@ -221,9 +219,8 @@ final class JoinMeetingActionTests: XCTestCase {
         var opened: [URL] = []
         await JoinMeetingAction.join(
             event: second, center: center, defaults: defaults,
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
         XCTAssertEqual(opened.count, 1, "the second join still opens its link")
         XCTAssertEqual(recorder.startCalls, 1, "no second recorder start while the first is mid-start")
 
@@ -246,12 +243,11 @@ final class JoinMeetingActionTests: XCTestCase {
         )
         let gate = JoinGate()
         let center = makeCenter(
-            recorder: recorder, defaults: try isolatedDefaults(),
-            engineFactory: { _ in
-                await gate.wait()
-                throw JoinTestError()
-            }
-        )
+            recorder: recorder, defaults: try isolatedDefaults()
+        ) { _ in
+            await gate.wait()
+            throw JoinTestError()
+        }
         let config = TranscriptionConfig.fromDefaults(try isolatedDefaults())
         await center.startRecording(eventID: "evt-a", title: "First", config: config)
         guard case .recording = center.phase else {
@@ -267,9 +263,8 @@ final class JoinMeetingActionTests: XCTestCase {
         var opened: [URL] = []
         await JoinMeetingAction.join(
             event: other, center: center, defaults: try isolatedDefaults(),
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
 
         XCTAssertEqual(opened, [URL(string: "https://company.zoom.us/j/123")],
                        "the link must open while transcription runs")
@@ -297,9 +292,8 @@ final class JoinMeetingActionTests: XCTestCase {
         var opened: [URL] = []
         await JoinMeetingAction.join(
             event: event, center: center, defaults: try isolatedDefaults(),
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
 
         XCTAssertEqual(opened, [URL(string: "https://meet.google.com/abc-defg-hij")],
                        "the link must open even when the recorder fails to start")
@@ -319,9 +313,8 @@ final class JoinMeetingActionTests: XCTestCase {
         await JoinMeetingAction.join(
             event: makeEvent(conferenceURL: "https://meet.google.com/abc-defg-hij"),
             center: center, defaults: try isolatedDefaults(),
-            recordingSupported: true,
-            openURL: { attempted.append($0); return false }
-        )
+            recordingSupported: true
+        ) { attempted.append($0); return false }
 
         XCTAssertEqual(attempted.count, 1, "the open must still be attempted")
         XCTAssertEqual(recorder.startCalls, 0, "no recording when the meeting never opened")
@@ -340,9 +333,8 @@ final class JoinMeetingActionTests: XCTestCase {
         await JoinMeetingAction.join(
             event: makeEvent(conferenceURL: "https://meet.google.com/abc-defg-hij"),
             center: center, defaults: try isolatedDefaults(),
-            recordingSupported: false,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: false
+        ) { opened.append($0); return true }
 
         XCTAssertEqual(opened.count, 1, "joining is unaffected by the recording gate")
         XCTAssertEqual(recorder.startCalls, 0)
@@ -360,9 +352,8 @@ final class JoinMeetingActionTests: XCTestCase {
         await JoinMeetingAction.join(
             event: makeEvent(conferenceURL: "https://meet.google.com/abc-defg-hij"),
             center: center, defaults: defaults,
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
 
         XCTAssertEqual(opened.count, 1)
         XCTAssertEqual(recorder.startCalls, 0)
@@ -378,9 +369,8 @@ final class JoinMeetingActionTests: XCTestCase {
         await JoinMeetingAction.join(
             event: makeEvent(conferenceURL: ""),
             center: center, defaults: try isolatedDefaults(),
-            recordingSupported: true,
-            openURL: { opened.append($0); return true }
-        )
+            recordingSupported: true
+        ) { opened.append($0); return true }
 
         XCTAssertTrue(opened.isEmpty)
         XCTAssertEqual(recorder.startCalls, 0)
