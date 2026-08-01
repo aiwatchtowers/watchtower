@@ -36,6 +36,7 @@ Delivery model: notifications fire while the app is running (owner-approved; the
 - Condition: `meetingRecorderCenter.phase == .recording` with a non-nil `currentEventID`, and that event's `end_time + 2 min grace < now`.
 - Push "Meeting ended — still recording" with a "Stop recording" action (calls `stopAndProcess`). Re-fires every 10 minutes while the condition holds (dedup key includes a fire-count window).
 - Ad-hoc recordings (no event) are exempt (owner chose event-end trigger only).
+- **Always on (owner decision 2026-07-31):** this is a safety net against forgotten recordings — independent of the "Meeting reminders" toggle AND the minutes stepper (minutes=0 silences only pre-meeting pushes). It respects only quiet hours and the global notification permission.
 
 ### 4. Upcoming-meeting banner (global overlay)
 

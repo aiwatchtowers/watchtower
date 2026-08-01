@@ -22,10 +22,17 @@ struct RecordingDetailView: View {
     let transcriptID: Int64
     let onDeleted: () -> Void
     let onChanged: () -> Void
+    /// Navigate to the Events tab with the given event expanded (linked-event
+    /// header tap); the link carries the start time so the host can pin the
+    /// event's day into the rendered window first. nil = no navigation
+    /// affordance available from this host.
+    var onOpenEvent: ((CalendarQueries.EventLink) -> Void)?
 
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
     @State private var utterances: [TranscriptUtterance]?
+    @State private var attendees: [EventAttendee] = []
+    @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
     @State private var chapters: MeetingChapters?
     @State private var tab: RecordingDetailTab = .recap
@@ -157,7 +164,18 @@ struct RecordingDetailView: View {
                 transcriptText: transcript.transcriptText,
                 utterances: utterances,
                 scrollTarget: $transcriptScrollTarget,
-                onSetUtteranceDeleted: setUtteranceDeleted)
+                attendees: attendees,
+                suggestions: appState.speakerGuessCenter.suggestions[transcriptID] ?? [],
+                isSuggesting: appState.speakerGuessCenter.generating.contains(transcriptID),
+                suggestError: appState.speakerGuessCenter.lastError[transcriptID],
+                suggestNotice: appState.speakerGuessCenter.lastNotice[transcriptID],
+                onSetUtteranceDeleted: setUtteranceDeleted,
+                onSuggestNames: suggestSpeakerNames,
+                onRenameSpeaker: renameSpeaker
+            ) { speaker in
+                appState.speakerGuessCenter.consumeSuggestion(
+                    transcriptID: transcriptID, speaker: speaker)
+            }
         case .chat:
             if let chatVM {
                 RecordingChatTab(chatVM: chatVM)
@@ -205,6 +223,13 @@ struct RecordingDetailView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
+            // Linked-event affordance: resolvable event → tappable deep link
+            // into the Events tab; event row pruned by sync retention → plain
+            // informational label (never an error, never navigation).
+            if transcript.eventID != nil {
+                LinkedEventHeader(linkedEvent: linkedEvent, onOpenEvent: onOpenEvent)
+            }
+
             // Audio playback (single-slot app-wide center; hidden once the
             // retention phase has swept the file).
             TranscriptAudioControl(transcript: transcript, center: appState.audioPlaybackCenter)
@@ -214,28 +239,51 @@ struct RecordingDetailView: View {
 
     // MARK: - Data
 
+    /// One detail load's off-main fetch result (row + everything derived from
+    /// its event), decoded once here so `body` never touches heavy blobs.
+    private struct LoadedDetail {
+        var row: MeetingTranscript?
+        var recap: MeetingRecap?
+        var link: CalendarQueries.EventLink?
+        var utterances: [TranscriptUtterance]?
+        var attendees: [EventAttendee]
+        var chapters: MeetingChapters?
+    }
+
     private func load() async {
         guard let db = appState.databaseManager else { return }
         do {
-            let (row, recap, decodedUtterances, decodedChapters) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
-                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, [TranscriptUtterance]?, MeetingChapters?) in
+            let loaded = try await Task.detached(priority: .userInitiated) { [transcriptID] in
+                try db.dbPool.read { conn -> LoadedDetail in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
                     var recap: MeetingRecap?
+                    var link: CalendarQueries.EventLink?
+                    var eventAttendees: [EventAttendee] = []
                     if let eventID = row?.eventID {
                         recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
+                        // Lightweight (title + start_time); nil when the event
+                        // row is gone — the header degrades to a plain label.
+                        link = try CalendarQueries.fetchEventLink(conn, id: eventID)
+                        // Attendees feed the rename picker (attendees first,
+                        // free text after); ad-hoc recordings have none.
+                        eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?.parsedAttendees ?? []
                     }
-                    return (row, recap, row?.utterances, row?.parsedChapters)
+                    return LoadedDetail(row: row, recap: recap, link: link,
+                                        utterances: row?.utterances, attendees: eventAttendees,
+                                        chapters: row?.parsedChapters)
                 }
             }.value
-            transcript = row
+            transcript = loaded.row
+            linkedEvent = loaded.link
             // Segments and chapters decoded ONCE here (off-main, alongside
             // the fetch), never in body evaluations or row builders.
-            utterances = decodedUtterances
-            chapters = decodedChapters
+            utterances = loaded.utterances
+            attendees = loaded.attendees
+            chapters = loaded.chapters
             // Event recap wins; ad-hoc (or collision-guarded) recap falls back
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
-            recapContent = recap?.parsed ?? row?.parsedSummary
+            recapContent = loaded.recap?.parsed ?? loaded.row?.parsedSummary
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -266,6 +314,48 @@ struct RecordingDetailView: View {
         } catch {
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    /// "Suggest speaker names" (LLM content hints for unnamed clusters) —
+    /// runs through the app-wide SpeakerGuessCenter so the in-flight state
+    /// and the returned chips survive navigation.
+    private func suggestSpeakerNames() {
+        guard let service = notesService else {
+            errorMessage = "watchtower CLI not found"
+            return
+        }
+        appState.speakerGuessCenter.suggest(transcriptID: transcriptID, service: service)
+    }
+
+    /// Manual rename / confirmed suggestion: the transactional
+    /// `segments_json` + `transcript_text` + `speakers_json` rewrite plus the
+    /// voice-print upsert (one write transaction, see
+    /// `MeetingTranscriptQueries.renameSpeaker`), then a reload so every tab
+    /// sees the new labels.
+    private func renameSpeaker(from: String, to name: String) {
+        guard let db = appState.databaseManager else {
+            errorMessage = "Database not available"
+            return
+        }
+        do {
+            let personKey = SpeakerNaming.personKey(for: name, attendees: attendees)
+            let applied = try db.dbPool.write { conn in
+                try MeetingTranscriptQueries.renameSpeaker(
+                    conn, id: transcriptID, from: from, to: name, personKey: personKey)
+            }
+            // A stale-state rename (label already gone, reserved name, …)
+            // writes nothing — keep the suggestion chip and say so instead of
+            // silently consuming it.
+            guard applied else {
+                errorMessage = "Could not rename \(from) — the transcript may have changed"
+                return
+            }
+            appState.speakerGuessCenter.consumeSuggestion(transcriptID: transcriptID, speaker: from)
+            onChanged()
+            Task { await load() }
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

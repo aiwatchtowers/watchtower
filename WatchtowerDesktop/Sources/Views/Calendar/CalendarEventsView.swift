@@ -22,6 +22,12 @@ struct CalendarEventsView: View {
     @State private var expandedEventID: String?
     @State private var userNotes: String = ""
     @State private var mode: CalendarMode = .events
+    /// Hoisted Recordings-tab selection so the Events tab can deep-link into
+    /// a specific recording (expanded event row → Recordings section tap).
+    @State private var selectedRecordingID: Int64?
+    /// Event id the events list should scroll to on next appearance/change —
+    /// set by the recording→event deep link, consumed once.
+    @State private var scrollTargetEventID: String?
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
 
@@ -52,13 +58,38 @@ struct CalendarEventsView: View {
                     case .events:
                         eventsSplitView(calVM)
                     case .recordings:
-                        RecordingsView()
+                        RecordingsView(externalSelection: $selectedRecordingID) { link in
+                            openLinkedEvent(link, in: calVM)
+                        }
                     }
                 }
             } else {
                 notConnectedView
             }
         }
+    }
+
+    /// Recording→event deep link ("Linked to:" header tap). The linked event
+    /// may be outside the default today..+7d window in EITHER direction —
+    /// sync retains ~24h back and calendar.sync_days_ahead is configurable —
+    /// so first pin its day into the rendered window (synchronous reload),
+    /// then switch to Events with the row expanded and scrolled into view.
+    private func openLinkedEvent(_ link: CalendarQueries.EventLink, in vm: CalendarViewModel) {
+        if let start = link.startDate {
+            vm.ensureVisible(date: start)
+        }
+        // An all-day event renders inside a collapsed chip — expand its day
+        // too, or the expanded detail would stay hidden.
+        if let day = vm.dailyEvents.first(where: { day in
+            day.events.contains { $0.id == link.id && $0.isAllDay }
+        }) {
+            expandedAllDayDates.insert(day.id)
+        }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            mode = .events
+            expandedEventID = link.id
+        }
+        scrollTargetEventID = link.id
     }
 
     private func eventsSplitView(_ vm: CalendarViewModel) -> some View {
@@ -88,20 +119,49 @@ struct CalendarEventsView: View {
     }
 
     private func eventsList(_ vm: CalendarViewModel) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
 
-                ForEach(vm.dailyEvents) { day in
-                    daySection(day: day, isToday: day.label == "Today")
+                    ForEach(vm.dailyEvents) { day in
+                        daySection(day: day)
+                            .id(day.id)
+                    }
+
+                    if vm.dailyEvents.isEmpty {
+                        emptyState
+                    }
                 }
-
-                if vm.dailyEvents.isEmpty {
-                    emptyState
+                .padding()
+            }
+            // Deep-link scroll wins when a target is set (before the mode
+            // switch); otherwise land on "Today" past the history days.
+            .onAppear {
+                if scrollTargetEventID != nil {
+                    scrollToTargetIfNeeded(proxy)
+                } else {
+                    scrollToToday(vm, proxy: proxy)
                 }
             }
-            .padding()
+            .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
         }
+    }
+
+    private func scrollToTargetIfNeeded(_ proxy: ScrollViewProxy) {
+        guard let target = scrollTargetEventID else { return }
+        scrollTargetEventID = nil
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(target, anchor: .center)
+        }
+    }
+
+    /// With past days in the list, land on "Today" (or the first future day
+    /// when today has no events) instead of two weeks of history.
+    private func scrollToToday(_ vm: CalendarViewModel, proxy: ScrollViewProxy) {
+        let today = Calendar.current.startOfDay(for: Date())
+        guard let target = vm.dailyEvents.first(where: { $0.id >= today })?.id else { return }
+        proxy.scrollTo(target, anchor: .top)
     }
 
     // MARK: - Header
@@ -148,6 +208,18 @@ struct CalendarEventsView: View {
         .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
     }
 
+    // MARK: - Join Button
+
+    /// Opens the event's conference link and (per the "Auto-record on join"
+    /// setting) starts an event-linked recording via the shared
+    /// `JoinMeetingAction`. Prominent while the meeting is imminent/ongoing.
+    @ViewBuilder
+    private func joinButton(_ event: CalendarEvent) -> some View {
+        JoinButton(event: event,
+                   center: appState.meetingRecorderCenter,
+                   prominent: event.isUpcoming || event.isHappeningNow)
+    }
+
     private func stopRecording() {
         // No CLI-runner guard here: stopping capture must never depend on the
         // watchtower binary resolving — the Center fails visibly at the save
@@ -159,7 +231,10 @@ struct CalendarEventsView: View {
 
     // MARK: - Day Section
 
-    private func daySection(day: DayEvents, isToday: Bool) -> some View {
+    private func daySection(day: DayEvents) -> some View {
+        let cal = Calendar.current
+        let isToday = cal.isDateInToday(day.id)
+        let isPast = day.id < cal.startOfDay(for: Date())
         let timed = day.events.filter { !$0.isAllDay }
         let allDay = day.events.filter { $0.isAllDay }
 
@@ -176,6 +251,10 @@ struct CalendarEventsView: View {
                 eventRow(event)
             }
         }
+        // Past days are browsable history, visually receded. Edge: a
+        // cross-midnight meeting still running lands in a dimmed past
+        // section WITH the green now-highlight — accepted cosmetic quirk.
+        .opacity(isPast ? 0.55 : 1)
     }
 
     // MARK: - All-Day Chip
@@ -283,6 +362,10 @@ struct CalendarEventsView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(selectedEventID == event.id ? Color.accentColor : .blue)
 
+                if event.conferenceLink != nil {
+                    joinButton(event)
+                }
+
                 recordButton(eventID: event.id, title: event.title)
             }
 
@@ -291,6 +374,8 @@ struct CalendarEventsView: View {
                     .padding(.leading, 88)
             }
         }
+        // Scroll anchor for the recording→event deep link.
+        .id(event.id)
     }
 
     // MARK: - Event Detail
@@ -343,6 +428,15 @@ struct CalendarEventsView: View {
                         .font(.caption)
                 }
                 .padding(.top, 2)
+            }
+
+            // Linked recordings (hidden when the event has none): tapping a
+            // row deep-links into the Recordings tab with it selected.
+            EventRecordingsSection(eventID: event.id) { recordingID in
+                selectedRecordingID = recordingID
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    mode = .recordings
+                }
             }
         }
         .padding(.vertical, 4)

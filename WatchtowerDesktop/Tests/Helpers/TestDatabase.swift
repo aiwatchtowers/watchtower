@@ -604,7 +604,8 @@ enum TestDatabase {
         raw_json        TEXT NOT NULL DEFAULT '{}',
         synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT '',
-        ical_uid        TEXT NOT NULL DEFAULT ''
+        ical_uid        TEXT NOT NULL DEFAULT '',
+        conference_url  TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);
@@ -1053,11 +1054,20 @@ enum TestDatabase {
         summary_json    TEXT,
         notes_md        TEXT,
         segments_json   TEXT,
+        speakers_json   TEXT,
         chapters_json   TEXT,
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
     CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
+    CREATE TABLE IF NOT EXISTS voice_prints (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_key   TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        embedding    BLOB NOT NULL,
+        sample_count INTEGER NOT NULL DEFAULT 1,
+        updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
     CREATE TABLE IF NOT EXISTS feed_items (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         item_type   TEXT NOT NULL CHECK (item_type IN ('situation','meeting','briefing','meeting_recap','day_plan')),
@@ -1635,15 +1645,16 @@ enum TestDatabase {
         summaryJSON: String? = nil,
         notesMD: String? = nil,
         segmentsJSON: String? = nil,
+        speakersJSON: String? = nil,
         chaptersJSON: String? = nil
     ) throws {
         try db.execute(sql: """
             INSERT INTO meeting_transcripts (id, event_id, title, audio_path,
-                duration_sec, transcript_text, summary_json, notes_md, segments_json, chapters_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                duration_sec, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             arguments: [id, eventID, title, audioPath, durationSec,
-                        transcriptText, summaryJSON, notesMD, segmentsJSON, chaptersJSON])
+                        transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON])
     }
 
     static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {

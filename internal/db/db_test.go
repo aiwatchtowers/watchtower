@@ -102,7 +102,7 @@ func TestAllTablesExist(t *testing.T) {
 		"custom_emojis", "tracks", "decision_importance_corrections",
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
-		"feed_items", "feed_state", "meeting_transcripts",
+		"feed_items", "feed_state", "meeting_transcripts", "voice_prints",
 		"gmail_messages", "google_accounts",
 		"email_accounts", "imap_messages", "calendar_accounts",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
@@ -655,6 +655,65 @@ func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_calendar_last_extracted_ts = 0`); err != nil {
 		t.Errorf("memory_calendar_last_extracted_ts missing after cycle: %v", err)
+	}
+}
+
+// TestMigration00044ConferenceURL: calendar_events.conference_url (Meet Join
+// button) is additive, defaults ”, and a plain insert that omits it still
+// succeeds.
+func TestMigration00044ConferenceURL(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	var n int
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('calendar_events') WHERE name = 'conference_url'`).Scan(&n)
+	if err != nil || n != 1 {
+		t.Fatalf("calendar_events.conference_url missing (count=%d err=%v)", n, err)
+	}
+
+	if _, err := database.Exec(
+		`INSERT INTO calendar_calendars (id, name) VALUES ('cal1', 'Cal')`); err != nil {
+		t.Fatalf("seeding calendar: %v", err)
+	}
+	if _, err := database.Exec(
+		`INSERT INTO calendar_events (id, calendar_id, start_time, end_time)
+		 VALUES ('evt-conf-x', 'cal1', '2026-01-01T09:00:00Z', '2026-01-01T10:00:00Z')`); err != nil {
+		t.Fatalf("inserting event without conference_url: %v", err)
+	}
+	var confURL string
+	if err := database.QueryRow(
+		`SELECT conference_url FROM calendar_events WHERE id = 'evt-conf-x'`).Scan(&confURL); err != nil {
+		t.Fatalf("reading conference_url default: %v", err)
+	}
+	if confURL != "" {
+		t.Fatalf("conference_url default = %q, want empty string", confURL)
+	}
+}
+
+// TestMigration00044ConferenceURLDownUpCycle: 00044's Down drops the
+// ALTER-added column (precedent: 00033/00042's Down), so a down;up cycle is
+// clean.
+func TestMigration00044ConferenceURLDownUpCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conference-url-cycle.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+
+	// DownTo 43 (not Down): the moment a 00045 lands, a plain Down would
+	// silently stop exercising 00044's Down forever (the DownTo idiom from
+	// TestMigration00043DownUpCycle).
+	if err := goose.DownTo(d.DB, "migrations", 43); err != nil {
+		t.Fatalf("goose down to 43: %v", err)
+	}
+	if err := goose.Up(d.DB, "migrations"); err != nil {
+		t.Fatalf("goose up after down: %v", err)
+	}
+
+	if _, err := d.Exec(`UPDATE calendar_events SET conference_url = ''`); err != nil {
+		t.Errorf("conference_url missing after cycle: %v", err)
 	}
 }
 

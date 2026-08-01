@@ -112,13 +112,17 @@ struct TranscriptSaveService {
 
     /// Writes `transcriptText` to a temp file, invokes
     /// `meeting-prep transcript save --transcript-file <tmp> [--segments-file <tmp>]
-    /// --audio <p> --duration <n> [--event-id <id>] [--title <s>] --lang-stats <json>`,
+    /// [--speakers-file <tmp>] --audio <p> --duration <n> [--event-id <id>]
+    /// [--title <s>] --lang-stats <json>`,
     /// and decodes the stdout envelope. The temp files are removed in defers,
     /// whether the run succeeds or throws. Non-nil `utterances` travel as a
     /// second temp file next to the transcript; the CLI persists them to
     /// `segments_json` (nil → the column stays NULL, legacy behavior).
+    /// Non-nil `speakers` (per-cluster voice embeddings) travel the same way
+    /// into `speakers_json`.
     func save(transcriptText: String,
               utterances: [TranscriptUtterance]? = nil,
+              speakers: [SpeakerEmbedding]? = nil,
               audioPath: String,
               durationSec: Int,
               eventID: String?,
@@ -145,12 +149,25 @@ struct TranscriptSaveService {
         }
         defer { if let segmentsURL { try? FileManager.default.removeItem(at: segmentsURL) } }
 
+        var speakersURL: URL?
+        if let speakers, !speakers.isEmpty,
+           let speakersJSON = SpeakerEmbeddings.encode(speakers) {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("watchtower-speakers-\(UUID().uuidString).json")
+            try speakersJSON.write(to: url, atomically: true, encoding: .utf8)
+            speakersURL = url
+        }
+        defer { if let speakersURL { try? FileManager.default.removeItem(at: speakersURL) } }
+
         var args = [
             "meeting-prep", "transcript", "save",
             "--transcript-file", tmpURL.path
         ]
         if let segmentsURL {
             args += ["--segments-file", segmentsURL.path]
+        }
+        if let speakersURL {
+            args += ["--speakers-file", speakersURL.path]
         }
         args += [
             "--audio", audioPath,
@@ -204,4 +221,38 @@ struct TranscriptSaveService {
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(TranscriptFollowupResult.self, from: data)
     }
+    /// `meeting-prep transcript speaker-guess <id>` — LLM content hints for
+    /// the transcript's unnamed "Speaker N" clusters. Nothing is persisted:
+    /// the suggestions render as confirm chips and are only applied through
+    /// the manual-rename mechanics.
+    func speakerGuess(transcriptID: Int64) async throws -> SpeakerGuessResult {
+        let args = ["meeting-prep", "transcript", "speaker-guess", String(transcriptID)]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(SpeakerGuessResult.self, from: data)
+    }
+}
+
+// MARK: - SpeakerGuessResult
+
+/// Decoded stdout envelope of `watchtower meeting-prep transcript
+/// speaker-guess <id>`. The CLI exits non-zero on any failure, so decoding
+/// only happens on success.
+struct SpeakerGuessResult: Decodable, Equatable {
+    let transcriptID: Int64
+    let suggestions: [SpeakerSuggestion]
+
+    enum CodingKeys: String, CodingKey {
+        case transcriptID = "transcript_id"
+        case suggestions
+    }
+}
+
+/// One "Speaker N looks like <candidate>" hint (never auto-applied).
+struct SpeakerSuggestion: Decodable, Equatable, Identifiable {
+    let speaker: String
+    let candidate: String
+    let confidence: Double
+    let evidence: String
+
+    var id: String { speaker }
 }

@@ -48,6 +48,10 @@ final class AppState {
     /// navigation-surviving state).
     let transcriptNotesCenter = TranscriptNotesCenter()
 
+    /// App-wide, single-slot-per-transcript registry for "Suggest speaker
+    /// names" runs and their suggestion chips (same surviving-state contract
+    /// as TranscriptNotesCenter).
+    let speakerGuessCenter = SpeakerGuessCenter()
     /// Same pattern for "generate chapters" runs (Recap tab).
     let transcriptChaptersCenter = TranscriptChaptersCenter()
 
@@ -142,6 +146,12 @@ final class AppState {
 
     /// Watches for new digests and sends notifications.
     private(set) var digestWatcher: DigestWatcher?
+
+    /// Drives all meeting-reminder surfaces: the pre-meeting push, the
+    /// stop-recording push, and the global countdown banner. Created with the
+    /// DB (not gated on notification permission — the in-app banner needs
+    /// none; the pushes silently no-op without it).
+    private(set) var meetingReminderCenter: MeetingReminderCenter?
 
     /// Manages app updates from GitHub Releases.
     let updateService = UpdateService()
@@ -251,6 +261,20 @@ final class AppState {
                 }.value
                 databaseManager = manager
                 errorMessage = nil
+                // Voice matching needs the DB at diarization time; the Center
+                // is created before the DB opens, so hand it a loader now. A
+                // read failure degrades to "no voice prints" (plain Speaker N
+                // labels), never a thrown error.
+                meetingRecorderCenter.voicePrintsLoader = { [dbPool = manager.dbPool] in
+                    do {
+                        return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
+                    } catch {
+                        // Documented degradation, but never a silent one
+                        // (the renderRoles diagnostics convention).
+                        print("[AppState] voice-print load failed, matching disabled for this run: \(error.localizedDescription)")
+                        return []
+                    }
+                }
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {
                     let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)
@@ -285,6 +309,7 @@ final class AppState {
                 initCalendarAccounts(dbPool: manager.dbPool)
                 initGoogleAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
+                startMeetingReminders(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
                     backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode)
@@ -451,6 +476,12 @@ final class AppState {
         // sibling VM above gets its pool, so isConnected reads google_accounts
         // instead of staying permanently false.
         GoogleConnectFlow.shared.configure(dbPool: dbPool)
+    }
+
+    private func startMeetingReminders(dbPool: DatabasePool) {
+        let center = MeetingReminderCenter(dbPool: dbPool, recorderCenter: meetingRecorderCenter)
+        meetingReminderCenter = center
+        center.start()
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

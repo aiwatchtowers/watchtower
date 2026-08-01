@@ -4,31 +4,46 @@ import SwiftUI
 /// Owns the lightweight list (RecordingListItem — never the heavy rows) and
 /// the selection; reloads when the recorder finishes a run.
 struct RecordingsView: View {
+    /// Optional external selection binding — the Calendar screen passes its
+    /// own state so the Events tab can deep-link into a specific recording;
+    /// when nil the view owns selection locally.
+    var externalSelection: Binding<Int64?>?
+    /// Navigate to the Events tab with this event expanded (the recording
+    /// header's "Linked to:" tap); nil hides the navigation affordance.
+    var onOpenEvent: ((CalendarQueries.EventLink) -> Void)?
+
     @Environment(AppState.self) private var appState
     @State private var items: [RecordingListItem] = []
-    @State private var selectedID: Int64?
+    @State private var localSelectedID: Int64?
+
+    /// External binding wins (Events-tab deep link), local state otherwise.
+    /// Internal (not private) so tests can pin the write-back direction.
+    var selectedID: Binding<Int64?> {
+        externalSelection ?? $localSelectedID
+    }
 
     var body: some View {
         HStack(spacing: 0) {
-            RecordingsListView(items: items, selectedID: $selectedID)
+            RecordingsListView(items: items, selectedID: selectedID)
                 .frame(minWidth: 300, idealWidth: 350)
 
-            if let selectedID {
+            if let selected = selectedID.wrappedValue {
                 Divider()
                 RecordingDetailView(
-                    transcriptID: selectedID,
+                    transcriptID: selected,
                     onDeleted: {
-                        self.selectedID = nil
+                        selectedID.wrappedValue = nil
                         loadItems()
                     },
-                    onChanged: loadItems
+                    onChanged: loadItems,
+                    onOpenEvent: onOpenEvent
                 )
-                .id(selectedID)
+                .id(selected)
                 .frame(minWidth: 400, idealWidth: 500)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: selectedID)
+        .animation(.easeInOut(duration: 0.25), value: selectedID.wrappedValue)
         .onAppear(perform: loadItems)
         .onChange(of: appState.meetingRecorderCenter.phase) { _, phase in
             if case .idle = phase { loadItems() }
@@ -42,7 +57,9 @@ struct RecordingsView: View {
                 try MeetingTranscriptQueries.fetchRecordingList(conn)
             }
         } catch {
-            // Silent: table may not exist yet on older DB schema versions.
+            // Render-nothing on failure, but never silently: an empty list and
+            // a failed read must be distinguishable in the logs.
+            print("RecordingsView load failed: \(error)")
         }
     }
 }

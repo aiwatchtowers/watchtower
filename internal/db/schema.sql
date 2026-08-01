@@ -856,6 +856,7 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     event_status    TEXT NOT NULL DEFAULT 'confirmed',
     event_type      TEXT NOT NULL DEFAULT '',
     html_link       TEXT NOT NULL DEFAULT '',
+    conference_url  TEXT NOT NULL DEFAULT '',  -- meeting join link (Meet/Zoom/Teams/Webex), '' when none (see 00044)
     raw_json        TEXT NOT NULL DEFAULT '{}',
     ical_uid        TEXT NOT NULL DEFAULT '',  -- dedup enabler across accounts/providers (see 00043)
     synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
@@ -1025,7 +1026,9 @@ CREATE TABLE IF NOT EXISTS meeting_recaps (
 -- meeting_recaps). segments_json is a JSON array of per-utterance segments
 -- ({"idx","start_sec","end_sec","speaker","text","deleted"}); NULL for legacy
 -- rows. Invariant: when non-NULL, transcript_text = render(segments where
--- !deleted). chapters_json is the AI-generated chapter breakdown
+-- !deleted). speakers_json is a JSON array of per-cluster voice embeddings
+-- ({"speaker","embedding"}); NULL when the diarizer produced none.
+-- chapters_json is the AI-generated chapter breakdown
 -- ({"overall_summary", "chapters": [{"title","start_sec","end_sec",
 -- "participants","summary","decisions","action_items","open_questions"}]});
 -- each action item is {"text","converted_target_id"} — converted_target_id
@@ -1041,11 +1044,25 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     summary_json    TEXT,
     notes_md        TEXT,
     segments_json   TEXT,
+    speakers_json   TEXT,
     chapters_json   TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
+
+-- Voice prints: one row per known person's voice, learned from manual speaker
+-- renames in the Desktop transcript view. person_key = attendee email (or a
+-- normalized display name when no email). embedding = L2-normalized 256-dim
+-- float32 centroid (little-endian BLOB); sample_count = clusters folded in.
+CREATE TABLE IF NOT EXISTS voice_prints (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_key   TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    embedding    BLOB NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 1,
+    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
 
 -- Gmail messages (synced inbox items from Gmail). account_id + composite PK
 -- scope messages per Google account (see 00043); calendar_auth_state/

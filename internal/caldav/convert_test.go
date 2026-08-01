@@ -270,4 +270,31 @@ func TestToDBEventScopesIDAndMirrorsGoogleRowShape(t *testing.T) {
 	if !row.IsRecurring || row.RawJSON != "{}" || row.Attendees != "[]" || row.EventType != "default" {
 		t.Errorf("row shape wrong: %+v", row)
 	}
+	if row.ConferenceURL != "" {
+		t.Errorf("conference_url = %q, want empty for an event with no link", row.ConferenceURL)
+	}
+}
+
+// TestToDBEventExtractsConferenceURL: CalDAV/ICS events have no dedicated
+// conference field, so a meeting link pasted into the location or description
+// must surface via the shared regex fallback (internal/calendar).
+func TestToDBEventExtractsConferenceURL(t *testing.T) {
+	base := Event{
+		UID:   "conf",
+		Title: "Sync",
+		Start: time.Date(2026, 1, 12, 9, 0, 0, 0, time.UTC),
+		End:   time.Date(2026, 1, 12, 10, 0, 0, 0, time.UTC),
+	}
+
+	fromLocation := base
+	fromLocation.Location = "https://company.zoom.us/j/1234567890"
+	if got := toDBEvent(fromLocation, "caldav:7", `[]`).ConferenceURL; got != "https://company.zoom.us/j/1234567890" {
+		t.Errorf("conference_url from location = %q", got)
+	}
+
+	fromDescription := base
+	fromDescription.Description = "Join: https://meet.google.com/abc-defg-hij"
+	if got := toDBEvent(fromDescription, "caldav:7", `[]`).ConferenceURL; got != "https://meet.google.com/abc-defg-hij" {
+		t.Errorf("conference_url from description = %q", got)
+	}
 }
