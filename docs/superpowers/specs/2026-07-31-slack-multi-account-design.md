@@ -1,8 +1,8 @@
 # Slack Multi-Account — Design
 
 **Date:** 2026-07-31
-**Branch:** `feature/multi-account` (parallel worktree, per the initiative plan)
-**Status:** proposed
+**Branch:** `feature/slack-multi-account` (fresh branch off `main`, which already carries the Google sub-project via PR #48 — the old `feature/multi-account` branch was stale and not reused)
+**Status:** implemented (Tasks 1–11 complete, 2026-07-31)
 
 Sub-project 2 of 3 of the multi-account initiative (Google → Slack → Jira). Reuses
 the conventions established by sub-project 1 (`docs/superpowers/specs/2026-07-30-google-multi-account-design.md`,
@@ -221,10 +221,46 @@ WKWebView OAuth flow Google/Gmail already use (`auth prepare`/`auth complete
 - Schema: `TestAllTablesExist`, schema golden regen, Swift
   `TestDatabase.swift` mirror.
 
+## Implementation deviations / clarifications
+
+Implemented on `feature/slack-multi-account` (migration **00044**). The following
+v1 identity-scoping decisions from this design were made explicit during
+implementation and are documented here as deliberate scope, not oversights
+(matching the Google sub-project's "Implementation deviations" precedent). None
+are behavioral departures from the design above — they pin down where the
+single-owner model is intentionally *not* widened:
+
+- **`db.GetCurrentUserID()` stays pinned to account #1.** Its consumers (Jira
+  detection, style-sample, people-card lookup, `cmd/profile.go`) keep reading a
+  single owner identity — account #1's `current_user_id`. The app remains
+  conceptually single-owner; only Slack message ingestion, inbox
+  stream-candidate exclusion (`db.ListOwnerSlackUserIDs()` →
+  `ListStreamCandidatesSince`), and own-message suppression became genuinely
+  multi-account aware. Widening every `GetCurrentUserID()` consumer to a
+  multi-identity union is out of scope for v1.
+- **The migration rewrites only scalar TEXT id columns, not JSON blobs or vault
+  files.** Historical rows in JSON-embedded id columns (`tracks.channel_ids`,
+  `tracks.participants`, `people.starred_channels`, any `shared_channel_ids`
+  config) keep their old bare ids as frozen historical text; the memory vault's
+  git-backed markdown (entity/episode mentions) is likewise not SQL-rewritable
+  and keeps old-style ids. New rows/content written by pipelines running
+  post-migration carry namespaced ids correctly.
+- **`slack remove <id>` is non-destructive** — the key departure from
+  `google remove`'s cascade. It deletes the token file and sets
+  `status='removed'`, `enabled=0`, but keeps the `slack_accounts` row (for
+  label/domain attribution of historical permalinks) and does NOT cascade-delete
+  `channels`/`messages`/digests/tracks/situations/memory for that account.
+- **Own-message exclusion is a *widening* of a pre-existing filter, not new
+  behavior** (contrast the Gmail case in the Google sub-project, where
+  suppression was genuinely new): Slack stream-candidate detection already
+  excluded the owner's own messages by one user id; it now excludes every
+  connected account's owner id. Recorded here so the distinction from the Gmail
+  clarification stays legible — see `docs/inventory/inbox-pulse.md` INBOX-09.
+
 ## Rollout
 
-Land as a PR chain into `feature/multi-account` (parallel worktree, per the
-initiative plan), migration number reserved ahead of Jira's (sub-project 3).
+Land as a PR chain into `feature/slack-multi-account`, migration number (00044)
+reserved ahead of Jira's (sub-project 3).
 Final merge to `main` after the owner verifies live: connect a second real
 Slack workspace, confirm both sync, show up correctly attributed in the
 dashboard/inbox, and a shared AI response (digest/chat) renders permalinks
