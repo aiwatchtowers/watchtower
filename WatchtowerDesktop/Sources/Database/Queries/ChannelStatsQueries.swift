@@ -280,9 +280,11 @@ enum ChannelStatsQueries {
         return result
     }
 
-    /// Fetch the current user ID from workspace table.
+    /// Fetch the current user ID (account #1) from the slack_accounts table.
+    /// current_user_id moved off workspace in migration 00044; pinned to
+    /// account #1, mirroring Go's db.GetCurrentUserID.
     static func fetchCurrentUserID(_ db: Database) throws -> String? {
-        try String.fetchOne(db, sql: "SELECT current_user_id FROM workspace LIMIT 1")
+        try String.fetchOne(db, sql: "SELECT current_user_id FROM slack_accounts WHERE id = 1")
     }
 
     /// Toggle mute_for_llm setting for a channel (upsert into channel_settings).

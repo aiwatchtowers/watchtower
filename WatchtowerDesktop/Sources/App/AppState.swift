@@ -113,6 +113,11 @@ final class AppState {
     /// away from the Settings window.
     private(set) var googleAccountsViewModel: GoogleAccountsViewModel?
 
+    /// Slack Accounts ViewModel (multi-workspace) — persists across tab
+    /// switches so an in-flight OAuth connect survives navigating away from the
+    /// Settings window.
+    private(set) var slackAccountsViewModel: SlackAccountsViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -281,6 +286,7 @@ final class AppState {
                 initEmailAccounts(dbPool: manager.dbPool)
                 initCalendarAccounts(dbPool: manager.dbPool)
                 initGoogleAccounts(dbPool: manager.dbPool)
+                initSlackAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
@@ -436,6 +442,12 @@ final class AppState {
         let vm = CalendarAccountsViewModel(dbPool: dbPool)
         vm.refresh()
         calendarAccountsViewModel = vm
+    }
+
+    func initSlackAccounts(dbPool: DatabasePool) {
+        let vm = SlackAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        slackAccountsViewModel = vm
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

@@ -792,7 +792,7 @@ final class ProfileQueryTests: XCTestCase {
         let db = try TestDatabase.create()
         try db.write { db in
             try TestDatabase.insertWorkspace(db, id: "T001", name: "Test")
-            try db.execute(sql: "UPDATE workspace SET current_user_id = 'U123' WHERE id = 'T001'")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U123')")
             try TestDatabase.insertProfile(db, slackUserID: "U123", role: "IC")
         }
 
