@@ -125,7 +125,8 @@ struct CalendarEventsView: View {
                     header
 
                     ForEach(vm.dailyEvents) { day in
-                        daySection(day: day, isToday: day.label == "Today")
+                        daySection(day: day)
+                            .id(day.id)
                     }
 
                     if vm.dailyEvents.isEmpty {
@@ -134,9 +135,15 @@ struct CalendarEventsView: View {
                 }
                 .padding()
             }
-            // Deep-link scroll: the target is set before the mode switch
-            // (onAppear) or while the list is already visible (onChange).
-            .onAppear { scrollToTargetIfNeeded(proxy) }
+            // Deep-link scroll wins when a target is set (before the mode
+            // switch); otherwise land on "Today" past the history days.
+            .onAppear {
+                if scrollTargetEventID != nil {
+                    scrollToTargetIfNeeded(proxy)
+                } else {
+                    scrollToToday(vm, proxy: proxy)
+                }
+            }
             .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
         }
     }
@@ -147,6 +154,14 @@ struct CalendarEventsView: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             proxy.scrollTo(target, anchor: .center)
         }
+    }
+
+    /// With past days in the list, land on "Today" (or the first future day
+    /// when today has no events) instead of two weeks of history.
+    private func scrollToToday(_ vm: CalendarViewModel, proxy: ScrollViewProxy) {
+        let today = Calendar.current.startOfDay(for: Date())
+        guard let target = vm.dailyEvents.first(where: { $0.id >= today })?.id else { return }
+        proxy.scrollTo(target, anchor: .top)
     }
 
     // MARK: - Header
@@ -216,7 +231,10 @@ struct CalendarEventsView: View {
 
     // MARK: - Day Section
 
-    private func daySection(day: DayEvents, isToday: Bool) -> some View {
+    private func daySection(day: DayEvents) -> some View {
+        let cal = Calendar.current
+        let isToday = cal.isDateInToday(day.id)
+        let isPast = day.id < cal.startOfDay(for: Date())
         let timed = day.events.filter { !$0.isAllDay }
         let allDay = day.events.filter { $0.isAllDay }
 
@@ -233,6 +251,10 @@ struct CalendarEventsView: View {
                 eventRow(event)
             }
         }
+        // Past days are browsable history, visually receded. Edge: a
+        // cross-midnight meeting still running lands in a dimmed past
+        // section WITH the green now-highlight — accepted cosmetic quirk.
+        .opacity(isPast ? 0.55 : 1)
     }
 
     // MARK: - All-Day Chip

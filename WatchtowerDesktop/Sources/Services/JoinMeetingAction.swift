@@ -20,10 +20,14 @@ enum JoinMeetingAction {
 
     /// `openURL`, `defaults`, and `recordingSupported` are injectable seams so
     /// tests neither drive `NSWorkspace`, read the real preference, nor depend
-    /// on the host's macOS version.
+    /// on the host's macOS version. `forceRecord` (the notification's
+    /// "Join + Record" action) starts a recording regardless of the
+    /// auto-record setting — the OS-support gate and the single-slot recorder
+    /// guard still apply.
     static func join(
         event: CalendarEvent,
         center: MeetingRecorderCenter,
+        forceRecord: Bool = false,
         defaults: UserDefaults = .standard,
         recordingSupported: Bool = SystemAudioRecorder.isSupported,
         openURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
@@ -42,7 +46,7 @@ enum JoinMeetingAction {
         // Join opens the link only, instead of dropping the Center into a
         // failure banner for a recording the user never requested.
         let autoRecord = defaults.object(forKey: autoRecordKey) as? Bool ?? true
-        guard autoRecord, recordingSupported, !center.isBusy else { return }
+        guard forceRecord || autoRecord, recordingSupported, !center.isBusy else { return }
         // A start failure surfaces through the Center's own error path
         // (RecordingIndicatorView) — the link has already opened above.
         await center.startRecording(eventID: event.id, title: event.title, config: .fromDefaults(defaults))

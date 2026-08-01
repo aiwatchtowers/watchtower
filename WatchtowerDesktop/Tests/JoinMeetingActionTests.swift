@@ -360,6 +360,53 @@ final class JoinMeetingActionTests: XCTestCase {
         XCTAssertEqual(center.phase, .idle)
     }
 
+    /// The notification's "Join + Record" action (spec §2): `forceRecord`
+    /// starts an event-linked recording even with auto-record switched OFF.
+    func testJoinForceRecordOverridesAutoRecordOff() async throws {
+        let recorder = JoinFakeRecorder()
+        let center = makeCenter(recorder: recorder, defaults: try isolatedDefaults())
+        let defaults = try isolatedDefaults()
+        defaults.set(false, forKey: JoinMeetingAction.autoRecordKey)
+
+        var opened: [URL] = []
+        await JoinMeetingAction.join(
+            event: makeEvent(id: "evt-force", conferenceURL: "https://meet.google.com/abc-defg-hij"),
+            center: center, forceRecord: true, defaults: defaults,
+            recordingSupported: true
+        ) { opened.append($0); return true }
+
+        XCTAssertEqual(opened.count, 1)
+        XCTAssertEqual(recorder.startCalls, 1, "forceRecord must start recording despite auto-record off")
+        XCTAssertEqual(center.currentEventID, "evt-force")
+        guard case .recording = center.phase else {
+            return XCTFail("expected .recording, got \(center.phase)")
+        }
+    }
+
+    /// `forceRecord` never overrides the single-slot recorder guard: with a
+    /// recording already in flight the link opens and nothing is interrupted
+    /// or double-started.
+    func testJoinForceRecordWhileBusyOpensLinkOnly() async throws {
+        let recorder = JoinFakeRecorder()
+        let center = makeCenter(recorder: recorder, defaults: try isolatedDefaults())
+        await center.startRecording(eventID: "evt-a", title: "First")
+        guard case .recording = center.phase else {
+            return XCTFail("expected .recording, got \(center.phase)")
+        }
+
+        var opened: [URL] = []
+        await JoinMeetingAction.join(
+            event: makeEvent(id: "evt-b", conferenceURL: "https://company.zoom.us/j/123"),
+            center: center, forceRecord: true, defaults: try isolatedDefaults(),
+            recordingSupported: true
+        ) { opened.append($0); return true }
+
+        XCTAssertEqual(opened, [URL(string: "https://company.zoom.us/j/123")],
+                       "the link must open even when the recorder is busy")
+        XCTAssertEqual(recorder.startCalls, 1, "forceRecord must not double-start or interrupt")
+        XCTAssertEqual(center.currentEventID, "evt-a", "the running recording keeps its event link")
+    }
+
     /// Degenerate input: an event without a (valid) link is a full no-op.
     func testJoinWithoutLinkIsANoOp() async throws {
         let recorder = JoinFakeRecorder()

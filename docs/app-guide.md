@@ -62,7 +62,11 @@ Google Calendar integration showing upcoming events and AI-powered meeting prepa
 
 **Tabs** — When connected, the Calendar screen has an "Events | Recordings" segmented control at the top. **Events** is the schedule + meeting-prep view described below; **Recordings** is the home for all meeting recordings (see "Recordings tab" further down).
 
-**Events view** — Shows today's and tomorrow's events. Each event displays: time range (or "All day"), duration, title, location, and attendee count. Events happening now have a green highlight; upcoming events (within 1 hour) have a blue highlight.
+**Events view** — Shows past events (last `calendar.history_days` days, default 14) plus the next 7 days, scrolled to "Today" on open. Each event displays: time range (or "All day"), duration, title, location, and attendee count. Events happening now have a green highlight; upcoming events (within 1 hour) have a blue highlight plus a live "in N min" countdown next to the time range. Past day sections are dimmed but fully browsable — past meetings keep their prep, recordings, and recaps reachable.
+
+**Meeting reminders** — A local notification fires N minutes before each meeting (Settings › Notifications › Meeting Reminders; default 5 minutes, 0 disables). When the event has a conference link the notification carries "Join" and "Join + Record" action buttons ("Join + Record" always starts an event-linked recording, regardless of the auto-record setting). While the app is open, a countdown banner also appears at the top of the window for the next meeting starting within the same window, with Join / Record / dismiss buttons — the banner needs no notification permission. If an event-linked recording is still running 2 minutes after the event's scheduled end, a "Meeting ended — still recording" notification with a "Stop recording" action fires and repeats every 10 minutes until stopped (ad-hoc recordings are exempt). This stop-recording alert is always on — it ignores both the "Meeting reminders" toggle and the minutes stepper (0/"Off" silences only pre-meeting reminders) and is suppressed only by quiet hours or denied notification permission. Pre-meeting reminders respect quiet hours and re-fire if a meeting is rescheduled.
+
+**Join button** — Events with a conference link (Google Meet, Zoom, Teams, Webex — from the event's Meet field, conference data, or a link pasted into the location/description, including CalDAV/ICS events) show a "Join" button next to Prepare/Record, accent-tinted while the meeting is imminent or ongoing. Clicking it opens the meeting link in the default browser and — if "Auto-record on join" is enabled in Settings › Transcription (default on) and no recording is already running — also starts an event-linked recording. A recording already in flight is never interrupted: Join then only opens the link. The sidebar's "next event" indicator shows the same Join button when that event has a link.
 
 **Join button** — Events with a conference link (Google Meet, Zoom, Teams, Webex — from the event's Meet field, conference data, or a link pasted into the location/description, including CalDAV/ICS events) show a "Join" button next to Prepare/Record, accent-tinted while the meeting is imminent or ongoing. Clicking it opens the meeting link in the default browser and — if "Auto-record on join" is enabled in Settings › Transcription (default on) and no recording is already running — also starts an event-linked recording. A recording already in flight is never interrupted: Join then only opens the link. The sidebar's "next event" indicator shows the same Join button when that event has a link.
 
@@ -78,7 +82,7 @@ Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] 
 
 **Not connected state** — When Google Calendar is not connected, the tab shows a prompt to connect in Settings.
 
-**Settings** — The Google Calendar section in Settings shows connection status and a "Sync days ahead" picker (3/5/7/14 days) when connected. Config field: `calendar.sync_days_ahead` (default: 2).
+**Settings** — The Google Calendar section in Settings shows connection status and a "Sync days ahead" picker (3/5/7/14 days) when connected. Config fields: `calendar.sync_days_ahead` (default: 2), `calendar.history_days` (past days kept synced and shown in the Events list; default: 14).
 
 **Briefing integration** — Today's calendar events appear as "Today's Schedule" at the top of the briefing detail view, before "Needs Attention". Events are also included in the briefing AI prompt for context-aware recommendations.
 
@@ -260,7 +264,7 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 **Gmail:** Connect/disconnect Gmail via OAuth. Connection status indicator (green checkmark when connected).
 **Jira:** Connect/disconnect Jira Cloud via OAuth. Boards selection with toggle switches. Board Profiles — workflow visualization (stage chain), stale threshold sliders, Re-analyze button, health signals, iteration info. User Mapping — matched/unmatched table with manual mapping dropdown. Sync status (last sync time, manual sync button). Jira Features — toggle switches organized by category (Your Work, Team Visibility, Product & Strategy, Automation). Defaults are set by user role on first connection; any toggle can be changed at any time. Jira key patterns (PROJ-123) in Slack messages are automatically detected and linked to issues.
 **Profile:** Your role, team, manager, reports, peers, starred channels/people.
-**Notifications:** Decision alerts, daily summaries, quiet hours.
+**Notifications:** Decision alerts, daily summaries, meeting reminders (toggle + minutes-before stepper, 0 disables pre-meeting reminders; the "still recording" alert stays on regardless), quiet hours.
 **Daemon:** Start/stop the background sync daemon, view status.
 **Training:** Prompt editor, feedback stats, tuning.
 **Logs:** Live daemon logs with filtering.

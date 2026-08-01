@@ -77,6 +77,48 @@ struct CalendarViewModelTests {
     // calendar_auth_state isn't in the test schema, so we don't exercise that
     // branch here — coverage for it lives in Go-side tests (internal/db).
 
+    @Test("loadEvents includes past days inside the history window and drops older ones")
+    func loadPastEvents() throws {
+        let pool = try makePool()
+        let cal = Calendar.current
+        let now = Date()
+        let threeDaysAgo = try #require(cal.date(byAdding: .day, value: -3, to: now))
+        let twentyDaysAgo = try #require(cal.date(byAdding: .day, value: -20, to: now))
+
+        try insertEvent(pool, id: "recent-past", title: "Retro", start: threeDaysAgo, end: threeDaysAgo.addingTimeInterval(3600))
+        try insertEvent(pool, id: "deep-past", title: "Ancient", start: twentyDaysAgo, end: twentyDaysAgo.addingTimeInterval(3600))
+        try insertEvent(pool, id: "today", title: "Standup", start: now, end: now.addingTimeInterval(1800))
+
+        let vm = CalendarViewModel(dbPool: pool, historyDays: 14)
+        vm.stopObserving()
+        vm.loadEvents()
+
+        let allIDs = vm.dailyEvents.flatMap(\.events).map(\.id)
+        #expect(allIDs.contains("recent-past"))
+        #expect(!allIDs.contains("deep-past"), "events older than the history window stay hidden")
+        // Date-keyed accessor: today's group is found even with past days first.
+        #expect(vm.todayEvents.contains { $0.id == "today" })
+        // Past groups sort before today.
+        let pastIndex = try #require(vm.dailyEvents.firstIndex { $0.events.contains { $0.id == "recent-past" } })
+        let todayIndex = try #require(vm.dailyEvents.firstIndex { $0.events.contains { $0.id == "today" } })
+        #expect(pastIndex < todayIndex)
+    }
+
+    @Test("degenerate historyDays values clamp to a 1-day floor")
+    func historyDaysClamped() throws {
+        let pool = try makePool()
+        // 0 and negative are valid-but-degenerate config values; the window
+        // must never collapse below one day of history (and never crash).
+        let vmZero = CalendarViewModel(dbPool: pool, historyDays: 0)
+        vmZero.stopObserving()
+        #expect(vmZero.historyDays == 1)
+        let vmNegative = CalendarViewModel(dbPool: pool, historyDays: -7)
+        vmNegative.stopObserving()
+        #expect(vmNegative.historyDays == 1)
+        vmNegative.loadEvents()
+        #expect(vmNegative.dailyEvents.isEmpty)
+    }
+
     @Test("todayEvents accessor returns first day group")
     func todayEventsAccessor() throws {
         let pool = try makePool()
@@ -94,29 +136,31 @@ struct CalendarViewModelTests {
 
     // MARK: - Deep-link window pin (recording → past/far-future event)
 
-    @Test("ensureVisible pins yesterday into the rendered window and survives reload")
+    @Test("ensureVisible pins a day beyond the history window and survives reload")
     func ensureVisiblePinsPastDay() throws {
         let pool = try makePool()
         let cal = Calendar.current
-        // Relative dates only — no hardcoded calendar bombs.
-        let yesterdayNoon = try #require(cal.date(byAdding: .day, value: -1,
-                                                  to: cal.startOfDay(for: Date()).addingTimeInterval(12 * 3600)))
+        // Relative dates only — no hardcoded calendar bombs. With the
+        // -historyDays..+daysAhead window, the pin only matters for days
+        // OUTSIDE it: use a 3-day history and an event 5 days back.
+        let pastNoon = try #require(cal.date(byAdding: .day, value: -5,
+                                             to: cal.startOfDay(for: Date()).addingTimeInterval(12 * 3600)))
         try insertEvent(pool, id: "y1", title: "Retro",
-                        start: yesterdayNoon, end: yesterdayNoon.addingTimeInterval(3600))
+                        start: pastNoon, end: pastNoon.addingTimeInterval(3600))
 
-        let vm = CalendarViewModel(dbPool: pool)
+        let vm = CalendarViewModel(dbPool: pool, historyDays: 3)
         vm.stopObserving()
         vm.loadEvents()
 
-        // Default window is today..+7d: yesterday's event is invisible —
+        // The window is -3d..+7d: the 5-days-back event is invisible —
         // exactly the deep-link dead-end being fixed.
         #expect(!vm.dailyEvents.flatMap(\.events).contains { $0.id == "y1" })
 
-        vm.ensureVisible(date: yesterdayNoon)
+        vm.ensureVisible(date: pastNoon)
 
         #expect(vm.dailyEvents.flatMap(\.events).contains { $0.id == "y1" })
-        // The pinned past day sorts before today and is labeled.
-        #expect(vm.dailyEvents.first?.label == "Yesterday")
+        // The pinned past day sorts before the rest of the window.
+        #expect(vm.dailyEvents.first?.id == cal.startOfDay(for: pastNoon))
 
         // A plain reload (the 30s observer tick) must not evict the pin
         // while the user is looking at the day.

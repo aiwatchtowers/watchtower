@@ -25,18 +25,24 @@ final class CalendarViewModel {
     private let dbPool: DatabasePool
     private var observationTask: Task<Void, Never>?
 
-    /// Number of days to display (including today).
+    /// Number of future days to display (including today).
     private let daysAhead = 7
 
+    /// Days of past events to display — `calendar.history_days` from the
+    /// config (the same knob that widens the Go syncers' timeMin), fallback 14.
+    let historyDays: Int
+
     /// Extra day pinned into the rendered window by a deep link whose event
-    /// falls outside today..+daysAhead — e.g. yesterday's recording reviewed
-    /// the morning after (sync retains ~24h back) or an event past +7d when
-    /// calendar.sync_days_ahead is configured larger. Kept across reloads so
-    /// the periodic observer can't evict the day while the user looks at it.
+    /// falls outside the -historyDays..+daysAhead window — e.g. an event past
+    /// +7d when calendar.sync_days_ahead is configured larger. Kept across
+    /// reloads so the periodic observer can't evict the day while the user
+    /// looks at it.
     private var pinnedDate: Date?
 
-    init(dbPool: DatabasePool) {
+    /// `historyDays` is injectable for tests; nil reads the config file.
+    init(dbPool: DatabasePool, historyDays: Int? = nil) {
         self.dbPool = dbPool
+        self.historyDays = max(1, historyDays ?? ConfigService().calendarHistoryDays)
         loadEvents()
         startObserving()
     }
@@ -48,12 +54,18 @@ final class CalendarViewModel {
 
     // MARK: - Convenience accessors (backward compat)
 
+    /// Keyed by date, not list position — with past days in `dailyEvents`
+    /// the first group is no longer necessarily today.
     var todayEvents: [CalendarEvent] {
-        dailyEvents.first?.events ?? []
+        events(startingAt: Calendar.current.startOfDay(for: Date()))
     }
 
     var tomorrowEvents: [CalendarEvent] {
-        dailyEvents.dropFirst().first?.events ?? []
+        events(startingAt: Calendar.current.startOfDay(for: Date()).addingTimeInterval(86400))
+    }
+
+    private func events(startingAt dayStart: Date) -> [CalendarEvent] {
+        dailyEvents.first { $0.id == dayStart }?.events ?? []
     }
 
     // MARK: - Data Loading
@@ -62,7 +74,8 @@ final class CalendarViewModel {
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
         let dayStarts = Self.dayWindow(
-            today: today, daysAhead: daysAhead, pinned: pinnedDate, calendar: cal)
+            today: today, historyDays: historyDays, daysAhead: daysAhead,
+            pinned: pinnedDate, calendar: cal)
 
         let result = try? dbPool.read { db -> ([DayEvents], CalendarEvent?, CalendarQueries.AuthState?, [CalendarCalendarItem]) in
             var days: [DayEvents] = []
@@ -106,11 +119,13 @@ final class CalendarViewModel {
         loadEvents()
     }
 
-    /// Day-start dates for the rendered window: today..+daysAhead plus the
-    /// pinned day when it falls outside that range (deduped by calendar day,
-    /// sorted so a past pin renders first). Pure — unit-tested directly.
-    static func dayWindow(today: Date, daysAhead: Int, pinned: Date?, calendar cal: Calendar) -> [Date] {
-        var days = (0..<daysAhead).map { today.addingTimeInterval(Double($0) * 86400) }
+    /// Day-start dates for the rendered window: -historyDays..+daysAhead plus
+    /// the pinned day when it falls outside that range (deduped by calendar
+    /// day, sorted so a past pin renders first). Pure — unit-tested directly.
+    static func dayWindow(
+        today: Date, historyDays: Int = 0, daysAhead: Int, pinned: Date?, calendar cal: Calendar
+    ) -> [Date] {
+        var days = (-historyDays..<daysAhead).map { today.addingTimeInterval(Double($0) * 86400) }
         if let pinned, !days.contains(where: { cal.isDate($0, inSameDayAs: pinned) }) {
             days.append(cal.startOfDay(for: pinned))
             days.sort()
