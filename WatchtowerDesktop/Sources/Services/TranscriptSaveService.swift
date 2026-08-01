@@ -7,12 +7,13 @@ import Foundation
 /// recap failed — check `recapOK`/`recapError` for the AI outcome.
 /// `segmentsOK == false` means the CLI dropped a provided segments file (the
 /// column stayed NULL) — the visible tripwire for Go↔Swift renderer drift.
-/// Optional so envelopes from an older CLI still decode.
+/// An older-CLI envelope omits the segments fields; absence is not a failure,
+/// so `segmentsOK` decodes as `true` when the key is missing.
 struct TranscriptSaveResult: Decodable, Equatable {
     let transcriptID: Int64
     let recapOK: Bool
     let recapError: String
-    let segmentsOK: Bool?
+    let segmentsOK: Bool
     let segmentsError: String?
 
     enum CodingKeys: String, CodingKey {
@@ -21,6 +22,15 @@ struct TranscriptSaveResult: Decodable, Equatable {
         case recapError = "recap_error"
         case segmentsOK = "segments_ok"
         case segmentsError = "segments_error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        transcriptID = try container.decode(Int64.self, forKey: .transcriptID)
+        recapOK = try container.decode(Bool.self, forKey: .recapOK)
+        recapError = try container.decode(String.self, forKey: .recapError)
+        segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
+        segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)
     }
 }
 

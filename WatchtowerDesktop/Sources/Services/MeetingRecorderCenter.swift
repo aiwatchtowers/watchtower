@@ -527,9 +527,12 @@ final class MeetingRecorderCenter {
     /// Save step: the only place the `watchtower` CLI is needed. Resolves the
     /// runner here — never earlier — so a missing CLI still leaves the recording
     /// stopped, the audio finalized, and the transcript persisted for retry.
-    private func saveTranscript(text: String, utterances: [TranscriptUtterance]?,
+    private func saveTranscript(text: String,
+                                utterances: [TranscriptUtterance]?,
                                 speakers: [SpeakerEmbedding]?,
-                                durationSec: Int, langStats: [String: Int], audioURL: URL) async {
+                                durationSec: Int,
+                                langStats: [String: Int],
+                                audioURL: URL) async {
         phase = .summarizing
         guard let runner = runnerResolver() else {
             fail("watchtower CLI not found — the recording and transcript are kept for retry")
@@ -549,7 +552,7 @@ final class MeetingRecorderCenter {
             Self.removePersistedTranscript(audioURL: audioURL)
             clearPending()
             phase = .idle
-            if result.segmentsOK == false {
+            if !result.segmentsOK {
                 // The CLI dropped the segments file (render mismatch = Go↔Swift
                 // renderer drift, or a malformed payload). The transcript row is
                 // saved either way; log so the drift is not invisible.
@@ -664,9 +667,12 @@ final class MeetingRecorderCenter {
 
     /// Best-effort: a persistence failure only means a later save retry pays
     /// for a full re-transcription, so it is deliberately not surfaced.
-    private static func persistTranscript(text: String, utterances: [TranscriptUtterance]?,
+    private static func persistTranscript(text: String,
+                                          utterances: [TranscriptUtterance]?,
                                           speakers: [SpeakerEmbedding]?,
-                                          durationSec: Int, langStats: [String: Int], audioURL: URL) {
+                                          durationSec: Int,
+                                          langStats: [String: Int],
+                                          audioURL: URL) {
         try? text.write(to: transcriptTextURL(for: audioURL), atomically: true, encoding: .utf8)
         let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: langStats,
                                            utterances: utterances, speakers: speakers)

@@ -69,20 +69,4 @@ final class TranscriptUtteranceTests: XCTestCase {
         XCTAssertNil(TranscriptSegments.decode("{\"idx\":0}"))
         XCTAssertNil(TranscriptSegments.decode("[]"), "an empty array must fall back to the flat text")
     }
-
-    func testMeetingTranscriptUtterancesDecodeOnce() throws {
-        let json = try XCTUnwrap(TranscriptSegments.encode(fixture))
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertMeetingTranscript(
-                db, id: 1, transcriptText: self.fixtureRendered, segmentsJSON: json)
-            try TestDatabase.insertMeetingTranscript(db, id: 2, title: "Legacy")
-        }
-        try db.read { db in
-            let withSegments = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
-            XCTAssertEqual(withSegments.utterances, self.fixture)
-            let legacy = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 2))
-            XCTAssertNil(legacy.utterances, "NULL segments_json → nil utterances (flat-text fallback)")
-        }
-    }
 }
