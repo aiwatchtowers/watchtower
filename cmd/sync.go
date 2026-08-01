@@ -268,14 +268,18 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
 
-	// TODO(Task 6): seed slack_accounts from a pre-multi-account legacy token
-	// file here (ensureLegacySlackAccount) before wiring, so a single-account
-	// install keeps syncing without a re-login.
-	// Wire one Slack sync orchestrator per connected, enabled slack_accounts row.
-	orchestrators := wireSlackSyncers(database, cfg, logger)
-
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Seed slack_accounts from a pre-multi-account legacy token (config.yaml)
+	// before wiring, so a single-account install keeps syncing without a
+	// re-login: the migration seeds row #1 but only Go can move the token out
+	// of config into slack_token_<id>.json, which wireSlackSyncers requires.
+	if _, err := ensureLegacySlackAccount(ctx, cfg, database, logger); err != nil {
+		logger.Printf("slack: failed to seed legacy account: %v", err)
+	}
+	// Wire one Slack sync orchestrator per connected, enabled slack_accounts row.
+	orchestrators := wireSlackSyncers(database, cfg, logger)
 
 	// Daemon mode: run periodic syncs until interrupted
 	if syncFlagDaemon {
