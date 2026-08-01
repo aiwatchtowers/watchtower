@@ -193,6 +193,18 @@ struct CalendarEventsView: View {
         .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
     }
 
+    // MARK: - Join Button
+
+    /// Opens the event's conference link and (per the "Auto-record on join"
+    /// setting) starts an event-linked recording via the shared
+    /// `JoinMeetingAction`. Prominent while the meeting is imminent/ongoing.
+    @ViewBuilder
+    private func joinButton(_ event: CalendarEvent) -> some View {
+        JoinButton(event: event,
+                   center: appState.meetingRecorderCenter,
+                   prominent: event.isUpcoming || event.isHappeningNow)
+    }
+
     private func stopRecording() {
         // No CLI-runner guard here: stopping capture must never depend on the
         // watchtower binary resolving — the Center fails visibly at the save
@@ -327,6 +339,10 @@ struct CalendarEventsView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(selectedEventID == event.id ? Color.accentColor : .blue)
+
+                if event.conferenceLink != nil {
+                    joinButton(event)
+                }
 
                 recordButton(eventID: event.id, title: event.title)
             }
