@@ -375,7 +375,7 @@ html_link TEXT NOT NULL DEFAULT '',
 raw_json TEXT NOT NULL DEFAULT '{}',
 synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT ''
-, ical_uid TEXT NOT NULL DEFAULT '')
+, ical_uid TEXT NOT NULL DEFAULT '', conference_url TEXT NOT NULL DEFAULT '')
 
 table	catchup_sessions
 CREATE TABLE catchup_sessions (
@@ -1618,6 +1618,7 @@ END
 15	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 16	updated_at	TEXT	notnull=1	dflt=''	pk=0
 17	ical_uid	TEXT	notnull=1	dflt=''	pk=0
+18	conference_url	TEXT	notnull=1	dflt=''	pk=0
 
 ## catchup_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

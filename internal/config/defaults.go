@@ -40,6 +40,7 @@ const (
 	// Calendar defaults
 	DefaultCalendarEnabled       = false
 	DefaultCalendarSyncDaysAhead = 7
+	DefaultCalendarHistoryDays   = 14
 
 	// Gmail defaults
 	DefaultGmailEnabled            = false

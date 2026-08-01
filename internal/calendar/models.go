@@ -19,6 +19,7 @@ type CalendarEvent struct {
 	Recurring      bool
 	CalendarID     string
 	HTMLLink       string
+	ConferenceURL  string // meeting join link (Meet/Zoom/Teams/Webex), "" when none
 	EventType      string // e.g. "default", "focusTime", "outOfOffice"
 	UpdatedAt      string // ISO8601 from Google API
 	RawJSON        string // original JSON (populated during sync)

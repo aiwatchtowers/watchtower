@@ -156,7 +156,9 @@ struct TranscriptSectionView: View {
                 try MeetingTranscriptQueries.fetchForEvent(conn, eventID: eventID)
             }
         } catch {
-            // Silent: table may not exist yet on older DB schema versions.
+            // Render-nothing on failure, but never silently: an empty section
+            // and a failed read must be distinguishable in the logs.
+            print("TranscriptSectionView load failed: \(error)")
         }
     }
 }

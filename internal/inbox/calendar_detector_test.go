@@ -19,9 +19,17 @@ func ensureCalendar(t *testing.T, database *db.DB) {
 	}
 }
 
-// seedCalendarEvent inserts a calendar event for testing.
-// syncedAt is when the event was first synced, updatedAt is when it was last updated.
+// seedCalendarEvent inserts a calendar event for testing, starting 1 h from
+// now (relative — never hardcode dates in windowed paths). syncedAt is when
+// the event was first synced, updatedAt is when it was last updated.
 func seedCalendarEvent(t *testing.T, database *db.DB, id, title, attendeesJSON, status string, syncedAt, updatedAt time.Time) {
+	t.Helper()
+	seedCalendarEventAt(t, database, id, title, attendeesJSON, status,
+		syncedAt, updatedAt, time.Now().Add(1*time.Hour), time.Now().Add(2*time.Hour))
+}
+
+// seedCalendarEventAt is seedCalendarEvent with explicit start/end times.
+func seedCalendarEventAt(t *testing.T, database *db.DB, id, title, attendeesJSON, status string, syncedAt, updatedAt, startTime, endTime time.Time) {
 	t.Helper()
 	ensureCalendar(t, database)
 	syncedStr := syncedAt.UTC().Format(time.RFC3339)
@@ -31,11 +39,12 @@ func seedCalendarEvent(t *testing.T, database *db.DB, id, title, attendeesJSON, 
 			(id, calendar_id, title, attendees, event_status, synced_at, updated_at,
 			 start_time, end_time, description, location, organizer_email,
 			 is_recurring, is_all_day, event_type, html_link, raw_json)
-		VALUES (?, 'cal-1', ?, ?, ?, ?, ?, '2026-04-23T10:00:00Z', '2026-04-23T11:00:00Z',
+		VALUES (?, 'cal-1', ?, ?, ?, ?, ?, ?, ?,
 		        '', '', '', 0, 0, '', '', '{}')`,
-		id, title, attendeesJSON, status, syncedStr, updatedStr)
+		id, title, attendeesJSON, status, syncedStr, updatedStr,
+		startTime.UTC().Format(time.RFC3339), endTime.UTC().Format(time.RFC3339))
 	if err != nil {
-		t.Fatalf("seedCalendarEvent: %v", err)
+		t.Fatalf("seedCalendarEventAt: %v", err)
 	}
 }
 
@@ -58,6 +67,55 @@ func TestCalendarDetector_NewInvite(t *testing.T) {
 	got := queryInboxByTrigger(t, d, "calendar_invite")
 	if len(got) != 1 {
 		t.Errorf("want 1 calendar_invite item, got %d", len(got))
+	}
+}
+
+func TestCalendarDetector_EndedInviteSkipped(t *testing.T) {
+	d := testDB(t)
+	// History backfill: a 10-day-old event gets a fresh synced_at on first
+	// sync with calendar.history_days — it must NOT mint a calendar_invite.
+	syncedAt := time.Now().Add(-30 * time.Minute)
+	seedCalendarEventAt(t, d, "evt-ended", "Old meeting",
+		`[{"email":"me@x.com","rsvp_status":"needsAction"}]`,
+		"confirmed", syncedAt, syncedAt,
+		time.Now().Add(-10*24*time.Hour), time.Now().Add(-10*24*time.Hour+time.Hour))
+
+	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("want 0 for ended invite, got %d", n)
+	}
+	if got := queryInboxByTrigger(t, d, "calendar_invite"); len(got) != 0 {
+		t.Errorf("want 0 calendar_invite items for ended event, got %d", len(got))
+	}
+}
+
+func TestCalendarDetector_UnparseableEndTimeKeepsInvite(t *testing.T) {
+	d := testDB(t)
+	// Degenerate: an end_time the RFC3339 parse rejects must keep the invite
+	// (conservative — never silently drop a live invite on bad data).
+	syncedAt := time.Now().Add(-30 * time.Minute)
+	ensureCalendar(t, d)
+	_, err := d.Exec(`
+		INSERT INTO calendar_events
+			(id, calendar_id, title, attendees, event_status, synced_at, updated_at,
+			 start_time, end_time)
+		VALUES ('evt-badend', 'cal-1', 'Odd event',
+		        '[{"email":"me@x.com","rsvp_status":"needsAction"}]',
+		        'confirmed', ?, ?, 'not-a-date', 'not-a-date')`,
+		syncedAt.UTC().Format(time.RFC3339), syncedAt.UTC().Format(time.RFC3339))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("want 1 for unparseable end_time, got %d", n)
 	}
 }
 

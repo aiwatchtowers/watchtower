@@ -21,6 +21,7 @@ type calEventRow struct {
 	title       string
 	attendees   string
 	eventStatus string
+	endTime     string
 	syncedAt    string
 	updatedAt   string
 }
@@ -46,7 +47,7 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 	// with MaxOpenConns(1). The deferred Close is just a safety net for the
 	// scan/rows-error early-return paths.
 	rows, err := database.Query(`
-		SELECT id, title, attendees, event_status, synced_at, updated_at
+		SELECT id, title, attendees, event_status, end_time, synced_at, updated_at
 		FROM calendar_events
 		WHERE synced_at > ? OR updated_at > ?`,
 		sinceISO, sinceISO)
@@ -58,7 +59,7 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 	var events []calEventRow
 	for rows.Next() {
 		var e calEventRow
-		if err := rows.Scan(&e.id, &e.title, &e.attendees, &e.eventStatus, &e.syncedAt, &e.updatedAt); err != nil {
+		if err := rows.Scan(&e.id, &e.title, &e.attendees, &e.eventStatus, &e.endTime, &e.syncedAt, &e.updatedAt); err != nil {
 			return 0, fmt.Errorf("calendar_detector: scan: %w", err)
 		}
 		events = append(events, e)
@@ -91,7 +92,16 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 		case e.eventStatus == "cancelled":
 			trig = "calendar_cancelled"
 		case e.syncedAt > sinceISO && myRSVP == "needsAction":
-			// Newly arrived event that needs an RSVP response.
+			// Newly arrived event that needs an RSVP response. A "new" row
+			// whose event already ended is history backfill, not an invite:
+			// the calendar.history_days sync window (default 14 d) gives past
+			// events a fresh synced_at on first sync / re-auth, and without
+			// this guard every dead invite would mint an actionable inbox
+			// item (triage may only downgrade, INBOX-01). An unparseable
+			// end_time keeps the invite (conservative).
+			if endT, err := time.Parse(time.RFC3339, e.endTime); err == nil && endT.Before(time.Now()) {
+				continue
+			}
 			trig = "calendar_invite"
 		case e.updatedAt > e.syncedAt:
 			// Event was modified after it was first synced — treat as a time/detail change.

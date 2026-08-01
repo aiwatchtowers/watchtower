@@ -149,6 +149,37 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
+    func test_recordingListJoinsEventTitleForLinkedRows() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1", title: "Design Review")
+            try TestDatabase.insertMeetingTranscript(db, id: 1, eventID: "evt-1", title: "Linked")
+            try TestDatabase.insertMeetingTranscript(db, id: 2, title: "AdHoc")
+        }
+        try db.read { db in
+            let items = try MeetingTranscriptQueries.fetchRecordingList(db)
+            XCTAssertEqual(items.map(\.id), [2, 1])
+            XCTAssertNil(items[0].eventTitle, "ad-hoc row carries no event title")
+            XCTAssertEqual(items[1].eventTitle, "Design Review")
+        }
+    }
+
+    func test_recordingListEventTitleAbsentAfterEventPruned() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1", title: "Design Review")
+            try TestDatabase.insertMeetingTranscript(db, id: 1, eventID: "evt-1", title: "Linked")
+            // Sync retention prunes the event row; the transcript must outlive
+            // it and the list must simply lose the subtitle, never error.
+            try db.execute(sql: "DELETE FROM calendar_events WHERE id = 'evt-1'")
+        }
+        try db.read { db in
+            let items = try MeetingTranscriptQueries.fetchRecordingList(db)
+            XCTAssertEqual(items.map(\.id), [1])
+            XCTAssertNil(items[0].eventTitle)
+        }
+    }
+
     func test_recordingListCountsEventRecapAsRecap() throws {
         let db = try TestDatabase.create()
         try db.write { db in

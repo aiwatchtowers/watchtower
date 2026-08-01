@@ -44,7 +44,7 @@ func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	now := time.Now().UTC()
 	syncedAt := now.Format(time.RFC3339)
-	timeMin := now.Add(-24 * time.Hour) // past 1 day
+	timeMin := now.Add(-time.Duration(s.cfg.Calendar.EffectiveHistoryDays()) * 24 * time.Hour)
 
 	daysAhead := s.cfg.Calendar.SyncDaysAhead
 	if daysAhead <= 0 {
@@ -165,6 +165,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			EventStatus:    e.EventStatus,
 			EventType:      e.EventType,
 			HTMLLink:       e.HTMLLink,
+			ConferenceURL:  e.ConferenceURL,
 			RawJSON:        rawJSON,
 			ICalUID:        e.ICalUID,
 			UpdatedAt:      e.UpdatedAt,

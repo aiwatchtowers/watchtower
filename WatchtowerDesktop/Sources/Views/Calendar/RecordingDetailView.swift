@@ -22,11 +22,17 @@ struct RecordingDetailView: View {
     let transcriptID: Int64
     let onDeleted: () -> Void
     let onChanged: () -> Void
+    /// Navigate to the Events tab with the given event expanded (linked-event
+    /// header tap); the link carries the start time so the host can pin the
+    /// event's day into the rendered window first. nil = no navigation
+    /// affordance available from this host.
+    var onOpenEvent: ((CalendarQueries.EventLink) -> Void)?
 
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
     @State private var utterances: [TranscriptUtterance]?
     @State private var attendees: [EventAttendee] = []
+    @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
@@ -178,6 +184,13 @@ struct RecordingDetailView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
+            // Linked-event affordance: resolvable event → tappable deep link
+            // into the Events tab; event row pruned by sync retention → plain
+            // informational label (never an error, never navigation).
+            if transcript.eventID != nil {
+                LinkedEventHeader(linkedEvent: linkedEvent, onOpenEvent: onOpenEvent)
+            }
+
             // Audio playback (single-slot app-wide center; hidden once the
             // retention phase has swept the file).
             TranscriptAudioControl(transcript: transcript, center: appState.audioPlaybackCenter)
@@ -187,32 +200,48 @@ struct RecordingDetailView: View {
 
     // MARK: - Data
 
+    /// One detail load's off-main fetch result (row + everything derived from
+    /// its event), decoded once here so `body` never touches heavy blobs.
+    private struct LoadedDetail {
+        var row: MeetingTranscript?
+        var recap: MeetingRecap?
+        var link: CalendarQueries.EventLink?
+        var utterances: [TranscriptUtterance]?
+        var attendees: [EventAttendee]
+    }
+
     private func load() async {
         guard let db = appState.databaseManager else { return }
         do {
-            let (row, recap, decodedUtterances, eventAttendees) = try await Task.detached(priority: .userInitiated) { [transcriptID] in
-                try db.dbPool.read { conn -> (MeetingTranscript?, MeetingRecap?, [TranscriptUtterance]?, [EventAttendee]) in
+            let loaded = try await Task.detached(priority: .userInitiated) { [transcriptID] in
+                try db.dbPool.read { conn -> LoadedDetail in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
                     var recap: MeetingRecap?
+                    var link: CalendarQueries.EventLink?
                     var eventAttendees: [EventAttendee] = []
                     if let eventID = row?.eventID {
                         recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
+                        // Lightweight (title + start_time); nil when the event
+                        // row is gone — the header degrades to a plain label.
+                        link = try CalendarQueries.fetchEventLink(conn, id: eventID)
                         // Attendees feed the rename picker (attendees first,
                         // free text after); ad-hoc recordings have none.
                         eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?.parsedAttendees ?? []
                     }
-                    return (row, recap, row?.utterances, eventAttendees)
+                    return LoadedDetail(row: row, recap: recap, link: link,
+                                        utterances: row?.utterances, attendees: eventAttendees)
                 }
             }.value
-            transcript = row
+            transcript = loaded.row
+            linkedEvent = loaded.link
             // Segments decoded ONCE here (off-main, alongside the fetch),
             // never in body evaluations or row builders.
-            utterances = decodedUtterances
-            attendees = eventAttendees
+            utterances = loaded.utterances
+            attendees = loaded.attendees
             // Event recap wins; ad-hoc (or collision-guarded) recap falls back
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
-            recapContent = recap?.parsed ?? row?.parsedSummary
+            recapContent = loaded.recap?.parsed ?? loaded.row?.parsedSummary
         } catch {
             errorMessage = error.localizedDescription
         }
