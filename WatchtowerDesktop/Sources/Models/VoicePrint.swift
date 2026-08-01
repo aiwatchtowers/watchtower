@@ -44,7 +44,7 @@ enum VoicePrintEmbedding {
     }
 
     static func decode(_ data: Data) -> [Float] {
-        guard !data.isEmpty, data.count % MemoryLayout<Float>.size == 0 else { return [] }
+        guard !data.isEmpty, data.count.isMultiple(of: MemoryLayout<Float>.size) else { return [] }
         return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
     }
 }

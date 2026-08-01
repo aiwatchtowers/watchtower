@@ -1230,16 +1230,26 @@ final class MeetingRecorderCenterTests: XCTestCase {
 
     // MARK: - Diarization post-pass
 
+    /// What the batch-path harness hands back: the saved text, the saved
+    /// segments JSON (nil when the save carried none), and the fakes for
+    /// further assertions.
+    private struct DiarizationFlowResult {
+        let savedText: String?
+        let savedSegments: String?
+        let center: MeetingRecorderCenter
+        let notifier: FakeNotifier
+        let runner: TranscriptCapturingRunner
+    }
+
     /// Batch-path harness: recording → (empty live) → decode stub → scripted
-    /// engine → fake diarizer → capturing runner. Returns the saved text and
-    /// the saved segments JSON (nil when the save carried none).
+    /// engine → fake diarizer → capturing runner.
     private func runDiarizationFlow(
         audio: URL,
         diarizer: FakeDiarizer,
         defaults: UserDefaults,
         rolesEnabled: Bool = true,
         voicePrints: [VoicePrint] = []
-    ) async throws -> (savedText: String?, savedSegments: String?, center: MeetingRecorderCenter, notifier: FakeNotifier, runner: TranscriptCapturingRunner) {
+    ) async throws -> DiarizationFlowResult {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
@@ -1260,7 +1270,9 @@ final class MeetingRecorderCenterTests: XCTestCase {
         config.diarization = rolesEnabled
         await center.startRecording(eventID: nil, title: "Roles")
         await center.stopAndProcess(config: config)
-        return (runner.savedTranscripts.first, runner.savedSegments.first.flatMap { $0 }, center, notifier, runner)
+        return DiarizationFlowResult(savedText: runner.savedTranscripts.first,
+                                     savedSegments: runner.savedSegments.first.flatMap { $0 },
+                                     center: center, notifier: notifier, runner: runner)
     }
 
     func testDiarizationRendersRolesIntoSavedText() async throws {
@@ -1275,13 +1287,14 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
         ]
 
-        let (saved, savedSegments, center, notifier, _) = try await runDiarizationFlow(
+        let flow = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
+        let (saved, savedSegments) = (flow.savedText, flow.savedSegments)
 
-        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(flow.center.phase, .idle)
         XCTAssertEqual(saved, "[Speaker 1] привет\n[Speaker 2] ответ")
-        XCTAssertEqual(notifier.readyTitles, ["Roles"], "successful roles must not flag the notification")
+        XCTAssertEqual(flow.notifier.readyTitles, ["Roles"], "successful roles must not flag the notification")
         XCTAssertEqual(diarizer.calls, 1)
 
         // The batch path must ship the structured utterances alongside the
@@ -1310,9 +1323,9 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
         ]
 
-        let (saved, _, _, _, _) = try await runDiarizationFlow(
+        let saved = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
-        )
+        ).savedText
 
         XCTAssertEqual(saved, "[Я] привет\n[Speaker 1] ответ")
     }
@@ -1337,17 +1350,17 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
         ]
 
-        let (saved, savedSegments, _, _, runner) = try await runDiarizationFlow(
+        let flow = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
             voicePrints: [voicePrint("sasha@corp.com", "Саша", [0, 1])]
         )
 
-        XCTAssertEqual(saved, "[Speaker 1] привет\n[Саша] ответ",
+        XCTAssertEqual(flow.savedText, "[Speaker 1] привет\n[Саша] ответ",
                        "a confident voice match renders the display name instead of Speaker N")
-        let utterances = try XCTUnwrap(TranscriptSegments.decode(try XCTUnwrap(savedSegments)))
+        let utterances = try XCTUnwrap(TranscriptSegments.decode(try XCTUnwrap(flow.savedSegments)))
         XCTAssertEqual(utterances.map(\.speaker), ["Speaker 1", "Саша"])
         // The per-cluster embeddings ship keyed by the FINAL rendered labels.
-        let speakersJSON = try XCTUnwrap(runner.savedSpeakers.first ?? nil)
+        let speakersJSON = try XCTUnwrap(flow.runner.savedSpeakers.first.flatMap { $0 })
         let speakers = try XCTUnwrap(SpeakerEmbeddings.decode(speakersJSON))
         XCTAssertEqual(Set(speakers.map(\.speaker)), ["Speaker 1", "Саша"])
     }
@@ -1371,15 +1384,15 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "C", startSec: 0.26, endSec: 0.3, embedding: [0.6, 0.8])
         ]
 
-        let (saved, savedSegments, _, _, runner) = try await runDiarizationFlow(
+        let flow = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
 
-        XCTAssertEqual(saved, "[Speaker 1] привет\n[Speaker 2] ответ")
-        let utterances = try XCTUnwrap(TranscriptSegments.decode(try XCTUnwrap(savedSegments)))
+        XCTAssertEqual(flow.savedText, "[Speaker 1] привет\n[Speaker 2] ответ")
+        let utterances = try XCTUnwrap(TranscriptSegments.decode(try XCTUnwrap(flow.savedSegments)))
         XCTAssertEqual(utterances.map(\.speaker), ["Speaker 1", "Speaker 2"])
         // The orphan cluster's embedding is dropped; the others survive.
-        let speakersJSON = try XCTUnwrap(runner.savedSpeakers.first ?? nil)
+        let speakersJSON = try XCTUnwrap(flow.runner.savedSpeakers.first.flatMap { $0 })
         let speakers = try XCTUnwrap(SpeakerEmbeddings.decode(speakersJSON))
         XCTAssertEqual(Set(speakers.map(\.speaker)), ["Speaker 1", "Speaker 2"],
                        "a zero-utterance cluster must not ship an orphan embedding")
@@ -1402,13 +1415,13 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
         ]
 
-        let (saved, _, _, _, _) = try await runDiarizationFlow(
+        let saved = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
             voicePrints: [
                 voicePrint("owner@corp.com", "Owner Duplicate", [1, 0]),
                 voicePrint("sasha@corp.com", "Саша", [0, 1])
             ]
-        )
+        ).savedText
 
         XCTAssertEqual(saved, "[Я] привет\n[Саша] ответ",
                        "the owner's cluster stays «Я» even when a voice print matches it")
@@ -1428,14 +1441,14 @@ final class MeetingRecorderCenterTests: XCTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
         ]
 
-        let (saved, _, _, _, runner) = try await runDiarizationFlow(
+        let flow = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
             voicePrints: [voicePrint("sasha@corp.com", "Саша", [0, 1])]
         )
 
-        XCTAssertEqual(saved, "[Speaker 1] привет\n[Speaker 2] ответ",
+        XCTAssertEqual(flow.savedText, "[Speaker 1] привет\n[Speaker 2] ответ",
                        "no embeddings → no matching, even with a populated voice-print DB")
-        XCTAssertNil(runner.savedSpeakers.first ?? nil,
+        XCTAssertNil(flow.runner.savedSpeakers.first.flatMap { $0 },
                      "no embeddings → no --speakers-file, the column stays NULL")
     }
 
@@ -1448,14 +1461,14 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let diarizer = FakeDiarizer()
         diarizer.error = FakeDiarizer.FakeError()
 
-        let (saved, savedSegments, center, notifier, _) = try await runDiarizationFlow(
+        let flow = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults()
         )
 
-        XCTAssertEqual(center.phase, .idle, "a diarization failure must never fail the pipeline")
-        XCTAssertEqual(saved, "привет\nответ")
-        XCTAssertNil(savedSegments, "no roles → no segments file, the column stays NULL")
-        XCTAssertEqual(notifier.readyTitles, ["Roles — saved without speaker labels"],
+        XCTAssertEqual(flow.center.phase, .idle, "a diarization failure must never fail the pipeline")
+        XCTAssertEqual(flow.savedText, "привет\nответ")
+        XCTAssertNil(flow.savedSegments, "no roles → no segments file, the column stays NULL")
+        XCTAssertEqual(flow.notifier.readyTitles, ["Roles — saved without speaker labels"],
                        "the notification must flag the missing labels")
     }
 
@@ -1551,13 +1564,13 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let diarizer = FakeDiarizer()
         diarizer.segments = [SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.3)]
 
-        let (saved, savedSegments, _, _, _) = try await runDiarizationFlow(
+        let flow = try await runDiarizationFlow(
             audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(), rolesEnabled: false
         )
 
         XCTAssertEqual(diarizer.calls, 0, "the toggle must gate the diarizer entirely")
-        XCTAssertEqual(saved, "привет\nответ")
-        XCTAssertNil(savedSegments, "diarization off → no segments file")
+        XCTAssertEqual(flow.savedText, "привет\nответ")
+        XCTAssertNil(flow.savedSegments, "diarization off → no segments file")
     }
 
     func testRetryAfterSaveFailureResendsSegmentsFromSidecar() async throws {

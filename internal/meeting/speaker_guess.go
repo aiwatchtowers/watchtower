@@ -59,24 +59,7 @@ func (p *Pipeline) GenerateSpeakerGuesses(ctx context.Context, eventID string, u
 		return nil, nil, fmt.Errorf("no unnamed speakers to guess")
 	}
 
-	title, startTime, endTime, attendees := "(ad-hoc recording)", "", "", "[]"
-	if eventID != "" && p.db != nil {
-		// Degrading to ad-hoc context is fine (the model leans on the
-		// transcript alone), but a DB error must not be silently identical
-		// to a legitimately-missing event.
-		ev, err := p.db.GetCalendarEventByID(eventID)
-		switch {
-		case err != nil:
-			p.logf("meeting: loading calendar event %s for speaker guess: %v (using ad-hoc context)", eventID, err)
-		case ev == nil:
-			p.logf("meeting: calendar event %s not found for speaker guess (using ad-hoc context)", eventID)
-		default:
-			title, startTime, endTime = ev.Title, ev.StartTime, ev.EndTime
-			if strings.TrimSpace(ev.Attendees) != "" {
-				attendees = ev.Attendees
-			}
-		}
-	}
+	title, startTime, endTime, attendees := p.speakerGuessEventContext(eventID)
 
 	lang := ""
 	if p.cfg != nil {
@@ -97,12 +80,40 @@ func (p *Pipeline) GenerateSpeakerGuesses(ctx context.Context, eventID string, u
 	if err := json.Unmarshal([]byte(cleanJSON(aiResponse)), &raw); err != nil {
 		return nil, nil, fmt.Errorf("parsing AI response: %w (raw: %.300s)", err, aiResponse)
 	}
+	return validateSpeakerGuesses(raw, unnamed), usage, nil
+}
 
-	// Validation: an unknown speaker label (not in the unnamed set), an
-	// empty candidate, or a candidate colliding with a reserved label
-	// («Я» / "Speaker N" — see reservedSpeakerLabel) is dropped, never a
-	// crash; confidence is clamped to [0,1]. At most one suggestion per
-	// speaker — the first wins.
+// speakerGuessEventContext resolves the event fields injected into the
+// speaker-guess system prompt, degrading to ad-hoc placeholders when the
+// recording has no event. Degrading is fine (the model leans on the
+// transcript alone), but a DB error must not be silently identical to a
+// legitimately-missing event.
+func (p *Pipeline) speakerGuessEventContext(eventID string) (title, startTime, endTime, attendees string) {
+	title, startTime, endTime, attendees = "(ad-hoc recording)", "", "", "[]"
+	if eventID == "" || p.db == nil {
+		return title, startTime, endTime, attendees
+	}
+	ev, err := p.db.GetCalendarEventByID(eventID)
+	switch {
+	case err != nil:
+		p.logf("meeting: loading calendar event %s for speaker guess: %v (using ad-hoc context)", eventID, err)
+	case ev == nil:
+		p.logf("meeting: calendar event %s not found for speaker guess (using ad-hoc context)", eventID)
+	default:
+		title, startTime, endTime = ev.Title, ev.StartTime, ev.EndTime
+		if strings.TrimSpace(ev.Attendees) != "" {
+			attendees = ev.Attendees
+		}
+	}
+	return title, startTime, endTime, attendees
+}
+
+// validateSpeakerGuesses filters the model's raw suggestions: an unknown
+// speaker label (not in the unnamed set), an empty candidate, or a candidate
+// colliding with a reserved label («Я» / "Speaker N" — see
+// reservedSpeakerLabel) is dropped, never a crash; confidence is clamped to
+// [0,1]. At most one suggestion per speaker — the first wins.
+func validateSpeakerGuesses(raw []SpeakerGuess, unnamed []string) []SpeakerGuess {
 	known := make(map[string]bool, len(unnamed))
 	for _, s := range unnamed {
 		known[s] = true
@@ -116,16 +127,11 @@ func (p *Pipeline) GenerateSpeakerGuesses(ctx context.Context, eventID string, u
 		if !known[g.Speaker] || g.Candidate == "" || seen[g.Speaker] || reservedSpeakerLabel(g.Candidate) {
 			continue
 		}
-		if g.Confidence < 0 {
-			g.Confidence = 0
-		}
-		if g.Confidence > 1 {
-			g.Confidence = 1
-		}
+		g.Confidence = min(max(g.Confidence, 0), 1)
 		seen[g.Speaker] = true
 		out = append(out, g)
 	}
-	return out, usage, nil
+	return out
 }
 
 // logf logs via the pipeline logger; nil-safe for tests that build the
@@ -178,14 +184,14 @@ func speakerGuessUserMessage(utterances []TranscriptUtterance, unnamed []string)
 	return b.String()
 }
 
-// truncateRunes caps s at max runes (never splitting a UTF-8 sequence —
+// truncateRunes caps s at limit runes (never splitting a UTF-8 sequence —
 // transcripts are mostly ru/uk) and marks the cut with an ellipsis.
-func truncateRunes(s string, max int) string {
+func truncateRunes(s string, limit int) string {
 	runes := []rune(s)
-	if len(runes) <= max {
+	if len(runes) <= limit {
 		return s
 	}
-	return string(runes[:max]) + "…"
+	return string(runes[:limit]) + "…"
 }
 
 func (p *Pipeline) loadSpeakerGuessPrompt() string {

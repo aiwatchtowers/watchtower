@@ -133,8 +133,11 @@ enum MeetingTranscriptQueries {
     /// `SpeakerNaming.isReserved`: renaming a stranger's cluster to a
     /// reserved label would corrupt the owner's voice identity).
     @discardableResult
-    static func renameSpeaker(_ db: Database, id: Int64, from: String,
-                              to displayName: String, personKey: String) throws -> Bool {
+    static func renameSpeaker(_ db: Database,
+                              id: Int64,
+                              from: String,
+                              to displayName: String,
+                              personKey: String) throws -> Bool {
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty, trimmedName != from,
               !SpeakerNaming.isReserved(trimmedName),

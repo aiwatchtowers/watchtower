@@ -126,11 +126,11 @@ struct RecordingDetailView: View {
                 suggestNotice: appState.speakerGuessCenter.lastNotice[transcriptID],
                 onSetUtteranceDeleted: setUtteranceDeleted,
                 onSuggestNames: suggestSpeakerNames,
-                onRenameSpeaker: renameSpeaker,
-                onDismissSuggestion: { speaker in
-                    appState.speakerGuessCenter.consumeSuggestion(
-                        transcriptID: transcriptID, speaker: speaker)
-                })
+                onRenameSpeaker: renameSpeaker
+            ) { speaker in
+                appState.speakerGuessCenter.consumeSuggestion(
+                    transcriptID: transcriptID, speaker: speaker)
+            }
         case .chat:
             if let chatVM {
                 RecordingChatTab(chatVM: chatVM)
