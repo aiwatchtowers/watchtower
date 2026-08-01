@@ -1,0 +1,110 @@
+# Transcript Stack: Persistent Segments, Pretty Transcript, Meeting Chapters, Speaker Identity
+
+**Date:** 2026-07-31
+**Status:** Approved by owner
+**Scope:** Three stacked slices over meeting recordings: (D1) persist per-utterance segments and replace the transcript "wall of text" with an editable utterance view (delete + undo); (D2) chapterize meetings with per-chapter takeaways, Action-item→Target conversion and follow-up drafts; (D3) name speakers via a voice-print database + LLM content hints + manual confirmation.
+
+**Order:** D1 is the foundation and ships first. D2 and D3 depend on D1 and are independent of each other.
+
+---
+
+## Current state (verified)
+
+- Transcript persists as **flat text only**: `meeting_transcripts.transcript_text` with `[Я]`/`[Speaker N]` line prefixes rendered by `RoleAssigner.render` (`RoleAssigner.swift:16-79`). Timestamped segments (`TranscriptionOutput.segments`) exist in memory during transcription and are discarded on save (`MeetingRecorderCenter.saveTranscript`, `:460-493`).
+- The Transcript tab is literally one `Text(blob)` in a ScrollView (`RecordingDetailTabs.swift:191-204`).
+- Diarization already yields voice embeddings: FluidAudio's `TimedSpeakerSegment` carries `embedding: [Float]` (256-dim, L2-normalized) and `DiarizationResult.speakerDatabase` gives per-speaker embeddings — our seam (`SpeakerDiarizing` → `SpeakerSegment{speakerID,startSec,endSec}`) drops them (`FluidAudioDiarizer.swift:31-47`).
+- Recap already extracts `summary/key_decisions/action_items/open_questions` (`internal/meeting/recap.go:13-18`) rendered as static bullets in `RecordingRecapTab`.
+- Attendees (email, display name, Slack id) are stored per event (`calendar_events.attendees`, `internal/calendar/models.go:29-33`) and already flow into the recap prompt.
+
+---
+
+## D1. Persistent segments + utterance view + delete
+
+### Data
+
+- **Migration** (next free goose number at merge time; renumber on rebase if a parallel branch claimed it): `meeting_transcripts` ADD COLUMN `segments_json TEXT` (NULL for legacy rows). JSON array of utterances:
+  `{"idx": 0, "start_sec": 12.4, "end_sec": 19.1, "speaker": "Я" | "Speaker 1" | "<name>", "text": "...", "deleted": false}`
+  Utterances are the RoleAssigner merge units (consecutive same-speaker segments), not raw windows. Mirror in `schema.sql`, golden snapshot regenerated. The column is heavy → it is NEVER selected by `fetchRecordingList` (existing perf guard).
+- **Invariant (load-bearing):** whenever `segments_json` is non-NULL, `transcript_text = render(segments where !deleted)` — one canonical renderer per side (Go for CLI writes, Swift for UI edits; the pair is a deliberate dual-path like `saveNotes`, documented in CLAUDE.md's dual-path list). Recap, notes, meeting chat, and memory keep reading `transcript_text` untouched.
+
+### Pipeline
+
+- `RoleAssigner` returns structured utterances (speaker + merged text + time range) instead of only a joined string; the string is derived from them.
+- Swift save path passes a second temp file (`--segments-file`) next to `--transcript-file`; Go `meeting-prep transcript save` stores both. Missing `--segments-file` (old callers, batch fallback failures) → NULL column, everything behaves as today.
+- Batch fallback and retry paths produce segments the same way (they already run diarization post-pass).
+
+### UI
+
+- `RecordingTranscriptTab`: when segments exist → utterance list: speaker label + `mm:ss` timecode header, utterance text below, visually grouped (no wall of text). Legacy rows (NULL segments) keep the current flat `Text` view.
+- **Delete:** hover reveals a delete control; deleting marks `deleted: true` (soft), transactionally rewrites `segments_json` + rebuilt `transcript_text` (GRDB write, `saveNotes` precedent). An undo toast restores it (same transactional write back). No hard deletion (owner decision). Already-generated recap/notes are not regenerated automatically — manual retry exists.
+
+### Testing
+
+- Renderer round-trip: segments → text equals legacy RoleAssigner output for the same input (pin the equivalence).
+- Soft-delete: delete → text excludes utterance; undo → byte-identical restore. Degenerate: delete ALL utterances → empty-but-valid text, no crash.
+- Go save: with/without `--segments-file`; malformed segments file → save still persists transcript text (exit 0 envelope semantics preserved), segments column NULL + warning.
+
+---
+
+## D2. Meeting chapters + per-chapter extractions
+
+### Data & AI
+
+- **Migration (own file, next free goose number at implementation time):** `meeting_transcripts` ADD COLUMN `chapters_json TEXT`.
+- **New prompt `meeting.chapters`** (strong tier, registered via the standard prompt-store flow; user message = transcript with timecodes and speaker labels, stdin path over 32 KB as usual). Output JSON:
+  `{"overall_summary": "...", "chapters": [{"title", "start_sec", "end_sec", "participants": [..], "summary", "decisions": [..], "action_items": [..], "open_questions": [..]}]}`
+- Generated by `watchtower meeting-prep transcript chapters <id>` (CLI, mirrors the `notes` command: exit 1 on failure, nothing persisted) and automatically after `save` when segments exist (failure leaves `chapters_json` NULL, envelope reports `chapters_ok/chapters_error`, retry via the CLI). Existing `meeting.recap` stays untouched — legacy recaps keep rendering.
+
+### UI (Recap tab evolution)
+
+- With `chapters_json`: overall summary on top, then chapters as disclosure groups (title + time range + participants; inside: summary, decisions, action items, open questions).
+- Without: current flat recap rendering + a "Generate chapters" button (visible when segments exist).
+- **Chapter → transcript jump:** tapping the chapter's time range switches to the Transcript tab scrolled to the first utterance ≥ `start_sec` (needs D1).
+- **Action item → Target:** button per action item; creates a Target titled from the item with description = chapter context (chapter summary + meeting title + date), via the existing Swift target-creation path. Marks the item as converted (`converted_target_id` inside chapters_json) — link, not delete (DASH-03 spirit).
+- **Follow-up draft:** button per chapter and one for the whole meeting; generates a message draft to participants (decisions + action items, owner's voice via `workspace.style_profile` — the Discuss intent-draft precedent) through a new light prompt `meeting.followup`; output shown in a copyable sheet. No auto-sending.
+
+### Testing
+
+- Go: chapters generation parse/validation (timecodes within duration, non-empty titles); envelope semantics on AI failure.
+- Swift: chapters decoding (missing/partial fields), converted-item state round-trip, chapter→transcript index resolution.
+
+---
+
+## D3. Speaker identity: voice prints + LLM hints + manual confirmation
+
+### Data
+
+- **Migration:** new table `voice_prints`:
+  `id INTEGER PK, person_key TEXT NOT NULL UNIQUE` (attendee email, or normalized display name when no email), `display_name TEXT NOT NULL`, `embedding BLOB NOT NULL` (256 float32, L2-normalized centroid), `sample_count INTEGER NOT NULL DEFAULT 1`, `updated_at TEXT NOT NULL`. Local-only data; add to `TestAllTablesExist`, schema.sql, golden snapshot.
+- **`meeting_transcripts.speakers_json`** (owner-accepted 2026-07-31, same migration): per-cluster embeddings keyed by rendered speaker label, written from Swift via an optional `--speakers-file` save flag (degrades to NULL like `--segments-file`). Required because Level-3 rename needs the cluster embedding at rename time and audio is swept by retention — the DB column is the only durable home. Renames/LLM candidates must never target or collide with reserved labels («Я», `Speaker N`) — validated on both the Go and Swift sides.
+
+### Level 1 — voice matching (automatic)
+
+- Extend the seam: `SpeakerSegment` gains `embedding: [Float]?`; `FluidAudioDiarizer` forwards per-speaker embeddings (`DiarizationResult.speakerDatabase`). Non-FluidAudio diarizers return nil → everything degrades to today's behavior.
+- After diarization, each cluster's embedding is matched against `voice_prints` by cosine similarity (dot product on normalized vectors). Threshold 0.7 (constant, tunable later). Confident match → the cluster renders as the person's `display_name` instead of `Speaker N`. `[Я]` detection (mic dominance) keeps absolute priority over voice matching.
+
+### Level 2 — LLM content hints
+
+- New prompt `meeting.speaker_guess` (cheap tier) run on demand (button in the Transcript tab: "Suggest speaker names"), only for clusters unmatched by Level 1. Input: transcript excerpt + attendee list (names/emails) + cluster utterance samples. Output: `[{"speaker": "Speaker 2", "candidate": "...", "confidence": 0..1, "evidence": "..."}]`.
+- Rendered as inline suggestion chips on the speaker label ("Looks like Sasha — confirm?"). Confirmation applies Level 3 mechanics. Suggestions are never auto-applied.
+
+### Level 3 — manual rename (the learning loop)
+
+- Tapping a speaker label in the Transcript tab opens a picker: event attendees first, then free-text entry.
+- On confirm/rename: (a) all utterances of that cluster get the new speaker name (`segments_json` rewrite + `transcript_text` rebuild, D1 transactional write); (b) `voice_prints` upsert — new person inserts the cluster embedding; existing person updates the centroid incrementally (`centroid = normalize(centroid·n + emb)/(n+1)`, `sample_count += 1`). Renames on recordings without embeddings (legacy/non-FluidAudio) update the transcript only.
+
+### Testing
+
+- Cosine matching unit tests (match above/below threshold, empty DB, multiple candidates → best wins, degenerate zero-vector rejected).
+- Centroid update math (normalization preserved, sample_count monotonic).
+- Rename round-trip on segments; `[Я]` priority over a voice match; nil-embedding degradation path.
+- speaker_guess output validation (unknown speaker id in response → dropped, not crash).
+
+---
+
+## Out of scope (all slices)
+
+- Feeding chapters into Secretary Memory as episodes (a natural later slice; noted, not designed).
+- Editing utterance text (delete only for now).
+- Cross-recording speaker analytics; exporting voice prints.
+- Backfilling segments/chapters for legacy recordings beyond the manual "Generate chapters" button (legacy rows have no segments; re-transcribe regenerates them).
