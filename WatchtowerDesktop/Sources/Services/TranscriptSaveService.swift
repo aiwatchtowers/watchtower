@@ -7,6 +7,8 @@ import Foundation
 /// recap failed — check `recapOK`/`recapError` for the AI outcome.
 /// `segmentsOK == false` means the CLI dropped a provided segments file (the
 /// column stayed NULL) — the visible tripwire for Go↔Swift renderer drift.
+/// An older-CLI envelope omits the segments fields; absence is not a failure,
+/// so `segmentsOK` decodes as `true` when the key is missing.
 /// `chaptersOK == false` means auto-chapter generation after save failed
 /// (chapters_json stayed NULL — retry via the in-UI "Generate chapters"
 /// button); nil means chapters were not attempted (no segments, or the
@@ -16,7 +18,7 @@ struct TranscriptSaveResult: Decodable, Equatable {
     let transcriptID: Int64
     let recapOK: Bool
     let recapError: String
-    let segmentsOK: Bool?
+    let segmentsOK: Bool
     let segmentsError: String?
     let chaptersOK: Bool?
     let chaptersError: String?
@@ -29,6 +31,17 @@ struct TranscriptSaveResult: Decodable, Equatable {
         case segmentsError = "segments_error"
         case chaptersOK = "chapters_ok"
         case chaptersError = "chapters_error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        transcriptID = try container.decode(Int64.self, forKey: .transcriptID)
+        recapOK = try container.decode(Bool.self, forKey: .recapOK)
+        recapError = try container.decode(String.self, forKey: .recapError)
+        segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
+        segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)
+        chaptersOK = try container.decodeIfPresent(Bool.self, forKey: .chaptersOK)
+        chaptersError = try container.decodeIfPresent(String.self, forKey: .chaptersError)
     }
 }
 

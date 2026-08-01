@@ -190,6 +190,20 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
             segmentsJSON: json)
     }
 
+    func test_fetchDecodesUtterancesOnceAndLegacyStaysNil() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscript(db, id: 1)
+            try TestDatabase.insertMeetingTranscript(db, id: 2, title: "Legacy")
+        }
+        try db.read { db in
+            let withSegments = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(withSegments.utterances, self.utterancesFixture)
+            let legacy = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 2))
+            XCTAssertNil(legacy.utterances, "NULL segments_json → nil utterances (flat-text fallback)")
+        }
+    }
+
     func test_setUtteranceDeletedRewritesTextAndSegments() throws {
         let db = try TestDatabase.create()
         try db.write { db in
