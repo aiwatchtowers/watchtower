@@ -1248,7 +1248,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         config.diarization = rolesEnabled
         await center.startRecording(eventID: nil, title: "Roles")
         await center.stopAndProcess(config: config)
-        return (runner.savedTranscripts.first, runner.savedSegments.first ?? nil, center, notifier)
+        return (runner.savedTranscripts.first, runner.savedSegments.first.flatMap { $0 }, center, notifier)
     }
 
     func testDiarizationRendersRolesIntoSavedText() async throws {
@@ -1362,7 +1362,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         // The live single-pass save must carry the structured utterances too —
         // live is the dominant real path, and dropping them there would fall
         // back to a legacy segment-less row for every live-transcribed meeting.
-        let savedSegments = try XCTUnwrap(runner.savedSegments.first ?? nil,
+        let savedSegments = try XCTUnwrap(runner.savedSegments.first.flatMap { $0 },
                                           "the live single-pass save must pass --segments-file")
         let utterances = try XCTUnwrap(TranscriptSegments.decode(savedSegments))
         XCTAssertEqual(TranscriptSegments.render(utterances), "[Speaker 1] live text",
@@ -1464,7 +1464,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         await center.startRecording(eventID: nil, title: "Retry segments")
         await center.stopAndProcess(config: config)
         guard case .failed = center.phase else { return XCTFail("expected failed save") }
-        let firstSegments = try XCTUnwrap(runner.savedSegments.first ?? nil,
+        let firstSegments = try XCTUnwrap(runner.savedSegments.first.flatMap { $0 },
                                           "the failed save must already have carried segments")
 
         runner.shouldThrow = nil

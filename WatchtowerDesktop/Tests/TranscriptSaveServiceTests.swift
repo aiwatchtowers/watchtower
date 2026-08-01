@@ -245,7 +245,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
         XCTAssertEqual(result.transcriptID, 7)
         XCTAssertFalse(result.recapOK)
         XCTAssertEqual(result.recapError, "boom")
-        XCTAssertNil(result.segmentsOK, "an older-CLI envelope without segments fields must still decode")
+        XCTAssertTrue(result.segmentsOK, "an older-CLI envelope without segments fields must decode as not-dropped")
         XCTAssertNil(result.segmentsError)
     }
 
@@ -262,7 +262,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
             eventID: nil, title: "Ad hoc", langStatsJSON: "{}"
         )
 
-        XCTAssertEqual(result.segmentsOK, false)
+        XCTAssertFalse(result.segmentsOK)
         XCTAssertEqual(result.segmentsError, "segments do not render to the transcript text")
     }
 
