@@ -290,7 +290,7 @@ final class SituationChatViewModel {
         memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
         // current_user_id moved from workspace to slack_accounts (migration
-        // 00044); pinned to account #1, mirroring Go's db.GetCurrentUserID.
+        // 00048); pinned to account #1, mirroring Go's db.GetCurrentUserID.
         let ownerID = (try? dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT current_user_id FROM slack_accounts WHERE id = 1")
         } ?? "") ?? ""

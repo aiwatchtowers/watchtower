@@ -47,7 +47,7 @@ enum TestDatabase {
             """, arguments: [id, name, domain, syncedAt])
     }
 
-    // Slack multi-account note: post-migration (00044) the real `channels.id`/
+    // Slack multi-account note: post-migration (00048) the real `channels.id`/
     // `users.id`/`messages.channel_id`/`messages.user_id` carry a namespaced
     // `"<accountID>:<rawSlackID>"` value. These fixtures still use bare ids
     // (`C001`/`U001`) — that's fine because each test inserts both sides of a
@@ -235,7 +235,7 @@ enum TestDatabase {
         domain            TEXT NOT NULL DEFAULT '',
         synced_at         TEXT,
         -- current_user_id / search_last_date moved to slack_accounts
-        -- (migration 00044). Mirror kept in sync with the real post-migration
+        -- (migration 00048). Mirror kept in sync with the real post-migration
         -- schema so tests can't accidentally read a dropped column.
         inbox_last_processed_ts REAL NOT NULL DEFAULT 0,
         secretary_profile TEXT NOT NULL DEFAULT '',

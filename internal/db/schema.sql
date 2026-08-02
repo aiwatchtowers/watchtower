@@ -3,7 +3,7 @@
 
 -- Workspace metadata. id/name/domain are a frozen legacy snapshot of Slack
 -- account #1 — current_user_id/search_last_date moved to slack_accounts,
--- one row per connected Slack workspace (see 00044).
+-- one row per connected Slack workspace (see 00048).
 CREATE TABLE IF NOT EXISTS workspace (
     id                TEXT PRIMARY KEY,  -- Slack team_id
     name              TEXT NOT NULL,
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS workspace (
 
 -- Users
 CREATE TABLE IF NOT EXISTS users (
-    id            TEXT PRIMARY KEY,  -- namespaced "<slack_account_id>:<raw Slack user ID>" (see 00044)
+    id            TEXT PRIMARY KEY,  -- namespaced "<slack_account_id>:<raw Slack user ID>" (see 00048)
     name          TEXT NOT NULL,
     display_name  TEXT NOT NULL DEFAULT '',
     real_name     TEXT NOT NULL DEFAULT '',
@@ -45,7 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);
 
 -- Channels
 CREATE TABLE IF NOT EXISTS channels (
-    id           TEXT PRIMARY KEY,  -- namespaced "<slack_account_id>:<raw Slack channel ID>" (see 00044)
+    id           TEXT PRIMARY KEY,  -- namespaced "<slack_account_id>:<raw Slack channel ID>" (see 00048)
     name         TEXT NOT NULL,
     type         TEXT NOT NULL CHECK(type IN ('public', 'private', 'dm', 'group_dm')),
     topic        TEXT NOT NULL DEFAULT '',
@@ -64,9 +64,9 @@ CREATE INDEX IF NOT EXISTS idx_channels_is_member ON channels(is_member);
 
 -- Messages
 CREATE TABLE IF NOT EXISTS messages (
-    channel_id   TEXT NOT NULL,  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00044)
+    channel_id   TEXT NOT NULL,  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00048)
     ts           TEXT NOT NULL,       -- Slack timestamp (unique message ID)
-    user_id      TEXT NOT NULL DEFAULT '',  -- namespaced "<slack_account_id>:<raw user ID>" (see 00044)
+    user_id      TEXT NOT NULL DEFAULT '',  -- namespaced "<slack_account_id>:<raw user ID>" (see 00048)
     text         TEXT NOT NULL DEFAULT '',
     thread_ts    TEXT,
     reply_count  INTEGER NOT NULL DEFAULT 0,
@@ -345,10 +345,10 @@ CREATE TABLE IF NOT EXISTS track_states (
     context            TEXT NOT NULL DEFAULT '',
     category           TEXT NOT NULL,
     ownership          TEXT NOT NULL,
-    ball_on            TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00044)
-    owner_user_id      TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00044)
+    ball_on            TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00048)
+    owner_user_id      TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00048)
     requester_name     TEXT NOT NULL DEFAULT '',
-    requester_user_id  TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00044)
+    requester_user_id  TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00048)
     blocking           TEXT NOT NULL DEFAULT '',
     decision_summary   TEXT NOT NULL DEFAULT '',
     decision_options   TEXT NOT NULL DEFAULT '[]',
@@ -381,7 +381,7 @@ CREATE TABLE IF NOT EXISTS targets (
                         CHECK(priority IN ('high','medium','low')),
     ownership           TEXT NOT NULL DEFAULT 'mine'
                         CHECK(ownership IN ('mine','delegated','watching')),
-    ball_on             TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00044)
+    ball_on             TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00048)
     due_date            TEXT NOT NULL DEFAULT '',
     snooze_until        TEXT NOT NULL DEFAULT '',
     blocking            TEXT NOT NULL DEFAULT '',
@@ -603,13 +603,13 @@ CREATE INDEX IF NOT EXISTS idx_dic_created ON decision_importance_corrections(cr
 -- User profile for personalization (role, team, reports, starred items)
 CREATE TABLE IF NOT EXISTS user_profile (
     id                    INTEGER PRIMARY KEY,
-    slack_user_id         TEXT NOT NULL UNIQUE,  -- namespaced "<slack_account_id>:<raw Slack user ID>" (see 00044)
+    slack_user_id         TEXT NOT NULL UNIQUE,  -- namespaced "<slack_account_id>:<raw Slack user ID>" (see 00048)
     role                  TEXT NOT NULL DEFAULT '',
     team                  TEXT NOT NULL DEFAULT '',
     responsibilities      TEXT NOT NULL DEFAULT '[]',    -- JSON array of strings
     reports               TEXT NOT NULL DEFAULT '[]',    -- JSON array of Slack user_ids
     peers                 TEXT NOT NULL DEFAULT '[]',    -- JSON array of Slack user_ids
-    manager               TEXT NOT NULL DEFAULT '',      -- namespaced Slack user_id (see 00044)
+    manager               TEXT NOT NULL DEFAULT '',      -- namespaced Slack user_id (see 00048)
     starred_channels      TEXT NOT NULL DEFAULT '[]',    -- JSON array of channel_ids
     starred_people        TEXT NOT NULL DEFAULT '[]',    -- JSON array of Slack user_ids
     pain_points           TEXT NOT NULL DEFAULT '[]',    -- JSON array from onboarding
@@ -815,7 +815,7 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
     step             INTEGER NOT NULL,
     total            INTEGER NOT NULL,
     status           TEXT NOT NULL DEFAULT '',
-    channel_id       TEXT NOT NULL DEFAULT '',  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00044)
+    channel_id       TEXT NOT NULL DEFAULT '',  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00048)
     channel_name     TEXT NOT NULL DEFAULT '',
     input_tokens     INTEGER NOT NULL DEFAULT 0,
     output_tokens    INTEGER NOT NULL DEFAULT 0,
@@ -1084,7 +1084,7 @@ CREATE TABLE IF NOT EXISTS google_accounts (
 -- Multi-account Slack source: one row per connected Slack workspace.
 -- Every Slack-derived id column across the schema (channels.id, users.id,
 -- messages.channel_id/user_id, etc.) is namespaced "<accountID>:<rawID>" so
--- multiple workspaces can coexist without id collisions (see 00044).
+-- multiple workspaces can coexist without id collisions (see 00048).
 CREATE TABLE IF NOT EXISTS slack_accounts (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     team_id           TEXT NOT NULL DEFAULT '',
@@ -1390,7 +1390,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_provenance_sender ON memory_provenance(sen
 -- UI; a pure reader of digests/digest_topics/messages writes here.
 CREATE TABLE IF NOT EXISTS memory_digest_shadow (
     id                   INTEGER PRIMARY KEY,
-    channel_id           TEXT NOT NULL,  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00044)
+    channel_id           TEXT NOT NULL,  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00048)
     period_from          REAL NOT NULL,
     period_to            REAL NOT NULL,
     legacy_digest_id     INTEGER NOT NULL DEFAULT 0,

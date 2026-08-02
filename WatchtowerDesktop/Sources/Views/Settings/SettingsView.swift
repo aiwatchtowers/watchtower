@@ -501,7 +501,7 @@ struct GeneralSettings: View {
     }
 
     /// Slack Workspaces section — the multi-account Slack connections
-    /// (`slack_accounts` table, migration 00044), each independently granting
+    /// (`slack_accounts` table, migration 00048), each independently granting
     /// access via its own OAuth consent and carrying its own namespaced
     /// identity. Modeled on `googleAccountsSection` below. Placed near the top
     /// of the sources group since Slack is Watchtower's primary data source.

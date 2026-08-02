@@ -20,10 +20,10 @@ import (
 // Two upgrading shapes land here:
 //
 //   - Token-only install (config token set, Slack never actually synced):
-//     migration 00044 could NOT seed a row (it keys on synced current_user_id/
+//     migration 00048 could NOT seed a row (it keys on synced current_user_id/
 //     team id, which a token-only install lacks), so slack_accounts is empty.
 //     This creates account #1.
-//   - Synced install (config token set AND Slack data synced): migration 00044
+//   - Synced install (config token set AND Slack data synced): migration 00048
 //     already seeded row #1 from the workspace singleton, but the token is
 //     still in config — only Go can move it to a file. This reuses the row.
 //

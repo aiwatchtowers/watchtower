@@ -223,7 +223,7 @@ WKWebView OAuth flow Google/Gmail already use (`auth prepare`/`auth complete
 
 ## Implementation deviations / clarifications
 
-Implemented on `feature/slack-multi-account` (migration **00044**). The following
+Implemented on `feature/slack-multi-account` (migration **00048**). The following
 v1 identity-scoping decisions from this design were made explicit during
 implementation and are documented here as deliberate scope, not oversights
 (matching the Google sub-project's "Implementation deviations" precedent). None
@@ -259,7 +259,7 @@ single-owner model is intentionally *not* widened:
 
 ## Rollout
 
-Land as a PR chain into `feature/slack-multi-account`, migration number (00044)
+Land as a PR chain into `feature/slack-multi-account`, migration number (00048)
 reserved ahead of Jira's (sub-project 3).
 Final merge to `main` after the owner verifies live: connect a second real
 Slack workspace, confirm both sync, show up correctly attributed in the

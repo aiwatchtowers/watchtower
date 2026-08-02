@@ -1,7 +1,7 @@
 import GRDB
 
 /// One connected Slack workspace from the `slack_accounts` table
-/// (internal/db/migrations/00044_slack_accounts.sql). Multiple workspaces can
+/// (internal/db/migrations/00048_slack_accounts.sql). Multiple workspaces can
 /// be connected side by side; each carries its own namespaced `current_user_id`
 /// (`"<accountID>:<rawSlackID>"`) and its own OAuth token file. The single
 /// pre-multi-account install migrates in place as account #1.

@@ -130,7 +130,7 @@ func TestEnsureLegacySlackAccount_SecondCallIsNoop(t *testing.T) {
 }
 
 func TestEnsureLegacySlackAccount_SeededRowStillMaterializesTokenFile(t *testing.T) {
-	// Reproduces the state an upgrading install is in after migration 00044
+	// Reproduces the state an upgrading install is in after migration 00048
 	// seeds slack_accounts row #1 (it had synced Slack data) but the token is
 	// still in config.yaml, since SQL can't touch it. The row-existence guard
 	// must NOT make the token-file materialization unreachable.
@@ -145,7 +145,7 @@ func TestEnsureLegacySlackAccount_SeededRowStillMaterializesTokenFile(t *testing
 	}
 	database := db.OpenTestDB(t)
 
-	// What migration 00044 step 2 does on an install with synced Slack data.
+	// What migration 00048 step 2 does on an install with synced Slack data.
 	seededID, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T0TEAM", TeamName: "Acme Corp", CurrentUserID: "1:U0OWNER"})
 	require.NoError(t, err)
 

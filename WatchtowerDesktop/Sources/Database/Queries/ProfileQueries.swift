@@ -16,7 +16,7 @@ enum ProfileQueries {
         guard try db.tableExists("user_profile") else { return nil }
         guard try db.tableExists("slack_accounts") else { return nil }
         // current_user_id moved from workspace to slack_accounts (migration
-        // 00044); pinned to account #1, mirroring Go's db.GetCurrentUserID.
+        // 00048); pinned to account #1, mirroring Go's db.GetCurrentUserID.
         guard let userID = try String.fetchOne(db, sql: """
             SELECT current_user_id FROM slack_accounts WHERE id = 1
             """), !userID.isEmpty else { return nil }

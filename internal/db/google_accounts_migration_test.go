@@ -199,11 +199,12 @@ func TestMigration00043DownUpCycle(t *testing.T) {
 	seedPostMigrationFixture(t, d)
 
 	// Pinned to the version boundary right before 00043 (not a relative
-	// single-step Down): 00044 now stacks on top of 00043, so a bare
-	// goose.Down would undo 00044 instead of 00043, leaving the assertions
-	// below checking the wrong migration's Down block. DownTo(42) always
-	// undoes exactly 00043 (plus whatever stacks above it) regardless of how
-	// many migrations land on top later.
+	// single-step Down): several later migrations (00044/45/46/47 and our
+	// 00048) now stack on top of 00043, so a bare goose.Down would undo the
+	// most recent of those instead of 00043, leaving the assertions below
+	// checking the wrong migration's Down block. DownTo(42) always undoes
+	// exactly 00043 (plus whatever stacks above it) regardless of how many
+	// migrations land on top later.
 	if err := goose.DownTo(d.DB, "migrations", 42); err != nil {
 		t.Fatalf("goose down: %v", err)
 	}

@@ -172,7 +172,7 @@ final class ProjectMapViewModel {
             let (uid, reports) = try await Task.detached { [dbManager] in
                 try dbManager.dbPool.read { db -> (String?, [String]) in
                     // current_user_id moved from workspace to slack_accounts
-                    // (migration 00044); pinned to account #1.
+                    // (migration 00048); pinned to account #1.
                     let userID = try String.fetchOne(
                         db, sql: "SELECT current_user_id FROM slack_accounts WHERE id = 1"
                     )

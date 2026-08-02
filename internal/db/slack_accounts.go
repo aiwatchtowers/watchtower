@@ -9,7 +9,7 @@ import (
 
 // SlackAccount is one row of slack_accounts — a connected Slack workspace.
 // Replaces the workspace singleton's current_user_id/search_last_date
-// scalars, which used to live as workspace columns (see migration 00044).
+// scalars, which used to live as workspace columns (see migration 00048).
 type SlackAccount struct {
 	ID             int64
 	TeamID         string

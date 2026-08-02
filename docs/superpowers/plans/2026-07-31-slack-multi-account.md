@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Branch: `feature/slack-multi-account` (fresh branch off `main`, which already has the Google sub-project merged via PR #48 — the old `feature/multi-account` branch is stale/superseded, do not reuse it). Commit messages in English.
-- New migration number: **00044** (`internal/db/migrations/00044_slack_accounts.sql`). Do NOT bump `CurrentSchemaFormat`.
+- New migration number: **00048** (`internal/db/migrations/00048_slack_accounts.sql`). Do NOT bump `CurrentSchemaFormat`.
 - Every schema change must be mirrored in `internal/db/schema.sql`, `WatchtowerDesktop/Tests/Helpers/TestDatabase.swift`, added to `TestAllTablesExist` (`internal/db/db_test.go`) if a new table, and the golden regenerated: `go test ./internal/db/ -run TestSchemaGolden -update`.
 - Table-recreation dances (`sync_state` PK rename is NOT needed — see Task 1 rationale; no table actually needs recreation this time, only `ALTER TABLE ... ADD COLUMN` and data `UPDATE`s) run under a normal transaction; no `PRAGMA foreign_keys = OFF` dance is required because no table's PRIMARY KEY *type* changes, only the *values* in existing TEXT columns.
 - **Documented v1 identity-scoping decisions (do not "fix" these — they are deliberate, not oversights):**
@@ -27,10 +27,10 @@
 
 ---
 
-### Task 1: Migration 00044 — `slack_accounts` + namespaced ids + in-place data migration
+### Task 1: Migration 00048 — `slack_accounts` + namespaced ids + in-place data migration
 
 **Files:**
-- Create: `internal/db/migrations/00044_slack_accounts.sql`
+- Create: `internal/db/migrations/00048_slack_accounts.sql`
 - Create: `internal/db/slack_accounts_migration_test.go`
 - Modify: `internal/db/schema.sql` (workspace block, users/channels/messages blocks, every table listed in Step 3 below; new `slack_accounts` block placed before `email_accounts`)
 - Modify: `internal/db/db_test.go` (`TestAllTablesExist`: add `"slack_accounts"`)
@@ -48,7 +48,7 @@ package db
 
 import "testing"
 
-func TestMigration00044SlackAccounts(t *testing.T) {
+func TestMigration00048SlackAccounts(t *testing.T) {
 	d := OpenTestDB(t)
 
 	assertTableExists(t, d, "slack_accounts")
@@ -80,7 +80,7 @@ func TestMigration00044SlackAccounts(t *testing.T) {
 	}
 }
 
-func TestMigration00044_FreshDBHasNoSeedRow(t *testing.T) {
+func TestMigration00048_FreshDBHasNoSeedRow(t *testing.T) {
 	d := OpenTestDB(t)
 	var n int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM slack_accounts`).Scan(&n); err != nil {
@@ -96,12 +96,12 @@ Reuse `assertTableExists`/`OpenTestDB` from the Google migration test helpers (s
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/db/ -run TestMigration00044 -v 2>&1 | tee /tmp/s1.log; echo "exit=$?"`
+Run: `go test ./internal/db/ -run TestMigration00048 -v 2>&1 | tee /tmp/s1.log; echo "exit=$?"`
 Expected: FAIL (table `slack_accounts` missing).
 
 - [ ] **Step 3: Write the migration**
 
-`internal/db/migrations/00044_slack_accounts.sql`. No table-recreation dance is needed — every affected table keeps its existing `PRIMARY KEY`/column types; only the *values* of existing TEXT id columns change, plus one new table and two dropped columns on `workspace` (SQLite supports `ALTER TABLE ... DROP COLUMN` directly, no rebuild required).
+`internal/db/migrations/00048_slack_accounts.sql`. No table-recreation dance is needed — every affected table keeps its existing `PRIMARY KEY`/column types; only the *values* of existing TEXT id columns change, plus one new table and two dropped columns on `workspace` (SQLite supports `ALTER TABLE ... DROP COLUMN` directly, no rebuild required).
 
 ```sql
 -- +goose Up
@@ -229,7 +229,7 @@ Notes for the implementer:
 
 - [ ] **Step 5: Run to verify failure, then implement, then verify pass**
 
-Run: `go test ./internal/db/ -run TestMigration00044 -v 2>&1 | tee /tmp/s1b.log; echo "exit=$?"` → FAIL, then write the SQL from Step 3, then rerun → PASS.
+Run: `go test ./internal/db/ -run TestMigration00048 -v 2>&1 | tee /tmp/s1b.log; echo "exit=$?"` → FAIL, then write the SQL from Step 3, then rerun → PASS.
 
 - [ ] **Step 6: Mirror into `internal/db/schema.sql`** — add the `slack_accounts` CREATE TABLE block (before `email_accounts`), remove `current_user_id`/`search_last_date` from the `workspace` block. (Existing column comments elsewhere that reference "Slack user_id"/"Slack channel_id" stay accurate — they're still Slack ids, just namespaced now; add one comment on `channels.id`/`users.id`/`messages.channel_id`/`messages.user_id` noting the `"<accountID>:<rawID>"` format.)
 
@@ -245,8 +245,8 @@ Run: `go test ./internal/db/ -v 2>&1 | tee /tmp/s1r.log; echo "exit=$?"` — exp
 - [ ] **Step 9: Commit**
 
 ```bash
-git add internal/db/migrations/00044_slack_accounts.sql internal/db/schema.sql internal/db/db_test.go internal/db/slack_accounts_migration_test.go internal/db/testdata/schema_v73.golden
-git commit -m "feat(db): slack_accounts table + namespaced Slack ids across the schema (migration 00044)"
+git add internal/db/migrations/00048_slack_accounts.sql internal/db/schema.sql internal/db/db_test.go internal/db/slack_accounts_migration_test.go internal/db/testdata/schema_v73.golden
+git commit -m "feat(db): slack_accounts table + namespaced Slack ids across the schema (migration 00048)"
 ```
 
 ---
