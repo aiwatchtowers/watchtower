@@ -675,7 +675,7 @@ type JiraAccount struct {
 	Status                    string
 	Error                     string
 	Enabled                   bool
-	MemoryJiraLastExtractedTs float64
+	MemoryJiraLastExtractedTS float64
 	CreatedAt                 string
 }
 

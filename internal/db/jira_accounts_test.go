@@ -31,7 +31,7 @@ func TestJiraAccountCreateListGetRoundTrip(t *testing.T) {
 	assert.Equal(t, "Work", accounts[0].Label)
 	assert.Equal(t, "ok", accounts[0].Status)
 	assert.True(t, accounts[0].Enabled)
-	assert.Equal(t, float64(0), accounts[0].MemoryJiraLastExtractedTs)
+	assert.Equal(t, float64(0), accounts[0].MemoryJiraLastExtractedTS)
 	assert.NotEmpty(t, accounts[0].CreatedAt)
 	assert.Equal(t, id2, accounts[1].ID)
 	assert.Equal(t, "cloud-2", accounts[1].CloudID)
@@ -144,5 +144,5 @@ func TestJiraAccount_MemoryWatermark_FreshAccountReadsZero(t *testing.T) {
 
 	got, err := d.GetJiraAccount(id)
 	require.NoError(t, err)
-	assert.Equal(t, float64(1784500000), got.MemoryJiraLastExtractedTs)
+	assert.Equal(t, float64(1784500000), got.MemoryJiraLastExtractedTS)
 }

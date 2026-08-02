@@ -33,7 +33,7 @@ func (db *DB) ListJiraAccounts() ([]JiraAccount, error) {
 	for rows.Next() {
 		var a JiraAccount
 		if err := rows.Scan(&a.ID, &a.CloudID, &a.SiteURL, &a.SiteName, &a.Label,
-			&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTs, &a.CreatedAt); err != nil {
+			&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTS, &a.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira account: %w", err)
 		}
 		out = append(out, a)
@@ -55,7 +55,7 @@ func (db *DB) ListEnabledJiraAccounts() ([]JiraAccount, error) {
 	for rows.Next() {
 		var a JiraAccount
 		if err := rows.Scan(&a.ID, &a.CloudID, &a.SiteURL, &a.SiteName, &a.Label,
-			&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTs, &a.CreatedAt); err != nil {
+			&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTS, &a.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira account: %w", err)
 		}
 		out = append(out, a)
@@ -70,7 +70,7 @@ func (db *DB) GetJiraAccount(id int64) (JiraAccount, error) {
         status, error, enabled, memory_jira_last_extracted_ts, created_at
         FROM jira_accounts WHERE id = ?`, id).
 		Scan(&a.ID, &a.CloudID, &a.SiteURL, &a.SiteName, &a.Label,
-			&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTs, &a.CreatedAt)
+			&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTS, &a.CreatedAt)
 	if err != nil {
 		return JiraAccount{}, fmt.Errorf("getting jira account %d: %w", id, err)
 	}

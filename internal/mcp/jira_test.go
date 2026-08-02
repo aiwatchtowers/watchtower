@@ -15,7 +15,7 @@ func TestListJiraIssues(t *testing.T) {
 	db.SeedTestJiraAccount(t, database)
 	if err := database.UpsertJiraIssue(db.JiraIssue{
 		AccountID: 1,
-		Key: "ABC-1", ID: "ABC-1", ProjectKey: "ABC", Summary: "fix the thing",
+		Key:       "ABC-1", ID: "ABC-1", ProjectKey: "ABC", Summary: "fix the thing",
 		Status: "To Do", StatusCategory: "To Do",
 		CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z",
 		SyncedAt: "2026-06-02T00:00:00Z",
@@ -44,7 +44,7 @@ func TestGetJiraIssue(t *testing.T) {
 	db.SeedTestJiraAccount(t, database)
 	if err := database.UpsertJiraIssue(db.JiraIssue{
 		AccountID: 1,
-		Key: "ABC-7", ID: "ABC-7", ProjectKey: "ABC", Summary: "wire the widget",
+		Key:       "ABC-7", ID: "ABC-7", ProjectKey: "ABC", Summary: "wire the widget",
 		Status: "In Progress", StatusCategory: "In Progress",
 		CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z",
 		SyncedAt: "2026-06-02T00:00:00Z",
@@ -92,7 +92,7 @@ func TestGetJiraIssueDeleted(t *testing.T) {
 	db.SeedTestJiraAccount(t, database)
 	if err := database.UpsertJiraIssue(db.JiraIssue{
 		AccountID: 1,
-		Key: "ABC-9", ID: "ABC-9", ProjectKey: "ABC", Summary: "deleted issue",
+		Key:       "ABC-9", ID: "ABC-9", ProjectKey: "ABC", Summary: "deleted issue",
 		Status: "Done", StatusCategory: "Done",
 		CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z",
 		SyncedAt: "2026-06-02T00:00:00Z", IsDeleted: true,
