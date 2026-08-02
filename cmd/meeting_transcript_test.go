@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,11 +18,13 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/meeting"
 )
 
 // transcriptMockGen is a mock digest.Generator for transcript CLI tests.
 type transcriptMockGen struct {
 	response        string
+	responses       []string
 	err             error
 	lastUserMessage string
 }
@@ -31,7 +34,12 @@ func (m *transcriptMockGen) Generate(_ context.Context, _, userMessage, _ string
 	if m.err != nil {
 		return "", nil, "", m.err
 	}
-	return m.response, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 20}, "s1", nil
+	out := m.response
+	if len(m.responses) > 0 {
+		out = m.responses[0]
+		m.responses = m.responses[1:]
+	}
+	return out, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 20}, "s1", nil
 }
 
 const transcriptMockRecapJSON = `{"summary":"s","key_decisions":["d"],"action_items":[],"open_questions":[]}`
@@ -50,20 +58,26 @@ func resetTranscriptFlags(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		transcriptSaveFlagFile = ""
+		transcriptSaveFlagSegments = ""
+		transcriptSaveFlagSpeakers = ""
 		transcriptSaveFlagAudio = ""
 		transcriptSaveFlagEventID = ""
 		transcriptSaveFlagTitle = ""
 		transcriptSaveFlagLangStats = ""
 		transcriptSaveFlagDuration = 0
 		transcriptListFlagEventID = ""
+		transcriptFollowupChapter = -1
 	})
 	transcriptSaveFlagFile = ""
+	transcriptSaveFlagSegments = ""
+	transcriptSaveFlagSpeakers = ""
 	transcriptSaveFlagAudio = ""
 	transcriptSaveFlagEventID = ""
 	transcriptSaveFlagTitle = ""
 	transcriptSaveFlagLangStats = ""
 	transcriptSaveFlagDuration = 0
 	transcriptListFlagEventID = ""
+	transcriptFollowupChapter = -1
 }
 
 // writeTranscriptFile writes content into a temp transcript file and returns its path.
@@ -77,11 +91,15 @@ func writeTranscriptFile(t *testing.T, content string) string {
 // transcriptEnvelope mirrors the frozen stdout contract consumed by the Swift
 // TranscriptSaveService.
 type transcriptEnvelope struct {
-	TranscriptID int64  `json:"transcript_id"`
-	EventID      string `json:"event_id"`
-	Title        string `json:"title"`
-	RecapOK      bool   `json:"recap_ok"`
-	RecapError   string `json:"recap_error"`
+	TranscriptID  int64  `json:"transcript_id"`
+	EventID       string `json:"event_id"`
+	Title         string `json:"title"`
+	RecapOK       bool   `json:"recap_ok"`
+	RecapError    string `json:"recap_error"`
+	SegmentsOK    bool   `json:"segments_ok"`
+	SegmentsError string `json:"segments_error"`
+	SpeakersOK    bool   `json:"speakers_ok"`
+	SpeakersError string `json:"speakers_error"`
 }
 
 func findPipelineRun(t *testing.T, database *db.DB, pipeline string) *db.PipelineRun {
@@ -272,6 +290,157 @@ func TestTranscriptSaveEventWithExistingRecapKeepsIt(t *testing.T) {
 	assert.Contains(t, tr.SummaryJSON.String, `"summary":"s"`)
 }
 
+// segmentsFixtureJSON renders to exactly "[Я] привет\n[Speaker 1] ответ" —
+// the transcript text used by the segments save tests (the invariant
+// transcript_text = render(segments) must hold at save time).
+const segmentsFixtureJSON = `[
+	{"idx":0,"start_sec":0,"end_sec":2.5,"speaker":"Я","text":"привет","deleted":false},
+	{"idx":1,"start_sec":2.5,"end_sec":5,"speaker":"Speaker 1","text":"ответ","deleted":false}
+]`
+
+const segmentsFixtureText = "[Я] привет\n[Speaker 1] ответ"
+
+// writeSegmentsFile writes content into a temp segments file and returns its path.
+func writeSegmentsFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "segments.json")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func TestTranscriptSaveWithSegmentsPersistsColumn(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagTitle = "With segments"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.RecapOK)
+	assert.True(t, env.SegmentsOK, "a valid segments file must report segments_ok=true")
+	assert.Equal(t, "", env.SegmentsError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.SegmentsJSON.Valid, "segments_json must be persisted when --segments-file is valid")
+	utterances, err := meeting.ParseTranscriptSegments([]byte(tr.SegmentsJSON.String))
+	require.NoError(t, err)
+	assert.Equal(t, tr.TranscriptText, meeting.RenderTranscriptSegments(utterances),
+		"invariant: transcript_text = render(segments where !deleted)")
+}
+
+func TestTranscriptSaveWithoutSegmentsLeavesColumnNULL(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "plain transcript, old caller")
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.SegmentsOK, "no segments attempted → nothing dropped, segments_ok=true")
+	assert.Equal(t, "", env.SegmentsError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.False(t, tr.SegmentsJSON.Valid, "no --segments-file → NULL column, legacy behavior")
+}
+
+func TestTranscriptSaveMalformedSegmentsStillPersistsTranscript(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	cases := map[string]string{
+		"not json":        `{{{not json`,
+		"empty array":     `[]`,
+		"render mismatch": `[{"idx":0,"start_sec":0,"end_sec":1,"speaker":"Я","text":"другой текст","deleted":false}]`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			resetTranscriptFlags(t)
+			transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+			transcriptSaveFlagSegments = writeSegmentsFile(t, payload)
+			transcriptSaveFlagTitle = "Malformed " + name
+
+			var out, errBuf bytes.Buffer
+			transcriptSaveCmd.SetOut(&out)
+			transcriptSaveCmd.SetErr(&errBuf)
+
+			// Exit-0 envelope semantics preserved: the transcript row saved.
+			require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+			assert.Contains(t, errBuf.String(), "warning:", "a bad segments file must warn on stderr")
+
+			var env transcriptEnvelope
+			require.NoError(t, json.Unmarshal(out.Bytes(), &env))
+			assert.Greater(t, env.TranscriptID, int64(0))
+			assert.False(t, env.SegmentsOK, "a dropped segments file must be visible in the envelope, not stderr-only")
+			assert.NotEmpty(t, env.SegmentsError, "segments_error must carry the drop reason")
+
+			database, err := openDBFromConfig()
+			require.NoError(t, err)
+			defer database.Close()
+			tr, err := database.GetMeetingTranscript(env.TranscriptID)
+			require.NoError(t, err)
+			require.NotNil(t, tr, "transcript must persist despite a bad segments file")
+			assert.Equal(t, segmentsFixtureText, tr.TranscriptText)
+			assert.False(t, tr.SegmentsJSON.Valid, "bad segments file → NULL column")
+		})
+	}
+}
+
+func TestTranscriptSaveMissingSegmentsFileStillPersistsTranscript(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "text without segments")
+	transcriptSaveFlagSegments = filepath.Join(t.TempDir(), "does-not-exist.json")
+
+	var out, errBuf bytes.Buffer
+	transcriptSaveCmd.SetOut(&out)
+	transcriptSaveCmd.SetErr(&errBuf)
+
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+	assert.Contains(t, errBuf.String(), "warning:")
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(out.Bytes(), &env))
+	assert.False(t, env.SegmentsOK, "an unreadable segments file counts as dropped")
+	assert.Contains(t, env.SegmentsError, "reading segments file")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.False(t, tr.SegmentsJSON.Valid)
+}
+
 func TestTranscriptSaveRecapFailureStillPersists(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
@@ -332,6 +501,7 @@ func TestTranscriptRecapRetry(t *testing.T) {
 	assert.Equal(t, id, env.TranscriptID)
 	assert.True(t, env.RecapOK)
 	assert.Equal(t, "", env.RecapError)
+	assert.True(t, env.SegmentsOK, "the recap retry never touches segments — segments_ok must be true")
 
 	database, err = openDBFromConfig()
 	require.NoError(t, err)
@@ -469,4 +639,774 @@ func TestTranscriptNotesUnknownIDFails(t *testing.T) {
 	err := transcriptNotesCmd.RunE(transcriptNotesCmd, []string{"9999"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
+}
+
+// speakersFixtureJSON matches segmentsFixtureJSON's labels ("Я", "Speaker 1").
+const speakersFixtureJSON = `[
+	{"speaker":"Я","embedding":[0.6,0.8]},
+	{"speaker":"Speaker 1","embedding":[1,0]}
+]`
+
+// writeSpeakersFile writes content into a temp speakers file and returns its path.
+func writeSpeakersFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "speakers.json")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func TestTranscriptSaveWithSpeakersPersistsColumn(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagSpeakers = writeSpeakersFile(t, speakersFixtureJSON)
+	transcriptSaveFlagTitle = "With speakers"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.SpeakersOK, "a fully-valid speakers file must report speakers_ok=true")
+	assert.Empty(t, env.SpeakersError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.SpeakersJSON.Valid, "speakers_json must be persisted when --speakers-file is valid")
+	speakers, err := meeting.ParseSpeakerEmbeddings([]byte(tr.SpeakersJSON.String))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Я", "Speaker 1"}, []string{speakers[0].Speaker, speakers[1].Speaker})
+}
+
+// One diarized cluster that won zero transcript utterances must drop ONLY its
+// own embedding — the rest of the payload persists so voice-print learning
+// stays available for the recording; the partial drop is surfaced through
+// speakers_ok=false (stderr alone is discarded by ProcessCLIRunner on exit 0).
+func TestTranscriptSaveOrphanSpeakerDropsOnlyThatEmbedding(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagSpeakers = writeSpeakersFile(t, `[
+		{"speaker":"Я","embedding":[0.6,0.8]},
+		{"speaker":"Speaker 1","embedding":[1,0]},
+		{"speaker":"Speaker 7","embedding":[0,1]}
+	]`)
+	transcriptSaveFlagTitle = "Orphan cluster"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.False(t, env.SpeakersOK, "a partial drop must be visible in the envelope")
+	assert.Contains(t, env.SpeakersError, "Speaker 7")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.SpeakersJSON.Valid,
+		"the surviving embeddings must persist — one orphan label must not disable voice-print learning")
+	speakers, err := meeting.ParseSpeakerEmbeddings([]byte(tr.SpeakersJSON.String))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Я", "Speaker 1"}, []string{speakers[0].Speaker, speakers[1].Speaker})
+}
+
+// A speakers file without a persisted segments column would leave dangling
+// labels — the save must degrade to NULL speakers and still succeed.
+func TestTranscriptSaveSpeakersWithoutSegmentsLeavesColumnNULL(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "plain transcript")
+	transcriptSaveFlagSpeakers = writeSpeakersFile(t, speakersFixtureJSON)
+	transcriptSaveFlagTitle = "Speakers only"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.False(t, tr.SpeakersJSON.Valid, "speakers without segments → NULL column")
+}
+
+func TestTranscriptSaveBadSpeakersStillPersistsTranscript(t *testing.T) {
+	for name, payload := range map[string]string{
+		"malformed json": `{not json`,
+		"empty array":    `[]`,
+		"empty label":    `[{"speaker":"","embedding":[1]}]`,
+		"unknown label":  `[{"speaker":"Speaker 7","embedding":[1,0]}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cleanup := setupWatchTestEnv(t)
+			defer cleanup()
+			resetTranscriptFlags(t)
+			stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+			transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+			transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+			transcriptSaveFlagSpeakers = writeSpeakersFile(t, payload)
+
+			var buf bytes.Buffer
+			transcriptSaveCmd.SetOut(&buf)
+			require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil),
+				"a bad speakers file must never fail the save")
+
+			var env transcriptEnvelope
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+			assert.False(t, env.SpeakersOK, "a dropped speakers file must be visible in the envelope")
+			assert.NotEmpty(t, env.SpeakersError)
+
+			database, err := openDBFromConfig()
+			require.NoError(t, err)
+			defer database.Close()
+			tr, err := database.GetMeetingTranscript(env.TranscriptID)
+			require.NoError(t, err)
+			require.NotNil(t, tr)
+			assert.True(t, tr.SegmentsJSON.Valid, "segments must persist independently of speakers")
+			assert.False(t, tr.SpeakersJSON.Valid, "bad speakers file → NULL column")
+		})
+	}
+}
+
+// An unreadable --speakers-file (here: a directory) degrades exactly like a
+// malformed one: transcript + segments persist, speakers stay NULL,
+// speakers_ok=false.
+func TestTranscriptSaveUnreadableSpeakersFileStillPersistsTranscript(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagSpeakers = t.TempDir() // a directory is not readable as a file
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil),
+		"an unreadable speakers file must never fail the save")
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.False(t, env.SpeakersOK)
+	assert.Contains(t, env.SpeakersError, "reading speakers file")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.True(t, tr.SegmentsJSON.Valid)
+	assert.False(t, tr.SpeakersJSON.Valid)
+}
+
+func TestTranscriptSpeakerGuessEnvelope(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: `[
+		{"speaker":"Speaker 1","candidate":"Саша","confidence":0.9,"evidence":"introduces himself"},
+		{"speaker":"Speaker 9","candidate":"Ghost","confidence":0.9,"evidence":"unknown"}
+	]`})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Guess",
+		TranscriptText: segmentsFixtureText,
+		SegmentsJSON:   sql.NullString{String: segmentsFixtureJSON, Valid: true},
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	var buf bytes.Buffer
+	transcriptSpeakerGuessCmd.SetOut(&buf)
+	require.NoError(t, transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)}))
+
+	var env struct {
+		TranscriptID int64                  `json:"transcript_id"`
+		Suggestions  []meeting.SpeakerGuess `json:"suggestions"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.Equal(t, id, env.TranscriptID)
+	require.Len(t, env.Suggestions, 1, "unknown speaker labels must be dropped")
+	assert.Equal(t, "Speaker 1", env.Suggestions[0].Speaker)
+	assert.Equal(t, "Саша", env.Suggestions[0].Candidate)
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	run := findPipelineRun(t, database, "meeting_speaker_guess")
+	require.NotNil(t, run, "a meeting_speaker_guess pipeline run must be recorded")
+	assert.Equal(t, "done", run.Status)
+}
+
+func TestTranscriptSpeakerGuessWithoutSegmentsFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: `[]`})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Legacy",
+		TranscriptText: "plain text",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	err = transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no per-utterance segments")
+}
+
+func TestTranscriptSpeakerGuessAIFailureExitsNonZero(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{err: errors.New("boom")})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Guess",
+		TranscriptText: segmentsFixtureText,
+		SegmentsJSON:   sql.NullString{String: segmentsFixtureJSON, Valid: true},
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	err = transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	run := findPipelineRun(t, database, "meeting_speaker_guess")
+	require.NotNil(t, run)
+	assert.Equal(t, "error", run.Status)
+}
+
+func TestTranscriptSaveWithSegmentsAutoGeneratesChapters(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	// Save makes two AI calls in order: recap, then chapters.
+	stubTranscriptGenerator(t, &transcriptMockGen{responses: []string{transcriptMockRecapJSON, transcriptMockChaptersJSON}})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagTitle = "Auto chapters"
+	transcriptSaveFlagDuration = 5
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env chaptersEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.RecapOK)
+	require.NotNil(t, env.ChaptersOK, "chapters_ok must be reported when segments exist")
+	assert.True(t, *env.ChaptersOK)
+	require.NotNil(t, env.ChaptersError)
+	assert.Equal(t, "", *env.ChaptersError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.ChaptersJSON.Valid, "chapters_json must be persisted after auto-generation")
+	chapters, err := meeting.ParseChapters([]byte(tr.ChaptersJSON.String))
+	require.NoError(t, err)
+	assert.Equal(t, "Intro", chapters.Chapters[0].Title)
+
+	run := findPipelineRun(t, database, "meeting_chapters")
+	require.NotNil(t, run, "a meeting_chapters pipeline run must be recorded")
+	assert.Equal(t, "done", run.Status)
+}
+
+func TestTranscriptSaveWithoutSegmentsSkipsChapters(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "plain transcript, no segments")
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env chaptersEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.Nil(t, env.ChaptersOK, "no segments → chapters not attempted → no chapters_ok key")
+	assert.Nil(t, env.ChaptersError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	run := findPipelineRun(t, database, "meeting_chapters")
+	assert.Nil(t, run, "no meeting_chapters run must be recorded without segments")
+}
+
+func TestTranscriptSaveChaptersFailureKeepsExitZero(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	// Recap succeeds; the chapters call returns garbage → chapters fail,
+	// but the envelope semantics stay exit-0 (the transcript row persisted).
+	stubTranscriptGenerator(t, &transcriptMockGen{responses: []string{transcriptMockRecapJSON, `not json`}})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagTitle = "Chapters fail"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env chaptersEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.RecapOK)
+	require.NotNil(t, env.ChaptersOK)
+	assert.False(t, *env.ChaptersOK)
+	require.NotNil(t, env.ChaptersError)
+	assert.NotEqual(t, "", *env.ChaptersError)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.True(t, tr.SegmentsJSON.Valid, "segments must survive a chapters failure")
+	assert.False(t, tr.ChaptersJSON.Valid, "failed generation must leave chapters_json NULL")
+}
+
+func TestTranscriptSaveRecapFailsChaptersSucceed(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	// Recap AI returns garbage; chapters succeed — pins that a recap error
+	// cannot short-circuit auto-chapters (no early return between them).
+	stubTranscriptGenerator(t, &transcriptMockGen{responses: []string{`not json`, transcriptMockChaptersJSON}})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagTitle = "Recap fails, chapters fine"
+	transcriptSaveFlagDuration = 5
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env chaptersEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.False(t, env.RecapOK)
+	assert.NotEqual(t, "", env.RecapError)
+	require.NotNil(t, env.ChaptersOK)
+	assert.True(t, *env.ChaptersOK, "a recap failure must not disable auto-chapters")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	assert.True(t, tr.ChaptersJSON.Valid, "chapters must persist even when the recap failed")
+	assert.False(t, tr.SummaryJSON.Valid, "failed recap must not write summary_json")
+}
+
+func TestTranscriptChaptersGeneratesAndStores(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: transcriptMockChaptersJSON}
+	stubTranscriptGenerator(t, mock)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapterTestTranscript(t, database)
+	database.Close()
+
+	var buf bytes.Buffer
+	transcriptChaptersCmd.SetOut(&buf)
+	require.NoError(t, transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{fmt.Sprint(id)}))
+
+	var env struct {
+		TranscriptID int64  `json:"transcript_id"`
+		ChaptersJSON string `json:"chapters_json"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.Equal(t, id, env.TranscriptID)
+	assert.Contains(t, env.ChaptersJSON, `"Intro"`)
+
+	// The timecoded transcript (with speakers) travels in the user message.
+	assert.Contains(t, mock.lastUserMessage, "[0:00] [Я] привет")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	require.True(t, tr.ChaptersJSON.Valid, "chapters_json must be persisted")
+	assert.Equal(t, env.ChaptersJSON, tr.ChaptersJSON.String)
+
+	run := findPipelineRun(t, database, "meeting_chapters")
+	require.NotNil(t, run)
+	assert.Equal(t, "done", run.Status)
+}
+
+func TestTranscriptChaptersRegenerationPreservesConvertedStamps(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	// Regenerated split: same "a1" item at a shifted position plus a new one.
+	regenerated := `{"overall_summary":"o2","chapters":[{"title":"Renamed","start_sec":0,"end_sec":5,"participants":["Я"],"summary":"s2","decisions":[],"action_items":["brand new item","a1"],"open_questions":[]}]}`
+	stubTranscriptGenerator(t, &transcriptMockGen{response: regenerated})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapterTestTranscript(t, database)
+	// Previous chapters with "a1" already converted to Target 77.
+	converted := `{"overall_summary":"o","chapters":[{"title":"Intro","start_sec":0,"end_sec":5,"participants":["Я"],"summary":"s","decisions":["d1"],"action_items":[{"text":"a1","converted_target_id":77}],"open_questions":[]}]}`
+	require.NoError(t, database.SetMeetingTranscriptChapters(id, converted))
+	database.Close()
+
+	require.NoError(t, transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{fmt.Sprint(id)}))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	require.True(t, tr.ChaptersJSON.Valid)
+	chapters, err := meeting.ParseChapters([]byte(tr.ChaptersJSON.String))
+	require.NoError(t, err)
+	items := chapters.Chapters[0].ActionItems
+	require.Len(t, items, 2)
+	assert.Nil(t, items[0].ConvertedTargetID, "a new action item must not inherit a stamp")
+	require.NotNil(t, items[1].ConvertedTargetID, "the surviving 'a1' item must keep its Target link across regeneration")
+	assert.Equal(t, int64(77), *items[1].ConvertedTargetID)
+}
+
+func TestTranscriptChaptersFailureExitsNonZeroAndStoresNothing(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{err: errors.New("boom")})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapterTestTranscript(t, database)
+	database.Close()
+
+	err = transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err, "chapters failure must flip the exit code — nothing was persisted")
+	assert.Contains(t, err.Error(), "boom")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	assert.False(t, tr.ChaptersJSON.Valid, "failed generation must not write chapters_json")
+
+	run := findPipelineRun(t, database, "meeting_chapters")
+	require.NotNil(t, run)
+	assert.Equal(t, "error", run.Status)
+}
+
+func TestTranscriptChaptersUnknownIDFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockChaptersJSON})
+
+	err := transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{"9999"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestTranscriptChaptersWithoutSegmentsFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: transcriptMockChaptersJSON}
+	stubTranscriptGenerator(t, mock)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Legacy",
+		TranscriptText: "no segments here",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	err = transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no segments")
+	assert.Equal(t, "", mock.lastUserMessage, "the AI must not be called without segments")
+}
+
+func TestTranscriptFollowupChapter(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: "Team, per the sync: shipping d1; a1 owned."}
+	stubTranscriptGenerator(t, mock)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapteredTranscript(t, database)
+	database.Close()
+
+	transcriptFollowupChapter = 0
+	var buf bytes.Buffer
+	transcriptFollowupCmd.SetOut(&buf)
+	require.NoError(t, transcriptFollowupCmd.RunE(transcriptFollowupCmd, []string{fmt.Sprint(id)}))
+
+	var env struct {
+		TranscriptID int64  `json:"transcript_id"`
+		Chapter      *int   `json:"chapter"`
+		Draft        string `json:"draft"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.Equal(t, id, env.TranscriptID)
+	require.NotNil(t, env.Chapter)
+	assert.Equal(t, 0, *env.Chapter)
+	assert.Contains(t, env.Draft, "shipping d1")
+
+	// Stated content only — the chapter's decisions and action items.
+	assert.Contains(t, mock.lastUserMessage, "d1")
+	assert.Contains(t, mock.lastUserMessage, "a1")
+
+	// Nothing is persisted by a followup draft.
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	assert.Equal(t, transcriptMockChaptersJSON, tr.ChaptersJSON.String, "followup must not modify chapters_json")
+
+	run := findPipelineRun(t, database, "meeting_followup")
+	require.NotNil(t, run)
+	assert.Equal(t, "done", run.Status)
+}
+
+func TestTranscriptFollowupWholeMeeting(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: "whole-meeting draft"}
+	stubTranscriptGenerator(t, mock)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapteredTranscript(t, database)
+	database.Close()
+
+	// No --chapter → whole meeting (chapter null in the envelope).
+	var buf bytes.Buffer
+	transcriptFollowupCmd.SetOut(&buf)
+	require.NoError(t, transcriptFollowupCmd.RunE(transcriptFollowupCmd, []string{fmt.Sprint(id)}))
+
+	var env struct {
+		Chapter *int   `json:"chapter"`
+		Draft   string `json:"draft"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.Nil(t, env.Chapter, "whole-meeting draft must report chapter null")
+	assert.Equal(t, "whole-meeting draft", env.Draft)
+	assert.Contains(t, mock.lastUserMessage, "d1")
+}
+
+func TestTranscriptFollowupNoChaptersFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: "draft"})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapterTestTranscript(t, database) // segments, but no chapters
+	database.Close()
+
+	err = transcriptFollowupCmd.RunE(transcriptFollowupCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no chapters")
+}
+
+func TestTranscriptFollowupChapterOutOfRangeFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: "draft"})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapteredTranscript(t, database)
+	database.Close()
+
+	transcriptFollowupChapter = 5
+	err = transcriptFollowupCmd.RunE(transcriptFollowupCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "out of range")
+}
+
+func TestTranscriptFollowupNegativeChapterFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: "draft"}
+	stubTranscriptGenerator(t, mock)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapteredTranscript(t, database)
+	database.Close()
+
+	// -1 is the whole-meeting sentinel; any other negative is rejected
+	// instead of silently meaning "whole meeting".
+	transcriptFollowupChapter = -3
+	err = transcriptFollowupCmd.RunE(transcriptFollowupCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --chapter")
+	assert.Equal(t, "", mock.lastUserMessage, "the AI must not be called for an invalid --chapter")
+}
+
+func TestTranscriptFollowupAIFailureExitsNonZero(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{err: errors.New("boom")})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id := insertChapteredTranscript(t, database)
+	database.Close()
+
+	err = transcriptFollowupCmd.RunE(transcriptFollowupCmd, []string{fmt.Sprint(id)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	run := findPipelineRun(t, database, "meeting_followup")
+	require.NotNil(t, run)
+	assert.Equal(t, "error", run.Status)
+}
+
+func TestFollowupInputWholeMeetingUnionAcrossChapters(t *testing.T) {
+	// Two chapters sharing a participant: the whole-meeting union must merge
+	// every category across chapters and deduplicate participant labels —
+	// pins that a Chapters[:1] refactor or dropped dedupe cannot pass.
+	chapters := &meeting.ChaptersResult{Chapters: []meeting.MeetingChapter{
+		{
+			Title:         "One",
+			Participants:  []string{"Я", "Speaker 1"},
+			Decisions:     []string{"d1"},
+			ActionItems:   []meeting.ChapterActionItem{{Text: "a1"}},
+			OpenQuestions: []string{"q1"},
+		},
+		{
+			Title:         "Two",
+			Participants:  []string{"Speaker 1", "Speaker 2"},
+			Decisions:     []string{"d2"},
+			ActionItems:   []meeting.ChapterActionItem{{Text: "a2"}},
+			OpenQuestions: []string{"q2"},
+		},
+	}}
+	tr := &db.MeetingTranscript{Title: "Sync", CreatedAt: "2026-01-15T10:00:00Z"}
+
+	input, err := followupInput(tr, chapters, -1)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-01-15", input.MeetingDate)
+	assert.Equal(t, []string{"Я", "Speaker 1", "Speaker 2"}, input.Participants,
+		"shared participants must be deduplicated, union preserved")
+	assert.Equal(t, []string{"d1", "d2"}, input.Decisions)
+	assert.Equal(t, []string{"a1", "a2"}, input.ActionItems)
+	assert.Equal(t, []string{"q1", "q2"}, input.OpenQuestions)
+
+	// Single-chapter selection stays scoped to that chapter only.
+	single, err := followupInput(tr, chapters, 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Speaker 1", "Speaker 2"}, single.Participants)
+	assert.Equal(t, []string{"d2"}, single.Decisions)
+	assert.Equal(t, []string{"a2"}, single.ActionItems)
+	assert.Equal(t, []string{"q2"}, single.OpenQuestions)
+}
+
+// insertChapterTestTranscript seeds a transcript row with valid segments and
+// returns its id.
+func insertChapterTestTranscript(t *testing.T, database *db.DB) int64 {
+	t.Helper()
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Chaptered",
+		DurationSec:    5,
+		TranscriptText: segmentsFixtureText,
+		SegmentsJSON:   sql.NullString{String: segmentsFixtureJSON, Valid: true},
+	})
+	require.NoError(t, err)
+	return id
+}
+
+// insertChapteredTranscript seeds a transcript row that already has chapters.
+func insertChapteredTranscript(t *testing.T, database *db.DB) int64 {
+	t.Helper()
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Weekly Sync",
+		DurationSec:    5,
+		TranscriptText: segmentsFixtureText,
+		SegmentsJSON:   sql.NullString{String: segmentsFixtureJSON, Valid: true},
+	})
+	require.NoError(t, err)
+	require.NoError(t, database.SetMeetingTranscriptChapters(id, transcriptMockChaptersJSON))
+	return id
+}
+
+// transcriptMockChaptersJSON stays within the segmentsFixture timecodes
+// (0-5s) so duration validation passes for any --duration.
+const transcriptMockChaptersJSON = `{"overall_summary":"o","chapters":[{"title":"Intro","start_sec":0,"end_sec":5,"participants":["Я","Speaker 1"],"summary":"s","decisions":["d1"],"action_items":["a1"],"open_questions":[]}]}`
+
+// chaptersEnvelope extends transcriptEnvelope with the additive chapters keys
+// (pointers so their absence is distinguishable from false/"").
+type chaptersEnvelope struct {
+	transcriptEnvelope
+	ChaptersOK    *bool   `json:"chapters_ok"`
+	ChaptersError *string `json:"chapters_error"`
 }

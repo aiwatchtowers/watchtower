@@ -44,7 +44,7 @@ func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	now := time.Now().UTC()
 	syncedAt := now.Format(time.RFC3339)
-	timeMin := now.Add(-24 * time.Hour) // past 1 day
+	timeMin := now.Add(-time.Duration(s.cfg.Calendar.EffectiveHistoryDays()) * 24 * time.Hour)
 
 	daysAhead := s.cfg.Calendar.SyncDaysAhead
 	if daysAhead <= 0 {
@@ -59,7 +59,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	calInfos, err := s.client.FetchCalendars(ctx)
 	var realPrimaryID string
 	if err != nil {
-		s.recordAuthResult(err)
+		s.recordAuthResult(ctx, err)
 		if errors.Is(err, ErrAuthRevoked) {
 			return 0, err
 		}
@@ -128,12 +128,12 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 
 	events, err := s.client.FetchEvents(ctx, calendarIDs, timeMin, timeMax)
 	if err != nil {
-		s.recordAuthResult(err)
+		s.recordAuthResult(ctx, err)
 		return 0, fmt.Errorf("fetching calendar events: %w", err)
 	}
 
 	// Successful fetch — clear any previously recorded auth failure.
-	s.recordAuthResult(nil)
+	s.recordAuthResult(ctx, nil)
 
 	// Resolve attendee emails to Slack user IDs.
 	events = s.ResolveAttendees(events)
@@ -165,6 +165,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			EventStatus:    e.EventStatus,
 			EventType:      e.EventType,
 			HTMLLink:       e.HTMLLink,
+			ConferenceURL:  e.ConferenceURL,
 			RawJSON:        rawJSON,
 			ICalUID:        e.ICalUID,
 			UpdatedAt:      e.UpdatedAt,
@@ -208,7 +209,9 @@ func dropNonGoogleCalendarIDs(ids []string) []string {
 
 // recordAuthResult persists the calendar auth state. Pass err=nil to mark auth as healthy.
 // Errors writing to the DB are logged but not returned — auth state is best-effort telemetry.
-func (s *Syncer) recordAuthResult(err error) {
+// A cancelled ctx means daemon shutdown, not an auth problem, so the state is left untouched —
+// the guard is ctx-based because Go's signal-cancel cause does not unwrap to context.Canceled.
+func (s *Syncer) recordAuthResult(ctx context.Context, err error) {
 	if s.db == nil {
 		return
 	}
@@ -216,6 +219,10 @@ func (s *Syncer) recordAuthResult(err error) {
 		if dbErr := s.db.SetGoogleAccountAuthState(s.accountID, "ok", ""); dbErr != nil {
 			s.logger.Printf("calendar: failed to clear auth state: %v", dbErr)
 		}
+		return
+	}
+	if ctx.Err() != nil {
+		s.logger.Printf("calendar: sync cancelled, leaving auth state untouched: %v", err)
 		return
 	}
 	status := "error"

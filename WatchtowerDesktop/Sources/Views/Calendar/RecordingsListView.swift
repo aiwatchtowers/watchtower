@@ -70,6 +70,15 @@ struct RecordingsListView: View {
                             .help("Has AI recap")
                     }
                 }
+                // Linked-event subtitle; absent for ad-hoc recordings and for
+                // links whose event row was pruned by sync retention.
+                if let eventTitle = item.eventTitle, !eventTitle.isEmpty {
+                    Label(eventTitle, systemImage: "calendar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
                 HStack(spacing: 8) {
                     Text(TranscriptFormatting.formattedDate(item.createdAt))
                     Text(TranscriptFormatting.formatDuration(item.durationSec))

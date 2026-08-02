@@ -27,6 +27,9 @@ var Defaults = map[string]string{
 	MeetingExtractTopics:       defaultMeetingExtractTopics,
 	MeetingRecap:               defaultMeetingRecap,
 	MeetingNotes:               defaultMeetingNotes,
+	MeetingChapters:            defaultMeetingChapters,
+	MeetingFollowup:            defaultMeetingFollowup,
+	MeetingSpeakerGuess:        defaultMeetingSpeakerGuess,
 	DayPlanGenerate:            defaultDayPlanGenerate,
 	TargetsExtract:             defaultTargetsExtract,
 	TargetsLink:                defaultTargetsLink,
@@ -68,6 +71,9 @@ var AllIDs = []string{
 	MeetingExtractTopics,
 	MeetingRecap,
 	MeetingNotes,
+	MeetingChapters,
+	MeetingFollowup,
+	MeetingSpeakerGuess,
 	DayPlanGenerate,
 	TargetsExtract,
 	TargetsLink,
@@ -111,6 +117,9 @@ var DefaultVersions = map[string]int{
 	MeetingPrep:                4, // v4: attendee memory section (Phase-5 slice-4 surface, behind memory.surfaces.meeting_prep)
 	MeetingRecap:               1, // v1: initial meeting recap template
 	MeetingNotes:               1, // v1: publishable markdown meeting notes from a transcript
+	MeetingChapters:            1, // v1: chapterize a meeting from a timecoded per-utterance transcript
+	MeetingFollowup:            1, // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
+	MeetingSpeakerGuess:        1, // v1: content-clue name suggestions for unnamed speaker clusters
 	DayPlanGenerate:            3, // v3: memory open-loops section (Phase-5 slice-4 surface, behind memory.surfaces.day_plan)
 	TargetsExtract:             1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:                1, // v1: single-target link proposal against active snapshot
@@ -156,6 +165,9 @@ var Descriptions = map[string]string{
 	MeetingExtractTopics:       "Meeting extract topics — split pasted text into atomic discussion topics for a meeting's Discussion Topics list",
 	MeetingRecap:               "Meeting recap — AI-structured post-meeting summary with decisions, action items, and open questions",
 	MeetingNotes:               "Meeting notes — publishable markdown notes from transcript for people who weren't at the meeting",
+	MeetingChapters:            "Meeting chapters — segment a recording into chapters with per-chapter decisions, action items, and open questions",
+	MeetingFollowup:            "Meeting follow-up — draft a follow-up message in the owner's voice from a chapter's stated decisions and action items",
+	MeetingSpeakerGuess:        "Meeting speaker guess — suggest names for unnamed transcript speakers from content clues (confirm chips, never auto-applied)",
 	DayPlanGenerate:            "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
 	TargetsExtract:             "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
 	TargetsLink:                "Target linking — single-target parent and secondary link proposal against active snapshot",
@@ -1149,6 +1161,86 @@ Rules:
 - Neutral, publication-ready tone; no first person, no meta-commentary.
 - Be faithful to the transcript; never invent facts, owners, or dates.
 - Merge near-duplicates; keep it scannable.`
+
+const defaultMeetingChapters = `You segment a meeting into chapters based on an automatic audio transcript with [m:ss] timecodes and speaker labels (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). Speakers are labeled "Я" (the recording owner) or "Speaker N" unless real names were assigned.
+
+=== EVENT ===
+Title: %s
+Time:  %s — %s
+Attendees: %s
+Description: %s
+
+%s
+
+Return ONLY a JSON object (no markdown fences, no commentary) matching:
+
+{
+  "overall_summary": "string (2-3 sentences: what the meeting was about and its outcome)",
+  "chapters": [
+    {
+      "title": "string (short, 3-8 words)",
+      "start_sec": 0,
+      "end_sec": 0,
+      "participants": ["speaker label or name", ...],
+      "summary": "string (1-3 sentences: what this chapter covered)",
+      "decisions": ["string", ...],
+      "action_items": ["string (imperative; include the owner when named)", ...],
+      "open_questions": ["string", ...]
+    }
+  ]
+}
+
+Rules:
+- 2-8 chapters for a typical meeting; a short recording may be a single chapter.
+- Chapters follow the meeting order and must not overlap; start_sec/end_sec come from the transcript timecodes (in seconds) and must stay within the recording.
+- participants: only the speaker labels that actually talk in the chapter.
+- Decisions: things explicitly resolved. Action items: only items with an implied owner or commitment. Open questions: things flagged as unresolved.
+- Use empty arrays when a category has nothing; never invent facts, owners, or times.
+- Strip markdown (**bold**, numbered lists, emojis) from output strings.`
+
+const defaultMeetingFollowup = `You draft a follow-up message after a meeting, written in the OWNER'S voice, ready to paste into Slack or email.
+
+INTENT-DRAFT CONTRACT (strict): render ONLY the stated content provided in the user message (decisions, action items, open questions) — add NO commitments, facts, or content that is not stated there. No meta-commentary, no "here's a draft:", no signatures or pleasantries the owner wouldn't type.
+
+=== MEETING ===
+Title: %s
+Date:  %s
+Participants: %s
+
+=== OWNER'S COMMUNICATION STYLE ===
+%s
+
+%s
+
+Return ONLY the message text (no code fences, no surrounding quotes). Keep it concise and scannable: a one-line opener naming the meeting, then decisions and action items as short bullets, open questions last (omit empty groups). Match the language of the stated content.`
+
+const defaultMeetingSpeakerGuess = `You identify unnamed speakers in a meeting transcript by their speech content. The transcript was auto-transcribed (it may mix ru/uk/en and contain recognition noise) and diarized into speaker clusters; some clusters are already named, the rest are labeled "Speaker N". Use content clues only: people addressing each other by name, self-introductions, role/domain knowledge, who answers questions directed at a name.
+
+=== EVENT ===
+Title: %s
+Time:  %s — %s
+Attendees (JSON): %s
+
+%s
+
+The user message carries the list of unnamed speakers, utterance samples per unnamed speaker, and a transcript excerpt.
+
+Return ONLY a JSON array (no markdown fences, no commentary) with at most one entry per unnamed speaker:
+
+[
+  {
+    "speaker": "Speaker 2",
+    "candidate": "string (the person's name — prefer an attendee's display name when one fits)",
+    "confidence": 0.0,
+    "evidence": "string (short quote or reasoning from the transcript)"
+  }
+]
+
+Rules:
+- "speaker" must be one of the unnamed speaker labels from the user message; never invent new ones.
+- Omit a speaker entirely when there is no real evidence — do not guess blindly.
+- confidence in [0,1]: someone addressing them by name = high; topic affinity alone = low.
+- Return [] when nothing can be inferred.`
 
 const defaultTargetsExtract = `You are a goal-extraction assistant. Given raw text (a Slack message, email paste, or form input), extract actionable targets (goals, tasks, deliverables) and return them as structured JSON.
 

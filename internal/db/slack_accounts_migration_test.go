@@ -54,7 +54,7 @@ func TestMigration00048_FreshDBHasNoSeedRow(t *testing.T) {
 // TestMigration00048_UpgradesLegacySingleAccount replays goose up to 00043
 // on a raw connection, seeds the pre-00048 legacy shape (single-workspace
 // Slack data with bare, un-namespaced ids plus a bare-thread Gmail inbox
-// item), then applies 00048 and asserts the in-place data migration: one
+// item), then applies through 00048 and asserts the in-place data migration: one
 // slack_accounts row minted from the workspace singleton, every Slack-
 // derived id column rewritten to the "1:<rawID>" namespaced form, and the
 // unrelated Gmail-scoped inbox row left untouched by the "1:" rewrite.
@@ -98,8 +98,8 @@ func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
 		t.Fatalf("seed inbox_items (gmail): %v", err)
 	}
 
-	if err := goose.UpByOne(raw, "migrations"); err != nil {
-		t.Fatalf("apply 00048: %v", err)
+	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+		t.Fatalf("apply through 00048: %v", err)
 	}
 
 	var accountCount int
@@ -167,7 +167,7 @@ func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
 
 // TestMigration00048DownUpCycle replays goose up to 00043 on a raw
 // connection, seeds bare (pre-namespacing) inbox_learned_rules scope_key
-// rows, applies 00048 (asserting the namespaced form), then applies 00048's
+// rows, applies through 00048 (asserting the namespaced form), then applies 00048's
 // own Down block and asserts the ORIGINAL bare scope_key is restored
 // exactly — the substr off-by-one in the Down block (substr(scope_key, 9)
 // for "sender:1:" and substr(scope_key, 10) for "channel:1:", each one
@@ -198,8 +198,8 @@ func TestMigration00048DownUpCycle(t *testing.T) {
 		t.Fatalf("seed channel scope_key: %v", err)
 	}
 
-	if err := goose.UpByOne(raw, "migrations"); err != nil {
-		t.Fatalf("apply 00048: %v", err)
+	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+		t.Fatalf("apply through 00048: %v", err)
 	}
 
 	var senderKey, channelKey string
@@ -233,8 +233,8 @@ func TestMigration00048DownUpCycle(t *testing.T) {
 		t.Errorf("channel scope_key after down = %q, want channel:C1 (original bare form)", channelKey)
 	}
 
-	if err := goose.UpByOne(raw, "migrations"); err != nil {
-		t.Fatalf("re-apply 00048: %v", err)
+	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+		t.Fatalf("re-apply through 00048: %v", err)
 	}
 	if err := raw.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE scope_key LIKE 'sender:%'`).Scan(&senderKey); err != nil {
 		t.Fatalf("read sender scope_key after re-up: %v", err)

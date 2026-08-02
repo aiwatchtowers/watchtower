@@ -103,6 +103,10 @@ struct SidebarView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                    if nextEvt.conferenceLink != nil {
+                        Spacer(minLength: 4)
+                        JoinButton(event: nextEvt, center: appState.meetingRecorderCenter)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)

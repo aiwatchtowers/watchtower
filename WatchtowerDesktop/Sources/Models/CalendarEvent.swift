@@ -60,6 +60,7 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
     let eventStatus: String
     let eventType: String
     let htmlLink: String
+    let conferenceURL: String
     let rawJSON: String
     let syncedAt: String
     let updatedAt: String
@@ -79,6 +80,7 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
         eventStatus = row["event_status"] ?? "confirmed"
         eventType = row["event_type"] ?? ""
         htmlLink = row["html_link"] ?? ""
+        conferenceURL = row["conference_url"] ?? ""
         rawJSON = row["raw_json"] ?? "{}"
         syncedAt = row["synced_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
@@ -112,6 +114,20 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
     var parsedAttendees: [EventAttendee] {
         guard let data = attendees.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([EventAttendee].self, from: data)) ?? []
+    }
+
+    // MARK: - Conference Link
+
+    /// The event's meeting link (Meet/Zoom/Teams/Webex) as a URL, or nil when
+    /// absent or malformed — a bad value in the DB must mean "no Join button",
+    /// never a crash.
+    var conferenceLink: URL? {
+        guard !conferenceURL.isEmpty,
+              let url = URL(string: conferenceURL),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              url.host != nil else { return nil }
+        return url
     }
 
     // MARK: - Status

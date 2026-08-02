@@ -619,3 +619,67 @@ func TestSyncAuthErrorMarksOnlyOwnAccount(t *testing.T) {
 		t.Fatalf("account B status = %q, want %q (untouched by A's auth failure)", accB.Status, "ok")
 	}
 }
+
+// TestRecordAuthResultSkipsCancelledContext guards the daemon-shutdown path:
+// when the sync's own context is cancelled (SIGTERM), the resulting HTTP
+// error is a shutdown artifact, not an auth problem, and must not flip a
+// healthy account into "error".
+func TestRecordAuthResultSkipsCancelledContext(t *testing.T) {
+	database := db.OpenTestDB(t)
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
+		t.Fatalf("seeding google account: %v", err)
+	}
+	s := NewSyncer(nil, database, &config.Config{}, nil, accountID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.recordAuthResult(ctx, errors.New("gmail GET /users/me/messages: terminated signal received"))
+
+	acc, err := database.GetGoogleAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.Status != "ok" {
+		t.Fatalf("account status = %q, want %q (cancelled ctx must not flip auth state)", acc.Status, "ok")
+	}
+	if acc.Error != "" {
+		t.Fatalf("account error = %q, want empty", acc.Error)
+	}
+}
+
+// TestRecordAuthResultLiveContext pins the existing behavior on a live
+// context: a generic error records "error", and a subsequent nil result
+// clears it back to "ok".
+func TestRecordAuthResultLiveContext(t *testing.T) {
+	database := db.OpenTestDB(t)
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
+		t.Fatalf("seeding google account: %v", err)
+	}
+	s := NewSyncer(nil, database, &config.Config{}, nil, accountID)
+
+	s.recordAuthResult(context.Background(), errors.New("boom"))
+	acc, err := database.GetGoogleAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.Status != "error" {
+		t.Fatalf("account status = %q, want %q", acc.Status, "error")
+	}
+	if !strings.Contains(acc.Error, "boom") {
+		t.Fatalf("account error = %q, want it to contain %q", acc.Error, "boom")
+	}
+
+	s.recordAuthResult(context.Background(), nil)
+	acc, err = database.GetGoogleAccount(accountID)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	if acc.Status != "ok" {
+		t.Fatalf("account status = %q, want %q after nil result", acc.Status, "ok")
+	}
+	if acc.Error != "" {
+		t.Fatalf("account error = %q, want empty after nil result", acc.Error)
+	}
+}

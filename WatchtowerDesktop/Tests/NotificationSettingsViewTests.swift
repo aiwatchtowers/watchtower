@@ -26,6 +26,16 @@ final class NotificationSettingsViewTests: XCTestCase {
         XCTAssertNoThrow(try inspected.find(text: "Enable quiet hours"))
     }
 
+    /// Секция Meeting Reminders: тогл и степпер минут присутствуют.
+    func testMeetingRemindersSectionRendered() throws {
+        let view = NotificationSettings()
+        let inspected = try view.inspect()
+
+        XCTAssertNoThrow(try inspected.find(text: "Meeting Reminders"))
+        XCTAssertNoThrow(try inspected.find(text: "Meeting reminders"))
+        XCTAssertNoThrow(try inspected.find(text: "Remind before meeting"))
+    }
+
     /// Кнопка "Send Test Notification" есть.
     func testSendButtonPresent() throws {
         let view = NotificationSettings()

@@ -95,6 +95,21 @@ type CalendarConfig struct {
 	Enabled           bool     `mapstructure:"enabled"`            // enable calendar sync (default: false)
 	SelectedCalendars []string `mapstructure:"selected_calendars"` // specific calendar IDs to sync
 	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: 2)
+	HistoryDays       int      `mapstructure:"history_days"`       // days of past events to keep synced (default: 14, floor 1)
+}
+
+// EffectiveHistoryDays returns the configured past-events sync window in
+// days, floored at 1 so the window never collapses (spec: default 14,
+// floor 1 — the same clamp CalendarViewModel applies on the Swift side; an
+// absent config key gets the 14-day default from viper's SetDefault). Both
+// the Google and CalDAV syncers derive timeMin from this, and the
+// per-calendar stale-delete then naturally retains the same window — so
+// widening it here is the single knob for browsable history.
+func (c CalendarConfig) EffectiveHistoryDays() int {
+	if c.HistoryDays < 1 {
+		return 1
+	}
+	return c.HistoryDays
 }
 
 // GmailConfig holds Gmail integration settings.
@@ -360,6 +375,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("catchup.caps.briefings", 20)
 	v.SetDefault("calendar.enabled", DefaultCalendarEnabled)
 	v.SetDefault("calendar.sync_days_ahead", DefaultCalendarSyncDaysAhead)
+	v.SetDefault("calendar.history_days", DefaultCalendarHistoryDays)
 	v.SetDefault("gmail.enabled", DefaultGmailEnabled)
 	v.SetDefault("gmail.initial_history_days", DefaultGmailInitialHistoryDays)
 	v.SetDefault("gmail.max_messages_per_sync", DefaultGmailMaxMessagesPerSync)

@@ -12,12 +12,62 @@ enum RoleAssigner {
     private static let selfShareThreshold = 0.6
 
     /// nil when roles cannot be derived (no segments / no speakers) — the
-    /// caller then keeps the plain transcript text.
+    /// caller then keeps the plain transcript text. The joined string is
+    /// derived from `assign`'s structured utterances via the canonical
+    /// renderer, so the two can never drift.
     static func render(
         segments: [TranscriptSegment],
         speakers: [SpeakerSegment],
-        activity: MicActivity?
+        activity: MicActivity?,
+        voiceNames: [String: String] = [:]
     ) -> String? {
+        assign(segments: segments, speakers: speakers, activity: activity, voiceNames: voiceNames)
+            .map(TranscriptSegments.render)
+    }
+
+    /// Final label per cluster ID. Priority per cluster: mic dominance («Я»,
+    /// absolute — a voice match can never claim the owner's cluster) →
+    /// `voiceNames` (display names from confident voice-print matches) →
+    /// dense "Speaker N" numbering over the remaining clusters in
+    /// first-appearance order. Exposed so the save path can key the persisted
+    /// per-cluster embeddings (`speakers_json`) by the same labels the
+    /// transcript renders.
+    static func clusterLabels(
+        speakers: [SpeakerSegment],
+        activity: MicActivity?,
+        voiceNames: [String: String] = [:]
+    ) -> [String: String] {
+        var clusterOrder: [String] = []
+        for s in speakers.sorted(by: { $0.startSec < $1.startSec }) where !clusterOrder.contains(s.speakerID) {
+            clusterOrder.append(s.speakerID)
+        }
+        let selfCluster = detectSelfCluster(speakers: speakers, activity: activity, order: clusterOrder)
+        var labels: [String: String] = [:]
+        var counter = 0
+        for id in clusterOrder {
+            if id == selfCluster {
+                labels[id] = selfLabel
+            } else if let name = voiceNames[id], !name.isEmpty {
+                labels[id] = name
+            } else {
+                counter += 1
+                labels[id] = "Speaker \(counter)"
+            }
+        }
+        return labels
+    }
+
+    /// Structured form of `render`: the merged same-speaker utterances with
+    /// their time ranges, ready to persist as `segments_json`. nil under the
+    /// same conditions as `render`. `voiceNames` (cluster ID → display name,
+    /// from voice-print matching) renames matched clusters; the mic-dominated
+    /// «Я» cluster always keeps its label (see `clusterLabels`).
+    static func assign(
+        segments: [TranscriptSegment],
+        speakers: [SpeakerSegment],
+        activity: MicActivity?,
+        voiceNames: [String: String] = [:]
+    ) -> [TranscriptUtterance]? {
         guard !segments.isEmpty, !speakers.isEmpty else { return nil }
 
         // Cluster order by first appearance drives Speaker 1..N numbering.
@@ -43,39 +93,38 @@ enum RoleAssigner {
             previous = cluster
         }
 
-        // 2. Labels: the mic-dominated cluster is «Я», the rest are numbered.
-        let selfCluster = detectSelfCluster(speakers: speakers, activity: activity, order: clusterOrder)
-        var labels: [String: String] = [:]
-        var counter = 0
-        for id in clusterOrder {
-            if id == selfCluster {
-                labels[id] = selfLabel
-            } else {
-                counter += 1
-                labels[id] = "Speaker \(counter)"
-            }
-        }
+        // 2. Labels: «Я» → voice-matched names → numbered strangers.
+        let labels = clusterLabels(speakers: speakers, activity: activity, voiceNames: voiceNames)
 
-        // 3. Merge consecutive same-cluster segments into one paragraph.
-        var lines: [String] = []
+        // 3. Merge consecutive same-cluster segments into one utterance.
+        var utterances: [TranscriptUtterance] = []
         var currentCluster: String?
         var currentTexts: [String] = []
+        var currentStart = 0.0
+        var currentEnd = 0.0
         func flush() {
             guard let cluster = currentCluster, !currentTexts.isEmpty else { return }
             // ?? is unreachable (every assigned cluster is seeded into labels
             // via clusterOrder) — it only spares a force unwrap.
-            lines.append("[\(labels[cluster] ?? cluster)] " + currentTexts.joined(separator: " "))
+            utterances.append(TranscriptUtterance(
+                idx: utterances.count,
+                startSec: currentStart,
+                endSec: currentEnd,
+                speaker: labels[cluster] ?? cluster,
+                text: currentTexts.joined(separator: " ")))
         }
         for (segment, cluster) in assigned {
             if cluster != currentCluster {
                 flush()
                 currentCluster = cluster
                 currentTexts = []
+                currentStart = segment.startSec
             }
             currentTexts.append(segment.text)
+            currentEnd = segment.endSec
         }
         flush()
-        return lines.joined(separator: "\n")
+        return utterances
     }
 
     /// The cluster whose speech time is dominated by the mic channel — the

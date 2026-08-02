@@ -5,6 +5,8 @@ struct NotificationSettings: View {
     @AppStorage("notifyDecisions") private var notifyDecisions = true
     @AppStorage("notifyDailySummary") private var notifyDailySummary = true
     @AppStorage("quietHoursEnabled") private var quietHoursEnabled = false
+    @AppStorage(MeetingReminderCenter.remindersEnabledKey) private var notifyMeetingReminders = true
+    @AppStorage(MeetingReminderCenter.reminderMinutesKey) private var reminderMinutes = MeetingReminderCenter.defaultReminderMinutes
     @State private var testSent = false
     @State private var permissionStatus: UNAuthorizationStatus?
 
@@ -30,6 +32,27 @@ struct NotificationSettings: View {
             Section("Notification Types") {
                 Toggle("Decision notifications", isOn: $notifyDecisions)
                 Toggle("Daily summary notifications", isOn: $notifyDailySummary)
+            }
+
+            Section("Meeting Reminders") {
+                Toggle("Meeting reminders", isOn: $notifyMeetingReminders)
+                Stepper(value: $reminderMinutes, in: 0...60) {
+                    HStack {
+                        Text("Remind before meeting")
+                        Spacer()
+                        Text(reminderMinutes == 0 ? "Off" : "\(reminderMinutes) min")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                // Not disabled with the toggle: the minutes window also
+                // drives the in-app banner, which the toggle does not gate.
+
+                // Owner decision: the stop-recording safety push is always
+                // on — neither the toggle above nor "Off" minutes silence
+                // it; only Quiet Hours (and the OS permission) do.
+                Text("The \u{201C}meeting ended — still recording\u{201D} alert is always on and is silenced only by Quiet Hours.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Quiet Hours") {

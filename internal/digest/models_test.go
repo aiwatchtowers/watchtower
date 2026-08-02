@@ -7,7 +7,7 @@ import (
 )
 
 func TestModelForSource(t *testing.T) {
-	haiku := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest}
+	haiku := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup}
 	for _, src := range haiku {
 		if got := ModelForSource(src); got != ModelHaiku {
 			t.Errorf("ModelForSource(%q) = %q, want %q", src, got, ModelHaiku)
@@ -23,6 +23,9 @@ func TestModelForSource(t *testing.T) {
 		// light-tier switch above); Phase-4 reflection likewise.
 		prompts.MemoryEntityRewrite, prompts.MemoryReviseBeliefs, prompts.MemoryRenderMap,
 		prompts.MemoryReflect,
+		// meeting.chapters routes strong by absence from the light-tier
+		// switch (only the followup drafts are light).
+		prompts.MeetingChapters,
 	}
 	for _, src := range sonnet {
 		if got := ModelForSource(src); got != ModelSonnet {
