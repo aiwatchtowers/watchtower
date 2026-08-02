@@ -32,7 +32,7 @@ func TestDaemon_FeedPhase(t *testing.T) {
 		VALUES (1, 'release blocked', 'high', 'open', '2026-07-09T10:00:00Z')`)
 	require.NoError(t, err)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-feed] ", 0))
 	d.SetDB(database)
 	d.SetFeedPipeline(feed.New(database, cfg, log.New(os.Stderr, "[test-feed-pipe] ", 0)))
@@ -49,7 +49,7 @@ func TestDaemon_FeedPhase(t *testing.T) {
 func TestDaemon_FeedPhaseNilPipeline(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-nil-feed] ", 0))
 
 	// Should not panic when no feed pipeline is installed.

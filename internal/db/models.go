@@ -7,11 +7,10 @@ import (
 
 // Workspace represents a Slack workspace (team).
 type Workspace struct {
-	ID            string         // Slack team_id
-	Name          string         // Workspace name
-	Domain        string         // Workspace domain
-	SyncedAt      sql.NullString // ISO8601 timestamp of last sync
-	CurrentUserID string         // Slack user_id of the token owner (from auth.test)
+	ID       string         // Slack team_id
+	Name     string         // Workspace name
+	Domain   string         // Workspace domain
+	SyncedAt sql.NullString // ISO8601 timestamp of last sync
 }
 
 // User represents a Slack user.

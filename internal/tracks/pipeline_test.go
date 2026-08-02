@@ -373,7 +373,8 @@ func TestRunWithDigestsAndAI(t *testing.T) {
 
 	// Seed workspace with current user
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U1"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
 	require.NoError(t, database.UpsertUser(db.User{ID: "U2", Name: "bob", DisplayName: "Bob"}))
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
@@ -627,7 +628,8 @@ func TestBatchTracksIntegration(t *testing.T) {
 
 	// Seed workspace.
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U1"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
 	require.NoError(t, database.UpsertUser(db.User{ID: "U2", Name: "bob", DisplayName: "Bob"}))
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
@@ -707,8 +709,8 @@ func TestStoreTrackItems(t *testing.T) {
 	database := testDB(t)
 
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U1"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	pipe := New(database, testConfig(), nil, log.Default())
 
 	items := []aiItem{
@@ -890,8 +892,8 @@ func TestJaccardSimilarity(t *testing.T) {
 func TestFindSimilarTrack(t *testing.T) {
 	database := testDB(t)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U1"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	// Create existing track about DDoS post-mortem (with context, as in production).
 	_, err := database.UpsertTrack(db.Track{
 		AssigneeUserID: "U1",
@@ -942,7 +944,8 @@ func TestFindSimilarTrack(t *testing.T) {
 func TestTextSimilarityDedupInStoreTrackItems(t *testing.T) {
 	database := testDB(t)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U1"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "incidents", Type: "public"}))
 
 	// Create existing track (with realistic context for similarity matching).
@@ -993,7 +996,8 @@ func TestTopicDedupBySourceRefs(t *testing.T) {
 	database := testDB(t)
 
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U1"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
 
@@ -1062,7 +1066,8 @@ func TestTracksLearnedPrefsInPrompt(t *testing.T) {
 	database := testDB(t)
 
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U1"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
 
@@ -1125,7 +1130,8 @@ func TestTracksLearnedPrefsHelper(t *testing.T) {
 func TestAutoExtractionFoldsIntoCustomTrack(t *testing.T) {
 	database := testDB(t)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U1"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
 
 	// Seed a custom track whose text/context match the auto item below.

@@ -196,7 +196,7 @@ final class TrackQueryTests: XCTestCase {
         let db = try TestDatabase.create()
         try db.write { db in
             try TestDatabase.insertWorkspace(db)
-            try db.execute(sql: "UPDATE workspace SET current_user_id = 'U123'")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U123')")
         }
         let uid = try db.read { try TrackQueries.fetchCurrentUserID($0) }
         XCTAssertEqual(uid, "U123")

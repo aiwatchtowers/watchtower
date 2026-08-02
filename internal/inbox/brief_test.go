@@ -81,6 +81,33 @@ func TestBuildSecretaryBrief_OwnerEmailAddresses(t *testing.T) {
 	}
 }
 
+func TestBuildSecretaryBrief_ConnectedSlackWorkspaces(t *testing.T) {
+	d := newTestDB(t)
+	// seedWorkspaceAndUser creates account #1 (bare current_user_id, no label).
+	seedWorkspaceAndUser(t, d, "U1")
+
+	// A single account must NOT emit the workspaces line — keeps the
+	// single/no-account output byte-identical to before this section existed.
+	single := buildSecretaryBrief(d, "U1", time.Now())
+	if strings.Contains(single, "Connected Slack workspaces:") {
+		t.Fatalf("single-account brief must omit the workspaces line, got:\n%s", single)
+	}
+
+	// Connect a second workspace → the line appears listing both.
+	if _, err := d.CreateSlackAccount(db.SlackAccount{
+		CurrentUserID: "2:U9", Label: "Personal", TeamName: "Acme Corp",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := buildSecretaryBrief(d, "U1", time.Now())
+	if !strings.Contains(got, "Connected Slack workspaces:") {
+		t.Fatalf("multi-account brief missing the workspaces line, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Personal (Acme Corp)") {
+		t.Errorf("workspaces line missing label/team_name entry, got:\n%s", got)
+	}
+}
+
 func TestBuildSecretaryBrief_NoAccountsOmitsOwnerEmailsSection(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "U1")

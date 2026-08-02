@@ -49,7 +49,8 @@ func TestPipelineRunForDate(t *testing.T) {
 
 	// Setup workspace and current user.
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
 
 	// Setup channel digest so briefing has data to work with.
@@ -135,7 +136,8 @@ func TestPipelineRunForDate_InjectsLearnedPreferences(t *testing.T) {
 	database := testDB(t)
 
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
 
 	now := time.Now()
@@ -199,7 +201,8 @@ func TestPipelineRunNoUser(t *testing.T) {
 func TestPipelineRunNoData(t *testing.T) {
 	database := testDB(t)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice"}))
 
 	cfg := testConfig()
@@ -387,7 +390,8 @@ func TestGatherTargets_WithTargets(t *testing.T) {
 func TestBriefingHasDataWithTargetsOnly(t *testing.T) {
 	database := testDB(t)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice"}))
 
 	// Create a target but no digests/tracks

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	watchtowerslack "watchtower/internal/slack"
 
 	"github.com/slack-go/slack"
 )
@@ -37,8 +38,8 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		days = 30
 	}
 
-	// Determine search start date
-	lastDate, err := o.db.GetSearchLastDate()
+	// Determine search start date.
+	lastDate, err := o.db.GetSlackAccountSearchWatermark(o.accountID)
 	if err != nil {
 		return fmt.Errorf("getting search_last_date: %w", err)
 	}
@@ -107,9 +108,15 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 			break
 		}
 
-		// Convert search messages to db.Message and collect channel/user info
+		// Convert search messages to db.Message and collect channel/user info.
+		// msg.Channel.ID/msg.User arrive raw from search.messages; seenChannels/
+		// seenUsers dedupe on the raw id, but everything written to the DB
+		// (EnsureChannel/EnsureUser/db.Message/discoveredChannelIDs) is namespaced.
 		dbMsgs := make([]db.Message, 0, len(result.Messages))
 		for _, msg := range result.Messages {
+			namespacedChannelID := watchtowerslack.Namespace(o.accountID, msg.Channel.ID)
+			namespacedUserID := watchtowerslack.Namespace(o.accountID, msg.User)
+
 			// Ensure channel
 			if msg.Channel.ID != "" && !seenChannels[msg.Channel.ID] {
 				seenChannels[msg.Channel.ID] = true
@@ -122,10 +129,10 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 				// Extract it so we can resolve to a display name later.
 				var dmUserID string
 				if chType == "dm" && strings.HasPrefix(name, "U") {
-					dmUserID = name
+					dmUserID = watchtowerslack.Namespace(o.accountID, name)
 				}
-				if err := o.db.EnsureChannel(msg.Channel.ID, name, chType, dmUserID); err != nil {
-					return fmt.Errorf("ensuring channel %s: %w", msg.Channel.ID, err)
+				if err := o.db.EnsureChannel(namespacedChannelID, name, chType, dmUserID); err != nil {
+					return fmt.Errorf("ensuring channel %s: %w", namespacedChannelID, err)
 				}
 			}
 
@@ -136,8 +143,8 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 				if userName == "" {
 					userName = msg.User
 				}
-				if err := o.db.EnsureUser(msg.User, userName); err != nil {
-					return fmt.Errorf("ensuring user %s: %w", msg.User, err)
+				if err := o.db.EnsureUser(namespacedUserID, userName); err != nil {
+					return fmt.Errorf("ensuring user %s: %w", namespacedUserID, err)
 				}
 			}
 
@@ -154,9 +161,9 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 			threadTS := extractThreadTSFromPermalink(msg.Permalink)
 
 			dbMsgs = append(dbMsgs, db.Message{
-				ChannelID:  msg.Channel.ID,
+				ChannelID:  namespacedChannelID,
 				TS:         msg.Timestamp,
-				UserID:     msg.User,
+				UserID:     namespacedUserID,
 				Text:       msg.Text,
 				ThreadTS:   threadTS,
 				ReplyCount: 0,
@@ -195,17 +202,17 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	// messages are lost forever.
 	if completed {
 		today := time.Now().Format("2006-01-02")
-		if err := o.db.SetSearchLastDate(today); err != nil {
+		if err := o.db.SetSlackAccountSearchWatermark(o.accountID, today); err != nil {
 			return fmt.Errorf("saving search_last_date: %w", err)
 		}
 	} else {
 		o.logger.Printf("search sync: pagination incomplete, leaving search_last_date unchanged to avoid data loss")
 	}
 
-	// Populate discoveredChannelIDs so the full-sync fallback can skip inactive channels.
+	// Populate discoveredChannelIDs (namespaced) so the full-sync fallback can skip inactive channels.
 	o.discoveredChannelIDs = make(map[string]bool, len(seenChannels))
 	for chID := range seenChannels {
-		o.discoveredChannelIDs[chID] = true
+		o.discoveredChannelIDs[watchtowerslack.Namespace(o.accountID, chID)] = true
 	}
 
 	o.progress.SetDiscovery(page, page, len(seenChannels), len(seenUsers))

@@ -64,7 +64,7 @@ func runStatus(deps Deps) string {
 	database := deps.DB
 	cfg := deps.Config
 
-	ws, err := database.GetWorkspace()
+	accounts, err := database.ListSlackAccounts()
 	if err != nil {
 		return errorStyle.Render("Error: " + err.Error())
 	}
@@ -81,10 +81,16 @@ func runStatus(deps Deps) string {
 
 	var b strings.Builder
 
-	if ws != nil {
-		b.WriteString(fmt.Sprintf("Workspace: %s (%s)\n", ws.Name, ws.ID))
-	} else {
+	if len(accounts) == 0 {
 		b.WriteString(fmt.Sprintf("Workspace: %s (not yet synced)\n", cfg.ActiveWorkspace))
+	} else {
+		for _, a := range accounts {
+			name := a.Label
+			if name == "" {
+				name = a.TeamName
+			}
+			b.WriteString(fmt.Sprintf("Slack: %s (%s) [%s]\n", name, a.TeamDomain, a.Status))
+		}
 	}
 
 	dbPath := cfg.DBPath()
@@ -125,31 +131,57 @@ func runSyncCommand(ctx context.Context, deps Deps) string {
 	cfg := deps.Config
 	database := deps.DB
 
-	ws, err := cfg.GetActiveWorkspace()
+	accounts, err := database.ListEnabledSlackAccounts()
 	if err != nil {
 		return errorStyle.Render("Error: " + err.Error())
 	}
-
-	if ws.SlackToken == "" {
-		return errorStyle.Render("Error: Slack token not configured. Run: watchtower config set workspaces.<name>.slack_token xoxb-...")
+	if len(accounts) == 0 {
+		return errorStyle.Render("Error: no Slack account connected. Run: watchtower slack login")
 	}
-
-	slackClient := watchtowerslack.NewClient(ws.SlackToken)
-	orch := sync.NewOrchestrator(database, slackClient, cfg)
-	orch.SetLogger(log.New(io.Discard, "", 0))
 
 	opts := sync.SyncOptions{
 		Workers: cfg.Sync.Workers,
 	}
+	discard := log.New(io.Discard, "", 0)
 
-	if err := orch.Run(ctx, opts); err != nil {
-		return errorStyle.Render("Sync failed: " + err.Error())
+	// Fan out over every connected account; one account's failure is reported
+	// but does not block the others (the daemon fan-out pattern).
+	var totalMessages int
+	var earliest time.Time
+	var firstErr error
+	ran := 0
+	for _, acct := range accounts {
+		token, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID).Load()
+		if err != nil || token == nil {
+			continue
+		}
+		client := watchtowerslack.NewClient(token.AccessToken)
+		client.SetLogger(discard)
+		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
+		orch.SetLogger(discard)
+
+		syncErr := orch.Run(ctx, opts)
+		snap := orch.Progress().Snapshot()
+		ran++
+		totalMessages += snap.MessagesFetched
+		if !snap.StartTime.IsZero() && (earliest.IsZero() || snap.StartTime.Before(earliest)) {
+			earliest = snap.StartTime
+		}
+		if syncErr != nil && firstErr == nil {
+			firstErr = syncErr
+		}
 	}
 
-	snap := orch.Progress().Snapshot()
-	elapsed := time.Since(snap.StartTime).Round(time.Second)
+	if ran == 0 {
+		return errorStyle.Render("Error: no Slack account has a stored token. Run: watchtower slack login")
+	}
+	if firstErr != nil {
+		return errorStyle.Render("Sync failed: " + firstErr.Error())
+	}
+
+	elapsed := time.Since(earliest).Round(time.Second)
 	return fmt.Sprintf("Sync complete in %s: %d messages synced.",
-		elapsed, snap.MessagesFetched)
+		elapsed, totalMessages)
 }
 
 // runCatchup streams a catchup summary to stdout.

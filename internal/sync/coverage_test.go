@@ -107,12 +107,8 @@ func TestSyncEmojiErrorNonFatal(t *testing.T) {
 
 	ts := newTestSetup(t, mux)
 
-	// Pre-populate workspace so we take the search path
-	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"})
-	require.NoError(t, err)
-
 	// Should not fail even though emoji.list errors — emoji sync is non-fatal
-	err = ts.orch.Run(context.Background(), SyncOptions{})
+	err := ts.orch.Run(context.Background(), SyncOptions{})
 	require.NoError(t, err)
 }
 
@@ -146,13 +142,14 @@ func TestSyncCurrentUserSuccess(t *testing.T) {
 	})
 
 	ts := newTestSetup(t, mux)
+
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
 	// Verify current user was saved
-	ws, err := ts.db.GetWorkspace()
+	userID, err := ts.db.GetCurrentUserID()
 	require.NoError(t, err)
-	assert.Equal(t, "U001", ws.CurrentUserID)
+	assert.Equal(t, ts.ns("U001"), userID)
 }
 
 func TestSyncCurrentUserAuthTestError(t *testing.T) {
@@ -187,9 +184,9 @@ func TestSyncCurrentUserAuthTestError(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	ws, err := ts.db.GetWorkspace()
+	userID, err := ts.db.GetCurrentUserID()
 	require.NoError(t, err)
-	assert.Empty(t, ws.CurrentUserID) // auth.test failed, no current user
+	assert.Empty(t, userID) // auth.test failed, no current user
 }
 
 func TestSyncCurrentUserRetryOnCachedWorkspace(t *testing.T) {
@@ -214,17 +211,19 @@ func TestSyncCurrentUserRetryOnCachedWorkspace(t *testing.T) {
 
 	ts := newTestSetup(t, mux)
 
-	// Pre-populate workspace WITHOUT current_user_id (simulating previous auth.test failure)
-	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"})
+	// Pre-populate the account's team info WITHOUT current_user_id
+	// (simulating a previous auth.test failure) so ensureWorkspace takes the
+	// cached path and Run() must retry syncCurrentUser separately.
+	err := ts.db.UpdateSlackAccountConnection(ts.accountID, "T024BE7LD", "my-company", "my-company", "")
 	require.NoError(t, err)
 
 	err = ts.orch.Run(context.Background(), SyncOptions{})
 	require.NoError(t, err)
 
 	// Should have retried auth.test and saved user
-	ws, err := ts.db.GetWorkspace()
+	userID, err := ts.db.GetCurrentUserID()
 	require.NoError(t, err)
-	assert.Equal(t, "U001", ws.CurrentUserID)
+	assert.Equal(t, ts.ns("U001"), userID)
 }
 
 // --- ensureWorkspace (cached path) ---
@@ -232,17 +231,17 @@ func TestSyncCurrentUserRetryOnCachedWorkspace(t *testing.T) {
 func TestEnsureWorkspaceCached(t *testing.T) {
 	ts := newTestSetup(t, defaultMux())
 
-	// Pre-populate workspace
-	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"})
+	// Pre-populate the account's team info
+	err := ts.db.UpdateSlackAccountConnection(ts.accountID, "T024BE7LD", "my-company", "my-company", "")
 	require.NoError(t, err)
 
-	// Should use cached workspace, not call team.info
+	// Should use the cached account, not call team.info
 	err = ts.orch.ensureWorkspace(context.Background())
 	require.NoError(t, err)
 
-	ws, err := ts.db.GetWorkspace()
+	acct, err := ts.db.GetSlackAccount(ts.accountID)
 	require.NoError(t, err)
-	assert.Equal(t, "T024BE7LD", ws.ID)
+	assert.Equal(t, "T024BE7LD", acct.TeamID)
 }
 
 // --- channelName ---
@@ -519,6 +518,10 @@ func TestRunSearchSyncZeroChannelsFallback(t *testing.T) {
 	// Pre-populate workspace with no channels in DB
 	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test", Domain: "test"})
 	require.NoError(t, err)
+	// Seed slack_accounts account #1 — the search watermark now lives there
+	// (see internal/db/slack_accounts.go); Task 4 threads a real accountID.
+	_, err = ts.db.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
 
 	// Search finds 0 channels + DB has 0 channels = fallback to full sync
 	err = ts.orch.Run(context.Background(), SyncOptions{})
@@ -542,6 +545,35 @@ func TestResultFromSnapshot(t *testing.T) {
 	// With error
 	result = ResultFromSnapshot(snap, fmt.Errorf("sync failed"))
 	assert.Equal(t, "sync failed", result.Error)
+}
+
+func TestResultFromSnapshots(t *testing.T) {
+	// Empty slice → zero result, no error.
+	empty := ResultFromSnapshots(nil, nil)
+	assert.Equal(t, 0, empty.MessagesFetched)
+	assert.Empty(t, empty.Error)
+	assert.True(t, empty.StartedAt.IsZero())
+
+	// Two accounts: messages summed, earliest start wins.
+	early := time.Now().Add(-60 * time.Second)
+	late := time.Now().Add(-20 * time.Second)
+	snaps := []Snapshot{
+		{StartTime: late, MessagesFetched: 100},
+		{StartTime: early, MessagesFetched: 250},
+	}
+	result := ResultFromSnapshots(snaps, nil)
+	assert.Equal(t, 350, result.MessagesFetched)
+	assert.Equal(t, early, result.StartedAt)
+	assert.InDelta(t, 60.0, result.DurationSecs, 2.0)
+	assert.Empty(t, result.Error)
+
+	// First error is propagated.
+	result = ResultFromSnapshots(snaps, fmt.Errorf("account 2 failed"))
+	assert.Equal(t, "account 2 failed", result.Error)
+
+	// Single snapshot matches ResultFromSnapshot's message count.
+	single := ResultFromSnapshots([]Snapshot{{StartTime: early, MessagesFetched: 42}}, nil)
+	assert.Equal(t, 42, single.MessagesFetched)
 }
 
 func TestWriteAndReadSyncResult(t *testing.T) {
@@ -839,7 +871,7 @@ func TestBuildChannelQueueSkipDMs(t *testing.T) {
 	tasks, err = ts.orch.buildChannelQueue(SyncOptions{SkipDMs: true})
 	require.NoError(t, err)
 	assert.Len(t, tasks, 1)
-	assert.Equal(t, "C001", tasks[0].ChannelID)
+	assert.Equal(t, ts.ns("C001"), tasks[0].ChannelID)
 }
 
 // --- assignChannelPriority with "low" watch ---

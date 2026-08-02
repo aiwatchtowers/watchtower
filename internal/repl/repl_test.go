@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	watchtowerslack "watchtower/internal/slack"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,6 +79,10 @@ func seedWorkspace(t *testing.T, database *db.DB) {
 		ID:     "T1234",
 		Name:   "Acme Corp",
 		Domain: "acme",
+	})
+	require.NoError(t, err)
+	_, err = database.CreateSlackAccount(db.SlackAccount{
+		TeamID: "T1234", TeamName: "Acme Corp", TeamDomain: "acme",
 	})
 	require.NoError(t, err)
 }
@@ -182,9 +187,8 @@ func TestRunStatusWithWorkspace(t *testing.T) {
 
 	output := runStatus(deps)
 
-	// Should show workspace name and ID
-	assert.Contains(t, output, "Acme Corp")
-	assert.Contains(t, output, "T1234")
+	// Should list the connected Slack workspace (name + domain + status).
+	assert.Contains(t, output, "Slack: Acme Corp (acme) [ok]")
 }
 
 func TestRunStatusWithSyncState(t *testing.T) {
@@ -237,13 +241,15 @@ func TestRunStatusWithWatchedChannels(t *testing.T) {
 
 func TestRunSyncCommandNoToken(t *testing.T) {
 	deps := testDeps(t)
-	// Remove the token
+	// Multi-account: connectivity is derived from slack_accounts, not the
+	// workspace config token. testDeps seeds no slack_accounts row, so /sync
+	// reports no connected account.
 	deps.Config.Workspaces["test-workspace"].SlackToken = ""
 
 	ctx := context.Background()
 	output := runSyncCommand(ctx, deps)
 
-	assert.Contains(t, output, "Slack token not configured")
+	assert.Contains(t, output, "no Slack account connected")
 }
 
 func TestRunSyncCommandNoActiveWorkspace(t *testing.T) {
@@ -827,8 +833,10 @@ func TestRunSyncCommandWorkspaceNotInConfig(t *testing.T) {
 
 	ctx := context.Background()
 	output := runSyncCommand(ctx, deps)
+	// Multi-account /sync no longer validates the workspace config; it reads
+	// slack_accounts. With no connected account it fails gracefully.
 	assert.Contains(t, output, "Error")
-	assert.Contains(t, output, "missing-workspace")
+	assert.Contains(t, output, "no Slack account connected")
 }
 
 // ---------------------------------------------------------------------------
@@ -911,6 +919,8 @@ func TestRunStatusWorkspaceSyncedAtDisplay(t *testing.T) {
 		Domain: "other",
 	})
 	require.NoError(t, err)
+	_, err = deps.DB.CreateSlackAccount(db.SlackAccount{TeamID: "T5678", TeamName: "Other Corp", TeamDomain: "other"})
+	require.NoError(t, err)
 
 	ws, err := deps.DB.GetWorkspace()
 	require.NoError(t, err)
@@ -987,12 +997,14 @@ func TestRunSyncConfigPaths(t *testing.T) {
 			expectContains: "Error",
 		},
 		{
+			// Multi-account: the workspace token is no longer consulted; with no
+			// slack_accounts row, /sync reports no connected account.
 			name:     "empty token",
 			activeWS: "ws",
 			workspaces: map[string]*config.WorkspaceConfig{
 				"ws": {SlackToken: ""},
 			},
-			expectContains: "Slack token not configured",
+			expectContains: "no Slack account connected",
 		},
 	}
 
@@ -1040,6 +1052,8 @@ func TestRunStatusNullSyncedAt(t *testing.T) {
 	_, err := deps.DB.Exec(
 		`INSERT INTO workspace (id, name, domain, synced_at) VALUES ('T999', 'NullSync Corp', 'nullsync', NULL)`,
 	)
+	require.NoError(t, err)
+	_, err = deps.DB.CreateSlackAccount(db.SlackAccount{TeamID: "T999", TeamName: "NullSync Corp", TeamDomain: "nullsync"})
 	require.NoError(t, err)
 
 	ws, err := deps.DB.GetWorkspace()
@@ -1337,6 +1351,53 @@ func TestRunSyncCommandInvalidSlackAPI(t *testing.T) {
 	// Should fail with some error (invalid auth, network error, etc.)
 	hasError := strings.Contains(output, "failed") || strings.Contains(output, "Error") || strings.Contains(output, "error")
 	assert.True(t, hasError, "Expected error in output, got: %s", output)
+}
+
+// ---------------------------------------------------------------------------
+// runSyncCommand — multi-account fan-out
+// ---------------------------------------------------------------------------
+
+// TestRunSyncCommandNoStoredToken covers an enabled slack_accounts row whose
+// per-account token file was never written (e.g. the token store was wiped
+// out-of-band) — the loop must skip it via `continue` and, once every
+// account has been skipped, report the "no stored token" error distinct
+// from "no Slack account connected".
+func TestRunSyncCommandNoStoredToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	deps := testDeps(t)
+	seedWorkspace(t, deps.DB) // one enabled account, no token file on disk
+
+	ctx := context.Background()
+	output := runSyncCommand(ctx, deps)
+
+	assert.Contains(t, output, "no Slack account has a stored token")
+}
+
+// TestRunSyncCommandFanOutOverAccounts seeds two enabled accounts — one with
+// no stored token (skipped via `continue`) and one with a stored token — so
+// the loop actually iterates multiple accounts and reaches the client/orch
+// construction and error-aggregation branches below it.
+func TestRunSyncCommandFanOutOverAccounts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	deps := testDeps(t)
+	seedWorkspace(t, deps.DB) // account #1, no token file -> skipped
+
+	id2, err := deps.DB.CreateSlackAccount(db.SlackAccount{
+		TeamID: "T5678", TeamName: "Beta Corp", TeamDomain: "beta",
+	})
+	require.NoError(t, err)
+	store := watchtowerslack.NewTokenStore(deps.Config.WorkspaceDir(), id2)
+	require.NoError(t, store.Save(&watchtowerslack.Token{AccessToken: "xoxb-invalid-token-12345"}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	output := runSyncCommand(ctx, deps)
+	// Account #2's invalid token makes the real sync call fail, so the
+	// aggregate result must report the failure (not "no stored token").
+	hasError := strings.Contains(output, "failed") || strings.Contains(output, "Error") || strings.Contains(output, "error")
+	assert.True(t, hasError, "expected error in output, got: %s", output)
+	assert.NotContains(t, output, "no Slack account has a stored token")
 }
 
 // ---------------------------------------------------------------------------

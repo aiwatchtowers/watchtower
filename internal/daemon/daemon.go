@@ -51,7 +51,7 @@ var minPollInterval = 1 * time.Second
 
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
-	orchestrator     *sync.Orchestrator
+	orchestrators    []*sync.Orchestrator
 	config           *config.Config
 	logger           *log.Logger
 	wakeCh           <-chan struct{}
@@ -78,15 +78,21 @@ type Daemon struct {
 	lastDayPlanDate  string    // YYYY-MM-DD of last generation, for dedup
 }
 
-// New creates a Daemon that runs incremental syncs via the given orchestrator.
-// orchestrator may be nil when Slack is not connected; the Slack sync phase is
-// then skipped while the other source syncers and pipelines still run.
-func New(orchestrator *sync.Orchestrator, cfg *config.Config) *Daemon {
+// New creates a Daemon. Slack orchestrators are attached separately via
+// SetOrchestrators — an empty (or nil) set means Slack is not connected, in
+// which case the Slack sync phase is skipped while the other source syncers
+// and pipelines still run.
+func New(cfg *config.Config) *Daemon {
 	return &Daemon{
-		orchestrator: orchestrator,
-		config:       cfg,
-		logger:       log.New(os.Stderr, "[daemon] ", log.LstdFlags),
+		config: cfg,
+		logger: log.New(os.Stderr, "[daemon] ", log.LstdFlags),
 	}
+}
+
+// SetOrchestrators attaches one Slack sync orchestrator per connected account.
+// An empty or nil slice disables the Slack sync phase.
+func (d *Daemon) SetOrchestrators(o []*sync.Orchestrator) {
+	d.orchestrators = o
 }
 
 // SetLogger replaces the daemon's logger.
@@ -345,24 +351,34 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 	_ = d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg)
 }
 
-// phaseSlackSync runs the orchestrator and persists last_sync.json. The
-// returned error is non-nil for non-fatal sync issues; pipelines still run.
-// A nil orchestrator means Slack is not connected — the phase is skipped and
-// the other sources still sync.
+// phaseSlackSync runs every connected account's orchestrator and persists one
+// aggregated last_sync.json. One account's error is logged and does not block
+// the others (the wireImapSyncers/wireGoogleSyncers fan-out pattern) — each
+// orchestrator advances its own account's sync_state independently, so a
+// failed account never freezes a healthy one's watermark. The returned error
+// is the first account's error (non-nil for non-fatal sync issues); pipelines
+// still run. An empty orchestrator set means Slack is not connected — the
+// phase is skipped and the other sources still sync.
 func (d *Daemon) phaseSlackSync(ctx context.Context) error {
-	if d.orchestrator == nil {
+	if len(d.orchestrators) == 0 {
 		return nil
 	}
-	syncErr := d.orchestrator.Run(ctx, sync.SyncOptions{})
-	if syncErr != nil {
-		d.logger.Printf("sync error: %v", syncErr)
+	var firstErr error
+	snaps := make([]sync.Snapshot, 0, len(d.orchestrators))
+	for _, o := range d.orchestrators {
+		if err := o.Run(ctx, sync.SyncOptions{}); err != nil {
+			d.logger.Printf("sync error: %v", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		snaps = append(snaps, o.Progress().Snapshot())
 	}
-	snap := d.orchestrator.Progress().Snapshot()
 	resultPath := filepath.Join(d.config.WorkspaceDir(), "last_sync.json")
-	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshot(snap, syncErr)); err != nil {
+	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshots(snaps, firstErr)); err != nil {
 		d.logger.Printf("failed to write sync result: %v", err)
 	}
-	return syncErr
+	return firstErr
 }
 
 // phaseCalendarSync pulls Google Calendar events for every connected

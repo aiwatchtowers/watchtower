@@ -26,8 +26,8 @@ func TestCLI_DayPlanShow(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	planID, err := database.CreateDayPlan(&db.DayPlan{
 		UserID:          "U001",
 		PlanDate:        "2026-04-23",
@@ -61,7 +61,8 @@ func TestCLI_DayPlanShow_NoExist(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	database.Close()
 
 	var buf bytes.Buffer
@@ -80,8 +81,8 @@ func TestCLI_DayPlanList(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	for _, d := range []string{"2026-04-21", "2026-04-22", "2026-04-23"} {
 		_, err := database.CreateDayPlan(&db.DayPlan{
 			UserID:          "U001",
@@ -119,8 +120,8 @@ func TestCLI_DayPlanReset(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	planID, err := database.CreateDayPlan(&db.DayPlan{
 		UserID:          "U001",
 		PlanDate:        "2026-04-23",
@@ -166,8 +167,8 @@ func TestCLI_DayPlanCheckConflicts(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	today := time.Now().Format("2006-01-02")
 	planID, err := database.CreateDayPlan(&db.DayPlan{
 		UserID:          "U001",
@@ -293,7 +294,8 @@ func TestCLI_DayPlanGenerate_JSON(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	// Seed a target so the backlog item source_id is valid.
 	_, err = database.CreateTarget(db.Target{
 		Text:        "Write tests",

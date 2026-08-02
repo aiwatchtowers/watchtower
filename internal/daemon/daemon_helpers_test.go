@@ -13,10 +13,22 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/sync"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newDaemon builds a Daemon and attaches a single Slack orchestrator, the
+// common test shape after New dropped its orchestrator parameter in favor of
+// SetOrchestrators. A nil orch leaves the Slack sync phase disabled.
+func newDaemon(orch *sync.Orchestrator, cfg *config.Config) *Daemon {
+	d := New(cfg)
+	if orch != nil {
+		d.SetOrchestrators([]*sync.Orchestrator{orch})
+	}
+	return d
+}
 
 func newQuietDaemon(t *testing.T) *Daemon {
 	t.Helper()
@@ -142,7 +154,7 @@ func TestLastBriefingPath_UnderWorkspaceDir(t *testing.T) {
 
 // Confirm helper does not panic with an unset DB.
 func TestDaemon_New(t *testing.T) {
-	d := New(nil, &config.Config{})
+	d := New(&config.Config{})
 	require.NotNil(t, d)
 	assert.NotNil(t, d.logger)
 	assert.Nil(t, d.db) // SetDB hasn't been called.

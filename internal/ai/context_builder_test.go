@@ -181,6 +181,63 @@ func TestBuild_WorkspaceSummary(t *testing.T) {
 	assert.Contains(t, result, "Users: 3")
 }
 
+func TestBuildWorkspaceSummary_MultiAccount(t *testing.T) {
+	database, _ := setupTestDB(t)
+
+	_, err := database.CreateSlackAccount(db.SlackAccount{
+		TeamID: "T001", TeamName: "Acme Inc", TeamDomain: "acme-corp", Label: "Work",
+	})
+	require.NoError(t, err)
+	_, err = database.CreateSlackAccount(db.SlackAccount{
+		TeamID: "T002", TeamName: "Beta LLC", TeamDomain: "beta-corp", Label: "Personal",
+	})
+	require.NoError(t, err)
+
+	cb := NewContextBuilder(database, 150000, "acme-corp", "T001")
+	summary, err := cb.BuildWorkspaceSummary()
+	require.NoError(t, err)
+
+	// Both connected workspaces are listed, replacing the single ws.Name line.
+	assert.Contains(t, summary, "Connected Slack workspaces:")
+	assert.Contains(t, summary, "Work (acme-corp)")
+	assert.Contains(t, summary, "Personal (beta-corp)")
+	assert.NotContains(t, summary, "Workspace: test-corp")
+}
+
+func TestFormatMessage_PermalinkPerAccount(t *testing.T) {
+	database, refTime := setupTestDB(t)
+
+	// Account #1 (T001) and account #2 (T002).
+	_, err := database.CreateSlackAccount(db.SlackAccount{
+		TeamID: "T001", TeamName: "Acme Inc", TeamDomain: "acme-corp", Label: "Work",
+	})
+	require.NoError(t, err)
+	_, err = database.CreateSlackAccount(db.SlackAccount{
+		TeamID: "T002", TeamName: "Beta LLC", TeamDomain: "beta-corp", Label: "Personal",
+	})
+	require.NoError(t, err)
+
+	cb := NewContextBuilder(database, 150000, "acme-corp", "T001")
+
+	tsUnix := float64(refTime.Unix())
+	// A message whose channel_id is namespaced to account #2.
+	msg := db.Message{
+		ChannelID: "2:C001",
+		TS:        fmt.Sprintf("%.6f", tsUnix),
+		UserID:    "U001",
+		Text:      "deploy to prod",
+		TSUnix:    tsUnix,
+	}
+	line := cb.formatMessage("engineering", msg)
+
+	// The permalink resolves to account #2's team, not the builder default (T001).
+	assert.Contains(t, line, "team=T002")
+	assert.NotContains(t, line, "team=T001")
+	// The namespaced prefix is stripped from the deep-link channel id.
+	assert.Contains(t, line, "id=C001")
+	assert.NotContains(t, line, "id=2:C001")
+}
+
 func TestBuild_WithWatchList(t *testing.T) {
 	database, refTime := setupTestDB(t)
 
