@@ -370,8 +370,8 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// failure freezes/partially advances the watermark below so no window is skipped).
 	p.progress(1, totalSteps, "detecting")
 	stepStart := time.Now()
-	createdSlack, createdJira, createdCalendar, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
-	created := createdSlack + createdJira + createdCalendar + createdWatchtower
+	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
+	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap + createdWatchtower
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 2: Triage — the secretary reviews every new trigger item plus a
@@ -426,8 +426,8 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	p.progress(totalSteps, totalSteps, "done")
 
-	p.logger.Printf("inbox: +%d new (S%d J%d C%d I%d T%d), %d auto-resolved, situations +%d/~%d, %d cards, %d auto-archived, %d learned-rule-updates",
-		created, createdSlack, createdJira, createdCalendar, createdWatchtower, outcome.Created,
+	p.logger.Printf("inbox: +%d new (S%d J%d C%d G%d M%d I%d T%d), %d auto-resolved, situations +%d/~%d, %d cards, %d auto-archived, %d learned-rule-updates",
+		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, outcome.Created,
 		resolved, composeCreated, composeMerged, cardsGenerated, archived, learnedRuleUpdates)
 
 	// detectErr is logged but non-fatal (existing behavior, guarded by
@@ -480,13 +480,13 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 	// RunFastDetection never advances the watermark (the full Run owns that), so
 	// a detector error is already surfaced via the per-detector logs inside
 	// detectAll; no watermark gating is needed here.
-	createdSlack, createdJira, createdCalendar, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
-	created := createdSlack + createdJira + createdCalendar
+	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
+	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap
 
 	resolved := p.autoResolveByRules(ctx, currentUserID)
 
-	p.logger.Printf("inbox fast: +%d new (S%d J%d C%d), %d auto-resolved",
-		created, createdSlack, createdJira, createdCalendar, resolved)
+	p.logger.Printf("inbox fast: +%d new (S%d J%d C%d G%d M%d), %d auto-resolved",
+		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, resolved)
 
 	return nil
 }
@@ -497,7 +497,7 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 // used by RunFastDetection so it can run before the digest pipeline.
 // The returned error is non-nil if any detector failed; callers use it to gate
 // the watermark advance so a failed pass does not skip its message window.
-func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time, includeWatchtower bool) (slack, jira, cal, wt int, err error) {
+func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time, includeWatchtower bool) (slack, jira, cal, gmail, imapCount, wt int, err error) {
 	var errs []error
 	if n, e := p.detectSlackTriggers(ctx, currentUserID, lastTS); e != nil {
 		p.logger.Printf("inbox: slack detect error: %v", e)
@@ -517,6 +517,18 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 	} else {
 		cal = n
 	}
+	if n, e := DetectGmailAccounts(ctx, p.db, sinceTime); e != nil {
+		p.logger.Printf("inbox: gmail detect error: %v", e)
+		errs = append(errs, fmt.Errorf("gmail: %w", e))
+	} else {
+		gmail = n
+	}
+	if n, e := DetectImapAccounts(ctx, p.db, sinceTime); e != nil {
+		p.logger.Printf("inbox: imap detect error: %v", e)
+		errs = append(errs, fmt.Errorf("imap: %w", e))
+	} else {
+		imapCount = n
+	}
 	if includeWatchtower {
 		if n, e := DetectWatchtowerInternal(ctx, p.db, sinceTime); e != nil {
 			p.logger.Printf("inbox: watchtower detect error: %v", e)
@@ -524,8 +536,19 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 		} else {
 			wt = n
 		}
+		// Memory dispute reader ("the arguing secretary"): dispute_pending
+		// beliefs become ordinary decision_made items, gated dark by default.
+		// An error here freezes the watermark exactly like any other detector
+		// (INBOX-09) — it is joined into errs.
+		disputesEnabled := p.cfg != nil && p.cfg.Memory.Surfaces.Disputes
+		if n, e := detectMemoryDisputes(p.db, disputesEnabled); e != nil {
+			p.logger.Printf("inbox: memory dispute detect error: %v", e)
+			errs = append(errs, fmt.Errorf("memory-dispute: %w", e))
+		} else {
+			wt += n
+		}
 	}
-	return slack, jira, cal, wt, errors.Join(errs...)
+	return slack, jira, cal, gmail, imapCount, wt, errors.Join(errs...)
 }
 
 // detectSlackTriggers detects @mentions, DMs, thread replies and reactions from Slack messages.

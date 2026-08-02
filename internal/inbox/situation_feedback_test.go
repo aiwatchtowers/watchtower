@@ -3,6 +3,7 @@ package inbox
 import (
 	"context"
 	"log"
+	"strconv"
 	"testing"
 
 	"watchtower/internal/db"
@@ -71,6 +72,34 @@ func TestSituationFeedback_RatingOnlyUpIsNoOp(t *testing.T) {
 	assert.Equal(t, 0, gen.calls)
 	_, err := d.GetLearnedRule("source_mute", "channel:C1")
 	assert.Error(t, err, "👍 without comment must not create rules")
+}
+
+func TestSituationFeedback_PersistsRatingRow(t *testing.T) {
+	d, p, gen := newFeedbackPipeline(t)
+	sitID := seedSituationWithSignal(t, d, "U1", "C1")
+
+	require.NoError(t, p.SubmitSituationFeedback(context.Background(), sitID, 1, ""))
+
+	rows, err := d.GetFeedback(db.FeedbackFilter{EntityType: "situation"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "bare 👍 must still persist the rating so the UI control reflects it")
+	assert.Equal(t, strconv.Itoa(sitID), rows[0].EntityID)
+	assert.Equal(t, 1, rows[0].Rating)
+	assert.Equal(t, 0, gen.calls)
+}
+
+func TestSituationFeedback_CommentPersistsRatingRowWithComment(t *testing.T) {
+	d, p, gen := newFeedbackPipeline(t)
+	sitID := seedSituationWithSignal(t, d, "U2", "C2")
+	gen.response = `{"rules": []}`
+
+	require.NoError(t, p.SubmitSituationFeedback(context.Background(), sitID, -1, "too noisy"))
+
+	rows, err := d.GetFeedback(db.FeedbackFilter{EntityType: "situation", EntityID: strconv.Itoa(sitID)})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, -1, rows[0].Rating)
+	assert.Equal(t, "too noisy", rows[0].Comment)
 }
 
 func TestSituationFeedback_CommentDerivesUserRules(t *testing.T) {

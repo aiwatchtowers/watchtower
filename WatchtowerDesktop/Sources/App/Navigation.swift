@@ -45,7 +45,12 @@ struct SplashView: View {
 struct MainNavigationView: View {
     @Environment(AppState.self) private var appState
     @State private var showMenu = true
-    @State private var googleAuth = GoogleAuthService()
+    /// Reuses `GoogleConnectFlow.shared.calendar` (rather than a locally-
+    /// constructed `GoogleAuthService()`) so this reconnect flow gets its
+    /// DB-derived `isConnected` from the same wiring — `AppState.
+    /// initGoogleAccounts` calls `GoogleConnectFlow.shared.configure(dbPool:)`
+    /// — instead of a second instance with no DB access.
+    private let googleAuth = GoogleConnectFlow.shared.calendar
     @State private var dismissedAuthTimestamp: String = UserDefaults.standard.string(forKey: "dismissedCalendarAuthAt") ?? ""
 
     /// Show the reconnect popup when the daemon has flagged the calendar auth as broken
@@ -134,9 +139,13 @@ struct MainNavigationView: View {
     }
 
     /// Runs the OAuth flow and, on success, restarts the daemon so the in-memory
-    /// refresh token is replaced with the freshly saved one.
+    /// refresh token is replaced with the freshly saved one. Targets the
+    /// SPECIFIC account `authState` flagged as broken (N2) — without this,
+    /// `connect()` falls back to the CLI's generic "account #1" alias, which
+    /// in a multi-account workspace may be a completely different, healthy
+    /// account, leaving the actually-broken one (and the alert) stuck forever.
     private func reconnectAndRestartDaemon() {
-        googleAuth.connect()
+        googleAuth.connect(accountID: appState.calendarViewModel?.authState?.accountID)
         Task {
             while googleAuth.isAuthenticating {
                 try? await Task.sleep(for: .milliseconds(250))
@@ -186,6 +195,14 @@ struct MainNavigationView: View {
             DigestListView()
         case .people:
             PeopleListView()
+        case .memory:
+            if let vm = appState.memoryViewModel {
+                MemoryView(vm: vm)
+            } else {
+                Text("Memory unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .workload:
             WorkloadView()
         case .blockers:

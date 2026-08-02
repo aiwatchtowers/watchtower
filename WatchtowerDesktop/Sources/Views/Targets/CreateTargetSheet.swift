@@ -22,7 +22,7 @@ struct CreateTargetSheet: View {
     @State private var showExtractSheet = false
     @State private var extractedResult: TargetExtractResult?
     /// True only while THIS sheet instance is the one that started the
-    /// in-flight extraction — gates the `isRunning` transition handler below
+    /// in-flight extraction — gates the `phase` transition handler below
     /// so a sheet never reacts to a result/error started by a different
     /// CreateTargetSheet instance elsewhere in the app.
     @State private var awaitingOwnExtraction = false
@@ -89,16 +89,23 @@ struct CreateTargetSheet: View {
                 )
             }
         }
-        .onChange(of: appState.targetExtractCenter.isRunning) { _, running in
-            guard awaitingOwnExtraction, !running else { return }
-            awaitingOwnExtraction = false
-            if let result = appState.targetExtractCenter.pendingResult {
-                extractedResult = result
-                showExtractSheet = true
-                appState.targetExtractCenter.clearPending()
-            } else if let error = appState.targetExtractCenter.pendingError {
-                errorMessage = error
-                appState.targetExtractCenter.clearPending()
+        .onChange(of: appState.targetExtractCenter.phase) { _, phase in
+            guard awaitingOwnExtraction else { return }
+            switch phase {
+            case .ready:
+                awaitingOwnExtraction = false
+                if let result = appState.targetExtractCenter.result {
+                    extractedResult = result
+                    showExtractSheet = true
+                    // The sheet now owns a copy; clear the Center so the global
+                    // capsule doesn't also offer the same result.
+                    appState.targetExtractCenter.dismiss()
+                }
+            case .empty, .failed:
+                // Hand off to the global capsule (friendly message + retry).
+                awaitingOwnExtraction = false
+            case .idle, .extracting:
+                break
             }
         }
     }
@@ -155,11 +162,12 @@ struct CreateTargetSheet: View {
 
     private var extractButton: some View {
         let center = appState.targetExtractCenter
+        let isExtracting = center.phase == .extracting
         return HStack {
             Button {
                 Task { await runExtract() }
             } label: {
-                if center.isRunning && awaitingOwnExtraction {
+                if isExtracting && awaitingOwnExtraction {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
                         Text("Extracting…")
@@ -169,9 +177,9 @@ struct CreateTargetSheet: View {
                 }
             }
             .buttonStyle(.bordered)
-            .disabled(center.isRunning || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(isExtracting || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .help(
-                center.isRunning && !awaitingOwnExtraction
+                isExtracting && !awaitingOwnExtraction
                     ? "An extraction is already running — wait for it to finish"
                     : "Run the entered text through the LLM to propose structured targets"
             )
@@ -551,6 +559,6 @@ struct CreateTargetSheet: View {
         }
         errorMessage = nil
         awaitingOwnExtraction = true
-        await appState.targetExtractCenter.start(text: text, runner: runner)
+        appState.targetExtractCenter.start(text: text, runner: runner)
     }
 }

@@ -2,21 +2,21 @@
 
 ## Overview
 
-Добавляем Codex CLI как полноценный AI-провайдер наравне с Claude CLI.
-Переключение через конфиг. Claude-путь остаётся нетронутым.
+Adding Codex CLI as a full-fledged AI provider alongside Claude CLI.
+Switching happens via config. The Claude path remains untouched.
 
 ---
 
 ## Go Backend
 
-### 1. Новый пакет `internal/codex/`
+### 1. New package `internal/codex/`
 
-#### `resolve.go` — binary discovery (аналог `internal/claude/resolve.go`):
-- `FindBinary(override string) string` — ищет `codex` бинарник (PATH → login shell → fallback dirs)
-- `RichPATH() string` — обогащённый PATH для subprocess
-- Кэширование через `sync.Once`
+#### `resolve.go` — binary discovery (analogous to `internal/claude/resolve.go`):
+- `FindBinary(override string) string` — looks up the `codex` binary (PATH → login shell → fallback dirs)
+- `RichPATH() string` — enriched PATH for the subprocess
+- Caching via `sync.Once`
 
-#### `generator.go` — CodexGenerator реализует `digest.Generator`:
+#### `generator.go` — CodexGenerator implements `digest.Generator`:
 ```go
 type CodexGenerator struct {
     model     string
@@ -26,7 +26,7 @@ func NewCodexGenerator(model, codexPath string) *CodexGenerator
 func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *digest.Usage, string, error)
 ```
 
-CLI вызов:
+CLI invocation:
 ```
 codex exec \
   --model <model> \
@@ -37,12 +37,12 @@ codex exec \
   "<userMessage>"
 ```
 
-Ключевое:
-- System prompt через `-c developer_instructions="..."` (НЕ конкатенация в userMessage)
+Key points:
+- System prompt via `-c developer_instructions="..."` (NOT concatenated into userMessage)
 - `--json` → JSONL output
-- `--ephemeral` для отключения сессий
+- `--ephemeral` to disable sessions
 
-#### `client.go` — CodexClient для streaming (ask/chat):
+#### `client.go` — CodexClient for streaming (ask/chat):
 ```go
 type Client struct {
     model    string
@@ -54,16 +54,16 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *ai.Usage, error)
 ```
 
-#### `models.go` — модели Codex:
+#### `models.go` — Codex models:
 ```go
 const (
-    ModelDefault     = "gpt-5.4"        // аналог Sonnet
-    ModelLightweight = "gpt-5.4-mini"   // аналог Haiku
+    ModelDefault     = "gpt-5.4"        // analog of Sonnet
+    ModelLightweight = "gpt-5.4-mini"   // analog of Haiku
 )
-func ModelForSource(source string) string // тот же маппинг что digest.ModelForSource
+func ModelForSource(source string) string // same mapping as digest.ModelForSource
 ```
 
-#### `parse.go` — парсинг JSONL events:
+#### `parse.go` — JSONL event parsing:
 ```go
 type CodexEvent struct {
     Type     string      `json:"type"`      // thread.started, turn.started, turn.completed, item.started, item.completed, error
@@ -86,23 +86,23 @@ type CodexError struct {
 }
 ```
 
-Извлечение результата: последний event `item.completed` с `item.type == "agent_message"` содержит финальный ответ.
+Result extraction: the last `item.completed` event with `item.type == "agent_message"` contains the final answer.
 
-#### `mcp.go` — MCP конфигурация для Codex:
-- Создаём temp директорию с `.codex/config.toml` содержащую MCP конфиг для SQLite
-- Используем `--cd` для указания этой директории
-- Cleanup в defer
+#### `mcp.go` — MCP configuration for Codex:
+- Create a temp directory with `.codex/config.toml` containing the MCP config for SQLite
+- Use `--cd` to point at this directory
+- Cleanup in defer
 
-Формат `.codex/config.toml`:
+`.codex/config.toml` format:
 ```toml
 [mcp_servers.sqlite]
 command = "npx"
 args = ["-y", "@anthropic-ai/mcp-server-sqlite", "<dbPath>"]
 ```
 
-### 2. Интерфейс `ai.Provider`
+### 2. `ai.Provider` interface
 
-Новый файл `internal/ai/provider.go`:
+New file `internal/ai/provider.go`:
 ```go
 type Provider interface {
     Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan string, <-chan error, <-chan string)
@@ -110,16 +110,16 @@ type Provider interface {
 }
 ```
 
-`ai.Client` (Claude) уже реализует по сигнатурам. `codex.Client` — новая реализация.
+`ai.Client` (Claude) already satisfies the signatures. `codex.Client` — new implementation.
 
-### 3. Конфигурация
+### 3. Configuration
 
-`internal/config/config.go` — добавить:
+`internal/config/config.go` — add:
 ```go
-// В AIConfig:
+// In AIConfig:
 Provider string `mapstructure:"provider"` // "claude" (default) | "codex"
 
-// В Config (корневой уровень, рядом с ClaudePath):
+// In Config (root level, next to ClaudePath):
 CodexPath string `mapstructure:"codex_path"`
 ```
 
@@ -128,7 +128,7 @@ CodexPath string `mapstructure:"codex_path"`
 const DefaultAIProvider = "claude"
 ```
 
-### 4. Factory-функции
+### 4. Factory functions
 
 `cmd/generator.go`:
 ```go
@@ -142,35 +142,35 @@ func cliGenerator(cfg *config.Config) digest.Generator {
 
 `cmd/ask.go` — `newAIClient(cfg, dbPath) ai.Provider`
 
-### 5. CLI флаг
+### 5. CLI flag
 
 `cmd/root.go` — persistent flag `--provider` (claude|codex), override cfg.AI.Provider.
 
-### 6. Go файлы (scope для Go Dev):
-1. `internal/codex/resolve.go` — новый
-2. `internal/codex/models.go` — новый
-3. `internal/codex/generator.go` — новый
-4. `internal/codex/client.go` — новый
-5. `internal/codex/mcp.go` — новый
-6. `internal/codex/parse.go` — новый
-7. `internal/ai/provider.go` — новый
-8. `internal/config/config.go` — изменить
-9. `internal/config/defaults.go` — изменить
-10. `cmd/generator.go` — изменить
-11. `cmd/ask.go` — изменить
-12. `cmd/root.go` — изменить
+### 6. Go files (scope for Go Dev):
+1. `internal/codex/resolve.go` — new
+2. `internal/codex/models.go` — new
+3. `internal/codex/generator.go` — new
+4. `internal/codex/client.go` — new
+5. `internal/codex/mcp.go` — new
+6. `internal/codex/parse.go` — new
+7. `internal/ai/provider.go` — new
+8. `internal/config/config.go` — change
+9. `internal/config/defaults.go` — change
+10. `cmd/generator.go` — change
+11. `cmd/ask.go` — change
+12. `cmd/root.go` — change
 
 ---
 
 ## Swift Desktop
 
-### 1. CodexService.swift — новый сервис
+### 1. CodexService.swift — new service
 
-Переименовать `ClaudeServiceProtocol` → `AIServiceProtocol`. Обновить:
-- Объявление протокола
+Rename `ClaudeServiceProtocol` → `AIServiceProtocol`. Update:
+- Protocol declaration
 - `ClaudeService: AIServiceProtocol`
 - `CodexService: AIServiceProtocol`
-- Все ссылки в ViewModels и DI
+- All references in ViewModels and DI
 
 ```swift
 final class CodexService: AIServiceProtocol, Sendable {
@@ -185,7 +185,7 @@ final class CodexService: AIServiceProtocol, Sendable {
 }
 ```
 
-CLI вызов:
+CLI invocation:
 ```
 codex exec \
   --model <model> \
@@ -197,36 +197,36 @@ codex exec \
   "<prompt>"
 ```
 
-Ключевое:
-- System prompt через `-c developer_instructions="..."` (НЕ конкатенация)
-- `--json` → JSONL output, парсим построчно
+Key points:
+- System prompt via `-c developer_instructions="..."` (NOT concatenation)
+- `--json` → JSONL output, parsed line by line
 - `item.completed` + `type == "agent_message"` → `.turnComplete(content)`
-- Streaming deltas через `item.started` → `.text(delta)`
-- `turn.completed` → можно игнорировать
-- Конец процесса → `.done`
+- Streaming deltas via `item.started` → `.text(delta)`
+- `turn.completed` → can be ignored
+- End of process → `.done`
 
-MCP для SQLite: создаём temp `.codex/config.toml`:
+MCP for SQLite: create a temp `.codex/config.toml`:
 ```toml
 [mcp_servers.sqlite]
 command = "npx"
 args = ["-y", "@anthropic-ai/mcp-server-sqlite", "<dbPath>"]
 ```
-Записываем в temp dir, используем `--cd`.
+Write to the temp dir, use `--cd`.
 
-Binary discovery: `Constants.findCodexPath()` — аналог `findClaudePath()`.
+Binary discovery: `Constants.findCodexPath()` — analog of `findClaudePath()`.
 
-### 2. ConfigService.swift — провайдер в настройках
+### 2. ConfigService.swift — provider in settings
 
-Новые поля:
+New fields:
 ```swift
 var aiProvider: String?  // "claude" | "codex", default "claude"
 var codexPath: String?
 ```
 
-В `reload()`: читать из yaml `ai.provider` и `codex_path`.
-В `save()`: сохранять обратно.
+In `reload()`: read from yaml `ai.provider` and `codex_path`.
+In `save()`: save back.
 
-### 3. ChatViewModel.swift — модели и провайдер
+### 3. ChatViewModel.swift — models and provider
 
 ```swift
 enum AIProvider: String, CaseIterable, Identifiable {
@@ -260,9 +260,9 @@ enum ChatModel: String, CaseIterable, Identifiable {
 }
 ```
 
-ChatView: picker показывает только модели текущего провайдера.
+ChatView: picker shows only models of the current provider.
 
-При смене провайдера:
+On provider switch:
 ```swift
 let service: any AIServiceProtocol = switch provider {
     case .claude: ClaudeService()
@@ -272,12 +272,12 @@ let service: any AIServiceProtocol = switch provider {
 
 ### 4. Settings UI
 
-В Settings → AI секции:
+In Settings → AI section:
 - **Provider picker**: `Picker("AI Provider", selection: $configService.aiProvider)` — Claude / Codex
-- **Codex Path**: текстовое поле, показывается только когда provider == codex
-- Model picker: фильтруется по текущему провайдеру
+- **Codex Path**: text field, shown only when provider == codex
+- Model picker: filtered by the current provider
 
-### 5. JSONL парсинг (Codex events)
+### 5. JSONL parsing (Codex events)
 
 ```swift
 struct CodexEvent: Decodable {
@@ -301,28 +301,28 @@ struct CodexError: Decodable {
 }
 ```
 
-### 6. Swift файлы (scope для Swift Dev):
-1. `WatchtowerDesktop/Sources/Services/CodexService.swift` — новый
-2. `WatchtowerDesktop/Sources/Services/ClaudeService.swift` — переименовать протокол → AIServiceProtocol
+### 6. Swift files (scope for Swift Dev):
+1. `WatchtowerDesktop/Sources/Services/CodexService.swift` — new
+2. `WatchtowerDesktop/Sources/Services/ClaudeService.swift` — rename protocol → AIServiceProtocol
 3. `WatchtowerDesktop/Sources/Services/Constants.swift` — findCodexPath()
 4. `WatchtowerDesktop/Sources/Services/ConfigService.swift` — aiProvider, codexPath
-5. `WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift` — ChatModel расширение, AIProvider enum
+5. `WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift` — ChatModel extension, AIProvider enum
 6. `WatchtowerDesktop/Sources/Views/SettingsView.swift` — provider picker
 
 ---
 
-## Config YAML формат (Go ↔ Swift контракт)
+## Config YAML format (Go ↔ Swift contract)
 
 ```yaml
 ai:
   provider: "codex"        # string: "claude" | "codex", default "claude"
-  model: "gpt-5.4"         # string: модель текущего провайдера
+  model: "gpt-5.4"         # string: model of the current provider
   workers: 5               # int
 codex_path: "/usr/local/bin/codex"  # string, optional
-claude_path: ""                      # string, optional (уже есть)
+claude_path: ""                      # string, optional (already exists)
 ```
 
-## Codex JSONL event types (для парсинга в обоих клиентах)
+## Codex JSONL event types (for parsing in both clients)
 
 - `thread.started` → `thread_id: string`
 - `turn.started` → (no payload)
@@ -330,5 +330,5 @@ claude_path: ""                      # string, optional (уже есть)
 - `turn.completed` → `usage.input_tokens: int, usage.output_tokens: int`
 - `error` → `error.message: string`
 
-Go типы: `int` для tokens, `string` для IDs и content.
-Swift типы: `Int` для tokens, `String` для IDs и content.
+Go types: `int` for tokens, `string` for IDs and content.
+Swift types: `Int` for tokens, `String` for IDs and content.

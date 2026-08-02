@@ -35,6 +35,42 @@ final class AppState {
     /// closed mid-extraction.
     let targetExtractCenter = TargetExtractCenter()
 
+    /// App-wide, single-slot registry for meeting recording + transcription, so
+    /// an in-flight recording and its transcription survive navigating away from
+    /// the calendar event that started it.
+    let meetingRecorderCenter = MeetingRecorderCenter()
+
+    /// App-wide, single-slot registry for meeting-recording audio playback, so
+    /// only one recording's audio plays at a time regardless of how many
+    /// transcript rows are expanded across the app.
+    let audioPlaybackCenter = AudioPlaybackCenter()
+
+    /// App-wide, single-slot-per-transcript registry for "generate meeting
+    /// notes" runs, so the "generating…" flag survives navigating away from
+    /// and back to a recording's detail (feedback: async ops need
+    /// navigation-surviving state).
+    let transcriptNotesCenter = TranscriptNotesCenter()
+
+    /// App-wide, single-slot-per-transcript registry for "Suggest speaker
+    /// names" runs and their suggestion chips (same surviving-state contract
+    /// as TranscriptNotesCenter).
+    let speakerGuessCenter = SpeakerGuessCenter()
+    /// Same pattern for "generate chapters" runs (Recap tab).
+    let transcriptChaptersCenter = TranscriptChaptersCenter()
+
+    /// Diarizer models are prefetched only while speaker roles are on; a
+    /// failure is fine — the post-pass retries the download and degrades to a
+    /// role-less transcript.
+    @Sendable private static func prefetchDiarizerModels() async {
+        guard TranscriptionConfig.fromDefaults().diarization else { return }
+        try? await FluidAudioDiarizer.prefetchModels()
+    }
+
+    /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,
+    /// so download progress is visible (and retryable) from anywhere,
+    /// independent of whether a recording is in progress.
+    let transcriptionModelProvisioner = TranscriptionModelProvisioner(prefetchExtras: AppState.prefetchDiarizerModels)
+
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?
@@ -47,6 +83,9 @@ final class AppState {
 
     /// Catch-Up ViewModel — persists across tab switches.
     private(set) var catchUpViewModel: CatchUpViewModel?
+
+    /// Memory browser ViewModel — persists across tab switches.
+    private(set) var memoryViewModel: MemoryViewModel?
 
     /// Dashboard ViewModel — persists across tab switches so an in-flight
     /// "Generate" run (and its `isGenerating` flag) survives navigating away
@@ -66,6 +105,23 @@ final class AppState {
     /// Sidebar badge counts — created during initialize() before the splash hides,
     /// so badges are visible the moment the main UI appears.
     private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
+
+    /// Email Accounts ViewModel (multi-account IMAP/Outlook) — persists across
+    /// tab switches so an in-flight connect (Outlook OAuth or IMAP add) survives
+    /// navigating away from the Settings window. Gmail keeps its own separate
+    /// single-account flow (`GoogleConnectFlow.shared`) and is not covered here.
+    private(set) var emailAccountsViewModel: EmailAccountsViewModel?
+
+    /// Calendar Accounts ViewModel (multi-account CalDAV/ICS) — persists across
+    /// tab switches so an in-flight connect survives navigating away from the
+    /// Settings window. Google Calendar keeps its own separate single-account
+    /// flow (`GoogleConnectFlow.shared`) and is not covered here.
+    private(set) var calendarAccountsViewModel: CalendarAccountsViewModel?
+
+    /// Google Accounts ViewModel (multi-account Calendar/Gmail) — persists
+    /// across tab switches so an in-flight OAuth connect survives navigating
+    /// away from the Settings window.
+    private(set) var googleAccountsViewModel: GoogleAccountsViewModel?
 
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
@@ -114,6 +170,12 @@ final class AppState {
         if let initError { return .unavailable(initError) }
         return .off
     }
+
+    /// Drives all meeting-reminder surfaces: the pre-meeting push, the
+    /// stop-recording push, and the global countdown banner. Created with the
+    /// DB (not gated on notification permission — the in-app banner needs
+    /// none; the pushes silently no-op without it).
+    private(set) var meetingReminderCenter: MeetingReminderCenter?
 
     /// Manages app updates from GitHub Releases.
     let updateService = UpdateService()
@@ -201,6 +263,9 @@ final class AppState {
         guard !isInitializing else { return }
         isInitializing = true
         isLoading = true
+        // Surface a recording captured before a crash/relaunch so the global
+        // indicator can offer to (re-)transcribe it. No DB needed.
+        meetingRecorderCenter.restorePendingOnLaunch()
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
@@ -220,6 +285,20 @@ final class AppState {
                 }.value
                 databaseManager = manager
                 errorMessage = nil
+                // Voice matching needs the DB at diarization time; the Center
+                // is created before the DB opens, so hand it a loader now. A
+                // read failure degrades to "no voice prints" (plain Speaker N
+                // labels), never a thrown error.
+                meetingRecorderCenter.voicePrintsLoader = { [dbPool = manager.dbPool] in
+                    do {
+                        return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
+                    } catch {
+                        // Documented degradation, but never a silent one
+                        // (the renderRoles diagnostics convention).
+                        print("[AppState] voice-print load failed, matching disabled for this run: \(error.localizedDescription)")
+                        return []
+                    }
+                }
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {
                     let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)
@@ -247,9 +326,14 @@ final class AppState {
                 initCalendar(dbPool: manager.dbPool)
                 initDayPlan(dbPool: manager.dbPool)
                 initCatchUp(dbPool: manager.dbPool)
+                initMemory(dbPool: manager.dbPool)
                 initDashboard(dbManager: manager)
                 initSecretaryProfile(dbManager: manager)
+                initEmailAccounts(dbPool: manager.dbPool)
+                initCalendarAccounts(dbPool: manager.dbPool)
+                initGoogleAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
+                startMeetingReminders(dbPool: manager.dbPool)
                 if UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey) {
                     startMobileHub()
                 }
@@ -374,6 +458,10 @@ final class AppState {
         catchUpViewModel = CatchUpViewModel(dbPool: dbPool)
     }
 
+    private func initMemory(dbPool: DatabasePool) {
+        memoryViewModel = MemoryViewModel(dbPool: dbPool)
+    }
+
     /// Builds the hub chain on first use (TransportStore → CloudKitTransport →
     /// HubSyncState → SlicePublisher/RelayProcessor → MobileHubService) and
     /// starts it. Called from initialize() and from the Settings toggle.
@@ -452,6 +540,36 @@ final class AppState {
     /// identity persists across accesses.
     func initSecretaryProfile(dbManager: DatabaseManager) {
         secretaryProfileViewModel = SecretaryProfileViewModel(dbManager: dbManager)
+    }
+
+    func initEmailAccounts(dbPool: DatabasePool) {
+        let vm = EmailAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        emailAccountsViewModel = vm
+    }
+
+    func initCalendarAccounts(dbPool: DatabasePool) {
+        let vm = CalendarAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        calendarAccountsViewModel = vm
+    }
+
+    func initGoogleAccounts(dbPool: DatabasePool) {
+        let vm = GoogleAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        googleAccountsViewModel = vm
+        // GoogleConnectFlow.shared is a singleton constructed before any
+        // dbPool exists (Navigation.swift / SidebarView.swift reference its
+        // `calendar` service directly) — wire it here, the same point its
+        // sibling VM above gets its pool, so isConnected reads google_accounts
+        // instead of staying permanently false.
+        GoogleConnectFlow.shared.configure(dbPool: dbPool)
+    }
+
+    private func startMeetingReminders(dbPool: DatabasePool) {
+        let center = MeetingReminderCenter(dbPool: dbPool, recorderCenter: meetingRecorderCenter)
+        meetingReminderCenter = center
+        center.start()
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

@@ -1,15 +1,15 @@
-# Баги на стороне сервера (Go) — аудит 2026-07-05
+# Server-side (Go) bugs — audit 2026-07-05
 
-Аудит покрывает весь Go-бэкенд Watchtower: sync-оркестратор (Slack/Jira/Calendar), слой БД и миграции, AI-пайплайны (digest, tracks, inbox, briefing, dayplan, people), CLI-команды и интеграцию с провайдерами claude/codex. Метод: несколько независимых агентов-поисковиков (по подсистемам) генерировали кандидатов, после чего каждая находка проходила независимую адверсариальную верификацию с трассировкой пути исполнения по коду; опровергнутые находки удалены из отчёта. Итог: 8 High, 23 Medium, 23 Low, Critical нет.
+The audit covers the entire Watchtower Go backend: the sync orchestrator (Slack/Jira/Calendar), the DB layer and migrations, the AI pipelines (digest, tracks, inbox, briefing, dayplan, people), CLI commands, and the claude/codex provider integration. Method: several independent search agents (by subsystem) generated candidates, after which each finding went through independent adversarial verification with execution-path tracing through the code; refuted findings were removed from the report. Result: 8 High, 23 Medium, 23 Low, 0 Critical.
 
 ## High
 
-### Миграция 00002 молча стирает всю таблицу inbox_feedback через каскад DROP TABLE
+### Migration 00002 silently wipes the entire inbox_feedback table via a DROP TABLE cascade
 
-- **Где:** `internal/db/migrations/00002_target_due_inbox.sql:48`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/migrations/00002_target_due_inbox.sql:48`
+- **Verification status:** ✅ confirmed
 
-Расширение enum `trigger_type` пересоздаёт `inbox_items` через классический DROP/RENAME-«танец». Но `db.Open` включает `PRAGMA foreign_keys=ON` на единственном pooled-соединении ещё до запуска goose, а `inbox_feedback` объявлена с `inbox_item_id ... REFERENCES inbox_items(id) ON DELETE CASCADE`. В SQLite `DROP TABLE` выполняет неявный `DELETE FROM`, который срабатывает FK-действиями, а `PRAGMA defer_foreign_keys=ON` откладывает только проверки НАРУШЕНИЙ, но не CASCADE-действия. В итоге `DROP TABLE inbox_items` каскадно удаляет все строки `inbox_feedback`. Любой пользователь, обновляющий legacy-базу (до goose) с накопленным 👍/👎-фидбеком, теряет всю историю обучения inbox в момент применения 00002. Воспроизведено эмпирически на драйвере проекта (modernc.org/sqlite): после точной последовательности стейтментов счётчик `inbox_feedback` падает 2 → 0, при этом `inbox_items` выживает. Down-миграция имеет идентичный дефект; тестов на выживание `inbox_feedback` через эту миграцию нет. Комментарий в самой миграции («reference survives the DROP/RENAME dance») ошибочен: выживает только схемная ссылка, строки — удаляются.
+Expanding the `trigger_type` enum recreates `inbox_items` via the classic DROP/RENAME "dance". But `db.Open` enables `PRAGMA foreign_keys=ON` on the single pooled connection before goose even runs, and `inbox_feedback` is declared with `inbox_item_id ... REFERENCES inbox_items(id) ON DELETE CASCADE`. In SQLite, `DROP TABLE` performs an implicit `DELETE FROM`, which triggers FK actions, and `PRAGMA defer_foreign_keys=ON` only defers VIOLATION checks, not CASCADE actions. As a result, `DROP TABLE inbox_items` cascades and deletes all `inbox_feedback` rows. Any user upgrading a legacy (pre-goose) database with accumulated 👍/👎 feedback loses their entire inbox-learning history the moment 00002 is applied. Reproduced empirically on the project's driver (modernc.org/sqlite): after the exact statement sequence, the `inbox_feedback` count drops 2 → 0, while `inbox_items` survives. The down migration has the identical defect; there are no tests for `inbox_feedback` surviving this migration. The comment in the migration itself ("reference survives the DROP/RENAME dance") is wrong: only the schema reference survives — the rows are deleted.
 
 ```sql
 PRAGMA defer_foreign_keys = ON;
@@ -20,14 +20,14 @@ ALTER TABLE inbox_items_new RENAME TO inbox_items;
 -- repro: sqlite3 with foreign_keys=ON → 'feedback rows after dance:|0'
 ```
 
-- **Рекомендация:** Использовать канонический идиом table-recreation из документации SQLite: временно выключать `PRAGMA foreign_keys=OFF` перед транзакцией (а не `defer_foreign_keys`), делать DROP/RENAME, затем `PRAGMA foreign_key_check` и снова `ON`. Исправить и Up, и Down; добавить регрессионный тест, который сеет строки в `inbox_feedback` перед 00002 и проверяет их выживание.
+- **Recommendation:** Use the canonical table-recreation idiom from the SQLite docs: temporarily turn `PRAGMA foreign_keys=OFF` off before the transaction (instead of `defer_foreign_keys`), do the DROP/RENAME, then `PRAGMA foreign_key_check` and turn it back `ON`. Fix both Up and Down; add a regression test that seeds rows into `inbox_feedback` before 00002 and checks they survive.
 
-### Watermark search_last_date продвигается до «сегодня» даже при досрочном обрыве пагинации — пропущенные сообщения теряются навсегда
+### The search_last_date watermark advances to "today" even on an early pagination abort — missed messages are lost forever
 
-- **Где:** `internal/sync/search_sync.go:181`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/sync/search_sync.go:181`
+- **Verification status:** ✅ confirmed
 
-`syncViaSearch` пагинирует `search.messages` по возрастанию timestamp (страница 1 — самые старые сообщения). При любой non-fatal ошибке посреди пагинации (`RateLimitedError` после 3 ретраев `doRequest`, `missing_scope`, `access_denied` и т.п.) цикл делает `break` и проваливается к безусловному `SetSearchLastDate(today)` — даже если остановился на 1-й странице из 50. Следующий инкрементальный sync запрашивает `after: today-2d`, поэтому все сообщения с незагруженных страниц старше `today-2d` больше никогда не будут получены. Поскольку search-sync — путь ПО УМОЛЧАНИЮ, включая первый запуск, обрыв по rate-limit в начале первичной синхронизации окна в 30–60 дней молча и безвозвратно теряет недели истории. Контраст: путь `conversations.history` намеренно НЕ продвигает `LastSyncedTS`, пока не выкачаны все страницы (message_sync.go:325-330); в search-пути эквивалентного guard'а нет. Отмена контекста корректно возвращается до записи watermark — затронут только non-fatal break.
+`syncViaSearch` paginates `search.messages` in ascending timestamp order (page 1 is the oldest messages). On any non-fatal error mid-pagination (`RateLimitedError` after 3 `doRequest` retries, `missing_scope`, `access_denied`, etc.) the loop `break`s and falls through to an unconditional `SetSearchLastDate(today)` — even if it stopped on page 1 of 50. The next incremental sync requests `after: today-2d`, so every message on the unfetched pages older than `today-2d` will never be fetched again. Since search-sync is the DEFAULT path, including the first run, hitting a rate limit early in the initial 30–60-day window sync silently and irrecoverably loses weeks of history. Contrast: the `conversations.history` path deliberately does NOT advance `LastSyncedTS` until every page has been drained (message_sync.go:325-330); the search path has no equivalent guard. Context cancellation correctly returns before the watermark write — only the non-fatal break is affected.
 
 ```go
 if isNonFatalError(err) {
@@ -40,14 +40,14 @@ today := time.Now().Format("2006-01-02")
 if err := o.db.SetSearchLastDate(today); err != nil {
 ```
 
-- **Рекомендация:** Ввести флаг `completed` и продвигать `search_last_date` только при полном проходе всех страниц; при досрочном break — либо не трогать watermark вообще, либо ставить его на дату последнего фактически обработанного сообщения. Дополнительно пробрасывать факт частичной синхронизации наверх (лог + LastSyncResult), чтобы сбой не выглядел успехом.
+- **Recommendation:** Introduce a `completed` flag and only advance `search_last_date` after a full pass through all pages; on an early break, either leave the watermark alone entirely or set it to the date of the last message actually processed. Additionally, surface the partial-sync fact upward (log + LastSyncResult) so the failure doesn't look like a success.
 
-### Токен без scope search:read: после первого sync каждый инкрементальный цикл молча синхронизирует ноль сообщений, отчитываясь об успехе
+### Token without the search:read scope: after the first sync, every incremental cycle silently syncs zero messages while reporting success
 
-- **Где:** `internal/sync/orchestrator.go:167`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/sync/orchestrator.go:167`
+- **Verification status:** ✅ confirmed
 
-Когда `search.messages` возвращает `missing_scope` (non-fatal), `syncViaSearch` делает break на странице 1 и возвращает `nil` — поэтому явная fallback-ветка `if isNonFatalError(err) { ... return o.runFullSync }` (orchestrator.go:156-159) недостижима для ошибок Slack search: `syncViaSearch` их никогда не возвращает. Единственный оставшийся fallback — проверка `DiscoveryChannels==0`, которая переключается на full sync ТОЛЬКО при пустой БД (ноль каналов). Сценарий для токена без `search:read` (например, bot-токен): первый цикл демона → БД пустая → fallback на full sync заполняет каналы; каждый последующий цикл → search падает non-fatally → 0 сообщений → `stats.ChannelCount > 0` → fallback не срабатывает → `finishSync()` вызывает `TouchSyncedAt()`, и Desktop показывает свежий успешный sync. Данные навсегда протухают при нулевой видимости ошибки (daemon-фаза `phaseSlackSync` получает `err=nil`). Тест `TestRunSearchSyncFallsBackOnNonFatalError` покрывает только случай пустой БД и маскирует проблему. Вдобавок watermark всё равно продвигается до «сегодня» каждый цикл (search_sync.go:181).
+When `search.messages` returns `missing_scope` (non-fatal), `syncViaSearch` breaks on page 1 and returns `nil` — so the explicit fallback branch `if isNonFatalError(err) { ... return o.runFullSync }` (orchestrator.go:156-159) is unreachable for Slack search errors: `syncViaSearch` never returns them. The only remaining fallback is the `DiscoveryChannels==0` check, which switches to a full sync ONLY when the DB is empty (zero channels). Scenario for a token without `search:read` (e.g. a bot token): first daemon cycle → DB empty → falls back to full sync, which populates channels; every subsequent cycle → search fails non-fatally → 0 messages → `stats.ChannelCount > 0` → fallback doesn't fire → `finishSync()` calls `TouchSyncedAt()`, and Desktop shows a fresh, successful sync. Data goes permanently stale with zero error visibility (the daemon phase `phaseSlackSync` gets `err=nil`). The test `TestRunSearchSyncFallsBackOnNonFatalError` only covers the empty-DB case and masks the problem. On top of that, the watermark still advances to "today" every cycle regardless (search_sync.go:181).
 
 ```go
 snap := o.progress.Snapshot()
@@ -60,14 +60,14 @@ if snap.DiscoveryChannels == 0 {
 }
 ```
 
-- **Рекомендация:** `syncViaSearch` должен возвращать типизированную ошибку (или флаг) для Slack-level non-fatal сбоев search, чтобы ветка fallback в `runSearchSync` реально срабатывала и переключала на full sync независимо от наполненности БД. Добавить тест с предзаполненными каналами и `missing_scope`.
+- **Recommendation:** `syncViaSearch` should return a typed error (or flag) for Slack-level non-fatal search failures, so the fallback branch in `runSearchSync` actually fires and switches to a full sync regardless of whether the DB is already populated. Add a test with pre-populated channels and `missing_scope`.
 
-### Дедупликация inbox сливает несвязанные items разных trigger-типов, молча «резолвя» pending-упоминания и DM
+### Inbox deduplication merges unrelated items of different trigger types, silently "resolving" pending mentions and DMs
 
-- **Где:** `internal/db/inbox.go:328`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/inbox.go:328`
+- **Verification status:** ✅ confirmed
 
-`DeduplicateThreadInboxItems` (Phase 0 каждого inbox `Run` и `RunFastDetection`) группирует pending-items только по `(channel_id, thread_ts)` без учёта `trigger_type`. Все не-тредовые items имеют `thread_ts=''`. Watchtower-item типа `decision_made` хранит реальный Slack `channel_id` дайджеста с `thread_ts=''` (watchtower_detector.go:127), поэтому когда у пользователя есть pending не-тредовый `mention`/`dm` в канале C и позже для того же канала создаётся `decision_made`, следующий цикл дедупликации оставляет только `MAX(id)` (решение) и переводит pending-упоминание в `status='resolved', resolved_reason='Merged duplicate'` — actionable-упоминание исчезает из ленты без какого-либо действия пользователя. Два разных важных решения в одном канале так же сливаются в одно, а пара `calendar_invite` + `calendar_time_change` по одному событию схлопывается. Тестов на `DeduplicateThreadInboxItems` нет.
+`DeduplicateThreadInboxItems` (Phase 0 of every inbox `Run` and `RunFastDetection`) groups pending items only by `(channel_id, thread_ts)`, without regard to `trigger_type`. All non-threaded items have `thread_ts=''`. A `decision_made` watchtower item stores the digest's real Slack `channel_id` with `thread_ts=''` (watchtower_detector.go:127), so when a user has a pending non-threaded `mention`/`dm` in channel C and a `decision_made` item is later created for that same channel, the next dedup cycle keeps only `MAX(id)` (the decision) and flips the pending mention to `status='resolved', resolved_reason='Merged duplicate'` — the actionable mention disappears from the feed without any user action. Two different important decisions in the same channel get merged into one the same way, and a `calendar_invite` + `calendar_time_change` pair for one event collapses too. There are no tests for `DeduplicateThreadInboxItems`.
 
 ```sql
 UPDATE inbox_items SET status = 'resolved', resolved_reason = 'Merged duplicate'
@@ -76,14 +76,14 @@ UPDATE inbox_items SET status = 'resolved', resolved_reason = 'Merged duplicate'
   AND EXISTS (SELECT 1 FROM inbox_items i2 WHERE i2.channel_id = inbox_items.channel_id AND i2.thread_ts = inbox_items.thread_ts ...)
 ```
 
-- **Рекомендация:** Добавить `trigger_type` в GROUP BY/EXISTS (и, вероятно, исключить из дедупликации не-тредовые items с `thread_ts=''` вовсе — дедуплицировать только реальные треды). Покрыть тестом сценарий «mention + decision_made в одном канале».
+- **Recommendation:** Add `trigger_type` to the GROUP BY/EXISTS (and probably exclude non-threaded items with `thread_ts=''` from dedup entirely — dedup only real threads). Cover with a test for the "mention + decision_made in the same channel" scenario.
 
-### Day-plan рендерит календарные события в UTC, а валидация и «now» — локальные: таймблоки AI отбрасываются у всех не-UTC пользователей
+### Day-plan renders calendar events in UTC while validation and "now" are local: AI timeblocks get discarded for every non-UTC user
 
-- **Где:** `internal/dayplan/prompt.go:213`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/dayplan/prompt.go:213`
+- **Verification status:** ✅ confirmed
 
-`shortTime` форматирует начало/конец события через `t.UTC().Format("15:04")`, поэтому для пользователя UTC+3 (пользователь этого проекта) встреча 10:00–11:00 по локальному времени показывается AI как «07:00–08:00». При этом `NowLocal` и рабочие часы в промпте — локальные, а возвращённые AI времена парсятся через `time.ParseInLocation(..., time.Local)` (merge.go:57). AI избегает фантомного слота 07:00–08:00 и свободно ставит блок на 10:00 локального времени — который проверка пересечений в `aiToTimeblock` (merge.go:75, сравнение абсолютных времён с корректно-UTC-распарсенным событием) затем отбрасывает как «timeblock overlaps calendar event». Каждая встреча сдвинута в промпте на величину UTC-смещения, так что планы системно теряют блоки вокруг реальных встреч и ничего не планируют вокруг фантомных. Ср. `formatCalendarEvent` в briefing (briefing/pipeline.go:552), который корректно вызывает `.Local()`.
+`shortTime` formats an event's start/end via `t.UTC().Format("15:04")`, so for a UTC+3 user (this project's user) a 10:00–11:00 local meeting is shown to the AI as "07:00–08:00". Meanwhile `NowLocal` and working hours in the prompt are local, and the AI-returned times are parsed via `time.ParseInLocation(..., time.Local)` (merge.go:57). The AI avoids the phantom 07:00–08:00 slot and freely places a block at 10:00 local time — which the overlap check in `aiToTimeblock` (merge.go:75, comparing absolute times against the correctly-UTC-parsed event) then discards as "timeblock overlaps calendar event". Every meeting is shifted in the prompt by the UTC offset, so plans systematically lose blocks around real meetings and plan nothing around phantom ones. Cf. `formatCalendarEvent` in briefing (briefing/pipeline.go:552), which correctly calls `.Local()`.
 
 ```go
 func shortTime(iso string) string {
@@ -94,14 +94,14 @@ func shortTime(iso string) string {
 	}
 ```
 
-- **Рекомендация:** Заменить `t.UTC()` на `t.Local()` в `shortTime`, чтобы промпт, валидация и «now» жили в одной таймзоне (по образцу briefing). Добавить тест с не-UTC локацией, проверяющий, что блок в момент реальной встречи отбрасывается, а вне её — принимается.
+- **Recommendation:** Replace `t.UTC()` with `t.Local()` in `shortTime` so the prompt, validation, and "now" all live in the same timezone (following the briefing pattern). Add a test with a non-UTC location that checks a block at the time of a real meeting gets discarded, while one outside it gets accepted.
 
-### All-day события не исключаются из валидации пересечений day-plan — одно событие «на весь день» убивает все таймблоки AI
+### All-day events are not excluded from day-plan overlap validation — one all-day event kills every AI timeblock
 
-- **Где:** `internal/dayplan/merge.go:69`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/dayplan/merge.go:69`
+- **Verification status:** ✅ confirmed
 
-Календарный клиент хранит all-day события как StartTime=UTC-полночь дня, EndTime=UTC-полночь следующего дня с `IsAllDay=true` (calendar/client.go:271-286), и `GetCalendarEventsForDate` их возвращает. Ни цикл пересечений в `aiToTimeblock`, ни `DetectConflicts` (conflicts.go:41), ни `syncCalendarItems` (calendar_sync.go:42) не проверяют `ev.IsAllDay`. При любом all-day событии в календаре (день рождения, OOO, праздник — очень частый случай) `timesOverlap(start, end, 00:00Z, 24:00Z)` истинно для каждого таймблока в рабочих часах: `buildItems` отбрасывает ВСЕ AI-таймблоки («overlaps calendar event»), `DetectConflicts` помечает каждый оставшийся блок конфликтным, а `syncCalendarItems` вставляет all-day событие как фиктивный таймблок на 1440 минут. Контраст: `PrepareForNext` в meeting явно пропускает `ev.IsAllDay` (meeting/pipeline.go:115), а briefing помечает их «All day» — dayplan здесь выбивается из общего паттерна.
+The calendar client stores all-day events as StartTime=UTC midnight of the day, EndTime=UTC midnight of the next day with `IsAllDay=true` (calendar/client.go:271-286), and `GetCalendarEventsForDate` returns them. Neither the overlap loop in `aiToTimeblock`, nor `DetectConflicts` (conflicts.go:41), nor `syncCalendarItems` (calendar_sync.go:42) checks `ev.IsAllDay`. With any all-day event on the calendar (a birthday, OOO, holiday — a very common case), `timesOverlap(start, end, 00:00Z, 24:00Z)` is true for every timeblock within working hours: `buildItems` discards ALL AI timeblocks ("overlaps calendar event"), `DetectConflicts` flags every remaining block as conflicting, and `syncCalendarItems` inserts the all-day event as a fake 1440-minute timeblock. Contrast: `PrepareForNext` in meeting explicitly skips `ev.IsAllDay` (meeting/pipeline.go:115), and briefing labels them "All day" — dayplan is the outlier here.
 
 ```go
 for _, ev := range events {
@@ -114,14 +114,14 @@ for _, ev := range events {
 }  // no ev.IsAllDay check
 ```
 
-- **Рекомендация:** Во всех трёх местах (aiToTimeblock, DetectConflicts, syncCalendarItems) добавить `if ev.IsAllDay { continue }` — по образцу meeting/pipeline.go:115. Тест: один all-day + обычная встреча, проверить что блоки отбрасываются только из-за встречи.
+- **Recommendation:** Add `if ev.IsAllDay { continue }` in all three places (aiToTimeblock, DetectConflicts, syncCalendarItems) — following the pattern in meeting/pipeline.go:115. Test: one all-day event plus a regular meeting, verify blocks are discarded only because of the meeting.
 
-### Инкрементальный Jira-sync сравнивает UTC-watermark с JQL, интерпретируемым в таймзоне пользователя — обновления навсегда пропускаются для профилей западнее UTC
+### Incremental Jira sync compares a UTC watermark against JQL interpreted in the user's timezone — updates are permanently missed for profiles west of UTC
 
-- **Где:** `internal/jira/sync.go:107`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/jira/sync.go:107`
+- **Verification status:** ✅ confirmed
 
-`Sync()` хранит watermark в UTC (`time.Now().UTC().Format(RFC3339)`) и строит инкрементальный JQL как `updated >= "2006-01-02 15:04"` без таймзоны. Jira интерпретирует JQL-datetime без таймзоны в профильной таймзоне пользователя Jira, а не в UTC. Для профиля западнее UTC (например, UTC-5) «12:00» означает 17:00 UTC — эффективное окно начинается на часы ПОЗЖЕ реального watermark. Issue, обновлённый в 13:00 UTC, не попадает в текущий цикл, а поскольку watermark затем продвигается до «now», эффективное начало каждого следующего запроса ещё позже — обновление никогда не будет выкачано, пока issue не отредактируют снова. Для таймзон восточнее UTC окно лишь сдвигается раньше (безвредный re-fetch). Итог: молча устаревшие `jira_issues` для любого Jira-профиля западнее UTC; двухминутный overlap многочасовое смещение не покрывает.
+`Sync()` stores the watermark in UTC (`time.Now().UTC().Format(RFC3339)`) and builds the incremental JQL as `updated >= "2006-01-02 15:04"` with no timezone. Jira interprets a timezone-less JQL datetime in the Jira user's profile timezone, not UTC. For a profile west of UTC (e.g. UTC-5), "12:00" means 17:00 UTC — the effective window starts hours LATER than the real watermark. An issue updated at 13:00 UTC is missed by the current cycle, and since the watermark then advances to "now," the effective start of every subsequent query is even later — the update will never be fetched until the issue is edited again. For timezones east of UTC, the window merely shifts earlier (a harmless re-fetch). Net effect: `jira_issues` silently goes stale for any Jira profile west of UTC; the two-minute overlap does not cover a multi-hour offset.
 
 ```go
 t = t.Add(-2 * time.Minute)
@@ -129,14 +129,14 @@ jql = fmt.Sprintf("project = %s AND updated >= \"%s\" ORDER BY updated ASC",
     projectKey, t.Format("2006-01-02 15:04"))
 ```
 
-- **Рекомендация:** Узнать таймзону аккаунта через `/rest/api/3/myself` и конвертировать watermark в неё перед форматированием JQL (либо использовать относительный синтаксис `updated >= -Nm`, не зависящий от таймзоны). Добавить тест, пиняющий формат JQL.
+- **Recommendation:** Look up the account's timezone via `/rest/api/3/myself` and convert the watermark to it before formatting the JQL (or use the timezone-independent relative syntax `updated >= -Nm`). Add a test pinning the JQL format.
 
-### SyncBoard продвигает watermark проекта, синхронизировав только незакрытые issues — закрытые никогда не бэкфиллятся, вопреки собственной документации
+### SyncBoard advances the project watermark after syncing only unresolved issues — closed ones are never backfilled, contradicting its own documentation
 
-- **Где:** `internal/jira/sync.go:190`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/jira/sync.go:190`
+- **Verification status:** ✅ confirmed
 
-`SyncBoard` (вызывается `jira sync --board`, который Desktop запускает при выборе доски — JiraBoardSyncManager.swift:62) синхронизирует по JQL `statusCategory != Done`, после чего вызывает `UpdateJiraSyncState(projectKey, now, n)`. Doc-комментарий утверждает, что «Terminal/closed issues are picked up by the daemon's regular Sync() cycle», но регулярный `Sync()` инкрементален от этого watermark (`updated >= now-2min`), поэтому исторические Done-issues — обновлённые в прошлом — никогда не будут выкачаны. `InitialLoad()`, который сделал бы полный бэклог, не имеет ни одного вызова в репозитории. Каждая доска, подключённая через Desktop (основной путь онбординга), навсегда лишена истории закрытых issues — ломаются прогресс эпиков, release-дашборды и velocity-запросы, считающие done.
+`SyncBoard` (invoked by `jira sync --board`, which Desktop runs when a board is selected — JiraBoardSyncManager.swift:62) syncs via the JQL `statusCategory != Done`, then calls `UpdateJiraSyncState(projectKey, now, n)`. The doc comment claims "Terminal/closed issues are picked up by the daemon's regular Sync() cycle," but the regular `Sync()` is incremental from this watermark (`updated >= now-2min`), so historical Done issues — updated in the past — will never be fetched. `InitialLoad()`, which would perform a full backlog fetch, has zero callers anywhere in the repo. Every board connected via Desktop (the primary onboarding path) is permanently missing closed-issue history — breaking epic progress, release dashboards, and any velocity query counting done work.
 
 ```go
 jql := fmt.Sprintf("project = %s AND statusCategory != Done ORDER BY updated ASC", board.ProjectKey)
@@ -145,16 +145,16 @@ now := time.Now().UTC().Format(time.RFC3339)
 _ = s.db.UpdateJiraSyncState(board.ProjectKey, now, n)
 ```
 
-- **Рекомендация:** Либо не записывать watermark из `SyncBoard` (оставив первый полный `Sync()` демону — он при отсутствии state делает полный fetch), либо вызывать `InitialLoad()` при первом подключении доски. Как минимум исправить doc-комментарий и добавить тест «после SyncBoard демон подхватывает исторические Done».
+- **Recommendation:** Either don't write the watermark from `SyncBoard` at all (leaving the first full `Sync()` to the daemon — which does a full fetch when there's no state), or call `InitialLoad()` when a board is first connected. At minimum, fix the doc comment and add a test that "after SyncBoard, the daemon picks up historical Done issues."
 
 ## Medium
 
-### `targets --status done|dismissed` всегда возвращает пустой список: исключение done/dismissed AND-ится с фильтром статуса
+### `targets --status done|dismissed` always returns an empty list: the done/dismissed exclusion is AND'd with the status filter
 
-- **Где:** `cmd/targets.go:342`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/targets.go:342`
+- **Verification status:** ✅ confirmed
 
-Help флага `--status` явно перечисляет `done` и `dismissed` как валидные значения, но `runTargetsList` выставляет `IncludeDone` только из `--all`. В `db.GetTargets` при `IncludeDone=false` запрос получает одновременно `status NOT IN ('done','dismissed')` И `status = ?`, что для `--status done|dismissed` — противоречие: запрос не матчит ничего. Пользователь, запускающий `watchtower targets --status done`, всегда видит «No targets found.» независимо от данных, пока не догадается добавить `--all`. (Верификатор понизил серьёзность до medium: реальный, достижимый баг на задокументированном флаге, но без потери данных и с обходным путём.)
+The `--status` flag's help text explicitly lists `done` and `dismissed` as valid values, but `runTargetsList` only sets `IncludeDone` from `--all`. In `db.GetTargets`, when `IncludeDone=false` the query gets both `status NOT IN ('done','dismissed')` AND `status = ?`, which for `--status done|dismissed` is a contradiction: the query matches nothing. A user running `watchtower targets --status done` always sees "No targets found." regardless of the data, until they figure out they need to add `--all`. (The verifier downgraded severity to medium: a real, reachable bug on a documented flag, but with no data loss and a workaround.)
 
 ```go
 f := db.TargetFilter{
@@ -166,14 +166,14 @@ f := db.TargetFilter{
 // if f.Status != "" { conditions = append(conditions, "status = ?") }
 ```
 
-- **Рекомендация:** В `runTargetsList` ставить `IncludeDone=true`, когда `--status` явно равен `done` или `dismissed` (или в `GetTargets` пропускать exclusion при заданном `f.Status`). Добавить тест на `--status done`.
+- **Recommendation:** In `runTargetsList`, set `IncludeDone=true` whenever `--status` is explicitly `done` or `dismissed` (or, in `GetTargets`, skip the exclusion when `f.Status` is set). Add a test for `--status done`.
 
-### UnsnoozeExpiredInboxItems сравнивает date-only строку с полным ISO-datetime из Desktop — короткие snooze длятся до следующего UTC-дня
+### UnsnoozeExpiredInboxItems compares a date-only string against the full ISO datetime written by Desktop — short snoozes last until the next UTC day
 
-- **Где:** `internal/db/inbox.go:246`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/inbox.go:246`
+- **Verification status:** ✅ confirmed
 
-Демонский unsnooze использует `today := time.Now().UTC().Format("2006-01-02")` и `WHERE ... snooze_until <= ?`. Но macOS-приложение пишет `snooze_until` полным ISO-8601 datetime: `.oneHour → iso8601String(now+1h)`, например `"2026-07-05T14:23:11Z"` (InboxFeedView.swift:295 через InboxQueries.snooze). Лексикографически `"2026-07-05T14:23:11Z" > "2026-07-05"` весь день, поэтому item, заснуженный на 1 час в Desktop UI, остаётся скрытым до первого запуска демона на СЛЕДУЮЩИЙ UTC-день. Swift-стороннего unsnooze нет — этот Go-запрос единственный механизм. Соседний `UnsnoozeExpiredTargets` (targets.go:338) корректно использует минутное разрешение `2006-01-02T15:04` — inbox здесь выбивается.
+The daemon's unsnooze uses `today := time.Now().UTC().Format("2006-01-02")` and `WHERE ... snooze_until <= ?`. But the macOS app writes `snooze_until` as a full ISO-8601 datetime: `.oneHour → iso8601String(now+1h)`, e.g. `"2026-07-05T14:23:11Z"` (InboxFeedView.swift:295 via InboxQueries.snooze). Lexicographically, `"2026-07-05T14:23:11Z" > "2026-07-05"` all day long, so an item snoozed for 1 hour in the Desktop UI stays hidden until the daemon's first run on the NEXT UTC day. There's no Swift-side unsnooze — this Go query is the only mechanism. The neighboring `UnsnoozeExpiredTargets` (targets.go:338) correctly uses minute resolution `2006-01-02T15:04` — inbox is the outlier here.
 
 ```go
 today := time.Now().UTC().Format("2006-01-02")
@@ -181,28 +181,28 @@ today := time.Now().UTC().Format("2006-01-02")
 // Desktop writes: until = iso8601String(cal.date(byAdding: .hour, value: 1, to: now) ?? now)
 ```
 
-- **Рекомендация:** Сравнивать с полным timestamp (`time.Now().UTC().Format(time.RFC3339)` или хотя бы минутным `2006-01-02T15:04`, как в targets) — date-only значения `<=`-сравнение с полным timestamp по-прежнему проходят корректно.
+- **Recommendation:** Compare against the full timestamp (`time.Now().UTC().Format(time.RFC3339)` or at least minute resolution `2006-01-02T15:04`, as in targets) — date-only values still compare correctly with `<=` against a full timestamp.
 
-### Прогон tracks со 100% упавших AI-батчей всё равно отчитывается успехом, продвигая инкрементальный watermark и навсегда пропуская те дайджесты
+### A tracks run with 100% failed AI batches still reports success, advancing the incremental watermark and permanently skipping those digests
 
-- **Где:** `internal/tracks/pipeline.go:314`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/tracks/pipeline.go:314`
+- **Verification status:** ✅ confirmed
 
-`runTrackBatches` только логирует пер-батчевые AI-ошибки (line 576), а `RunForWindow` всегда возвращает nil error. Если упали ВСЕ батчи (например, временный сбой claude CLI / rate limit после того, как digest-фаза съела квоту), `tracks.Run` возвращает `(0, 0, nil)`, демон записывает прогон со status='done' (daemon.go:287), а `GetLatestPipelineRunStartedAt/PeriodTo` (фильтруют по status='done') продвигают watermark tracks. Следующий инкрементальный прогон берёт только дайджесты, созданные после started_at провального прогона, — все digest-topics из провального окна никогда не сканируются на треки: тихий, постоянный пробел экстракции. Контраст: digest-пайплайн намеренно возвращает ошибку при `gen==0 && errs>0` (digest/pipeline.go:781-783) ровно чтобы этого избежать.
+`runTrackBatches` only logs per-batch AI errors (line 576), and `RunForWindow` always returns a nil error. If ALL batches fail (e.g. a transient claude CLI outage / rate limit after the digest phase already ate the quota), `tracks.Run` returns `(0, 0, nil)`, the daemon records the run with status='done' (daemon.go:287), and `GetLatestPipelineRunStartedAt/PeriodTo` (which filter on status='done') advance the tracks watermark. The next incremental run only picks up digests created after the failed run's started_at — every digest topic from the failed window is never scanned for tracks again: a silent, permanent extraction gap. Contrast: the digest pipeline deliberately returns an error when `gen==0 && errs>0` (digest/pipeline.go:781-783) precisely to avoid this.
 
 ```go
 return totalStored, nil //nolint:nilerr // partial results returned; per-batch errors logged above
 // runTrackBatches: p.logger.Printf("tracks: error in batch %d/%d: %v", …) — error never propagated
 ```
 
-- **Рекомендация:** Повторить guard digest-пайплайна: если сохранено 0 треков и были ошибки батчей — возвращать ошибку из `RunForWindow`, чтобы daemon записал прогон failed и watermark не продвинулся.
+- **Recommendation:** Mirror the digest pipeline's guard: if 0 tracks were stored and there were batch errors, return an error from `RunForWindow` so the daemon records the run as failed and the watermark doesn't advance.
 
-### Codex-генератор читает source пайплайна из чужого context-ключа — маршрутизация ModelForSource мертва
+### The codex generator reads the pipeline source from the wrong context key — ModelForSource routing is dead
 
-- **Где:** `internal/codex/generator.go:38`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/codex/generator.go:38`
+- **Verification status:** ✅ confirmed
 
-Все пайплайны помечают AI-вызовы через `digest.WithSource(ctx, source)`, который кладёт метку под неэкспортируемым типом `digest.sessionSourceKey{}` (digest/pooled.go:69-74). `CodexGenerator.Generate` объявляет СВОЙ `type sessionSourceKey struct{}` в пакете codex и делает `ctx.Value(sessionSourceKey{})` с ним. Context-ключи сравниваются по идентичности динамического типа; `codex.sessionSourceKey` и `digest.sessionSourceKey` — разные типы, поэтому lookup ВСЕГДА возвращает nil. Следствие: для каждого пользователя codex-провайдера `ModelForSource` никогда не вызывается — лёгкие sources (`digest.SourceLight`, "inbox.prioritize", "digest.channel_batch", "people.batch" и т.д.) не маршрутизируются на gpt-5.4-mini, все пайплайновые вызовы идут на модель по умолчанию, вопреки контракту в pooled.go и документации проекта. models_test.go тестирует `ModelForSource` только как чистую функцию, так что сломанная обвязка не покрыта.
+All pipelines tag AI calls via `digest.WithSource(ctx, source)`, which stores the label under the unexported type `digest.sessionSourceKey{}` (digest/pooled.go:69-74). `CodexGenerator.Generate` declares its OWN `type sessionSourceKey struct{}` in the codex package and does `ctx.Value(sessionSourceKey{})` with it. Context keys are compared by dynamic-type identity; `codex.sessionSourceKey` and `digest.sessionSourceKey` are different types, so the lookup ALWAYS returns nil. Consequence: for every codex-provider user, `ModelForSource` is never invoked — light sources (`digest.SourceLight`, "inbox.prioritize", "digest.channel_batch", "people.batch", etc.) are never routed to gpt-5.4-mini; every pipeline call goes to the default model, contrary to the contract in pooled.go and the project docs. models_test.go only tests `ModelForSource` as a pure function, so the broken wiring isn't covered.
 
 ```go
 // codex/generator.go:20,38
@@ -218,14 +218,14 @@ func WithSource(ctx context.Context, source string) context.Context {
 }
 ```
 
-- **Рекомендация:** Экспортировать из пакета digest функцию `SourceFromContext(ctx) (string, bool)` и использовать её в codex-генераторе (удалив локальный тип-двойник). Добавить интеграционный тест: `digest.WithSource` → `CodexGenerator` выбирает mini-модель.
+- **Recommendation:** Export a `SourceFromContext(ctx) (string, bool)` function from the digest package and use it in the codex generator (removing the local duplicate type). Add an integration test: `digest.WithSource` → `CodexGenerator` selects the mini model.
 
-### Store.Seed молча перезаписывает кастомизированные пользователем промпты при повышении версии встроенного дефолта
+### Store.Seed silently overwrites user-customized prompts when the built-in default's version is bumped
 
-- **Где:** `internal/prompts/store.go:90`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/prompts/store.go:90`
+- **Verification status:** ✅ confirmed
 
-Ветка авто-апгрейда в комментарии обещает обновлять только «if ... the user hasn't customized the template», но код не проверяет ничего, кроме `existing.Version < defaultVer` — сравнения шаблонов нет. `db.UpdatePrompt` инкрементирует версию на +1 от текущей. Сценарий: промпт засеян с DefaultVersions=3; пользователь кастомизирует его через `prompts tune`/Update → v4; релиз повышает DefaultVersions до 5 (реальные значения в defaults.go доходят до 5, напр. BriefingDaily); при следующем Seed (каждый старт) 4 < 5 — тюненный шаблон молча заменяется встроенным дефолтом. Guard-тест `TestSeedIdempotentWithExisting` покрывает только случай, когда кастомная версия уже выше дефолтной, так что деструктивный путь не протестирован. Старый текст выживает только в `prompt_history` (восстановим через Rollback), но потеря происходит молча.
+The auto-upgrade branch's comment promises to update only "if ... the user hasn't customized the template," but the code checks nothing beyond `existing.Version < defaultVer` — there's no template comparison. `db.UpdatePrompt` increments the version by +1 from the current one. Scenario: a prompt is seeded with DefaultVersions=3; the user customizes it via `prompts tune`/Update → v4; a release bumps DefaultVersions to 5 (actual values in defaults.go go up to 5, e.g. BriefingDaily); on the next Seed (every startup) 4 < 5 — the tuned template is silently replaced by the built-in default. The guard test `TestSeedIdempotentWithExisting` only covers the case where the custom version is already higher than the default, so the destructive path is untested. The old text survives only in `prompt_history` (recoverable via Rollback), but the loss happens silently.
 
 ```go
 // Auto-upgrade: if the default version is higher and the user hasn't
@@ -239,14 +239,14 @@ if existing.Version < defaultVer {
     }); err != nil { ...
 ```
 
-- **Рекомендация:** Реализовать то, что обещает комментарий: апгрейдить только если текущий шаблон в БД совпадает с каким-либо прошлым дефолтом (хранить/сравнивать хэши дефолтов) либо ввести флаг `customized`, выставляемый в UpdatePrompt/Tune. Добавить тест «tuned prompt + bumped default → не перезаписан».
+- **Recommendation:** Implement what the comment promises: upgrade only if the DB's current template matches some past default (store/compare default hashes), or introduce a `customized` flag set by UpdatePrompt/Tune. Add a test for "tuned prompt + bumped default → not overwritten."
 
-### Архивированные stale-items inbox остаются status='pending' и протекают в GetInboxItems, GetInboxCounts и daily briefing
+### Archived stale inbox items stay status='pending' and leak into GetInboxItems, GetInboxCounts, and the daily briefing
 
-- **Где:** `internal/db/inbox.go:700`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/inbox.go:700`
+- **Verification status:** ✅ confirmed
 
-`ArchiveStaleActionable` выставляет `archived_at/archive_reason='stale'`, намеренно оставляя `status='pending'`. Однако `GetInboxItems` (CLI-список `watchtower inbox`), `GetInboxCounts` (pending/unread счётчики) и `GetInboxItemsForBriefing` (`WHERE status = 'pending' ... LIMIT 20`, инжектится в промпт daily briefing) фильтруют только по status и никогда не исключают `archived_at IS NOT NULL`. В итоге items, заархивированные пайплайном как stale, продолжают показываться в CLI, вечно раздувают pending-счётчик и бессрочно занимают 20-элементный бюджет inbox в briefing — вопреки жизненному циклу архива (actionable stale после 14 дней должен исчезать). Новые feed-запросы (`ListActionableOpen`, `ListInboxFeed`, `ListInboxPinned`, `GetUnreadInboxItems`) все корректно добавляют `archived_at IS NULL` — эти три запроса пропустили паттерн.
+`ArchiveStaleActionable` sets `archived_at/archive_reason='stale'` while deliberately leaving `status='pending'`. However `GetInboxItems` (the `watchtower inbox` CLI list), `GetInboxCounts` (pending/unread counters), and `GetInboxItemsForBriefing` (`WHERE status = 'pending' ... LIMIT 20`, injected into the daily briefing prompt) all filter only by status and never exclude `archived_at IS NOT NULL`. As a result, items archived by the pipeline as stale keep showing in the CLI, permanently inflate the pending count, and indefinitely occupy the 20-item inbox budget in the briefing — contrary to the archive lifecycle (actionable items should disappear once stale after 14 days). The newer feed queries (`ListActionableOpen`, `ListInboxFeed`, `ListInboxPinned`, `GetUnreadInboxItems`) all correctly add `archived_at IS NULL` — these three queries missed the pattern.
 
 ```sql
 -- ArchiveStaleActionable:
@@ -255,14 +255,14 @@ UPDATE inbox_items SET archived_at=?, archive_reason='stale' ... WHERE ... statu
 FROM inbox_items WHERE status = 'pending' ORDER BY ... LIMIT 20  -- no archived_at filter
 ```
 
-- **Рекомендация:** Добавить `AND archived_at IS NULL` в три отстающих запроса (GetInboxItems, GetInboxCounts, GetInboxItemsForBriefing) и покрыть тестом «archived-stale не попадает в briefing/counts».
+- **Recommendation:** Add `AND archived_at IS NULL` to the three lagging queries (GetInboxItems, GetInboxCounts, GetInboxItemsForBriefing) and cover with a test for "archived-stale doesn't appear in briefing/counts."
 
-### Дедупликация топиков уровня 2 (слой TRACKS-01) структурно мертва: пайплайн хранит source_refs как {ts,...}, а дедуп ждёт {digest_id, topic_id}
+### Level-2 topic dedup (the TRACKS-01 layer) is structurally dead: the pipeline stores source_refs as {ts,...}, but dedup expects {digest_id, topic_id}
 
-- **Где:** `internal/tracks/pipeline.go:475`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/tracks/pipeline.go:475`
+- **Verification status:** ✅ confirmed
 
-`buildRelevanceSignals` парсит source_refs трека, ожидая `{"digest_id":N,"topic_id":N}`, и помечает топик обработанным только при обоих > 0. Но extract-промпт велит AI выдавать source_refs как `{ts, channel_id, thread_ts, author, text}` (prompts/defaults.go:826,856), а `filterValidSourceRefs` (line 1703) ре-маршалит через структуру только с этими полями, отбрасывая любые digest_id/topic_id. Значит у каждого трека, созданного этим пайплайном, refs имеют ts-форму, `processedTopics` всегда пуст, ветка «tracks: deduped %d topics already linked» никогда не срабатывает, а задокументированный в docs/inventory/tracks.md слой TRACKS-01 («topics already linked to a track are stripped from the prompt») не включается никогда. В overlap-режиме уже привязанные топики повторно скармливаются AI каждый прогон — трата токенов и опора только на fingerprint/Jaccard-дедуп, чьи merge флипают has_updates и всплывают уже прочитанные треки. Guard-тест `TestTopicDedupBySourceRefs` проходит лишь потому, что вручную сеет legacy-форму `{digest_id,topic_id}` (pipeline_test.go:1025), которую продакшен никогда не пишет.
+`buildRelevanceSignals` parses a track's source_refs expecting `{"digest_id":N,"topic_id":N}`, and only marks a topic as processed when both are > 0. But the extract prompt instructs the AI to emit source_refs as `{ts, channel_id, thread_ts, author, text}` (prompts/defaults.go:826,856), and `filterValidSourceRefs` (line 1703) re-marshals through a struct with only those fields, dropping any digest_id/topic_id. So every track this pipeline creates has ts-shaped refs, `processedTopics` is always empty, the "tracks: deduped %d topics already linked" branch never fires, and the TRACKS-01 layer documented in docs/inventory/tracks.md ("topics already linked to a track are stripped from the prompt") never engages. In overlap mode, already-linked topics get fed back to the AI every single run — wasted tokens, relying solely on fingerprint/Jaccard dedup, whose merges flip has_updates and resurface already-read tracks. The guard test `TestTopicDedupBySourceRefs` passes only because it manually seeds the legacy `{digest_id,topic_id}` shape (pipeline_test.go:1025), which production never writes.
 
 ```go
 var refs []struct {
@@ -273,14 +273,14 @@ var refs []struct {
 if ref.DigestID > 0 && ref.TopicID > 0 {  // never true: filterValidSourceRefs only preserves {ts, channel_id, thread_ts, author, text}
 ```
 
-- **Рекомендация:** Согласовать форму source_refs между слоями: либо дописывать digest_id/topic_id в refs при сохранении трека (расширив filterValidSourceRefs), либо переписать дедуп уровня 2 на (channel_id, ts)-ключи, реально присутствующие в данных. Пересобрать guard-тест на данные, которые генерит сам пайплайн.
+- **Recommendation:** Align the source_refs shape between layers: either write digest_id/topic_id into refs when the track is saved (extending filterValidSourceRefs), or rewrite level-2 dedup to use (channel_id, ts) keys, which are actually present in the data. Rebuild the guard test on data the pipeline itself produces.
 
-### Пер-канальные сбои digest и «deferred»-каналы из budget-cap навсегда теряют своё окно сообщений из-за глобального watermark
+### Per-channel digest failures and "deferred" channels from the budget cap permanently lose their message window due to a global watermark
 
-- **Где:** `internal/digest/pipeline.go:1575`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/digest/pipeline.go:1575`
+- **Verification status:** ✅ confirmed
 
-`lastDigestTime()` берёт `period_to` единственного самого свежего channel-дайджеста по ВСЕМ каналам как глобальный `sinceUnix` следующего прогона. Когда AI-вызов одного канала падает (dispatchChannelBatches терпит частичные сбои, lines 779-784) или батч канала выброшен бюджетным капом maxBatches (line 715 логирует «channels deferred», намекая на позднейшую обработку), успешные каналы всё равно сохраняют дайджесты с `period_to ≈ now`, так что окно следующего прогона стартует ПОСЛЕ непереваренных сообщений упавшего/отложенного канала. Эти сообщения никогда не переизбираются (`GetMessagesByTimeRange` использует новый глобальный since) — постоянные пер-канальные пробелы дайджестов; слово «deferred» в логе фактически ложно: никто их не ре-квьюит.
+`lastDigestTime()` takes the `period_to` of the single most recent channel digest across ALL channels as the global `sinceUnix` for the next run. When one channel's AI call fails (dispatchChannelBatches suffers partial failures, lines 779-784) or a channel's batch gets dropped by the budget cap maxBatches (line 715 logs "channels deferred," implying later processing), the successful channels still save digests with `period_to ≈ now`, so the next run's window starts AFTER the failed/deferred channel's undigested messages. Those messages are never re-selected (`GetMessagesByTimeRange` uses the new global since) — permanent per-channel digest gaps; the word "deferred" in the log is effectively a lie: nothing ever re-reviews them.
 
 ```go
 digests, err := p.db.GetDigests(db.DigestFilter{Type: "channel", Limit: 1})
@@ -288,28 +288,28 @@ if err == nil && len(digests) > 0 { … return digests[0].PeriodTo }
 // global watermark; cf. line 715: "budget cap: keeping %d of %d batches (%d channels deferred)"
 ```
 
-- **Рекомендация:** Перейти на пер-канальный watermark (`period_to` последнего дайджеста ИМЕННО этого канала) при выборе окна сообщений — глобальный оставить только как нижнюю границу для discovery. Тогда упавшие/отложенные каналы автоматически догоняют на следующем прогоне.
+- **Recommendation:** Switch to a per-channel watermark (the `period_to` of that specific channel's last digest) when selecting the message window — keep the global one only as a lower bound for discovery. Then failed/deferred channels automatically catch up on the next run.
 
-### Channel-дайджесты, пересекающие полночь UTC, исключаются из всех daily rollups
+### Channel digests that cross UTC midnight are excluded from all daily rollups
 
-- **Где:** `internal/digest/pipeline.go:980`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/digest/pipeline.go:980`
+- **Verification status:** ✅ confirmed
 
-`runDailyRollupForDate` выбирает channel-дайджесты фильтром `{FromUnix: dayStart, ToUnix: dayEnd}`, который `GetDigests` транслирует в `period_from >= dayStart AND period_to <= dayEnd` (db/digests.go:104,108) — то есть только дайджесты, ПОЛНОСТЬЮ лежащие внутри дня. Дайджест, чьё окно пересекает полночь UTC (нормальный случай после ночного сна ноутбука: последний дайджест вчера 23:00 UTC, следующий цикл демона утром создаёт один дайджест «вчера-вечер → сегодня-утро»), не проходит `period_from >= dayStart` сегодняшнего rollup, а вчерашний rollup был сгенерирован до появления дайджеста (и всё равно не прошёл бы `period_to <= dayEnd`). Этот контент не попадает ни в один daily rollup — а значит и в weekly/briefing-агрегацию.
+`runDailyRollupForDate` selects channel digests with the filter `{FromUnix: dayStart, ToUnix: dayEnd}`, which `GetDigests` translates into `period_from >= dayStart AND period_to <= dayEnd` (db/digests.go:104,108) — i.e. only digests that lie ENTIRELY inside the day. A digest whose window crosses UTC midnight (a normal case after a laptop sleeps overnight: yesterday's last digest at 23:00 UTC, the daemon's next cycle this morning creates one digest spanning "yesterday evening → this morning") fails today's rollup's `period_from >= dayStart`, while yesterday's rollup was already generated before that digest existed (and wouldn't have passed `period_to <= dayEnd` anyway). This content never makes it into any daily rollup — and thus never into weekly/briefing aggregation either.
 
 ```go
 channelDigests, err := p.db.GetDigests(db.DigestFilter{Type: "channel", FromUnix: fromUnix, ToUnix: toUnix})
 // GetDigests: "period_from >= ?" AND "period_to <= ?"
 ```
 
-- **Рекомендация:** Использовать критерий пересечения окон вместо строгого вложения: `period_to > dayStart AND period_from < dayEnd` (с защитой от двойного учёта, например, приписывая дайджест дню, в который попадает `period_to`). Либо резать окна channel-дайджестов по полуночи при генерации.
+- **Recommendation:** Use a window-overlap criterion instead of strict containment: `period_to > dayStart AND period_from < dayEnd` (with protection against double-counting, e.g. attributing the digest to the day its `period_to` falls in). Alternatively, cut channel-digest windows at midnight during generation.
 
-### Сигнал @mention в scoreChannel никогда не матчит key_messages (там только «голые» timestamps) — каналы «только с упоминаниями» пропускаются
+### The @mention signal in scoreChannel never matches key_messages (which only contains "bare" timestamps) — mention-only channels get skipped
 
-- **Где:** `internal/tracks/pipeline.go:1438`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/tracks/pipeline.go:1438`
+- **Verification status:** ✅ confirmed
 
-`scoreChannel` проверяет `strings.Contains(t.KeyMessages, "<@"+userID+">")`. Но digest-`storeDigest` сохраняет `digest_topics.key_messages` через `filterValidTimestamps` (digest/pipeline.go:1336,1893), оставляющий только строки вида `^\d{10}\.\d{6}$` — key_messages физически не может содержать `<@U…>`. Situations — проза с plain user_id («U123456»), не `<@…>`-синтаксис. Задокументированный сигнал релевантности «+2: user @mentioned in key_messages or situations» (docs/inventory/tracks.md, TRACKS-02) фактически мёртв. Канал, где пользователя прямо @упомянули, но без существующих треков, звезды, репортов/пиров и action_items, набирает 0 и пропускается до всякого AI-вызова — треки для прямых упоминаний молча не создаются. Тест TestScoreChannel проходит только потому, что вручную скармливает нефильтрованный KeyMessages, который продакшен хранить не может.
+`scoreChannel` checks `strings.Contains(t.KeyMessages, "<@"+userID+">")`. But digest's `storeDigest` saves `digest_topics.key_messages` through `filterValidTimestamps` (digest/pipeline.go:1336,1893), which keeps only strings matching `^\d{10}\.\d{6}$` — key_messages physically cannot contain `<@U…>`. Situations are prose with plain user IDs ("U123456"), not `<@…>` syntax. The documented relevance signal "+2: user @mentioned in key_messages or situations" (docs/inventory/tracks.md, TRACKS-02) is effectively dead. A channel where the user was directly @mentioned, but with no existing tracks, stars, reports/peers, or action_items, scores 0 and gets skipped before any AI call is made — tracks for direct mentions are silently never created. TestScoreChannel passes only because it manually feeds unfiltered KeyMessages, which production can never store.
 
 ```go
 mentionTag := "<@" + userID + ">"
@@ -318,14 +318,14 @@ for _, t := range topics {
 		// KeyMessages == JSON array of "1234567890.123456" only
 ```
 
-- **Рекомендация:** Считать сигнал упоминания из реальных данных: искать `"user_id":"<userID>"` в Situations (JSON участников) либо джойнить сообщения по key_messages-timestamps и искать `<@userID>` в их тексте. Обновить guard-тест на production-форму данных.
+- **Recommendation:** Derive the mention signal from real data: search for `"user_id":"<userID>"` in Situations (the participants JSON), or join messages by key_messages timestamps and search their text for `<@userID>`. Update the guard test to production-shaped data.
 
-### Детекция calendar_time_change — мёртвый код: synced_at обновляется каждым sync, поэтому updatedAt > syncedAt никогда не истинно
+### calendar_time_change detection is dead code: synced_at gets updated on every sync, so updatedAt > syncedAt is never true
 
-- **Где:** `internal/inbox/calendar_detector.go:95`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/inbox/calendar_detector.go:95`
+- **Verification status:** ✅ confirmed
 
-Ветка `calendar_time_change` детектора срабатывает при `e.updatedAt > e.syncedAt` («Event was modified after it was first synced»). Но `UpsertCalendarEvent(s)` использует `INSERT OR REPLACE` и выставляет `synced_at = strftime('now')` при КАЖДОМ sync (db/calendar.go:85-90,109-113): synced_at — всегда время последнего sync, которое всегда не раньше гуглового updated_at, записанного тем же sync'ом. Сравнение практически никогда не истинно (кроме clock skew), поэтому перенесённые встречи, которые пользователь уже принял, никогда не порождают inbox-item `calendar_time_change` — trigger-тип существует в схеме, классификаторе ('actionable') и auto-resolve, но недостижим в продакшене. Единственный тест этой ветки сеет строки raw-INSERT'ом в обход upsert, создавая состояние, невозможное в продакшене.
+The detector's `calendar_time_change` branch fires when `e.updatedAt > e.syncedAt` ("Event was modified after it was first synced"). But `UpsertCalendarEvent(s)` uses `INSERT OR REPLACE` and sets `synced_at = strftime('now')` on EVERY sync (db/calendar.go:85-90,109-113): synced_at is always the time of the last sync, which is always no earlier than Google's updated_at recorded during that same sync. The comparison is practically never true (barring clock skew), so a rescheduled meeting the user already accepted never produces a `calendar_time_change` inbox item — the trigger type exists in the schema, the classifier ('actionable'), and auto-resolve, but is unreachable in production. The only test for this branch seeds rows via a raw INSERT that bypasses the upsert, creating a state that's impossible in production.
 
 ```go
 case e.updatedAt > e.syncedAt:
@@ -334,14 +334,14 @@ case e.updatedAt > e.syncedAt:
 // but upsert: INSERT OR REPLACE ... VALUES (..., strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?) — synced_at reset every sync
 ```
 
-- **Рекомендация:** Хранить в таблице предыдущий updated_at (например, `first_synced_at` или `prev_updated_at`, сохраняемый в ON CONFLICT-апдейте) и детектировать изменение сравнением нового updated_at с сохранённым, а не с моментом sync. Переписать тест через реальный upsert-путь.
+- **Recommendation:** Store the previous updated_at in the table (e.g. `first_synced_at` or `prev_updated_at`, preserved in the ON CONFLICT update) and detect a change by comparing the new updated_at against the stored one, not against the sync's own timestamp. Rewrite the test to go through the real upsert path.
 
-### Новое Slack-сообщение может перезаписать несвязанный pending-item другого trigger-типа через FindPendingInboxByThread
+### A new Slack message can overwrite an unrelated pending item of a different trigger type via FindPendingInboxByThread
 
-- **Где:** `internal/inbox/pipeline.go:508`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/inbox/pipeline.go:508`
+- **Verification status:** ✅ confirmed
 
-`detectSlackTriggers` ищет существующий pending-item только по `(channel_id, thread_ts)` — `FindPendingInboxByThread` (db/inbox.go:81) не фильтрует по trigger_type или Slack-происхождению. Pending `decision_made` разделяет `(channel_id=C, thread_ts='')` с любым не-тредовым Slack-кандидатом в канале C. Когда в C приходит новое top-level упоминание/DM, код идёт по update-пути: `UpdateInboxItemSnippet` заменяет у decision-item message_ts, sender_user_id, snippet, raw_text и permalink контентом упоминания, при этом строка сохраняет trigger_type='decision_made' и item_class='ambient'. Actionable-упоминание никогда не получает собственный item (created не инкрементируется, а NOT EXISTS-дедуп теперь матчит перезаписанный message_ts) — @mention молча деградирует в неверно помеченную ambient decision-карточку.
+`detectSlackTriggers` looks up an existing pending item only by `(channel_id, thread_ts)` — `FindPendingInboxByThread` (db/inbox.go:81) doesn't filter by trigger_type or Slack origin. A pending `decision_made` item shares `(channel_id=C, thread_ts='')` with any non-threaded Slack candidate in channel C. When a new top-level mention/DM arrives in C, the code takes the update path: `UpdateInboxItemSnippet` overwrites the decision item's message_ts, sender_user_id, snippet, raw_text, and permalink with the mention's content, while the row keeps trigger_type='decision_made' and item_class='ambient'. The actionable mention never gets its own item (created isn't incremented, and the NOT EXISTS dedup now matches the overwritten message_ts) — the @mention silently degrades into a mislabeled ambient decision card.
 
 ```go
 existingID, _ := p.db.FindPendingInboxByThread(c.ChannelID, c.ThreadTS)
@@ -350,14 +350,14 @@ if existingID > 0 {
 // query: WHERE channel_id = ? AND thread_ts = ? AND status = 'pending' — no trigger_type filter
 ```
 
-- **Рекомендация:** Добавить фильтр по trigger_type (или хотя бы по Slack-типам mention/dm/thread_reply) в `FindPendingInboxByThread`, и не применять этот lookup к не-тредовым кандидатам (`thread_ts=''`). Та же корневая причина, что и в баге дедупликации выше, — исправлять согласованно.
+- **Recommendation:** Add a trigger_type filter (or at least Slack types mention/dm/thread_reply) to `FindPendingInboxByThread`, and don't apply this lookup to non-threaded candidates (`thread_ts=''`). Same root cause as the dedup bug above — fix consistently.
 
-### DetectJira лексикографически сравнивает сырые Jira-timestamps (offset-формат) с UTC-'Z' watermark — items могут теряться навсегда
+### DetectJira lexicographically compares raw Jira timestamps (offset format) against a UTC-'Z' watermark — items can be lost permanently
 
-- **Где:** `internal/inbox/jira_detector.go:44`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/inbox/jira_detector.go:44`
+- **Verification status:** ✅ confirmed
 
-`jira_issues.updated_at` хранит `f.Updated` дословно из Jira API (jira/sync.go:536) — ISO8601 с миллисекундами и числовым офсетом, например `2026-07-05T16:00:00.000-0400` (layout `-0700` в briefing/jira.go подтверждает формат). Детектор фильтрует строковым сравнением `updated_at > ?` против sinceISO в формате RFC3339 UTC (`2026-07-05T19:00:00Z`). Лексикографическое сравнение offset-строк с UTC-строками не хронологично: для Jira-инстанса с отрицательным офсетом issue, обновлённый в 20:00Z, хранится как `...T16:00:00.000-0400` и сортируется НИЖЕ watermark `...T19:00:00Z` — свежепорученный issue пропускается, и поскольку inbox-watermark только растёт, он не будет подхвачен никогда. `autoResolveJira` имеет то же смешанно-форматное сравнение (pipeline.go:895-897): auto-resolve срабатывает рано или никогда в зависимости от знака офсета.
+`jira_issues.updated_at` stores `f.Updated` verbatim from the Jira API (jira/sync.go:536) — ISO8601 with milliseconds and a numeric offset, e.g. `2026-07-05T16:00:00.000-0400` (the `-0700` layout in briefing/jira.go confirms the format). The detector filters via a string comparison `updated_at > ?` against a sinceISO formatted as UTC RFC3339 (`2026-07-05T19:00:00Z`). A lexicographic comparison of offset strings against UTC strings isn't chronological: for a Jira instance with a negative offset, an issue updated at 20:00Z is stored as `...T16:00:00.000-0400` and sorts BELOW the watermark `...T19:00:00Z` — a freshly-updated issue gets skipped, and since the inbox watermark only moves forward, it will never be picked up. `autoResolveJira` has the same mixed-format comparison (pipeline.go:895-897): auto-resolve fires either early or never depending on the offset's sign.
 
 ```go
 sinceISO := sinceTS.UTC().Format(time.RFC3339)
@@ -366,14 +366,14 @@ rows, err := database.Query(`SELECT key, summary, updated_at FROM jira_issues
 // sync stores: UpdatedAt: f.Updated (raw Jira '...+0300'/'-0400' format)
 ```
 
-- **Рекомендация:** Нормализовать `updated_at` в UTC RFC3339 при записи в jira/sync.go (распарсив layout `2006-01-02T15:04:05.000-0700`), либо парсить и сравнивать по времени на стороне Go вместо строкового SQL-сравнения. Проверить все места, сравнивающие jira-таймстампы со строками 'Z'-формата.
+- **Recommendation:** Normalize `updated_at` to UTC RFC3339 when writing it in jira/sync.go (parsing the layout `2006-01-02T15:04:05.000-0700`), or parse and compare timestamps in Go instead of via a string SQL comparison. Audit all other places comparing Jira timestamps against 'Z'-format strings.
 
-### Реакции на сообщения старше watermark никогда не детектируются — reaction-триггер работает только ~30 минут
+### Reactions on messages older than the watermark are never detected — the reaction trigger only works for ~30 minutes
 
-- **Где:** `internal/db/inbox.go:525`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/inbox.go:525`
+- **Verification status:** ✅ confirmed
 
-`FindReactionRequests` фильтрует по `m.ts_unix > sinceTS` — по времени СООБЩЕНИЯ, а не по времени добавления реакции (в таблице reactions нет timestamp-колонки: только `PRIMARY KEY(channel_id, message_ts, user_id, emoji)`). В steady state inbox-watermark стоит на ~now-30min, поэтому как только сообщению ~30+ минут, любая последующая ❓/👀/‼️-реакция на него уже не может породить inbox-item. Поскольку люди обычно реагируют через минуты-часы после публикации, детекция «reaction request» фактически мертва вне узкого окна сразу после отправки — `:question:` на вчерашнее сообщение не всплывает никогда. Существующие тесты гоняют только `sinceTS=0`.
+`FindReactionRequests` filters on `m.ts_unix > sinceTS` — the MESSAGE's timestamp, not when the reaction was added (the reactions table has no timestamp column: only `PRIMARY KEY(channel_id, message_ts, user_id, emoji)`). In steady state the inbox watermark sits at ~now-30min, so once a message is ~30+ minutes old, any subsequent ❓/👀/‼️ reaction on it can no longer produce an inbox item. Since people typically react minutes-to-hours after a message is posted, "reaction request" detection is effectively dead outside a narrow window right after posting — a `:question:` on yesterday's message never surfaces. Existing tests only exercise `sinceTS=0`.
 
 ```sql
 FROM messages m
@@ -382,14 +382,14 @@ WHERE m.user_id = ? AND r.user_id != ? AND r.emoji IN (...) AND m.ts_unix > ?
 -- reactions schema: PRIMARY KEY (channel_id, message_ts, user_id, emoji) — no reaction timestamp
 ```
 
-- **Рекомендация:** Добавить в таблицу reactions колонку `synced_at`/`first_seen_at` (миграция) и фильтровать по ней; в качестве промежуточной меры — расширить окно по сообщению до нескольких дней, полагаясь на существующий NOT EXISTS-дедуп против дублей.
+- **Recommendation:** Add a `synced_at`/`first_seen_at` column to the reactions table (migration) and filter on that; as an interim measure, widen the message-age window to several days, relying on the existing NOT EXISTS dedup against duplicates.
 
-### «Сегодняшние события» briefing/day-plan используют UTC-окно дня для локальной даты — ранние утренние события пропадают
+### "Today's events" in briefing/day-plan use a UTC day window for a local date — early-morning events go missing
 
-- **Где:** `internal/db/calendar.go:159`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/calendar.go:159`
+- **Verification status:** ✅ confirmed
 
-`GetCalendarEventsForDate` строит окно как `date+'T00:00:00Z' .. date+'T23:59:59Z'` (UTC), тогда как все вызывающие передают ЛОКАЛЬНУЮ дату: briefing `gatherCalendar` — `time.Now().Local().Format("2006-01-02")` (briefing/pipeline.go:535), dayplan `Run/gatherCalendarEvents/DetectConflicts` — `time.Now().Format`-даты. Времена событий хранятся нормализованными в UTC. Для пользователя проекта (UTC+3) встреча сегодня 01:00–02:00 локально хранится с окончанием 23:00Z ПРЕДЫДУЩЕГО UTC-дня, так что `end_time >= 'todayT00:00:00Z'` не проходит — событие отсутствует в календарной секции briefing и в day plan (ни таймблока, ни конфликт-детекции); наоборот, события 00:00–03:00 локального завтра протекают в сегодняшний план.
+`GetCalendarEventsForDate` builds the window as `date+'T00:00:00Z' .. date+'T23:59:59Z'` (UTC), while every caller passes a LOCAL date: briefing's `gatherCalendar` uses `time.Now().Local().Format("2006-01-02")` (briefing/pipeline.go:535), dayplan's `Run/gatherCalendarEvents/DetectConflicts` use `time.Now().Format`-based dates. Event times are stored normalized to UTC. For this project's user (UTC+3), a meeting today at 01:00–02:00 local time is stored ending at 23:00Z of the PREVIOUS UTC day, so `end_time >= 'todayT00:00:00Z'` fails — the event is missing from the briefing's calendar section and from the day plan (no timeblock, no conflict detection); conversely, events from 00:00–03:00 local tomorrow leak into today's plan.
 
 ```go
 func (db *DB) GetCalendarEventsForDate(date string) ([]CalendarEvent, error) {
@@ -399,14 +399,14 @@ func (db *DB) GetCalendarEventsForDate(date string) ([]CalendarEvent, error) {
 } // callers pass local dates: today := time.Now().Local().Format("2006-01-02")
 ```
 
-- **Рекомендация:** Строить границы окна из локальной даты: `time.ParseInLocation("2006-01-02", date, time.Local)`, затем конвертировать начало/конец локального дня в UTC RFC3339 для сравнения. Добавить тест с не-UTC зоной и событием в 01:00 локального времени.
+- **Recommendation:** Build the window bounds from the local date: `time.ParseInLocation("2006-01-02", date, time.Local)`, then convert the local day's start/end to UTC RFC3339 for comparison. Add a test with a non-UTC zone and an event at 01:00 local time.
 
-### limitedWriter в ai.Client нарушает контракт io.Writer — >64KB stderr от claude превращает успешный запрос в ошибку
+### limitedWriter in ai.Client violates the io.Writer contract — >64KB of stderr from claude turns a successful request into an error
 
-- **Где:** `internal/ai/client.go:327`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/ai/client.go:327`
+- **Verification status:** ✅ confirmed
 
-Когда одиночный Write пересекает 64KB-кап, `limitedWriter` обрезает `p` и возвращает `n < len(p)` при `err == nil`. `os/exec` копирует не-`*os.File` Stderr через `io.Copy` в горутине; `io.Copy` превращает short write с nil-ошибкой в `io.ErrShortWrite`, и `cmd.Wait()`/`cmd.Output()` возвращают эту copy-ошибку даже при exit 0 и валидном stdout. Воспроизведено standalone-программой с точной копией limitedWriter: ребёнок пишет 100KB в stderr двумя всплесками и «OK» в stdout → `out="OK" err=short write`. Следствие: любой вызов claude, эмитящий >64KB stderr (многословный MCP/npx-логгинг) в не выровненных по 32K чанках, заставляет `QuerySync` выбросить валидный ответ с ошибкой «claude CLI error: short write», а `Query` — рапортовать ошибку после завершённого стриминга (REPL печатает ошибку вместо ответа). limitedWriter в пакете codex (codex/generator.go:150-165) уже исправлен ровно для этого — возвращает полную исходную длину; копия в ai — устаревший баговый вариант.
+Once a single Write crosses the 64KB cap, `limitedWriter` truncates `p` and returns `n < len(p)` with `err == nil`. `os/exec` copies a non-`*os.File` Stderr via `io.Copy` in a goroutine; `io.Copy` turns a short write with a nil error into `io.ErrShortWrite`, and `cmd.Wait()`/`cmd.Output()` return that copy error even on exit 0 with valid stdout. Reproduced with a standalone program that's an exact copy of limitedWriter: the child writes 100KB to stderr in two bursts plus "OK" to stdout → `out="OK" err=short write`. Consequence: any claude invocation emitting >64KB of stderr (verbose MCP/npx logging) in chunks not aligned to 32K boundaries makes `QuerySync` throw away a valid response with a "claude CLI error: short write" error, and `Query` reports an error after a completed stream (the REPL prints an error instead of the answer). The limitedWriter in the codex package (codex/generator.go:150-165) has already been fixed for exactly this — it returns the full original length; the copy in ai is the stale, buggy variant.
 
 ```go
 func (lw *limitedWriter) Write(p []byte) (int, error) {
@@ -423,14 +423,14 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 }
 ```
 
-- **Рекомендация:** Портировать исправленный вариант из codex: после усечённой записи возвращать полную исходную длину `len(p)` (при nil-ошибке нижележащего Write). В идеале — вынести limitedWriter в общий пакет, чтобы копии не расходились.
+- **Recommendation:** Port the fixed variant from codex: after a truncated write, return the full original length `len(p)` (when the underlying Write's error is nil). Ideally, extract limitedWriter into a shared package so the copies can't drift apart.
 
-### ai.Client.Query может навсегда зависнуть в cmd.Wait() после ошибки сканера — ребёнок заблокирован записью в недочитанный stdout-pipe
+### ai.Client.Query can hang forever in cmd.Wait() after a scanner error — the child is blocked writing into an undrained stdout pipe
 
-- **Где:** `internal/ai/client.go:228`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/ai/client.go:228`
+- **Verification status:** ✅ confirmed
 
-Сканер ограничивает строки 1MB (line 194). stream-json от claude с `--verbose` эмитит каждое событие одной JSON-строкой, включая tool results — MCP `read_query`, вываливающий большую таблицу, легко превышает 1MB, после чего `scanner.Scan()` останавливается с `bufio.ErrTooLong`. Код затем вызывает `_ = cmd.Wait()` без дочитывания stdout. Wait блокируется до выхода ребёнка, но ребёнок заблокирован записью остатка сверхдлинной строки (и последующих событий) в заполненный ~64KB OS-буфер пайпа и не завершается никогда. `cmd.WaitDelay` не спасает: он ограничивает ожидание только после отмены Context или вызова Cancel — ни то, ни другое не произошло. Итог: producer-горутина висит вечно, textCh/errCh/sidCh не закрываются, REPL (`runAIQuery` ranged по textCh) висит до Ctrl+C, всё это время живёт зомби-процесс claude. Паттерн исправления (дочитывание/закрытие пайпа до Wait) отсутствует.
+The scanner caps lines at 1MB (line 194). claude's stream-json output with `--verbose` emits each event as a single JSON line, including tool results — an MCP `read_query` dumping a large table can easily exceed 1MB, at which point `scanner.Scan()` stops with `bufio.ErrTooLong`. The code then calls `_ = cmd.Wait()` without draining stdout first. Wait blocks until the child exits, but the child is blocked writing the rest of the oversized line (and subsequent events) into the ~64KB-full OS pipe buffer and never exits. `cmd.WaitDelay` doesn't save this: it only bounds the wait after the Context is canceled or Cancel is called — neither happened. Result: the producer goroutine hangs forever, textCh/errCh/sidCh never get closed, the REPL (`runAIQuery` ranging over textCh) hangs until Ctrl+C, and a zombie claude process lives on the whole time. There's no fix pattern (drain/close the pipe before Wait) present anywhere.
 
 ```go
 if err := scanner.Err(); err != nil {
@@ -440,14 +440,14 @@ if err := scanner.Err(); err != nil {
 }
 ```
 
-- **Рекомендация:** Перед `cmd.Wait()` на всех ранних выходах дренировать пайп (`go io.Copy(io.Discard, stdout)`) либо убивать процесс (`cmd.Process.Kill()` / отмена per-command контекста) — тогда Wait гарантированно вернётся. Заодно поднять лимит сканера или перейти на `bufio.Reader.ReadBytes`.
+- **Recommendation:** Before `cmd.Wait()` on every early exit, drain the pipe (`go io.Copy(io.Discard, stdout)`) or kill the process (`cmd.Process.Kill()` / cancel a per-command context) — either guarantees Wait returns. Also consider raising the scanner limit or switching to `bufio.Reader.ReadBytes`.
 
-### codex.Client.Query имеет тот же deadlock недочитанного stdout на путях error-event и scanner-error
+### codex.Client.Query has the same undrained-stdout deadlock on the error-event and scanner-error paths
 
-- **Где:** `internal/codex/client.go:132`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/codex/client.go:132`
+- **Verification status:** ✅ confirmed
 
-На JSONL-событии `error` (line 131-135) и на ошибке сканера (line 149-153, например одна agent_message-строка >1MB) горутина вызывает `_ = cmd.Wait()` при недочитанном stdout. Если процессу codex осталось записать больше буфера пайпа (~64KB) — хвостовые события после ошибки или остаток сверхдлинной строки — он блокируется на write и не завершается, Wait висит вечно (WaitDelay применим только после отмены ctx). textCh/errCh/sidCh не закрываются, вызывающий на `for range textCh` (cmd/ai.go:102) висит перманентно (спасает только Ctrl+C); остаётся зомби-процесс codex. Кроме того, на этих ранних выходах отложенный `os.RemoveAll(tmpDir)` для MCP-конфига (line 77) не выполняется, пока висит горутина, — утечка temp-директории на всё время зависания.
+On a JSONL `error` event (line 131-135) and on a scanner error (line 149-153, e.g. a single agent_message line >1MB), the goroutine calls `_ = cmd.Wait()` with stdout undrained. If the codex process still has more than the pipe buffer (~64KB) left to write — trailing events after the error, or the remainder of an oversized line — it blocks on write and never exits, and Wait hangs forever (WaitDelay only applies after ctx is canceled). textCh/errCh/sidCh never get closed, and the caller's `for range textCh` (cmd/ai.go:102) hangs permanently (only Ctrl+C saves it); a zombie codex process is left behind. Additionally, on these early exits the deferred `os.RemoveAll(tmpDir)` for the MCP config (line 77) doesn't run while the goroutine is hung — leaking a temp directory for as long as the hang lasts.
 
 ```go
 if event.Error != nil {
@@ -457,14 +457,14 @@ if event.Error != nil {
 }
 ```
 
-- **Рекомендация:** То же исправление, что для ai.Client: дренировать stdout (`io.Copy(io.Discard, ...)`) или убивать процесс перед Wait на всех ранних выходах. Исправлять оба клиента одним PR — дефект зеркальный.
+- **Recommendation:** Same fix as for ai.Client: drain stdout (`io.Copy(io.Discard, ...)`) or kill the process before Wait on every early exit. Fix both clients in one PR — the defect is a mirror image.
 
-### `watchtower jira boards` обнуляет issue_count у всех досок и пишет литеральную строку "now" в synced_at
+### `watchtower jira boards` zeroes out issue_count on every board and writes the literal string "now" into synced_at
 
-- **Где:** `cmd/jira.go:448`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/jira.go:448`
+- **Verification status:** ✅ confirmed
 
-`runJiraBoards` собирает `db.JiraBoard` с `IssueCount`, оставленным нулём, и `SyncedAt`, равным литеральной строке "now" (не timestamp), после чего ON CONFLICT-ветка `UpsertJiraBoard` перезаписывает `issue_count=excluded.issue_count` и `synced_at=excluded.synced_at`. Каждый запуск `jira boards` (используется и Desktop-пикерами досок: «Refresh Boards» запускает эту команду) сбрасывает issue_count всех досок в 0 — таблица, печатаемая той же командой сразу после, показывает Issues=0 для досок с тысячами синхронизированных issues — и портит synced_at не-таймстампом до следующего sync, вызывающего `UpdateJiraBoardIssueCount`.
+`runJiraBoards` builds a `db.JiraBoard` with `IssueCount` left at zero and `SyncedAt` set to the literal string "now" (not a timestamp), after which the ON CONFLICT branch of `UpsertJiraBoard` overwrites `issue_count=excluded.issue_count` and `synced_at=excluded.synced_at`. Every run of `jira boards` (also used by Desktop's board pickers: "Refresh Boards" runs this command) resets issue_count to 0 on every board — the very table printed by that same command right afterward shows Issues=0 for boards with thousands of synced issues — and corrupts synced_at with a non-timestamp until the next sync calls `UpdateJiraBoardIssueCount`.
 
 ```go
 dbBoard := db.JiraBoard{
@@ -478,14 +478,14 @@ _ = database.UpsertJiraBoard(dbBoard)
 // db: ON CONFLICT ... SET issue_count=excluded.issue_count, synced_at=excluded.synced_at
 ```
 
-- **Рекомендация:** Исключить `issue_count` и `synced_at` из SET-списка ON CONFLICT в `UpsertJiraBoard` (метаданные доски — да, счётчики sync — нет), а `SyncedAt` заполнять `time.Now().UTC().Format(time.RFC3339)`. Тест: upsert существующей доски не сбрасывает issue_count.
+- **Recommendation:** Exclude `issue_count` and `synced_at` from the ON CONFLICT SET list in `UpsertJiraBoard` (board metadata — yes, sync counters — no), and populate `SyncedAt` with `time.Now().UTC().Format(time.RFC3339)`. Test: upserting an existing board doesn't reset issue_count.
 
-### `targets update --status done|dismissed` обходит INBOX-02-каскад target_due — reminder-item остаётся pending
+### `targets update --status done|dismissed` bypasses the INBOX-02 target_due cascade — the reminder item stays pending
 
-- **Где:** `cmd/targets.go:799`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/targets.go:799`
+- **Verification status:** ✅ confirmed
 
-docs/inventory/inbox-pulse.md (INBOX-02, расширен 2026-05-01) фиксирует контракт: закрытие таргета (status → done/dismissed) авто-резолвит его inbox-item `target_due`. Каскад живёт только в `db.UpdateTargetStatus` (targets.go:286-294). `runTargetsUpdate` меняет статус через `db.UpdateTarget` — обычный UPDATE без inbox-каскада. Пользователь, закрывающий reminder-таргет через `watchtower targets update N --status done`, оставляет pending `target_due`-item и вынужден закрывать одно и то же дважды — ровно то, что запрещает залоченный контракт. (Верификатор уточнил: Swift-путь `TargetQueries.updateStatus` каскад делает, дефект ограничен Go CLI update-путём.)
+docs/inventory/inbox-pulse.md (INBOX-02, extended 2026-05-01) pins the contract: closing a target (status → done/dismissed) auto-resolves its `target_due` inbox item. The cascade lives only in `db.UpdateTargetStatus` (targets.go:286-294). `runTargetsUpdate` changes the status via `db.UpdateTarget` — a plain UPDATE with no inbox cascade. A user closing a reminder target via `watchtower targets update N --status done` leaves the pending `target_due` item behind and has to close the same thing twice — exactly what the locked contract forbids. (The verifier clarified: the Swift path `TargetQueries.updateStatus` does perform the cascade; the defect is confined to the Go CLI update path.)
 
 ```go
 if cmd.Flags().Changed("status") {
@@ -496,14 +496,14 @@ if err := database.UpdateTarget(*target); err != nil { ... }
 // db.UpdateTarget has no `UPDATE inbox_items ... trigger_type = 'target_due'` cascade; only UpdateTargetStatus does
 ```
 
-- **Рекомендация:** В `runTargetsUpdate` при изменённом `--status` вызывать `UpdateTargetStatus` (или вынести каскад в общий хелпер, вызываемый обоими путями). Расширить guard-тест INBOX-02 на update-путь.
+- **Recommendation:** In `runTargetsUpdate`, when `--status` changes, call `UpdateTargetStatus` (or factor the cascade into a shared helper called by both paths). Extend the INBOX-02 guard test to cover the update path.
 
-### Extract-пайплайн не валидирует возвращённые AI level/priority против CHECK-enum'ов БД — одно плохое значение откатывает весь подтверждённый батч
+### The extract pipeline doesn't validate the AI-returned level/priority against the DB's CHECK enums — one bad value rolls back the whole confirmed batch
 
-- **Где:** `internal/targets/extractor.go:199`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/targets/extractor.go:199`
+- **Verification status:** ✅ confirmed
 
-`parseExtractResponse` аккуратно валидирует relations, префиксы external_ref, parent-ID и лимиты, но копирует `item.Level` и `item.Priority` без валидации. Таблица targets имеет `CHECK(level IN ('quarter','month','week','day','custom'))` и `CHECK(priority IN ('high','medium','low'))`. Если AI вернул, например, level="sprint" или priority="urgent" для одного из десяти извлечённых items, `Store.CreateBatch` выполняет все вставки одной транзакцией и на CHECK-нарушении откатывает всё — пользователь интерактивно подтверждает 10 таргетов и получает ноль созданных с сырой SQLite constraint-ошибкой. Пустые значения дефолтятся в `insertTargetTx`, но непустые невалидные нигде не санитайзятся.
+`parseExtractResponse` carefully validates relations, external_ref prefixes, parent IDs, and limits, but copies `item.Level` and `item.Priority` without validation. The targets table has `CHECK(level IN ('quarter','month','week','day','custom'))` and `CHECK(priority IN ('high','medium','low'))`. If the AI returns, say, level="sprint" or priority="urgent" for one of ten extracted items, `Store.CreateBatch` performs all inserts in a single transaction and rolls back the entire batch on a CHECK violation — the user interactively confirms 10 targets and gets zero created, along with a raw SQLite constraint error. Empty values are defaulted in `insertTargetTx`, but non-empty invalid ones are never sanitized anywhere.
 
 ```go
 pt := ProposedTarget{
@@ -515,14 +515,14 @@ pt := ProposedTarget{
 // store.go: level defaults only when ""; INSERT hits CHECK(level IN (...)) inside one tx for the whole batch
 ```
 
-- **Рекомендация:** В `parseExtractResponse` нормализовать значения: невалидный level → "custom" (или ""), невалидный priority → "medium", с логом — по аналогии с уже имеющейся защитной санацией других полей. Тест: батч с одним невалидным значением создаёт остальные targets.
+- **Recommendation:** In `parseExtractResponse`, normalize the values: an invalid level → "custom" (or ""), an invalid priority → "medium", with a log line — following the existing defensive sanitization already applied to other fields. Test: a batch with one invalid value still creates the rest of the targets.
 
-### Таргет можно сделать родителем самого себя — нет self/cycle-проверки в `targets link --parent` и в валидации AI suggest-links
+### A target can be made its own parent — no self/cycle check in `targets link --parent` or in AI suggest-links validation
 
-- **Где:** `cmd/targets.go:607`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/targets.go:607`
+- **Verification status:** ✅ confirmed
 
-`runTargetsLink` выставляет `target.ParentID` из `--parent` без проверки на совпадение с собственным ID (и на циклы): `watchtower targets link 5 --parent 5` успешно проходит — FK `REFERENCES targets(id)` удовлетворён самой строкой. AI-путь имеет ту же дыру: `parseLinkResponse` (targets/linker.go:83) валидирует parent_id против snapshot-множества, но snapshot из `GetTargets` включает сам линкуемый таргет (`buildLinkPrompt` лишь прячет его из текста промпта), так что AI-parent_id, равный собственному ID, проходит валидацию и применяется. Self-parented строка ломает обход иерархии: в Desktop `rootEntries` такой таргет не является ни корнем, ни чьим-то ребёнком — молча исчезает из списка, а `RecomputeParentProgress` учитывает таргет в его же среднем.
+`runTargetsLink` sets `target.ParentID` from `--parent` without checking it against the target's own ID (or for cycles): `watchtower targets link 5 --parent 5` succeeds — the FK `REFERENCES targets(id)` is satisfied by the row itself. The AI path has the same hole: `parseLinkResponse` (targets/linker.go:83) validates parent_id against a snapshot set, but the snapshot from `GetTargets` includes the target being linked itself (`buildLinkPrompt` only hides it from the prompt text), so an AI-suggested parent_id equal to the target's own ID passes validation and gets applied. A self-parented row breaks hierarchy traversal: in Desktop, `rootEntries` treats such a target as neither a root nor anyone's child — it silently vanishes from the list, and `RecomputeParentProgress` counts the target in its own average.
 
 ```go
 if targetsFlagLinkParent > 0 {
@@ -533,14 +533,14 @@ if targetsFlagLinkParent > 0 {
 // linker.go: if resp.ParentID != nil && snapshotIDs[*resp.ParentID] { ... }  — snapshot includes the target itself
 ```
 
-- **Рекомендация:** В обоих путях отклонять `parentID == id` и делать простой walk по цепочке предков для отсечения циклов (глубина иерархии мала). В linker — исключать собственный ID из snapshot-множества, а не только из текста промпта.
+- **Recommendation:** In both paths, reject `parentID == id` and walk the ancestor chain to catch cycles (hierarchy depth is small). In the linker, exclude the target's own ID from the snapshot set, not just from the prompt text.
 
-### Автозакрытие браузера после OAuth-логина гонится с завершением процесса, а когда всё-таки срабатывает — вызывает macOS TCC Automation prompt
+### Auto-closing the browser after OAuth login races the process's own exit, and when it does fire, it triggers a macOS TCC Automation prompt
 
-- **Где:** `internal/auth/oauth.go:284`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/auth/oauth.go:284`
+- **Verification status:** ✅ confirmed
 
-После успешного callback `Login` запускает `go func() { time.Sleep(2 * time.Second); getCloseBrowserFunc()() }()` и возвращается. CLI-команда сохраняет конфиг и завершается обычно быстрее 2 секунд (отложенный server.Close спит лишь 500ms), так что горутина убивается вместе с процессом — фича «auto-close browser window» молча не выполняется. В случаях же, когда процесс живёт ≥2s, `closeBrowserWindow` запускает `osascript` с `tell application "System Events"`, что требует TCC-разрешения Apple Events / Automation и показывает macOS-диалог согласия, атрибутированный ответственному процессу. Критично: Desktop-приложение само спавнит `watchtower auth login` (OnboardingView.swift:1244, SettingsView.swift:695), поэтому по цепочке ответственности prompt атрибутируется Watchtower.app — по правилу проекта («no TCC prompts from Watchtower» = P0) это недопустимо. Путь дефектен в обоих исходах: мёртв в типовом случае, генерирует prompt в остальных.
+After a successful callback, `Login` starts `go func() { time.Sleep(2 * time.Second); getCloseBrowserFunc()() }()` and returns. The CLI command saves the config and exits normally faster than 2 seconds (the deferred server.Close only sleeps 500ms), so the goroutine dies along with the process — the "auto-close browser window" feature silently never runs. In cases where the process does live ≥2s, `closeBrowserWindow` runs `osascript` with `tell application "System Events"`, which requires Apple Events/Automation TCC permission and pops a macOS consent dialog attributed to the responsible process. Critically, the Desktop app itself spawns `watchtower auth login` (OnboardingView.swift:1244, SettingsView.swift:695), so up the responsibility chain the prompt gets attributed to Watchtower.app — which the project's own rule ("no TCC prompts from Watchtower" = P0) forbids. The path is defective in both outcomes: dead in the typical case, prompt-generating in the rest.
 
 ```go
 go func() {
@@ -550,16 +550,16 @@ go func() {
 ... script := ` tell application "System Events" ... ` ; cmd := exec.Command("osascript", "-e", script)
 ```
 
-- **Рекомендация:** Удалить osascript-автозакрытие целиком: заменить страницу callback на самодостаточный HTML с `window.close()`/сообщением «можно закрыть вкладку» — это не требует TCC и не зависит от времени жизни процесса. Ни в коем случае не «чинить» через ожидание горутины — это лишь сделает TCC-prompt детерминированным.
+- **Recommendation:** Remove the osascript auto-close entirely: replace the callback page with a self-contained HTML page using `window.close()`/a "you can close this tab" message — this requires no TCC and doesn't depend on the process's lifetime. Do not "fix" this by waiting for the goroutine — that would only make the TCC prompt deterministic.
 
 ## Low
 
-### Закрытый wake-канал гонится с ctx.Done() при shutdown — ложные sync'и перезаписывают last_sync.json ошибкой «context canceled»
+### A closed wake channel races ctx.Done() at shutdown — spurious syncs overwrite last_sync.json with a "context canceled" error
 
-- **Где:** `internal/daemon/daemon.go:188`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/daemon/daemon.go:188`
+- **Verification status:** ✅ confirmed
 
-Горутина `WatchWake` делает `defer close(ch)` (wake.go:14) при отмене ctx. В select-цикле `Daemon.Run` закрытый канал перманентно готов, поэтому при shutdown select случайно выбирает между `<-ctx.Done()` и `<-d.wakeChannel()`. С вероятностью ~50% на итерацию демон логирует «wake event detected, syncing» и вызывает runSync с уже отменённым контекстом: orchestrator.Run падает с context.Canceled, а phaseSlackSync безусловно пишет last_sync.json с Error: "context canceled" (daemon.go:297-301). Примерно после каждого второго graceful shutdown `watchtower status` и Desktop показывают последний sync как проваленный, хотя ничего не сломалось. Самовосстанавливается следующим sync'ом.
+The `WatchWake` goroutine does `defer close(ch)` (wake.go:14) on ctx cancellation. In `Daemon.Run`'s select loop, a closed channel is permanently ready, so at shutdown the select randomly picks between `<-ctx.Done()` and `<-d.wakeChannel()`. With roughly 50% odds per iteration, the daemon logs "wake event detected, syncing" and calls runSync with an already-canceled context: orchestrator.Run fails with context.Canceled, and phaseSlackSync unconditionally writes last_sync.json with Error: "context canceled" (daemon.go:297-301). Roughly every other graceful shutdown makes `watchtower status` and Desktop show the last sync as failed, even though nothing actually broke. Self-heals on the next sync.
 
 ```go
 case <-d.wakeChannel():
@@ -570,42 +570,42 @@ go func() {
     defer close(ch)
 ```
 
-- **Рекомендация:** В wake-case использовать двухзначный приём `w, ok := <-...` и выходить из цикла при `ok == false`; дополнительно проверять `ctx.Err() != nil` перед runSync в начале каждой ветки.
+- **Recommendation:** In the wake case, use the two-value receive `w, ok := <-...` and exit the loop when `ok == false`; additionally check `ctx.Err() != nil` before runSync at the start of each branch.
 
-### UNIQUE-констрейнт target_links не дедуплицирует external-ref связи (NULL target_target_id) — дубликаты накапливаются
+### The target_links UNIQUE constraint doesn't dedupe external-ref links (NULL target_target_id) — duplicates accumulate
 
-- **Где:** `internal/db/target_links.go:26`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/target_links.go:26`
+- **Verification status:** ✅ confirmed
 
-`UNIQUE(source_target_id, target_target_id, external_ref, relation)` — единственная защита от дублей, но external-only связи вставляются с `target_target_id = NULL`, а SQLite считает NULL'ы различными в UNIQUE-индексах. `CreateTargetLink` делает голый INSERT без conflict-обработки, так что каждый повторный прогон AI link-suggester'а (или повторное действие пользователя), предлагающий тот же external ref (jira:ABC-1, relation=related), вставляет ещё одну идентичную строку — UI показывает продублированные связи. Комментарий миграции 00007 даже документирует, что такие дубли уже встречались «в дикой природе»; та зачистка была одноразовым ремонтом данных, путь вставки по-прежнему дыряв.
+`UNIQUE(source_target_id, target_target_id, external_ref, relation)` is the only protection against duplicates, but external-only links are inserted with `target_target_id = NULL`, and SQLite treats NULLs as distinct in UNIQUE indexes. `CreateTargetLink` does a bare INSERT with no conflict handling, so every repeat run of the AI link-suggester (or a repeated user action) proposing the same external ref (jira:ABC-1, relation=related) inserts yet another identical row — the UI shows duplicated links. The migration 00007 comment even documents that such duplicates have already been seen "in the wild"; that cleanup was a one-time data repair, and the insert path is still leaky.
 
 ```go
 res, err := db.Exec(`INSERT INTO target_links (source_target_id, target_target_id, external_ref, relation, confidence, created_by) VALUES (?, ?, ?, ?, ?, ?)`, ...)
 // schema: UNIQUE(source_target_id, target_target_id, external_ref, relation) with target_target_id NULL → never conflicts
 ```
 
-- **Рекомендация:** Добавить частичный уникальный индекс `CREATE UNIQUE INDEX ... ON target_links(source_target_id, external_ref, relation) WHERE target_target_id IS NULL` (миграция) и/или проверку существования перед INSERT в `CreateTargetLink`.
+- **Recommendation:** Add a partial unique index `CREATE UNIQUE INDEX ... ON target_links(source_target_id, external_ref, relation) WHERE target_target_id IS NULL` (migration) and/or check for existence before INSERT in `CreateTargetLink`.
 
-### Weekly trends digest никогда не генерируется: у RunWeeklyTrends нет production-вызова
+### The weekly trends digest is never generated: RunWeeklyTrends has no production caller
 
-- **Где:** `internal/digest/pipeline.go:1053`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/digest/pipeline.go:1053`
+- **Verification status:** ✅ confirmed
 
-`RunWeeklyTrends` вызывается только из тестов. Комментарий daemon-фазы `phaseTracksAndRollups` говорит «runs daily/weekly rollups», но `RunRollups` вызывает лишь `RunDailyRollup` (pipeline.go:423); в cmd/ вызовов тоже нет. Дайджесты типа 'weekly' никогда не существуют; `watchtower trends` всегда идёт по деградированному fallback-пути, а задокументированный трёхуровневый digest-пайплайн (channel/daily/weekly) молча потерял weekly-уровень.
+`RunWeeklyTrends` is only called from tests. The daemon phase `phaseTracksAndRollups`'s comment says "runs daily/weekly rollups," but `RunRollups` only calls `RunDailyRollup` (pipeline.go:423); there are no callers in cmd/ either. Digests of type 'weekly' never exist; `watchtower trends` always goes through a degraded fallback path, and the documented three-tier digest pipeline (channel/daily/weekly) has silently lost its weekly tier.
 
 ```go
 func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 // grep: only callers are pipeline_test.go; daemon RunRollups calls only RunDailyRollup
 ```
 
-- **Рекомендация:** Вызывать `RunWeeklyTrends` из `RunRollups` (например, раз в неделю по последнему weekly-дайджесту, аналогично daily-логике) либо осознанно удалить weekly-уровень и обновить документацию/CLI.
+- **Recommendation:** Call `RunWeeklyTrends` from `RunRollups` (e.g. once a week, based on the last weekly digest, analogous to the daily logic), or deliberately remove the weekly tier and update the docs/CLI.
 
-### autoResolveSlack матчит trigger_type 'reaction_request', а детектор/схема используют 'reaction' — reaction-items никогда не авто-резолвятся
+### autoResolveSlack matches trigger_type 'reaction_request', but the detector/schema use 'reaction' — reaction items are never auto-resolved
 
-- **Где:** `internal/inbox/pipeline.go:837`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/inbox/pipeline.go:837`
+- **Verification status:** ✅ confirmed
 
-`FindReactionRequests` выставляет `c.TriggerType = "reaction"` (db/inbox.go:545), и CHECK-констрейнт схемы допускает только 'reaction'. Switch в autoResolveSlack whitelist'ит "reaction_request" — значение, которое не может существовать в БД (единственное вхождение строки в кодовой базе). Итог: когда кто-то реагирует ❓ на сообщение пользователя и пользователь затем отвечает в треде, item не авто-резолвится rule-проходом — вопреки INBOX-02; item висит до 7-дневного ambient-архива.
+`FindReactionRequests` sets `c.TriggerType = "reaction"` (db/inbox.go:545), and the schema's CHECK constraint only allows 'reaction'. The switch in autoResolveSlack whitelists "reaction_request" — a value that can never exist in the DB (the only occurrence of that string in the codebase). Result: when someone reacts ❓ to the user's message and the user then replies in the thread, the item doesn't get auto-resolved by the rule pass — contrary to INBOX-02; the item sits until the 7-day ambient archive.
 
 ```go
 switch item.TriggerType {
@@ -616,14 +616,14 @@ default:
 // but detector: c.TriggerType = "reaction"; schema CHECK: ('mention','dm','thread_reply','reaction', ...)
 ```
 
-- **Рекомендация:** Заменить "reaction_request" на "reaction" в switch; завести константы trigger-типов в одном месте вместо строковых литералов, чтобы такие расхождения ловились компилятором.
+- **Recommendation:** Replace "reaction_request" with "reaction" in the switch; centralize trigger-type constants in one place instead of string literals, so mismatches like this get caught by the compiler.
 
-### SessionPool.Acquire возвращает (nil, nil) ожидающим, когда пул закрывают под ними
+### SessionPool.Acquire returns (nil, nil) to waiters when the pool is closed out from under them
 
-- **Где:** `internal/sessions/pool.go:45`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/sessions/pool.go:45`
+- **Verification status:** ✅ confirmed
 
-Acquire проверяет `p.closed`, разлочивается и блокируется на `w := <-p.workers`. Если `Close()` выполняется, пока горутины заблокированы там (все слоты заняты), `close(p.workers)` будит каждого получателя нулевым значением: Acquire возвращает w=nil, err=nil, нарушая собственный контракт («Returns error if pool is closed»). `PooledGenerator.Generate` проверяет только err, так что все ранее заблокированные вызывающие одновременно уходят в inner.Generate с nil Worker. С текущими вызывающими Close всегда происходит после завершения пайплайна, поэтому сценарий латентный, — но это однострочная бомба на будущее.
+Acquire checks `p.closed`, unlocks, then blocks on `w := <-p.workers`. If `Close()` runs while goroutines are blocked there (all slots busy), `close(p.workers)` wakes every receiver with the zero value: Acquire returns w=nil, err=nil, violating its own contract ("Returns error if pool is closed"). `PooledGenerator.Generate` only checks err, so every previously-blocked caller proceeds to inner.Generate with a nil Worker simultaneously. With the current callers, Close always happens after the pipeline finishes, so the scenario is latent — but it's a one-line time bomb for the future.
 
 ```go
 select {
@@ -634,14 +634,14 @@ case <-ctx.Done():
 }
 ```
 
-- **Рекомендация:** Использовать двухзначную форму `w, ok := <-p.workers` и при `!ok` возвращать ошибку «pool closed». Добавить тест blocked-then-closed.
+- **Recommendation:** Use the two-value form `w, ok := <-p.workers` and return a "pool closed" error when `!ok`. Add a blocked-then-closed test.
 
-### Стриминговый Query и QuerySync/Generate в codex делают противоречащие предположения о событиях agent_message — одно из двух портит вывод
+### The streaming Query and QuerySync/Generate in codex make contradictory assumptions about agent_message events — one of the two corrupts the output
 
-- **Где:** `internal/codex/client.go:138`
-- **Статус верификации:** ⚠️ не удалось однозначно верифицировать (verdict 'uncertain')
+- **Where:** `internal/codex/client.go:138`
+- **Verification status:** ⚠️ could not be conclusively verified (verdict 'uncertain')
 
-Query стримит текст КАЖДОГО item.*-lifecycle-события с agent_message (без фильтра по event.Type), и его тест кодирует delta-семантику: item.started "Hello " + item.updated "world" + item.completed "!" конкатенируются в "Hello world!". Но `parseJSONLOutput`, используемый QuerySync и CodexGenerator.Generate, оставляет ТОЛЬКО последний item.completed с replace-семантикой. Оба потребляют один и тот же поток `codex exec --json`, значит правы оба быть не могут. Верификатор отметил: Swift-дизайн и design-doc проекта трактуют item.completed как ПОЛНЫЙ текст хода (replace), что делает completed-only парсер корректным; реалистичный дефект — стриминговый Query может дублировать вывод, если codex эмитит pre-completion события, но подтвердить, что codex реально их эмитит в exec --json, не удалось.
+Query streams the text of EVERY item.*-lifecycle event with agent_message (no filter on event.Type), and its test encodes delta semantics: item.started "Hello " + item.updated "world" + item.completed "!" concatenate into "Hello world!". But `parseJSONLOutput`, used by QuerySync and CodexGenerator.Generate, keeps ONLY the last item.completed with replace semantics. Both consume the same `codex exec --json` stream, so they can't both be right. The verifier noted: the Swift design and the project's design doc treat item.completed as the FULL turn text (replace), which makes the completed-only parser correct; the realistic defect is that streaming Query could duplicate output if codex emits pre-completion events, but it couldn't be confirmed whether codex actually emits those in exec --json.
 
 ```go
 // client.go Query — no event.Type filter:
@@ -652,14 +652,14 @@ if event.Type == "item.completed" && event.Item != nil && event.Item.Type == "ag
     lastContent = event.Item.MessageText()
 ```
 
-- **Рекомендация:** Привести стриминговый путь к семантике completed-only (фильтровать `event.Type == "item.completed"`), согласовав с parseJSONLOutput и Swift-дизайном; исправить тест exec_test.go, кодирующий delta-модель.
+- **Recommendation:** Bring the streaming path in line with completed-only semantics (filter on `event.Type == "item.completed"`), matching parseJSONLOutput and the Swift design; fix the exec_test.go test that encodes the delta model.
 
-### REPL никогда не восстанавливается после мёртвой Claude-сессии — протухший sessionID валит каждый последующий запрос
+### The REPL never recovers from a dead Claude session — a stale sessionID fails every subsequent request
 
-- **Где:** `internal/repl/repl.go:204`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/repl/repl.go:204`
+- **Verification status:** ✅ confirmed
 
-`runAIQuery` запоминает `r.sessionID` после первого успешного ответа и далее всегда резюмирует его, а раз sessionID непуст — пропускает и пересборку system prompt (line 158-165). Если claude CLI больше не может резюмировать сессию (файлы сессии зачищены/протухли, кэш очищен, CLI обновлён), сабпроцесс выходит ненулевым, ошибка печатается — а r.sessionID не трогается, так что следующий вопрос резюмирует ту же мёртвую сессию с пустым system prompt и падает так же. Пути/слэш-команды для очистки sessionID нет — REPL перманентно сломан для AI-запросов до рестарта процесса. Важно: guard-тест repl_test.go:1099 намеренно фиксирует, что transient-ошибки sessionID не сбрасывают — корректный фикс должен различать resume-failure и transient error.
+`runAIQuery` remembers `r.sessionID` after the first successful response and always resumes it thereafter, and once sessionID is non-empty, it also skips rebuilding the system prompt (line 158-165). If the claude CLI can no longer resume the session (session files cleared/expired, cache cleared, CLI updated), the subprocess exits non-zero, the error is printed — but r.sessionID isn't touched, so the next question resumes the same dead session with an empty system prompt and fails the same way. There's no path/slash command to clear sessionID — the REPL is permanently broken for AI queries until the process restarts. Important: the guard test repl_test.go:1099 deliberately pins that transient sessionID errors must NOT reset it — a correct fix needs to distinguish a resume failure from a transient error.
 
 ```go
 if err := <-errCh; err != nil {
@@ -668,14 +668,14 @@ if err := <-errCh; err != nil {
 }
 ```
 
-- **Рекомендация:** Детектировать именно ошибку резюмирования (по exit-коду/тексту stderr claude при `--resume`) и в этом случае сбрасывать sessionID с автоматическим ретраем «с чистого листа»; transient-ошибки оставлять как есть (guard-тест сохранить). Дополнительно — добавить слэш-команду `/reset` как ручной выход.
+- **Recommendation:** Detect specifically a resume failure (by claude's `--resume` exit code/stderr text) and in that case reset sessionID with an automatic clean-slate retry; leave transient errors as-is (keep the guard test). Additionally, add a `/reset` slash command as a manual escape hatch.
 
-### Ошибки Jira-sync никогда не персистятся: LastError/LastErrorAt выставляются на структуре, но UpdateJiraSyncState пишет только last_synced_at и issues_synced
+### Jira sync errors are never persisted: LastError/LastErrorAt are set on the struct, but UpdateJiraSyncState only writes last_synced_at and issues_synced
 
-- **Где:** `internal/jira/sync.go:124`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/jira/sync.go:124`
+- **Verification status:** ✅ confirmed
 
-При падении sync проекта Sync() выставляет syncState.LastError и syncState.LastErrorAt, затем вызывает `db.UpdateJiraSyncState(projectKey, lastSyncedAt, issuesSynced)` — функция трогает только project_key, last_synced_at и issues_synced. Ни один код-путь в репозитории не пишет колонки last_error/last_error_at, хотя GetJiraSyncState(s) их читают (и Swift-модель JiraSyncState тоже). Любая поверхность статуса, полагающаяся на эти колонки, показывает вечно пустое состояние ошибки; повторные сбои sync невидимы вне лога демона.
+When a project sync fails, Sync() sets syncState.LastError and syncState.LastErrorAt, then calls `db.UpdateJiraSyncState(projectKey, lastSyncedAt, issuesSynced)` — a function that only touches project_key, last_synced_at, and issues_synced. No code path anywhere in the repo writes the last_error/last_error_at columns, even though GetJiraSyncState(s) reads them (and so does the Swift JiraSyncState model). Any status surface relying on these columns shows a permanently empty error state; repeated sync failures are invisible outside the daemon log.
 
 ```go
 syncState.LastError = err.Error()
@@ -684,14 +684,14 @@ _ = s.db.UpdateJiraSyncState(syncState.ProjectKey, syncState.LastSyncedAt, syncS
 // db: INSERT INTO jira_sync_state (project_key, last_synced_at, issues_synced) ... — error fields dropped
 ```
 
-- **Рекомендация:** Расширить сигнатуру `UpdateJiraSyncState` (или добавить `UpdateJiraSyncError`) для записи last_error/last_error_at; очищать их при успешном sync.
+- **Recommendation:** Extend the `UpdateJiraSyncState` signature (or add `UpdateJiraSyncError`) to write last_error/last_error_at; clear them on a successful sync.
 
-### `targets snooze` принимает любую невалидированную строку как дату — искажённое значение оставляет таргет заснуженным навсегда
+### `targets snooze` accepts any unvalidated string as a date — a malformed value leaves the target snoozed forever
 
-- **Где:** `cmd/targets.go:763`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/targets.go:763`
+- **Verification status:** ✅ confirmed
 
-`runTargetsSnooze` кладёт args[1] дословно в snooze_until без валидации формата. `UnsnoozeExpiredTargets` будит таргеты лексикографическим сравнением `snooze_until <= '2006-01-02T15:04'`. Пользователь, набравший `watchtower targets snooze 5 tomorrow`, получает success-сообщение («snoozed until tomorrow»), но "tomorrow" > "2026-..." лексикографически — демон никогда не разбудит таргет, и он молча исчезает из всех активных списков навсегда. Форматы вроде "07/10/2026" наоборот сравниваются НИЗКО и просыпаются на следующем же цикле. Соседний inbox snooze валидирует через parseDuration — несогласованность.
+`runTargetsSnooze` stores args[1] verbatim into snooze_until with no format validation. `UnsnoozeExpiredTargets` wakes targets via the lexicographic comparison `snooze_until <= '2006-01-02T15:04'`. A user who types `watchtower targets snooze 5 tomorrow` gets a success message ("snoozed until tomorrow"), but "tomorrow" > "2026-..." lexicographically — the daemon will never wake the target, and it silently vanishes from every active list forever. Conversely, formats like "07/10/2026" sort LOW and wake up on the very next cycle. The neighboring inbox snooze validates via parseDuration — an inconsistency.
 
 ```go
 snoozeDate := args[1]
@@ -701,14 +701,14 @@ target.SnoozeUntil = snoozeDate
 // db: WHERE status = 'snoozed' AND snooze_until != '' AND snooze_until <= ?  (string compare vs "2006-01-02T15:04")
 ```
 
-- **Рекомендация:** Валидировать/парсить ввод (`time.Parse("2006-01-02", ...)` плюс поддержка длительностей как в inbox) и падать с понятной ошибкой при невалидном формате, нормализуя хранимое значение в канонический вид.
+- **Recommendation:** Validate/parse the input (`time.Parse("2006-01-02", ...)` plus duration support like inbox has) and fail with a clear error on an invalid format, normalizing the stored value to a canonical shape.
 
-### События деселектнутого календаря никогда не зачищаются и продолжают всплывать в CLI/briefings/AI-контексте
+### Events from a deselected calendar are never cleaned up and keep surfacing in the CLI/briefings/AI context
 
-- **Где:** `internal/calendar/sync.go:142`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/calendar/sync.go:142`
+- **Verification status:** ✅ confirmed
 
-Зачистка stale-событий в Sync проходит только по текущим ВЫБРАННЫМ calendarIDs. После деселекта календаря (`calendar select <id>`) он больше не фетчится И не чистится — все ранее синхронизированные события остаются в calendar_events бессрочно со старым synced_at. `GetCalendarEvents` не джойнит is_selected, поэтому `watchtower calendar`, briefing gatherCalendar и AI context builder продолжают показывать события выключенного календаря (пока каждое не выйдет из запрашиваемого временного окна — практически самолечится за ~2 дня, но строки в БД остаются навсегда).
+Sync's stale-event cleanup only runs over the currently SELECTED calendarIDs. After a calendar is deselected (`calendar select <id>`), it's no longer fetched AND no longer cleaned up — every previously synced event stays in calendar_events indefinitely with its old synced_at. `GetCalendarEvents` doesn't join is_selected, so `watchtower calendar`, briefing's gatherCalendar, and the AI context builder keep showing events from the disabled calendar (until each one ages out of the requested time window — it practically self-heals within ~2 days, but the rows in the DB remain forever).
 
 ```go
 for _, calID := range calendarIDs {
@@ -716,14 +716,14 @@ for _, calID := range calendarIDs {
 // calendarIDs = selected calendars only; deselected calendar's rows never touched
 ```
 
-- **Рекомендация:** При деселекте календаря сразу удалять его события (в `calendar select`), либо в Sync дополнительно чистить события всех is_selected=0 календарей.
+- **Recommendation:** Delete a calendar's events immediately on deselect (in `calendar select`), or additionally have Sync clean up events for all is_selected=0 calendars.
 
-### Пагинация syncChannel не защищена от HasMore=true с пустым NextCursor — бесконечный цикл на одной странице
+### syncChannel's pagination isn't guarded against HasMore=true with an empty NextCursor — an infinite loop on a single page
 
-- **Где:** `internal/sync/message_sync.go:346`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/sync/message_sync.go:346`
+- **Verification status:** ✅ confirmed
 
-Цикл `conversations.history` завершается только через `done := !resp.HasMore` или пустой ответ. Если Slack вернёт has_more=true с пустым response_metadata.next_cursor (исторически наблюдалось на границах с удалёнными сообщениями), `cursor = resp.NextCursor` сбрасывает cursor в "" и цикл вечно повторяет идентичный запрос (блокируя воркера, сжигая ~40 req/min глобального rate-бюджета, апсертя ту же страницу) до отмены контекста демона. Сам код защищается от этого в replies-пути — `GetConversationReplies` брейкает на `!hasMore || nextCursor == ""` (client.go:288), а history-вызывающий — нет.
+The `conversations.history` loop only ends via `done := !resp.HasMore` or an empty response. If Slack returns has_more=true with an empty response_metadata.next_cursor (historically observed at boundaries with deleted messages), `cursor = resp.NextCursor` resets cursor to "" and the loop repeats the identical request forever (blocking the worker, burning ~40 req/min of the global rate budget, re-upserting the same page) until the daemon's context is canceled. The code itself guards against this in the replies path — `GetConversationReplies` breaks on `!hasMore || nextCursor == ""` (client.go:288) — but the history caller doesn't.
 
 ```go
 done := !resp.HasMore
@@ -736,28 +736,28 @@ cursor = resp.NextCursor
 // vs client.go:288 (replies): if !hasMore || nextCursor == "" { break }
 ```
 
-- **Рекомендация:** Добавить тот же guard, что в replies: `if !resp.HasMore || resp.NextCursor == "" { break }` (плюс, опционально, верхний предел итераций как страховку).
+- **Recommendation:** Add the same guard as in replies: `if !resp.HasMore || resp.NextCursor == "" { break }` (plus, optionally, an upper iteration cap as a safety net).
 
-### SearchUsersByName игнорирует is_bot_override — несогласованно с GetUsers
+### SearchUsersByName ignores is_bot_override — inconsistent with GetUsers
 
-- **Где:** `internal/db/users.go:82`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/users.go:82`
+- **Verification status:** ✅ confirmed
 
-`GetUsers(ExcludeBots)` фильтрует через `COALESCE(is_bot_override, is_bot) = 0`, уважая колонку ручного оверрайда (оператор может пометить Slack-«бота» человеком через SetBotOverride). `SearchUsersByName` фильтрует по голому `is_bot = 0`, поэтому пользователь с is_bot_override=0, is_bot=1 никогда не появляется в поиске по имени (MCP people lookup), хотя виден в обычном списке людей.
+`GetUsers(ExcludeBots)` filters via `COALESCE(is_bot_override, is_bot) = 0`, respecting the manual-override column (an operator can mark a Slack "bot" as human via SetBotOverride). `SearchUsersByName` filters on the bare `is_bot = 0`, so a user with is_bot_override=0, is_bot=1 never shows up in name search (MCP people lookup), even though they're visible in the regular people list.
 
 ```sql
 WHERE is_bot = 0 AND is_deleted = 0  -- SearchUsersByName
 -- vs "COALESCE(is_bot_override, is_bot) = 0" -- GetUsers
 ```
 
-- **Рекомендация:** Заменить условие на `COALESCE(is_bot_override, is_bot) = 0`, как в GetUsers и channel_stats.
+- **Recommendation:** Replace the condition with `COALESCE(is_bot_override, is_bot) = 0`, as in GetUsers and channel_stats.
 
-### FindPendingInboxByThread глотает все ошибки запроса, порождая дубли inbox-items при транзиентных сбоях
+### FindPendingInboxByThread swallows every query error, producing duplicate inbox items on transient failures
 
-- **Где:** `internal/db/inbox.go:88`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/db/inbox.go:88`
+- **Verification status:** ✅ confirmed
 
-Любая ошибка QueryRow (не только ErrNoRows) конвертируется в (0, nil) — «не найдено». При транзиентной ошибке (SQLITE_BUSY несмотря на busy_timeout, I/O-ошибка) inbox-пайплайн решает, что pending-item для треда нет, и создаёт новый — дубликаты на один тред, которые потом чинит repair-проход DeduplicateThreadInboxItems (сам по себе баговый, см. High). Настоящие ошибки надо отличать от sql.ErrNoRows.
+Any QueryRow error (not just ErrNoRows) is converted into (0, nil) — "not found." On a transient error (SQLITE_BUSY despite busy_timeout, an I/O error), the inbox pipeline concludes there's no pending item for the thread and creates a new one — duplicates per thread, later cleaned up by the (itself buggy, see High) DeduplicateThreadInboxItems repair pass. Real errors need to be distinguished from sql.ErrNoRows.
 
 ```go
 err := db.QueryRow(`SELECT id FROM inbox_items WHERE channel_id = ? AND thread_ts = ? AND status = 'pending' ...`).Scan(&id)
@@ -766,14 +766,14 @@ if err != nil {
 }
 ```
 
-- **Рекомендация:** `if errors.Is(err, sql.ErrNoRows) { return 0, nil }; return 0, err` — и обрабатывать ошибку у вызывающего (пропускать кандидата в этом цикле вместо создания дубля).
+- **Recommendation:** `if errors.Is(err, sql.ErrNoRows) { return 0, nil }; return 0, err` — and handle the error at the call site (skip the candidate for this cycle instead of creating a duplicate).
 
-### storeDigest пишет строку "null" вместо "[]" для пустых topics/decisions/action_items/situations, ломая downstream-проверки != "[]"
+### storeDigest writes the string "null" instead of "[]" for empty topics/decisions/action_items/situations, breaking downstream != "[]" checks
 
-- **Где:** `internal/digest/pipeline.go:1290`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/digest/pipeline.go:1290`
+- **Verification status:** ✅ confirmed
 
-Когда result.Topics пуст (AI вернул `"topics": []` — реалистично для тихих каналов/дней), allTopicTitles/allDecisions/allActionItems/allSituations остаются nil-слайсами, а `json.Marshal(nil-slice)` даёт "null". Строка digests хранит topics="null", decisions="null" и т.д. Downstream-guard'ы проверяют `d.Decisions != "" && d.Decisions != "[]"` (lines 1009, 1083), поэтому литеральный текст «Decisions: null» инжектится в промпты daily-rollup и weekly-trends, а любой потребитель, различающий пусто/содержимое по "[]", неверно классифицирует такие строки.
+When result.Topics is empty (the AI returned `"topics": []` — realistic for quiet channels/days), allTopicTitles/allDecisions/allActionItems/allSituations stay nil slices, and `json.Marshal(nil-slice)` produces "null". The digests row ends up with topics="null", decisions="null", etc. Downstream guards check `d.Decisions != "" && d.Decisions != "[]"` (lines 1009, 1083), so the literal text "Decisions: null" gets injected into the daily-rollup and weekly-trends prompts, and any consumer that distinguishes empty vs. populated by "[]" misclassifies these rows.
 
 ```go
 topics, _ := json.Marshal(allTopicTitles)      // nil []string → "null"
@@ -781,14 +781,14 @@ decisions, _ := json.Marshal(allDecisions)     // nil []Decision → "null"
 // later: if d.Decisions != "" && d.Decisions != "[]" { fmt.Fprintf(&sb, "Decisions: %s\n", …) }
 ```
 
-- **Рекомендация:** Инициализировать слайсы как `make([]T, 0)` перед агрегацией (или добавить "null" в downstream-guard'ы). Первый вариант чище — тогда в БД всегда "[]".
+- **Recommendation:** Initialize the slices as `make([]T, 0)` before aggregation (or add "null" to the downstream guards). The first option is cleaner — then the DB always has "[]".
 
-### prompt_version дайджеста протаскивается через пайплайн, но никогда не персистится — в таблице digests всегда 0
+### The digest's prompt_version travels through the pipeline but is never persisted — it's always 0 in the digests table
 
-- **Где:** `internal/digest/pipeline.go:1315`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/digest/pipeline.go:1315`
+- **Verification status:** ✅ confirmed
 
-storeDigest заполняет db.Digest.PromptVersion версией из prompt store, но INSERT/UPDATE-список колонок `UpsertDigest` (db/digests.go:16-31) не содержит prompt_version, а GetDigests его не селектит. Колонка схемы `prompt_version INTEGER NOT NULL DEFAULT 0` остаётся 0 для каждого дайджеста — провенанс версий промптов для digests молча сломан (tracks/people cards свои персистят).
+storeDigest populates db.Digest.PromptVersion from the prompt store's version, but the INSERT/UPDATE column list of `UpsertDigest` (db/digests.go:16-31) doesn't include prompt_version, and GetDigests doesn't select it. The schema column `prompt_version INTEGER NOT NULL DEFAULT 0` stays 0 for every digest — prompt-version provenance for digests is silently broken (tracks/people cards do persist theirs).
 
 ```go
 PromptVersion:  promptVersion,
@@ -797,14 +797,14 @@ PromptVersion:  promptVersion,
 //   input_tokens, output_tokens, cost_usd) — no prompt_version
 ```
 
-- **Рекомендация:** Добавить prompt_version в column-list INSERT/UPDATE в UpsertDigest и в SELECT GetDigests; поправить тест, отмечающий «prompt_version may not be scanned».
+- **Recommendation:** Add prompt_version to the INSERT/UPDATE column list in UpsertDigest and to the SELECT in GetDigests; fix the test that notes "prompt_version may not be scanned."
 
-### Пер-шаговая статистика токенов tracks всегда 0: LastStepInputTokens/LastStepOutputTokens обнуляются и никогда не обновляются из usage
+### Per-step tracks token stats are always 0: LastStepInputTokens/LastStepOutputTokens are zeroed and never updated from usage
 
-- **Где:** `internal/tracks/pipeline.go:569`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/tracks/pipeline.go:569`
+- **Verification status:** ✅ confirmed
 
-runTrackBatches зануляет LastStepInputTokens/LastStepOutputTokens перед каждым батчем, но generateBatchTracks добавляет usage только в атомарные тоталы (lines 933-937) — LastStep*-поля никто не пишет. cmd/tracks.go:647-648 читает их внутри OnProgress для записи пер-шаговой статистики, так что каждый tracks-шаг записывается с 0 токенов, хотя usage доступен. Соседние пайплайны (digest, inbox, guide) поля заполняют — tracks выбивается.
+runTrackBatches zeroes LastStepInputTokens/LastStepOutputTokens before each batch, but generateBatchTracks only adds usage to the running atomic totals (lines 933-937) — nothing ever writes the LastStep* fields. cmd/tracks.go:647-648 reads them inside OnProgress to record per-step stats, so every tracks step gets logged with 0 tokens even though the usage data is available. Neighboring pipelines (digest, inbox, guide) populate these fields — tracks is the outlier.
 
 ```go
 p.LastStepInputTokens = 0
@@ -813,14 +813,14 @@ p.LastStepOutputTokens = 0
 n, err := p.generateBatchTracks(…)  // usage goes only to p.totalInputTokens.Add(…); LastStep tokens never set
 ```
 
-- **Рекомендация:** В generateBatchTracks (или сразу после его возврата в runTrackBatches) присваивать LastStep*-поля из usage данного вызова — по образцу digest/pipeline.go:840-841.
+- **Recommendation:** In generateBatchTracks (or right after it returns in runTrackBatches), assign the LastStep* fields from that call's usage — following the pattern in digest/pipeline.go:840-841.
 
-### Байтовое усечение UTF-8 текста при сборке промптов режет мультибайтовые руны (кириллицу), давая невалидный UTF-8
+### Byte-based UTF-8 truncation when building prompts cuts multi-byte runes (Cyrillic), producing invalid UTF-8
 
-- **Где:** `internal/tracks/pipeline.go:1103`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/tracks/pipeline.go:1103`
+- **Verification status:** ✅ confirmed
 
-formatExistingTracks усекает контекст через `c[:120]` (байтовый индекс), хотя собственный хелпер пакета `truncate()` корректно режет по рунам. Тот же паттерн: digest formatMessages (digest/pipeline.go:1602-1604), tracks enrichKeyMessages (line 1161, `text[:200]`), guide formatRawMessages (guide/pipeline.go:847). Воркспейс русскоязычный (2-байтовые руны), усечение регулярно попадает в середину руны, встраивая невалидный UTF-8 байт в промпт (json.Marshal в enrichKeyMessages подставляет U+FFFD). Косметическая порча контента промпта на каждой границе усечения.
+formatExistingTracks truncates context via `c[:120]` (a byte index), even though the package's own `truncate()` helper correctly cuts by rune. Same pattern elsewhere: digest's formatMessages (digest/pipeline.go:1602-1604), tracks' enrichKeyMessages (line 1161, `text[:200]`), guide's formatRawMessages (guide/pipeline.go:847). This workspace is Russian-language (2-byte runes), so truncation regularly lands mid-rune, embedding an invalid UTF-8 byte in the prompt (json.Marshal in enrichKeyMessages substitutes U+FFFD). Cosmetic corruption of prompt content at every truncation boundary.
 
 ```go
 c := sanitize(track.Context)
@@ -829,14 +829,14 @@ if len(c) > 120 {
 }  // vs func truncate(s string, maxLen int) { runes := []rune(s); … } three screens below
 ```
 
-- **Рекомендация:** Во всех четырёх местах заменить байтовые срезы на рунобезопасный truncate (он уже есть в tracks — вынести в общий util или продублировать).
+- **Recommendation:** Replace the byte slices with a rune-safe truncate in all four places (it already exists in tracks — extract it into a shared util or duplicate it).
 
-### Briefing-пайплайн разыменовывает usage.Model после nil-guard'а на usage
+### The briefing pipeline dereferences usage.Model after a nil guard on usage
 
-- **Где:** `internal/briefing/pipeline.go:245`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/briefing/pipeline.go:245`
+- **Verification status:** ✅ confirmed
 
-RunForDate защищается `if usage != nil` при чтении токен-каунтов (lines 225-229), признавая, что интерфейс digest.Generator может вернуть nil *Usage при nil error, — но затем безусловно читает usage.Model при сборке db.Briefing. Любая реализация Generator, возвращающая `(response, nil, "", nil)` — что разрешено интерфейсом и делается тест-моками, — уронит briefing-фазу демона nil-pointer'ом. In-repo генераторы сейчас всегда возвращают non-nil usage при успехе, так что дефект латентный; остальные пайплайны (inbox, dayplan) nil обрабатывают.
+RunForDate guards `if usage != nil` when reading token counts (lines 225-229), acknowledging that the digest.Generator interface can return a nil *Usage with a nil error — but then unconditionally reads usage.Model when building db.Briefing. Any Generator implementation returning `(response, nil, "", nil)` — which the interface allows and which test mocks do — crashes the daemon's briefing phase with a nil pointer. The in-repo generators currently always return a non-nil usage on success, so the defect is latent; the other pipelines (inbox, dayplan) do handle nil.
 
 ```go
 var inTok, outTok, totalAPI int
@@ -845,14 +845,14 @@ if usage != nil { inTok = usage.InputTokens; ... }
 briefing := db.Briefing{ ... Model: usage.Model,  // no nil guard
 ```
 
-- **Рекомендация:** Вынести `model := ""` под тот же `if usage != nil` блок и использовать переменную в структуре.
+- **Recommendation:** Move `model := ""` under the same `if usage != nil` block and use that variable in the struct.
 
-### «Never show me this» молча превращается в no-op при сбое upsert'а правила
+### "Never show me this" silently becomes a no-op when the rule upsert fails
 
-- **Где:** `internal/inbox/feedback.go:30`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/inbox/feedback.go:30`
+- **Verification status:** ✅ confirmed
 
-Ветка never_show в SubmitFeedback использует `if err := database.UpsertLearnedRule(...); err == nil && len(logger) > 0 ...` — результат ошибки решает только, ЛОГИРОВАТЬ ли успех, и иначе отбрасывается; функция возвращает nil в любом случае. Если upsert падает (SQLITE_BUSY от параллельно пишущего демона, CHECK-нарушение), явный one-click hard mute пользователя (escape hatch INBOX-04) молча теряется: строка фидбека есть, а mute-правило не материализовалось — отправитель продолжает пиниться/приоритизироваться, и сбой нигде не всплывает.
+The never_show branch in SubmitFeedback uses `if err := database.UpsertLearnedRule(...); err == nil && len(logger) > 0 ...` — the error result only decides whether to LOG success, and is otherwise discarded; the function returns nil either way. If the upsert fails (SQLITE_BUSY from a concurrently-writing daemon, a CHECK violation), the user's explicit one-click hard mute (the INBOX-04 escape hatch) is silently lost: the feedback row exists, but the mute rule never materialized — the sender keeps getting pinned/prioritized, and the failure never surfaces anywhere.
 
 ```go
 if err := database.UpsertLearnedRule(db.InboxLearnedRule{RuleType: "source_mute",
@@ -863,14 +863,14 @@ if err := database.UpsertLearnedRule(db.InboxLearnedRule{RuleType: "source_mute"
 // err != nil path: swallowed, SubmitFeedback returns nil
 ```
 
-- **Рекомендация:** Пробрасывать ошибку UpsertLearnedRule из SubmitFeedback (как делают более ранние записи в той же функции), чтобы вызывающий мог показать сбой и пользователь — повторить действие.
+- **Recommendation:** Propagate the UpsertLearnedRule error out of SubmitFeedback (as the earlier writes in the same function already do), so the caller can surface the failure and the user can retry.
 
-### Ctrl+C на простаивающем REPL отменяет контекст, но цикл остаётся заблокированным в scanner.Scan до нажатия Enter
+### Ctrl+C on an idle REPL cancels the context, but the loop stays blocked in scanner.Scan until Enter is pressed
 
-- **Где:** `internal/repl/repl.go:104`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/repl/repl.go:104`
+- **Verification status:** ✅ confirmed
 
-Idle-ветка signal-горутины вызывает cancel() и возвращается, но главный цикл заблокирован внутри scanner.Scan() на stdin (repl.go:127). Go-рантайм перезапускает read после EINTR, а проверка ctx.Done() выполняется только в начале следующей итерации — для чего read должен сперва завершиться. Нажатие Ctrl+C в простое (задокументированный способ выхода: «Ctrl+C to quit») печатает перевод строки и внешне ничего не делает; процесс выходит только после дополнительного Enter (или Ctrl+D). Причём после возврата горутины дальнейшие Ctrl+C глотаются signal.Notify с непрочитанным каналом ёмкости 1 — принудительно выйти вторым Ctrl+C нельзя.
+The idle branch of the signal goroutine calls cancel() and returns, but the main loop is blocked inside scanner.Scan() on stdin (repl.go:127). The Go runtime restarts the read after EINTR, and the ctx.Done() check only happens at the start of the next iteration — which requires the read to finish first. Pressing Ctrl+C while idle (the documented way to quit: "Ctrl+C to quit") prints a newline and outwardly does nothing; the process only exits after an additional Enter (or Ctrl+D). Worse, once the goroutine has returned, further Ctrl+C presses are swallowed by signal.Notify with its unread, capacity-1 channel — there's no way to force a second Ctrl+C to exit.
 
 ```go
 } else {
@@ -880,14 +880,14 @@ Idle-ветка signal-горутины вызывает cancel() и возвр�
 }
 ```
 
-- **Рекомендация:** В idle-ветке после cancel() вызывать `signal.Stop(sigCh)` и завершать процесс явно (`os.Exit(0)` после аккуратных defers) либо читать stdin в отдельной горутине с каналом строк, чтобы select мог реагировать на ctx.Done().
+- **Recommendation:** In the idle branch, after cancel(), call `signal.Stop(sigCh)` and exit the process explicitly (`os.Exit(0)` after tidy defers), or read stdin in a separate goroutine over a line channel so the select can react to ctx.Done().
 
-### Сбои батч-upsert'а при Jira-sync только логируются, но watermark всё равно продвигается — упавшие страницы молча теряются
+### Jira sync batch-upsert failures are only logged, but the watermark advances anyway — failed pages are silently lost
 
-- **Где:** `internal/jira/sync.go:330`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `internal/jira/sync.go:330`
+- **Verification status:** ✅ confirmed
 
-В writer-цикле syncWithJQL ошибка UpsertJiraIssueBatch (например SQLITE_BUSY, пока Desktop держит общую БД) логируется, цикл продолжается; `written` всё равно засчитывает упавшие issues, syncWithJQL не возвращает ошибку. Sync() затем продвигает last_synced_at до now, так что issues из упавшего батча (транзакция всё-или-ничего откатывает всю страницу) не будут перевыкачаны, пока их снова не обновят в Jira — тихий невосстановимый пробел в локальном зеркале.
+In syncWithJQL's writer loop, an `UpsertJiraIssueBatch` error (e.g. SQLITE_BUSY while Desktop is holding the shared DB) is only logged and the loop continues; `written` still counts the failed issues, and syncWithJQL doesn't return an error. Sync() then advances last_synced_at to now, so the issues from the failed batch (an all-or-nothing transaction rolls back the whole page) won't be re-fetched until they're updated in Jira again — a silent, unrecoverable gap in the local mirror.
 
 ```go
 if err := s.db.UpsertJiraIssueBatch(dbIssues, dbLinks); err != nil {
@@ -897,14 +897,14 @@ written += len(dbIssues)
 // caller: total += n; _ = s.db.UpdateJiraSyncState(projectKey, now, issuesSynced)
 ```
 
-- **Рекомендация:** Пробрасывать ошибку батча наверх (или собирать в multierror) и при её наличии не продвигать watermark для проекта — по аналогии с исправлением search-sync watermark.
+- **Recommendation:** Propagate the batch error upward (or collect into a multierror) and, when present, don't advance the watermark for that project — analogous to the search-sync watermark fix.
 
-### jira login записывает имя сайта в jira.user_display_name — status показывает сайт вместо пользователя
+### jira login writes the site name into jira.user_display_name — status shows the site instead of the user
 
-- **Где:** `cmd/jira.go:302`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/jira.go:302`
+- **Verification status:** ✅ confirmed
 
-runJiraLogin персистит `v.Set("jira.user_display_name", site.Name)`, где site — выбранный CloudResource (Jira-сайт, например "mycompany"), а не аутентифицированный пользователь. runJiraStatus печатает `User: %s` из cfg.Jira.UserDisplayName, так что `watchtower jira status` (и Desktop Settings, читающий тот же ключ) показывает имя сайта как display name пользователя.
+runJiraLogin persists `v.Set("jira.user_display_name", site.Name)`, where site is the selected CloudResource (the Jira site, e.g. "mycompany"), not the authenticated user. runJiraStatus prints `User: %s` from cfg.Jira.UserDisplayName, so `watchtower jira status` (and Desktop Settings, which reads the same key) shows the site name as the user's display name.
 
 ```go
 v.Set("jira.site_url", site.URL)
@@ -912,14 +912,14 @@ v.Set("jira.user_display_name", site.Name)
 // runJiraStatus: fmt.Fprintf(out, "User: %s\n", cfg.Jira.UserDisplayName)
 ```
 
-- **Рекомендация:** После логина запрашивать `/rest/api/3/myself` и сохранять реальное displayName пользователя; имя сайта хранить отдельным ключом (например jira.site_name), если оно нужно.
+- **Recommendation:** After login, query `/rest/api/3/myself` and store the user's actual displayName; keep the site name under a separate key (e.g. jira.site_name) if it's still needed.
 
-### truncate() в cmd/jira.go режет по байтам — невалидный UTF-8 для мультибайтовых имён
+### truncate() in cmd/jira.go cuts by bytes — invalid UTF-8 for multi-byte names
 
-- **Где:** `cmd/jira.go:1438`
-- **Статус верификации:** ✅ подтверждено
+- **Where:** `cmd/jira.go:1438`
+- **Verification status:** ✅ confirmed
 
-truncate() срезает по байтовым смещениям (`s[:maxLen-3]`). Jira display names и имена досок на кириллице (данные этого воркспейса частично русско/украиноязычные) — 2+ байта на руну, поэтому таблицы `jira users` и `jira boards` могут резать середину руны и печатать replacement/мусорный символ в точке усечения. Ср. internal/targets/resolver.go, где для той же цели корректно реализован truncateRunes.
+truncate() slices by byte offset (`s[:maxLen-3]`). Jira display names and board names in Cyrillic (this workspace's data is partly Russian/Ukrainian) are 2+ bytes per rune, so the `jira users` and `jira boards` tables can cut mid-rune and print a replacement/garbled character at the truncation point. Cf. internal/targets/resolver.go, where the same purpose is correctly implemented via truncateRunes.
 
 ```go
 func truncate(s string, maxLen int) string {
@@ -931,4 +931,5 @@ func truncate(s string, maxLen int) string {
 }
 ```
 
-- **Рекомендация:** Заменить на рунобезопасную версию (`[]rune`-срез, как truncateRunes в targets/resolver.go), в идеале — общий хелпер.
+- **Recommendation:** Replace with a rune-safe version (a `[]rune` slice, like truncateRunes in targets/resolver.go), ideally as a shared helper.
+</content>

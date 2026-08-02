@@ -47,8 +47,27 @@ struct GeneralSettings: View {
     @State private var slackReconnectResult: String?
     @State private var slackReconnectSuccess = false
     @State private var slackAuthProcess: Process?
-    @State private var googleAuth = GoogleAuthService()
+    @State private var slackAuth = SlackAuthService()
+    @State private var slackDisconnecting = false
+    @State private var showSlackDisconnectConfirm = false
     @State private var jiraAuth = JiraAuthService()
+    @State private var showAddEmailAccountSheet = false
+    @State private var accountPendingRemoval: EmailAccount?
+    @State private var showAddCalendarAccountSheet = false
+    @State private var calendarAccountPendingRemoval: CalendarAccount?
+    @State private var showAddGoogleAccountSheet = false
+    @State private var googleAccountPendingRemoval: GoogleAccount?
+
+    @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
+    @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
+    @AppStorage("transcription.langset") private var transcriptionLangset = "ru,uk,en"
+    @AppStorage("transcription.windowSec") private var transcriptionWindowSec = 20.0
+    @AppStorage("transcription.langThreshold") private var transcriptionLangThreshold = 0.6
+    @AppStorage("transcription.margin") private var transcriptionMargin = 0.2
+    @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
+    @AppStorage("transcription.diarization") private var transcriptionDiarization = true
+    @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
+    @State private var showAdvancedTranscription = false
 
     var body: some View {
         Form {
@@ -59,6 +78,12 @@ struct GeneralSettings: View {
             dayPlanSection
             aiSection
             calendarSettingsSection
+            googleAccountsSection
+            calendarAccountsSection
+            calendarSelectionSection
+            gmailSettingsSection
+            emailAccountsSection
+            transcriptionSection
             jiraSettingsSection
 
             if let error = config.parseError {
@@ -82,6 +107,15 @@ struct GeneralSettings: View {
         .safeAreaInset(edge: .bottom) {
             bottomBar
         }
+        .onAppear {
+            // Re-stat tokens/config: a connect or disconnect may have happened
+            // outside this window (Calendar tab, Inbox banner, CLI).
+            jiraAuth.checkStatus()
+            slackAuth.checkStatus()
+            appState.emailAccountsViewModel?.refresh()
+            appState.calendarAccountsViewModel?.refresh()
+            appState.googleAccountsViewModel?.refresh()
+        }
     }
 
     private var workspaceSection: some View {
@@ -92,6 +126,11 @@ struct GeneralSettings: View {
             }
 
             HStack {
+                Image(systemName: slackAuth.isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle")
+                    .foregroundStyle(slackAuth.isConnected ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                Text(slackAuth.isConnected ? "Slack connected" : "Slack not connected")
+                Spacer()
+
                 Button {
                     reconnectSlack()
                 } label: {
@@ -100,10 +139,12 @@ struct GeneralSettings: View {
                             ProgressView()
                                 .controlSize(.small)
                         }
-                        Text(slackReconnecting ? "Connecting..." : "Reconnect Slack")
+                        Text(slackReconnecting
+                            ? "Connecting..."
+                            : (slackAuth.isConnected ? "Reconnect Slack" : "Connect Slack"))
                     }
                 }
-                .disabled(slackReconnecting)
+                .disabled(slackReconnecting || slackDisconnecting)
 
                 if slackReconnecting {
                     Button("Cancel") {
@@ -111,7 +152,24 @@ struct GeneralSettings: View {
                     }
                 }
 
-                if let result = slackReconnectResult {
+                if slackAuth.isConnected {
+                    Button(role: .destructive) {
+                        showSlackDisconnectConfirm = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            if slackDisconnecting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(slackDisconnecting ? "Disconnecting..." : "Disconnect")
+                        }
+                    }
+                    .disabled(slackReconnecting || slackDisconnecting)
+                }
+            }
+
+            if let result = slackReconnectResult {
+                HStack {
                     Image(systemName: slackReconnectSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundStyle(slackReconnectSuccess ? .green : .red)
                     Text(result)
@@ -121,6 +179,44 @@ struct GeneralSettings: View {
                         .textSelection(.enabled)
                 }
             }
+
+            if let err = slackAuth.error {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .confirmationDialog(
+            "Disconnect Slack?",
+            isPresented: $showSlackDisconnectConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Disconnect & Delete Slack Data", role: .destructive) {
+                disconnectSlack()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Removes the Slack connection and deletes all synced Slack messages plus the AI products "
+                    + "built on them (digests, tracks, people cards, inbox items, situations). "
+                    + "Gmail, Calendar, and Jira data are kept."
+            )
+        }
+    }
+
+    private func disconnectSlack() {
+        slackDisconnecting = true
+        Task {
+            // Stop the daemon first so it doesn't rewrite Slack data mid-purge,
+            // then restart it — without a token it skips the Slack phase.
+            await daemonManager.stopDaemon()
+            await slackAuth.disconnect()
+            if slackAuth.error == nil {
+                config.reload()
+                slackReconnectResult = nil
+            }
+            await daemonManager.startDaemon()
+            slackDisconnecting = false
         }
     }
 
@@ -374,62 +470,452 @@ struct GeneralSettings: View {
         }
     }
 
+    /// Global calendar-sync toggles only — connect/disconnect for individual
+    /// Google accounts now lives in `googleAccountsSection` below, since a
+    /// workspace can have more than one Google account granting Calendar
+    /// access.
     private var calendarSettingsSection: some View {
         Section("Google Calendar") {
-            if googleAuth.isConnected {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Connected")
-                    Spacer()
-                    Button("Disconnect") {
-                        googleAuth.disconnect()
-                        config.calendarEnabled = false
-                        saveConfig()
+            Toggle("Enable calendar sync", isOn: $config.calendarEnabled)
+                .onChange(of: config.calendarEnabled) { _, _ in saveConfig() }
+
+            Picker("Sync days ahead", selection: $config.calendarSyncDaysAhead) {
+                Text("2 days").tag(2)
+                Text("3 days").tag(3)
+                Text("5 days").tag(5)
+                Text("7 days").tag(7)
+                Text("14 days").tag(14)
+            }
+        }
+    }
+
+    /// Global Gmail-sync toggle only — connect/disconnect for individual
+    /// Google accounts now lives in `googleAccountsSection` below, since a
+    /// workspace can have more than one Google account granting Gmail access.
+    private var gmailSettingsSection: some View {
+        Section("Gmail") {
+            Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
+                .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
+        }
+    }
+
+    /// Google Accounts section — the multi-account Calendar/Gmail
+    /// connections (`google_accounts` table), each independently granting
+    /// Calendar and/or Gmail access via its own OAuth consent. Modeled on
+    /// `emailAccountsSection`/`calendarAccountsSection` below, placed before
+    /// `calendarAccountsSection` since Google usually comes first for a new
+    /// user.
+    private var googleAccountsSection: some View {
+        Section("Google Accounts") {
+            if let vm = appState.googleAccountsViewModel {
+                if vm.accounts.isEmpty {
+                    Text("No Google accounts connected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.accounts) { account in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.displayName)
+                                HStack(spacing: 8) {
+                                    if account.calendarEnabled {
+                                        Label("Calendar", systemImage: "calendar")
+                                    }
+                                    if account.gmailEnabled {
+                                        Label("Gmail", systemImage: "envelope")
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(googleAccountStatusColor(account))
+                                .frame(width: 8, height: 8)
+                                .help(account.isOK ? "Connected" : account.error)
+                            if !account.isOK {
+                                Button("Re-login") {
+                                    vm.relogin(account)
+                                }
+                                .disabled(vm.isConnecting)
+                            }
+                            Button("Remove") {
+                                googleAccountPendingRemoval = account
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                            .disabled(vm.isConnecting)
+                        }
                     }
                 }
 
-                Toggle("Enable calendar sync", isOn: $config.calendarEnabled)
-                    .onChange(of: config.calendarEnabled) { _, _ in saveConfig() }
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
 
-                Picker("Sync days ahead", selection: $config.calendarSyncDaysAhead) {
-                    Text("2 days").tag(2)
-                    Text("3 days").tag(3)
-                    Text("5 days").tag(5)
-                    Text("7 days").tag(7)
-                    Text("14 days").tag(14)
+                Button("Add Google Account") {
+                    showAddGoogleAccountSheet = true
+                }
+                .disabled(vm.isConnecting)
+            } else {
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $showAddGoogleAccountSheet) {
+            AddGoogleAccountView()
+                .environment(appState)
+        }
+        .confirmationDialog(
+            "Remove \(googleAccountPendingRemoval?.displayName ?? "this account")?",
+            isPresented: Binding(
+                get: { googleAccountPendingRemoval != nil },
+                set: { if !$0 { googleAccountPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Account", role: .destructive) {
+                if let account = googleAccountPendingRemoval {
+                    Task { await appState.googleAccountsViewModel?.remove(account) }
+                }
+                googleAccountPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Removes the connection and stops syncing this account's Calendar and Gmail data. "
+                    + "Already-synced events/messages and AI products built on them are kept."
+            )
+        }
+    }
+
+    private func googleAccountStatusColor(_ account: GoogleAccount) -> Color {
+        if account.isOK { return .green }
+        if account.isRevoked { return .red }
+        return .orange
+    }
+
+    /// Email Accounts section — the multi-account IMAP/Outlook connections,
+    /// distinct from Gmail's single-account section above. Each row is a DB row
+    /// (`email_accounts`), not a token file, so status can be ok/error/revoked
+    /// per account rather than a single connected/disconnected flag.
+    private var emailAccountsSection: some View {
+        Section("Email Accounts") {
+            if let vm = appState.emailAccountsViewModel {
+                if vm.accounts.isEmpty {
+                    Text("No IMAP or Outlook accounts connected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.accounts) { account in
+                        HStack {
+                            Image(systemName: account.isOutlook ? "envelope.badge.fill" : "server.rack")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(account.displayName)
+                                Text(account.isOutlook ? "Outlook" : "IMAP \u{00B7} \(account.host)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(emailAccountStatusColor(account))
+                                .frame(width: 8, height: 8)
+                            Button("Remove") {
+                                accountPendingRemoval = account
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button("Add Account") {
+                    showAddEmailAccountSheet = true
                 }
             } else {
-                HStack {
-                    Image(systemName: "calendar.badge.plus")
-                        .foregroundStyle(.secondary)
-                    Text("Not connected")
-                    Spacer()
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $showAddEmailAccountSheet) {
+            AddEmailAccountView()
+                .environment(appState)
+        }
+        .confirmationDialog(
+            "Remove \(accountPendingRemoval?.displayName ?? "this account")?",
+            isPresented: Binding(
+                get: { accountPendingRemoval != nil },
+                set: { if !$0 { accountPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Account", role: .destructive) {
+                if let account = accountPendingRemoval {
+                    Task { await appState.emailAccountsViewModel?.remove(account) }
+                }
+                accountPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Removes the connection and stops syncing this mailbox. "
+                    + "Already-synced messages and AI products built on them are kept."
+            )
+        }
+    }
 
-                    if googleAuth.isAuthenticating {
-                        ProgressView().controlSize(.small)
-                        Button("Cancel") { googleAuth.cancelConnect() }
-                    } else {
-                        Button("Connect") {
-                            googleAuth.connect()
+    private func emailAccountStatusColor(_ account: EmailAccount) -> Color {
+        if account.isOK { return .green }
+        if account.isRevoked { return .orange }
+        return .red
+    }
+
+    /// Calendar Accounts section — the multi-account CalDAV/ICS connections,
+    /// distinct from Google Calendar's single-account section above. Each row
+    /// is a DB row (`calendar_accounts`), so status can be ok/error per
+    /// account rather than a single connected/disconnected flag.
+    private var calendarAccountsSection: some View {
+        Section("Calendar Accounts") {
+            if let vm = appState.calendarAccountsViewModel {
+                if vm.accounts.isEmpty {
+                    Text("No CalDAV or ICS calendars connected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.accounts) { account in
+                        HStack {
+                            Image(systemName: account.isICS ? "link" : "server.rack")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(account.displayName)
+                                Text(account.isICS ? "ICS feed" : "CalDAV \u{00B7} \(account.url)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(account.isOK ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Button("Remove") {
+                                calendarAccountPendingRemoval = account
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
                         }
-                        .buttonStyle(.borderedProminent)
+                    }
+                }
+
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button("Add Calendar") {
+                    showAddCalendarAccountSheet = true
+                }
+            } else {
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $showAddCalendarAccountSheet) {
+            AddCalendarAccountView()
+                .environment(appState)
+        }
+        .confirmationDialog(
+            "Remove \(calendarAccountPendingRemoval?.displayName ?? "this calendar")?",
+            isPresented: Binding(
+                get: { calendarAccountPendingRemoval != nil },
+                set: { if !$0 { calendarAccountPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Calendar", role: .destructive) {
+                if let account = calendarAccountPendingRemoval {
+                    Task { await appState.calendarAccountsViewModel?.remove(account) }
+                }
+                calendarAccountPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Removes the connection and stops syncing this calendar. "
+                    + "Already-synced events and AI products built on them are kept."
+            )
+        }
+    }
+
+    /// Per-calendar sync selection — the Desktop twin of `watchtower calendar
+    /// select <id>`. Grouped under one Section per connected Google account
+    /// (using `GoogleAccountsViewModel.accounts` for the header label) plus a
+    /// trailing group for CalDAV/ICS calendars (`account_id IS NULL`), so a
+    /// multi-account workspace can tell which calendar belongs to which
+    /// connection. `@ViewBuilder` because the group count varies with how
+    /// many accounts have synced calendars — unlike this file's other
+    /// section properties, which always render exactly one `Section`.
+    @ViewBuilder
+    private var calendarSelectionSection: some View {
+        if let calVM = appState.calendarViewModel, !calVM.calendars.isEmpty {
+            ForEach(appState.googleAccountsViewModel?.accounts ?? []) { account in
+                let calendars = calVM.calendars.filter { $0.accountID == account.id }
+                if !calendars.isEmpty {
+                    Section("Calendars \u{00B7} \(account.displayName)") {
+                        calendarSelectionRows(calendars, calVM: calVM)
                     }
                 }
             }
-
-            if let err = googleAuth.error {
-                Text(err)
+            let otherCalendars = calVM.calendars.filter { $0.accountID == nil }
+            if !otherCalendars.isEmpty {
+                Section("Calendars \u{00B7} CalDAV/ICS") {
+                    calendarSelectionRows(otherCalendars, calVM: calVM)
+                }
+            }
+        } else {
+            Section("Synced Calendars") {
+                Text("No calendars synced yet.")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.secondary)
             }
         }
-        .onChange(of: googleAuth.isConnected) { _, connected in
-            if connected && !config.calendarEnabled {
-                config.calendarEnabled = true
-                saveConfig()
+    }
+
+    @ViewBuilder
+    private func calendarSelectionRows(_ calendars: [CalendarCalendarItem], calVM: CalendarViewModel) -> some View {
+        ForEach(calendars) { cal in
+            Toggle(isOn: Binding(
+                get: { cal.isSelected },
+                set: { calVM.setCalendarSelected(cal.id, selected: $0) }
+            )) {
+                HStack(spacing: 4) {
+                    Text(cal.name)
+                    if cal.isPrimary {
+                        Text("Primary")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
+    }
+
+    private var transcriptionSection: some View {
+        Section("Transcription") {
+            Picker("Engine", selection: $transcriptionProvider) {
+                ForEach(TranscriptionProviderRegistry.availableProviders(), id: \.displayName) { p in
+                    Text(p.displayName).tag(type(of: p).id)
+                }
+            }
+            .help("On-device transcription engine")
+            .onChange(of: transcriptionProvider) { _, id in
+                // Reset the model to the new provider's default, then prefetch.
+                let provider = TranscriptionProviderRegistry.resolve(providerID: id)
+                transcriptionModel = provider.models.first?.id ?? transcriptionModel
+                appState.transcriptionModelProvisioner.ensureDownloaded(providerID: id, model: transcriptionModel)
+            }
+
+            Picker("Model", selection: $transcriptionModel) {
+                ForEach(TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider).models) { m in
+                    Text(m.label).tag(m.id)
+                }
+            }
+            .help("Model used for on-device transcription")
+            .onChange(of: transcriptionModel) { _, newValue in
+                appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: newValue)
+            }
+
+            engineCapabilityCaption
+
+            if let supported = TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider)
+                .supportedLanguages(model: transcriptionModel) {
+                let missing = transcriptionLangset.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && !supported.contains($0) }
+                if !missing.isEmpty {
+                    Label("This engine does not support: \(missing.joined(separator: ", "))",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+
+            TextField(
+                "Languages",
+                text: $transcriptionLangset,
+                prompt: Text("ru,uk,en")
+            )
+            .help("Comma-separated language codes to detect per window")
+
+            Toggle("Speaker roles", isOn: $transcriptionDiarization)
+                .help("Label transcript lines with who was speaking ([Я] / [Speaker N]) using on-device diarization")
+
+            Toggle("Auto-record on join", isOn: $autoRecordOnJoin)
+                .help("Pressing Join on a calendar event also starts an event-linked recording (unless one is already running)")
+
+            Stepper(
+                "Delete audio after \(config.transcriptAudioRetentionDays) days",
+                value: $config.transcriptAudioRetentionDays,
+                in: 0...365
+            )
+            .help("Recording audio is deleted after this many days; transcript text is kept forever. 0 disables cleanup.")
+
+            DisclosureGroup("Advanced", isExpanded: $showAdvancedTranscription) {
+                LabeledContent("Window (seconds)") {
+                    TextField("", value: $transcriptionWindowSec, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Language threshold") {
+                    TextField("", value: $transcriptionLangThreshold, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Runner-up margin") {
+                    TextField("", value: $transcriptionMargin, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                TextField(
+                    "Force language",
+                    text: $transcriptionForceLang,
+                    prompt: Text("auto-detect")
+                )
+                .help("Set a language code (e.g. ru) to skip detection entirely")
+            }
+        }
+    }
+
+    /// One-line summary of what the selected engine/model can do, so the
+    /// live-vs-batch difference is visible right where the engine is chosen
+    /// (batch engines show no live panel while recording — that's expected,
+    /// not a bug).
+    private var engineCapabilityCaption: some View {
+        let provider = TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider)
+        var parts = [
+            provider.supportsLive
+                ? "Live transcript while recording"
+                : "No live transcript — text appears after Stop"
+        ]
+        if let langs = provider.supportedLanguages(model: transcriptionModel) {
+            parts.append("\(langs.count) languages")
+        } else {
+            parts.append("any language")
+        }
+        return Label(parts.joined(separator: " · "),
+                     systemImage: provider.supportsLive ? "waveform.badge.mic" : "clock")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     @ViewBuilder
@@ -734,6 +1220,7 @@ struct GeneralSettings: View {
                     slackReconnectSuccess = true
                     slackReconnectResult = "Connected"
                     config.reload()
+                    slackAuth.checkStatus()
                 } else if exitCode == 15 || exitCode == 9 {
                     // SIGTERM / SIGKILL — user cancelled
                     slackReconnectResult = nil

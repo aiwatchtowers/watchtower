@@ -11,7 +11,7 @@ Watchtower is an AI platform for analyzing Slack communications. Current integra
 **Profile:** Coordinates the team, tracks delivery, conducts 1:1s. Uses in Watchtower: Briefing, Tracks, Tasks, People Cards, Meeting Prep.
 
 **Key Pain Points:**
-- **Blind spot on work status:** Tracks show "what's being discussed in Slack" but not "what's actually in progress." Manager sees a track "Петр promised to fix a bug" but doesn't see that PROJ-123 has been In Review for 3 days and the sprint ends tomorrow.
+- **Blind spot on work status:** Tracks show "what's being discussed in Slack" but not "what's actually in progress." Manager sees a track "Peter promised to fix a bug" but doesn't see that PROJ-123 has been In Review for 3 days and the sprint ends tomorrow.
 - **No visibility into team workload:** Can't see who is overloaded (12 open issues + constant mentions) and who is idle. No data for balancing — task redistribution happens by gut feel, not by data.
 - **Stuck tasks and missed deadlines:** Learns about stuck tasks at standup or retro, not proactively. Overdue tickets pile up unnoticed — there's no unified picture of "what's on fire right now."
 - **No objective performance picture:** People Cards show communication profile but not delivery metrics. Impossible to tell who is systematically overworking (many tasks, high cycle time, evening activity) and who is underloaded.
@@ -40,7 +40,7 @@ Watchtower is an AI platform for analyzing Slack communications. Current integra
 | 2 | As an EM, I want Briefing → Attention to contain signals: stuck >3 days, unassigned, approaching deadline, overdue | **Must-have** |
 | 3 | As an EM, I want Meeting Prep for standup to show each participant's Jira tasks + Slack activity for each | **Must-have** |
 | 4 | As an EM, I want to see a **Workload Dashboard** for the team: for each employee — open issues count, total SP in progress, overdue count, avg cycle time, Slack activity — to see who is overloaded and who is underloaded | **Must-have** |
-| 5 | As an EM, I want Briefing → Team Pulse to contain compound overload signals: "Петр: 12 open issues + 40 messages/day + 6 meetings — risk of burnout" and underload signals: "Дима: 2 open issues, low Slack activity — possibly blocked or needs help" | **Must-have** |
+| 5 | As an EM, I want Briefing → Team Pulse to contain compound overload signals: "Peter: 12 open issues + 40 messages/day + 6 meetings — risk of burnout" and underload signals: "Dima: 2 open issues, low Slack activity — possibly blocked or needs help" | **Must-have** |
 | 6 | As an EM, I want to see a **Deadline Heatmap**: all team tasks with approaching/missed deadlines, sorted by criticality, with Slack context (why it's stuck) | **Must-have** |
 | 7 | As an EM, I want to ask AI Chat "what's the status of PROJ-1234?" and get Jira + Slack context | **Should-have** |
 | 8 | As an EM, I want People Cards to include "Workload & Delivery": tasks closed, cycle time, current load (open issues/SP), trend (rising/falling), overwork/underload signals | **Should-have** |
@@ -51,12 +51,12 @@ Watchtower is an AI platform for analyzing Slack communications. Current integra
 
 | Time | Action | What They See | Value |
 |------|--------|---------------|-------|
-| 08:30 | Daily Briefing | **Attention**: "PROJ-142 (@Пётр, Bug, High) — In Progress for 5 days. 2 overdue tasks: PROJ-180 (deadline yesterday), PROJ-195 (deadline today)." **Team Pulse**: "Пётр is overloaded: 10 open issues (28 SP) + 45 messages/day + 5 meetings. Дима is underloaded: 2 open issues (5 SP), low activity — consider redistribution" | Problems + workload imbalance in 1 min |
-| 09:00 | Meeting Prep (standup) | Each participant's Jira tasks + Slack activity. Workload: Пётр 28 SP / Аня 15 SP / Дима 5 SP. Talking point: "Redistribute PROJ-195 from Пётр to Дима" | Preparation + balancing decision |
+| 08:30 | Daily Briefing | **Attention**: "PROJ-142 (@Peter, Bug, High) — In Progress for 5 days. 2 overdue tasks: PROJ-180 (deadline yesterday), PROJ-195 (deadline today)." **Team Pulse**: "Peter is overloaded: 10 open issues (28 SP) + 45 messages/day + 5 meetings. Dima is underloaded: 2 open issues (5 SP), low activity — consider redistribution" | Problems + workload imbalance in 1 min |
+| 09:00 | Meeting Prep (standup) | Each participant's Jira tasks + Slack activity. Workload: Peter 28 SP / Anya 15 SP / Dima 5 SP. Talking point: "Redistribute PROJ-195 from Peter to Dima" | Preparation + balancing decision |
 | 11:00 | Inbox → track "code_review" | "Review PR #456 for PROJ-203" — Jira: In Review, High, Sprint 24, deadline tomorrow | Prioritization with sprint context |
-| 14:00 | Meeting Prep (1:1 with Пётр) | People Card: 5 tasks closed this week, but 10 open, cycle time +30%, evening Slack activity. Signal: "Possible overwork — workload 60% above average." Recommendation: discuss prioritization and delegation | 1:1 focused on the real problem |
-| 15:30 | Workload Dashboard | Team table: name → open issues → SP in progress → overdue → avg cycle time → Slack volume → meetings/day. Imbalance is visually obvious. Red zones: Пётр (overloaded), green: Дима (capacity available) | Data for task redistribution |
-| 16:30 | AI Chat: "What about the DB migration?" | 3 tasks in epic: 1 Done, 1 In Progress (stuck 4 days — in Slack Дима wrote about an index issue), 1 To Do | Full picture + reason for delay |
+| 14:00 | Meeting Prep (1:1 with Peter) | People Card: 5 tasks closed this week, but 10 open, cycle time +30%, evening Slack activity. Signal: "Possible overwork — workload 60% above average." Recommendation: discuss prioritization and delegation | 1:1 focused on the real problem |
+| 15:30 | Workload Dashboard | Team table: name → open issues → SP in progress → overdue → avg cycle time → Slack volume → meetings/day. Imbalance is visually obvious. Red zones: Peter (overloaded), green: Dima (capacity available) | Data for task redistribution |
+| 16:30 | AI Chat: "What about the DB migration?" | 3 tasks in epic: 1 Done, 1 In Progress (stuck 4 days — in Slack Dima wrote about an index issue), 1 To Do | Full picture + reason for delay |
 
 ### Pain-Gain Matrix
 
@@ -127,8 +127,8 @@ Watchtower is an AI platform for analyzing Slack communications. Current integra
 | Time | Action | What They See | Value |
 |------|--------|---------------|-------|
 | 09:00 | Daily Briefing | **Attention**: "Epic User Auth (deadline: Apr 20) — 2 tasks blocked >2 days, at current velocity we won't make it. Payment v2 (deadline: May 1) — on track, but PROJ-310 overdue." **What Happened** by epics with emphasis on movement toward deadlines | Timeline risks + blockers in 1 min |
-| 09:30 | Blocker Map | All blocked tasks by epic: PROJ-301 (blocked 3 days, reason from Slack: waiting for OAuth provider response, @Дима escalated). PROJ-310 (blocked 1 day, depends on PROJ-301). Who can unblock: @Дима → vendor, PM escalation needed | Targeted escalation instead of "we'll figure it out in the meeting" |
-| 10:00 | Meeting Prep (sync with designers) | Talking points linked to tasks + deadlines: "PROJ-340 [To Do, needed by Apr 15] — @Маша proposed 2 options, no decision made — blocks development start" | Agenda focused on timelines |
+| 09:30 | Blocker Map | All blocked tasks by epic: PROJ-301 (blocked 3 days, reason from Slack: waiting for OAuth provider response, @Dima escalated). PROJ-310 (blocked 1 day, depends on PROJ-301). Who can unblock: @Dima → vendor, PM escalation needed | Targeted escalation instead of "we'll figure it out in the meeting" |
+| 10:00 | Meeting Prep (sync with designers) | Talking points linked to tasks + deadlines: "PROJ-340 [To Do, needed by Apr 15] — @Masha proposed 2 options, no decision made — blocks development start" | Agenda focused on timelines |
 | 11:30 | Tracks → "decision_needed" | Each enriched: "Caching for PROJ-250 [High, Sprint 24, Epic: Performance, deadline: Apr 25]. Blocks 2 downstream tasks." | Decision prioritization by impact on delivery |
 | 14:00 | Weekly Trends | **Epic Progress & Forecast**: User Auth 60% (+15%), forecast: at risk (velocity 8 SP/week, need 15 SP in 2 weeks). Payment 80%, on track. Performance 30%, behind (3 blocked). **Risk changes**: Payment accelerated (+10%), Auth slowed down (-5%) | Forecast + trends in 5 min |
 | 15:00 | AI Chat: "Will we make the auth release?" | "At current velocity (8 SP/week) and remaining scope (15 SP) — no, need ~2 more weeks. 2 tasks blocked (reasons: ...). Options: 1) unblock PROJ-301 → +3 SP/week, 2) cut scope by 2 stories (low priority), 3) add a resource" | Data-driven decision instead of panic |
@@ -269,12 +269,12 @@ Watchtower is an AI platform for analyzing Slack communications. Current integra
 
 | Time | Action | What They See | Value |
 |------|--------|---------------|-------|
-| 09:30 | Briefing → Your Day | **My tasks**: PROJ-250 [In Progress, High] — 2 new Slack clarifications linked. PROJ-260 [To Do]. **Waiting on you**: Review PR #456 for PROJ-203 (@Аня has been waiting 2 days, blocks her sprint task). Reply to @Пётр about the caching approach (yesterday in #backend). **My blockers**: PROJ-250 depends on PROJ-251 (@Дима, In Progress) → ping @Дима | Everything in one place. I know what to do, who's waiting, who to ping |
+| 09:30 | Briefing → Your Day | **My tasks**: PROJ-250 [In Progress, High] — 2 new Slack clarifications linked. PROJ-260 [To Do]. **Waiting on you**: Review PR #456 for PROJ-203 (@Anya has been waiting 2 days, blocks her sprint task). Reply to @Peter about the caching approach (yesterday in #backend). **My blockers**: PROJ-250 depends on PROJ-251 (@Dima, In Progress) → ping @Dima | Everything in one place. I know what to do, who's waiting, who to ping |
 | 10:00 | Opens PROJ-250 | Sees Jira description + **Slack updates**: "Yesterday @TL wrote: 'add rate limiting' (#backend, 15:30). Today @PM clarified: 'limit 100 req/min' (#product, 09:15)". All already as Jira comments | Working from the current description, not an outdated one |
-| 11:00 | Blocked on PROJ-250 | Watchtower shows: "PROJ-250 blocked by PROJ-251 (assignee: @Дима, In Progress 2 days). In Slack @Дима wrote that he's waiting for data from @Infra-team (#backend, yesterday). **Ping**: @Дима (assignee) or @Лид (decision-maker for infra)". Button "Message @Дима" | Knows exactly who to ping and with what context. Doesn't spend 10 min searching |
-| 14:00 | Inbox → "Waiting on you" | 3 items: 1) Review for @Аня (2 days, blocking). 2) Reply to @Пётр (yesterday, not blocking). 3) Approve design doc (today, @PM is waiting). Sorted by impact | Doesn't forget, doesn't slow down colleagues |
+| 11:00 | Blocked on PROJ-250 | Watchtower shows: "PROJ-250 blocked by PROJ-251 (assignee: @Dima, In Progress 2 days). In Slack @Dima wrote that he's waiting for data from @Infra-team (#backend, yesterday). **Ping**: @Dima (assignee) or @Lead (decision-maker for infra)". Button "Message @Dima" | Knows exactly who to ping and with what context. Doesn't spend 10 min searching |
+| 14:00 | Inbox → "Waiting on you" | 3 items: 1) Review for @Anya (2 days, blocking). 2) Reply to @Peter (yesterday, not blocking). 3) Approve design doc (today, @PM is waiting). Sorted by impact | Doesn't forget, doesn't slow down colleagues |
 | 16:00 | Meeting Prep (1:1) | **My blockers**: PROJ-250 → who to ping. **Changes this week**: 5 Slack clarifications on 2 tasks — all in Jira. **Waiting on me**: 1 overdue review | Prepared 1:1 with specifics |
-| 17:00 | Briefing notification | "PROJ-250: @Дима updated PROJ-251 → In Review. Your blocker will be resolved soon" | Proactive notification without monitoring |
+| 17:00 | Briefing notification | "PROJ-250: @Dima updated PROJ-251 → In Review. Your blocker will be resolved soon" | Proactive notification without monitoring |
 
 ### Pain-Gain Matrix
 
@@ -389,7 +389,7 @@ Uses: Digests, People Cards, AI Chat, Search + all features of their primary rol
 
 **Functional:**
 1. "When I get a task, I want to see a **map of people around it**: who else is working on this epic (assignees), who tests (QA assignee), who reviews (reviewer/approver), who depends on my result (blocked by links) — to know my surroundings."
-2. "When I need information on a topic, I want to ask AI Chat and get not only an answer but also **'ask @Аня — she's the owner of this epic and discussed it in #backend 3 times this week'** — to know who to go to."
+2. "When I need information on a topic, I want to ask AI Chat and get not only an answer but also **'ask @Anya — she's the owner of this epic and discussed it in #backend 3 times this week'** — to know who to go to."
 3. "When I see a stuck task and don't understand if that's normal, I want to see **context**: the team's average cycle time, whether there's a blocker, whether it was discussed in Slack — to understand if I need to escalate or it's in progress."
 4. "When getting to know the team/project, I want to see a **Project Map**: epics → owners → current status → key decisions from Slack — to understand the work structure in 15 minutes."
 5. "When I hit a problem, I want to see **'Who can help'**: who discussed this topic in Slack + who's the decision-maker from People Card + who's the assignee of related Jira issues."
@@ -408,19 +408,19 @@ Uses: Digests, People Cards, AI Chat, Search + all features of their primary rol
 | 4 | As a newcomer, I want my tasks in "Your Day" with Slack context + flag if something is stuck (task in status >N days, no activity) | **Must-have** |
 | 5 | As a newcomer, I want to see **"Who can help"** when blocked/with a question: topic expert (from Slack activity + Jira ownership) + decision-maker + who discussed it before | **Must-have** |
 | 6 | As a newcomer, I want to see in People Cards: colleagues' tasks/epics + their expertise (by Jira labels/components + Slack channel activity) — to know who to go to for what topic | **Should-have** |
-| 7 | As a newcomer, I want discussions linked to Jira in Digests — "this discussion is about PROJ-350 [In Review, @Аня]" | **Should-have** |
+| 7 | As a newcomer, I want discussions linked to Jira in Digests — "this discussion is about PROJ-350 [In Review, @Anya]" | **Should-have** |
 | 8 | As a newcomer, I want to see **"Stale tasks"** in my area: tasks with no activity for >N days, overdue, unassigned — to understand where the gaps are | **Should-have** |
 
 ### Workday Scenario (week 1, new IC)
 
 | Time | Action | What They See | Value |
 |------|--------|---------------|-------|
-| 09:00 | Briefing → Your Day | **My tasks**: PROJ-500 [To Do] — onboarding task. **People around**: @Ментор (epic owner), @Аня (testing), @Дима (parallel task PROJ-501). **Stuck nearby**: PROJ-499 in Review for 5 days (assignee: @Петр) | Know my surroundings from day one |
-| 10:00 | AI Chat: "Tell me about PROJ-500" | "PROJ-500: Set up dev environment. Epic: Onboarding (owner: @Ментор). Jira description: [...]. In Slack: @Ментор recommended Docker (#onboarding, 2 days ago). Decision in #infra: switched to Podman. **Expert**: @Лид-infra (discussed 5 times, owner of component 'infra')" | Full context + know who to go to |
-| 11:00 | Project Map | **Epic "Onboarding"**: 3 tasks (1 mine, 2 others). **Epic "API v3"**: owner @TL, 12 tasks, 60% done. **Epic "Performance"**: owner @Аня, 8 tasks, 30% done, 2 blocked. Key decisions for each from Slack | Project landscape in 15 min |
-| 14:00 | Hit a problem | Watchtower: **"Who can help"**: 1) @Дима — assignee of PROJ-501 (similar task, Done). 2) @Лид-infra — discussed setup in #infra (3 times). 3) @Ментор — epic owner, decision-maker | Found help in 1 min instead of 30 min asking around |
-| 15:00 | People Cards — studying the team | @Аня: Staff Eng, owner of Epic "Performance", expertise: caching, profiling (Jira components + Slack channels). @Дима: Senior, Epic "API v3", expertise: REST, gRPC. @Петр: Mid, 3 open tasks, PROJ-499 stuck in Review | Know who owns what and who to go to for each topic |
-| 16:00 | Stale tasks in my area | "PROJ-499 (Review, 5 days, @Петр) — no Slack activity for 3 days. PROJ-502 (To Do, unassigned, 2 weeks) — mentioned in #backend once." Context: team avg review time = 1.5 days | Understand where gaps are, can ask informed questions |
+| 09:00 | Briefing → Your Day | **My tasks**: PROJ-500 [To Do] — onboarding task. **People around**: @Mentor (epic owner), @Anya (testing), @Dima (parallel task PROJ-501). **Stuck nearby**: PROJ-499 in Review for 5 days (assignee: @Peter) | Know my surroundings from day one |
+| 10:00 | AI Chat: "Tell me about PROJ-500" | "PROJ-500: Set up dev environment. Epic: Onboarding (owner: @Mentor). Jira description: [...]. In Slack: @Mentor recommended Docker (#onboarding, 2 days ago). Decision in #infra: switched to Podman. **Expert**: @Infra-Lead (discussed 5 times, owner of component 'infra')" | Full context + know who to go to |
+| 11:00 | Project Map | **Epic "Onboarding"**: 3 tasks (1 mine, 2 others). **Epic "API v3"**: owner @TL, 12 tasks, 60% done. **Epic "Performance"**: owner @Anya, 8 tasks, 30% done, 2 blocked. Key decisions for each from Slack | Project landscape in 15 min |
+| 14:00 | Hit a problem | Watchtower: **"Who can help"**: 1) @Dima — assignee of PROJ-501 (similar task, Done). 2) @Infra-Lead — discussed setup in #infra (3 times). 3) @Mentor — epic owner, decision-maker | Found help in 1 min instead of 30 min asking around |
+| 15:00 | People Cards — studying the team | @Anya: Staff Eng, owner of Epic "Performance", expertise: caching, profiling (Jira components + Slack channels). @Dima: Senior, Epic "API v3", expertise: REST, gRPC. @Peter: Mid, 3 open tasks, PROJ-499 stuck in Review | Know who owns what and who to go to for each topic |
+| 16:00 | Stale tasks in my area | "PROJ-499 (Review, 5 days, @Peter) — no Slack activity for 3 days. PROJ-502 (To Do, unassigned, 2 weeks) — mentioned in #backend once." Context: team avg review time = 1.5 days | Understand where gaps are, can ask informed questions |
 
 ### Onboarding Scenario for Other Roles
 

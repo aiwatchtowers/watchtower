@@ -18,6 +18,7 @@ import (
 
 	"encoding/json"
 	"watchtower/internal/briefing"
+	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/customtracks"
@@ -26,7 +27,9 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/feed"
+	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
+	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
 	"watchtower/internal/prompts"
@@ -202,8 +205,19 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return runSyncStop(cfg)
 	}
 
-	if err := cfg.Validate(); err != nil {
+	// Slack is optional: without a token the daemon still runs (Calendar,
+	// Gmail, Jira keep syncing) and only the Slack phase is skipped.
+	if err := cfg.ValidateWorkspace(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+	ws, err := cfg.GetActiveWorkspace()
+	if err != nil {
+		return err
+	}
+	if ws.SlackToken != "" {
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
 	}
 
 	// --detach re-execs the process in the background.
@@ -230,19 +244,17 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
 
-	ws, err := cfg.GetActiveWorkspace()
-	if err != nil {
-		return err
-	}
-
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
-	slackClient := watchtowerslack.NewClient(ws.SlackToken)
-	orch := sync.NewOrchestrator(database, slackClient, cfg)
+	var orch *sync.Orchestrator
+	if ws.SlackToken != "" {
+		slackClient := watchtowerslack.NewClient(ws.SlackToken)
+		orch = sync.NewOrchestrator(database, slackClient, cfg)
+	}
 
 	// Always write logs to watchtower.log; also to stderr when verbose or detached.
 	syncLog := syncLogFilePath(cfg)
@@ -261,7 +273,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 		logWriter = io.MultiWriter(logFile, os.Stderr)
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
-	orch.SetLogger(logger)
+	if orch != nil {
+		orch.SetLogger(logger)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -289,6 +303,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				inboxPipe.SetPromptStore(prompts.New(database, nil))
 				d.SetInboxPipeline(inboxPipe)
 			}
+			wireMemoryPipeline(d, database, cfg, logger)
 			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
 			customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
 			d.SetCustomTracksPipeline(customTracksPipe)
@@ -302,58 +317,25 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 		}
 		// Wire Jira syncer if configured and token exists.
-		if cfg.Jira.Enabled && cfg.Jira.CloudID != "" {
-			jiraStore := jira.NewTokenStore(cfg.WorkspaceDir())
-			if jiraStore.Exists() {
-				jiraCfg := resolveJiraOAuthConfig()
-				jiraClient := jira.NewClient(cfg.Jira.CloudID, jiraCfg, jiraStore)
-				jiraMapper := jira.NewUserMapper(jiraClient, database)
-				boards, bErr := database.GetJiraSelectedBoards()
-				if bErr != nil {
-					logger.Printf("jira: failed to load selected boards: %v", bErr)
-				} else {
-					boardIDs := make([]int, len(boards))
-					for i, b := range boards {
-						boardIDs[i] = b.ID
-					}
-					jiraSyncer := jira.NewSyncer(jiraClient, database, jiraMapper, boardIDs)
-					jiraSyncer.SetLogger(logger)
-					// Wire board analyzer for auto-refresh of changed configs.
-					if cfg.Digest.Enabled {
-						aiProvider := newAIClient(cfg, cfg.DBPath())
-						analyzer := jira.NewBoardAnalyzer(jiraClient, database, aiProvider)
-						analyzer.SetLanguage(cfg.Digest.Language)
-						jiraSyncer.SetBoardAnalyzer(analyzer)
-						jiraSyncer.SetAutoRefresh(true)
-					}
-					d.SetJiraSyncer(jiraSyncer)
-				}
-			}
+		wireJiraSyncer(d, cfg, database, logger)
+		// Seed google_accounts from a pre-multi-account legacy token file
+		// before wiring, so a single-account install keeps syncing without
+		// a re-login.
+		if _, err := ensureLegacyGoogleAccount(ctx, cfg, database, logger); err != nil {
+			logger.Printf("google: failed to seed legacy account: %v", err)
 		}
-		// Wire calendar syncer if token exists.
-		calendarStore := calendar.NewTokenStore(cfg.WorkspaceDir())
-		if calendarStore.Exists() {
-			googleCfg := resolveGoogleOAuthConfig()
-			calToken, err := calendarStore.Load()
-			if err != nil {
-				logger.Printf("calendar: failed to load token: %v", err)
-			} else {
-				calClient, err := calendar.NewClient(ctx, calToken.RefreshToken, googleCfg)
-				if err != nil {
-					logger.Printf("calendar: failed to create client: %v", err)
-					status := "error"
-					if errors.Is(err, calendar.ErrAuthRevoked) {
-						status = "revoked"
-					}
-					if dbErr := database.SetCalendarAuthState(status, err.Error()); dbErr != nil {
-						logger.Printf("calendar: failed to record auth state: %v", dbErr)
-					}
-				} else {
-					d.SetCalendarSyncer(calendar.NewSyncer(calClient, database, cfg, logger))
-				}
-			}
-		}
+		// Wire one calendar/gmail syncer per connected google_accounts row.
+		wireGoogleSyncers(ctx, d, cfg, database, logger)
+		// Wire one IMAP/Outlook syncer per connected email_accounts row.
+		wireImapSyncers(ctx, d, cfg, database, logger)
+		// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
+		wireCalDAVSyncers(d, cfg, database, logger)
 		return d.Run(ctx)
+	}
+
+	// One-shot sync is a Slack sync — nothing to do without a token.
+	if orch == nil {
+		return fmt.Errorf("slack is not connected for workspace %q; run 'watchtower auth login' first", cfg.ActiveWorkspace)
 	}
 
 	// Override initial_history_days if --days specified
@@ -433,6 +415,228 @@ func runSync(cmd *cobra.Command, args []string) error {
 				printProgress(out, orch.Progress(), cfg.ActiveWorkspace)
 			}
 		}
+	}
+}
+
+// wireJiraSyncer wires the Jira syncer onto the daemon if Jira is configured
+// and a token exists, logging failures instead of failing sync startup.
+func wireJiraSyncer(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	if !cfg.Jira.Enabled || cfg.Jira.CloudID == "" {
+		return
+	}
+	jiraStore := jira.NewTokenStore(cfg.WorkspaceDir())
+	if !jiraStore.Exists() {
+		return
+	}
+	jiraCfg := resolveJiraOAuthConfig()
+	jiraClient := jira.NewClient(cfg.Jira.CloudID, jiraCfg, jiraStore)
+	jiraMapper := jira.NewUserMapper(jiraClient, database)
+	boards, err := database.GetJiraSelectedBoards()
+	if err != nil {
+		logger.Printf("jira: failed to load selected boards: %v", err)
+		return
+	}
+	boardIDs := make([]int, len(boards))
+	for i, b := range boards {
+		boardIDs[i] = b.ID
+	}
+	jiraSyncer := jira.NewSyncer(jiraClient, database, jiraMapper, boardIDs)
+	jiraSyncer.SetLogger(logger)
+	// Wire board analyzer for auto-refresh of changed configs.
+	if cfg.Digest.Enabled {
+		aiProvider := newAIClient(cfg, cfg.DBPath())
+		analyzer := jira.NewBoardAnalyzer(jiraClient, database, aiProvider)
+		analyzer.SetLanguage(cfg.Digest.Language)
+		jiraSyncer.SetBoardAnalyzer(analyzer)
+		jiraSyncer.SetAutoRefresh(true)
+	}
+	d.SetJiraSyncer(jiraSyncer)
+}
+
+// wireGoogleSyncers wires one calendar.Syncer and/or gmail.Syncer per
+// connected google_accounts row whose token store exists, using each
+// account's own OAuth client credentials when it brought one. A broken
+// account records its own auth-state error (e.g. revoked grants) rather than
+// aborting the wiring step for the others — the calendar/gmail analog of
+// wireImapSyncers/wireCalDAVSyncers. The global cfg.Calendar.Enabled /
+// cfg.Gmail.Enabled toggles gate the corresponding syncer kind across every
+// account, matching every other daemon phase's global on/off switch.
+func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	accounts, err := database.ListGoogleAccounts()
+	if err != nil {
+		logger.Printf("google: failed to list accounts: %v", err)
+		return
+	}
+	var calSyncers []*calendar.Syncer
+	var gmSyncers []*gmail.Syncer
+	for _, acct := range accounts {
+		store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
+		if !store.Exists() {
+			// Only flip a currently-"ok" account to "error" — an account
+			// already flagged error/revoked stays as-is, so this doesn't
+			// churn the status/updated_at on every daemon cycle.
+			if acct.Status == "ok" {
+				if err := database.SetGoogleAccountAuthState(acct.ID, "error", "no token file — re-login required"); err != nil {
+					logger.Printf("google: account %d: record auth state: %v", acct.ID, err)
+				}
+			}
+			continue
+		}
+		token, err := store.Load()
+		if err != nil {
+			logger.Printf("google: account %d: failed to load token: %v", acct.ID, err)
+			continue
+		}
+		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
+		if cfg.Calendar.Enabled && acct.CalendarEnabled {
+			calClient, err := calendar.NewClient(ctx, token.RefreshToken, googleCfg)
+			if err != nil {
+				recordGoogleWireError(database, logger, acct.ID, "calendar", err, errors.Is(err, calendar.ErrAuthRevoked))
+			} else {
+				calSyncers = append(calSyncers, calendar.NewSyncer(calClient, database, cfg, logger, acct.ID))
+			}
+		}
+		if cfg.Gmail.Enabled && acct.GmailEnabled {
+			gmClient, err := gmail.NewClient(ctx, token.RefreshToken,
+				gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
+			if err != nil {
+				recordGoogleWireError(database, logger, acct.ID, "gmail", err, errors.Is(err, gmail.ErrAuthRevoked))
+			} else {
+				gmSyncers = append(gmSyncers, gmail.NewSyncer(gmClient, database, cfg, logger, acct.ID))
+			}
+		}
+	}
+	d.SetCalendarSyncers(calSyncers)
+	d.SetGmailSyncers(gmSyncers)
+}
+
+// recordGoogleWireError logs a per-account client-creation failure and
+// records its auth-state (revoked vs plain error) so the Desktop UI shows
+// the problem instead of a silently-dead account.
+func recordGoogleWireError(database *db.DB, logger *log.Logger, accountID int64, svc string, err error, revoked bool) {
+	logger.Printf("%s: account %d: failed to create client: %v", svc, accountID, err)
+	status := "error"
+	if revoked {
+		status = "revoked"
+	}
+	if dbErr := database.SetGoogleAccountAuthState(accountID, status, err.Error()); dbErr != nil {
+		logger.Printf("%s: account %d: record auth state: %v", svc, accountID, dbErr)
+	}
+}
+
+// wireImapSyncers wires one imap.Syncer per connected email_accounts row —
+// the non-Google mail analog of wireGoogleSyncers. A broken mailbox records
+// its own auth-state error (imap.Syncer.Sync) rather than aborting the
+// wiring step for the others.
+func wireImapSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	accounts, err := database.ListEmailAccounts()
+	if err != nil {
+		logger.Printf("imap: failed to list accounts: %v", err)
+		return
+	}
+	var syncers []*imap.Syncer
+	for _, acct := range accounts {
+		accountCfg := imap.AccountConfig{
+			Host: acct.Host, Port: acct.Port,
+			Security: imap.Security(acct.Security), Folder: acct.Folder,
+		}
+
+		var auth imap.Authenticator
+		switch acct.Provider {
+		case "imap":
+			store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
+			creds, err := store.Load()
+			if err != nil {
+				logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
+				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
+				}
+				continue
+			}
+			auth = imap.PasswordAuth{Username: acct.EmailAddress, Password: creds.Password}
+		case "outlook":
+			auth = outlookAuthenticator(ctx, cfg, database, acct, logger)
+			if auth == nil {
+				continue
+			}
+		default:
+			logger.Printf("imap: account %d: unknown provider %q, skipping", acct.ID, acct.Provider)
+			continue
+		}
+
+		syncers = append(syncers, imap.NewSyncer(acct, accountCfg, auth, database, cfg, logger))
+	}
+	d.SetImapSyncers(syncers)
+}
+
+// wireCalDAVSyncers wires one caldav.Syncer per connected calendar_accounts
+// row — the exact calendar analog of wireImapSyncers. A broken account
+// records its own auth-state error rather than aborting the wiring step for
+// the others; an account whose credential file can't be loaded is marked
+// status='error' immediately so the Desktop UI shows the problem instead of
+// a silently-dead account.
+func wireCalDAVSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	accounts, err := database.ListCalendarAccounts()
+	if err != nil {
+		logger.Printf("caldav: failed to list accounts: %v", err)
+		return
+	}
+	var syncers []*caldav.Syncer
+	for _, acct := range accounts {
+		store := caldav.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
+		creds, err := store.Load()
+		if err != nil {
+			logger.Printf("caldav: account %d: failed to load credentials: %v", acct.ID, err)
+			if dbErr := database.SetCalendarAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+				logger.Printf("caldav: account %d: record auth state: %v", acct.ID, dbErr)
+			}
+			continue
+		}
+		syncers = append(syncers, caldav.NewSyncer(acct, creds, database, cfg, logger))
+	}
+	d.SetCalDAVSyncers(syncers)
+}
+
+// outlookAuthenticator builds a RefreshingXOAUTH2Auth for one Outlook
+// account: RefreshFunc loads the stored refresh token, exchanges it for a
+// fresh access token on every Authenticate() call (i.e. every Dial(), i.e.
+// every Sync() cycle — see imap.RefreshingXOAUTH2Auth), and re-persists the
+// credential store whenever Microsoft rotates the refresh token. Returns nil
+// if the account's credentials can't be loaded, in which case the caller
+// skips wiring a syncer for it (mirroring the imap-provider branch above).
+func outlookAuthenticator(_ context.Context, cfg *config.Config, database *db.DB, acct db.EmailAccount, logger *log.Logger) imap.Authenticator {
+	store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
+	if _, err := store.Load(); err != nil {
+		logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
+		if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+			logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
+		}
+		return nil
+	}
+
+	msCfg := resolveMicrosoftOAuthConfig()
+	return imap.RefreshingXOAUTH2Auth{
+		Username: acct.EmailAddress,
+		RefreshFunc: func(ctx context.Context) (string, error) {
+			creds, err := store.Load()
+			if err != nil {
+				return "", fmt.Errorf("loading outlook credentials for account %d: %w", acct.ID, err)
+			}
+			accessToken, newRefreshToken, err := imap.RefreshAccessToken(ctx, msCfg, creds.RefreshToken)
+			if err != nil {
+				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
+				}
+				return "", fmt.Errorf("refreshing outlook token for account %d: %w", acct.ID, err)
+			}
+			if newRefreshToken != "" && newRefreshToken != creds.RefreshToken {
+				creds.RefreshToken = newRefreshToken
+				if err := store.Save(creds); err != nil {
+					logger.Printf("imap: account %d: failed to persist rotated refresh token: %v", acct.ID, err)
+				}
+			}
+			return accessToken, nil
+		},
 	}
 }
 

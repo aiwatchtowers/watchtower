@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"watchtower/internal/config"
@@ -74,7 +76,12 @@ func runTargetsExtract(cmd *cobra.Command, _ []string) error {
 		time.Duration(cfg.Targets.Resolver.MCPTimeoutSeconds)*time.Second)
 	pipe := targets.New(database, &cfg.Targets, gen, resolver, cfg.Digest.Language, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel on SIGINT/SIGTERM so the Desktop capsule's Cancel (which sends
+	// SIGTERM via Process.terminate()) cancels this context — which in turn
+	// kills the claude subprocess spawned via exec.CommandContext. Without
+	// trapping the signal, a default SIGTERM would kill watchtower outright
+	// and orphan the running claude child (reparented to launchd).
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	result, err := pipe.Extract(ctx, targets.ExtractRequest{

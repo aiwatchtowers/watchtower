@@ -45,6 +45,25 @@ struct ConfigServiceTests {
         #expect(svc.initialHistoryDays == 14)
     }
 
+    @Test("Load parses calendar history days with a 14-day fallback")
+    func loadCalendarHistoryDays() {
+        let path = makeTempConfig("""
+        calendar:
+          enabled: true
+          sync_days_ahead: 7
+          history_days: 30
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.calendarHistoryDays == 30)
+
+        let fallbackPath = makeTempConfig("""
+        calendar:
+          enabled: true
+        """)
+        let fallback = ConfigService(configPath: fallbackPath)
+        #expect(fallback.calendarHistoryDays == 14)
+    }
+
     @Test("Load applies defaults for missing day_plan keys")
     func loadDayPlanDefaults() {
         let path = makeTempConfig("active_workspace: x\n")
@@ -107,6 +126,34 @@ struct ConfigServiceTests {
         let svc = ConfigService(configPath: path)
         #expect(svc.jiraFeatures["briefings"] == true)
         #expect(svc.jiraFeatures["recommendations"] == false)
+    }
+
+    @Test("Load applies default transcript audio retention when section missing")
+    func loadTranscriptRetentionDefault() {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        #expect(svc.transcriptAudioRetentionDays == 30)
+    }
+
+    @Test("Load parses transcripts section")
+    func loadTranscripts() {
+        let path = makeTempConfig("""
+        transcripts:
+          audio_retention_days: 7
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.transcriptAudioRetentionDays == 7)
+    }
+
+    @Test("Save round-trips transcript audio retention")
+    func saveTranscriptRetention() throws {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        svc.transcriptAudioRetentionDays = 14
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.transcriptAudioRetentionDays == 14)
     }
 
     @Test("Save round-trips dirty values")

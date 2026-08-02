@@ -25,6 +25,9 @@ struct SituationReviewPane: View {
     let onKeepOpen: () -> Void
     let onSnooze: (SnoozeOption) -> Void
     let onFeedback: (Int, String) -> Void
+    /// Loads the situation's persisted 👍/👎 rating (nil = never rated); the
+    /// control mirrors it and updates optimistically on tap.
+    var loadFeedbackRating: () -> Int? = { nil }
     /// Disables the Target button while its async prefill is being built.
     var isCreatingTarget: Bool = false
     let onCreateTarget: () -> Void
@@ -33,6 +36,7 @@ struct SituationReviewPane: View {
     let onOpenTrack: (Int) -> Void
 
     @State private var comment: String = ""
+    @State private var feedbackRating: Int?
 
     // Discuss chat state lives on the pane (not the in-scroll section) because
     // its input bar must dock OUTSIDE the ScrollView — ChatInput's nested
@@ -162,7 +166,7 @@ struct SituationReviewPane: View {
         }
     }
 
-    // MARK: - Sources (первоисточники: Target/Track navigation + newest Slack link)
+    // MARK: - Sources (primary sources: Target/Track navigation + newest Slack link)
 
     @ViewBuilder
     private var sourcesSection: some View {
@@ -355,8 +359,10 @@ struct SituationReviewPane: View {
                 Button {
                     onFeedback(1, comment)
                     comment = ""
+                    feedbackRating = 1
                 } label: {
-                    Image(systemName: "hand.thumbsup")
+                    Image(systemName: feedbackRating == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
+                        .foregroundStyle(feedbackRating == 1 ? AnyShapeStyle(.green) : AnyShapeStyle(.primary))
                 }
                 .buttonStyle(.bordered)
                 .help("Helpful")
@@ -364,14 +370,19 @@ struct SituationReviewPane: View {
                 Button {
                     onFeedback(-1, comment)
                     comment = ""
+                    feedbackRating = -1
                 } label: {
-                    Image(systemName: "hand.thumbsdown")
+                    Image(systemName: feedbackRating == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                        .foregroundStyle(feedbackRating == -1 ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
                 }
                 .buttonStyle(.bordered)
                 .help("Not helpful")
 
                 TextField("Comment to teach the secretary…", text: $comment)
                     .textFieldStyle(.roundedBorder)
+            }
+            .task {
+                feedbackRating = loadFeedbackRating()
             }
 
             HStack(spacing: 8) {

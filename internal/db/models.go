@@ -635,7 +635,9 @@ type CalendarEvent struct {
 	EventStatus    string
 	EventType      string
 	HTMLLink       string
+	ConferenceURL  string // meeting join link (Meet/Zoom/Teams/Webex), "" when none
 	RawJSON        string
+	ICalUID        string // dedup enabler across accounts/providers
 	SyncedAt       string
 	UpdatedAt      string
 }

@@ -23,6 +23,11 @@ final class ConfigService {
     var codexPath: String?
     var calendarEnabled: Bool = false
     var calendarSyncDaysAhead: Int = 2
+    /// Days of past events kept synced (`calendar.history_days`), the same
+    /// knob widening the Go syncers' timeMin. Read-only here — `save()`
+    /// preserves whatever is on disk via its merge.
+    var calendarHistoryDays: Int = 14
+    var gmailEnabled: Bool = false
     var jiraFeatures: [String: Bool] = [:]
     var dayPlanEnabled: Bool = true
     var dayPlanHour: Int = 8
@@ -31,6 +36,7 @@ final class ConfigService {
     var maxTimeblocks: Int = 3
     var minBacklog: Int = 3
     var maxBacklog: Int = 8
+    var transcriptAudioRetentionDays: Int = 30
     var parseError: String?
 
     private let configPath: String
@@ -94,6 +100,11 @@ final class ConfigService {
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? false
                 calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? 2
+                calendarHistoryDays = (calendar["history_days"] as? Int) ?? 14
+            }
+
+            if let gmail = yaml["gmail"] as? [String: Any] {
+                gmailEnabled = (gmail["enabled"] as? Bool) ?? false
             }
 
             if let jira = yaml["jira"] as? [String: Any],
@@ -101,6 +112,10 @@ final class ConfigService {
                 jiraFeatures = features
             } else {
                 jiraFeatures = [:]
+            }
+
+            if let transcripts = yaml["transcripts"] as? [String: Any] {
+                transcriptAudioRetentionDays = (transcripts["audio_retention_days"] as? Int) ?? 30
             }
 
             if let dayPlan = yaml["day_plan"] as? [String: Any] {
@@ -165,6 +180,11 @@ final class ConfigService {
         calendarDict["sync_days_ahead"] = calendarSyncDaysAhead
         yaml["calendar"] = calendarDict
 
+        // Gmail section
+        var gmailDict = (yaml["gmail"] as? [String: Any]) ?? [:]
+        gmailDict["enabled"] = gmailEnabled
+        yaml["gmail"] = gmailDict
+
         // Day Plan section
         var dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
         dayPlan["enabled"] = dayPlanEnabled
@@ -175,6 +195,11 @@ final class ConfigService {
         dayPlan["min_backlog"] = minBacklog
         dayPlan["max_backlog"] = maxBacklog
         yaml["day_plan"] = dayPlan
+
+        // Transcripts section
+        var transcripts = (yaml["transcripts"] as? [String: Any]) ?? [:]
+        transcripts["audio_retention_days"] = transcriptAudioRetentionDays
+        yaml["transcripts"] = transcripts
 
         // Claude path override
         if let val = claudePath, !val.isEmpty { yaml["claude_path"] = val } else { yaml.removeValue(forKey: "claude_path") }

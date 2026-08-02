@@ -43,6 +43,8 @@ final class JiraAuthService {
                     self.isConnected = true
                     self.error = nil
                     self.readConfig()
+                    // Re-wire the daemon so the first sync + AI cycle runs now.
+                    Task { await DaemonManager.restart() }
                 } else if result.exitCode == 15
                             || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
@@ -83,6 +85,8 @@ final class JiraAuthService {
                     self.siteURL = nil
                     self.userDisplayName = nil
                     self.error = nil
+                    // Restart so the daemon drops the disconnected syncer.
+                    Task { await DaemonManager.restart() }
                 } else {
                     self.error = result.stderr.isEmpty
                         ? "Disconnect failed (exit \(result.exitCode))"
@@ -95,23 +99,24 @@ final class JiraAuthService {
     // MARK: - Status
 
     func checkStatus() {
-        let basePath = Constants.databasePath
         let fileManager = FileManager.default
+        // Only the ACTIVE workspace's token counts — logout deletes the token
+        // there, and a stale token in an old workspace must not read as connected.
+        if let dir = Constants.activeWorkspaceDir() {
+            isConnected = fileManager.fileExists(atPath: "\(dir)/jira_token.json")
+            if isConnected { readConfig() }
+            return
+        }
+        // No active workspace configured — fall back to scanning all workspaces.
+        let basePath = Constants.databasePath
         guard let contents = try? fileManager.contentsOfDirectory(
             atPath: basePath
         ) else {
             isConnected = false
             return
         }
-        for dir in contents {
-            let tokenPath = "\(basePath)/\(dir)/jira_token.json"
-            if fileManager.fileExists(atPath: tokenPath) {
-                isConnected = true
-                readConfig()
-                return
-            }
-        }
-        isConnected = false
+        isConnected = contents.contains { fileManager.fileExists(atPath: "\(basePath)/\($0)/jira_token.json") }
+        if isConnected { readConfig() }
     }
 
     // MARK: - Config Reader

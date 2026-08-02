@@ -4,6 +4,10 @@ on:
   push:
     branches: [main, mobile-app, feature/*]
   pull_request:
+  # Manual escape hatch: lets a maintainer force a real run (bypassing the
+  # `gate` job's push-vs-pull_request dedupe below, since its event_name
+  # isn't "push") when a PR's pull_request-triggered run never materializes.
+  workflow_dispatch:
 
 # One live run per branch and event: rapid successive pushes (or PR syncs)
 # cancel their stale predecessors. Cross-event dedupe (push vs pull_request
@@ -66,22 +70,23 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Test (race, library packages)
-        # Race-instrumented pure-Go sqlite is ~10x slower; internal/db is the
-        # long pole (~7min on shared runners), so keep the generous timeout.
-        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
-
-      - name: Test (cmd, no race)
-        # cmd is CLI glue over file-backed SQLite fixtures — under -race it
-        # alone took ~13min on shared runners while its concurrency all lives
-        # in internal/*, which stays race-covered above.
-        run: go test ./cmd/ -count=1 -timeout 10m
-
       - name: Build
         run: go build ./...
 
-      - name: Coverage gate
+      # Runs the full suite with -cover and enforces coverage.thresholds —
+      # this IS the test run on feature branches and PRs.
+      - name: Test + coverage gate
         run: make test-cover
+
+      - name: Test (race, library packages)
+        # Race-instrumented pure-Go sqlite is ~10x slower (internal/db alone
+        # ~9min on shared runners), so the race pass runs only on pushes to
+        # main (i.e. per merged PR — a one-PR bisect window) and in the
+        # release workflow, keeping feature-branch CI fast. cmd stays out:
+        # it is CLI glue over file-backed SQLite fixtures whose concurrency
+        # all lives in internal/*, which is race-covered here.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
 
   swift-lint:
     name: Swift Lint
@@ -110,6 +115,26 @@ jobs:
         working-directory: WatchtowerDesktop
     steps:
       - uses: actions/checkout@v4
+
+      # The runner's default toolchain (Xcode 16.4) predates the macOS 26 SDK, so
+      # any reference to Speech's SpeechTranscriber/SpeechAnalyzer/AssetInventory/
+      # AnalyzerInput (AppleProvider.swift) fails to compile with "cannot find type
+      # in scope" rather than an availability diagnostic. Xcode 26.3 is installed on
+      # this image (non-default) and ships the macOS 26 SDK those declarations live
+      # in; selecting it lets the file weak-link as designed without needing a
+      # macOS-26 runner to execute the guarded code.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.3"
+
+      # GRDB alone is minutes of compile on a cold runner; reuse build
+      # products across runs until dependencies change.
+      - name: Cache SPM build
+        uses: actions/cache@v4
+        with:
+          path: WatchtowerDesktop/.build
+          key: ${{ runner.os }}-spm-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}
+          restore-keys: ${{ runner.os }}-spm-
 
       - name: Build
         run: swift build

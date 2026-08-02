@@ -614,6 +614,37 @@ func TestPipeline_RunFastDetection_NoCurrentUserCleanExit(t *testing.T) {
 	assert.Equal(t, 0, n, "no-current-user fast pass must write nothing")
 }
 
+// TestRunFastDetectionPicksUpGmail: a Gmail message addressed to the current
+// user's email should surface as an email_received inbox item via the fast
+// detection pass, same as Slack/Jira/Calendar sources.
+func TestRunFastDetectionPicksUpGmail(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+
+	acctID, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me", GmailEnabled: true})
+	require.NoError(t, err)
+
+	require.NoError(t, d.UpsertGmailMessage(acctID, db.GmailMessage{
+		ID:           "g1",
+		ThreadID:     "th1",
+		FromEmail:    "a@x.com",
+		Subject:      "Ping",
+		ToJSON:       `["me@x.com"]`,
+		CcJSON:       `[]`,
+		InternalDate: "2026-07-09T09:00:00Z",
+		SyncedAt:     time.Now().UTC().Format(time.RFC3339),
+	}))
+
+	p := New(d, testConfig(), nil, log.Default())
+	p.SetCurrentUser("U1", "me@x.com")
+
+	require.NoError(t, p.RunFastDetection(context.Background()))
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type='email_received'`).Scan(&n))
+	assert.Equal(t, 1, n, "want 1 email inbox item")
+}
+
 // TestInbox09_WatermarkFrozenOnDetectorError guards INBOX-09: when a detector
 // pass fails, the inbox watermark must NOT advance. Advancing it on failure
 // permanently skips the window of mentions/DMs the failed pass never scanned.

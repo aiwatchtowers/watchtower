@@ -88,7 +88,15 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagProvider, "provider", "", "AI provider to use (claude|codex)")
 }
 
+// defaultConfigPath honors WATCHTOWER_CONFIG_PATH when set, so a dev/verification
+// run (and any subprocess it spawns, e.g. the Desktop app's `sync --daemon`
+// child) can be pointed at an isolated config without an explicit --config flag
+// at every call site. Mirrors the Desktop app's Constants.configPath override —
+// same env var name, same fallback-to-real-path behavior when unset.
 func defaultConfigPath() string {
+	if p := os.Getenv("WATCHTOWER_CONFIG_PATH"); p != "" {
+		return p
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

@@ -59,5 +59,17 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("enforcing read-only: %w", err)
 	}
 
-	return internalmcp.NewServer(database).ServeStdio(cmd.Context())
+	var opts []internalmcp.ServerOption
+	if cfg.Memory.Enabled {
+		opts = append(opts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))
+		if cfg.Memory.Retrieve.RecallCompare {
+			shadowDB, err := db.Open(dbPath)
+			if err != nil {
+				return fmt.Errorf("opening retrieve-compare shadow handle: %w", err)
+			}
+			defer shadowDB.Close()
+			opts = append(opts, internalmcp.WithMemoryRetrieveCompare(shadowDB))
+		}
+	}
+	return internalmcp.NewServer(database, opts...).ServeStdio(cmd.Context())
 }

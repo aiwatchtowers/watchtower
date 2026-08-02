@@ -329,14 +329,65 @@ func TestLoginShellPATH_EmptyOutput(t *testing.T) {
 }
 
 func TestRichPATH_SuccessViaFakeShell(t *testing.T) {
-	// A working login shell that yields a distinct PATH must be used verbatim
-	// by RichPATH (covers the non-fallback branch).
+	// A working login shell that yields a distinct PATH must lead the result,
+	// with the well-known fallback dirs merged in AFTER it — a non-interactive
+	// login shell skips .zshrc, so its PATH alone can miss install locations.
 	resetCache()
 	custom := "/opt/rich/bin:/opt/more/bin"
 	t.Setenv("PATH", "/usr/bin")
 	fakeShell(t, custom+"\n")
 
-	if got := RichPATH(); got != custom {
-		t.Errorf("RichPATH via fake shell = %q, want %q", got, custom)
+	got := RichPATH()
+	if !strings.HasPrefix(got, custom+":") {
+		t.Errorf("RichPATH via fake shell = %q, want prefix %q", got, custom+":")
+	}
+	if !strings.Contains(got, "/usr/local/bin") {
+		t.Errorf("RichPATH via fake shell = %q, want well-known dirs merged in", got)
+	}
+}
+
+func TestMergePATH_DedupsAndSkipsEmpty(t *testing.T) {
+	got := mergePATH("/a:/b", "", "/b:/c::/a")
+	if got != "/a:/b:/c" {
+		t.Errorf("mergePATH = %q, want %q", got, "/a:/b:/c")
+	}
+}
+
+func TestWellKnownBinary_FindsInHomeLocalBin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := wellKnownBinary("claude"); got != bin {
+		t.Errorf("wellKnownBinary = %q, want %q", got, bin)
+	}
+}
+
+func TestFindBinary_WellKnownFallback(t *testing.T) {
+	// LookPath fails (empty PATH) and the login shell is broken — FindBinary
+	// must still find claude in a well-known install dir (~/.local/bin).
+	resetCache()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("SHELL", "/nonexistent/shell")
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := FindBinary(""); got != bin {
+		t.Errorf("FindBinary = %q, want %q", got, bin)
 	}
 }

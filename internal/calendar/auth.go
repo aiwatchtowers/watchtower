@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,17 +20,22 @@ import (
 )
 
 const (
-	defaultRedirectPort       = 18501 // separate range from Slack (18491-18500)
-	callbackPath              = "/callback"
-	loginTimeout              = 5 * time.Minute
-	calendarEventsScope       = "https://www.googleapis.com/auth/calendar.events.readonly"
-	calendarCalendarListScope = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+	defaultRedirectPort = 18501 // separate range from Slack (18491-18500)
+	callbackPath        = "/callback"
+	loginTimeout        = 5 * time.Minute
+	// ScopeCalendarReadonly is one broad read-only scope instead of
+	// events.readonly + calendarlist.readonly: Google shows its
+	// granular-consent checkbox screen only for MULTI-scope requests, so a
+	// single scope gives a plain Continue screen the user cannot half-grant.
+	// Exported for the combined `google login` flow in cmd.
+	ScopeCalendarReadonly = "https://www.googleapis.com/auth/calendar.readonly"
 )
 
 // Google OAuth endpoints — vars so tests can point at httptest.Server.
 var (
-	googleAuthEndpoint  = "https://accounts.google.com/o/oauth2/v2/auth"
-	googleTokenEndpoint = "https://oauth2.googleapis.com/token"
+	googleAuthEndpoint   = "https://accounts.google.com/o/oauth2/v2/auth"
+	googleTokenEndpoint  = "https://oauth2.googleapis.com/token"
+	googleRevokeEndpoint = "https://oauth2.googleapis.com/revoke"
 )
 
 // DefaultGoogleClientID and DefaultGoogleClientSecret are injected at build time via -ldflags:
@@ -53,6 +59,7 @@ type OAuthToken struct {
 	TokenType    string `json:"token_type"`
 	RefreshToken string `json:"refresh_token"`
 	Expiry       string `json:"expiry,omitempty"`
+	Scope        string `json:"scope,omitempty"`
 }
 
 // TokenStore persists and loads OAuth2 refresh/access tokens.
@@ -64,6 +71,13 @@ type TokenStore struct {
 func NewTokenStore(workspaceDir string) *TokenStore {
 	return &TokenStore{
 		path: filepath.Join(workspaceDir, "google_token.json"),
+	}
+}
+
+// NewAccountTokenStore creates a TokenStore for the given workspace directory and account ID.
+func NewAccountTokenStore(workspaceDir string, accountID int64) *TokenStore {
+	return &TokenStore{
+		path: filepath.Join(workspaceDir, fmt.Sprintf("google_token_%d.json", accountID)),
 	}
 }
 
@@ -115,6 +129,14 @@ func (s *TokenStore) Exists() bool {
 // LoginOptions configures the Login flow behaviour.
 type LoginOptions struct {
 	SkipBrowserOpen bool
+	// Scopes to request; defaults to ScopeCalendarReadonly. The combined
+	// `google login` flow passes the user's in-app selection here so one
+	// consent screen covers exactly the chosen services.
+	Scopes []string
+	// AppReturn makes the success page redirect the browser to the
+	// watchtower-auth:// scheme, so macOS brings the desktop app back to the
+	// foreground after the consent flow. Off for plain CLI logins.
+	AppReturn bool
 }
 
 // PrepareResult holds the data needed by the desktop app to start the OAuth flow.
@@ -136,7 +158,7 @@ func Prepare(cfg GoogleOAuthConfig, customRedirectURI string) (*PrepareResult, e
 		redirectURI = fmt.Sprintf("http://127.0.0.1:%d%s", defaultRedirectPort, callbackPath)
 	}
 
-	authorizeURL := buildAuthURL(cfg, redirectURI, state)
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, []string{ScopeCalendarReadonly})
 
 	return &PrepareResult{
 		AuthorizeURL: authorizeURL,
@@ -146,12 +168,12 @@ func Prepare(cfg GoogleOAuthConfig, customRedirectURI string) (*PrepareResult, e
 }
 
 // buildAuthURL constructs the Google OAuth2 authorization URL.
-func buildAuthURL(cfg GoogleOAuthConfig, redirectURI, state string) string {
+func buildAuthURL(cfg GoogleOAuthConfig, redirectURI, state string, scopes []string) string {
 	params := url.Values{
 		"client_id":     {cfg.ClientID},
 		"redirect_uri":  {redirectURI},
 		"response_type": {"code"},
-		"scope":         {calendarEventsScope + " " + calendarCalendarListScope},
+		"scope":         {strings.Join(scopes, " ")},
 		"state":         {state},
 		"access_type":   {"offline"},
 		"prompt":        {"consent"},
@@ -194,12 +216,74 @@ func exchangeCode(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI 
 	return &token, nil
 }
 
+// GrantsScope reports whether the token's granted-scope list includes scope.
+// An empty Scope field means the response didn't say — treated as granted,
+// since Google omits it only in legacy/test responses, never to deny.
+func (t *OAuthToken) GrantsScope(scope string) bool {
+	if t.Scope == "" {
+		return true
+	}
+	return slices.Contains(strings.Fields(t.Scope), scope)
+}
+
+// validateGrantedScopes rejects tokens that carry NONE of the requested
+// scopes — Google's multi-scope checkbox screen lets the user continue
+// having granted nothing, which would otherwise surface only as 403s during
+// sync. A partial grant passes: the caller decides which services to enable.
+func validateGrantedScopes(token *OAuthToken, requested []string) error {
+	for _, s := range requested {
+		if token.GrantsScope(s) {
+			return nil
+		}
+	}
+	return fmt.Errorf("google did not grant any of the requested access (granted: %q) — run login again and approve access on the consent screen", token.Scope)
+}
+
 // Complete exchanges an authorization code for tokens.
 func Complete(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI string) (*OAuthToken, error) {
 	if code == "" {
 		return nil, fmt.Errorf("no authorization code provided")
 	}
 	return exchangeCode(ctx, cfg, code, redirectURI)
+}
+
+// Revoke tells Google to revoke the grant behind the given token (refresh or
+// access). Without this, logout only deletes the local file and the account
+// keeps the grant — the next consent screen then says "already has some
+// access" instead of listing the requested permissions.
+func Revoke(ctx context.Context, token string) error {
+	data := url.Values{"token": {token}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, googleRevokeEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	hc := &http.Client{Timeout: 30 * time.Second}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("revoke request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("revoke failed (%d): %s", resp.StatusCode, body)
+	}
+	return nil
+}
+
+// SetGoogleRevokeEndpointForTest overrides the Google token-revocation
+// endpoint for the life of a test and returns a restore func. googleRevokeEndpoint
+// is package-private and swapped directly by this package's own tests
+// (auth_test.go); this exported seam exists for callers OUTSIDE this
+// package (e.g. cmd's `google remove`) that need to exercise Revoke's real
+// HTTP round trip against an httptest.Server rather than mocking Revoke
+// itself.
+func SetGoogleRevokeEndpointForTest(url string) (restore func()) {
+	prev := googleRevokeEndpoint
+	googleRevokeEndpoint = url
+	return func() { googleRevokeEndpoint = prev }
 }
 
 // callbackResult is sent from the HTTP callback handler to the Login goroutine.
@@ -245,9 +329,25 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 		return nil, fmt.Errorf("generating state: %w", err)
 	}
 
-	authorizeURL := buildAuthURL(cfg, redirectURI, state)
+	scopes := opt.Scopes
+	if len(scopes) == 0 {
+		scopes = []string{ScopeCalendarReadonly}
+	}
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, scopes)
 
 	resultCh := make(chan callbackResult, 1)
+
+	// With app-return the page first sits for 3s (so the confirmation is
+	// readable and the redirect doesn't race page load, which spawns a blank
+	// tab in some browsers), then navigates to the app scheme; the tab tries
+	// to close itself only after that. Without app-return it just self-closes.
+	returnBlock, closeMS := "", "2000"
+	if opt.AppReturn {
+		returnBlock = appReturnBlock
+		closeMS = "4500"
+	}
+	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
+		Replace(callbackSuccessPage)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +363,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 			state: q.Get("state"),
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, callbackSuccessPage)
+		fmt.Fprint(w, successPage)
 	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -279,7 +379,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 		fmt.Fprintf(out, "Authorize URL:\n\n  %s\n\n", authorizeURL)
 		fmt.Fprintf(out, "Waiting for authorization callback...\n")
 	} else {
-		fmt.Fprintf(out, "Opening browser for Google Calendar authorization...\n")
+		fmt.Fprintf(out, "Opening browser for Google authorization...\n")
 		fmt.Fprintf(out, "If the browser doesn't open, visit this URL:\n\n  %s\n\n", authorizeURL)
 		getOpenBrowserFunc()(authorizeURL)
 	}
@@ -308,6 +408,9 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 	if err != nil {
 		return nil, fmt.Errorf("exchanging code for token: %w", err)
 	}
+	if err := validateGrantedScopes(token, scopes); err != nil {
+		return nil, err
+	}
 
 	return token, nil
 }
@@ -325,12 +428,24 @@ func listenLocal() (net.Listener, error) {
 }
 
 const callbackSuccessPage = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Watchtower — Calendar Connected</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
+<html><head><meta charset="utf-8"><title>Watchtower — Google Connected</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
 .card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;max-width:440px;text-align:center}
-h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}</style></head>
-<body><div class="card"><h1>Calendar Connected</h1><p>Google Calendar has been linked to Watchtower. You can close this tab.</p></div>
-<script>setTimeout(function(){try{window.close()}catch(e){}},2000);</script></body></html>`
+.logo{width:52px;height:52px;border-radius:13px;background:linear-gradient(135deg,#5b8cff,#3f5be0);color:#fff;font-weight:700;font-size:24px;line-height:52px;margin:0 auto 18px}
+h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}
+.btn{display:inline-block;margin-top:22px;padding:13px 32px;background:linear-gradient(135deg,#5b8cff,#3f5be0);color:#fff;text-decoration:none;font-weight:600;font-size:15px;border-radius:10px;box-shadow:0 4px 14px rgba(63,91,224,.35)}
+.btn:hover{filter:brightness(1.12)}
+.hint{margin-top:12px;color:#666;font-size:12px}</style></head>
+<body><div class="card"><div class="logo">W</div><h1>Google Connected</h1><p>Your Google account has been linked to Watchtower.</p><!--RETURN--></div>
+<script>setTimeout(function(){try{window.close()}catch(e){}},{{CLOSE_MS}});</script></body></html>`
+
+// appReturnBlock is injected into the success page when LoginOptions.AppReturn
+// is set. The button is the reliable path back to the app — browsers block
+// scripted navigation to custom schemes without a user gesture, so the
+// delayed auto-redirect below is best-effort only.
+const appReturnBlock = `<a class="btn" href="watchtower-auth://connected">Open Watchtower</a>
+<p class="hint">You can close this tab afterwards.</p>
+<script>setTimeout(function(){location.href="watchtower-auth://connected";},3000);</script>`
 
 const callbackErrorPage = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Watchtower — Error</title>

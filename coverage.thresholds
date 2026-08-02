@@ -12,7 +12,7 @@ watchtower/internal/calendar  51
 watchtower/internal/claude    82
 watchtower/internal/codex     78
 watchtower/internal/config    89
-watchtower/internal/daemon    71
+watchtower/internal/daemon    70
 watchtower/internal/dayplan   66
 watchtower/internal/db        64
 watchtower/internal/digest    77

@@ -40,6 +40,18 @@ const (
 	// Calendar defaults
 	DefaultCalendarEnabled       = false
 	DefaultCalendarSyncDaysAhead = 7
+	DefaultCalendarHistoryDays   = 14
+
+	// Gmail defaults
+	DefaultGmailEnabled            = false
+	DefaultGmailInitialHistoryDays = 7
+	DefaultGmailMaxMessagesPerSync = 100
+	DefaultGmailMaxBodyBytes       = 51200
+
+	// IMAP defaults (shared by every connected email_accounts row)
+	DefaultImapInitialHistoryDays = 7
+	DefaultImapMaxMessagesPerSync = 100
+	DefaultImapMaxBodyBytes       = 51200
 
 	// Jira defaults
 	DefaultJiraEnabled          = false
@@ -60,7 +72,7 @@ const (
 	// Targets defaults
 	DefaultTargetsExtractEnabled        = true
 	DefaultTargetsExtractMaxPerCall     = 10
-	DefaultTargetsExtractTimeoutSeconds = 45
+	DefaultTargetsExtractTimeoutSeconds = 0  // 0 = no deadline; extraction is user-cancellable in the Desktop capsule
 	DefaultTargetsExtractModel          = "" // empty → provider default
 
 	DefaultTargetsResolverSlackEnabled        = true
@@ -71,6 +83,10 @@ const (
 	// Dashboard (situation composer) defaults
 	DefaultDashboardStaleAfterDays    = 7
 	DefaultDashboardMaxComposeSignals = 200
+
+	// Meeting transcripts: delete recording audio after N days (transcript
+	// text is kept forever). <= 0 disables the retention phase.
+	DefaultTranscriptAudioRetentionDays = 30
 )
 
 // RoleDisplayNames maps role keys to human-readable display names.

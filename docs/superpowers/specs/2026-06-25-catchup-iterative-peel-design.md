@@ -30,7 +30,7 @@ reaches the model.
 Replace the single `outline` clustering call with a **sequential peel-off loop**:
 each round the model picks the *single most important coherent theme* from the
 remaining pool, we remove its items, and repeat until the model says only noise
-is left. The existing per-theme `expand` ("экстракт") pass is reused unchanged
+is left. The existing per-theme `expand` ("extract") pass is reused unchanged
 and is dispatched concurrently as themes are peeled.
 
 This was chosen over a single non-merging call because the owner explicitly wants

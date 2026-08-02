@@ -1313,6 +1313,16 @@ private func syncProgressView(_ progress: SyncProgressData) -> some View {
 
     private func runSync() {
         guard let path = cliPath else { return }
+        // No Slack connected — the one-shot CLI sync is Slack-only, so skip it;
+        // other sources sync via the daemon after onboarding.
+        guard SlackAuthService.tokenPresent() else {
+            _ = ensureOnboardingDatabase()
+            appState.onboarding.syncCompleted = true
+            if appState.onboarding.chatFinished {
+                appState.onboarding.goTo(.teamForm)
+            }
+            return
+        }
         isRunning = true
         cliError = nil
         syncProgress = nil

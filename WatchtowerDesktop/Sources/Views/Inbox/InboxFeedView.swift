@@ -12,6 +12,9 @@ import SwiftUI
 struct InboxFeedView: View {
     @Environment(AppState.self) private var appState
     @State private var tab: Tab = .feed
+    private let google = GoogleConnectFlow.shared
+    @State private var showConnectOptions = false
+    @State private var showAddEmailAccountSheet = false
 
     /// The dashboard VM is owned by `AppState` (survives tab switches so an
     /// in-flight "Generate" run isn't orphaned on navigation) rather than
@@ -30,7 +33,13 @@ struct InboxFeedView: View {
             switch tab {
             case .feed:
                 if let dashboardVM, let feedVM {
-                    DashboardView(vm: dashboardVM, feedVM: feedVM)
+                    VStack(spacing: 0) {
+                        if !sourcesFullyConnected || google.isRunning {
+                            connectSourcesBanner
+                            Divider()
+                        }
+                        DashboardView(vm: dashboardVM, feedVM: feedVM)
+                    }
                 } else {
                     ProgressView("Loading...")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -47,6 +56,115 @@ struct InboxFeedView: View {
             // the dashboard tab was inactive.
             dashboardVM?.refresh()
             feedVM?.refresh()
+            google.refresh()
+            appState.emailAccountsViewModel?.refresh()
+        }
+    }
+
+    // MARK: - Connect Sources Banner
+
+    /// True once an email source is connected — Gmail OR at least one HEALTHY
+    /// IMAP/Outlook mailbox, so connecting only an IMAP account (without ever
+    /// touching Gmail) satisfies the email leg of the connect check too. An
+    /// account stuck in "error"/"revoked" must not count — otherwise its mere
+    /// presence in the list would hide the banner even though nothing syncs.
+    private var hasEmailSource: Bool {
+        google.gmail.isConnected || (appState.emailAccountsViewModel?.accounts.contains { $0.isOK } ?? false)
+    }
+
+    /// Whether both the calendar and email legs are connected.
+    private var sourcesFullyConnected: Bool {
+        google.calendar.isConnected && hasEmailSource
+    }
+
+    /// Names of the disconnected sources, for the banner text.
+    private var missingSources: [String] {
+        var missing: [String] = []
+        if !google.calendar.isConnected { missing.append("Google Calendar") }
+        if !hasEmailSource { missing.append("Email") }
+        return missing
+    }
+
+    private var connectSourcesBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(google.isRunning
+                ? "Connecting Google... approve access in the browser."
+                : "\(missingSources.joined(separator: " and ")) not connected — "
+                    + "meeting and email signals are missing from this feed.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            if google.isRunning {
+                ProgressView().controlSize(.small)
+                Button("Cancel") { google.cancel() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Connect") {
+                    // The Calendar tab's connect screen shares this same
+                    // `google` singleton and forces includeGmail off (it's
+                    // calendar-only) — restore Gmail's default here so a
+                    // stale false from Calendar doesn't silently drop Gmail
+                    // from this banner's own "Connect Google" request.
+                    google.includeGmail = true
+                    showConnectOptions = true
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .popover(isPresented: $showConnectOptions) {
+                    connectOptionsPopover
+                }
+            }
+
+            if let err = google.error {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.orange.opacity(0.08))
+    }
+
+    private var connectOptionsPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Connect Google")
+                .font(.headline)
+
+            GoogleConnectOptionsView(flow: google)
+
+            Text("Google will show a single approval screen listing exactly the selected access.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button("Connect") {
+                showConnectOptions = false
+                google.connect()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!google.hasSelection)
+
+            Divider()
+
+            Button("Add an IMAP or Outlook mailbox instead…") {
+                showConnectOptions = false
+                showAddEmailAccountSheet = true
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(width: 320)
+        .sheet(isPresented: $showAddEmailAccountSheet) {
+            AddEmailAccountView()
+                .environment(appState)
         }
     }
 

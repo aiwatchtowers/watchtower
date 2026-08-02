@@ -13,7 +13,15 @@ CREATE TABLE IF NOT EXISTS workspace (
     secretary_profile TEXT NOT NULL DEFAULT '',  -- User-written secretary brief text
     style_profile TEXT NOT NULL DEFAULT '',  -- AI-distilled, user-editable communication style (see 00013)
     style_profile_updated_at TEXT NOT NULL DEFAULT '',
-    compose_last_run_ts REAL NOT NULL DEFAULT 0  -- Unix timestamp of last situation composer run
+    compose_last_run_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last situation composer run
+    memory_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last message consumed by the memory episode extractor (see 00017)
+    memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0,  -- ingest floor: highest terminal situation id already folded into the vault (see 00018)
+    memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0,  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
+    memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00042)
+    memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00033)
+    memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last jira issue fully folded into an episode by the jira issue extractor; a fifth independent memory watermark (see 00040)
+    memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00036, M8)
+    memory_focus_fingerprint TEXT NOT NULL DEFAULT ''  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00041)
 );
 
 -- Users
@@ -456,7 +464,8 @@ CREATE TABLE IF NOT EXISTS inbox_items (
         'calendar_invite','calendar_time_change','calendar_cancelled',
         'decision_made','briefing_ready',
         'target_due',
-        'stream'
+        'stream',
+        'email_received','email_cc'
     )),
     snippet         TEXT NOT NULL DEFAULT '',
     context         TEXT NOT NULL DEFAULT '',
@@ -547,7 +556,7 @@ CREATE INDEX IF NOT EXISTS idx_catchup_themes_session ON catchup_themes(session_
 -- Feedback on AI-generated content (thumbs up/down)
 CREATE TABLE IF NOT EXISTS feedback (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'target', 'inbox', 'catchup_theme')),
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'target', 'inbox', 'catchup_theme', 'situation')),
     entity_id   TEXT NOT NULL,       -- digest.id, tracks.id, or "digest_id:decision_idx"
     rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),  -- -1 = bad, +1 = good
     comment     TEXT NOT NULL DEFAULT '',
@@ -792,7 +801,9 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     period_to        REAL,
     started_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     finished_at      TEXT,
-    duration_seconds REAL NOT NULL DEFAULT 0
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,  -- prompt-cache read tokens (billed cheaper, recorded separately)
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0   -- prompt-cache creation tokens
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline ON pipeline_runs(pipeline);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC);
@@ -825,7 +836,8 @@ CREATE TABLE IF NOT EXISTS calendar_calendars (
     is_primary  INTEGER NOT NULL DEFAULT 0,
     is_selected INTEGER NOT NULL DEFAULT 1,
     color       TEXT NOT NULL DEFAULT '',
-    synced_at   TEXT NOT NULL DEFAULT ''
+    synced_at   TEXT NOT NULL DEFAULT '',
+    account_id  INTEGER REFERENCES google_accounts(id)  -- NULL for caldav:/ics: rows (see 00043)
 );
 
 -- Calendar events (synced from Google Calendar)
@@ -844,7 +856,9 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     event_status    TEXT NOT NULL DEFAULT 'confirmed',
     event_type      TEXT NOT NULL DEFAULT '',
     html_link       TEXT NOT NULL DEFAULT '',
+    conference_url  TEXT NOT NULL DEFAULT '',  -- meeting join link (Meet/Zoom/Teams/Webex), '' when none (see 00044)
     raw_json        TEXT NOT NULL DEFAULT '{}',
+    ical_uid        TEXT NOT NULL DEFAULT '',  -- dedup enabler across accounts/providers (see 00043)
     synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT ''
 );
@@ -1003,14 +1017,154 @@ CREATE TABLE IF NOT EXISTS meeting_recaps (
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
--- Calendar auth state (tracks whether the Google refresh token is still valid)
-CREATE TABLE IF NOT EXISTS calendar_auth_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    status TEXT NOT NULL DEFAULT 'ok',
-    error TEXT NOT NULL DEFAULT '',
+-- Meeting transcripts: locally-transcribed meeting audio (WhisperKit in the
+-- Desktop app). One row per recording. event_id is NULL for ad-hoc recordings
+-- and survives event deletion (SET NULL) — a transcript must outlive its
+-- calendar event. audio_path is NULLed by the daemon retention phase once the
+-- audio file is deleted; transcript_text is kept forever. summary_json holds
+-- the recap for ad-hoc recordings only (event-linked recaps live in
+-- meeting_recaps). segments_json is a JSON array of per-utterance segments
+-- ({"idx","start_sec","end_sec","speaker","text","deleted"}); NULL for legacy
+-- rows. Invariant: when non-NULL, transcript_text = render(segments where
+-- !deleted). speakers_json is a JSON array of per-cluster voice embeddings
+-- ({"speaker","embedding"}); NULL when the diarizer produced none.
+-- chapters_json is the AI-generated chapter breakdown
+-- ({"overall_summary", "chapters": [{"title","start_sec","end_sec",
+-- "participants","summary","decisions","action_items","open_questions"}]});
+-- each action item is {"text","converted_target_id"} — converted_target_id
+-- links the Target created from it.
+CREATE TABLE IF NOT EXISTS meeting_transcripts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id        TEXT REFERENCES calendar_events(id) ON DELETE SET NULL,
+    title           TEXT NOT NULL,
+    audio_path      TEXT,
+    duration_sec    INTEGER NOT NULL DEFAULT 0,
+    lang_stats      TEXT NOT NULL DEFAULT '',
+    transcript_text TEXT NOT NULL,
+    summary_json    TEXT,
+    notes_md        TEXT,
+    segments_json   TEXT,
+    speakers_json   TEXT,
+    chapters_json   TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
+
+-- Voice prints: one row per known person's voice, learned from manual speaker
+-- renames in the Desktop transcript view. person_key = attendee email (or a
+-- normalized display name when no email). embedding = L2-normalized 256-dim
+-- float32 centroid (little-endian BLOB); sample_count = clusters folded in.
+CREATE TABLE IF NOT EXISTS voice_prints (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_key   TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    embedding    BLOB NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 1,
+    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Gmail messages (synced inbox items from Gmail). account_id + composite PK
+-- scope messages per Google account (see 00043); calendar_auth_state/
+-- gmail_auth_state singletons are retired in favor of google_accounts below.
+CREATE TABLE IF NOT EXISTS gmail_messages (
+    account_id     INTEGER NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+    id             TEXT NOT NULL,                 -- Gmail message ID
+    thread_id      TEXT NOT NULL DEFAULT '',
+    from_email     TEXT NOT NULL DEFAULT '',
+    from_name      TEXT NOT NULL DEFAULT '',
+    to_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (To)
+    cc_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (Cc)
+    subject        TEXT NOT NULL DEFAULT '',
+    snippet        TEXT NOT NULL DEFAULT '',      -- Gmail-provided preview (~200 chars)
+    body_text      TEXT NOT NULL DEFAULT '',      -- full plain-text body (truncated at sync)
+    internal_date  TEXT NOT NULL DEFAULT '',      -- ISO8601 message time
+    labels_json    TEXT NOT NULL DEFAULT '[]',    -- JSON array of Gmail label IDs
+    is_unread      INTEGER NOT NULL DEFAULT 0,
+    permalink      TEXT NOT NULL DEFAULT '',
+    synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (account_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
+
+-- Multi-account Google source: one row per connected Google account (Gmail
+-- and/or Calendar). Replaces the calendar_auth_state / gmail_auth_state
+-- singletons — status/error/watermarks now live per account here (see 00043).
+CREATE TABLE IF NOT EXISTS google_accounts (
+    id                             INTEGER PRIMARY KEY AUTOINCREMENT,
+    email                          TEXT NOT NULL DEFAULT '',
+    label                          TEXT NOT NULL DEFAULT '',
+    client_id                      TEXT NOT NULL DEFAULT '',  -- non-secret half of a custom OAuth client; '' = build-time default
+    calendar_enabled               INTEGER NOT NULL DEFAULT 0,
+    gmail_enabled                  INTEGER NOT NULL DEFAULT 0,
+    status                         TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked
+    error                          TEXT NOT NULL DEFAULT '',
+    gmail_last_internal_date       REAL NOT NULL DEFAULT 0,   -- per-account Gmail sync watermark
+    memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,   -- per-account memory extraction watermark
+    created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Multi-account IMAP/Outlook email source: one row per connected mailbox
+-- (email_accounts) plus its synced messages (imap_messages). status/error
+-- live directly on email_accounts, the same pattern google_accounts uses
+-- for Gmail's multi-account model.
+CREATE TABLE IF NOT EXISTS email_accounts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider       TEXT NOT NULL CHECK(provider IN ('imap','outlook')),
+    email_address  TEXT NOT NULL DEFAULT '',
+    host           TEXT NOT NULL DEFAULT '',
+    port           INTEGER NOT NULL DEFAULT 0,
+    security       TEXT NOT NULL DEFAULT 'ssl' CHECK(security IN ('ssl','starttls','none')),
+    folder         TEXT NOT NULL DEFAULT 'INBOX',
+    label          TEXT NOT NULL DEFAULT '',      -- user-facing display name
+    status         TEXT NOT NULL DEFAULT 'ok',    -- ok | error | revoked
+    error          TEXT NOT NULL DEFAULT '',
+    last_uid       INTEGER NOT NULL DEFAULT 0,    -- sync watermark: highest IMAP UID synced
+    uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY; a change means last_uid must reset
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS imap_messages (
+    account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+    uid            INTEGER NOT NULL,              -- IMAP UID; unique within (account_id, uidvalidity, uid)
+    uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY epoch this uid was assigned under
+    from_email     TEXT NOT NULL DEFAULT '',
+    from_name      TEXT NOT NULL DEFAULT '',
+    to_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (To)
+    cc_json        TEXT NOT NULL DEFAULT '[]',    -- JSON array of recipient emails (Cc)
+    subject        TEXT NOT NULL DEFAULT '',
+    snippet        TEXT NOT NULL DEFAULT '',
+    body_text      TEXT NOT NULL DEFAULT '',      -- full plain-text body (truncated at sync)
+    internal_date  TEXT NOT NULL DEFAULT '',      -- ISO8601 message time
+    is_unread      INTEGER NOT NULL DEFAULT 0,
+    permalink      TEXT NOT NULL DEFAULT '',
+    synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (account_id, uidvalidity, uid)
+);
+CREATE INDEX IF NOT EXISTS idx_imap_messages_synced ON imap_messages(synced_at);
+
+-- Multi-account open-protocol calendar sources: one row per connected CalDAV
+-- server or secret ICS feed (the calendar analog of email_accounts). Events
+-- land in the shared calendar_events table scoped by calendar_id =
+-- 'caldav:<id>' / 'ics:<id>'. For provider='ics' the url column stays empty:
+-- the secret feed URL is a credential and lives in the per-account
+-- credential file, never the DB.
+CREATE TABLE IF NOT EXISTS calendar_accounts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider   TEXT NOT NULL CHECK(provider IN ('caldav','ics')),
+    username   TEXT NOT NULL DEFAULT '',
+    url        TEXT NOT NULL DEFAULT '',      -- CalDAV server base URL ONLY; empty for provider='ics'
+    label      TEXT NOT NULL DEFAULT '',      -- user-facing display name
+    status     TEXT NOT NULL DEFAULT 'ok',    -- ok | error | revoked
+    error      TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
-INSERT OR IGNORE INTO calendar_auth_state (id, status, error) VALUES (1, 'ok', '');
 
 -- Jira releases (fix versions)
 CREATE TABLE IF NOT EXISTS jira_releases (
@@ -1138,4 +1292,145 @@ CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
 CREATE TABLE IF NOT EXISTS feed_state (
     id               INTEGER PRIMARY KEY CHECK (id = 1),
     bootstrap_cutoff TEXT NOT NULL
+);
+
+-- Secretary memory index — rebuildable SQLite mirror of the markdown vault
+-- (files + git are the source of truth; MEM-02: drop all memory_* tables and
+-- reindex reproduces this index).
+CREATE TABLE IF NOT EXISTS memory_nodes (
+    id            TEXT PRIMARY KEY,             -- ent_*/ep_*/sum_*/bel_*
+    type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),
+    tier          TEXT NOT NULL CHECK (tier IN ('short','long')),
+    status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed','tombstone','shaken','retired')),  -- shaken/retired are belief-only (see 00018)
+    redirect_to   TEXT,
+    title         TEXT NOT NULL DEFAULT '',
+    path          TEXT NOT NULL,                -- vault-relative file path
+    content_hash  TEXT NOT NULL,                -- sha256 of file bytes at last index
+    indexed_at    TEXT NOT NULL,
+    subject       TEXT NOT NULL DEFAULT '',     -- belief subject entity id, '' for non-beliefs; file-derived (see 00019)
+    confidence    REAL NOT NULL DEFAULT 0,      -- belief confidence 0..1, 0 for non-beliefs; file-derived (see 00019)
+    importance_score REAL NOT NULL DEFAULT 0    -- merged override-or-computed importance snapshot, refreshed by Reconcile/Rebuild (see 00037, MEM-16)
+);
+
+-- Alias → node lookup (natural keys like slack IDs, 'situation:<id>', names).
+CREATE TABLE IF NOT EXISTS memory_aliases (
+    alias    TEXT PRIMARY KEY COLLATE NOCASE,
+    node_id  TEXT NOT NULL REFERENCES memory_nodes(id)
+);
+
+-- Access accounting bumped by memory_open (not by memory_recall).
+CREATE TABLE IF NOT EXISTS memory_node_stats (
+    node_id          TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+    access_count     INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at TEXT
+);
+
+-- FTS5 index over node titles/bodies for memory_recall.
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    id UNINDEXED, title, body
+);
+
+-- Unresolved extractor entity hints, persisted for concept-entity promotion
+-- once a hint recurs across enough distinct episodes (see 00018). Runtime
+-- accumulation like memory_node_stats — excluded from the MEM-02 reindex-
+-- equivalence comparison and NOT cleared by a reindex.
+CREATE TABLE IF NOT EXISTS memory_entity_hints (
+    hint        TEXT NOT NULL,          -- normalized (lowercased, trimmed) hint text
+    episode_id  TEXT NOT NULL,          -- the ep_* node that emitted it (distinct-episode counting)
+    first_seen  TEXT NOT NULL,
+    promoted_to TEXT NOT NULL DEFAULT '', -- ent_* once a concept entity was created; '' until then
+    PRIMARY KEY (hint, episode_id)
+);
+
+-- Phase-4 dispute flags (see 00019): a SIDE TABLE, not a memory_nodes
+-- column — runtime state set by the belief pass / weekly reflection when a
+-- belief's evidence looks contested, read and cleared by the inbox
+-- watchtower detector in the same transaction it mints the dispute item
+-- (MEM-05). Same memory_node_stats precedent: excluded from the MEM-02
+-- reindex-equivalence comparison by construction (it lives outside
+-- memory_nodes and Reconcile/Rebuild never touch it).
+CREATE TABLE IF NOT EXISTS memory_dispute_flags (
+    node_id     TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+    flagged_at  TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT ''
+);
+
+-- Phase-5 slice-1 per-entity engagement aggregates (see 00042): the
+-- retention-importance input Phase-3's RetentionInputs/RetentionScore
+-- stubbed out, fed by the mechanical interaction-ingest step
+-- (memory.sources.actions) from inbox_feedback/situation transitions/
+-- conversions. A dedicated side table — not memory_nodes columns, not
+-- memory_node_stats (which stays write-dead in this slice). Runtime state
+-- derived from interaction rows: MEM-02-exempt like memory_entity_hints
+-- (NOT like memory_node_stats) — it must survive DropMemoryIndex/reindex
+-- because the interaction floor may already have stepped past the rows that
+-- produced these aggregates.
+CREATE TABLE IF NOT EXISTS memory_engagement (
+    node_id             TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+    engaged_count       INTEGER NOT NULL DEFAULT 0,
+    dismissed_count     INTEGER NOT NULL DEFAULT 0,
+    last_interaction_at TEXT NOT NULL DEFAULT ''
+);
+
+-- Phase-5 slice-3 (see 00034): derived index of each episode/rollup node's
+-- `## Provenance` refs, so a channel+window lookup does not require a full
+-- vault body re-scan. Rebuildable from vault files — INSIDE the MEM-02
+-- reindex-equivalence set (an extension, not a weakening; owner-review
+-- flagged). scheme='' for bare Slack channel_id refs; mail:/cal:/chat:/act:
+-- prefixed refs carry their scheme, naturally excluded from a Slack channel
+-- window query.
+CREATE TABLE IF NOT EXISTS memory_provenance (
+    node_id     TEXT NOT NULL REFERENCES memory_nodes(id),
+    scheme      TEXT NOT NULL DEFAULT '',
+    channel_id  TEXT NOT NULL,
+    ts_raw      TEXT NOT NULL,
+    ts_unix     REAL NOT NULL,
+    sender_id   TEXT NOT NULL DEFAULT '',    -- per-message sender (Slack user_id / Gmail from_email); '' for cal:/chat:/act: schemes (see 00038, Slice B)
+    PRIMARY KEY (node_id, channel_id, ts_raw)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix);
+CREATE INDEX IF NOT EXISTS idx_memory_provenance_sender ON memory_provenance(sender_id);
+
+-- Phase-5 slice-3 (see 00034): dark compare-mode telemetry
+-- (memory.renders.digest_compare) — memory-owned, never the legacy
+-- digests/digest_topics tables (MEM-05/MEM-14). Not a memory_nodes child;
+-- not vault-derived, so DropMemoryIndex leaves it alone. Never read by any
+-- UI; a pure reader of digests/digest_topics/messages writes here.
+CREATE TABLE IF NOT EXISTS memory_digest_shadow (
+    id                   INTEGER PRIMARY KEY,
+    channel_id           TEXT NOT NULL,
+    period_from          REAL NOT NULL,
+    period_to            REAL NOT NULL,
+    legacy_digest_id     INTEGER NOT NULL DEFAULT 0,
+    rendered_json        TEXT NOT NULL,
+    coverage             REAL NOT NULL DEFAULT 0,
+    render_refs_rejected INTEGER NOT NULL DEFAULT 0,
+    model                TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    UNIQUE(channel_id, period_from, period_to)
+);
+
+-- Slice B Task 7 (see 00039): dark retrieval-compare telemetry
+-- (memory.retrieve.{recall_compare,briefing_compare,meeting_prep_compare}) —
+-- append-only, no FK onto memory_nodes (a shadow row is pure telemetry that
+-- must survive independently of the compared node's later eviction).
+CREATE TABLE IF NOT EXISTS memory_retrieve_shadow (
+    id                INTEGER PRIMARY KEY,
+    surface           TEXT NOT NULL CHECK (surface IN ('recall','briefing','meeting_prep')),
+    query_key         TEXT NOT NULL DEFAULT '',
+    old_result_json   TEXT NOT NULL,
+    new_result_json   TEXT NOT NULL,
+    diff_metrics_json TEXT NOT NULL,
+    ts                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surface, ts);
+
+-- Focus salience (see 00041): mechanically-matched node set (state 'now' or
+-- 'cooled'), rewritten wholesale on every fingerprint change. Runtime state:
+-- rebuilt from focus.md + the index, cleared and rewritten by the pipeline.
+-- No FK (a match may outlive its node briefly between runs; reads join
+-- against live nodes).
+CREATE TABLE IF NOT EXISTS memory_focus_matches (
+    node_id TEXT PRIMARY KEY,
+    state   TEXT NOT NULL CHECK (state IN ('now','cooled'))
 );

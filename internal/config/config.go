@@ -95,6 +95,38 @@ type CalendarConfig struct {
 	Enabled           bool     `mapstructure:"enabled"`            // enable calendar sync (default: false)
 	SelectedCalendars []string `mapstructure:"selected_calendars"` // specific calendar IDs to sync
 	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: 2)
+	HistoryDays       int      `mapstructure:"history_days"`       // days of past events to keep synced (default: 14, floor 1)
+}
+
+// EffectiveHistoryDays returns the configured past-events sync window in
+// days, floored at 1 so the window never collapses (spec: default 14,
+// floor 1 — the same clamp CalendarViewModel applies on the Swift side; an
+// absent config key gets the 14-day default from viper's SetDefault). Both
+// the Google and CalDAV syncers derive timeMin from this, and the
+// per-calendar stale-delete then naturally retains the same window — so
+// widening it here is the single knob for browsable history.
+func (c CalendarConfig) EffectiveHistoryDays() int {
+	if c.HistoryDays < 1 {
+		return 1
+	}
+	return c.HistoryDays
+}
+
+// GmailConfig holds Gmail integration settings.
+type GmailConfig struct {
+	Enabled            bool `mapstructure:"enabled"`               // enable gmail sync (default: false)
+	InitialHistoryDays int  `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync
+	MaxMessagesPerSync int  `mapstructure:"max_messages_per_sync"` // per-cycle cap
+	MaxBodyBytes       int  `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
+}
+
+// ImapConfig holds settings shared by every connected IMAP/Outlook mailbox
+// (individual accounts themselves live in the email_accounts table, not
+// here — this only tunes how each one syncs).
+type ImapConfig struct {
+	InitialHistoryDays int `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync per account
+	MaxMessagesPerSync int `mapstructure:"max_messages_per_sync"` // per-cycle, per-account cap
+	MaxBodyBytes       int `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
 }
 
 // JiraFeatureToggles controls which Jira features are enabled for the user.
@@ -151,6 +183,12 @@ type TargetsConfig struct {
 	Resolver TargetsResolverConfig `mapstructure:"resolver"`
 }
 
+// TranscriptsConfig holds settings for meeting transcript storage.
+type TranscriptsConfig struct {
+	AudioRetentionDays int    `mapstructure:"audio_retention_days"` // delete recording audio after N days (default 30); transcript text is kept forever
+	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the Desktop recorder writes rec_* files into; empty → the default computed by Config.RecordingsDir
+}
+
 // DayPlanConfig holds settings for the daily plan generation pipeline.
 type DayPlanConfig struct {
 	Enabled           bool   `yaml:"enabled" mapstructure:"enabled"`
@@ -160,6 +198,105 @@ type DayPlanConfig struct {
 	MaxTimeblocks     int    `yaml:"max_timeblocks" mapstructure:"max_timeblocks"`
 	MinBacklog        int    `yaml:"min_backlog" mapstructure:"min_backlog"`
 	MaxBacklog        int    `yaml:"max_backlog" mapstructure:"max_backlog"`
+}
+
+// MemoryConfig holds settings for the secretary memory consolidation
+// pipeline (internal/memory).
+type MemoryConfig struct {
+	Enabled              bool                 `mapstructure:"enabled"`                 // enable memory consolidation (default: false — off until the feature settles)
+	MaxChunkMessages     int                  `mapstructure:"max_chunk_messages"`      // max raw messages consumed per consolidation run (default: 2000)
+	SeedMinMessages      int                  `mapstructure:"seed_min_messages"`       // messages in the last 30 days before a person is seeded as an entity (default: 20)
+	MaxEpisodesPerWindow int                  `mapstructure:"max_episodes_per_window"` // episode cap per channel window in the extractor (default: 5)
+	MaxWindowMessages    int                  `mapstructure:"max_window_messages"`     // max messages per extraction window; a busier channel forms multiple sequential windows (default: 200)
+	BatchMaxChannels     int                  `mapstructure:"batch_max_channels"`      // max channel windows grouped into one extraction call (default: 20, digest-pipeline precedent)
+	BatchMaxMessages     int                  `mapstructure:"batch_max_messages"`      // max total messages grouped into one extraction call (default: 1500)
+	Semantic             MemorySemanticConfig `mapstructure:"semantic"`                // Phase-3 semantic tier (belief/rewrite/dedupe/evict/concept steps), dark by default
+	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/disputes/reflection), each dark by default
+	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // Phase-5 slice-1 sources (gmail/actions), each dark by default
+	Renders              MemoryRendersConfig  `mapstructure:"renders"`                 // Phase-5 slice-3 renders (digest_compare), dark by default
+	Retrieve             MemoryRetrieveConfig `mapstructure:"retrieve"`                // Phase-5 Slice B dark retrieval-compare (recall/briefing/meeting_prep), each dark by default
+	Focus                MemoryFocusConfig    `mapstructure:"focus"`                   // focus-salience Run step (fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep), dark by default
+}
+
+// MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
+// strong-tier entity rewrites, belief revision, and strong world-map render,
+// plus the mechanical dedupe/concept-promotion/eviction steps. Every step is a
+// no-op unless Enabled is true, so phases 0–2 keep running alone by default.
+// All caps are per consolidation run.
+type MemorySemanticConfig struct {
+	Enabled            bool `mapstructure:"enabled"`              // enable the semantic tier (default: false)
+	RewriteMaxEntities int  `mapstructure:"rewrite_max_entities"` // max entity pages rewritten per run (default: 10)
+	BeliefsMax         int  `mapstructure:"beliefs_max"`          // max belief ops applied per run (default: 20)
+	DedupeMaxMerges    int  `mapstructure:"dedupe_max_merges"`    // max episode merges per run (default: 20)
+	AgeAfterDays       int  `mapstructure:"age_after_days"`       // active short non-situation episodes whose newest event is older than this age to closed+long (default: 14)
+	EvictAfterDays     int  `mapstructure:"evict_after_days"`     // closed long episodes older than this are eviction candidates (default: 45)
+	EvictMax           int  `mapstructure:"evict_max"`            // max episodes evicted per run (default: 50)
+	ConceptMinEpisodes int  `mapstructure:"concept_min_episodes"` // distinct-episode recurrence before a hint is promoted (default: 5)
+	ConceptMaxCreate   int  `mapstructure:"concept_max_create"`   // max concept entities created per run (default: 10)
+	OutputBudget       int  `mapstructure:"output_budget"`        // stop launching further strong-tier AI steps once the run's output tokens exceed this (default: 200000)
+	Preferences        bool `mapstructure:"preferences"`          // Phase-5 slice-4: gate the OWNER ACTIONS block in the belief pass, forming preference beliefs from staged owner-action evidence (default: false)
+}
+
+// MemorySurfacesConfig gates the four Phase-4 memory surfaces independently —
+// each is a no-op when its flag is off, so the four have independent blast
+// radii. All default false (dark by default).
+type MemorySurfacesConfig struct {
+	Chat        bool `mapstructure:"chat"`         // Discuss chat MEMORY block + ingestChatStatements owner-evidence minting (default: false)
+	Briefing    bool `mapstructure:"briefing"`     // daily briefing "Memory revisions" journal block (default: false)
+	Disputes    bool `mapstructure:"disputes"`     // inbox watchtower detector surfaces dispute_pending beliefs as dashboard situations (default: false)
+	Reflection  bool `mapstructure:"reflection"`   // weekly strong-tier reflection pass over vault git history (default: false)
+	DayPlan     bool `mapstructure:"day_plan"`     // Phase-5 slice-4: day plan reads open loops from memory entity mirrors (default: false)
+	MeetingPrep bool `mapstructure:"meeting_prep"` // Phase-5 slice-4: meeting prep reads attendee entity pages + beliefs from memory (default: false)
+}
+
+// MemorySourcesConfig gates the two Phase-5 slice-1 memory sources
+// independently — each gated path is a byte-identical no-op when its flag is
+// off, and the two flags have independent blast radii from each other AND from
+// Semantic.Enabled/Surfaces.*. This independence is literal: Gmail gates BOTH the
+// thread->episode extractor AND sender->person seeding, and Actions runs the
+// mechanical interaction ingest as its OWN Run step (not a semantic sub-step), so
+// its annotations + engagement land even with the semantic tier off (the staged
+// act: refs are simply unused then). All default false (dark by default).
+type MemorySourcesConfig struct {
+	Gmail       bool `mapstructure:"gmail"`       // Gmail thread->episode extractor + sender->person seeding (default: false)
+	Actions     bool `mapstructure:"actions"`     // mechanical interaction ingest (owner-action evidence, engagement aggregates), its own Run step (default: false)
+	Calendar    bool `mapstructure:"calendar"`    // Phase-5 slice-2: mechanical past-event->episode builder + recurring-series seeding (default: false)
+	Chats       bool `mapstructure:"chats"`       // Phase-5 slice-2: generalizes internal-dialogs ingest to target/track Discuss chats + the "remember this" command (default: false)
+	Operational bool `mapstructure:"operational"` // Phase-5 slice-4: mechanical target/track entity mirrors in the vault (target:<id>/track:<id>), its own Run step (default: false)
+	Jira        bool `mapstructure:"jira"`        // mechanical jira issue->episode builder + jira: provenance scheme, its own Run step (default: false)
+}
+
+// MemoryRendersConfig gates the Phase-5 slice-3 render-inversion steps
+// independently. Each is a no-op when its flag is off. All default false
+// (dark by default).
+type MemoryRendersConfig struct {
+	DigestCompare bool `mapstructure:"digest_compare"` // dark compare-mode: render channel digests from memory episodes and diff against the legacy digest pipeline (default: false)
+}
+
+// MemoryRetrieveConfig gates the Phase-5 Slice-B dark retrieval-compare mode
+// independently per surface — each is a no-op when its flag is off, mirroring
+// Renders.DigestCompare's precedent. All default false (dark by default).
+// Unlike Renders.DigestCompare (one daemon-tail batch job), these three run
+// inline at each surface's own live call site (memory_recall's MCP handler,
+// briefing's gatherMemoryRevisions, meeting-prep's gatherMemoryContext) —
+// there is no cost concern requiring a daemon-cycle gate, since none of the
+// three retrieval functions makes an AI call.
+type MemoryRetrieveConfig struct {
+	RecallCompare      bool `mapstructure:"recall_compare"`       // memory_recall MCP tool also runs RetrieveByQuery and shadow-diffs against the legacy FTS ranking (default: false)
+	BriefingCompare    bool `mapstructure:"briefing_compare"`     // briefing's Memory revisions journal also runs RetrieveRevisions and shadow-diffs against the legacy notable-revision order (default: false)
+	MeetingPrepCompare bool `mapstructure:"meeting_prep_compare"` // meeting-prep's attendee memory context also runs RetrieveBySubject and shadow-diffs against the legacy confidence-ordered belief selection (default: false)
+}
+
+// MemoryFocusConfig gates the focus-salience Run step independently. When
+// Enabled is false, focus.md (internal/memory/focus.go) is never parsed —
+// but the gate-off path still runs runFocusDisable, which neutralizes any
+// residual memory_focus_matches rows / boosted importance_scores left over
+// from a prior enabled run whenever the stored fingerprint is non-empty; it
+// is a fast no-op (no DB write at all) only once that fingerprint is already
+// empty, i.e. a workspace that never had focus enabled, or one already
+// neutralized by an earlier disabled run. Default false (dark by default).
+type MemoryFocusConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable the focus-salience Run step: fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep (default: false)
 }
 
 type Config struct {
@@ -174,10 +311,14 @@ type Config struct {
 	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
+	Gmail           GmailConfig                 `mapstructure:"gmail"`
+	Imap            ImapConfig                  `mapstructure:"imap"`
 	Jira            JiraConfig                  `mapstructure:"jira"`
 	Analysis        AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
+	Memory          MemoryConfig                `mapstructure:"memory"`
 	Targets         TargetsConfig               `mapstructure:"targets"`
+	Transcripts     TranscriptsConfig           `mapstructure:"transcripts"`
 	Catchup         CatchupConfig               `mapstructure:"catchup"`
 	DB              DBConfig                    `mapstructure:"db"`
 	ClaudePath      string                      `mapstructure:"claude_path"`
@@ -234,6 +375,14 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("catchup.caps.briefings", 20)
 	v.SetDefault("calendar.enabled", DefaultCalendarEnabled)
 	v.SetDefault("calendar.sync_days_ahead", DefaultCalendarSyncDaysAhead)
+	v.SetDefault("calendar.history_days", DefaultCalendarHistoryDays)
+	v.SetDefault("gmail.enabled", DefaultGmailEnabled)
+	v.SetDefault("gmail.initial_history_days", DefaultGmailInitialHistoryDays)
+	v.SetDefault("gmail.max_messages_per_sync", DefaultGmailMaxMessagesPerSync)
+	v.SetDefault("gmail.max_body_bytes", DefaultGmailMaxBodyBytes)
+	v.SetDefault("imap.initial_history_days", DefaultImapInitialHistoryDays)
+	v.SetDefault("imap.max_messages_per_sync", DefaultImapMaxMessagesPerSync)
+	v.SetDefault("imap.max_body_bytes", DefaultImapMaxBodyBytes)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
@@ -243,6 +392,40 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
 	v.SetDefault("day_plan.min_backlog", DefaultDayPlanMinBacklog)
 	v.SetDefault("day_plan.max_backlog", DefaultDayPlanMaxBacklog)
+	v.SetDefault("memory.enabled", false) // off by default until the feature settles
+	v.SetDefault("memory.max_chunk_messages", 2000)
+	v.SetDefault("memory.seed_min_messages", 20)
+	v.SetDefault("memory.max_episodes_per_window", 5)
+	v.SetDefault("memory.max_window_messages", 200)
+	v.SetDefault("memory.batch_max_channels", DefaultBatchMaxChannels)
+	v.SetDefault("memory.batch_max_messages", DefaultBatchMaxMessages)
+	v.SetDefault("memory.semantic.enabled", false) // semantic tier dark by default
+	v.SetDefault("memory.semantic.rewrite_max_entities", 10)
+	v.SetDefault("memory.semantic.beliefs_max", 20)
+	v.SetDefault("memory.semantic.dedupe_max_merges", 20)
+	v.SetDefault("memory.semantic.age_after_days", 14)
+	v.SetDefault("memory.semantic.evict_after_days", 45)
+	v.SetDefault("memory.semantic.evict_max", 50)
+	v.SetDefault("memory.semantic.concept_min_episodes", 5)
+	v.SetDefault("memory.semantic.concept_max_create", 10)
+	v.SetDefault("memory.semantic.output_budget", 200000)
+	v.SetDefault("memory.surfaces.chat", false) // Phase-4 surfaces dark by default
+	v.SetDefault("memory.surfaces.briefing", false)
+	v.SetDefault("memory.surfaces.disputes", false)
+	v.SetDefault("memory.surfaces.reflection", false)
+	v.SetDefault("memory.sources.gmail", false) // Phase-5 slice-1 sources dark by default
+	v.SetDefault("memory.sources.actions", false)
+	v.SetDefault("memory.sources.calendar", false) // Phase-5 slice-2 sources dark by default
+	v.SetDefault("memory.sources.chats", false)
+	v.SetDefault("memory.renders.digest_compare", false) // Phase-5 slice-3 renders dark by default
+	v.SetDefault("memory.sources.operational", false)    // Phase-5 slice-4 gates dark by default
+	v.SetDefault("memory.surfaces.day_plan", false)
+	v.SetDefault("memory.surfaces.meeting_prep", false)
+	v.SetDefault("memory.semantic.preferences", false)
+	v.SetDefault("memory.retrieve.recall_compare", false) // Slice B dark retrieval-compare, dark by default
+	v.SetDefault("memory.retrieve.briefing_compare", false)
+	v.SetDefault("memory.retrieve.meeting_prep_compare", false)
+	v.SetDefault("memory.focus.enabled", false) // focus-salience Run step dark by default
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
 	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)
@@ -251,6 +434,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("targets.resolver.jira_enabled", DefaultTargetsResolverJiraEnabled)
 	v.SetDefault("targets.resolver.mcp_timeout_seconds", DefaultTargetsResolverMCPTimeoutSeconds)
 	v.SetDefault("targets.resolver.active_snapshot_limit", DefaultTargetsResolverActiveSnapshotLimit)
+	v.SetDefault("transcripts.audio_retention_days", DefaultTranscriptAudioRetentionDays)
 	// db.schema_format defaults to 1 (legacy PRAGMA-based) so that any
 	// existing install triggers the one-shot upgrade on first run of the
 	// goose-based binary. cmd/root.go bumps it to db.CurrentSchemaFormat
@@ -380,4 +564,20 @@ func (c *Config) WorkspaceDir() string {
 // DBPath returns the path to the SQLite database for the active workspace.
 func (c *Config) DBPath() string {
 	return filepath.Join(c.WorkspaceDir(), "watchtower.db")
+}
+
+// RecordingsDir returns the meeting-recording directory scanned by the daemon
+// orphan cleanup: transcripts.recordings_dir when set, otherwise the Swift
+// recorder's default location ($HOME/Library/Application Support/Watchtower/
+// recordings, cf. MeetingRecorderCenter.recordingsDirectory). Returns "" when
+// the home directory cannot be determined.
+func (c *Config) RecordingsDir() string {
+	if c.Transcripts.RecordingsDir != "" {
+		return c.Transcripts.RecordingsDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings")
 }

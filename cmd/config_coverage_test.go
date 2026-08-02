@@ -122,6 +122,33 @@ func TestConfigSet_WorkspaceKey(t *testing.T) {
 	assert.Contains(t, buf.String(), "Set workspaces.test.slack_token = xoxp-new")
 }
 
+func TestConfigSet_MemorySurfaces(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	for _, key := range []string{
+		"memory.surfaces.chat",
+		"memory.surfaces.briefing",
+		"memory.surfaces.disputes",
+		"memory.surfaces.reflection",
+	} {
+		buf := new(bytes.Buffer)
+		errBuf := new(bytes.Buffer)
+		configSetCmd.SetOut(buf)
+		configSetCmd.SetErr(errBuf)
+
+		err := configSetCmd.RunE(configSetCmd, []string{key, "true"})
+		require.NoError(t, err)
+		assert.Empty(t, errBuf.String(), "%s should be a recognized key", key)
+		assert.Contains(t, buf.String(), "Set "+key+" = true")
+	}
+}
+
 func TestConfigSet_NoConfigFile(t *testing.T) {
 	oldFlagConfig := flagConfig
 	flagConfig = "/nonexistent/config.yaml"
@@ -218,6 +245,10 @@ func TestKnownConfigKeys(t *testing.T) {
 		"digest.min_messages",
 		"digest.language",
 		"digest.workers",
+		"memory.surfaces.chat",
+		"memory.surfaces.briefing",
+		"memory.surfaces.disputes",
+		"memory.surfaces.reflection",
 		"claude_path",
 	}
 

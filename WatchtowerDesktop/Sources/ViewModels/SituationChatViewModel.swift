@@ -276,8 +276,18 @@ final class SituationChatViewModel {
         return b
     }
 
+    /// `memoryChatEnabled` / `memoryVaultDir` default to the config-derived
+    /// values in production; tests inject them explicitly. When the memory
+    /// surface is off, the returned prompt is byte-identical to the pre-Phase-4
+    /// output — the MEMORY section and memory-tool bullet are interpolated as
+    /// empty-string slots on the disabled path, so no memory read runs and the
+    /// base template is unchanged.
     nonisolated static func buildSystemPrompt(
-        situation: Situation, memberSignals: [InboxItem], dbPool: DatabasePool
+        situation: Situation,
+        memberSignals: [InboxItem],
+        dbPool: DatabasePool,
+        memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
+        memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
         let ws: Workspace? = try? dbPool.read { db in try WorkspaceQueries.fetchWorkspace(db) }
         let ownerID = ws?.currentUserID ?? ""
@@ -289,7 +299,24 @@ final class SituationChatViewModel {
             ? "No stored style profile — mirror the owner's own messages in the register sample below."
             : "=== OWNER'S COMMUNICATION STYLE ===\n\(style)"
 
-        return """
+        // Phase-4 memory surface: the MEMORY block and the memory-tools bullet are
+        // interpolated as neighbor-style slots — each an empty string when the
+        // surface is off, so the disabled path is byte-identical to the pre-Phase-4
+        // output (no splicing, no memory reads on the off path). See
+        // SituationChatMemoryPromptTests.testDisabledPathByteIdenticalRegardlessOfMemoryData.
+        let memoryBlock = memoryChatEnabled
+            ? renderMemorySection(
+                hotMap: hotMap(vaultDir: memoryVaultDir),
+                context: relevantMemoryContext(subjects: situationSubjects(memberSignals: memberSignals), dbPool: dbPool)
+              ) + "\n\n"
+            : ""
+        let memoryToolsBullet = memoryChatEnabled
+            ? "- memory_recall / memory_open / memory_map — the secretary's built-up memory of "
+                + "people, topics, and what it currently believes; check what the secretary already knows before "
+                + "asking the user.\n"
+            : ""
+
+        let base = """
         You are the user's AI secretary, discussing ONE situation from their work dashboard. \
         Help them think it through; when they tell you WHAT to reply, turn their intent into the reply FOR them.
 
@@ -310,13 +337,13 @@ final class SituationChatViewModel {
 
         \(counterpartyBlock(memberSignals: memberSignals, ownerID: ownerID, dbPool: dbPool))
         \(registerSampleBlock(memberSignals: memberSignals, ownerID: ownerID, dbPool: dbPool))
-        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+        \(memoryBlock)=== TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
         You have read-only tools over the user's OWN local Watchtower database. \
         Use them to look things up instead of asking the user:
         - list_messages — search/list the user's Slack messages by person, channel, and/or keyword. \
         This is how you find what someone said (e.g. the open questions a colleague handed over). \
         Pass the person's name in `person` and optional keywords in `query`.
-        - get_person / list_people — people cards; get_target / list_tracks / list_digests / list_jira_issues — work context.
+        \(memoryToolsBullet)- get_person / list_people — people cards; get_target / list_tracks / list_digests / list_jira_issues — work context.
         Never ask for a database path, never ask the user to authorize Slack, and never use claude.ai connectors \
         (the Slack connector or any other) — the data is already local and these tools are already connected. \
         If a lookup returns nothing, say so plainly rather than blaming access.
@@ -325,6 +352,22 @@ final class SituationChatViewModel {
         - Match the user's language in conversation.
         - Be concise; this is a working discussion, not a report.
         """
+
+        return base
+    }
+
+    // MARK: - Memory surface (Phase 4, behind memory.surfaces.chat)
+
+    /// Discuss's subjects: the situation's member signals' channel and sender
+    /// user ids — unchanged from the pre-Slice-C relevantMemory's alias-key
+    /// computation.
+    nonisolated private static func situationSubjects(memberSignals: [InboxItem]) -> [String] {
+        var subjects = Set<String>()
+        for signal in memberSignals {
+            if !signal.channelID.isEmpty { subjects.insert(signal.channelID) }
+            if !signal.senderUserID.isEmpty { subjects.insert(signal.senderUserID) }
+        }
+        return Array(subjects)
     }
 
     /// People-card briefs for each distinct non-owner sender among the member

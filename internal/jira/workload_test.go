@@ -287,7 +287,7 @@ func TestWorkload_WithMeetingHours(t *testing.T) {
 	}))
 
 	// Insert calendar data: calendar + event + attendee map.
-	require.NoError(t, d.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "cal1", Name: "Work", IsPrimary: true, IsSelected: true, SyncedAt: "2026-04-08T00:00:00Z",
 	}))
 	require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{

@@ -1,6 +1,10 @@
 // Package mcp implements a read-only Model Context Protocol server that
 // exposes Watchtower's curated product data to MCP clients. Every registered
-// tool is read-only; no tool mutates the database.
+// tool is a read surface; the deliberate writes are memory_open's best-effort
+// usage-stats bump (telemetry, not domain data) and, when
+// WithMemoryRetrieveCompare is supplied, memory_recall's dark retrieval-
+// compare shadow row (also telemetry — Slice B Task 8, memory_retrieve_shadow
+// only, never the tool's own response).
 package mcp
 
 import (
@@ -60,24 +64,63 @@ func firstError(msgs ...string) string {
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.
 type Server struct {
 	s *mcpsdk.Server
+
+	// memoryVaultPath is the workspace memory vault directory; empty when
+	// memory is disabled — the memory_ tools then answer "not initialized".
+	memoryVaultPath string
+
+	// retrieveShadowDB is a SEPARATE, ordinarily-writable *db.DB handle used
+	// ONLY for memory_recall's dark retrieval-compare shadow write (Slice B
+	// Task 8). The server's main `database` handle is deliberately
+	// PRAGMA query_only=ON at the call sites (cmd/mcp.go, cmd/tools.go) so
+	// no tool handler can write; this field is the one narrow, explicit
+	// exception, threaded in only when memory.retrieve.recall_compare is on.
+	// nil means the flag is off — memory_recall behaves byte-identically to
+	// before this field existed.
+	retrieveShadowDB *db.DB
+}
+
+// ServerOption customizes NewServer additively, so existing call sites keep
+// compiling as new dependencies are introduced.
+type ServerOption func(*Server)
+
+// WithMemoryVault points the memory_ tools at the workspace memory vault
+// directory (WorkspaceDir()/memory). Callers pass it only when memory is
+// enabled; without it the tools report memory as not initialized.
+func WithMemoryVault(path string) ServerOption {
+	return func(srv *Server) { srv.memoryVaultPath = path }
+}
+
+// WithMemoryRetrieveCompare enables memory_recall's dark retrieval-compare
+// mode (Slice B Task 8, memory.retrieve.recall_compare): shadowDB must be an
+// ordinarily-writable *db.DB (NOT the server's read-only main handle) used
+// exclusively for the one memory_retrieve_shadow insert per call. Absent
+// (nil) or never called, memory_recall never touches that table.
+func WithMemoryRetrieveCompare(shadowDB *db.DB) ServerOption {
+	return func(srv *Server) { srv.retrieveShadowDB = shadowDB }
 }
 
 // NewServer builds an MCP server over the given database and registers every
-// read-only domain tool.
-func NewServer(database *db.DB) *Server {
-	s := mcpsdk.NewServer(&mcpsdk.Implementation{
+// domain tool.
+func NewServer(database *db.DB, opts ...ServerOption) *Server {
+	srv := &Server{s: mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "watchtower",
 		Title:   "Watchtower",
 		Version: version,
-	}, nil)
+	}, nil)}
+	for _, opt := range opts {
+		opt(srv)
+	}
 
-	registerTargets(s, database)
-	registerDigests(s, database)
-	registerPeople(s, database)
-	registerJira(s, database)
-	registerMessages(s, database)
+	registerTargets(srv.s, database)
+	registerDigests(srv.s, database)
+	registerPeople(srv.s, database)
+	registerJira(srv.s, database)
+	registerMessages(srv.s, database)
+	registerTranscripts(srv.s, database)
+	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 
-	return &Server{s: s}
+	return srv
 }
 
 // ServeStdio runs the server over stdio until the context is cancelled or the

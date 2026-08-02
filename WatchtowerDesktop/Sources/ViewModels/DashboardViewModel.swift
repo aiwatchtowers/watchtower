@@ -254,16 +254,20 @@ final class DashboardViewModel {
     }
 
     /// Records thumbs-up/down feedback for a situation. Comment-less feedback
-    /// stays on the direct-write fast path (rating -1 derives channel mute
-    /// rules; +1 is a no-op — see `SituationQueries.recordFeedback`). A
-    /// non-empty comment routes through `watchtower inbox feedback`, whose
-    /// learning interpreter turns it into targeted user rules (same pattern
-    /// as `CatchUpViewModel.submitFeedback`).
+    /// stays on the direct-write fast path: the raw rating lands in the
+    /// feedback table (entity_type='situation') so the 👍/👎 control reflects
+    /// it, and rating -1 additionally derives channel mute rules — see
+    /// `SituationQueries.recordFeedback`. A non-empty comment routes through
+    /// `watchtower inbox feedback`, which persists the rating row itself
+    /// (Go `SubmitSituationFeedback`) before running the learning interpreter
+    /// (same pattern as `CatchUpViewModel.submitFeedback`).
     func submitFeedback(_ situation: Situation, rating: Int, comment: String = "") async {
         let trimmed = comment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             do {
                 try await dbManager.dbPool.write { db in
+                    try FeedbackQueries.addFeedback(
+                        db, entityType: "situation", entityID: String(situation.id), rating: rating)
                     try SituationQueries.recordFeedback(db, situationID: situation.id, rating: rating)
                 }
                 load()
@@ -284,6 +288,15 @@ final class DashboardViewModel {
             ])
         } catch {
             errorMessage = "Failed to submit feedback: \(error.localizedDescription)"
+        }
+    }
+
+    /// Returns the situation's most recent 👍/👎 rating (nil = never rated),
+    /// so the review pane's feedback control can render its selected state.
+    func feedbackRating(for situationID: Int) -> Int? {
+        try? dbManager.dbPool.read { db in
+            try FeedbackQueries.getFeedback(
+                db, entityType: "situation", entityID: String(situationID))?.rating
         }
     }
 

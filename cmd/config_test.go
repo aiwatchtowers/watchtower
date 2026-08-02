@@ -78,6 +78,132 @@ func TestConfigSet(t *testing.T) {
 	assert.Contains(t, string(data), "claude-opus-4-6")
 }
 
+func TestConfigSet_MemorySourcesGmail_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	err := configSetCmd.RunE(configSetCmd, []string{"memory.sources.gmail", "true"})
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "Set memory.sources.gmail = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "gmail: true")
+}
+
+func TestConfigSet_MemorySourcesCalendarAndChats_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	err := configSetCmd.RunE(configSetCmd, []string{"memory.sources.calendar", "true"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Set memory.sources.calendar = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	buf.Reset()
+	errBuf.Reset()
+	err = configSetCmd.RunE(configSetCmd, []string{"memory.sources.chats", "true"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Set memory.sources.chats = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "calendar: true")
+	assert.Contains(t, string(data), "chats: true")
+}
+
+func TestConfigSet_MemorySlice4Gates_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	keys := []string{
+		"memory.sources.operational",
+		"memory.surfaces.day_plan",
+		"memory.surfaces.meeting_prep",
+		"memory.semantic.preferences",
+	}
+	for _, key := range keys {
+		buf.Reset()
+		errBuf.Reset()
+		err := configSetCmd.RunE(configSetCmd, []string{key, "true"})
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "Set "+key+" = true")
+		assert.NotContains(t, errBuf.String(), "not a recognized config key")
+	}
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "operational: true")
+	assert.Contains(t, string(data), "day_plan: true")
+	assert.Contains(t, string(data), "meeting_prep: true")
+	assert.Contains(t, string(data), "preferences: true")
+}
+
+func TestConfigSet_MemoryRendersDigestCompare_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	err := configSetCmd.RunE(configSetCmd, []string{"memory.renders.digest_compare", "true"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Set memory.renders.digest_compare = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "digest_compare: true")
+}
+
 func TestConfigShow(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")

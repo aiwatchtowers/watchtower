@@ -165,6 +165,7 @@ struct DashboardView: View {
                     onFeedback: { rating, comment in
                         Task { await vm.submitFeedback(situation, rating: rating, comment: comment) }
                     },
+                    loadFeedbackRating: { vm.feedbackRating(for: situation.id) },
                     isCreatingTarget: isBuildingPrefill,
                     onCreateTarget: { openCreateTarget(for: situation) },
                     onCreateTrack: { openCreateTrack(for: situation) },

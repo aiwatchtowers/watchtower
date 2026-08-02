@@ -13,6 +13,14 @@ struct SidebarView: View {
     /// Held in @State so hide/show re-renders; persisted to UserDefaults.
     @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
 
+    /// DB-derived connection check for the "connect" badge on the Calendar
+    /// item — reuses `GoogleConnectFlow.shared.calendar` (wired to a dbPool
+    /// by `AppState.initGoogleAccounts`) rather than a locally-constructed
+    /// `GoogleAuthService()`, which would have no DB access. Re-checked on
+    /// every selection change so the badge clears right after the user
+    /// connects from any screen.
+    private let googleAuth = GoogleConnectFlow.shared.calendar
+
     private static func storageKey(_ section: SidebarSection) -> String {
         "sidebar.section.\(section.id).collapsed"
     }
@@ -46,6 +54,7 @@ struct SidebarView: View {
     private var overdueTaskCount: Int { counts?.overdueTaskCount ?? 0 }
     private var inboxHighPriorityCount: Int { counts?.inboxHighPriorityCount ?? 0 }
     private var situationsCount: Int { counts?.situationsCount ?? 0 }
+    private var memoryDisputedCount: Int { counts?.memoryDisputedCount ?? 0 }
     private var catchUpTotalCount: Int { counts?.catchUpTotalCount ?? 0 }
 
     var body: some View {
@@ -94,6 +103,10 @@ struct SidebarView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                    if nextEvt.conferenceLink != nil {
+                        Spacer(minLength: 4)
+                        JoinButton(event: nextEvt, center: appState.meetingRecorderCenter)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
@@ -137,6 +150,8 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { googleAuth.checkStatus() }
+        .onChange(of: selection) { _, _ in googleAuth.checkStatus() }
     }
 
     // MARK: - Main Sidebar Button
@@ -176,10 +191,18 @@ struct SidebarView: View {
                     .fill(Color.red)
                     .frame(width: 6, height: 6)
             }
+        } else if item == .calendar {
+            if !googleAuth.isConnected {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .help("Google is not connected — open Calendar to connect it")
+            }
         } else {
             let count = self.count(for: item)
             if count > 0 {
                 capsuleBadge(count, color: item == .tracks ? .orange
+                    : item == .memory ? .orange
                     : item == .inbox && inboxHighPriorityCount > 0 ? .red
                     : item == .inbox ? .blue
                     : item == .targets && overdueTaskCount > 0 ? .red
@@ -210,6 +233,7 @@ struct SidebarView: View {
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
         case .tracks: updatedTrackCount
         case .digests: unreadDigestCount
+        case .memory: memoryDisputedCount
         case .statistics: recommendationCount
         default: 0
         }
