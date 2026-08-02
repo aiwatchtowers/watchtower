@@ -249,12 +249,15 @@ func TestRunJiraLogout_NoToken(t *testing.T) {
 	var buf bytes.Buffer
 	c.SetOut(&buf)
 
-	// Logout is idempotent — works even without a saved token.
+	// Logout is idempotent — works even without a saved token. With no
+	// accounts (multi-account model) it reports nothing to disconnect.
 	require.NoError(t, runJiraLogout(c, nil))
-	assert.Contains(t, buf.String(), "disconnected")
+	assert.Contains(t, buf.String(), "No Jira site connected")
 }
 
-func TestRunJiraLogout_RemovesTokenAndClearsData(t *testing.T) {
+// Logout is now non-destructive: the token file is removed and the account row
+// marked removed, but synced data is kept.
+func TestRunJiraLogout_RemovesTokenKeepsData(t *testing.T) {
 	wsDir := setupTempWorkspace(t)
 
 	tokenPath := filepath.Join(wsDir, "jira_token.json")
@@ -387,7 +390,7 @@ func TestRunJiraStatus_NotConnected(t *testing.T) {
 	require.NoError(t, runJiraStatus(c, nil))
 	out := buf.String()
 	assert.Contains(t, out, "not connected")
-	assert.Contains(t, out, "jira login")
+	assert.Contains(t, out, "jira add")
 }
 
 func TestRunJiraStatus_Connected(t *testing.T) {
@@ -402,7 +405,10 @@ func TestRunJiraStatus_Connected(t *testing.T) {
 
 	require.NoError(t, runJiraStatus(c, nil))
 	out := buf.String()
-	assert.Contains(t, out, "connected")
-	assert.Contains(t, out, tokenPath)
+	assert.Contains(t, out, "account(s) connected")
+	assert.Contains(t, out, "[1]")
 	assert.Contains(t, out, "Issues synced:")
+	// The legacy token was migrated to the per-account store (account #1).
+	assert.FileExists(t, filepath.Join(wsDir, "jira_token_1.json"))
+	assert.NoFileExists(t, tokenPath)
 }

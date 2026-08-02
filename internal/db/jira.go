@@ -8,13 +8,14 @@ import (
 	"time"
 )
 
-// UpsertJiraBoard inserts or updates a Jira board. Profile columns are NOT overwritten on conflict.
+// UpsertJiraBoard inserts or updates a Jira board (keyed by the board's
+// AccountID). Profile columns are NOT overwritten on conflict.
 func (db *DB) UpsertJiraBoard(board JiraBoard) error {
-	_, err := db.Exec(`INSERT INTO jira_boards (id, name, project_key, board_type, is_selected, issue_count, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, project_key=excluded.project_key,
+	_, err := db.Exec(`INSERT INTO jira_boards (account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(account_id, id) DO UPDATE SET name=excluded.name, project_key=excluded.project_key,
 			board_type=excluded.board_type, issue_count=excluded.issue_count, synced_at=excluded.synced_at`,
-		board.ID, board.Name, board.ProjectKey, board.BoardType, board.IsSelected, board.IssueCount, board.SyncedAt)
+		board.AccountID, board.ID, board.Name, board.ProjectKey, board.BoardType, board.IsSelected, board.IssueCount, board.SyncedAt)
 	if err != nil {
 		return fmt.Errorf("upserting jira board %d: %w", board.ID, err)
 	}
@@ -22,10 +23,10 @@ func (db *DB) UpsertJiraBoard(board JiraBoard) error {
 }
 
 // UpdateJiraBoardProfile updates board analysis profile columns.
-func (db *DB) UpdateJiraBoardProfile(boardID int, rawColumnsJSON, rawConfigJSON, llmProfileJSON, workflowSummary, configHash, profileGeneratedAt string) error {
+func (db *DB) UpdateJiraBoardProfile(accountID int64, boardID int, rawColumnsJSON, rawConfigJSON, llmProfileJSON, workflowSummary, configHash, profileGeneratedAt string) error {
 	_, err := db.Exec(`UPDATE jira_boards SET raw_columns_json=?, raw_config_json=?, llm_profile_json=?,
-		workflow_summary=?, config_hash=?, profile_generated_at=? WHERE id=?`,
-		rawColumnsJSON, rawConfigJSON, llmProfileJSON, workflowSummary, configHash, profileGeneratedAt, boardID)
+		workflow_summary=?, config_hash=?, profile_generated_at=? WHERE account_id=? AND id=?`,
+		rawColumnsJSON, rawConfigJSON, llmProfileJSON, workflowSummary, configHash, profileGeneratedAt, accountID, boardID)
 	if err != nil {
 		return fmt.Errorf("updating jira board profile %d: %w", boardID, err)
 	}
@@ -33,14 +34,15 @@ func (db *DB) UpdateJiraBoardProfile(boardID int, rawColumnsJSON, rawConfigJSON,
 }
 
 // UpdateJiraBoardIssueCount sets issue_count from the actual number of issues in the database.
-func (db *DB) UpdateJiraBoardIssueCount(boardID int) error {
-	_, err := db.Exec(`UPDATE jira_boards SET issue_count = (SELECT COUNT(*) FROM jira_issues WHERE board_id = ?) WHERE id = ?`, boardID, boardID)
+func (db *DB) UpdateJiraBoardIssueCount(accountID int64, boardID int) error {
+	_, err := db.Exec(`UPDATE jira_boards SET issue_count = (SELECT COUNT(*) FROM jira_issues WHERE account_id = ? AND board_id = ?)
+		WHERE account_id = ? AND id = ?`, accountID, boardID, accountID, boardID)
 	return err
 }
 
 // UpdateJiraBoardUserOverrides updates user overrides for a board.
-func (db *DB) UpdateJiraBoardUserOverrides(boardID int, userOverridesJSON string) error {
-	_, err := db.Exec(`UPDATE jira_boards SET user_overrides_json=? WHERE id=?`, userOverridesJSON, boardID)
+func (db *DB) UpdateJiraBoardUserOverrides(accountID int64, boardID int, userOverridesJSON string) error {
+	_, err := db.Exec(`UPDATE jira_boards SET user_overrides_json=? WHERE account_id=? AND id=?`, userOverridesJSON, accountID, boardID)
 	if err != nil {
 		return fmt.Errorf("updating jira board user overrides %d: %w", boardID, err)
 	}
@@ -48,14 +50,14 @@ func (db *DB) UpdateJiraBoardUserOverrides(boardID int, userOverridesJSON string
 }
 
 // GetJiraBoardProfile returns a board with all profile columns by ID.
-func (db *DB) GetJiraBoardProfile(boardID int) (*JiraBoard, error) {
-	row := db.QueryRow(`SELECT id, name, project_key, board_type, is_selected, issue_count, synced_at,
+func (db *DB) GetJiraBoardProfile(accountID int64, boardID int) (*JiraBoard, error) {
+	row := db.QueryRow(`SELECT account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at,
 		raw_columns_json, raw_config_json, llm_profile_json, workflow_summary,
 		user_overrides_json, config_hash, profile_generated_at
-		FROM jira_boards WHERE id = ?`, boardID)
+		FROM jira_boards WHERE account_id = ? AND id = ?`, accountID, boardID)
 
 	var b JiraBoard
-	err := row.Scan(&b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt,
+	err := row.Scan(&b.AccountID, &b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt,
 		&b.RawColumnsJSON, &b.RawConfigJSON, &b.LLMProfileJSON, &b.WorkflowSummary,
 		&b.UserOverridesJSON, &b.ConfigHash, &b.ProfileGeneratedAt)
 	if err == sql.ErrNoRows {
@@ -67,9 +69,9 @@ func (db *DB) GetJiraBoardProfile(boardID int) (*JiraBoard, error) {
 	return &b, nil
 }
 
-// GetJiraBoards returns all Jira boards.
+// GetJiraBoards returns all Jira boards across every account.
 func (db *DB) GetJiraBoards() ([]JiraBoard, error) {
-	rows, err := db.Query(`SELECT id, name, project_key, board_type, is_selected, issue_count, synced_at FROM jira_boards ORDER BY name`)
+	rows, err := db.Query(`SELECT account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at FROM jira_boards ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira boards: %w", err)
 	}
@@ -78,7 +80,7 @@ func (db *DB) GetJiraBoards() ([]JiraBoard, error) {
 	var boards []JiraBoard
 	for rows.Next() {
 		var b JiraBoard
-		if err := rows.Scan(&b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt); err != nil {
+		if err := rows.Scan(&b.AccountID, &b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira board: %w", err)
 		}
 		boards = append(boards, b)
@@ -86,9 +88,10 @@ func (db *DB) GetJiraBoards() ([]JiraBoard, error) {
 	return boards, rows.Err()
 }
 
-// GetJiraSelectedBoards returns boards where is_selected = 1.
-func (db *DB) GetJiraSelectedBoards() ([]JiraBoard, error) {
-	rows, err := db.Query(`SELECT id, name, project_key, board_type, is_selected, issue_count, synced_at FROM jira_boards WHERE is_selected = 1 ORDER BY name`)
+// GetJiraSelectedBoards returns one account's boards where is_selected = 1.
+func (db *DB) GetJiraSelectedBoards(accountID int64) ([]JiraBoard, error) {
+	rows, err := db.Query(`SELECT account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at
+		FROM jira_boards WHERE account_id = ? AND is_selected = 1 ORDER BY name`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("querying selected jira boards: %w", err)
 	}
@@ -97,7 +100,7 @@ func (db *DB) GetJiraSelectedBoards() ([]JiraBoard, error) {
 	var boards []JiraBoard
 	for rows.Next() {
 		var b JiraBoard
-		if err := rows.Scan(&b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt); err != nil {
+		if err := rows.Scan(&b.AccountID, &b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira board: %w", err)
 		}
 		boards = append(boards, b)
@@ -105,14 +108,36 @@ func (db *DB) GetJiraSelectedBoards() ([]JiraBoard, error) {
 	return boards, rows.Err()
 }
 
-// GetJiraSelectedBoardsWithProfile returns selected boards that have a profile (config_hash != ”).
+// ListSelectedJiraBoards returns selected boards across every account —
+// for account-agnostic surfaces (briefing, status) that then scope
+// per-board work by the row's AccountID.
+func (db *DB) ListSelectedJiraBoards() ([]JiraBoard, error) {
+	rows, err := db.Query(`SELECT account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at
+		FROM jira_boards WHERE is_selected = 1 ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("querying selected jira boards: %w", err)
+	}
+	defer rows.Close()
+
+	var boards []JiraBoard
+	for rows.Next() {
+		var b JiraBoard
+		if err := rows.Scan(&b.AccountID, &b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt); err != nil {
+			return nil, fmt.Errorf("scanning jira board: %w", err)
+		}
+		boards = append(boards, b)
+	}
+	return boards, rows.Err()
+}
+
+// GetJiraSelectedBoardsWithProfile returns one account's selected boards that have a profile (config_hash != ”).
 // Useful for detecting config changes by comparing stored config_hash with freshly computed hashes.
-func (db *DB) GetJiraSelectedBoardsWithProfile() ([]JiraBoard, error) {
-	rows, err := db.Query(`SELECT id, name, project_key, board_type, is_selected, issue_count, synced_at,
+func (db *DB) GetJiraSelectedBoardsWithProfile(accountID int64) ([]JiraBoard, error) {
+	rows, err := db.Query(`SELECT account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at,
 		raw_columns_json, raw_config_json, llm_profile_json, workflow_summary,
 		user_overrides_json, config_hash, profile_generated_at
-		FROM jira_boards WHERE is_selected = 1 AND config_hash != ''
-		ORDER BY name`)
+		FROM jira_boards WHERE account_id = ? AND is_selected = 1 AND config_hash != ''
+		ORDER BY name`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("querying boards with changed config: %w", err)
 	}
@@ -121,7 +146,7 @@ func (db *DB) GetJiraSelectedBoardsWithProfile() ([]JiraBoard, error) {
 	var boards []JiraBoard
 	for rows.Next() {
 		var b JiraBoard
-		if err := rows.Scan(&b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt,
+		if err := rows.Scan(&b.AccountID, &b.ID, &b.Name, &b.ProjectKey, &b.BoardType, &b.IsSelected, &b.IssueCount, &b.SyncedAt,
 			&b.RawColumnsJSON, &b.RawConfigJSON, &b.LLMProfileJSON, &b.WorkflowSummary,
 			&b.UserOverridesJSON, &b.ConfigHash, &b.ProfileGeneratedAt); err != nil {
 			return nil, fmt.Errorf("scanning board with changed config: %w", err)
@@ -132,8 +157,8 @@ func (db *DB) GetJiraSelectedBoardsWithProfile() ([]JiraBoard, error) {
 }
 
 // SetJiraBoardSelected updates the is_selected flag for a Jira board.
-func (db *DB) SetJiraBoardSelected(boardID int, selected bool) error {
-	_, err := db.Exec(`UPDATE jira_boards SET is_selected = ? WHERE id = ?`, selected, boardID)
+func (db *DB) SetJiraBoardSelected(accountID int64, boardID int, selected bool) error {
+	_, err := db.Exec(`UPDATE jira_boards SET is_selected = ? WHERE account_id = ? AND id = ?`, selected, accountID, boardID)
 	if err != nil {
 		return fmt.Errorf("setting jira board %d selected=%v: %w", boardID, selected, err)
 	}
@@ -142,14 +167,14 @@ func (db *DB) SetJiraBoardSelected(boardID int, selected bool) error {
 
 // UpsertJiraIssue inserts or updates a Jira issue.
 func (db *DB) UpsertJiraIssue(issue JiraIssue) error {
-	_, err := db.Exec(`INSERT INTO jira_issues (key, id, project_key, board_id, summary, description_text,
+	_, err := db.Exec(`INSERT INTO jira_issues (account_id, key, id, project_key, board_id, summary, description_text,
 		issue_type, issue_type_category, is_bug, status, status_category, status_category_changed_at,
 		assignee_account_id, assignee_email, assignee_display_name, assignee_slack_id,
 		reporter_account_id, reporter_email, reporter_display_name, reporter_slack_id,
 		priority, story_points, due_date, sprint_id, sprint_name, epic_key,
 		labels, components, fix_versions, created_at, updated_at, resolved_at, raw_json, custom_fields_json, synced_at, is_deleted)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(key) DO UPDATE SET
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(account_id, key) DO UPDATE SET
 			id=excluded.id, project_key=excluded.project_key, board_id=excluded.board_id,
 			summary=excluded.summary, description_text=excluded.description_text,
 			issue_type=excluded.issue_type, issue_type_category=excluded.issue_type_category, is_bug=excluded.is_bug,
@@ -166,7 +191,7 @@ func (db *DB) UpsertJiraIssue(issue JiraIssue) error {
 			created_at=excluded.created_at, updated_at=excluded.updated_at, resolved_at=excluded.resolved_at,
 			raw_json=excluded.raw_json, custom_fields_json=excluded.custom_fields_json,
 			synced_at=excluded.synced_at, is_deleted=excluded.is_deleted`,
-		issue.Key, issue.ID, issue.ProjectKey, issue.BoardID,
+		issue.AccountID, issue.Key, issue.ID, issue.ProjectKey, issue.BoardID,
 		issue.Summary, issue.DescriptionText,
 		issue.IssueType, issue.IssueTypeCategory, issue.IsBug,
 		issue.Status, issue.StatusCategory, issue.StatusCategoryChangedAt,
@@ -193,14 +218,14 @@ func (db *DB) UpsertJiraIssueBatch(issues []JiraIssue, links []JiraIssueLink) er
 
 	for i := range issues {
 		issue := &issues[i]
-		_, err := tx.Exec(`INSERT INTO jira_issues (key, id, project_key, board_id, summary, description_text,
+		_, err := tx.Exec(`INSERT INTO jira_issues (account_id, key, id, project_key, board_id, summary, description_text,
 			issue_type, issue_type_category, is_bug, status, status_category, status_category_changed_at,
 			assignee_account_id, assignee_email, assignee_display_name, assignee_slack_id,
 			reporter_account_id, reporter_email, reporter_display_name, reporter_slack_id,
 			priority, story_points, due_date, sprint_id, sprint_name, epic_key,
 			labels, components, fix_versions, created_at, updated_at, resolved_at, raw_json, custom_fields_json, synced_at, is_deleted)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(key) DO UPDATE SET
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(account_id, key) DO UPDATE SET
 				id=excluded.id, project_key=excluded.project_key, board_id=excluded.board_id,
 				summary=excluded.summary, description_text=excluded.description_text,
 				issue_type=excluded.issue_type, issue_type_category=excluded.issue_type_category, is_bug=excluded.is_bug,
@@ -217,7 +242,7 @@ func (db *DB) UpsertJiraIssueBatch(issues []JiraIssue, links []JiraIssueLink) er
 				created_at=excluded.created_at, updated_at=excluded.updated_at, resolved_at=excluded.resolved_at,
 				raw_json=excluded.raw_json, custom_fields_json=excluded.custom_fields_json,
 				synced_at=excluded.synced_at, is_deleted=excluded.is_deleted`,
-			issue.Key, issue.ID, issue.ProjectKey, issue.BoardID,
+			issue.AccountID, issue.Key, issue.ID, issue.ProjectKey, issue.BoardID,
 			issue.Summary, issue.DescriptionText,
 			issue.IssueType, issue.IssueTypeCategory, issue.IsBug,
 			issue.Status, issue.StatusCategory, issue.StatusCategoryChangedAt,
@@ -235,11 +260,11 @@ func (db *DB) UpsertJiraIssueBatch(issues []JiraIssue, links []JiraIssueLink) er
 
 	for i := range links {
 		link := &links[i]
-		_, err := tx.Exec(`INSERT INTO jira_issue_links (id, source_key, target_key, link_type, synced_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET source_key=excluded.source_key, target_key=excluded.target_key,
+		_, err := tx.Exec(`INSERT INTO jira_issue_links (account_id, id, source_key, target_key, link_type, synced_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(account_id, id) DO UPDATE SET source_key=excluded.source_key, target_key=excluded.target_key,
 				link_type=excluded.link_type, synced_at=excluded.synced_at`,
-			link.ID, link.SourceKey, link.TargetKey, link.LinkType, link.SyncedAt)
+			link.AccountID, link.ID, link.SourceKey, link.TargetKey, link.LinkType, link.SyncedAt)
 		if err != nil {
 			return fmt.Errorf("upserting jira issue link %s: %w", link.ID, err)
 		}
@@ -271,12 +296,12 @@ func (db *DB) GetJiraIssueCount() (int, error) {
 
 // UpsertJiraSprint inserts or updates a Jira sprint.
 func (db *DB) UpsertJiraSprint(sprint JiraSprint) error {
-	_, err := db.Exec(`INSERT INTO jira_sprints (id, board_id, name, state, goal, start_date, end_date, complete_date, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET board_id=excluded.board_id, name=excluded.name, state=excluded.state,
+	_, err := db.Exec(`INSERT INTO jira_sprints (account_id, id, board_id, name, state, goal, start_date, end_date, complete_date, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(account_id, id) DO UPDATE SET board_id=excluded.board_id, name=excluded.name, state=excluded.state,
 			goal=excluded.goal, start_date=excluded.start_date, end_date=excluded.end_date,
 			complete_date=excluded.complete_date, synced_at=excluded.synced_at`,
-		sprint.ID, sprint.BoardID, sprint.Name, sprint.State, sprint.Goal,
+		sprint.AccountID, sprint.ID, sprint.BoardID, sprint.Name, sprint.State, sprint.Goal,
 		sprint.StartDate, sprint.EndDate, sprint.CompleteDate, sprint.SyncedAt)
 	if err != nil {
 		return fmt.Errorf("upserting jira sprint %d: %w", sprint.ID, err)
@@ -285,9 +310,9 @@ func (db *DB) UpsertJiraSprint(sprint JiraSprint) error {
 }
 
 // GetJiraActiveSprints returns active sprints for a given board.
-func (db *DB) GetJiraActiveSprints(boardID int) ([]JiraSprint, error) {
-	rows, err := db.Query(`SELECT id, board_id, name, state, goal, start_date, end_date, complete_date, synced_at
-		FROM jira_sprints WHERE board_id = ? AND state = 'active' ORDER BY start_date`, boardID)
+func (db *DB) GetJiraActiveSprints(accountID int64, boardID int) ([]JiraSprint, error) {
+	rows, err := db.Query(`SELECT account_id, id, board_id, name, state, goal, start_date, end_date, complete_date, synced_at
+		FROM jira_sprints WHERE account_id = ? AND board_id = ? AND state = 'active' ORDER BY start_date`, accountID, boardID)
 	if err != nil {
 		return nil, fmt.Errorf("querying active sprints for board %d: %w", boardID, err)
 	}
@@ -296,7 +321,7 @@ func (db *DB) GetJiraActiveSprints(boardID int) ([]JiraSprint, error) {
 	var sprints []JiraSprint
 	for rows.Next() {
 		var s JiraSprint
-		if err := rows.Scan(&s.ID, &s.BoardID, &s.Name, &s.State, &s.Goal,
+		if err := rows.Scan(&s.AccountID, &s.ID, &s.BoardID, &s.Name, &s.State, &s.Goal,
 			&s.StartDate, &s.EndDate, &s.CompleteDate, &s.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira sprint: %w", err)
 		}
@@ -307,11 +332,11 @@ func (db *DB) GetJiraActiveSprints(boardID int) ([]JiraSprint, error) {
 
 // UpsertJiraIssueLink inserts or updates a Jira issue link.
 func (db *DB) UpsertJiraIssueLink(link JiraIssueLink) error {
-	_, err := db.Exec(`INSERT INTO jira_issue_links (id, source_key, target_key, link_type, synced_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET source_key=excluded.source_key, target_key=excluded.target_key,
+	_, err := db.Exec(`INSERT INTO jira_issue_links (account_id, id, source_key, target_key, link_type, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(account_id, id) DO UPDATE SET source_key=excluded.source_key, target_key=excluded.target_key,
 			link_type=excluded.link_type, synced_at=excluded.synced_at`,
-		link.ID, link.SourceKey, link.TargetKey, link.LinkType, link.SyncedAt)
+		link.AccountID, link.ID, link.SourceKey, link.TargetKey, link.LinkType, link.SyncedAt)
 	if err != nil {
 		return fmt.Errorf("upserting jira issue link %s: %w", link.ID, err)
 	}
@@ -442,26 +467,26 @@ func (db *DB) GetJiraUserMapByAccountID(id string) (*JiraUserMap, error) {
 	return &m, nil
 }
 
-// UpdateJiraSyncState inserts or updates the sync state for a Jira project.
-func (db *DB) UpdateJiraSyncState(projectKey, lastSyncedAt string, issuesSynced int) error {
-	_, err := db.Exec(`INSERT INTO jira_sync_state (project_key, last_synced_at, issues_synced)
-		VALUES (?, ?, ?)
-		ON CONFLICT(project_key) DO UPDATE SET last_synced_at=excluded.last_synced_at,
+// UpdateJiraSyncState inserts or updates the sync state for a Jira project on one account.
+func (db *DB) UpdateJiraSyncState(accountID int64, projectKey, lastSyncedAt string, issuesSynced int) error {
+	_, err := db.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(account_id, project_key) DO UPDATE SET last_synced_at=excluded.last_synced_at,
 			issues_synced=excluded.issues_synced`,
-		projectKey, lastSyncedAt, issuesSynced)
+		accountID, projectKey, lastSyncedAt, issuesSynced)
 	if err != nil {
 		return fmt.Errorf("updating jira sync state %s: %w", projectKey, err)
 	}
 	return nil
 }
 
-// GetJiraSyncState returns the sync state for a Jira project.
-func (db *DB) GetJiraSyncState(projectKey string) (*JiraSyncState, error) {
-	row := db.QueryRow(`SELECT project_key, last_synced_at, issues_synced, last_error, last_error_at
-		FROM jira_sync_state WHERE project_key = ?`, projectKey)
+// GetJiraSyncState returns the sync state for a Jira project on one account.
+func (db *DB) GetJiraSyncState(accountID int64, projectKey string) (*JiraSyncState, error) {
+	row := db.QueryRow(`SELECT account_id, project_key, last_synced_at, issues_synced, last_error, last_error_at
+		FROM jira_sync_state WHERE account_id = ? AND project_key = ?`, accountID, projectKey)
 
 	var s JiraSyncState
-	err := row.Scan(&s.ProjectKey, &s.LastSyncedAt, &s.IssuesSynced, &s.LastError, &s.LastErrorAt)
+	err := row.Scan(&s.AccountID, &s.ProjectKey, &s.LastSyncedAt, &s.IssuesSynced, &s.LastError, &s.LastErrorAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -471,9 +496,9 @@ func (db *DB) GetJiraSyncState(projectKey string) (*JiraSyncState, error) {
 	return &s, nil
 }
 
-// GetJiraSyncStates returns all Jira sync states.
+// GetJiraSyncStates returns all Jira sync states across every account.
 func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
-	rows, err := db.Query(`SELECT project_key, last_synced_at, issues_synced, last_error, last_error_at FROM jira_sync_state ORDER BY project_key`)
+	rows, err := db.Query(`SELECT account_id, project_key, last_synced_at, issues_synced, last_error, last_error_at FROM jira_sync_state ORDER BY account_id, project_key`)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira sync states: %w", err)
 	}
@@ -482,7 +507,7 @@ func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
 	var states []JiraSyncState
 	for rows.Next() {
 		var s JiraSyncState
-		if err := rows.Scan(&s.ProjectKey, &s.LastSyncedAt, &s.IssuesSynced, &s.LastError, &s.LastErrorAt); err != nil {
+		if err := rows.Scan(&s.AccountID, &s.ProjectKey, &s.LastSyncedAt, &s.IssuesSynced, &s.LastError, &s.LastErrorAt); err != nil {
 			return nil, fmt.Errorf("scanning jira sync state: %w", err)
 		}
 		states = append(states, s)
@@ -565,28 +590,8 @@ func (db *DB) GetKnownProjectKeys() ([]string, error) {
 	return keys, rows.Err()
 }
 
-// ClearJiraData deletes all data from jira_* tables.
-func (db *DB) ClearJiraData() error {
-	tables := []string{
-		"jira_slack_links",
-		"jira_issue_links",
-		"jira_issues",
-		"jira_sprints",
-		"jira_releases",
-		"jira_user_map",
-		"jira_sync_state",
-		"jira_boards",
-	}
-	for _, table := range tables {
-		if _, err := db.Exec("DELETE FROM " + table); err != nil {
-			return fmt.Errorf("clearing %s: %w", table, err)
-		}
-	}
-	return nil
-}
-
 // jiraIssueColumns is the common column list for scanning JiraIssue rows (unqualified, for single-table queries).
-const jiraIssueColumns = `key, id, project_key, board_id, summary, description_text,
+const jiraIssueColumns = `account_id, key, id, project_key, board_id, summary, description_text,
 	issue_type, issue_type_category, is_bug, status, status_category, status_category_changed_at,
 	assignee_account_id, assignee_email, assignee_display_name, assignee_slack_id,
 	reporter_account_id, reporter_email, reporter_display_name, reporter_slack_id,
@@ -594,7 +599,7 @@ const jiraIssueColumns = `key, id, project_key, board_id, summary, description_t
 	labels, components, fix_versions, created_at, updated_at, resolved_at, raw_json, custom_fields_json, synced_at, is_deleted`
 
 // jiraIssueColumnsQualified is the same column list but qualified with table name (for JOINs).
-const jiraIssueColumnsQualified = `jira_issues.key, jira_issues.id, jira_issues.project_key, jira_issues.board_id,
+const jiraIssueColumnsQualified = `jira_issues.account_id, jira_issues.key, jira_issues.id, jira_issues.project_key, jira_issues.board_id,
 	jira_issues.summary, jira_issues.description_text,
 	jira_issues.issue_type, jira_issues.issue_type_category, jira_issues.is_bug,
 	jira_issues.status, jira_issues.status_category, jira_issues.status_category_changed_at,
@@ -606,7 +611,7 @@ const jiraIssueColumnsQualified = `jira_issues.key, jira_issues.id, jira_issues.
 
 func scanJiraIssue(scanner interface{ Scan(dest ...any) error }) (JiraIssue, error) {
 	var issue JiraIssue
-	err := scanner.Scan(&issue.Key, &issue.ID, &issue.ProjectKey, &issue.BoardID,
+	err := scanner.Scan(&issue.AccountID, &issue.Key, &issue.ID, &issue.ProjectKey, &issue.BoardID,
 		&issue.Summary, &issue.DescriptionText,
 		&issue.IssueType, &issue.IssueTypeCategory, &issue.IsBug,
 		&issue.Status, &issue.StatusCategory, &issue.StatusCategoryChangedAt,
@@ -833,12 +838,12 @@ func (db *DB) GetJiraIssues(f JiraIssueFilter) ([]JiraIssue, error) {
 
 // GetJiraActiveSprintStats returns aggregated stats for the active sprint of a board.
 // Returns nil if no active sprint exists.
-func (db *DB) GetJiraActiveSprintStats(boardID int) (*SprintStats, error) {
+func (db *DB) GetJiraActiveSprintStats(accountID int64, boardID int) (*SprintStats, error) {
 	// Find the active sprint.
 	var sprintName, endDate string
 	var sprintID int
 	err := db.QueryRow(`SELECT id, name, end_date FROM jira_sprints
-		WHERE board_id = ? AND state = 'active' ORDER BY start_date LIMIT 1`, boardID).
+		WHERE account_id = ? AND board_id = ? AND state = 'active' ORDER BY start_date LIMIT 1`, accountID, boardID).
 		Scan(&sprintID, &sprintName, &endDate)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -851,7 +856,7 @@ func (db *DB) GetJiraActiveSprintStats(boardID int) (*SprintStats, error) {
 
 	// Count issues by status_category.
 	rows, err := db.Query(`SELECT status_category, COUNT(*) FROM jira_issues
-		WHERE sprint_id = ? AND is_deleted = 0 GROUP BY status_category`, sprintID)
+		WHERE account_id = ? AND sprint_id = ? AND is_deleted = 0 GROUP BY status_category`, accountID, sprintID)
 	if err != nil {
 		return nil, fmt.Errorf("querying sprint stats for board %d: %w", boardID, err)
 	}

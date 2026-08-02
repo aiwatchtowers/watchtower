@@ -15,6 +15,7 @@ func setupBlockerTestDB(t *testing.T) *db.DB {
 		t.Fatalf("opening test db: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })
+	db.SeedTestJiraAccount(t, d)
 	return d
 }
 
@@ -31,6 +32,9 @@ func blockerConfig(enabled bool) *config.Config {
 
 func insertTestIssue(t *testing.T, d *db.DB, issue db.JiraIssue) {
 	t.Helper()
+	if issue.AccountID == 0 {
+		issue.AccountID = 1
+	}
 	if err := d.UpsertJiraIssue(issue); err != nil {
 		t.Fatalf("inserting test issue %s: %v", issue.Key, err)
 	}
@@ -38,6 +42,9 @@ func insertTestIssue(t *testing.T, d *db.DB, issue db.JiraIssue) {
 
 func insertTestLink(t *testing.T, d *db.DB, link db.JiraIssueLink) {
 	t.Helper()
+	if link.AccountID == 0 {
+		link.AccountID = 1
+	}
 	if err := d.UpsertJiraIssueLink(link); err != nil {
 		t.Fatalf("inserting test link %s: %v", link.ID, err)
 	}

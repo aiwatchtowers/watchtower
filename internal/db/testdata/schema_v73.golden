@@ -777,17 +777,33 @@ last_updated TEXT NOT NULL, pipeline TEXT NOT NULL DEFAULT 'inbox',
 UNIQUE(rule_type, scope_key)
 )
 
+table	jira_accounts
+CREATE TABLE jira_accounts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+cloud_id TEXT NOT NULL DEFAULT '',
+site_url TEXT NOT NULL DEFAULT '',
+site_name TEXT NOT NULL DEFAULT '',
+label TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT 'ok', -- ok | error | revoked | removed
+error TEXT NOT NULL DEFAULT '',
+enabled INTEGER NOT NULL DEFAULT 1,
+memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory extraction watermark (was workspace.memory_jira_last_extracted_ts)
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
 table	jira_board_field_map
-CREATE TABLE jira_board_field_map (
+CREATE TABLE "jira_board_field_map" (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
 board_id INTEGER NOT NULL,
 field_id TEXT NOT NULL,
 role TEXT NOT NULL,
-PRIMARY KEY (board_id, field_id)
+PRIMARY KEY (account_id, board_id, field_id)
 )
 
 table	jira_boards
-CREATE TABLE jira_boards (
-id INTEGER PRIMARY KEY, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
+CREATE TABLE "jira_boards" (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+id INTEGER NOT NULL, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
 board_type TEXT NOT NULL DEFAULT '', is_selected INTEGER NOT NULL DEFAULT 0,
 issue_count INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT '',
 raw_columns_json TEXT NOT NULL DEFAULT '',
@@ -796,29 +812,35 @@ llm_profile_json TEXT NOT NULL DEFAULT '',
 workflow_summary TEXT NOT NULL DEFAULT '',
 user_overrides_json TEXT NOT NULL DEFAULT '',
 config_hash TEXT NOT NULL DEFAULT '',
-profile_generated_at TEXT NOT NULL DEFAULT ''
+profile_generated_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, id)
 )
 
 table	jira_custom_fields
-CREATE TABLE jira_custom_fields (
-id TEXT PRIMARY KEY,
+CREATE TABLE "jira_custom_fields" (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
 name TEXT NOT NULL,
 field_type TEXT NOT NULL,
 items_type TEXT NOT NULL DEFAULT '',
 is_useful INTEGER NOT NULL DEFAULT 0,
 usage_hint TEXT NOT NULL DEFAULT '',
-synced_at TEXT NOT NULL DEFAULT ''
+synced_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, id)
 )
 
 table	jira_issue_links
-CREATE TABLE jira_issue_links (
-id TEXT PRIMARY KEY, source_key TEXT NOT NULL, target_key TEXT NOT NULL,
-link_type TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT ''
+CREATE TABLE "jira_issue_links" (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL, source_key TEXT NOT NULL, target_key TEXT NOT NULL,
+link_type TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, id)
 )
 
 table	jira_issues
-CREATE TABLE jira_issues (
-key TEXT PRIMARY KEY, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
+CREATE TABLE "jira_issues" (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+key TEXT NOT NULL, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
 board_id INTEGER,
 summary TEXT NOT NULL, description_text TEXT NOT NULL DEFAULT '',
 issue_type TEXT NOT NULL DEFAULT '', issue_type_category TEXT NOT NULL DEFAULT '',
@@ -836,11 +858,13 @@ labels TEXT NOT NULL DEFAULT '[]', components TEXT NOT NULL DEFAULT '[]',
 fix_versions TEXT NOT NULL DEFAULT '[]',
 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '',
 raw_json TEXT NOT NULL DEFAULT '', custom_fields_json TEXT NOT NULL DEFAULT '',
-synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0
+synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0,
+PRIMARY KEY (account_id, key)
 )
 
 table	jira_releases
-CREATE TABLE jira_releases (
+CREATE TABLE "jira_releases" (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
 id INTEGER NOT NULL,
 project_key TEXT NOT NULL,
 name TEXT NOT NULL,
@@ -849,8 +873,8 @@ release_date TEXT NOT NULL DEFAULT '',
 released INTEGER NOT NULL DEFAULT 0,
 archived INTEGER NOT NULL DEFAULT 0,
 synced_at TEXT NOT NULL DEFAULT '',
-PRIMARY KEY (id),
-UNIQUE(project_key, name)
+PRIMARY KEY (account_id, id),
+UNIQUE(account_id, project_key, name)
 )
 
 table	jira_slack_links
@@ -867,18 +891,22 @@ UNIQUE(issue_key, channel_id, message_ts)
 )
 
 table	jira_sprints
-CREATE TABLE jira_sprints (
-id INTEGER PRIMARY KEY, board_id INTEGER NOT NULL, name TEXT NOT NULL,
+CREATE TABLE "jira_sprints" (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+id INTEGER NOT NULL, board_id INTEGER NOT NULL, name TEXT NOT NULL,
 state TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '',
 start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL DEFAULT '',
-complete_date TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL DEFAULT ''
+complete_date TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, id)
 )
 
 table	jira_sync_state
-CREATE TABLE jira_sync_state (
-project_key TEXT PRIMARY KEY, last_synced_at TEXT NOT NULL DEFAULT '',
+CREATE TABLE "jira_sync_state" (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+project_key TEXT NOT NULL, last_synced_at TEXT NOT NULL DEFAULT '',
 issues_synced INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
-last_error_at TEXT NOT NULL DEFAULT ''
+last_error_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, project_key)
 )
 
 table	jira_user_map
@@ -1540,7 +1568,7 @@ name TEXT NOT NULL,
 domain TEXT NOT NULL DEFAULT '',
 synced_at TEXT, -- ISO8601 timestamp of last sync
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0)
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0)
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
@@ -1959,90 +1987,108 @@ END
 6	last_updated	TEXT	notnull=1	dflt=NULL	pk=0
 7	pipeline	TEXT	notnull=1	dflt='inbox'	pk=0
 
+## jira_accounts
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	cloud_id	TEXT	notnull=1	dflt=''	pk=0
+2	site_url	TEXT	notnull=1	dflt=''	pk=0
+3	site_name	TEXT	notnull=1	dflt=''	pk=0
+4	label	TEXT	notnull=1	dflt=''	pk=0
+5	status	TEXT	notnull=1	dflt='ok'	pk=0
+6	error	TEXT	notnull=1	dflt=''	pk=0
+7	enabled	INTEGER	notnull=1	dflt=1	pk=0
+8	memory_jira_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
+9	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
 ## jira_board_field_map
-0	board_id	INTEGER	notnull=1	dflt=NULL	pk=1
-1	field_id	TEXT	notnull=1	dflt=NULL	pk=2
-2	role	TEXT	notnull=1	dflt=NULL	pk=0
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	board_id	INTEGER	notnull=1	dflt=NULL	pk=2
+2	field_id	TEXT	notnull=1	dflt=NULL	pk=3
+3	role	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## jira_boards
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	name	TEXT	notnull=1	dflt=NULL	pk=0
-2	project_key	TEXT	notnull=1	dflt=''	pk=0
-3	board_type	TEXT	notnull=1	dflt=''	pk=0
-4	is_selected	INTEGER	notnull=1	dflt=0	pk=0
-5	issue_count	INTEGER	notnull=1	dflt=0	pk=0
-6	synced_at	TEXT	notnull=1	dflt=''	pk=0
-7	raw_columns_json	TEXT	notnull=1	dflt=''	pk=0
-8	raw_config_json	TEXT	notnull=1	dflt=''	pk=0
-9	llm_profile_json	TEXT	notnull=1	dflt=''	pk=0
-10	workflow_summary	TEXT	notnull=1	dflt=''	pk=0
-11	user_overrides_json	TEXT	notnull=1	dflt=''	pk=0
-12	config_hash	TEXT	notnull=1	dflt=''	pk=0
-13	profile_generated_at	TEXT	notnull=1	dflt=''	pk=0
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	INTEGER	notnull=1	dflt=NULL	pk=2
+2	name	TEXT	notnull=1	dflt=NULL	pk=0
+3	project_key	TEXT	notnull=1	dflt=''	pk=0
+4	board_type	TEXT	notnull=1	dflt=''	pk=0
+5	is_selected	INTEGER	notnull=1	dflt=0	pk=0
+6	issue_count	INTEGER	notnull=1	dflt=0	pk=0
+7	synced_at	TEXT	notnull=1	dflt=''	pk=0
+8	raw_columns_json	TEXT	notnull=1	dflt=''	pk=0
+9	raw_config_json	TEXT	notnull=1	dflt=''	pk=0
+10	llm_profile_json	TEXT	notnull=1	dflt=''	pk=0
+11	workflow_summary	TEXT	notnull=1	dflt=''	pk=0
+12	user_overrides_json	TEXT	notnull=1	dflt=''	pk=0
+13	config_hash	TEXT	notnull=1	dflt=''	pk=0
+14	profile_generated_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_custom_fields
-0	id	TEXT	notnull=0	dflt=NULL	pk=1
-1	name	TEXT	notnull=1	dflt=NULL	pk=0
-2	field_type	TEXT	notnull=1	dflt=NULL	pk=0
-3	items_type	TEXT	notnull=1	dflt=''	pk=0
-4	is_useful	INTEGER	notnull=1	dflt=0	pk=0
-5	usage_hint	TEXT	notnull=1	dflt=''	pk=0
-6	synced_at	TEXT	notnull=1	dflt=''	pk=0
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	name	TEXT	notnull=1	dflt=NULL	pk=0
+3	field_type	TEXT	notnull=1	dflt=NULL	pk=0
+4	items_type	TEXT	notnull=1	dflt=''	pk=0
+5	is_useful	INTEGER	notnull=1	dflt=0	pk=0
+6	usage_hint	TEXT	notnull=1	dflt=''	pk=0
+7	synced_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_issue_links
-0	id	TEXT	notnull=0	dflt=NULL	pk=1
-1	source_key	TEXT	notnull=1	dflt=NULL	pk=0
-2	target_key	TEXT	notnull=1	dflt=NULL	pk=0
-3	link_type	TEXT	notnull=1	dflt=NULL	pk=0
-4	synced_at	TEXT	notnull=1	dflt=''	pk=0
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	source_key	TEXT	notnull=1	dflt=NULL	pk=0
+3	target_key	TEXT	notnull=1	dflt=NULL	pk=0
+4	link_type	TEXT	notnull=1	dflt=NULL	pk=0
+5	synced_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_issues
-0	key	TEXT	notnull=0	dflt=NULL	pk=1
-1	id	TEXT	notnull=1	dflt=''	pk=0
-2	project_key	TEXT	notnull=1	dflt=NULL	pk=0
-3	board_id	INTEGER	notnull=0	dflt=NULL	pk=0
-4	summary	TEXT	notnull=1	dflt=NULL	pk=0
-5	description_text	TEXT	notnull=1	dflt=''	pk=0
-6	issue_type	TEXT	notnull=1	dflt=''	pk=0
-7	issue_type_category	TEXT	notnull=1	dflt=''	pk=0
-8	is_bug	INTEGER	notnull=1	dflt=0	pk=0
-9	status	TEXT	notnull=1	dflt=NULL	pk=0
-10	status_category	TEXT	notnull=1	dflt=NULL	pk=0
-11	status_category_changed_at	TEXT	notnull=1	dflt=''	pk=0
-12	assignee_account_id	TEXT	notnull=1	dflt=''	pk=0
-13	assignee_email	TEXT	notnull=1	dflt=''	pk=0
-14	assignee_display_name	TEXT	notnull=1	dflt=''	pk=0
-15	assignee_slack_id	TEXT	notnull=1	dflt=''	pk=0
-16	reporter_account_id	TEXT	notnull=1	dflt=''	pk=0
-17	reporter_email	TEXT	notnull=1	dflt=''	pk=0
-18	reporter_display_name	TEXT	notnull=1	dflt=''	pk=0
-19	reporter_slack_id	TEXT	notnull=1	dflt=''	pk=0
-20	priority	TEXT	notnull=1	dflt=''	pk=0
-21	story_points	REAL	notnull=0	dflt=NULL	pk=0
-22	due_date	TEXT	notnull=1	dflt=''	pk=0
-23	sprint_id	INTEGER	notnull=0	dflt=NULL	pk=0
-24	sprint_name	TEXT	notnull=1	dflt=''	pk=0
-25	epic_key	TEXT	notnull=1	dflt=''	pk=0
-26	labels	TEXT	notnull=1	dflt='[]'	pk=0
-27	components	TEXT	notnull=1	dflt='[]'	pk=0
-28	fix_versions	TEXT	notnull=1	dflt='[]'	pk=0
-29	created_at	TEXT	notnull=1	dflt=NULL	pk=0
-30	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
-31	resolved_at	TEXT	notnull=1	dflt=''	pk=0
-32	raw_json	TEXT	notnull=1	dflt=''	pk=0
-33	custom_fields_json	TEXT	notnull=1	dflt=''	pk=0
-34	synced_at	TEXT	notnull=1	dflt=NULL	pk=0
-35	is_deleted	INTEGER	notnull=1	dflt=0	pk=0
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	key	TEXT	notnull=1	dflt=NULL	pk=2
+2	id	TEXT	notnull=1	dflt=''	pk=0
+3	project_key	TEXT	notnull=1	dflt=NULL	pk=0
+4	board_id	INTEGER	notnull=0	dflt=NULL	pk=0
+5	summary	TEXT	notnull=1	dflt=NULL	pk=0
+6	description_text	TEXT	notnull=1	dflt=''	pk=0
+7	issue_type	TEXT	notnull=1	dflt=''	pk=0
+8	issue_type_category	TEXT	notnull=1	dflt=''	pk=0
+9	is_bug	INTEGER	notnull=1	dflt=0	pk=0
+10	status	TEXT	notnull=1	dflt=NULL	pk=0
+11	status_category	TEXT	notnull=1	dflt=NULL	pk=0
+12	status_category_changed_at	TEXT	notnull=1	dflt=''	pk=0
+13	assignee_account_id	TEXT	notnull=1	dflt=''	pk=0
+14	assignee_email	TEXT	notnull=1	dflt=''	pk=0
+15	assignee_display_name	TEXT	notnull=1	dflt=''	pk=0
+16	assignee_slack_id	TEXT	notnull=1	dflt=''	pk=0
+17	reporter_account_id	TEXT	notnull=1	dflt=''	pk=0
+18	reporter_email	TEXT	notnull=1	dflt=''	pk=0
+19	reporter_display_name	TEXT	notnull=1	dflt=''	pk=0
+20	reporter_slack_id	TEXT	notnull=1	dflt=''	pk=0
+21	priority	TEXT	notnull=1	dflt=''	pk=0
+22	story_points	REAL	notnull=0	dflt=NULL	pk=0
+23	due_date	TEXT	notnull=1	dflt=''	pk=0
+24	sprint_id	INTEGER	notnull=0	dflt=NULL	pk=0
+25	sprint_name	TEXT	notnull=1	dflt=''	pk=0
+26	epic_key	TEXT	notnull=1	dflt=''	pk=0
+27	labels	TEXT	notnull=1	dflt='[]'	pk=0
+28	components	TEXT	notnull=1	dflt='[]'	pk=0
+29	fix_versions	TEXT	notnull=1	dflt='[]'	pk=0
+30	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+31	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+32	resolved_at	TEXT	notnull=1	dflt=''	pk=0
+33	raw_json	TEXT	notnull=1	dflt=''	pk=0
+34	custom_fields_json	TEXT	notnull=1	dflt=''	pk=0
+35	synced_at	TEXT	notnull=1	dflt=NULL	pk=0
+36	is_deleted	INTEGER	notnull=1	dflt=0	pk=0
 
 ## jira_releases
-0	id	INTEGER	notnull=1	dflt=NULL	pk=1
-1	project_key	TEXT	notnull=1	dflt=NULL	pk=0
-2	name	TEXT	notnull=1	dflt=NULL	pk=0
-3	description	TEXT	notnull=1	dflt=''	pk=0
-4	release_date	TEXT	notnull=1	dflt=''	pk=0
-5	released	INTEGER	notnull=1	dflt=0	pk=0
-6	archived	INTEGER	notnull=1	dflt=0	pk=0
-7	synced_at	TEXT	notnull=1	dflt=''	pk=0
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	INTEGER	notnull=1	dflt=NULL	pk=2
+2	project_key	TEXT	notnull=1	dflt=NULL	pk=0
+3	name	TEXT	notnull=1	dflt=NULL	pk=0
+4	description	TEXT	notnull=1	dflt=''	pk=0
+5	release_date	TEXT	notnull=1	dflt=''	pk=0
+6	released	INTEGER	notnull=1	dflt=0	pk=0
+7	archived	INTEGER	notnull=1	dflt=0	pk=0
+8	synced_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_slack_links
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -2055,22 +2101,24 @@ END
 7	detected_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## jira_sprints
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	board_id	INTEGER	notnull=1	dflt=NULL	pk=0
-2	name	TEXT	notnull=1	dflt=NULL	pk=0
-3	state	TEXT	notnull=1	dflt=NULL	pk=0
-4	goal	TEXT	notnull=1	dflt=''	pk=0
-5	start_date	TEXT	notnull=1	dflt=''	pk=0
-6	end_date	TEXT	notnull=1	dflt=''	pk=0
-7	complete_date	TEXT	notnull=1	dflt=''	pk=0
-8	synced_at	TEXT	notnull=1	dflt=''	pk=0
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	INTEGER	notnull=1	dflt=NULL	pk=2
+2	board_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	name	TEXT	notnull=1	dflt=NULL	pk=0
+4	state	TEXT	notnull=1	dflt=NULL	pk=0
+5	goal	TEXT	notnull=1	dflt=''	pk=0
+6	start_date	TEXT	notnull=1	dflt=''	pk=0
+7	end_date	TEXT	notnull=1	dflt=''	pk=0
+8	complete_date	TEXT	notnull=1	dflt=''	pk=0
+9	synced_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_sync_state
-0	project_key	TEXT	notnull=0	dflt=NULL	pk=1
-1	last_synced_at	TEXT	notnull=1	dflt=''	pk=0
-2	issues_synced	INTEGER	notnull=1	dflt=0	pk=0
-3	last_error	TEXT	notnull=1	dflt=''	pk=0
-4	last_error_at	TEXT	notnull=1	dflt=''	pk=0
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	project_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	last_synced_at	TEXT	notnull=1	dflt=''	pk=0
+3	issues_synced	INTEGER	notnull=1	dflt=0	pk=0
+4	last_error	TEXT	notnull=1	dflt=''	pk=0
+5	last_error_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_user_map
 0	jira_account_id	TEXT	notnull=0	dflt=NULL	pk=1
@@ -2661,7 +2709,6 @@ END
 11	memory_chat_turn_floor	INTEGER	notnull=1	dflt=0	pk=0
 12	memory_calendar_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
 13	memory_last_situation_feedback_id	INTEGER	notnull=1	dflt=0	pk=0
-14	memory_jira_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
-15	memory_focus_fingerprint	TEXT	notnull=1	dflt=''	pk=0
-16	memory_last_interaction_id	INTEGER	notnull=1	dflt=0	pk=0
+14	memory_focus_fingerprint	TEXT	notnull=1	dflt=''	pk=0
+15	memory_last_interaction_id	INTEGER	notnull=1	dflt=0	pk=0
 

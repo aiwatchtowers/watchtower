@@ -16,6 +16,7 @@ func releaseDashTestDB(t *testing.T) *db.DB {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { d.Close() })
+	db.SeedTestJiraAccount(t, d)
 	return d
 }
 
@@ -33,6 +34,7 @@ func releaseDashConfig(enabled bool) *config.Config {
 func seedRelease(t *testing.T, database *db.DB, id int, projectKey, name, releaseDate string, released, archived bool) {
 	t.Helper()
 	err := database.UpsertJiraRelease(db.JiraRelease{
+		AccountID:   1,
 		ID:          id,
 		ProjectKey:  projectKey,
 		Name:        name,
@@ -47,6 +49,7 @@ func seedRelease(t *testing.T, database *db.DB, id int, projectKey, name, releas
 func seedReleaseIssue(t *testing.T, database *db.DB, key, epicKey, status, statusCategory, fixVersions, syncedAt string) {
 	t.Helper()
 	err := database.UpsertJiraIssue(db.JiraIssue{
+		AccountID:      1,
 		Key:            key,
 		ID:             key,
 		Summary:        "Issue " + key,
@@ -142,10 +145,10 @@ func TestBuildReleaseDashboard_EpicGrouping(t *testing.T) {
 
 	// Seed epic issues for name lookup.
 	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
-		Key: "EPIC-A", ID: "EPIC-A", Summary: "Auth System",
+		AccountID: 1, Key: "EPIC-A", ID: "EPIC-A", Summary: "Auth System",
 	}))
 	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
-		Key: "EPIC-B", ID: "EPIC-B", Summary: "Payment",
+		AccountID: 1, Key: "EPIC-B", ID: "EPIC-B", Summary: "Payment",
 	}))
 
 	// EPIC-A: 2/3 done = 66.7%

@@ -582,6 +582,19 @@ enum TestDatabase {
         created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
 
+    CREATE TABLE IF NOT EXISTS jira_accounts (
+        id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+        cloud_id                      TEXT NOT NULL DEFAULT '',
+        site_url                      TEXT NOT NULL DEFAULT '',
+        site_name                     TEXT NOT NULL DEFAULT '',
+        label                         TEXT NOT NULL DEFAULT '',
+        status                        TEXT NOT NULL DEFAULT 'ok',
+        error                         TEXT NOT NULL DEFAULT '',
+        enabled                       INTEGER NOT NULL DEFAULT 1,
+        memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,
+        created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+
     CREATE TABLE IF NOT EXISTS google_accounts (
         id                             INTEGER PRIMARY KEY AUTOINCREMENT,
         email                          TEXT NOT NULL DEFAULT '',
@@ -1840,6 +1853,29 @@ enum TestDatabase {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             arguments: [teamID, teamName, teamDomain, label, currentUserID, status, error, enabled, searchLastDate, createdAt]
+        )
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    static func insertJiraAccount(
+        _ db: Database,
+        cloudID: String = "",
+        siteURL: String = "",
+        siteName: String = "",
+        label: String = "",
+        status: String = "ok",
+        error: String = "",
+        enabled: Bool = true,
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO jira_accounts
+                    (cloud_id, site_url, site_name, label, status, error, enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [cloudID, siteURL, siteName, label, status, error, enabled, createdAt]
         )
         return db.lastInsertedRowID
     }

@@ -131,7 +131,9 @@ func TestNoToolMutatesDatabase(t *testing.T) {
 	if _, err := database.UpsertTrack(db.Track{Text: "guard track", Ownership: "mine", Priority: "low"}); err != nil {
 		t.Fatalf("seeding track: %v", err)
 	}
+	db.SeedTestJiraAccount(t, database)
 	if err := database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: 1,
 		Key: "ABC-1", ID: "ABC-1", ProjectKey: "ABC", Summary: "s", Status: "To Do", StatusCategory: "To Do",
 		CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z", SyncedAt: "2026-06-02T00:00:00Z",
 	}); err != nil {

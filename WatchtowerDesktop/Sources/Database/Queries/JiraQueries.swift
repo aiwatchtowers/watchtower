@@ -101,7 +101,9 @@ enum JiraQueries {
 
     // MARK: - Connection Status
 
-    /// Check if jira_token.json exists in any workspace directory.
+    /// Check if any Jira token file exists in any workspace directory —
+    /// the legacy jira_token.json or a per-account jira_token_<id>.json
+    /// (multi-account, migration 00049).
     static func isConnected() -> Bool {
         let basePath = Constants.databasePath
         let fileManager = FileManager.default
@@ -111,8 +113,10 @@ enum JiraQueries {
             return false
         }
         for dir in contents {
-            let tokenPath = "\(basePath)/\(dir)/jira_token.json"
-            if fileManager.fileExists(atPath: tokenPath) {
+            guard let files = try? fileManager.contentsOfDirectory(atPath: "\(basePath)/\(dir)") else {
+                continue
+            }
+            if files.contains(where: { $0.hasPrefix("jira_token") && $0.hasSuffix(".json") }) {
                 return true
             }
         }

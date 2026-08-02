@@ -10,14 +10,17 @@ import (
 
 func TestUpsertAndGetJiraBoards(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	err := db.UpsertJiraBoard(JiraBoard{
-		ID: 1, Name: "Sprint Board", ProjectKey: "PROJ", BoardType: "scrum", IsSelected: false, IssueCount: 42, SyncedAt: "2026-04-01T00:00:00Z",
+		AccountID: 1,
+		ID:        1, Name: "Sprint Board", ProjectKey: "PROJ", BoardType: "scrum", IsSelected: false, IssueCount: 42, SyncedAt: "2026-04-01T00:00:00Z",
 	})
 	require.NoError(t, err)
 
 	err = db.UpsertJiraBoard(JiraBoard{
-		ID: 2, Name: "Kanban Board", ProjectKey: "KAN", BoardType: "kanban", IsSelected: true, IssueCount: 10, SyncedAt: "2026-04-01T00:00:00Z",
+		AccountID: 1,
+		ID:        2, Name: "Kanban Board", ProjectKey: "KAN", BoardType: "kanban", IsSelected: true, IssueCount: 10, SyncedAt: "2026-04-01T00:00:00Z",
 	})
 	require.NoError(t, err)
 
@@ -28,36 +31,40 @@ func TestUpsertAndGetJiraBoards(t *testing.T) {
 
 func TestGetJiraSelectedBoards(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "B1", ProjectKey: "P1", IsSelected: true, SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 2, Name: "B2", ProjectKey: "P2", IsSelected: false, SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 3, Name: "B3", ProjectKey: "P3", IsSelected: true, SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "B1", ProjectKey: "P1", IsSelected: true, SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 2, Name: "B2", ProjectKey: "P2", IsSelected: false, SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 3, Name: "B3", ProjectKey: "P3", IsSelected: true, SyncedAt: "now"}))
 
-	selected, err := db.GetJiraSelectedBoards()
+	selected, err := db.GetJiraSelectedBoards(1)
 	require.NoError(t, err)
 	assert.Len(t, selected, 2)
 }
 
 func TestSetJiraBoardSelected(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "B1", ProjectKey: "P1", IsSelected: false, SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "B1", ProjectKey: "P1", IsSelected: false, SyncedAt: "now"}))
 
-	require.NoError(t, db.SetJiraBoardSelected(1, true))
-	selected, err := db.GetJiraSelectedBoards()
+	require.NoError(t, db.SetJiraBoardSelected(1, 1, true))
+	selected, err := db.GetJiraSelectedBoards(1)
 	require.NoError(t, err)
 	assert.Len(t, selected, 1)
 
-	require.NoError(t, db.SetJiraBoardSelected(1, false))
-	selected, err = db.GetJiraSelectedBoards()
+	require.NoError(t, db.SetJiraBoardSelected(1, 1, false))
+	selected, err = db.GetJiraSelectedBoards(1)
 	require.NoError(t, err)
 	assert.Empty(t, selected)
 }
 
 func TestUpsertAndGetJiraIssue(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	issue := JiraIssue{
+		AccountID:         1,
 		Key:               "PROJ-1",
 		ID:                "10001",
 		ProjectKey:        "PROJ",
@@ -95,13 +102,14 @@ func TestGetJiraIssueByKey_NotFound(t *testing.T) {
 
 func TestGetJiraIssueCount(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	count, err := db.GetJiraIssueCount()
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
 
-	require.NoError(t, db.UpsertJiraIssue(JiraIssue{Key: "P-1", ProjectKey: "P", Summary: "S", Status: "Open", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraIssue(JiraIssue{Key: "P-2", ProjectKey: "P", Summary: "S", Status: "Open", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{AccountID: 1, Key: "P-1", ProjectKey: "P", Summary: "S", Status: "Open", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{AccountID: 1, Key: "P-2", ProjectKey: "P", Summary: "S", Status: "Open", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
 
 	count, err = db.GetJiraIssueCount()
 	require.NoError(t, err)
@@ -110,9 +118,10 @@ func TestGetJiraIssueCount(t *testing.T) {
 
 func TestUpsertJiraIssue_UpdateOnConflict(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraIssue(JiraIssue{Key: "P-1", ProjectKey: "P", Summary: "Old", Status: "Open", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraIssue(JiraIssue{Key: "P-1", ProjectKey: "P", Summary: "New", Status: "Done", StatusCategory: "done", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{AccountID: 1, Key: "P-1", ProjectKey: "P", Summary: "Old", Status: "Open", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{AccountID: 1, Key: "P-1", ProjectKey: "P", Summary: "New", Status: "Done", StatusCategory: "done", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
 
 	loaded, err := db.GetJiraIssueByKey("P-1")
 	require.NoError(t, err)
@@ -122,14 +131,16 @@ func TestUpsertJiraIssue_UpdateOnConflict(t *testing.T) {
 
 func TestUpsertAndGetJiraSprint(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	sprint := JiraSprint{
-		ID: 100, BoardID: 1, Name: "Sprint 1", State: "active",
+		AccountID: 1,
+		ID:        100, BoardID: 1, Name: "Sprint 1", State: "active",
 		Goal: "Ship MVP", StartDate: "2026-04-01", EndDate: "2026-04-14", SyncedAt: "now",
 	}
 	require.NoError(t, db.UpsertJiraSprint(sprint))
 
-	sprints, err := db.GetJiraActiveSprints(1)
+	sprints, err := db.GetJiraActiveSprints(1, 1)
 	require.NoError(t, err)
 	assert.Len(t, sprints, 1)
 	assert.Equal(t, "Sprint 1", sprints[0].Name)
@@ -138,11 +149,12 @@ func TestUpsertAndGetJiraSprint(t *testing.T) {
 
 func TestGetJiraActiveSprints_FiltersState(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraSprint(JiraSprint{ID: 1, BoardID: 1, Name: "Active", State: "active", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraSprint(JiraSprint{ID: 2, BoardID: 1, Name: "Closed", State: "closed", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraSprint(JiraSprint{AccountID: 1, ID: 1, BoardID: 1, Name: "Active", State: "active", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraSprint(JiraSprint{AccountID: 1, ID: 2, BoardID: 1, Name: "Closed", State: "closed", SyncedAt: "now"}))
 
-	sprints, err := db.GetJiraActiveSprints(1)
+	sprints, err := db.GetJiraActiveSprints(1, 1)
 	require.NoError(t, err)
 	assert.Len(t, sprints, 1)
 	assert.Equal(t, "Active", sprints[0].Name)
@@ -150,9 +162,11 @@ func TestGetJiraActiveSprints_FiltersState(t *testing.T) {
 
 func TestUpsertJiraIssueLink(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	link := JiraIssueLink{
-		ID: "link-1", SourceKey: "PROJ-1", TargetKey: "PROJ-2", LinkType: "Blocks", SyncedAt: "now",
+		AccountID: 1,
+		ID:        "link-1", SourceKey: "PROJ-1", TargetKey: "PROJ-2", LinkType: "Blocks", SyncedAt: "now",
 	}
 	require.NoError(t, db.UpsertJiraIssueLink(link))
 
@@ -163,11 +177,12 @@ func TestUpsertJiraIssueLink(t *testing.T) {
 
 func TestGetJiraIssueLinksByKey(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	// Insert several links.
-	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l1", SourceKey: "PROJ-1", TargetKey: "PROJ-2", LinkType: "Blocks", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l2", SourceKey: "PROJ-3", TargetKey: "PROJ-1", LinkType: "Relates to", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l3", SourceKey: "PROJ-4", TargetKey: "PROJ-5", LinkType: "Blocks", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{AccountID: 1, ID: "l1", SourceKey: "PROJ-1", TargetKey: "PROJ-2", LinkType: "Blocks", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{AccountID: 1, ID: "l2", SourceKey: "PROJ-3", TargetKey: "PROJ-1", LinkType: "Relates to", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{AccountID: 1, ID: "l3", SourceKey: "PROJ-4", TargetKey: "PROJ-5", LinkType: "Blocks", SyncedAt: "now"}))
 
 	// PROJ-1 appears as source in l1, target in l2 — should find both.
 	links, err := db.GetJiraIssueLinksByKey("PROJ-1")
@@ -190,10 +205,11 @@ func TestGetJiraIssueLinksByKey(t *testing.T) {
 
 func TestGetJiraIssueLinksByKeys(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l1", SourceKey: "A-1", TargetKey: "A-2", LinkType: "Blocks", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l2", SourceKey: "A-3", TargetKey: "A-4", LinkType: "Relates to", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l3", SourceKey: "A-5", TargetKey: "A-6", LinkType: "Blocks", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{AccountID: 1, ID: "l1", SourceKey: "A-1", TargetKey: "A-2", LinkType: "Blocks", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{AccountID: 1, ID: "l2", SourceKey: "A-3", TargetKey: "A-4", LinkType: "Relates to", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{AccountID: 1, ID: "l3", SourceKey: "A-5", TargetKey: "A-6", LinkType: "Blocks", SyncedAt: "now"}))
 
 	// Batch: A-1 (source in l1) and A-4 (target in l2) → l1, l2.
 	links, err := db.GetJiraIssueLinksByKeys([]string{"A-1", "A-4"})
@@ -247,10 +263,11 @@ func TestGetJiraUserMapByAccountID_NotFound(t *testing.T) {
 
 func TestUpdateAndGetJiraSyncState(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpdateJiraSyncState("PROJ", "2026-04-01T00:00:00Z", 100))
+	require.NoError(t, db.UpdateJiraSyncState(1, "PROJ", "2026-04-01T00:00:00Z", 100))
 
-	state, err := db.GetJiraSyncState("PROJ")
+	state, err := db.GetJiraSyncState(1, "PROJ")
 	require.NoError(t, err)
 	require.NotNil(t, state)
 	assert.Equal(t, "PROJ", state.ProjectKey)
@@ -261,59 +278,32 @@ func TestUpdateAndGetJiraSyncState(t *testing.T) {
 func TestGetJiraSyncState_NotFound(t *testing.T) {
 	db := openTestDB(t)
 
-	state, err := db.GetJiraSyncState("NONEXIST")
+	state, err := db.GetJiraSyncState(1, "NONEXIST")
 	require.NoError(t, err)
 	assert.Nil(t, state)
 }
 
 func TestGetJiraSyncStates(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpdateJiraSyncState("A", "2026-04-01T00:00:00Z", 10))
-	require.NoError(t, db.UpdateJiraSyncState("B", "2026-04-01T00:00:00Z", 20))
+	require.NoError(t, db.UpdateJiraSyncState(1, "A", "2026-04-01T00:00:00Z", 10))
+	require.NoError(t, db.UpdateJiraSyncState(1, "B", "2026-04-01T00:00:00Z", 20))
 
 	states, err := db.GetJiraSyncStates()
 	require.NoError(t, err)
 	assert.Len(t, states, 2)
 }
 
-func TestClearJiraData(t *testing.T) {
-	db := openTestDB(t)
-
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "B", ProjectKey: "P", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraIssue(JiraIssue{Key: "P-1", ProjectKey: "P", Summary: "S", Status: "O", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraSprint(JiraSprint{ID: 1, BoardID: 1, Name: "S", State: "active", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraIssueLink(JiraIssueLink{ID: "l1", SourceKey: "P-1", TargetKey: "P-2", LinkType: "Blocks", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraUserMap(JiraUserMap{JiraAccountID: "a1", DisplayName: "User"}))
-	require.NoError(t, db.UpdateJiraSyncState("P", "now", 1))
-
-	require.NoError(t, db.ClearJiraData())
-
-	boards, _ := db.GetJiraBoards()
-	assert.Empty(t, boards)
-
-	count, _ := db.GetJiraIssueCount()
-	assert.Equal(t, 0, count)
-
-	maps, _ := db.GetJiraUserMaps()
-	assert.Empty(t, maps)
-
-	states, _ := db.GetJiraSyncStates()
-	assert.Empty(t, states)
-
-	// Verify issue links are also cleared.
-	issueLinks, _ := db.GetJiraIssueLinksByKey("P-1")
-	assert.Empty(t, issueLinks)
-}
-
 func TestUpdateAndGetJiraBoardProfile(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
 
-	require.NoError(t, db.UpdateJiraBoardProfile(1, `[{"name":"col1"}]`, `{"columns":[]}`, `{"stages":[]}`, "scrum workflow", "abc123", "2026-04-01T00:00:00Z"))
+	require.NoError(t, db.UpdateJiraBoardProfile(1, 1, `[{"name":"col1"}]`, `{"columns":[]}`, `{"stages":[]}`, "scrum workflow", "abc123", "2026-04-01T00:00:00Z"))
 
-	board, err := db.GetJiraBoardProfile(1)
+	board, err := db.GetJiraBoardProfile(1, 1)
 	require.NoError(t, err)
 	require.NotNil(t, board)
 	assert.Equal(t, `[{"name":"col1"}]`, board.RawColumnsJSON)
@@ -326,11 +316,12 @@ func TestUpdateAndGetJiraBoardProfile(t *testing.T) {
 
 func TestUpdateJiraBoardUserOverrides(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
-	require.NoError(t, db.UpdateJiraBoardUserOverrides(1, `{"stale_thresholds":{"Review":2}}`))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
+	require.NoError(t, db.UpdateJiraBoardUserOverrides(1, 1, `{"stale_thresholds":{"Review":2}}`))
 
-	board, err := db.GetJiraBoardProfile(1)
+	board, err := db.GetJiraBoardProfile(1, 1)
 	require.NoError(t, err)
 	require.NotNil(t, board)
 	assert.Equal(t, `{"stale_thresholds":{"Review":2}}`, board.UserOverridesJSON)
@@ -339,21 +330,22 @@ func TestUpdateJiraBoardUserOverrides(t *testing.T) {
 func TestGetJiraBoardProfile_NotFound(t *testing.T) {
 	db := openTestDB(t)
 
-	board, err := db.GetJiraBoardProfile(999)
+	board, err := db.GetJiraBoardProfile(1, 999)
 	require.NoError(t, err)
 	assert.Nil(t, board)
 }
 
 func TestUpsertJiraBoard_DoesNotOverwriteProfile(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
-	require.NoError(t, db.UpdateJiraBoardProfile(1, "raw", "cfg", "profile", "summary", "hash", "time"))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "Board", ProjectKey: "P", SyncedAt: "now"}))
+	require.NoError(t, db.UpdateJiraBoardProfile(1, 1, "raw", "cfg", "profile", "summary", "hash", "time"))
 
 	// Re-upsert the board (sync scenario).
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Updated Board", ProjectKey: "P", SyncedAt: "now2"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "Updated Board", ProjectKey: "P", SyncedAt: "now2"}))
 
-	board, err := db.GetJiraBoardProfile(1)
+	board, err := db.GetJiraBoardProfile(1, 1)
 	require.NoError(t, err)
 	require.NotNil(t, board)
 	assert.Equal(t, "Updated Board", board.Name)
@@ -414,9 +406,10 @@ func TestUpsertJiraSlackLink_OnConflict(t *testing.T) {
 
 func TestGetKnownProjectKeys(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraIssue(JiraIssue{Key: "PROJ-1", ProjectKey: "PROJ", Summary: "S", Status: "O", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "Board", ProjectKey: "KAN", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{AccountID: 1, Key: "PROJ-1", ProjectKey: "PROJ", Summary: "S", Status: "O", StatusCategory: "todo", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "Board", ProjectKey: "KAN", SyncedAt: "now"}))
 
 	keys, err := db.GetKnownProjectKeys()
 	require.NoError(t, err)
@@ -424,24 +417,13 @@ func TestGetKnownProjectKeys(t *testing.T) {
 	assert.Contains(t, keys, "KAN")
 }
 
-func TestClearJiraData_IncludesSlackLinks(t *testing.T) {
-	db := openTestDB(t)
-
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "B", ProjectKey: "P", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraSlackLink(JiraSlackLink{IssueKey: "P-1", ChannelID: "C1", MessageTS: "100", LinkType: "mention"}))
-
-	require.NoError(t, db.ClearJiraData())
-
-	links, _ := db.GetJiraSlackLinksByIssue("P-1")
-	assert.Empty(t, links)
-}
-
 // --- Phase 1 query tests ---
 
 func seedIssue(t *testing.T, db *DB, key, projectKey, status, statusCat, assigneeSlackID, priority string) {
 	t.Helper()
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: key, ProjectKey: projectKey, Summary: "Summary " + key,
+		AccountID: 1,
+		Key:       key, ProjectKey: projectKey, Summary: "Summary " + key,
 		Status: status, StatusCategory: statusCat,
 		AssigneeSlackID: assigneeSlackID, Priority: priority,
 		Labels: `[]`, Components: `[]`,
@@ -451,6 +433,7 @@ func seedIssue(t *testing.T, db *DB, key, projectKey, status, statusCat, assigne
 
 func TestGetJiraIssuesForTrack(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	seedIssue(t, db, "P-1", "P", "Open", "todo", "U1", "High")
 	seedIssue(t, db, "P-2", "P", "Open", "todo", "U2", "Low")
@@ -474,6 +457,7 @@ func TestGetJiraIssuesForTrack_Empty(t *testing.T) {
 
 func TestGetJiraIssuesForDigest(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	seedIssue(t, db, "P-1", "P", "Done", "done", "U1", "Medium")
 
@@ -496,6 +480,7 @@ func TestGetJiraIssuesForDigest_Empty(t *testing.T) {
 
 func TestGetJiraIssuesByAssigneeSlackID(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	seedIssue(t, db, "P-1", "P", "In Progress", "in_progress", "U1", "High")
 	seedIssue(t, db, "P-2", "P", "Open", "todo", "U1", "Low")
@@ -518,6 +503,7 @@ func TestGetJiraIssuesByAssigneeSlackID_Empty(t *testing.T) {
 
 func TestGetJiraIssuesByKeys(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	seedIssue(t, db, "A-1", "A", "Open", "todo", "", "Medium")
 	seedIssue(t, db, "A-2", "A", "Open", "todo", "", "Medium")
@@ -542,9 +528,11 @@ func TestGetJiraIssuesByKeys_Empty(t *testing.T) {
 
 func TestGetJiraActiveSprintStats(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	require.NoError(t, db.UpsertJiraSprint(JiraSprint{
-		ID: 1, BoardID: 10, Name: "Sprint 5", State: "active",
+		AccountID: 1,
+		ID:        1, BoardID: 10, Name: "Sprint 5", State: "active",
 		StartDate: "2026-04-01", EndDate: "2026-12-31", SyncedAt: "now",
 	}))
 
@@ -555,14 +543,15 @@ func TestGetJiraActiveSprintStats(t *testing.T) {
 		{"P-4", "todo"}, {"P-5", "todo"},
 	} {
 		require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-			Key: tc.key, ProjectKey: "P", Summary: "S", Status: "X",
+			AccountID: 1,
+			Key:       tc.key, ProjectKey: "P", Summary: "S", Status: "X",
 			StatusCategory: tc.cat, SprintID: 1,
 			Labels: `[]`, Components: `[]`,
 			CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
 		}))
 	}
 
-	stats, err := db.GetJiraActiveSprintStats(10)
+	stats, err := db.GetJiraActiveSprintStats(1, 10)
 	require.NoError(t, err)
 	require.NotNil(t, stats)
 	assert.Equal(t, "Sprint 5", stats.SprintName)
@@ -576,13 +565,14 @@ func TestGetJiraActiveSprintStats(t *testing.T) {
 func TestGetJiraActiveSprintStats_NoSprint(t *testing.T) {
 	db := openTestDB(t)
 
-	stats, err := db.GetJiraActiveSprintStats(999)
+	stats, err := db.GetJiraActiveSprintStats(1, 999)
 	require.NoError(t, err)
 	assert.Nil(t, stats)
 }
 
 func TestGetJiraIssuesForUser(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	seedIssue(t, db, "P-1", "P", "In Progress", "in_progress", "U1", "Medium")
 	seedIssue(t, db, "P-2", "P", "Done", "done", "U1", "Medium")
@@ -630,11 +620,13 @@ func TestGetJiraSlackLinksByTrackID_Empty(t *testing.T) {
 
 func TestGetJiraDeliveryStats(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	// Closed issue with story points.
 	sp := 5.0
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-1", ProjectKey: "P", Summary: "Done task",
+		AccountID: 1,
+		Key:       "P-1", ProjectKey: "P", Summary: "Done task",
 		Status: "Done", StatusCategory: "done",
 		AssigneeSlackID: "U1", Priority: "Medium",
 		StoryPoints: &sp,
@@ -648,7 +640,8 @@ func TestGetJiraDeliveryStats(t *testing.T) {
 
 	// Open issue (overdue).
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-2", ProjectKey: "P", Summary: "Open task",
+		AccountID: 1,
+		Key:       "P-2", ProjectKey: "P", Summary: "Open task",
 		Status: "Open", StatusCategory: "todo",
 		AssigneeSlackID: "U1", Priority: "High",
 		DueDate:    "2026-01-01",
@@ -685,6 +678,7 @@ func TestCreateTargetFromJiraIssue(t *testing.T) {
 	db := openTestDB(t)
 
 	issue := JiraIssue{
+		AccountID:      1,
 		Key:            "PROJ-10",
 		ProjectKey:     "PROJ",
 		Summary:        "Implement feature X",
@@ -742,7 +736,8 @@ func TestCreateTargetFromJiraIssue_PriorityMapping(t *testing.T) {
 
 	for _, tc := range cases {
 		issue := JiraIssue{
-			Key: "MAP-" + tc.jiraPriority, ProjectKey: "MAP", Summary: "Test " + tc.jiraPriority,
+			AccountID: 1,
+			Key:       "MAP-" + tc.jiraPriority, ProjectKey: "MAP", Summary: "Test " + tc.jiraPriority,
 			Priority: tc.jiraPriority, Status: "Open", StatusCategory: "todo",
 			Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
 		}
@@ -754,30 +749,34 @@ func TestCreateTargetFromJiraIssue_PriorityMapping(t *testing.T) {
 
 func TestSyncJiraTargetStatuses(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	// Seed Jira issues with different statuses.
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "S-1", ProjectKey: "S", Summary: "Done in Jira",
+		AccountID: 1,
+		Key:       "S-1", ProjectKey: "S", Summary: "Done in Jira",
 		Status: "Done", StatusCategory: "done",
 		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
 	}))
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "S-2", ProjectKey: "S", Summary: "In progress in Jira",
+		AccountID: 1,
+		Key:       "S-2", ProjectKey: "S", Summary: "In progress in Jira",
 		Status: "In Progress", StatusCategory: "in_progress",
 		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
 	}))
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "S-3", ProjectKey: "S", Summary: "Still todo in Jira",
+		AccountID: 1,
+		Key:       "S-3", ProjectKey: "S", Summary: "Still todo in Jira",
 		Status: "Open", StatusCategory: "todo",
 		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
 	}))
 
 	// Create targets linked to these issues.
-	t1, err := db.CreateTargetFromJiraIssue(JiraIssue{Key: "S-1", Summary: "Done in Jira", Priority: "Medium"})
+	t1, err := db.CreateTargetFromJiraIssue(JiraIssue{AccountID: 1, Key: "S-1", Summary: "Done in Jira", Priority: "Medium"})
 	require.NoError(t, err)
-	t2, err := db.CreateTargetFromJiraIssue(JiraIssue{Key: "S-2", Summary: "In progress in Jira", Priority: "Medium"})
+	t2, err := db.CreateTargetFromJiraIssue(JiraIssue{AccountID: 1, Key: "S-2", Summary: "In progress in Jira", Priority: "Medium"})
 	require.NoError(t, err)
-	t3, err := db.CreateTargetFromJiraIssue(JiraIssue{Key: "S-3", Summary: "Still todo in Jira", Priority: "Medium"})
+	t3, err := db.CreateTargetFromJiraIssue(JiraIssue{AccountID: 1, Key: "S-3", Summary: "Still todo in Jira", Priority: "Medium"})
 	require.NoError(t, err)
 
 	// All targets start as 'todo'.
@@ -825,13 +824,15 @@ func TestSyncJiraTargetStatuses_MissingIssue(t *testing.T) {
 
 func TestGetJiraTeamWorkload(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	sp3 := 3.0
 	sp5 := 5.0
 
 	// User U1: 2 open issues (1 overdue, 1 blocked), 1 done issue.
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-1", ProjectKey: "P", Summary: "Open normal",
+		AccountID: 1,
+		Key:       "P-1", ProjectKey: "P", Summary: "Open normal",
 		Status: "In Progress", StatusCategory: "in_progress",
 		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
 		StoryPoints: &sp3,
@@ -839,7 +840,8 @@ func TestGetJiraTeamWorkload(t *testing.T) {
 		CreatedAt: "2026-03-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
 	}))
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-2", ProjectKey: "P", Summary: "Overdue task",
+		AccountID: 1,
+		Key:       "P-2", ProjectKey: "P", Summary: "Overdue task",
 		Status: "Open", StatusCategory: "todo",
 		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
 		StoryPoints: &sp5,
@@ -848,7 +850,8 @@ func TestGetJiraTeamWorkload(t *testing.T) {
 		CreatedAt: "2026-03-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
 	}))
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-3", ProjectKey: "P", Summary: "Blocked task",
+		AccountID: 1,
+		Key:       "P-3", ProjectKey: "P", Summary: "Blocked task",
 		Status: "Blocked", StatusCategory: "in_progress",
 		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
 		Labels: `[]`, Components: `[]`,
@@ -860,7 +863,8 @@ func TestGetJiraTeamWorkload(t *testing.T) {
 	createdAt := now.AddDate(0, 0, -15).Format("2006-01-02T15:04:05Z")
 	resolvedAt := now.AddDate(0, 0, -5).Format("2006-01-02T15:04:05Z")
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-4", ProjectKey: "P", Summary: "Done task",
+		AccountID: 1,
+		Key:       "P-4", ProjectKey: "P", Summary: "Done task",
 		Status: "Done", StatusCategory: "done",
 		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
 		Labels: `[]`, Components: `[]`,
@@ -871,7 +875,8 @@ func TestGetJiraTeamWorkload(t *testing.T) {
 
 	// User U2: 1 open issue, no overdue, no blocked.
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-5", ProjectKey: "P", Summary: "U2 open",
+		AccountID: 1,
+		Key:       "P-5", ProjectKey: "P", Summary: "U2 open",
 		Status: "To Do", StatusCategory: "todo",
 		AssigneeSlackID: "U2", AssigneeDisplayName: "Bob",
 		Labels: `[]`, Components: `[]`,
@@ -880,7 +885,8 @@ func TestGetJiraTeamWorkload(t *testing.T) {
 
 	// Issue with empty assignee_slack_id (should be filtered out).
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-6", ProjectKey: "P", Summary: "Unassigned",
+		AccountID: 1,
+		Key:       "P-6", ProjectKey: "P", Summary: "Unassigned",
 		Status: "Open", StatusCategory: "todo",
 		Labels: `[]`, Components: `[]`,
 		CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
@@ -888,7 +894,8 @@ func TestGetJiraTeamWorkload(t *testing.T) {
 
 	// Deleted issue (should be filtered out).
 	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-		Key: "P-7", ProjectKey: "P", Summary: "Deleted",
+		AccountID: 1,
+		Key:       "P-7", ProjectKey: "P", Summary: "Deleted",
 		Status: "Open", StatusCategory: "todo",
 		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
 		Labels: `[]`, Components: `[]`,
@@ -945,14 +952,17 @@ func TestTargetSourceTypeJira(t *testing.T) {
 
 func TestUpsertAndGetJiraReleases(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	r1 := JiraRelease{
-		ID: 10001, ProjectKey: "PROJ", Name: "v1.0",
+		AccountID: 1,
+		ID:        10001, ProjectKey: "PROJ", Name: "v1.0",
 		Description: "First release", ReleaseDate: "2026-04-15",
 		Released: false, Archived: false, SyncedAt: "2026-04-01T00:00:00Z",
 	}
 	r2 := JiraRelease{
-		ID: 10002, ProjectKey: "PROJ", Name: "v2.0",
+		AccountID: 1,
+		ID:        10002, ProjectKey: "PROJ", Name: "v2.0",
 		Description: "Second release", ReleaseDate: "2026-05-01",
 		Released: true, Archived: false, SyncedAt: "2026-04-01T00:00:00Z",
 	}
@@ -970,9 +980,11 @@ func TestUpsertAndGetJiraReleases(t *testing.T) {
 
 func TestUpsertJiraRelease_UpdateOnConflict(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	r := JiraRelease{
-		ID: 10001, ProjectKey: "PROJ", Name: "v1.0",
+		AccountID: 1,
+		ID:        10001, ProjectKey: "PROJ", Name: "v1.0",
 		Description: "Old desc", ReleaseDate: "2026-04-15",
 		Released: false, SyncedAt: "2026-04-01T00:00:00Z",
 	}
@@ -1000,10 +1012,11 @@ func TestGetJiraReleases_Empty(t *testing.T) {
 
 func TestGetJiraReleases_SortedByReleaseDate(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraRelease(JiraRelease{ID: 3, ProjectKey: "P", Name: "v3", ReleaseDate: "2026-06-01", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraRelease(JiraRelease{ID: 1, ProjectKey: "P", Name: "v1", ReleaseDate: "2026-04-01", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraRelease(JiraRelease{ID: 2, ProjectKey: "P", Name: "v2", ReleaseDate: "2026-05-01", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraRelease(JiraRelease{AccountID: 1, ID: 3, ProjectKey: "P", Name: "v3", ReleaseDate: "2026-06-01", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraRelease(JiraRelease{AccountID: 1, ID: 1, ProjectKey: "P", Name: "v1", ReleaseDate: "2026-04-01", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraRelease(JiraRelease{AccountID: 1, ID: 2, ProjectKey: "P", Name: "v2", ReleaseDate: "2026-05-01", SyncedAt: "now"}))
 
 	releases, err := db.GetJiraReleases("P")
 	require.NoError(t, err)
@@ -1015,10 +1028,11 @@ func TestGetJiraReleases_SortedByReleaseDate(t *testing.T) {
 
 func TestGetJiraReleasesByName(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
-	require.NoError(t, db.UpsertJiraRelease(JiraRelease{ID: 1, ProjectKey: "A", Name: "v1.0", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraRelease(JiraRelease{ID: 2, ProjectKey: "B", Name: "v1.0", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraRelease(JiraRelease{ID: 3, ProjectKey: "C", Name: "v2.0", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraRelease(JiraRelease{AccountID: 1, ID: 1, ProjectKey: "A", Name: "v1.0", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraRelease(JiraRelease{AccountID: 1, ID: 2, ProjectKey: "B", Name: "v1.0", SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraRelease(JiraRelease{AccountID: 1, ID: 3, ProjectKey: "C", Name: "v2.0", SyncedAt: "now"}))
 
 	releases, err := db.GetJiraReleasesByName("v1.0")
 	require.NoError(t, err)
@@ -1033,9 +1047,11 @@ func TestGetJiraReleasesByName(t *testing.T) {
 
 func TestJiraIssueFixVersions(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	issue := JiraIssue{
-		Key: "P-1", ProjectKey: "P", Summary: "With fix versions",
+		AccountID: 1,
+		Key:       "P-1", ProjectKey: "P", Summary: "With fix versions",
 		Status: "Open", StatusCategory: "todo",
 		Labels: `[]`, Components: `[]`, FixVersions: `["v1.0","v2.0"]`,
 		CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
@@ -1050,10 +1066,12 @@ func TestJiraIssueFixVersions(t *testing.T) {
 
 func TestJiraIssueFixVersions_DefaultEmpty(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	// Issue without setting FixVersions — should default to "[]".
 	issue := JiraIssue{
-		Key: "P-2", ProjectKey: "P", Summary: "No fix versions",
+		AccountID: 1,
+		Key:       "P-2", ProjectKey: "P", Summary: "No fix versions",
 		Status: "Open", StatusCategory: "todo",
 		Labels: `[]`, Components: `[]`,
 		CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
@@ -1067,24 +1085,14 @@ func TestJiraIssueFixVersions_DefaultEmpty(t *testing.T) {
 	assert.Contains(t, []string{"", "[]"}, loaded.FixVersions)
 }
 
-func TestClearJiraData_IncludesReleases(t *testing.T) {
-	db := openTestDB(t)
-
-	require.NoError(t, db.UpsertJiraBoard(JiraBoard{ID: 1, Name: "B", ProjectKey: "P", SyncedAt: "now"}))
-	require.NoError(t, db.UpsertJiraRelease(JiraRelease{ID: 1, ProjectKey: "P", Name: "v1.0", SyncedAt: "now"}))
-
-	require.NoError(t, db.ClearJiraData())
-
-	releases, _ := db.GetJiraReleases("P")
-	assert.Empty(t, releases)
-}
-
 func TestGetJiraIssues(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 
 	mustUpsert := func(key, project, status string) {
 		require.NoError(t, db.UpsertJiraIssue(JiraIssue{
-			Key: key, ID: key, ProjectKey: project, Summary: "s",
+			AccountID: 1,
+			Key:       key, ID: key, ProjectKey: project, Summary: "s",
 			Status: status, StatusCategory: "In Progress",
 			CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z",
 			SyncedAt: "2026-06-02T00:00:00Z",

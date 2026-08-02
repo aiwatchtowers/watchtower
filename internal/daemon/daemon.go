@@ -70,7 +70,7 @@ type Daemon struct {
 	calDAVSyncers    []*caldav.Syncer
 	gmailSyncers     []*gmail.Syncer
 	imapSyncers      []*imap.Syncer
-	jiraSyncer       *jira.Syncer
+	jiraSyncers      []*jira.Syncer
 	dayPlanPipeline  DayPlanRunner
 	lastJira         time.Time
 	lastPeople       time.Time // when people cards last ran (once per day)
@@ -183,9 +183,11 @@ func (d *Daemon) SetImapSyncers(s []*imap.Syncer) {
 	d.imapSyncers = s
 }
 
-// SetJiraSyncer sets the Jira syncer for periodic sync.
-func (d *Daemon) SetJiraSyncer(s *jira.Syncer) {
-	d.jiraSyncer = s
+// SetJiraSyncers sets the per-account Jira syncers — one per connected,
+// enabled jira_accounts row with a live token (mirrors SetCalendarSyncers/
+// SetGmailSyncers). An empty or nil slice disables the Jira sync phase.
+func (d *Daemon) SetJiraSyncers(s []*jira.Syncer) {
+	d.jiraSyncers = s
 }
 
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
@@ -443,10 +445,13 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 	}
 }
 
-// phaseJiraSync pulls Jira issues respecting the configured interval, then
-// records board-analyzer LLM usage and reflects target statuses.
+// phaseJiraSync pulls Jira issues for every connected account respecting the
+// configured interval, then records board-analyzer LLM usage and reflects
+// target statuses. One account's sync error is logged and recorded on its
+// jira_accounts row only — it never blocks the other accounts (the
+// phaseCalendarSync/phaseGmailSync fan-out pattern).
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
-	if d.jiraSyncer == nil {
+	if len(d.jiraSyncers) == 0 {
 		return
 	}
 	interval := time.Duration(d.config.Jira.SyncIntervalMins) * time.Minute
@@ -456,26 +461,52 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if !d.lastJira.IsZero() && time.Since(d.lastJira) < interval {
 		return
 	}
-	n, err := d.jiraSyncer.Sync(ctx)
-	if err != nil {
-		d.logger.Printf("jira sync error: %v", err)
-	} else if n > 0 {
-		d.logger.Printf("jira: %d issues synced", n)
-	}
 	d.lastJira = time.Now()
+
+	var firstErr error
+	for _, s := range d.jiraSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("jira: account %d: sync error: %v", s.AccountID(), err)
+			if d.db != nil {
+				if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "error", err.Error()); dbErr != nil {
+					d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
+				}
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if n > 0 {
+			d.logger.Printf("jira: account %d: %d issues synced", s.AccountID(), n)
+		}
+		if d.db != nil {
+			if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "ok", ""); dbErr != nil {
+				d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
+			}
+		}
+	}
 
 	// Record board analyzer LLM usage if any boards were re-analyzed.
 	if d.db != nil {
-		inTok, outTok, totalAPI := d.jiraSyncer.BoardAnalyzerUsage()
+		var inTok, outTok, totalAPI int
+		for _, s := range d.jiraSyncers {
+			in, out, api := s.BoardAnalyzerUsage()
+			inTok += in
+			outTok += out
+			totalAPI += api
+		}
 		if inTok > 0 || outTok > 0 {
+			err := firstErr
 			d.trackedPipelineRun("jira-boards", func() pipelineRunStats {
 				return pipelineRunStats{inTok: inTok, outTok: outTok, totalAPI: totalAPI, err: err}
 			})
 		}
 	}
 
-	// Sync target statuses from Jira issues after successful sync.
-	if err == nil && d.db != nil {
+	// Sync target statuses from Jira issues after a fully successful pass.
+	if firstErr == nil && d.db != nil {
 		if synced, serr := d.db.SyncJiraTargetStatuses(); serr != nil {
 			d.logger.Printf("jira target status sync warning: %v", serr)
 		} else if synced > 0 {

@@ -15,3 +15,20 @@ func OpenTestDB(t *testing.T) *DB {
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
+
+// SeedTestJiraAccount inserts a jira_accounts row and returns its id, so
+// tests can write into the account-scoped jira_* tables (their account_id
+// FK requires a parent row). Idempotent per call — each call mints a new
+// account.
+func SeedTestJiraAccount(t *testing.T, d *DB) int64 {
+	t.Helper()
+	id, err := d.CreateJiraAccount(JiraAccount{
+		CloudID:  "test-cloud",
+		SiteURL:  "https://test.atlassian.net",
+		SiteName: "Test",
+	})
+	if err != nil {
+		t.Fatalf("seeding test jira account: %v", err)
+	}
+	return id
+}

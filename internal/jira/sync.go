@@ -25,28 +25,36 @@ type SyncProgress struct {
 	Phase string // "issues", "sprints", "releases", "done"
 }
 
-// Syncer performs incremental and full syncs of Jira issues into the local database.
+// Syncer performs incremental and full syncs of one Jira account's issues
+// into the local database. Every row it writes carries its accountID.
 type Syncer struct {
 	client        *Client
 	db            *db.DB
 	mapper        *UserMapper
 	logger        *log.Logger
 	boardIDs      []int
+	accountID     int64
 	boardAnalyzer *BoardAnalyzer                 // optional, for config change detection
 	autoRefresh   bool                           // when true, auto re-analyze boards with changed config
 	fieldMapCache map[int][]db.JiraBoardFieldMap // boardID -> field mappings
 	OnProgress    func(SyncProgress)             // optional progress callback
 }
 
-// NewSyncer creates a Syncer.
-func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []int) *Syncer {
+// NewSyncer creates a Syncer for one Jira account.
+func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []int, accountID int64) *Syncer {
 	return &Syncer{
-		client:   client,
-		db:       database,
-		mapper:   mapper,
-		logger:   log.New(os.Stderr, "[jira-sync] ", log.LstdFlags),
-		boardIDs: boardIDs,
+		client:    client,
+		db:        database,
+		mapper:    mapper,
+		logger:    log.New(os.Stderr, "[jira-sync] ", log.LstdFlags),
+		boardIDs:  boardIDs,
+		accountID: accountID,
 	}
+}
+
+// AccountID returns the Jira account this syncer writes for.
+func (s *Syncer) AccountID() int64 {
+	return s.accountID
 }
 
 // SetLogger replaces the syncer's logger.
@@ -76,7 +84,7 @@ func (s *Syncer) SetAutoRefresh(auto bool) {
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	total := 0
 
-	boards, err := s.db.GetJiraSelectedBoards()
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
 	if err != nil {
 		return 0, fmt.Errorf("getting selected boards: %w", err)
 	}
@@ -97,7 +105,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			continue
 		}
 
-		syncState, _ := s.db.GetJiraSyncState(projectKey)
+		syncState, _ := s.db.GetJiraSyncState(s.accountID, projectKey)
 		lastSyncedAt := ""
 		if syncState != nil {
 			lastSyncedAt = syncState.LastSyncedAt
@@ -108,11 +116,11 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if err != nil {
 			s.logger.Printf("sync error for project %s: %v", projectKey, err)
 			if syncState == nil {
-				syncState = &db.JiraSyncState{ProjectKey: projectKey}
+				syncState = &db.JiraSyncState{AccountID: s.accountID, ProjectKey: projectKey}
 			}
 			syncState.LastError = err.Error()
 			syncState.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
-			_ = s.db.UpdateJiraSyncState(syncState.ProjectKey, syncState.LastSyncedAt, syncState.IssuesSynced)
+			_ = s.db.UpdateJiraSyncState(s.accountID, syncState.ProjectKey, syncState.LastSyncedAt, syncState.IssuesSynced)
 			continue
 		}
 
@@ -122,8 +130,8 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if syncState != nil {
 			issuesSynced += syncState.IssuesSynced
 		}
-		_ = s.db.UpdateJiraSyncState(projectKey, now, issuesSynced)
-		_ = s.db.UpdateJiraBoardIssueCount(board.ID)
+		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, issuesSynced)
+		_ = s.db.UpdateJiraBoardIssueCount(s.accountID, board.ID)
 	}
 
 	// Sync sprints for selected boards.
@@ -188,7 +196,7 @@ func buildIncrementalJQL(projectKey, lastSyncedAt string, now time.Time) string 
 // Writing a watermark here would pin every later Sync() to an incremental window
 // that never reaches those closed issues, so they would never be loaded.
 func (s *Syncer) SyncBoard(ctx context.Context, boardID int) (int, error) {
-	board, err := s.db.GetJiraBoardProfile(boardID)
+	board, err := s.db.GetJiraBoardProfile(s.accountID, boardID)
 	if err != nil {
 		return 0, fmt.Errorf("getting board %d: %w", boardID, err)
 	}
@@ -209,7 +217,7 @@ func (s *Syncer) SyncBoard(ctx context.Context, boardID int) (int, error) {
 
 	// Intentionally no UpdateJiraSyncState here — see the doc comment above:
 	// leaving the watermark unset lets the daemon's first Sync() backfill closed issues.
-	_ = s.db.UpdateJiraBoardIssueCount(boardID)
+	_ = s.db.UpdateJiraBoardIssueCount(s.accountID, boardID)
 
 	if s.OnProgress != nil {
 		s.OnProgress(SyncProgress{Done: n, Total: n, Phase: "done"})
@@ -269,7 +277,7 @@ func buildStatusNotIn(statuses []string) string {
 func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 	total := 0
 
-	boards, err := s.db.GetJiraSelectedBoards()
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
 	if err != nil {
 		return 0, fmt.Errorf("getting selected boards: %w", err)
 	}
@@ -294,7 +302,7 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 		total += n
 
 		now := time.Now().UTC().Format(time.RFC3339)
-		_ = s.db.UpdateJiraSyncState(projectKey, now, n)
+		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, n)
 	}
 
 	if err := s.SyncSprints(ctx); err != nil {
@@ -350,7 +358,7 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 			s.logger.Printf("batch upsert error: %v", err)
 		}
 		written += len(dbIssues)
-		_ = s.db.UpdateJiraBoardIssueCount(boardID)
+		_ = s.db.UpdateJiraBoardIssueCount(s.accountID, boardID)
 
 		if s.OnProgress != nil {
 			s.OnProgress(SyncProgress{Done: written, Total: 0, Phase: "issues"})
@@ -523,6 +531,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 	statusCatChanged := "" // Jira API doesn't expose this directly in basic search
 
 	dbIssue := db.JiraIssue{
+		AccountID:               s.accountID,
 		Key:                     issue.Key,
 		ID:                      issue.ID,
 		ProjectKey:              projectKey,
@@ -573,6 +582,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 		}
 		if targetKey != "" {
 			links = append(links, db.JiraIssueLink{
+				AccountID: s.accountID,
 				ID:        link.ID,
 				SourceKey: sourceKey,
 				TargetKey: targetKey,
@@ -603,7 +613,7 @@ func (s *Syncer) ensureUserMap(u *User) {
 
 // SyncSprints syncs active and recent closed sprints for all selected boards.
 func (s *Syncer) SyncSprints(ctx context.Context) error {
-	boards, err := s.db.GetJiraSelectedBoards()
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
 	if err != nil {
 		return err
 	}
@@ -624,6 +634,7 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 			now := time.Now().UTC().Format(time.RFC3339)
 			for _, sprint := range resp.Values {
 				dbSprint := db.JiraSprint{
+					AccountID:    s.accountID,
 					ID:           sprint.ID,
 					BoardID:      board.ID,
 					Name:         sprint.Name,
@@ -680,6 +691,7 @@ func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error 
 				continue
 			}
 			release := db.JiraRelease{
+				AccountID:   s.accountID,
 				ID:          id,
 				ProjectKey:  projectKey,
 				Name:        v.Name,
@@ -709,7 +721,7 @@ func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
 	if cached, ok := s.fieldMapCache[boardID]; ok {
 		return cached
 	}
-	mappings, err := s.db.GetJiraBoardFieldMap(boardID)
+	mappings, err := s.db.GetJiraBoardFieldMap(s.accountID, boardID)
 	if err != nil {
 		return nil
 	}

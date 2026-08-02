@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -20,24 +21,66 @@ import (
 var (
 	jiraSyncFlagBoard        int
 	jiraSyncFlagProgressJSON bool
+	jiraFlagAccount          int64
 )
 
 var jiraCmd = &cobra.Command{
 	Use:   "jira",
-	Short: "Jira Cloud integration",
+	Short: "Jira Cloud integration (multiple Atlassian sites supported)",
 	RunE:  runJiraStatus,
+}
+
+var jiraAddCmd = &cobra.Command{
+	Use:   "add",
+	Short: "Connect a new Jira Cloud site via OAuth",
+	Long: "Runs a browser-based OAuth flow, creates a new jira_accounts row, and\n" +
+		"records the selected site. Each connected site syncs independently.",
+	RunE: runJiraAdd,
 }
 
 var jiraLoginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Connect Jira Cloud via OAuth",
-	RunE:  runJiraLogin,
+	Short: "Re-consent (re-authorize) a connected Jira site",
+	Long: "Runs the OAuth flow again for an existing account and overwrites its token.\n\n" +
+		"Without --account, operates on account #1 — the implicit account every\n" +
+		"single-account install already has, created on first use if it doesn't exist yet.",
+	RunE: runJiraLogin,
 }
 
 var jiraLogoutCmd = &cobra.Command{
 	Use:   "logout",
-	Short: "Disconnect Jira Cloud",
+	Short: "Disconnect Jira account #1 (non-destructive: keeps synced data)",
 	RunE:  runJiraLogout,
+}
+
+var jiraAccountsCmd = &cobra.Command{
+	Use:   "accounts",
+	Short: "List connected Jira sites",
+	RunE:  runJiraAccounts,
+}
+
+var jiraEnableCmd = &cobra.Command{
+	Use:   "enable <account-id>",
+	Short: "Resume syncing a Jira site",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runJiraEnable,
+}
+
+var jiraDisableCmd = &cobra.Command{
+	Use:   "disable <account-id>",
+	Short: "Pause syncing a Jira site (keeps its data)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runJiraDisable,
+}
+
+var jiraRemoveCmd = &cobra.Command{
+	Use:   "remove <account-id>",
+	Short: "Disconnect a Jira site (non-destructive: keeps synced data)",
+	Long: "Deletes the account's stored OAuth token and marks it removed so it stops\n" +
+		"syncing. Its synced issues, boards, releases, and links are deliberately\n" +
+		"kept — removal is a soft delete, not a purge (the Slack precedent).",
+	Args: cobra.ExactArgs(1),
+	RunE: runJiraRemove,
 }
 
 var jiraStatusCmd = &cobra.Command{
@@ -175,8 +218,13 @@ var jiraFieldsMapCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(jiraCmd)
+	jiraCmd.AddCommand(jiraAddCmd)
 	jiraCmd.AddCommand(jiraLoginCmd)
 	jiraCmd.AddCommand(jiraLogoutCmd)
+	jiraCmd.AddCommand(jiraAccountsCmd)
+	jiraCmd.AddCommand(jiraEnableCmd)
+	jiraCmd.AddCommand(jiraDisableCmd)
+	jiraCmd.AddCommand(jiraRemoveCmd)
 	jiraCmd.AddCommand(jiraStatusCmd)
 	jiraCmd.AddCommand(jiraBoardsCmd)
 	jiraBoardsCmd.AddCommand(jiraBoardsSelectCmd)
@@ -209,8 +257,13 @@ func init() {
 	jiraProjectMapCmd.Flags().String("epic", "", "Show details for a specific epic (e.g. PROJ-100)")
 	jiraReleasesCmd.Flags().Bool("json", false, "Output as JSON")
 	jiraReleasesCmd.Flags().String("release", "", "Show details for a specific release (e.g. v1.0)")
+	jiraCmd.PersistentFlags().Int64Var(&jiraFlagAccount, "account", 0,
+		"Jira account id to operate on (default: the single enabled account)")
 	jiraLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
 	jiraLoginCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
+	jiraAddCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
+	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
+	jiraAddCmd.Flags().String("label", "", "display name for this site")
 	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
 	jiraBoardsAnalyzeCmd.Flags().Bool("force", false, "re-analyze even if config hash unchanged")
 	jiraBoardsAnalyzeCmd.Flags().Bool("auto", false, "auto re-analyze boards with changed config (respects 24h cooldown)")
@@ -222,20 +275,172 @@ func init() {
 	jiraSyncCmd.Flags().BoolVar(&jiraSyncFlagProgressJSON, "progress-json", false, "output progress as JSON lines to stdout")
 }
 
-func runJiraLogin(cmd *cobra.Command, _ []string) error {
+// openJiraCmdDB is the shared command preamble: load config, apply the
+// --workspace override, validate, open the DB (the openSlackCmdDB pattern).
+func openJiraCmdDB() (*config.Config, *db.DB, error) {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	if err := cfg.ValidateWorkspace(); err != nil {
+		return nil, nil, err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	return cfg, database, nil
+}
+
+// resolveJiraAccount resolves the --account flag to a connected account.
+// Without the flag it picks the single enabled account; zero or multiple
+// enabled accounts require an explicit --account.
+func resolveJiraAccount(database *db.DB, accountID int64) (db.JiraAccount, error) {
+	if accountID > 0 {
+		return database.GetJiraAccount(accountID)
+	}
+	accounts, err := database.ListEnabledJiraAccounts()
+	if err != nil {
+		return db.JiraAccount{}, err
+	}
+	switch len(accounts) {
+	case 0:
+		return db.JiraAccount{}, fmt.Errorf("no Jira site connected, run 'watchtower jira add' first")
+	case 1:
+		return accounts[0], nil
+	default:
+		return db.JiraAccount{}, fmt.Errorf("multiple Jira sites connected — pass --account <id> (see 'watchtower jira accounts')")
+	}
+}
+
+// jiraAccountDisplayName renders an account for human-readable output:
+// label, else site name, else site URL, else "(unnamed)".
+func jiraAccountDisplayName(a db.JiraAccount) string {
+	switch {
+	case a.Label != "":
+		return a.Label
+	case a.SiteName != "":
+		return a.SiteName
+	case a.SiteURL != "":
+		return a.SiteURL
+	default:
+		return "(unnamed)"
+	}
+}
+
+// selectJiraSite picks one accessible site: --site substring match, auto if
+// exactly one, else an interactive numeric prompt. preferCloudID, when
+// non-empty and present in the list, short-circuits the choice — a re-login
+// keeps its account's site without prompting.
+func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag, preferCloudID string) (jira.CloudResource, error) {
+	out := cmd.OutOrStdout()
+	if siteFlag != "" {
+		for _, r := range resources {
+			if strings.Contains(r.URL, siteFlag) || strings.Contains(r.Name, siteFlag) {
+				return r, nil
+			}
+		}
+		fmt.Fprintln(out, "Available sites:")
+		for _, r := range resources {
+			fmt.Fprintf(out, "  - %s (%s)\n", r.Name, r.URL)
+		}
+		return jira.CloudResource{}, fmt.Errorf("site %q not found", siteFlag)
+	}
+	if preferCloudID != "" {
+		for _, r := range resources {
+			if r.ID == preferCloudID {
+				return r, nil
+			}
+		}
+	}
+	if len(resources) == 1 {
+		return resources[0], nil
+	}
+	fmt.Fprintln(out, "\nAvailable Jira Cloud sites:")
+	for i, r := range resources {
+		fmt.Fprintf(out, "  [%d] %s (%s)\n", i+1, r.Name, r.URL)
+	}
+	fmt.Fprintf(out, "\nSelect site [1-%d]: ", len(resources))
+	var choice int
+	if _, err := fmt.Fscan(cmd.InOrStdin(), &choice); err != nil || choice < 1 || choice > len(resources) {
+		return jira.CloudResource{}, fmt.Errorf("invalid selection")
+	}
+	return resources[choice-1], nil
+}
+
+// connectJiraAccount finishes an OAuth flow for accountID: resolves the
+// accessible sites, records the chosen site on the row, saves the token to
+// the account's store, and marks the account ok. On any failure for a newly
+// created row the account is soft-removed so a failed connect never leaves
+// an un-loginable ghost.
+func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, token *jira.OAuthToken, siteFlag, preferCloudID string, isNewRow bool) (jira.CloudResource, error) {
+	rollback := func() {
+		if isNewRow {
+			_ = jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Delete()
+			_ = database.SetJiraAccountRemoved(accountID)
+		}
+	}
+
+	resources, err := jira.FetchAccessibleResources(cmd.Context(), token.AccessToken)
+	if err != nil {
+		rollback()
+		return jira.CloudResource{}, fmt.Errorf("fetching accessible resources: %w", err)
+	}
+	if len(resources) == 0 {
+		rollback()
+		return jira.CloudResource{}, fmt.Errorf("no Jira Cloud sites found for this account")
+	}
+
+	site, err := selectJiraSite(cmd, resources, siteFlag, preferCloudID)
+	if err != nil {
+		rollback()
+		return jira.CloudResource{}, err
+	}
+
+	if err := database.UpdateJiraAccountConnection(accountID, site.ID, site.URL, site.Name); err != nil {
+		rollback()
+		return jira.CloudResource{}, fmt.Errorf("recording site: %w", err)
+	}
+	if err := jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Save(token); err != nil {
+		rollback()
+		return jira.CloudResource{}, fmt.Errorf("saving token: %w", err)
+	}
+	if err := database.SetJiraAccountAuthState(accountID, "ok", ""); err != nil {
+		return jira.CloudResource{}, fmt.Errorf("recording auth state: %w", err)
+	}
+	return site, nil
+}
+
+// enableJiraPhase flips the global jira.enabled daemon-phase switch on in
+// config.yaml (the per-account on/off lives on the jira_accounts row).
+func enableJiraPhase() error {
+	v := viper.New()
+	v.SetConfigFile(flagConfig)
+	_ = v.ReadInConfig()
+	v.Set("jira.enabled", true)
+	return writeConfigAtomic(v, flagConfig)
+}
+
+func runJiraAdd(cmd *cobra.Command, _ []string) error {
+	cfg, database, err := openJiraCmdDB()
+	if err != nil {
 		return err
+	}
+	defer database.Close()
+
+	// Seed the legacy single-account install first so the new row never
+	// collides with the implicit account #1 (the `slack add` precedent).
+	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
 	}
 
 	jiraCfg := resolveJiraOAuthConfig()
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	siteFlag, _ := cmd.Flags().GetString("site")
+	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
 
 	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen})
@@ -243,148 +448,240 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("jira login: %w", err)
 	}
 
-	store := jira.NewTokenStore(cfg.WorkspaceDir())
-	if err := store.Save(token); err != nil {
-		return fmt.Errorf("saving token: %w", err)
-	}
-
-	// Fetch accessible resources to get cloud ID.
-	resources, err := jira.FetchAccessibleResources(cmd.Context(), token.AccessToken)
+	accountID, err := database.CreateJiraAccount(db.JiraAccount{Label: label})
 	if err != nil {
-		return fmt.Errorf("fetching accessible resources: %w", err)
+		return fmt.Errorf("creating jira account: %w", err)
+	}
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, siteFlag, "", true)
+	if err != nil {
+		return err
+	}
+	if err := enableJiraPhase(); err != nil {
+		return fmt.Errorf("saving jira config: %w", err)
 	}
 
-	if len(resources) == 0 {
-		fmt.Fprintln(out, "No Jira Cloud sites found for this account.")
-		return nil
+	fmt.Fprintf(out, "\nJira Cloud connected as account %d!\n", accountID)
+	fmt.Fprintf(out, "Site: %s (%s)\n", site.Name, site.URL)
+	fmt.Fprintf(out, "\nRun 'watchtower jira boards --account %d' to see available boards.\n", accountID)
+	fmt.Fprintf(out, "Run 'watchtower jira sync --account %d' to sync issues.\n", accountID)
+	return nil
+}
+
+// resolveJiraAccountForLogin resolves the account a bare `jira login`
+// re-consents: --account if given, else account #1 — seeded from a legacy
+// install when possible, created empty otherwise (the
+// resolveSlackAccountOneForLogin pattern).
+func resolveJiraAccountForLogin(cfg *config.Config, database *db.DB, accountID int64) (int64, bool, error) {
+	if accountID > 0 {
+		if _, err := database.GetJiraAccount(accountID); err != nil {
+			return 0, false, err
+		}
+		return accountID, false, nil
+	}
+	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+		return 0, false, fmt.Errorf("seeding legacy account: %w", err)
+	}
+	accounts, err := database.ListJiraAccounts()
+	if err != nil {
+		return 0, false, err
+	}
+	if len(accounts) > 0 {
+		return accounts[0].ID, false, nil
+	}
+	id, err := database.CreateJiraAccount(db.JiraAccount{})
+	if err != nil {
+		return 0, false, err
+	}
+	return id, true, nil
+}
+
+func runJiraLogin(cmd *cobra.Command, _ []string) error {
+	cfg, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	accountID, isNewRow, err := resolveJiraAccountForLogin(cfg, database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
+	account, err := database.GetJiraAccount(accountID)
+	if err != nil {
+		return err
 	}
 
-	// Select site — flag, auto if one, prompt if multiple.
-	var site jira.CloudResource
+	jiraCfg := resolveJiraOAuthConfig()
+	noOpen, _ := cmd.Flags().GetBool("no-open")
 	siteFlag, _ := cmd.Flags().GetString("site")
-	if siteFlag != "" {
-		found := false
-		for _, r := range resources {
-			if strings.Contains(r.URL, siteFlag) || strings.Contains(r.Name, siteFlag) {
-				site = r
-				found = true
-				break
-			}
-		}
-		if !found {
-			fmt.Fprintln(out, "Available sites:")
-			for _, r := range resources {
-				fmt.Fprintf(out, "  - %s (%s)\n", r.Name, r.URL)
-			}
-			return fmt.Errorf("site %q not found", siteFlag)
-		}
-	} else if len(resources) == 1 {
-		site = resources[0]
-	} else {
-		fmt.Fprintln(out, "\nAvailable Jira Cloud sites:")
-		for i, r := range resources {
-			fmt.Fprintf(out, "  [%d] %s (%s)\n", i+1, r.Name, r.URL)
-		}
-		fmt.Fprintf(out, "\nSelect site [1-%d]: ", len(resources))
-		var choice int
-		if _, err := fmt.Fscan(cmd.InOrStdin(), &choice); err != nil || choice < 1 || choice > len(resources) {
-			return fmt.Errorf("invalid selection")
-		}
-		site = resources[choice-1]
+	out := cmd.OutOrStdout()
+
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen})
+	if err != nil {
+		return fmt.Errorf("jira login: %w", err)
 	}
 
-	// Persist Jira config so downstream commands (boards, sync) can find cloud_id.
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	_ = v.ReadInConfig()
-	v.Set("jira.cloud_id", site.ID)
-	v.Set("jira.site_url", site.URL)
-	v.Set("jira.user_display_name", site.Name)
-	v.Set("jira.enabled", true)
-	if err := writeConfigAtomic(v, flagConfig); err != nil {
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, token, siteFlag, account.CloudID, isNewRow)
+	if err != nil {
+		return err
+	}
+	if err := enableJiraPhase(); err != nil {
 		return fmt.Errorf("saving jira config: %w", err)
 	}
 
 	fmt.Fprintf(out, "\nJira Cloud connected!\n")
+	fmt.Fprintf(out, "Account: %d\n", accountID)
 	fmt.Fprintf(out, "Site: %s (%s)\n", site.Name, site.URL)
-	fmt.Fprintf(out, "Cloud ID: %s\n", site.ID)
-	fmt.Fprintf(out, "Token saved to: %s\n", store.Path())
 	fmt.Fprintf(out, "\nRun 'watchtower jira boards' to see available boards.\n")
 	fmt.Fprintf(out, "Run 'watchtower jira sync' to sync issues.\n")
-
 	return nil
 }
 
-func runJiraLogout(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(flagConfig)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
+// removeJiraAccount soft-removes an account: token file deleted, row marked
+// removed. Synced data is deliberately kept (non-destructive, the Slack
+// precedent — NOT Google's cascade).
+func removeJiraAccount(cfg *config.Config, database *db.DB, accountID int64) error {
+	if _, err := database.GetJiraAccount(accountID); err != nil {
 		return err
 	}
-
-	store := jira.NewTokenStore(cfg.WorkspaceDir())
-	if err := store.Delete(); err != nil {
+	if err := jira.NewTokenStore(cfg.WorkspaceDir(), accountID).Delete(); err != nil {
 		return fmt.Errorf("deleting token: %w", err)
 	}
+	return database.SetJiraAccountRemoved(accountID)
+}
 
-	database, err := db.Open(cfg.DBPath())
+func runJiraLogout(cmd *cobra.Command, _ []string) error {
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
+		return err
 	}
 	defer database.Close()
 
-	if err := database.ClearJiraData(); err != nil {
-		return fmt.Errorf("clearing jira data: %w", err)
+	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
 	}
+	accounts, err := database.ListJiraAccounts()
+	if err != nil {
+		return err
+	}
+	if len(accounts) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No Jira site connected.")
+		return nil
+	}
+	if err := removeJiraAccount(cfg, database, accounts[0].ID); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Jira Cloud disconnected. Token removed; synced data kept.")
+	return nil
+}
 
-	fmt.Fprintln(cmd.OutOrStdout(), "Jira Cloud disconnected. Token and data removed.")
+func runJiraAccounts(cmd *cobra.Command, _ []string) error {
+	_, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	accounts, err := database.ListJiraAccounts()
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	if len(accounts) == 0 {
+		fmt.Fprintln(out, "No Jira sites connected. Run 'watchtower jira add' to connect one.")
+		return nil
+	}
+	fmt.Fprintf(out, "%-4s %-24s %-36s %-8s %-8s %s\n", "ID", "Name", "Site", "Status", "Enabled", "Error")
+	for _, a := range accounts {
+		enabled := "yes"
+		if !a.Enabled {
+			enabled = "no"
+		}
+		fmt.Fprintf(out, "%-4d %-24s %-36s %-8s %-8s %s\n",
+			a.ID, truncate(jiraAccountDisplayName(a), 24), truncate(a.SiteURL, 36), a.Status, enabled, truncate(a.Error, 40))
+	}
+	return nil
+}
+
+func runJiraEnable(cmd *cobra.Command, args []string) error {
+	return setJiraAccountEnabled(cmd, args[0], true)
+}
+
+func runJiraDisable(cmd *cobra.Command, args []string) error {
+	return setJiraAccountEnabled(cmd, args[0], false)
+}
+
+func setJiraAccountEnabled(cmd *cobra.Command, arg string, enabled bool) error {
+	id, err := strconv.ParseInt(arg, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid account id %q: %w", arg, err)
+	}
+	_, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	if err := database.SetJiraAccountEnabled(id, enabled); err != nil {
+		return err
+	}
+	action := "enabled"
+	if !enabled {
+		action = "disabled"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Jira account %d %s.\n", id, action)
+	return nil
+}
+
+func runJiraRemove(cmd *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid account id %q: %w", args[0], err)
+	}
+	cfg, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	if err := removeJiraAccount(cfg, database, id); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Jira account %d removed. Token deleted; synced data kept.\n", id)
 	return nil
 }
 
 func runJiraStatus(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(flagConfig)
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
-	}
-
-	out := cmd.OutOrStdout()
-	store := jira.NewTokenStore(cfg.WorkspaceDir())
-
-	if !store.Exists() {
-		fmt.Fprintln(out, "Jira Cloud: not connected")
-		fmt.Fprintln(out, "Run 'watchtower jira login' to connect.")
-		return nil
-	}
-
-	fmt.Fprintln(out, "Jira Cloud: connected")
-	fmt.Fprintf(out, "Token file: %s\n", store.Path())
-	fmt.Fprintf(out, "Enabled: %v\n", cfg.Jira.Enabled)
-
-	if cfg.Jira.SiteURL != "" {
-		fmt.Fprintf(out, "Site: %s\n", cfg.Jira.SiteURL)
-	}
-	if cfg.Jira.UserDisplayName != "" {
-		fmt.Fprintf(out, "User: %s\n", cfg.Jira.UserDisplayName)
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return nil // non-fatal
 	}
 	defer database.Close()
 
-	boards, _ := database.GetJiraSelectedBoards()
+	out := cmd.OutOrStdout()
+
+	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
+	}
+	accounts, err := database.ListJiraAccounts()
+	if err != nil {
+		return err
+	}
+	if len(accounts) == 0 {
+		fmt.Fprintln(out, "Jira Cloud: not connected")
+		fmt.Fprintln(out, "Run 'watchtower jira add' to connect.")
+		return nil
+	}
+
+	fmt.Fprintf(out, "Jira Cloud: %d account(s) connected\n", len(accounts))
+	fmt.Fprintf(out, "Enabled: %v\n", cfg.Jira.Enabled)
+	for _, a := range accounts {
+		enabled := ""
+		if !a.Enabled {
+			enabled = ", disabled"
+		}
+		fmt.Fprintf(out, "  [%d] %s (%s) — %s%s\n", a.ID, jiraAccountDisplayName(a), a.SiteURL, a.Status, enabled)
+	}
+
+	boards, _ := database.ListSelectedJiraBoards()
 	if len(boards) > 0 {
 		names := make([]string, len(boards))
 		for i, b := range boards {
@@ -399,7 +696,7 @@ func runJiraStatus(cmd *cobra.Command, _ []string) error {
 	states, _ := database.GetJiraSyncStates()
 	for _, s := range states {
 		if s.LastSyncedAt != "" {
-			fmt.Fprintf(out, "Last sync (%s): %s\n", s.ProjectKey, s.LastSyncedAt)
+			fmt.Fprintf(out, "Last sync (%d:%s): %s\n", s.AccountID, s.ProjectKey, s.LastSyncedAt)
 		}
 	}
 
@@ -407,33 +704,26 @@ func runJiraStatus(cmd *cobra.Command, _ []string) error {
 }
 
 func runJiraBoards(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(flagConfig)
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
-	store := jira.NewTokenStore(cfg.WorkspaceDir())
+	account, err := resolveJiraAccount(database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
+	store := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID)
 	if !store.Exists() {
-		fmt.Fprintln(cmd.OutOrStdout(), "Jira not connected. Run 'watchtower jira login' first.")
+		fmt.Fprintln(cmd.OutOrStdout(), "Jira not connected. Run 'watchtower jira add' first.")
 		return nil
 	}
 
 	// Fetch boards from API and update DB.
 	jiraCfg := resolveJiraOAuthConfig()
-	if cfg.Jira.CloudID != "" {
-		client := jira.NewClient(cfg.Jira.CloudID, jiraCfg, store)
+	if account.CloudID != "" {
+		client := jira.NewClient(account.CloudID, jiraCfg, store)
 		boards, err := client.FetchAllBoards(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("fetching boards: %w", err)
@@ -441,6 +731,7 @@ func runJiraBoards(cmd *cobra.Command, _ []string) error {
 
 		for _, b := range boards {
 			dbBoard := db.JiraBoard{
+				AccountID:  account.ID,
 				ID:         b.ID,
 				Name:       b.Name,
 				ProjectKey: b.Location.ProjectKey,
@@ -462,15 +753,15 @@ func runJiraBoards(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	fmt.Fprintf(out, "%-6s %-30s %-12s %-10s %-8s %-8s\n", "#", "Name", "Project", "Type", "Issues", "Selected")
-	fmt.Fprintf(out, "%-6s %-30s %-12s %-10s %-8s %-8s\n", "------", "------------------------------", "------------", "----------", "--------", "--------")
+	fmt.Fprintf(out, "%-5s %-6s %-30s %-12s %-10s %-8s %-8s\n", "Acct", "#", "Name", "Project", "Type", "Issues", "Selected")
+	fmt.Fprintf(out, "%-5s %-6s %-30s %-12s %-10s %-8s %-8s\n", "-----", "------", "------------------------------", "------------", "----------", "--------", "--------")
 	for _, b := range boards {
 		selected := " "
 		if b.IsSelected {
 			selected = "*"
 		}
-		fmt.Fprintf(out, "%-6d %-30s %-12s %-10s %-8d %-8s\n",
-			b.ID, truncate(b.Name, 30), b.ProjectKey, b.BoardType, b.IssueCount, selected)
+		fmt.Fprintf(out, "%-5d %-6d %-30s %-12s %-10s %-8d %-8s\n",
+			b.AccountID, b.ID, truncate(b.Name, 30), b.ProjectKey, b.BoardType, b.IssueCount, selected)
 	}
 	return nil
 }
@@ -484,29 +775,23 @@ func runJiraBoardsDeselect(cmd *cobra.Command, args []string) error {
 }
 
 func setJiraBoardSelection(cmd *cobra.Command, args []string, selected bool) error {
-	cfg, err := config.Load(flagConfig)
+	_, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
 	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
 	defer database.Close()
+
+	account, err := resolveJiraAccount(database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
 
 	for _, arg := range args {
 		id, err := strconv.Atoi(arg)
 		if err != nil {
 			return fmt.Errorf("invalid board ID %q: %w", arg, err)
 		}
-		if err := database.SetJiraBoardSelected(id, selected); err != nil {
+		if err := database.SetJiraBoardSelected(account.ID, id, selected); err != nil {
 			return fmt.Errorf("updating board %d: %w", id, err)
 		}
 		action := "selected"
@@ -642,38 +927,34 @@ func runJiraUsersResolve(cmd *cobra.Command, _ []string) error {
 }
 
 func runJiraSync(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(flagConfig)
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
-	}
-
-	if cfg.Jira.CloudID == "" {
-		return fmt.Errorf("jira cloud_id not configured, run 'watchtower jira login' first")
-	}
-
-	store := jira.NewTokenStore(cfg.WorkspaceDir())
-	if !store.Exists() {
-		return fmt.Errorf("jira not connected, run 'watchtower jira login' first")
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
+	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
+	}
+	account, err := resolveJiraAccount(database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
+	if account.CloudID == "" {
+		return fmt.Errorf("jira account %d has no site, run 'watchtower jira login --account %d' first", account.ID, account.ID)
+	}
+
+	store := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID)
+	if !store.Exists() {
+		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
+	}
+
 	jiraCfg := resolveJiraOAuthConfig()
-	client := jira.NewClient(cfg.Jira.CloudID, jiraCfg, store)
+	client := jira.NewClient(account.CloudID, jiraCfg, store)
 	mapper := jira.NewUserMapper(client, database)
 
 	// Get selected board IDs.
-	boards, err := database.GetJiraSelectedBoards()
+	boards, err := database.GetJiraSelectedBoards(account.ID)
 	if err != nil {
 		return fmt.Errorf("getting selected boards: %w", err)
 	}
@@ -683,7 +964,7 @@ func runJiraSync(cmd *cobra.Command, _ []string) error {
 		boardIDs[i] = b.ID
 	}
 
-	syncer := jira.NewSyncer(client, database, mapper, boardIDs)
+	syncer := jira.NewSyncer(client, database, mapper, boardIDs, account.ID)
 
 	out := cmd.OutOrStdout()
 
@@ -966,39 +1247,31 @@ func runJiraFeaturesReset(cmd *cobra.Command, _ []string) error {
 }
 
 func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load(flagConfig)
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
-	}
-
-	if cfg.Jira.CloudID == "" {
-		return fmt.Errorf("jira cloud_id not configured, run 'watchtower jira login' first")
-	}
-
-	store := jira.NewTokenStore(cfg.WorkspaceDir())
-	if !store.Exists() {
-		return fmt.Errorf("jira not connected, run 'watchtower jira login' first")
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
+	account, err := resolveJiraAccount(database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
+	if account.CloudID == "" {
+		return fmt.Errorf("jira account %d has no site, run 'watchtower jira login --account %d' first", account.ID, account.ID)
+	}
+	store := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID)
+	if !store.Exists() {
+		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
+	}
+
 	jiraCfg := resolveJiraOAuthConfig()
-	client := jira.NewClient(cfg.Jira.CloudID, jiraCfg, store)
+	client := jira.NewClient(account.CloudID, jiraCfg, store)
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
 
-	analyzer := jira.NewBoardAnalyzer(client, database, aiProvider)
+	analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, account.ID)
 	analyzer.SetLanguage(cfg.Digest.Language)
 
 	force, _ := cmd.Flags().GetBool("force")
@@ -1040,7 +1313,7 @@ func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
 				analyzeErr = fmt.Errorf("invalid board ID %q: %w", arg, err)
 				break
 			}
-			board, err := database.GetJiraBoardProfile(boardID)
+			board, err := database.GetJiraBoardProfile(account.ID, boardID)
 			if err != nil {
 				analyzeErr = fmt.Errorf("getting board %d: %w", boardID, err)
 				break
@@ -1063,12 +1336,12 @@ func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
 	} else {
 		// Analyze all selected boards.
 		if force {
-			boards, err := database.GetJiraSelectedBoards()
+			boards, err := database.GetJiraSelectedBoards(account.ID)
 			if err != nil {
 				analyzeErr = fmt.Errorf("getting selected boards: %w", err)
 			} else {
 				for _, b := range boards {
-					full, err := database.GetJiraBoardProfile(b.ID)
+					full, err := database.GetJiraBoardProfile(account.ID, b.ID)
 					if err != nil || full == nil {
 						full = &b
 					}
@@ -1112,22 +1385,16 @@ func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid board ID %q: %w", args[0], err)
 	}
 
-	cfg, err := config.Load(flagConfig)
+	_, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
 	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
 	defer database.Close()
+
+	account, err := resolveJiraAccount(database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
 
 	staleFlag, _ := cmd.Flags().GetString("stale")
 	terminalFlag, _ := cmd.Flags().GetString("terminal")
@@ -1138,7 +1405,7 @@ func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
 	}
 
 	// Read existing overrides and merge new values on top.
-	board, err := database.GetJiraBoardProfile(boardID)
+	board, err := database.GetJiraBoardProfile(account.ID, boardID)
 	if err != nil {
 		return fmt.Errorf("getting board %d: %w", boardID, err)
 	}
@@ -1203,7 +1470,7 @@ func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("marshaling overrides: %w", err)
 	}
 
-	if err := database.UpdateJiraBoardUserOverrides(boardID, string(overridesJSON)); err != nil {
+	if err := database.UpdateJiraBoardUserOverrides(account.ID, boardID, string(overridesJSON)); err != nil {
 		return fmt.Errorf("updating overrides: %w", err)
 	}
 
@@ -1216,22 +1483,16 @@ func runJiraBoardsOverride(cmd *cobra.Command, args []string) error {
 // ---------------------------------------------------------------------------
 
 func runJiraFields(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(flagConfig)
+	_, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
 	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
 	defer database.Close()
+
+	account, err := resolveJiraAccount(database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
 
 	usefulOnly, _ := cmd.Flags().GetBool("useful")
 	asJSON, _ := cmd.Flags().GetBool("json")
@@ -1239,9 +1500,9 @@ func runJiraFields(cmd *cobra.Command, _ []string) error {
 
 	var fields []db.JiraCustomField
 	if usefulOnly {
-		fields, err = database.GetUsefulJiraCustomFields()
+		fields, err = database.GetUsefulJiraCustomFields(account.ID)
 	} else {
-		fields, err = database.GetJiraCustomFields()
+		fields, err = database.GetJiraCustomFields(account.ID)
 	}
 	if err != nil {
 		return fmt.Errorf("fetching custom fields: %w", err)
@@ -1294,33 +1555,26 @@ func runJiraFields(cmd *cobra.Command, _ []string) error {
 }
 
 func runJiraFieldsDiscover(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(flagConfig)
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
-	}
-	if cfg.Jira.CloudID == "" {
-		return fmt.Errorf("jira cloud_id not configured, run 'watchtower jira login' first")
-	}
-
-	store := jira.NewTokenStore(cfg.WorkspaceDir())
-	if !store.Exists() {
-		return fmt.Errorf("jira not connected, run 'watchtower jira login' first")
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
+	account, err := resolveJiraAccount(database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
+	if account.CloudID == "" {
+		return fmt.Errorf("jira account %d has no site, run 'watchtower jira login --account %d' first", account.ID, account.ID)
+	}
+	store := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID)
+	if !store.Exists() {
+		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
+	}
+
 	jiraCfg := resolveJiraOAuthConfig()
-	client := jira.NewClient(cfg.Jira.CloudID, jiraCfg, store)
+	client := jira.NewClient(account.CloudID, jiraCfg, store)
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
@@ -1328,14 +1582,14 @@ func runJiraFieldsDiscover(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "Discovering custom fields from Jira API...")
 
-	fd := jira.NewFieldDiscovery(client, database, aiProvider)
+	fd := jira.NewFieldDiscovery(client, database, aiProvider, account.ID)
 	if err := fd.DiscoverAndClassify(cmd.Context()); err != nil {
 		return fmt.Errorf("field discovery: %w", err)
 	}
 
 	// Report results.
-	all, _ := database.GetJiraCustomFields()
-	useful, _ := database.GetUsefulJiraCustomFields()
+	all, _ := database.GetJiraCustomFields(account.ID)
+	useful, _ := database.GetUsefulJiraCustomFields(account.ID)
 	fmt.Fprintf(out, "Discovered %d custom fields, %d classified as useful.\n", len(all), len(useful))
 	fmt.Fprintln(out, "Run 'watchtower jira fields' to see the full list.")
 	return nil
@@ -1347,37 +1601,30 @@ func runJiraFieldsMap(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid board ID %q: %w", args[0], err)
 	}
 
-	cfg, err := config.Load(flagConfig)
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
 	}
-	if cfg.Jira.CloudID == "" {
-		return fmt.Errorf("jira cloud_id not configured, run 'watchtower jira login' first")
-	}
-
-	store := jira.NewTokenStore(cfg.WorkspaceDir())
-	if !store.Exists() {
-		return fmt.Errorf("jira not connected, run 'watchtower jira login' first")
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
 	defer database.Close()
+
+	account, err := resolveJiraAccount(database, jiraFlagAccount)
+	if err != nil {
+		return err
+	}
+	if account.CloudID == "" {
+		return fmt.Errorf("jira account %d has no site, run 'watchtower jira login --account %d' first", account.ID, account.ID)
+	}
+	store := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID)
+	if !store.Exists() {
+		return fmt.Errorf("jira account %d not connected, run 'watchtower jira login --account %d' first", account.ID, account.ID)
+	}
 
 	force, _ := cmd.Flags().GetBool("force")
 	out := cmd.OutOrStdout()
 
 	// If mapping exists and not forcing, just show it.
 	if !force {
-		existing, err := database.GetJiraBoardFieldMap(boardID)
+		existing, err := database.GetJiraBoardFieldMap(account.ID, boardID)
 		if err == nil && len(existing) > 0 {
 			fmt.Fprintf(out, "Field mapping for board %d (%d fields):\n\n", boardID, len(existing))
 			fmt.Fprintf(out, "%-22s %-20s\n", "Field ID", "Role")
@@ -1392,14 +1639,14 @@ func runJiraFieldsMap(cmd *cobra.Command, args []string) error {
 
 	// Need to generate — create client + AI provider.
 	jiraCfg := resolveJiraOAuthConfig()
-	client := jira.NewClient(cfg.Jira.CloudID, jiraCfg, store)
+	client := jira.NewClient(account.CloudID, jiraCfg, store)
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
 
-	fd := jira.NewFieldDiscovery(client, database, aiProvider)
+	fd := jira.NewFieldDiscovery(client, database, aiProvider, account.ID)
 
-	board, err := database.GetJiraBoardProfile(boardID)
+	board, err := database.GetJiraBoardProfile(account.ID, boardID)
 	if err != nil {
 		return fmt.Errorf("fetching board: %w", err)
 	}

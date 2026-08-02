@@ -16,6 +16,7 @@ func epicTestDB(t *testing.T) *db.DB {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { d.Close() })
+	db.SeedTestJiraAccount(t, d)
 	return d
 }
 
@@ -34,6 +35,7 @@ func epicTestConfig(enabled bool) *config.Config {
 func seedEpicIssue(t *testing.T, database *db.DB, key, epicKey, statusCategory, resolvedAt string) {
 	t.Helper()
 	err := database.UpsertJiraIssue(db.JiraIssue{
+		AccountID:      1,
 		Key:            key,
 		ID:             key,
 		Summary:        "Issue " + key,
@@ -94,9 +96,10 @@ func TestComputeEpicProgress_BasicProgress(t *testing.T) {
 
 	// Insert the epic issue itself (for name lookup).
 	err := database.UpsertJiraIssue(db.JiraIssue{
-		Key:     "EPIC-10",
-		ID:      "EPIC-10",
-		Summary: "Payment Refactor",
+		AccountID: 1,
+		Key:       "EPIC-10",
+		ID:        "EPIC-10",
+		Summary:   "Payment Refactor",
 	})
 	require.NoError(t, err)
 

@@ -132,9 +132,10 @@ func (p *Pipeline) queryReportedActiveIssues(userSlackID string) []db.JiraIssue 
 	return issues
 }
 
-// gatherSprintProgress returns sprint stats for all selected boards.
+// gatherSprintProgress returns sprint stats for all selected boards across
+// every connected Jira account.
 func (p *Pipeline) gatherSprintProgress() string {
-	boards, err := p.db.GetJiraSelectedBoards()
+	boards, err := p.db.ListSelectedJiraBoards()
 	if err != nil {
 		p.logger.Printf("briefing: error loading selected Jira boards: %v", err)
 		return ""
@@ -145,7 +146,7 @@ func (p *Pipeline) gatherSprintProgress() string {
 
 	var lines []string
 	for _, board := range boards {
-		stats, err := p.db.GetJiraActiveSprintStats(board.ID)
+		stats, err := p.db.GetJiraActiveSprintStats(board.AccountID, board.ID)
 		if err != nil {
 			p.logger.Printf("briefing: error loading sprint stats for board %d: %v", board.ID, err)
 			continue

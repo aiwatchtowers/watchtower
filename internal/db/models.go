@@ -664,8 +664,24 @@ type MeetingPrepCache struct {
 	GeneratedAt string
 }
 
+// JiraAccount is one connected Atlassian site (jira_accounts, migration
+// 00049). Site-scoped jira_* rows reference it via account_id.
+type JiraAccount struct {
+	ID                        int64
+	CloudID                   string
+	SiteURL                   string
+	SiteName                  string
+	Label                     string
+	Status                    string
+	Error                     string
+	Enabled                   bool
+	MemoryJiraLastExtractedTs float64
+	CreatedAt                 string
+}
+
 // JiraBoard represents a Jira agile board stored locally.
 type JiraBoard struct {
+	AccountID          int64
 	ID                 int
 	Name               string
 	ProjectKey         string
@@ -696,6 +712,7 @@ type JiraSlackLink struct {
 
 // JiraIssue represents a Jira issue stored locally.
 type JiraIssue struct {
+	AccountID               int64
 	Key                     string
 	ID                      string
 	ProjectKey              string
@@ -736,6 +753,7 @@ type JiraIssue struct {
 
 // JiraCustomField represents a discovered Jira custom field.
 type JiraCustomField struct {
+	AccountID int64
 	ID        string
 	Name      string
 	FieldType string
@@ -747,13 +765,15 @@ type JiraCustomField struct {
 
 // JiraBoardFieldMap maps a custom field to a role on a specific board.
 type JiraBoardFieldMap struct {
-	BoardID int
-	FieldID string
-	Role    string
+	AccountID int64
+	BoardID   int
+	FieldID   string
+	Role      string
 }
 
 // JiraSprint represents a Jira sprint stored locally.
 type JiraSprint struct {
+	AccountID    int64
 	ID           int
 	BoardID      int
 	Name         string
@@ -767,6 +787,7 @@ type JiraSprint struct {
 
 // JiraIssueLink represents a link between two Jira issues.
 type JiraIssueLink struct {
+	AccountID int64
 	ID        string
 	SourceKey string
 	TargetKey string
@@ -785,8 +806,9 @@ type JiraUserMap struct {
 	ResolvedAt      string
 }
 
-// JiraSyncState tracks the sync state for a Jira project.
+// JiraSyncState tracks the sync state for a Jira project on one account.
 type JiraSyncState struct {
+	AccountID    int64
 	ProjectKey   string
 	LastSyncedAt string
 	IssuesSynced int
@@ -796,6 +818,7 @@ type JiraSyncState struct {
 
 // JiraRelease represents a Jira fix version (release) stored locally.
 type JiraRelease struct {
+	AccountID   int64  `json:"account_id"`
 	ID          int    `json:"id"`
 	ProjectKey  string `json:"project_key"`
 	Name        string `json:"name"`

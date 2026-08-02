@@ -18,7 +18,7 @@ import (
 func makeTestClient(t *testing.T, baseURL string) *Client {
 	t.Helper()
 	dir := t.TempDir()
-	store := NewTokenStore(dir)
+	store := NewTokenStore(dir, 1)
 
 	tok := &OAuthToken{
 		AccessToken:  "at-valid",
@@ -42,7 +42,7 @@ func makeTestClient(t *testing.T, baseURL string) *Client {
 }
 
 func TestNewClient_Initialization(t *testing.T) {
-	store := NewTokenStore(t.TempDir())
+	store := NewTokenStore(t.TempDir(), 1)
 	c := NewClient("c1", JiraOAuthConfig{}, store)
 	assert.Equal(t, "c1", c.cloudID)
 	assert.Contains(t, c.baseURL, "/ex/jira/c1")
@@ -213,7 +213,7 @@ func TestClient_FetchBoardIssueCount(t *testing.T) {
 
 func TestClient_GetAccessToken_Refreshes(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTokenStore(dir)
+	store := NewTokenStore(dir, 1)
 	// Save expired token.
 	require.NoError(t, store.Save(&OAuthToken{
 		AccessToken:  "old",
@@ -249,7 +249,7 @@ func TestClient_GetAccessToken_Refreshes(t *testing.T) {
 
 func TestClient_GetAccessToken_PreservesRefreshTokenOnEmptyResponse(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTokenStore(dir)
+	store := NewTokenStore(dir, 1)
 	require.NoError(t, store.Save(&OAuthToken{
 		AccessToken:  "old",
 		RefreshToken: "keep-me",

@@ -9,16 +9,27 @@ import (
 	"watchtower/internal/db"
 )
 
-// seedJiraIssueExtract inserts one jira_issues row for builder tests (a fuller
-// fixture than seed_test.go's seedJiraIssue, which only seeds key/project_key
-// for the project-seeding tests).
+// seedJiraAccount ensures the jira_accounts row id=1 exists (the account-scoped
+// jira_* tables FK-require a parent row, and the per-account watermark
+// accessors target it). Idempotent so every fixture helper can call it.
+func seedJiraAccount(t *testing.T, d *db.DB) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT OR IGNORE INTO jira_accounts (id, cloud_id) VALUES (1, 'c')`); err != nil {
+		t.Fatalf("seed jira account: %v", err)
+	}
+}
+
+// seedJiraIssueExtract inserts one jira_issues row (account 1) for builder
+// tests (a fuller fixture than seed_test.go's seedJiraIssue, which only seeds
+// key/project_key for the project-seeding tests).
 func seedJiraIssueExtract(t *testing.T, d *db.DB, key, project, summary, desc, status, statusCat, resolvedAt, updatedAt, assigneeSlackID string) {
 	t.Helper()
+	seedJiraAccount(t, d)
 	_, err := d.Exec(`INSERT INTO jira_issues
-		(key, project_key, summary, description_text, issue_type, status, status_category,
+		(account_id, key, project_key, summary, description_text, issue_type, status, status_category,
 		 priority, assignee_display_name, assignee_slack_id, reporter_display_name, reporter_slack_id,
 		 sprint_name, epic_key, due_date, resolved_at, created_at, updated_at, synced_at, is_deleted)
-		VALUES (?,?,?,?, 'Task', ?, ?, 'Medium', 'Alice A', ?, 'Bob B', '', 'Sprint 9', '', '', ?, '2026-07-01T00:00:00.000+0000', ?, '2026-07-22T00:00:00Z', 0)`,
+		VALUES (1,?,?,?,?, 'Task', ?, ?, 'Medium', 'Alice A', ?, 'Bob B', '', 'Sprint 9', '', '', ?, '2026-07-01T00:00:00.000+0000', ?, '2026-07-22T00:00:00Z', 0)`,
 		key, project, summary, desc, status, statusCat, assigneeSlackID, resolvedAt, updatedAt)
 	if err != nil {
 		t.Fatalf("seed jira issue %s: %v", key, err)
@@ -45,7 +56,7 @@ func TestRunJiraIngestNoBackfillInit(t *testing.T) {
 	if stats.JiraEpisodes != 0 {
 		t.Errorf("JiraEpisodes = %d, want 0 (no backfill)", stats.JiraEpisodes)
 	}
-	wm, _ := d.MemoryJiraWatermark()
+	wm, _ := d.MemoryJiraWatermark(1)
 	if wm == 0 {
 		t.Error("watermark not initialized")
 	}
@@ -105,7 +116,8 @@ func TestRunJiraIngestBuildsEpisode(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
 	seedUserRow(t, d, "U1ALICE", "alice")
-	if err := d.SetMemoryJiraWatermark(1); err != nil {
+	seedJiraAccount(t, d)
+	if err := d.SetMemoryJiraWatermark(1, 1); err != nil {
 		t.Fatal(err)
 	}
 	seedJiraIssueExtract(t, d, "CEX-7413", "CEX", "Fix the webhook", "Decision-request handling is broken on prod.",
@@ -149,7 +161,7 @@ func TestRunJiraIngestBuildsEpisode(t *testing.T) {
 	// Back-links landed on both entities.
 	assertEntityBackLinks(t, v, []string{"ent_00000000000000000000000cex", "ent_0000000000000000000000alice"}, id)
 	// Watermark advanced to the issue's parsed updated_at.
-	wm, _ := d.MemoryJiraWatermark()
+	wm, _ := d.MemoryJiraWatermark(1)
 	if wm == 1 {
 		t.Error("watermark did not advance")
 	}
@@ -170,7 +182,8 @@ func TestRunJiraIngestBuildsEpisode(t *testing.T) {
 func TestRunJiraIngestIdempotentUpdate(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
-	if err := d.SetMemoryJiraWatermark(1); err != nil {
+	seedJiraAccount(t, d)
+	if err := d.SetMemoryJiraWatermark(1, 1); err != nil {
 		t.Fatal(err)
 	}
 	seedJiraIssueExtract(t, d, "CEX-1", "CEX", "First", "", "To Do", "todo", "", "2026-07-22T10:00:00.000+0000", "")
@@ -184,7 +197,7 @@ func TestRunJiraIngestIdempotentUpdate(t *testing.T) {
 
 	// Same content re-scan: reset the watermark so the row re-lists — commit
 	// must be a no-op (JiraEpisodes unchanged).
-	if err := d.SetMemoryJiraWatermark(1); err != nil {
+	if err := d.SetMemoryJiraWatermark(1, 1); err != nil {
 		t.Fatal(err)
 	}
 	before := stats.JiraEpisodes
@@ -220,7 +233,8 @@ func TestRunJiraIngestIdempotentUpdate(t *testing.T) {
 func TestRunJiraIngestReopenFlipsBackToActive(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
-	if err := d.SetMemoryJiraWatermark(1); err != nil {
+	seedJiraAccount(t, d)
+	if err := d.SetMemoryJiraWatermark(1, 1); err != nil {
 		t.Fatal(err)
 	}
 	seedJiraIssueExtract(t, d, "CEX-9", "CEX", "Flaky test", "", "Done", "done", "2026-07-22T09:00:00.000+0000", "2026-07-22T10:00:00.000+0000", "")
@@ -265,7 +279,8 @@ func TestRunJiraIngestReopenFlipsBackToActive(t *testing.T) {
 func TestRunJiraIngestSkipsArchivedRollupAlias(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
-	if err := d.SetMemoryJiraWatermark(1); err != nil {
+	seedJiraAccount(t, d)
+	if err := d.SetMemoryJiraWatermark(1, 1); err != nil {
 		t.Fatal(err)
 	}
 	seedJiraIssueExtract(t, d, "CEX-1", "CEX", "Reopened after archive", "", "In Progress", "in_progress", "", "2026-07-22T10:00:00.000+0000", "")
@@ -313,7 +328,8 @@ func TestRunJiraIngestSkipsArchivedRollupAlias(t *testing.T) {
 func TestRunJiraIngestWatermarkFreezeOnError(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
-	if err := d.SetMemoryJiraWatermark(1); err != nil {
+	seedJiraAccount(t, d)
+	if err := d.SetMemoryJiraWatermark(1, 1); err != nil {
 		t.Fatal(err)
 	}
 	seedJiraIssueExtract(t, d, "CEX-1", "CEX", "s", "", "To Do", "todo", "", "2026-07-22T10:00:00.000+0000", "")
@@ -327,7 +343,7 @@ func TestRunJiraIngestWatermarkFreezeOnError(t *testing.T) {
 	if stats.JiraIssuesFailed == 0 {
 		t.Error("failed counter not bumped")
 	}
-	wm, _ := d.MemoryJiraWatermark()
+	wm, _ := d.MemoryJiraWatermark(1)
 	if wm != 1 {
 		t.Errorf("watermark moved to %v on a failed commit (must freeze at 1)", wm)
 	}
@@ -343,14 +359,15 @@ func TestRunJiraIngestWatermarkFreezeOnError(t *testing.T) {
 func TestRunJiraIngestWatermarkSetFailureAfterBuildRecordsStepError(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
-	if err := d.SetMemoryJiraWatermark(1); err != nil {
+	seedJiraAccount(t, d)
+	if err := d.SetMemoryJiraWatermark(1, 1); err != nil {
 		t.Fatal(err)
 	}
 	seedJiraIssueExtract(t, d, "CEX-1", "CEX", "s", "", "To Do", "todo", "", "2026-07-22T10:00:00.000+0000", "")
 	p := NewPipeline(d, v, noCallGen(t), pipelineTestConfig(), t.Logf)
 
 	if _, err := d.Exec(`CREATE TRIGGER jira_watermark_write_fails
-		BEFORE UPDATE OF memory_jira_last_extracted_ts ON workspace
+		BEFORE UPDATE OF memory_jira_last_extracted_ts ON jira_accounts
 		BEGIN SELECT RAISE(FAIL, 'boom'); END`); err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +395,7 @@ func TestRunJiraIngestWatermarkSetFailureAfterBuildRecordsStepError(t *testing.T
 	}
 	assertPipelineStepStatus(t, steps, "jira-ingest", "error")
 
-	wm, _ := d.MemoryJiraWatermark()
+	wm, _ := d.MemoryJiraWatermark(1)
 	if wm != 1 {
 		t.Errorf("watermark = %v, want unchanged 1 (the set failed)", wm)
 	}
@@ -401,7 +418,7 @@ func TestRunJiraIngestDarkByDefault(t *testing.T) {
 	if _, err := d.LookupMemoryAlias("jiraissue:CEX-1"); err == nil {
 		t.Error("dark run built a jira episode")
 	}
-	wm, _ := d.MemoryJiraWatermark()
+	wm, _ := d.MemoryJiraWatermark(1)
 	if wm != 0 {
 		t.Errorf("dark run moved the jira watermark to %v", wm)
 	}

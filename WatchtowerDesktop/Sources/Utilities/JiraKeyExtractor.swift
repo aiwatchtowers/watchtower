@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import SwiftUI
 import Yams
 
@@ -121,8 +122,26 @@ struct JiraKeyLinkBadgesView: View {
 // MARK: - Jira Config Helpers
 
 enum JiraConfigHelper {
-    /// Read siteURL from config YAML without creating a full ConfigService.
+    /// The app's DB pool, wired once from `AppState.initJiraAccounts` so
+    /// `readSiteURL()` can resolve the site from `jira_accounts` (the config
+    /// keys are frozen since multi-account, migration 00049).
+    nonisolated(unsafe) private static var dbPool: DatabasePool?
+
+    static func configure(dbPool: DatabasePool) {
+        self.dbPool = dbPool
+    }
+
+    /// The site URL browse links resolve against: the first enabled
+    /// jira_accounts row's site_url (multi-site v1 limitation — text-extracted
+    /// issue keys are site-ambiguous, so links resolve against the primary
+    /// site), falling back to the legacy config key for a pre-multi-account
+    /// install that hasn't migrated yet.
     static func readSiteURL() -> String? {
+        if let pool = dbPool,
+           let url = try? pool.read({ db in try JiraAccountQueries.primarySiteURL(db) }),
+           let url, !url.isEmpty {
+            return url
+        }
         let configPath = Constants.configPath
         guard let data = FileManager.default.contents(atPath: configPath),
               let str = String(data: data, encoding: .utf8),

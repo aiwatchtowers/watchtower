@@ -99,29 +99,40 @@ final class JiraAuthService {
     // MARK: - Status
 
     func checkStatus() {
-        let fileManager = FileManager.default
+        // A token can be the legacy jira_token.json or a per-account
+        // jira_token_<id>.json (multi-account, migration 00049).
+        func hasToken(inDir dir: String) -> Bool {
+            guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+                return false
+            }
+            return files.contains { $0.hasPrefix("jira_token") && $0.hasSuffix(".json") }
+        }
         // Only the ACTIVE workspace's token counts — logout deletes the token
         // there, and a stale token in an old workspace must not read as connected.
         if let dir = Constants.activeWorkspaceDir() {
-            isConnected = fileManager.fileExists(atPath: "\(dir)/jira_token.json")
+            isConnected = hasToken(inDir: dir)
             if isConnected { readConfig() }
             return
         }
         // No active workspace configured — fall back to scanning all workspaces.
         let basePath = Constants.databasePath
-        guard let contents = try? fileManager.contentsOfDirectory(
+        guard let contents = try? FileManager.default.contentsOfDirectory(
             atPath: basePath
         ) else {
             isConnected = false
             return
         }
-        isConnected = contents.contains { fileManager.fileExists(atPath: "\(basePath)/\($0)/jira_token.json") }
+        isConnected = contents.contains { hasToken(inDir: "\(basePath)/\($0)") }
         if isConnected { readConfig() }
     }
 
     // MARK: - Config Reader
 
     private func readConfig() {
+        // Site URL comes from jira_accounts when the pool is wired (the config
+        // keys are frozen since multi-account); the yaml fallback inside
+        // readSiteURL covers pre-migration installs.
+        siteURL = JiraConfigHelper.readSiteURL()
         let configPath = Constants.configPath
         guard let data = FileManager.default.contents(atPath: configPath),
               let str = String(data: data, encoding: .utf8),
@@ -129,7 +140,6 @@ final class JiraAuthService {
               let jira = yaml["jira"] as? [String: Any] else {
             return
         }
-        siteURL = jira["site_url"] as? String
         userDisplayName = jira["user_display_name"] as? String
     }
 

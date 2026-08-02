@@ -12,7 +12,7 @@ import (
 
 func TestTokenStore_CRUD(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTokenStore(dir)
+	store := NewTokenStore(dir, 1)
 
 	// Initially does not exist.
 	assert.False(t, store.Exists())
@@ -48,19 +48,19 @@ func TestTokenStore_CRUD(t *testing.T) {
 }
 
 func TestTokenStore_Path(t *testing.T) {
-	store := NewTokenStore("/tmp/test-workspace")
-	assert.Equal(t, filepath.Join("/tmp/test-workspace", "jira_token.json"), store.Path())
+	store := NewTokenStore("/tmp/test-workspace", 1)
+	assert.Equal(t, filepath.Join("/tmp/test-workspace", "jira_token_1.json"), store.Path())
 }
 
 func TestTokenStore_SaveCreatesDirectory(t *testing.T) {
 	dir := t.TempDir()
 	subDir := filepath.Join(dir, "sub", "dir")
-	store := NewTokenStore(subDir)
+	store := NewTokenStore(subDir, 1)
 
 	token := &OAuthToken{AccessToken: "test"}
 	require.NoError(t, store.Save(token))
 
-	_, err := os.Stat(filepath.Join(subDir, "jira_token.json"))
+	_, err := os.Stat(filepath.Join(subDir, "jira_token_1.json"))
 	assert.NoError(t, err)
 }
 

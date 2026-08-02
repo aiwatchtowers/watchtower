@@ -38,14 +38,50 @@ func jiraIssueAlias(key string) string { return jiraIssueAliasPrefix + key }
 const jiraDescriptionCapBytes = 1500
 
 // runJiraIngest is Run step 3d (behind memory.sources.jira): the mechanical,
-// no-AI fold of updated Jira issues into episode nodes. First gated run with
-// rows present initializes the watermark to the newest parsed updated_at and
-// builds nothing (no backfill, owner decision). Subsequent runs load issues
-// above the watermark, build episodes in one vault commit, and advance the
-// watermark only after the commit succeeded (MEM-04-adapted; frozen on any
-// build/commit/lookup error). Returns the number of step rows recorded.
+// no-AI fold of updated Jira issues into episode nodes, looped over every
+// enabled jira_accounts row (the runGmailExtract precedent — each account
+// carries its own memory_jira_last_extracted_ts, so a disabled or errored
+// account can never advance, freeze, or otherwise affect another account's
+// watermark). One account's failure is recorded on its own step row and the
+// loop moves on. Returns the number of step rows recorded.
 func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (int, error) {
-	wm, err := p.db.MemoryJiraWatermark()
+	accounts, err := p.db.ListJiraAccounts()
+	if err != nil {
+		return 0, err
+	}
+
+	// The jira-only provenance registry is built ONCE per run, shared across
+	// every account: jira: is the only scheme a Jira episode can carry, and
+	// JiraIssueExists is deliberately account-unscoped (a documented v1
+	// limitation — cross-site issue-key collision accepted, the
+	// GmailMessageExists precedent), so every account's issues validate
+	// through the same instance (MEM-12 scheme scoping).
+	jiraReg := newProvenanceRegistry(jiraResolver{p.db})
+
+	recorded := 0
+	for _, acct := range accounts {
+		if !acct.Enabled || acct.Status == "removed" {
+			continue
+		}
+		n, aerr := p.runJiraIngestAccount(runID, stepOffset+recorded, jiraReg, acct.ID, stats)
+		if aerr != nil {
+			p.logf("memory: jira ingest account %d: %v", acct.ID, aerr)
+		}
+		recorded += n
+	}
+	return recorded, nil
+}
+
+// runJiraIngestAccount runs the Jira issue→episode step for ONE connected
+// account (see runJiraIngest for the per-account loop). First gated run with
+// rows present initializes the account's watermark to its newest parsed
+// updated_at and builds nothing (no backfill, owner decision). Subsequent
+// runs load that account's issues above ITS OWN watermark, build episodes in
+// one vault commit, and advance the watermark only after the commit succeeded
+// (MEM-04-adapted; frozen on any build/commit/lookup error). Returns the
+// number of step rows recorded for this account.
+func (p *Pipeline) runJiraIngestAccount(runID int64, stepOffset int, jiraReg *provenanceRegistry, accountID int64, stats *RunStats) (int, error) {
+	wm, err := p.db.MemoryJiraWatermark(accountID)
 	if err != nil {
 		stats.JiraIssuesFailed++
 		step := stepOffset + 1
@@ -54,7 +90,7 @@ func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (
 	}
 
 	if wm == 0 {
-		maxU, merr := p.db.MaxJiraUpdatedUnix()
+		maxU, merr := p.db.MaxJiraUpdatedUnix(accountID)
 		if merr != nil {
 			stats.JiraIssuesFailed++
 			step := stepOffset + 1
@@ -64,19 +100,19 @@ func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (
 		if maxU == 0 {
 			return 0, nil // no synced issues yet — retry initialization next run
 		}
-		if serr := p.db.SetMemoryJiraWatermark(float64(maxU)); serr != nil {
+		if serr := p.db.SetMemoryJiraWatermark(accountID, float64(maxU)); serr != nil {
 			stats.JiraIssuesFailed++
 			step := stepOffset + 1
 			p.recordSemanticStep(runID, &step, "jira-ingest", "error", nil, time.Now())
 			return 1, serr
 		}
-		p.logf("memory: jira source initialized at %d, no backfill", maxU)
+		p.logf("memory: jira source account %d initialized at %d, no backfill", accountID, maxU)
 		step := stepOffset + 1
 		p.recordSemanticStep(runID, &step, "jira-ingest", "done", nil, time.Now())
 		return 1, nil
 	}
 
-	issues, err := p.db.ListJiraIssuesForExtract(int64(wm), orDefault(p.cfg.MaxChunkMessages, 2000))
+	issues, err := p.db.ListJiraIssuesForExtract(accountID, int64(wm), orDefault(p.cfg.MaxChunkMessages, 2000))
 	if err != nil {
 		stats.JiraIssuesFailed++
 		step := stepOffset + 1
@@ -86,9 +122,6 @@ func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (
 	if len(issues) == 0 {
 		return 0, nil
 	}
-
-	// jira: is the only scheme a Jira episode can carry (MEM-12 scheme scoping).
-	jiraReg := newProvenanceRegistry(jiraResolver{p.db})
 
 	start := time.Now()
 	built, failed, maxUpdated, berr := p.buildJiraEpisodes(runID, jiraReg, issues)
@@ -108,7 +141,7 @@ func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (
 		stats.JiraEpisodes += built
 		stats.JiraIssuesFailed += failed
 		if float64(maxUpdated) > wm {
-			if serr := p.db.SetMemoryJiraWatermark(float64(maxUpdated)); serr != nil {
+			if serr := p.db.SetMemoryJiraWatermark(accountID, float64(maxUpdated)); serr != nil {
 				p.logf("memory: jira ingest: set watermark: %v", serr)
 				stepErr = serr
 			}
