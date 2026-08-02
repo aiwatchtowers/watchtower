@@ -11,6 +11,13 @@ public struct EventAttendee: Codable, Identifiable, Equatable {
     public let responseStatus: String
     public let slackUserID: String
 
+    public init(email: String, displayName: String, responseStatus: String, slackUserID: String) {
+        self.email = email
+        self.displayName = displayName
+        self.responseStatus = responseStatus
+        self.slackUserID = slackUserID
+    }
+
     enum CodingKeys: String, CodingKey {
         case email
         case displayName = "display_name"
