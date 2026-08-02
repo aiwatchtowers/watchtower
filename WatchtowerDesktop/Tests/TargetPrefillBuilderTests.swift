@@ -207,6 +207,79 @@ final class TargetPrefillBuilderTests: XCTestCase {
         XCTAssertTrue(prefill.secondaryLinks.isEmpty)
     }
 
+    // MARK: - fromSituation
+
+    func testFromSituation_HappyPath() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertSituation(
+                db,
+                title: "Renewal deal stalling",
+                aiReason: "fallback reason, should not be used",
+                summary: "Client is asking for a pricing update before they sign."
+            )
+            let item = try TestDatabase.insertInboxItem(
+                db, channelID: "C400", messageTS: "1700000100.000000", snippet: "Any update on pricing?"
+            )
+            try TestDatabase.linkSituationSignal(db, situationID: 1, inboxItemID: item)
+        }
+        let situation = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Situation.fetchOne(db, sql: "SELECT * FROM situations WHERE id = 1"))
+        }
+
+        let prefill = try await TargetPrefillBuilder.fromSituation(situation, db: mgr)
+
+        XCTAssertEqual(prefill.text, "Renewal deal stalling")
+        XCTAssertEqual(prefill.intent, "Client is asking for a pricing update before they sign.")
+        XCTAssertEqual(prefill.sourceType, "inbox")
+        XCTAssertEqual(prefill.sourceID, "situation:1")
+        XCTAssertNil(prefill.parentID)
+        XCTAssertEqual(prefill.secondaryLinks, [
+            TargetPrefillLink(externalRef: "slack:C400:1700000100.000000", relation: "related")
+        ])
+    }
+
+    func testFromSituation_NoSummary_FallsBackToAiReason() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertSituation(db, title: "X", aiReason: "AI says it's urgent", summary: "")
+        }
+        let situation = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Situation.fetchOne(db, sql: "SELECT * FROM situations WHERE id = 1"))
+        }
+
+        let prefill = try await TargetPrefillBuilder.fromSituation(situation, db: mgr)
+        XCTAssertEqual(prefill.intent, "AI says it's urgent")
+    }
+
+    func testFromSituation_CapsSecondaryLinksAtThree() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertSituation(db, title: "Many signals")
+            for i in 0..<4 {
+                let item = try TestDatabase.insertInboxItem(
+                    db, channelID: "C\(i)", messageTS: "170000010\(i).000000"
+                )
+                try TestDatabase.linkSituationSignal(db, situationID: 1, inboxItemID: item)
+            }
+        }
+        let situation = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Situation.fetchOne(db, sql: "SELECT * FROM situations WHERE id = 1"))
+        }
+
+        let prefill = try await TargetPrefillBuilder.fromSituation(situation, db: mgr)
+        XCTAssertEqual(prefill.secondaryLinks.count, 3)
+    }
+
+    func testFromSituation_NoMemberSignals_NoLinks() async throws {
+        let mgr = try Self.makeManagerSeededWith { db in
+            try TestDatabase.insertSituation(db, title: "Lonely situation", summary: "No signals yet.")
+        }
+        let situation = try await mgr.dbPool.read { db in
+            try XCTUnwrap(try Situation.fetchOne(db, sql: "SELECT * FROM situations WHERE id = 1"))
+        }
+
+        let prefill = try await TargetPrefillBuilder.fromSituation(situation, db: mgr)
+        XCTAssertTrue(prefill.secondaryLinks.isEmpty)
+    }
+
     // MARK: - fromBriefingItem
 
     func testFromBriefingItem_TrackUpstream_PassThrough() async throws {

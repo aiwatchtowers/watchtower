@@ -43,26 +43,7 @@ func (p *Pipeline) GenerateRecap(
 	}
 
 	// Existing meeting_notes (pre-meeting topics + freeform notes) for context.
-	topicsBlock, notesBlock := "(none)", "(none)"
-	if p.db != nil {
-		if notes, err := p.db.GetMeetingNotesForEvent(eventID); err == nil {
-			var qs, ns []string
-			for _, n := range notes {
-				line := "- " + strings.TrimSpace(n.Text)
-				if n.Type == "question" {
-					qs = append(qs, line)
-				} else if n.Type == "note" {
-					ns = append(ns, line)
-				}
-			}
-			if len(qs) > 0 {
-				topicsBlock = strings.Join(qs, "\n")
-			}
-			if len(ns) > 0 {
-				notesBlock = strings.Join(ns, "\n")
-			}
-		}
-	}
+	topicsBlock, notesBlock := p.meetingNotesBlocks(eventID)
 
 	lang := ""
 	if p.cfg != nil {
@@ -95,6 +76,38 @@ func (p *Pipeline) GenerateRecap(
 	raw.OpenQuestions = trimNonEmpty(raw.OpenQuestions)
 
 	return &raw, nil
+}
+
+// meetingNotesBlocks builds the pre-meeting discussion-topics (questions) and
+// freeform-notes prompt blocks from the event's meeting_notes rows, with
+// "(none)" placeholders when there is nothing to inject. Shared by
+// GenerateRecap and GenerateTranscriptRecap.
+func (p *Pipeline) meetingNotesBlocks(eventID string) (topicsBlock, notesBlock string) {
+	topicsBlock, notesBlock = "(none)", "(none)"
+	if p.db == nil {
+		return topicsBlock, notesBlock
+	}
+	notes, err := p.db.GetMeetingNotesForEvent(eventID)
+	if err != nil {
+		return topicsBlock, notesBlock
+	}
+	var qs, ns []string
+	for _, n := range notes {
+		line := "- " + strings.TrimSpace(n.Text)
+		switch n.Type {
+		case "question":
+			qs = append(qs, line)
+		case "note":
+			ns = append(ns, line)
+		}
+	}
+	if len(qs) > 0 {
+		topicsBlock = strings.Join(qs, "\n")
+	}
+	if len(ns) > 0 {
+		notesBlock = strings.Join(ns, "\n")
+	}
+	return topicsBlock, notesBlock
 }
 
 // trimNonEmpty trims whitespace from each string and drops empty entries.

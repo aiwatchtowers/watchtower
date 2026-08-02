@@ -13,7 +13,8 @@ const inboxSelectCols = `id, channel_id, message_ts, thread_ts, sender_user_id,
 	ai_reason, resolved_reason, snooze_until, COALESCE(waiting_user_ids,''), target_id,
 	COALESCE(read_at,''), created_at, updated_at,
 	COALESCE(item_class,'actionable'), COALESCE(archived_at,''), COALESCE(archive_reason,''),
-	COALESCE(why_matters,''), COALESCE(thread_digest,''), COALESCE(draft_reply,''), COALESCE(card_status,'none'), COALESCE(card_generated_at,'')`
+	COALESCE(why_matters,''), COALESCE(thread_digest,''), COALESCE(draft_reply,''), COALESCE(card_status,'none'), COALESCE(card_generated_at,''),
+	COALESCE(composed_at,'')`
 
 // inboxItemColumns is an alias for inboxSelectCols used by feed queries.
 const inboxItemColumns = inboxSelectCols
@@ -29,6 +30,7 @@ func scanInboxItem(row interface{ Scan(...any) error }) (*InboxItem, error) {
 		&it.ReadAt, &it.CreatedAt, &it.UpdatedAt,
 		&it.ItemClass, &it.ArchivedAt, &it.ArchiveReason,
 		&it.WhyMatters, &it.ThreadDigest, &it.DraftReply, &it.CardStatus, &cardGeneratedAt,
+		&it.ComposedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -92,12 +94,31 @@ func (db *DB) FindPendingInboxByThread(channelID, threadTS string) (int, error) 
 	return id, nil
 }
 
-// UpdateInboxItemSnippet updates the snippet, context, raw_text, sender, message_ts and permalink
-// of an existing inbox item (used when a newer message arrives in the same thread).
+// UpdateInboxItemSnippet updates the snippet, context, raw_text, sender,
+// message_ts and permalink of an existing inbox item (the detector's
+// thread-fold path). It conditionally clears composed_at so a folded thread
+// update re-enters the composer only when there's a sane place for it to
+// land: the item belongs to an open situation (the DASH-01 re-merge target
+// exists) or to no situation at all (never composed, so nothing to
+// resurrect). If the item belongs only to dismissed/snoozed/done/converted/
+// stale situations, composed_at stays set — a dismissal is an explicit user
+// signal, and a snoozed owner isn't in the composer's OPEN block, so clearing
+// composed_at there would mint a duplicate situation instead of re-merging.
 func (db *DB) UpdateInboxItemSnippet(id int, messageTS, senderUserID, snippet, context, rawText, permalink string) error {
 	_, err := db.Exec(`UPDATE inbox_items SET
 		message_ts = ?, sender_user_id = ?, snippet = ?, context = ?, raw_text = ?, permalink = ?,
 		ai_reason = '', read_at = NULL,
+		composed_at = CASE
+			WHEN EXISTS (
+				SELECT 1 FROM situation_signals ss
+				JOIN situations s ON s.id = ss.situation_id
+				WHERE ss.inbox_item_id = inbox_items.id AND s.status = 'open')
+			  OR NOT EXISTS (
+				SELECT 1 FROM situation_signals ss
+				WHERE ss.inbox_item_id = inbox_items.id)
+			THEN NULL
+			ELSE composed_at
+		END,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ?`,
 		messageTS, senderUserID, snippet, context, rawText, permalink, id)

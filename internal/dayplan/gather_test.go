@@ -87,7 +87,7 @@ func TestGatherCalendarEvents_Today(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
 
 	// Calendar events have a FK to calendar_calendars; insert a parent calendar first.
-	require.NoError(t, d.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{
 		ID:        "cal-001",
 		Name:      "Primary",
 		IsPrimary: true,

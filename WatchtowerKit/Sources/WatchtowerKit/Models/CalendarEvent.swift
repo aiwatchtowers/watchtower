@@ -11,6 +11,13 @@ public struct EventAttendee: Codable, Identifiable, Equatable {
     public let responseStatus: String
     public let slackUserID: String
 
+    public init(email: String, displayName: String, responseStatus: String, slackUserID: String) {
+        self.email = email
+        self.displayName = displayName
+        self.responseStatus = responseStatus
+        self.slackUserID = slackUserID
+    }
+
     enum CodingKeys: String, CodingKey {
         case email
         case displayName = "display_name"
@@ -28,6 +35,9 @@ public struct CalendarCalendarItem: FetchableRecord, Identifiable, Equatable {
     public let isSelected: Bool
     public let color: String
     public let syncedAt: String
+    /// The Google account that synced this calendar, or nil for a CalDAV/ICS
+    /// calendar (`caldav:%`/`ics:%` ids), which isn't tied to any account.
+    public let accountID: Int?
 
     public init(row: Row) {
         id = row["id"]
@@ -36,6 +46,7 @@ public struct CalendarCalendarItem: FetchableRecord, Identifiable, Equatable {
         isSelected = (row["is_selected"] as Int? ?? 1) != 0
         color = row["color"] ?? ""
         syncedAt = row["synced_at"] ?? ""
+        accountID = row["account_id"]
     }
 }
 
@@ -56,6 +67,7 @@ public struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
     public let eventStatus: String
     public let eventType: String
     public let htmlLink: String
+    public let conferenceURL: String
     public let rawJSON: String
     public let syncedAt: String
     public let updatedAt: String
@@ -75,6 +87,7 @@ public struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
         eventStatus = row["event_status"] ?? "confirmed"
         eventType = row["event_type"] ?? ""
         htmlLink = row["html_link"] ?? ""
+        conferenceURL = row["conference_url"] ?? ""
         rawJSON = row["raw_json"] ?? "{}"
         syncedAt = row["synced_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
@@ -108,6 +121,20 @@ public struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
     public var parsedAttendees: [EventAttendee] {
         guard let data = attendees.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([EventAttendee].self, from: data)) ?? []
+    }
+
+    // MARK: - Conference Link
+
+    /// The event's meeting link (Meet/Zoom/Teams/Webex) as a URL, or nil when
+    /// absent or malformed — a bad value in the DB must mean "no Join button",
+    /// never a crash.
+    public var conferenceLink: URL? {
+        guard !conferenceURL.isEmpty,
+              let url = URL(string: conferenceURL),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              url.host != nil else { return nil }
+        return url
     }
 
     // MARK: - Status

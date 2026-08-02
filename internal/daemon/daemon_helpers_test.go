@@ -35,8 +35,8 @@ func TestDaemon_Setters_AssignDeps(t *testing.T) {
 	assert.Same(t, briefingPipe, d.briefingPipe)
 
 	calendarSyncer := &calendar.Syncer{}
-	d.SetCalendarSyncer(calendarSyncer)
-	assert.Same(t, calendarSyncer, d.calendarSyncer)
+	d.SetCalendarSyncers([]*calendar.Syncer{calendarSyncer})
+	assert.Same(t, calendarSyncer, d.calendarSyncers[0])
 
 	jiraSyncer := &jira.Syncer{}
 	d.SetJiraSyncer(jiraSyncer)

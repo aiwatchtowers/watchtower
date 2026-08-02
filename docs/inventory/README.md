@@ -9,8 +9,10 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Module | Inventory file | Code paths |
 |---|---|---|
 | Inbox Pulse | [inbox-pulse.md](inbox-pulse.md) | `internal/inbox/`, `WatchtowerDesktop/Sources/Views/Inbox/`, `WatchtowerDesktop/Sources/ViewModels/Inbox*.swift` |
+| Secretary Dashboard | [dashboard.md](dashboard.md) | `internal/inbox/` (compose/situation_card stages), `internal/db/situations.go`, `WatchtowerDesktop/Sources/Views/Dashboard/`, `WatchtowerDesktop/Sources/ViewModels/DashboardViewModel.swift` |
 | Tracks | [tracks.md](tracks.md) | `internal/tracks/`, `internal/db/tracks.go`, `WatchtowerDesktop/Sources/Views/Tracks/`, `WatchtowerDesktop/Sources/ViewModels/TracksViewModel.swift` |
 | Catch-up | [catchup.md](catchup.md) | `internal/catchup/`, `internal/db/catchup_store.go`, `internal/db/digests.go` (`MarkDigestRead` decision cascade), `WatchtowerDesktop/Sources/{Views,ViewModels}/CatchUp*`, `WatchtowerDesktop/Sources/Database/Queries/CatchUpQueries.swift` |
+| Secretary Memory | [memory.md](memory.md) | `internal/memory/`, `internal/db/memory.go`, `internal/daemon/daemon.go` (`phaseMemory`), `internal/mcp/memory.go`, `cmd/memory.go` |
 
 (Other modules will be added as their inventories are written.)
 

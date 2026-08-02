@@ -111,7 +111,7 @@ func TestListUpcomingEventsEmpty(t *testing.T) {
 // the look-ahead window appears; one beyond it is excluded.
 func TestListUpcomingEventsWindow(t *testing.T) {
 	database := seedDB(t)
-	if err := database.UpsertCalendar(db.CalendarCalendar{ID: "cal1", Name: "Primary"}); err != nil {
+	if err := database.UpsertCalendar(0, db.CalendarCalendar{ID: "cal1", Name: "Primary"}); err != nil {
 		t.Fatalf("seeding calendar: %v", err)
 	}
 	now := time.Now().UTC()
@@ -282,7 +282,7 @@ func TestListPeopleLimit(t *testing.T) {
 // TestListUpcomingEventsLimit: list_upcoming_events accepts a limit too.
 func TestListUpcomingEventsLimit(t *testing.T) {
 	database := seedDB(t)
-	if err := database.UpsertCalendar(db.CalendarCalendar{ID: "cal1", Name: "Primary"}); err != nil {
+	if err := database.UpsertCalendar(0, db.CalendarCalendar{ID: "cal1", Name: "Primary"}); err != nil {
 		t.Fatalf("seeding calendar: %v", err)
 	}
 	now := time.Now().UTC()

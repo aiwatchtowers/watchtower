@@ -3,9 +3,9 @@ import GRDB
 @testable import WatchtowerDesktop
 @testable import WatchtowerKit
 
-// MARK: - DashboardViewModel
+// MARK: - WorkspaceOverviewViewModel
 
-final class DashboardViewModelTests: XCTestCase {
+final class WorkspaceOverviewViewModelTests: XCTestCase {
     private var dbManager: DatabaseManager!
     private var dbPath: String!
 
@@ -34,7 +34,7 @@ final class DashboardViewModelTests: XCTestCase {
             try TestDatabase.insertDigest(db)
         }
 
-        let vm = DashboardViewModel(dbManager: dbManager)
+        let vm = WorkspaceOverviewViewModel(dbManager: dbManager)
         await vm.load()
 
         XCTAssertEqual(vm.workspace?.name, "Acme Corp")
@@ -48,7 +48,7 @@ final class DashboardViewModelTests: XCTestCase {
 
     @MainActor
     func testLoadEmptyDB() async {
-        let vm = DashboardViewModel(dbManager: dbManager)
+        let vm = WorkspaceOverviewViewModel(dbManager: dbManager)
         await vm.load()
 
         XCTAssertNil(vm.workspace)
@@ -67,7 +67,7 @@ final class DashboardViewModelTests: XCTestCase {
             try TestDatabase.insertMessage(db, channelID: "C001", ts: recentTS, userID: "U001", text: "Recent msg")
         }
 
-        let vm = DashboardViewModel(dbManager: dbManager)
+        let vm = WorkspaceOverviewViewModel(dbManager: dbManager)
         await vm.load()
 
         XCTAssertEqual(vm.recentActivity.count, 1)

@@ -190,6 +190,67 @@ final class RelayProcessorActionTests: XCTestCase {
         XCTAssertEqual(payload?.status, .applied)
     }
 
+    /// The four situation actions land in `SituationQueries` exactly like the
+    /// desktop's own dashboard buttons: done stamps `user_done`, dismiss
+    /// stamps `user_dismissed`, snooze stores the raw ISO string, and
+    /// keep-open clears ONLY the suggested-resolution mark (DASH-07 — status
+    /// stays open).
+    func testSituationActionsApplyThroughSituationQueries() async throws {
+        try await dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "One")   // id 1 → done
+            _ = try TestDatabase.insertSituation(db, title: "Two")   // id 2 → dismiss
+            _ = try TestDatabase.insertSituation(db, title: "Three") // id 3 → snooze
+            _ = try TestDatabase.insertSituation(
+                db, title: "Four", suggestedResolution: "looks wrapped up"
+            ) // id 4 → keep open
+        }
+        let until = "2026-07-10T12:00:00Z"
+        let names = [
+            try await enqueue(.situationDone, id: "s1", entityID: "1"),
+            try await enqueue(.situationDismiss, id: "s2", entityID: "2"),
+            try await enqueue(.situationSnooze, id: "s3", entityID: "3",
+                              params: ["snooze_until": .string(until)]),
+            try await enqueue(.situationKeepOpen, id: "s4", entityID: "4")
+        ]
+
+        let applied = try await processor.processOnce()
+
+        XCTAssertEqual(applied, 4)
+        for name in names {
+            let payload = try await statusPayload(recordName: name)
+            XCTAssertEqual(payload?.status, .applied)
+        }
+        // Explicit closure return type: CI's older toolchain fails to infer
+        // it through the multiline-string argument and lands on ().
+        let rows = try await dbPool.read { db -> [Row] in
+            try Row.fetchAll(db, sql: """
+                SELECT status, resolved_reason, snooze_until, suggested_resolution
+                FROM situations ORDER BY id
+                """)
+        }
+        XCTAssertEqual(rows[0]["status"], "done")
+        XCTAssertEqual(rows[0]["resolved_reason"], "user_done")
+        XCTAssertEqual(rows[1]["status"], "dismissed")
+        XCTAssertEqual(rows[1]["resolved_reason"], "user_dismissed")
+        XCTAssertEqual(rows[2]["status"], "snoozed")
+        XCTAssertEqual(rows[2]["snooze_until"], until)
+        XCTAssertEqual(rows[3]["status"], "open", "keep-open must not close the situation")
+        XCTAssertEqual(rows[3]["suggested_resolution"], "")
+    }
+
+    /// A situation action against a row that no longer exists fails with the
+    /// echoed error instead of silently applying (same contract as inbox).
+    func testSituationActionOnMissingRowFails() async throws {
+        let name = try await enqueue(.situationDone, id: "s9", entityID: "42")
+
+        let applied = try await processor.processOnce()
+
+        XCTAssertEqual(applied, 0)
+        let payload = try await statusPayload(recordName: name)
+        XCTAssertEqual(payload?.status, .failed)
+        XCTAssertFalse(payload?.errorMessage?.isEmpty ?? true)
+    }
+
     func testHygieneSparesUnprocessedPendingActionAndDeletesAppliedOne() async throws {
         let age: TimeInterval = 8 * 86_400 // 8 days — past the 7-day threshold
         // Use fixedNow as the reference so the injected clock and record ages align.

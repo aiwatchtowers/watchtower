@@ -85,6 +85,39 @@ enum DemoSeed {
             "created_at": Self.iso.string(from: now),
         ]))
 
+        // MARK: Situations (Inbox dashboard)
+        records.append(try record(.situation, "1", now, [
+            "id": 1,
+            "title": "Q3 launch checklist needs your review",
+            "kind": "external",
+            "status": "open",
+            "priority": "high",
+            "rank": 90.0,
+            "summary": "Alice asked for a review of the launch checklist; the Friday deadline is at risk without it.",
+            "why_matters": "The Q3 launch gate is Friday — an unreviewed checklist blocks the go/no-go call.",
+            "chronology": "Alice flagged the checklist in #launch. Bob confirmed he picked up the rollout notes.",
+            "card_status": "ready",
+            "signal_ids": "[1,2]",
+            "last_signal_at": Self.iso.string(from: now),
+            "created_at": Self.iso.string(from: now),
+            "updated_at": Self.iso.string(from: now),
+        ]))
+        records.append(try record(.situation, "2", now, [
+            "id": 2,
+            "title": "Refund fix rollout wrapped up",
+            "kind": "external",
+            "status": "open",
+            "priority": "medium",
+            "rank": 40.0,
+            "summary": "The payments team shipped the refund fix and confirmed the rollout finished cleanly.",
+            "card_status": "ready",
+            "suggested_resolution": "The rollout finished and nobody is waiting on you — this looks resolved.",
+            "signal_ids": "[]",
+            "last_signal_at": Self.iso.string(from: now.addingTimeInterval(-3600)),
+            "created_at": Self.iso.string(from: now),
+            "updated_at": Self.iso.string(from: now),
+        ]))
+
         // MARK: Targets (Tasks, grouped by status)
         records.append(try record(.target, "1", now, [
             "id": 1,

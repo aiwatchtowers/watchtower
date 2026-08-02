@@ -201,7 +201,11 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 		userNotesCtx = userNotes
 	}
 
-	// Args: 1=userName, 2=title, 3=meetingTime, 4=language, 5=meetingDesc, 6=attendees, 7=sharedContext, 8=jiraContext, 9=profile, 10=userNotes
+	// Attendee memory context (secretary's own notes + beliefs). Sentinel when
+	// the memory.surfaces.meeting_prep gate is off or no vault exists.
+	memoryCtx := p.gatherMemoryContext(attendees)
+
+	// Args: 1=userName, 2=title, 3=meetingTime, 4=language, 5=meetingDesc, 6=attendees, 7=sharedContext, 8=jiraContext, 9=profile, 10=userNotes, 11=attendeeMemory
 	systemPrompt := fmt.Sprintf(promptTmpl,
 		userName,
 		event.Title,
@@ -213,6 +217,7 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 		jiraCtx,
 		profileCtx,
 		userNotesCtx,
+		memoryCtx,
 	)
 
 	userMessage := fmt.Sprintf("Generate meeting prep for event %q (ID: %s) at %s on %s.",

@@ -97,6 +97,41 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(store.corruptCount(), 0)
     }
 
+    /// A situation payload — desktop columns plus the publisher-joined
+    /// `signal_ids` array — decodes into the typed model, including the
+    /// member-id array the review screen joins bubbles from.
+    func testHydrateDecodesSituationPayload() async throws {
+        let transport = InMemoryCloudTransport()
+        let row = Row([
+            "id": 5, "title": "Launch checklist review", "kind": "external",
+            "status": "open", "priority": "high", "rank": 90.0,
+            "summary": "Alice needs the checklist reviewed.",
+            "why_matters": "The Friday gate depends on it.",
+            "chronology": "Alice asked; Bob picked up rollout notes.",
+            "card_status": "ready", "suggested_resolution": "",
+            "signal_ids": "[3,8]", "last_signal_at": "2026-07-12T10:00:00Z",
+            "created_at": "2026-07-12T09:00:00Z", "updated_at": "2026-07-12T10:00:00Z"
+        ])
+        try await transport.save([
+            dataRecord(kind: .situation, id: "5", payload: try RowPayloadCoder.payload(from: row))
+        ])
+        let store = try ReplicaStore.inMemory()
+
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+
+        let situations = try store.fetchAll(Situation.self, kind: .situation)
+        XCTAssertEqual(situations.count, 1)
+        let situation = try XCTUnwrap(situations.first)
+        XCTAssertEqual(situation.id, 5)
+        XCTAssertEqual(situation.title, "Launch checklist review")
+        XCTAssertEqual(situation.status, .open)
+        XCTAssertEqual(situation.rank, 90.0)
+        XCTAssertTrue(situation.hasCard)
+        XCTAssertFalse(situation.hasSuggestedResolution)
+        XCTAssertEqual(situation.decodedSignalIDs, [3, 8])
+        XCTAssertEqual(store.corruptCount(), 0)
+    }
+
     // MARK: - Token advancement
 
     func testTokenAdvancesAndSecondHydrateAppliesNothing() async throws {
@@ -453,6 +488,7 @@ final class ReplicaTests: XCTestCase {
 
     // MARK: - DatabasePool (production mechanism) path
 
+    @MainActor
     func testHydrateAndObserveOnDatabasePoolPath() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("replica-pool-\(UUID().uuidString)")

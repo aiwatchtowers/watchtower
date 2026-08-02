@@ -66,11 +66,11 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 	if err != nil {
 		return 0, fmt.Errorf("sender query: %w", err)
 	}
+	defer senderRows.Close()
 	for senderRows.Next() {
 		var sender string
 		var total, negatives, positives int
 		if err := senderRows.Scan(&sender, &total, &negatives, &positives); err != nil {
-			senderRows.Close()
 			return 0, fmt.Errorf("sender scan: %w", err)
 		}
 		negRate := float64(negatives) / float64(total)
@@ -83,10 +83,8 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 		}
 	}
 	if err := senderRows.Err(); err != nil {
-		senderRows.Close()
 		return 0, fmt.Errorf("sender rows: %w", err)
 	}
-	senderRows.Close()
 
 	// Per-channel unified pool — negatives only (no boost on channel side).
 	chanRows, err := database.Query(`
@@ -115,11 +113,11 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 	if err != nil {
 		return 0, fmt.Errorf("channel query: %w", err)
 	}
+	defer chanRows.Close()
 	for chanRows.Next() {
 		var ch string
 		var total, negatives int
 		if err := chanRows.Scan(&ch, &total, &negatives); err != nil {
-			chanRows.Close()
 			return 0, fmt.Errorf("channel scan: %w", err)
 		}
 		if float64(negatives)/float64(total) > muteRateChan {
@@ -127,10 +125,8 @@ func RunImplicitLearner(ctx context.Context, database *db.DB, lookback time.Dura
 		}
 	}
 	if err := chanRows.Err(); err != nil {
-		chanRows.Close()
 		return 0, fmt.Errorf("channel rows: %w", err)
 	}
-	chanRows.Close()
 
 	// Upsert all collected rules.
 	upserted := 0

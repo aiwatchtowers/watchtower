@@ -135,10 +135,10 @@ final class UpdateService {
         // `codesign --verify` only checks that *some* signature is valid —
         // an ad-hoc or third-party signed .app (e.g. a compromised download)
         // would pass just as well. Fail closed: if we can't determine our
-        // own Team ID (ad-hoc/dev build), refuse to install rather than
+        // own Team ID (ad-hoc-signed build), refuse to install rather than
         // falling back to a signature check with no identity pinning.
         guard let teamID = Self.currentTeamIdentifier() else {
-            state = .error("Update aborted: could not determine the running app's Team ID (ad-hoc/dev build). "
+            state = .error("Update aborted: could not determine the running app's Team ID (ad-hoc-signed build). "
                 + "Refusing to install an update that can't be verified against a known signer.")
             return
         }
@@ -290,7 +290,7 @@ final class UpdateService {
     }
 
     /// Team ID of the currently running app bundle, read from its own code
-    /// signature. Nil for ad-hoc/dev builds with no Team ID.
+    /// signature. Nil for ad-hoc-signed builds with no Team ID.
     private static func currentTeamIdentifier() -> String? {
         guard let bundlePath = currentAppBundlePath() else { return nil }
 

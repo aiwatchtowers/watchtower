@@ -475,7 +475,7 @@ final class ChatViewModel {
         ALWAYS include Slack links as descriptive markdown — never bare URLs.
 
         Channel link: [#channel-name](slack://channel?team=\(teamID)&id={channel_id})
-        Message link: [описательный текст](slack://channel?team=\(teamID)&id={channel_id}&message={ts})
+        Message link: [descriptive text](slack://channel?team=\(teamID)&id={channel_id}&message={ts})
           Use the raw ts value (with dot). Example: "1740577800.000100" → message=1740577800.000100
 
         Rules:

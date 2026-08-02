@@ -76,6 +76,9 @@ func TestToolsList(t *testing.T) {
 		"get_today_briefing", "list_digests", "get_digest",
 		"list_people", "get_person", "list_tracks", "get_track", "list_upcoming_events",
 		"list_jira_issues", "get_jira_issue",
+		"list_messages",
+		"list_transcripts", "get_transcript",
+		"memory_map", "memory_open", "memory_recall",
 	}
 	for _, name := range want {
 		if !got[name] {
@@ -96,10 +99,15 @@ func TestAllToolsAreReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
+	// The memory_ tools are read surfaces over the vault + index; memory_open
+	// additionally bumps memory_node_stats — best-effort usage telemetry, not
+	// domain data — the one deliberate exception to "no writes".
+	readVerbs := map[string]bool{"memory_map": true, "memory_open": true, "memory_recall": true}
 	for _, tool := range res.Tools {
 		if !strings.HasPrefix(tool.Name, "list_") &&
-			!strings.HasPrefix(tool.Name, "get_") {
-			t.Errorf("tool %q is not a read-only verb (list_/get_)", tool.Name)
+			!strings.HasPrefix(tool.Name, "get_") &&
+			!readVerbs[tool.Name] {
+			t.Errorf("tool %q is not a known read-only verb (list_/get_/memory_)", tool.Name)
 		}
 	}
 }

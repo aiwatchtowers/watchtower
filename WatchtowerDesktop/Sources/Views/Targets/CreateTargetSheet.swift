@@ -21,7 +21,11 @@ struct CreateTargetSheet: View {
     @State private var errorMessage: String?
     @State private var showExtractSheet = false
     @State private var extractedResult: TargetExtractResult?
-    @State private var isExtracting = false
+    /// True only while THIS sheet instance is the one that started the
+    /// in-flight extraction — gates the `phase` transition handler below
+    /// so a sheet never reacts to a result/error started by a different
+    /// CreateTargetSheet instance elsewhere in the app.
+    @State private var awaitingOwnExtraction = false
     @State private var showMoreOptions: Bool = false
     @State private var showChecklist: Bool = false
     /// Indices into `subItems` that the user marked to be promoted into
@@ -85,6 +89,25 @@ struct CreateTargetSheet: View {
                 )
             }
         }
+        .onChange(of: appState.targetExtractCenter.phase) { _, phase in
+            guard awaitingOwnExtraction else { return }
+            switch phase {
+            case .ready:
+                awaitingOwnExtraction = false
+                if let result = appState.targetExtractCenter.result {
+                    extractedResult = result
+                    showExtractSheet = true
+                    // The sheet now owns a copy; clear the Center so the global
+                    // capsule doesn't also offer the same result.
+                    appState.targetExtractCenter.dismiss()
+                }
+            case .empty, .failed:
+                // Hand off to the global capsule (friendly message + retry).
+                awaitingOwnExtraction = false
+            case .idle, .extracting:
+                break
+            }
+        }
     }
 
     private var sheetHeader: some View {
@@ -138,11 +161,13 @@ struct CreateTargetSheet: View {
     }
 
     private var extractButton: some View {
-        HStack {
+        let center = appState.targetExtractCenter
+        let isExtracting = center.phase == .extracting
+        return HStack {
             Button {
                 Task { await runExtract() }
             } label: {
-                if isExtracting {
+                if isExtracting && awaitingOwnExtraction {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
                         Text("Extracting…")
@@ -153,7 +178,11 @@ struct CreateTargetSheet: View {
             }
             .buttonStyle(.bordered)
             .disabled(isExtracting || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .help("Run the entered text through the LLM to propose structured targets")
+            .help(
+                isExtracting && !awaitingOwnExtraction
+                    ? "An extraction is already running — wait for it to finish"
+                    : "Run the entered text through the LLM to propose structured targets"
+            )
             Spacer()
         }
     }
@@ -528,20 +557,8 @@ struct CreateTargetSheet: View {
             errorMessage = "watchtower CLI not found in PATH"
             return
         }
-        isExtracting = true
         errorMessage = nil
-        defer { isExtracting = false }
-        do {
-            let service = TargetExtractService(runner: runner)
-            let result = try await service.extract(text: text)
-            if result.extracted.isEmpty {
-                errorMessage = "AI returned no extracted targets"
-                return
-            }
-            extractedResult = result
-            showExtractSheet = true
-        } catch {
-            errorMessage = "Extract failed: \(error.localizedDescription)"
-        }
+        awaitingOwnExtraction = true
+        appState.targetExtractCenter.start(text: text, runner: runner)
     }
 }

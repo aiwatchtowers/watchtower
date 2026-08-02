@@ -74,6 +74,49 @@ func TestSearchMessagesUserFilter(t *testing.T) {
 	assert.Equal(t, "U001", results[0].UserID)
 }
 
+func TestListRecentMessagesByUser(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+	seedSearchMessages(t, db)
+
+	// No keyword: every message from U001, newest first.
+	results, err := db.ListRecentMessages(SearchOpts{UserIDs: []string{"U001"}})
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.Equal(t, "U001", results[0].UserID)
+	assert.Equal(t, "U001", results[1].UserID)
+	// Newest first: C002/1700000003 before C001/1700000001.
+	assert.True(t, results[0].TSUnix > results[1].TSUnix, "results must be newest first")
+}
+
+func TestListRecentMessagesChannelAndLimit(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+	seedSearchMessages(t, db)
+
+	results, err := db.ListRecentMessages(SearchOpts{ChannelIDs: []string{"C002"}, Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "C002", results[0].ChannelID)
+	// Limit honoured, newest of C002 wins (1700000500 database migration).
+	assert.Contains(t, results[0].Text, "migration")
+}
+
+func TestListRecentMessagesNoFilterReturnsNothing(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+	seedSearchMessages(t, db)
+
+	// An unfiltered call must not dump the whole table — the MCP tool relies on
+	// this to force at least one narrowing filter.
+	results, err := db.ListRecentMessages(SearchOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
 func TestSearchMessagesTimeFilter(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

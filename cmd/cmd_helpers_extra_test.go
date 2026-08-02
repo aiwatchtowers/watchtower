@@ -69,6 +69,26 @@ func TestResolveGoogleOAuthConfig_FromBuildDefaults(t *testing.T) {
 	assert.Equal(t, "build-secret", got.ClientSecret)
 }
 
+func TestResolveGoogleOAuthConfigForAccount_CustomCredentialsWin(t *testing.T) {
+	dir := t.TempDir()
+	store := calendar.NewCredentialStore(dir, 7)
+	require.NoError(t, store.Save(&calendar.Credentials{ClientID: "acct-7-id", ClientSecret: "acct-7-secret"}))
+
+	got := resolveGoogleOAuthConfigForAccount(dir, 7)
+	assert.Equal(t, "acct-7-id", got.ClientID)
+	assert.Equal(t, "acct-7-secret", got.ClientSecret)
+}
+
+func TestResolveGoogleOAuthConfigForAccount_FallsBackWithoutCredentialFile(t *testing.T) {
+	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_ID", "env-client-id")
+	t.Setenv("WATCHTOWER_GOOGLE_CLIENT_SECRET", "env-secret")
+	dir := t.TempDir()
+
+	got := resolveGoogleOAuthConfigForAccount(dir, 7)
+	assert.Equal(t, "env-client-id", got.ClientID)
+	assert.Equal(t, "env-secret", got.ClientSecret)
+}
+
 func TestPrintCalendarEvents_GroupsByDate(t *testing.T) {
 	cmd := &cobra.Command{}
 	var buf bytes.Buffer

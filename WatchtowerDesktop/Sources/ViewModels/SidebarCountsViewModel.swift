@@ -13,6 +13,11 @@ final class SidebarCountsViewModel {
     var overdueTaskCount: Int = 0
     var inboxPendingCount: Int = 0
     var inboxHighPriorityCount: Int = 0
+    /// Open-situation count, driving the Dashboard sidebar badge (see D9 dashboard task).
+    var situationsCount: Int = 0
+
+    /// Pending memory dispute flags — beliefs waiting for the owner's verdict.
+    var memoryDisputedCount: Int = 0
 
     /// Pending themes of the active Catch-Up review session, or nil when no
     /// session is active. When present, it drives the Catch-Up badge.
@@ -51,7 +56,8 @@ final class SidebarCountsViewModel {
             // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
             let observation = ValueObservation.tracking { db -> [Int] in
                 let tables = ["tracks", "briefings", "targets", "inbox_items", "digests",
-                              "catchup_sessions", "catchup_themes"]
+                              "catchup_sessions", "catchup_themes", "situations",
+                              "memory_dispute_flags"]
                 return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {
@@ -83,6 +89,8 @@ final class SidebarCountsViewModel {
         let overdueTaskCount: Int
         let inboxPendingCount: Int
         let inboxHighPriorityCount: Int
+        var situationsCount: Int
+        var memoryDisputedCount: Int
         var pendingThemeCount: Int?
 
         static let zero = Self(
@@ -95,6 +103,8 @@ final class SidebarCountsViewModel {
             overdueTaskCount: 0,
             inboxPendingCount: 0,
             inboxHighPriorityCount: 0,
+            situationsCount: 0,
+            memoryDisputedCount: 0,
             pendingThemeCount: nil
         )
     }
@@ -117,10 +127,16 @@ final class SidebarCountsViewModel {
                 // Computed independently of the current user so the badge works
                 // even before a workspace user is resolved.
                 let activeThemeCount = try Self.pendingThemeCount(db)
+                // Open situations, likewise independent of the current user.
+                let openSituations = try SituationQueries.openCount(db)
+                // Memory disputes, tolerant of a pre-memory schema.
+                let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
 
                 guard let uid = try TrackQueries.fetchCurrentUserID(db) else {
                     var zero = Counts.zero
                     zero.pendingThemeCount = activeThemeCount
+                    zero.situationsCount = openSituations
+                    zero.memoryDisputedCount = disputed
                     return zero
                 }
                 let trackCounts = try TrackQueries.fetchCounts(db)
@@ -153,6 +169,8 @@ final class SidebarCountsViewModel {
                     overdueTaskCount: taskCounts.overdue,
                     inboxPendingCount: inboxCounts.unread,
                     inboxHighPriorityCount: inboxCounts.highPriority,
+                    situationsCount: openSituations,
+                    memoryDisputedCount: disputed,
                     pendingThemeCount: activeThemeCount
                 )
             }
@@ -172,6 +190,8 @@ final class SidebarCountsViewModel {
         overdueTaskCount = c.overdueTaskCount
         inboxPendingCount = c.inboxPendingCount
         inboxHighPriorityCount = c.inboxHighPriorityCount
+        situationsCount = c.situationsCount
+        memoryDisputedCount = c.memoryDisputedCount
         pendingThemeCount = c.pendingThemeCount
     }
 }

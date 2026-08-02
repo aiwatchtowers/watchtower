@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,14 +14,19 @@ import (
 
 	gosync "sync"
 	"watchtower/internal/briefing"
+	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/feed"
+	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
+	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
+	"watchtower/internal/memory"
 
 	"watchtower/internal/customtracks"
 	"watchtower/internal/sync"
@@ -56,9 +62,14 @@ type Daemon struct {
 	peoplePipe       *guide.Pipeline
 	briefingPipe     *briefing.Pipeline
 	inboxPipe        *inbox.Pipeline
+	memoryPipe       *memory.Pipeline
+	feedPipe         *feed.Pipeline
 	nextStepPipe     *targets.Pipeline
 	customTracksPipe *customtracks.Pipeline
-	calendarSyncer   *calendar.Syncer
+	calendarSyncers  []*calendar.Syncer
+	calDAVSyncers    []*caldav.Syncer
+	gmailSyncers     []*gmail.Syncer
+	imapSyncers      []*imap.Syncer
 	jiraSyncer       *jira.Syncer
 	dayPlanPipeline  DayPlanRunner
 	lastJira         time.Time
@@ -68,6 +79,8 @@ type Daemon struct {
 }
 
 // New creates a Daemon that runs incremental syncs via the given orchestrator.
+// orchestrator may be nil when Slack is not connected; the Slack sync phase is
+// then skipped while the other source syncers and pipelines still run.
 func New(orchestrator *sync.Orchestrator, cfg *config.Config) *Daemon {
 	return &Daemon{
 		orchestrator: orchestrator,
@@ -106,6 +119,21 @@ func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
 	d.inboxPipe = p
 }
 
+// SetMemoryPipeline sets the memory consolidation pipeline (internal/memory).
+// The daemon owns the run context, so the pipeline's pipeline_runs rows are
+// stamped source="daemon" here regardless of how the caller constructed it.
+func (d *Daemon) SetMemoryPipeline(p *memory.Pipeline) {
+	if p != nil {
+		p.Source = "daemon"
+	}
+	d.memoryPipe = p
+}
+
+// SetFeedPipeline installs the dashboard feed publisher (internal/feed).
+func (d *Daemon) SetFeedPipeline(p *feed.Pipeline) {
+	d.feedPipe = p
+}
+
 // SetNextStepPipeline sets the targets pipeline used to refresh AI next-step
 // suggestions for active targets each cycle.
 func (d *Daemon) SetNextStepPipeline(p *targets.Pipeline) {
@@ -120,9 +148,33 @@ func (d *Daemon) SetCustomTracksPipeline(p *customtracks.Pipeline) {
 	d.customTracksPipe = p
 }
 
-// SetCalendarSyncer sets the calendar syncer for post-sync calendar fetch.
-func (d *Daemon) SetCalendarSyncer(s *calendar.Syncer) {
-	d.calendarSyncer = s
+// SetCalendarSyncers sets the per-account Google Calendar syncers — one per
+// connected google_accounts row with calendar enabled and a live token
+// (mirrors SetCalDAVSyncers/SetImapSyncers).
+func (d *Daemon) SetCalendarSyncers(s []*calendar.Syncer) {
+	d.calendarSyncers = s
+}
+
+// SetCalDAVSyncers sets the per-account CalDAV/ICS calendar syncers — one
+// per connected calendar_accounts row, unlike Google Calendar's single
+// syncer, since a workspace can have any number of connected calendar
+// sources (mirrors SetImapSyncers).
+func (d *Daemon) SetCalDAVSyncers(s []*caldav.Syncer) {
+	d.calDAVSyncers = s
+}
+
+// SetGmailSyncers sets the per-account Gmail syncers — one per connected
+// google_accounts row with gmail enabled and a live token (mirrors
+// SetCalendarSyncers/SetImapSyncers).
+func (d *Daemon) SetGmailSyncers(s []*gmail.Syncer) {
+	d.gmailSyncers = s
+}
+
+// SetImapSyncers sets the per-account IMAP/Outlook syncers for post-sync mail
+// fetch — one per connected email_accounts row, unlike Gmail's single syncer,
+// since a workspace can have any number of connected mailboxes.
+func (d *Daemon) SetImapSyncers(s []*imap.Syncer) {
+	d.imapSyncers = s
 }
 
 // SetJiraSyncer sets the Jira syncer for periodic sync.
@@ -206,6 +258,9 @@ func (d *Daemon) wakeChannel() <-chan struct{} {
 func (d *Daemon) runSync(ctx context.Context) {
 	syncErr := d.phaseSlackSync(ctx)
 	d.phaseCalendarSync(ctx)
+	d.phaseCalDAVSync(ctx)
+	d.phaseGmailSync(ctx)
+	d.phaseImapSync(ctx)
 	d.phaseJiraSync(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
@@ -222,6 +277,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseFastInbox(ctx)
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
+	d.phaseTranscriptAudioCleanup()
 
 	d.phaseCustomTrackScan(ctx) // before auto extraction so folds land
 
@@ -246,12 +302,14 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.autoMarkRead()
 
 	d.phaseInbox(ctx)
+	d.phaseMemory(ctx)
 	d.phaseNextStep(ctx)
 	d.phaseBriefing(ctx)
 
 	now := time.Now()
 	d.runDayPlanPhase(ctx, now)
 	d.runDayPlanConflictPhase(ctx, now)
+	d.phaseFeed()
 }
 
 // pipelineRunStats are the bookkeeping metrics recorded for a daemon-managed
@@ -289,7 +347,12 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 
 // phaseSlackSync runs the orchestrator and persists last_sync.json. The
 // returned error is non-nil for non-fatal sync issues; pipelines still run.
+// A nil orchestrator means Slack is not connected — the phase is skipped and
+// the other sources still sync.
 func (d *Daemon) phaseSlackSync(ctx context.Context) error {
+	if d.orchestrator == nil {
+		return nil
+	}
 	syncErr := d.orchestrator.Run(ctx, sync.SyncOptions{})
 	if syncErr != nil {
 		d.logger.Printf("sync error: %v", syncErr)
@@ -302,16 +365,65 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) error {
 	return syncErr
 }
 
-// phaseCalendarSync pulls Google Calendar events. Lightweight, runs every cycle.
+// phaseCalendarSync pulls Google Calendar events for every connected
+// google_accounts row with calendar enabled. Lightweight, runs every cycle.
+// Like phaseCalDAVSync/phaseImapSync, this loops over one syncer per
+// account — a per-account failure is logged and skipped rather than
+// aborting the rest of the accounts.
 func (d *Daemon) phaseCalendarSync(ctx context.Context) {
-	if d.calendarSyncer == nil {
-		return
+	for _, s := range d.calendarSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("calendar sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("calendar: %d events synced", n)
+		}
 	}
-	n, err := d.calendarSyncer.Sync(ctx)
-	if err != nil {
-		d.logger.Printf("calendar sync error: %v", err)
-	} else if n > 0 {
-		d.logger.Printf("calendar: %d events synced", n)
+}
+
+// phaseCalDAVSync pulls calendar events for every connected CalDAV/ICS
+// account. Lightweight, runs every cycle. Like phaseImapSync, this loops
+// over one syncer per account — a per-account failure is logged and skipped
+// rather than aborting the rest of the accounts.
+func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
+	for _, s := range d.calDAVSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("caldav sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("caldav: %d events synced", n)
+		}
+	}
+}
+
+// phaseGmailSync pulls Gmail inbox messages for every connected
+// google_accounts row with gmail enabled. Lightweight, runs every cycle.
+// Like phaseCalDAVSync/phaseImapSync, this loops over one syncer per
+// account — a per-account failure is logged and skipped rather than
+// aborting the rest of the accounts.
+func (d *Daemon) phaseGmailSync(ctx context.Context) {
+	for _, s := range d.gmailSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("gmail sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("gmail: %d messages synced", n)
+		}
+	}
+}
+
+// phaseImapSync pulls new mail for every connected IMAP/Outlook account.
+// Lightweight, runs every cycle. Unlike phaseGmailSync's single nil-check,
+// this loops over one syncer per account — a per-account failure is logged
+// and skipped rather than aborting the rest of the accounts.
+func (d *Daemon) phaseImapSync(ctx context.Context) {
+	for _, s := range d.imapSyncers {
+		n, err := s.Sync(ctx)
+		if err != nil {
+			d.logger.Printf("imap sync error: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("imap: %d messages synced", n)
+		}
 	}
 }
 
@@ -419,6 +531,90 @@ func (d *Daemon) phaseUnsnooze() {
 	}
 }
 
+// phaseTranscriptAudioCleanup deletes meeting-recording audio files past the
+// retention window and NULLs audio_path. Transcript text is never touched.
+// Missing files are fine (idempotent re-runs). It then sweeps the recordings
+// directory for orphaned rec_* files no transcript row references.
+func (d *Daemon) phaseTranscriptAudioCleanup() {
+	if d.db == nil {
+		return
+	}
+	days := d.config.Transcripts.AudioRetentionDays
+	if days <= 0 {
+		return // retention disabled
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days)
+	rows, err := d.db.ExpiredTranscriptAudio(cutoff.Format(time.RFC3339))
+	if err != nil {
+		d.logger.Printf("transcript cleanup query error: %v", err)
+		return
+	}
+	for _, tr := range rows {
+		if err := os.Remove(tr.AudioPath.String); err != nil && !os.IsNotExist(err) {
+			d.logger.Printf("transcript cleanup: removing %s: %v", tr.AudioPath.String, err)
+			continue // keep audio_path so a later run retries
+		}
+		if err := d.db.ClearMeetingTranscriptAudio(tr.ID); err != nil {
+			d.logger.Printf("transcript cleanup: clearing row %d: %v", tr.ID, err)
+		}
+	}
+	if len(rows) > 0 {
+		d.logger.Printf("transcript cleanup: processed %d expired recording(s)", len(rows))
+	}
+
+	d.cleanupOrphanRecordings(cutoff)
+}
+
+// cleanupOrphanRecordings deletes rec_* files in the recordings directory that
+// are older than the retention window (by modification time) and not
+// referenced by any meeting_transcripts.audio_path. Recordings whose Center
+// run failed never get a DB row, so the row-driven pass above would leave them
+// on disk forever.
+func (d *Daemon) cleanupOrphanRecordings(cutoff time.Time) {
+	dir := d.config.RecordingsDir()
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			d.logger.Printf("transcript cleanup: reading recordings dir %s: %v", dir, err)
+		}
+		return
+	}
+	referenced, err := d.db.TranscriptAudioPaths()
+	if err != nil {
+		d.logger.Printf("transcript cleanup: listing referenced audio paths: %v", err)
+		return
+	}
+	refSet := make(map[string]bool, len(referenced))
+	for _, p := range referenced {
+		refSet[p] = true
+	}
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "rec_") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if refSet[path] {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue // young orphans get a full retention window before deletion
+		}
+		if err := os.Remove(path); err != nil {
+			d.logger.Printf("transcript cleanup: removing orphan %s: %v", path, err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		d.logger.Printf("transcript cleanup: removed %d orphaned recording(s)", removed)
+	}
+}
+
 // phaseTracksAndRollups (group A) runs the tracks pipeline, injects active
 // track context into the digest pipeline, then runs daily/weekly rollups.
 func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
@@ -514,6 +710,55 @@ func (d *Daemon) phaseInbox(ctx context.Context) {
 	})
 }
 
+// phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
+// seeding, situation ingest, episode extraction). Runs after inbox so freshly
+// composed situations are visible, before next-step. The pipeline records its
+// own pipeline_runs row (source="daemon", see SetMemoryPipeline), so there is
+// no trackedPipelineRun wrapper here. Errors are logged and never abort the
+// cycle; watermark freeze on failure is the pipeline's own business (MEM-04).
+func (d *Daemon) phaseMemory(ctx context.Context) {
+	if d.memoryPipe == nil {
+		return
+	}
+	if !d.config.Memory.Enabled {
+		d.logger.Printf("memory: disabled, skipping")
+		return
+	}
+	stats, err := d.memoryPipe.Run(ctx)
+	if errors.Is(err, memory.ErrLocked) {
+		// A CLI consolidate/seed/reindex holds the memory lock — skip this
+		// cycle, the next one picks up where the other run left off.
+		d.logger.Printf("memory: skipping cycle — %v", err)
+		return
+	}
+	if err != nil {
+		d.logger.Printf("memory error: %v", err)
+		return
+	}
+	situations := stats.Ingested.Created + stats.Ingested.Updated + stats.Ingested.Finalized
+	if stats.Seeded > 0 || situations > 0 || stats.Episodes > 0 || stats.WindowsFailed > 0 {
+		d.logger.Printf("memory: %d seeded, %d situation node(s), %d episode(s) from %d window(s) (%d failed, %d refs rejected)",
+			stats.Seeded, situations, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.RefsRejected)
+	}
+}
+
+// phaseFeed mirrors source tables into the dashboard feed index. Runs last so
+// it sees everything this cycle produced (situations, briefings, recaps, day
+// plans). AI-free and best-effort: errors are logged, never propagated, and
+// never affect the inbox pipeline or its watermarks (DASH-06).
+func (d *Daemon) phaseFeed() {
+	if d.feedPipe == nil {
+		return
+	}
+	n, err := d.feedPipe.Publish(time.Now())
+	if err != nil {
+		d.logger.Printf("feed error: %v", err)
+	}
+	if n > 0 {
+		d.logger.Printf("feed: published %d items", n)
+	}
+}
+
 // phaseNextStep refreshes AI next-step suggestions for active targets whose
 // suggestion is missing or stale (regenerated after a user edit). Runs after
 // inbox so any targets just surfaced/created are included.
@@ -576,18 +821,36 @@ func (d *Daemon) phaseBriefing(ctx context.Context) {
 }
 
 // applyInboxCurrentUser populates the inbox pipeline with the current user's
-// id+email so it can filter mentions/DMs. No-op when DB is unavailable.
+// id+email so it can filter mentions/DMs. The email falls back to the first
+// connected google_accounts row with a resolved email when there is no Slack
+// identity (no users row) — otherwise the Gmail/Calendar detectors can't
+// match To/Cc/attendees. No-op when DB is unavailable.
 func (d *Daemon) applyInboxCurrentUser() {
 	if d.db == nil || d.inboxPipe == nil {
 		return
 	}
 	uid, err := d.db.GetCurrentUserID()
-	if err != nil || uid == "" {
-		return
+	if err != nil {
+		uid = ""
 	}
 	email := ""
-	if u, uerr := d.db.GetUserByID(uid); uerr == nil && u != nil {
-		email = u.Email
+	if uid != "" {
+		if u, uerr := d.db.GetUserByID(uid); uerr == nil && u != nil {
+			email = u.Email
+		}
+	}
+	if email == "" {
+		if accounts, aerr := d.db.ListGoogleAccounts(); aerr == nil {
+			for _, a := range accounts {
+				if a.Email != "" {
+					email = a.Email
+					break
+				}
+			}
+		}
+	}
+	if uid == "" && email == "" {
+		return
 	}
 	d.inboxPipe.SetCurrentUser(uid, email)
 }

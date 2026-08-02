@@ -1,58 +1,167 @@
 import SwiftUI
 
+enum CalendarMode: String, CaseIterable {
+    case events, recordings
+
+    var title: String {
+        switch self {
+        case .events: return "Events"
+        case .recordings: return "Recordings"
+        }
+    }
+}
+
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
+    @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     @State private var meetingPrepVM = MeetingPrepViewModel()
     @State private var selectedEventID: String?
-    @State private var googleAuth = GoogleAuthService()
+    private let google = GoogleConnectFlow.shared
     @State private var expandedAllDayDates: Set<Date> = []
     @State private var expandedEventID: String?
     @State private var userNotes: String = ""
+    @State private var mode: CalendarMode = .events
+    /// Hoisted Recordings-tab selection so the Events tab can deep-link into
+    /// a specific recording (expanded event row → Recordings section tap).
+    @State private var selectedRecordingID: Int64?
+    /// Event id the events list should scroll to on next appearance/change —
+    /// set by the recording→event deep link, consumed once.
+    @State private var scrollTargetEventID: String?
+    @State private var showAddEmailAccountSheet = false
+    @State private var showAddCalendarAccountSheet = false
+
+    /// True once ANY calendar source is connected — Google OAuth OR at least
+    /// one healthy CalDAV/ICS account — so connecting only e.g. an iCloud
+    /// calendar (without ever touching Google) unlocks the events UI too.
+    /// Mirrors InboxFeedView.hasEmailSource.
+    private var hasCalendarSource: Bool {
+        google.calendar.isConnected
+            || (appState.calendarAccountsViewModel?.accounts.contains { $0.isOK } ?? false)
+    }
 
     var body: some View {
         Group {
-            if googleAuth.isConnected, let calVM = appState.calendarViewModel {
-                HStack(spacing: 0) {
-                    eventsList(calVM)
-                        .frame(minWidth: 300, idealWidth: 350)
+            if hasCalendarSource, !google.isRunning, let calVM = appState.calendarViewModel {
+                VStack(spacing: 0) {
+                    Picker("", selection: $mode) {
+                        ForEach(CalendarMode.allCases, id: \.self) { m in
+                            Text(m.title).tag(m)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: 260)
+                    .padding(.top, 10)
 
-                    if let eventID = selectedEventID {
-                        Divider()
-                        MeetingPrepDetailView(
-                            eventID: eventID,
-                            viewModel: meetingPrepVM,
-                            userNotes: $userNotes
-                        )                            { selectedEventID = nil }
-                        .id(eventID)
-                        .frame(minWidth: 400, idealWidth: 500)
-                        .transition(
-                            .move(edge: .trailing).combined(with: .opacity)
-                        )
+                    switch mode {
+                    case .events:
+                        eventsSplitView(calVM)
+                    case .recordings:
+                        RecordingsView(externalSelection: $selectedRecordingID) { link in
+                            openLinkedEvent(link, in: calVM)
+                        }
                     }
                 }
-                .animation(.easeInOut(duration: 0.25), value: selectedEventID)
-                .onAppear { calVM.loadEvents() }
             } else {
                 notConnectedView
             }
         }
     }
 
+    /// Recording→event deep link ("Linked to:" header tap). The linked event
+    /// may be outside the default today..+7d window in EITHER direction —
+    /// sync retains ~24h back and calendar.sync_days_ahead is configurable —
+    /// so first pin its day into the rendered window (synchronous reload),
+    /// then switch to Events with the row expanded and scrolled into view.
+    private func openLinkedEvent(_ link: CalendarQueries.EventLink, in vm: CalendarViewModel) {
+        if let start = link.startDate {
+            vm.ensureVisible(date: start)
+        }
+        // An all-day event renders inside a collapsed chip — expand its day
+        // too, or the expanded detail would stay hidden.
+        if let day = vm.dailyEvents.first(where: { day in
+            day.events.contains { $0.id == link.id && $0.isAllDay }
+        }) {
+            expandedAllDayDates.insert(day.id)
+        }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            mode = .events
+            expandedEventID = link.id
+        }
+        scrollTargetEventID = link.id
+    }
+
+    private func eventsSplitView(_ vm: CalendarViewModel) -> some View {
+        HStack(spacing: 0) {
+            eventsList(vm)
+                .frame(minWidth: 300, idealWidth: 350)
+
+            if let eventID = selectedEventID {
+                Divider()
+                MeetingPrepDetailView(
+                    eventID: eventID,
+                    viewModel: meetingPrepVM,
+                    userNotes: $userNotes
+                ) { selectedEventID = nil }
+                .id(eventID)
+                .frame(minWidth: 400, idealWidth: 500)
+                .transition(
+                    .move(edge: .trailing).combined(with: .opacity)
+                )
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: selectedEventID)
+        .onAppear {
+            vm.loadEvents()
+            appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: transcriptionModel)
+        }
+    }
+
     private func eventsList(_ vm: CalendarViewModel) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
 
-                ForEach(vm.dailyEvents) { day in
-                    daySection(day: day, isToday: day.label == "Today")
+                    ForEach(vm.dailyEvents) { day in
+                        daySection(day: day)
+                            .id(day.id)
+                    }
+
+                    if vm.dailyEvents.isEmpty {
+                        emptyState
+                    }
                 }
-
-                if vm.dailyEvents.isEmpty {
-                    emptyState
+                .padding()
+            }
+            // Deep-link scroll wins when a target is set (before the mode
+            // switch); otherwise land on "Today" past the history days.
+            .onAppear {
+                if scrollTargetEventID != nil {
+                    scrollToTargetIfNeeded(proxy)
+                } else {
+                    scrollToToday(vm, proxy: proxy)
                 }
             }
-            .padding()
+            .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
         }
+    }
+
+    private func scrollToTargetIfNeeded(_ proxy: ScrollViewProxy) {
+        guard let target = scrollTargetEventID else { return }
+        scrollTargetEventID = nil
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(target, anchor: .center)
+        }
+    }
+
+    /// With past days in the list, land on "Today" (or the first future day
+    /// when today has no events) instead of two weeks of history.
+    private func scrollToToday(_ vm: CalendarViewModel, proxy: ScrollViewProxy) {
+        let today = Calendar.current.startOfDay(for: Date())
+        guard let target = vm.dailyEvents.first(where: { $0.id >= today })?.id else { return }
+        proxy.scrollTo(target, anchor: .top)
     }
 
     // MARK: - Header
@@ -64,12 +173,68 @@ struct CalendarEventsView: View {
             Text("Calendar")
                 .font(.title2)
                 .fontWeight(.bold)
+            Spacer()
+            recordButton(eventID: nil, title: nil)
+        }
+    }
+
+    // MARK: - Record Button
+
+    /// Record/Stop control for a calendar event (or ad-hoc when `eventID` is nil).
+    /// Shows "Stop" only while THIS target is the one being recorded; disabled
+    /// when another run is in flight or system-audio capture is unsupported.
+    @ViewBuilder
+    private func recordButton(eventID: String?, title: String?) -> some View {
+        let center = appState.meetingRecorderCenter
+        let isRecordingThis: Bool = {
+            if case .recording = center.phase { return center.currentEventID == eventID }
+            return false
+        }()
+        Button {
+            if isRecordingThis {
+                stopRecording()
+            } else {
+                Task { await center.startRecording(eventID: eventID, title: title, config: .fromDefaults()) }
+            }
+        } label: {
+            Label(isRecordingThis ? "Stop" : "Record",
+                  systemImage: isRecordingThis ? "stop.circle" : "record.circle")
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(isRecordingThis ? .red : nil)
+        .disabled((center.isBusy && !isRecordingThis) || !SystemAudioRecorder.isSupported)
+        .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
+    }
+
+    // MARK: - Join Button
+
+    /// Opens the event's conference link and (per the "Auto-record on join"
+    /// setting) starts an event-linked recording via the shared
+    /// `JoinMeetingAction`. Prominent while the meeting is imminent/ongoing.
+    @ViewBuilder
+    private func joinButton(_ event: CalendarEvent) -> some View {
+        JoinButton(event: event,
+                   center: appState.meetingRecorderCenter,
+                   prominent: event.isUpcoming || event.isHappeningNow)
+    }
+
+    private func stopRecording() {
+        // No CLI-runner guard here: stopping capture must never depend on the
+        // watchtower binary resolving — the Center fails visibly at the save
+        // step instead, with the audio kept.
+        Task {
+            await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
         }
     }
 
     // MARK: - Day Section
 
-    private func daySection(day: DayEvents, isToday: Bool) -> some View {
+    private func daySection(day: DayEvents) -> some View {
+        let cal = Calendar.current
+        let isToday = cal.isDateInToday(day.id)
+        let isPast = day.id < cal.startOfDay(for: Date())
         let timed = day.events.filter { !$0.isAllDay }
         let allDay = day.events.filter { $0.isAllDay }
 
@@ -86,6 +251,10 @@ struct CalendarEventsView: View {
                 eventRow(event)
             }
         }
+        // Past days are browsable history, visually receded. Edge: a
+        // cross-midnight meeting still running lands in a dimmed past
+        // section WITH the green now-highlight — accepted cosmetic quirk.
+        .opacity(isPast ? 0.55 : 1)
     }
 
     // MARK: - All-Day Chip
@@ -192,6 +361,12 @@ struct CalendarEventsView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(selectedEventID == event.id ? Color.accentColor : .blue)
+
+                if event.conferenceLink != nil {
+                    joinButton(event)
+                }
+
+                recordButton(eventID: event.id, title: event.title)
             }
 
             if expandedEventID == event.id {
@@ -199,6 +374,8 @@ struct CalendarEventsView: View {
                     .padding(.leading, 88)
             }
         }
+        // Scroll anchor for the recording→event deep link.
+        .id(event.id)
     }
 
     // MARK: - Event Detail
@@ -252,6 +429,15 @@ struct CalendarEventsView: View {
                 }
                 .padding(.top, 2)
             }
+
+            // Linked recordings (hidden when the event has none): tapping a
+            // row deep-links into the Recordings tab with it selected.
+            EventRecordingsSection(eventID: event.id) { recordingID in
+                selectedRecordingID = recordingID
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    mode = .recordings
+                }
+            }
         }
         .padding(.vertical, 4)
     }
@@ -292,42 +478,77 @@ struct CalendarEventsView: View {
     }
 
     private var notConnectedView: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             Image(systemName: "calendar.badge.exclamationmark")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            Text("Google Calendar not connected")
+            Text("No calendar connected")
                 .font(.headline)
-            Text("Connect your Google Calendar to see upcoming meetings and prepare for them.")
+            Text("Connect a calendar to see your meetings, prep, and briefings here.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
 
-            if googleAuth.isAuthenticating {
-                ProgressView("Connecting...")
+            if google.isRunning {
+                ProgressView("Connecting Google...")
                     .padding(.top, 4)
                 Button("Cancel") {
-                    googleAuth.cancelConnect()
+                    google.cancel()
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             } else {
+                // Two equally-visible paths — a barely-there caption link is
+                // not discoverable enough for the primary alternative.
                 Button {
-                    googleAuth.connect()
+                    google.includeGmail = false
+                    google.includeCalendar = true
+                    google.connect()
                 } label: {
                     Label("Connect Google Calendar", systemImage: "calendar.badge.plus")
+                        .frame(width: 280)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .padding(.top, 4)
+
+                Button {
+                    showAddCalendarAccountSheet = true
+                } label: {
+                    Label("Connect iCloud / CalDAV / ICS calendar", systemImage: "link.badge.plus")
+                        .frame(width: 280)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
 
-            if let err = googleAuth.error {
+            if let err = google.error {
                 Text(err)
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+
+            Button("Add an IMAP or Outlook mailbox instead…") {
+                showAddEmailAccountSheet = true
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            google.refresh()
+            appState.calendarAccountsViewModel?.refresh()
+        }
+        .sheet(isPresented: $showAddEmailAccountSheet) {
+            AddEmailAccountView()
+                .environment(appState)
+        }
+        .sheet(isPresented: $showAddCalendarAccountSheet) {
+            AddCalendarAccountView()
+                .environment(appState)
+        }
     }
 }

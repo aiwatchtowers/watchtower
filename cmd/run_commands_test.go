@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"watchtower/internal/calendar"
 	"watchtower/internal/db"
 
 	"github.com/spf13/cobra"
@@ -64,8 +65,16 @@ func TestRunCalendarStatus_NotConnected(t *testing.T) {
 
 func TestRunCalendarStatus_Connected(t *testing.T) {
 	wsDir := setupTempWorkspace(t)
-	// Create token file so the status check sees it as connected.
-	tokenPath := filepath.Join(wsDir, "google_token.json")
+
+	dbPath := filepath.Join(wsDir, "watchtower.db")
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	id, err := database.CreateGoogleAccount(db.GoogleAccount{CalendarEnabled: true})
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	// Create the per-account token file so the status check sees it as connected.
+	tokenPath := calendar.NewAccountTokenStore(wsDir, id).Path()
 	require.NoError(t, os.WriteFile(tokenPath, []byte(`{"access_token":"x"}`), 0o600))
 
 	c := &cobra.Command{}
@@ -97,10 +106,10 @@ func TestRunCalendarList_WithCalendars(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "primary", Name: "Main", IsPrimary: true, IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z",
 	}))
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "work@x.com", Name: "Work", IsSelected: false, SyncedAt: "2026-04-01T00:00:00Z",
 	}))
 
@@ -197,7 +206,7 @@ func TestRunCalendarSelect_TogglesSelection(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "primary", Name: "Main", IsSelected: true, SyncedAt: "2026-04-01T00:00:00Z",
 	}))
 

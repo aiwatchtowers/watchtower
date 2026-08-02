@@ -34,14 +34,6 @@ struct InboxCardView: View {
 
     @State private var didCopyDraft = false
 
-    // MARK: - Snooze Options
-
-    enum SnoozeOption {
-        case oneHour
-        case tillTomorrow
-        case tillMonday
-    }
-
     // MARK: - Body
 
     var body: some View {
@@ -279,6 +271,7 @@ struct InboxCardView: View {
         case "decision_made":         return "Decision"
         case "briefing_ready":        return "Briefing"
         case "target_due":            return "Reminder"
+        case "email_received", "email_cc": return "Email"
         default:                      return item.triggerType.capitalized
         }
     }
@@ -297,6 +290,7 @@ struct InboxCardView: View {
         case "decision_made":         return "paperplane"
         case "briefing_ready":        return "sun.max"
         case "target_due":            return "bell.badge"
+        case "email_received", "email_cc": return "envelope"
         default:                      return "circle"
         }
     }
@@ -315,6 +309,8 @@ struct InboxCardView: View {
         case "decision_made":        return .indigo
         case "briefing_ready":       return .yellow
         case "target_due":           return .pink
+        case "email_received",
+             "email_cc":             return .blue
         default:                     return .secondary
         }
     }

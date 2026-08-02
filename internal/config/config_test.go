@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,6 +71,8 @@ func TestLoad_DefaultValues(t *testing.T) {
 	// Catch-up gather caps feed the peel-off pool; raised so peel sees the real
 	// unread backlog instead of an arbitrarily truncated slice.
 	assert.Equal(t, CatchupCaps{Digests: 150, Tracks: 80, Inbox: 120, Briefings: 20}, cfg.Catchup.Caps)
+
+	assert.Equal(t, DefaultTranscriptAudioRetentionDays, cfg.Transcripts.AudioRetentionDays)
 }
 
 func TestLoad_MissingFile(t *testing.T) {
@@ -281,6 +284,186 @@ day_plan:
 	assert.Equal(t, 10, cfg.DayPlan.MaxBacklog)
 }
 
+func TestMemoryConfig_Defaults(t *testing.T) {
+	path := writeTestConfig(t, "")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Memory.Enabled, "memory is off by default until the feature settles")
+	assert.Equal(t, 2000, cfg.Memory.MaxChunkMessages)
+	assert.Equal(t, 20, cfg.Memory.SeedMinMessages)
+	assert.Equal(t, 5, cfg.Memory.MaxEpisodesPerWindow)
+	assert.Equal(t, 200, cfg.Memory.MaxWindowMessages)
+
+	// Phase-3 semantic tier: dark by default, with the documented caps.
+	assert.False(t, cfg.Memory.Semantic.Enabled, "semantic tier off by default")
+	assert.Equal(t, 10, cfg.Memory.Semantic.RewriteMaxEntities)
+	assert.Equal(t, 20, cfg.Memory.Semantic.BeliefsMax)
+	assert.Equal(t, 20, cfg.Memory.Semantic.DedupeMaxMerges)
+	assert.Equal(t, 45, cfg.Memory.Semantic.EvictAfterDays)
+	assert.Equal(t, 50, cfg.Memory.Semantic.EvictMax)
+	assert.Equal(t, 5, cfg.Memory.Semantic.ConceptMinEpisodes)
+	assert.Equal(t, 10, cfg.Memory.Semantic.ConceptMaxCreate)
+	assert.Equal(t, 200000, cfg.Memory.Semantic.OutputBudget)
+
+	// Phase-4 surfaces: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Surfaces.Chat, "chat surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.Briefing, "briefing surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.Disputes, "disputes surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.Reflection, "reflection surface off by default")
+
+	// Phase-5 slice-1 sources: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Sources.Gmail, "gmail source off by default")
+	assert.False(t, cfg.Memory.Sources.Actions, "actions source off by default")
+
+	// Phase-5 slice-2 sources: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Sources.Calendar, "calendar source off by default")
+	assert.False(t, cfg.Memory.Sources.Chats, "chats source off by default")
+
+	// Phase-5 slice-3 renders: dark by default.
+	assert.False(t, cfg.Memory.Renders.DigestCompare, "digest_compare render off by default")
+
+	// Phase-5 slice-4 gates: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Sources.Operational, "operational source off by default")
+	assert.False(t, cfg.Memory.Surfaces.DayPlan, "day_plan surface off by default")
+	assert.False(t, cfg.Memory.Surfaces.MeetingPrep, "meeting_prep surface off by default")
+	assert.False(t, cfg.Memory.Semantic.Preferences, "preferences semantic gate off by default")
+
+	// Slice B dark retrieval-compare: dark by default, independently gated.
+	assert.False(t, cfg.Memory.Retrieve.RecallCompare, "recall_compare off by default")
+	assert.False(t, cfg.Memory.Retrieve.BriefingCompare, "briefing_compare off by default")
+	assert.False(t, cfg.Memory.Retrieve.MeetingPrepCompare, "meeting_prep_compare off by default")
+}
+
+func TestMemorySlice4Config_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  sources:
+    operational: true
+  surfaces:
+    day_plan: true
+    meeting_prep: true
+  semantic:
+    preferences: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Sources.Operational)
+	assert.True(t, cfg.Memory.Surfaces.DayPlan)
+	assert.True(t, cfg.Memory.Surfaces.MeetingPrep)
+	assert.True(t, cfg.Memory.Semantic.Preferences)
+}
+
+func TestMemorySourcesConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  sources:
+    gmail: true
+    actions: true
+    calendar: true
+    chats: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Sources.Gmail)
+	assert.True(t, cfg.Memory.Sources.Actions)
+	assert.True(t, cfg.Memory.Sources.Calendar)
+	assert.True(t, cfg.Memory.Sources.Chats)
+}
+
+func TestMemorySurfacesConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  surfaces:
+    chat: true
+    briefing: true
+    disputes: true
+    reflection: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Surfaces.Chat)
+	assert.True(t, cfg.Memory.Surfaces.Briefing)
+	assert.True(t, cfg.Memory.Surfaces.Disputes)
+	assert.True(t, cfg.Memory.Surfaces.Reflection)
+}
+
+func TestMemoryRendersConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  renders:
+    digest_compare: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Renders.DigestCompare)
+}
+
+func TestMemoryRetrieveConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  retrieve:
+    recall_compare: true
+    briefing_compare: true
+    meeting_prep_compare: true
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Retrieve.RecallCompare)
+	assert.True(t, cfg.Memory.Retrieve.BriefingCompare)
+	assert.True(t, cfg.Memory.Retrieve.MeetingPrepCompare)
+}
+
+func TestMemoryConfig_FromYAML(t *testing.T) {
+	yaml := `
+memory:
+  enabled: true
+  max_chunk_messages: 500
+  seed_min_messages: 3
+  max_episodes_per_window: 2
+  max_window_messages: 50
+  semantic:
+    enabled: true
+    rewrite_max_entities: 3
+    beliefs_max: 4
+    dedupe_max_merges: 5
+    evict_after_days: 30
+    evict_max: 7
+    concept_min_episodes: 2
+    concept_max_create: 6
+    output_budget: 12345
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.Memory.Enabled)
+	assert.Equal(t, 500, cfg.Memory.MaxChunkMessages)
+	assert.Equal(t, 3, cfg.Memory.SeedMinMessages)
+	assert.Equal(t, 2, cfg.Memory.MaxEpisodesPerWindow)
+	assert.Equal(t, 50, cfg.Memory.MaxWindowMessages)
+
+	assert.True(t, cfg.Memory.Semantic.Enabled)
+	assert.Equal(t, 3, cfg.Memory.Semantic.RewriteMaxEntities)
+	assert.Equal(t, 4, cfg.Memory.Semantic.BeliefsMax)
+	assert.Equal(t, 5, cfg.Memory.Semantic.DedupeMaxMerges)
+	assert.Equal(t, 30, cfg.Memory.Semantic.EvictAfterDays)
+	assert.Equal(t, 7, cfg.Memory.Semantic.EvictMax)
+	assert.Equal(t, 2, cfg.Memory.Semantic.ConceptMinEpisodes)
+	assert.Equal(t, 6, cfg.Memory.Semantic.ConceptMaxCreate)
+	assert.Equal(t, 12345, cfg.Memory.Semantic.OutputBudget)
+}
+
 func TestTargetsConfigDefaults(t *testing.T) {
 	path := writeTestConfig(t, "")
 	cfg, err := Load(path)
@@ -358,4 +541,26 @@ workspaces:
 	ws, err := cfg.GetActiveWorkspace()
 	require.NoError(t, err)
 	assert.Equal(t, "xoxp-prod", ws.SlackToken)
+}
+
+// TestConfigRecordingsDir freezes the cross-language contract with the Swift
+// MeetingRecorderCenter.recordingsDirectory(): an explicit transcripts.recordings_dir
+// wins verbatim, otherwise the default resolves under the same
+// Library/Application Support/Watchtower/recordings location the Desktop recorder
+// writes into (so the daemon orphan cleanup scans the right directory).
+func TestConfigRecordingsDir(t *testing.T) {
+	t.Run("override used verbatim", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.Transcripts.RecordingsDir = "/custom/recordings/path"
+		assert.Equal(t, "/custom/recordings/path", cfg.RecordingsDir())
+	})
+
+	t.Run("default under Application Support", func(t *testing.T) {
+		cfg := &Config{}
+		got := cfg.RecordingsDir()
+		require.NotEmpty(t, got, "default recordings dir must resolve when a home directory exists")
+		suffix := filepath.Join("Library", "Application Support", "Watchtower", "recordings")
+		assert.True(t, strings.HasSuffix(got, suffix),
+			"default must match the Swift MeetingRecorderCenter path, got %q", got)
+	})
 }

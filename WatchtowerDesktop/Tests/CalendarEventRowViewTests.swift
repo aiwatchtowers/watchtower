@@ -84,4 +84,31 @@ final class CalendarEventRowViewTests: XCTestCase {
         // его не должно быть в дереве, т.к. блок `if count > 0` не сработал.
         XCTAssertThrowsError(try view.inspect().find(text: "0"))
     }
+
+    /// Upcoming-событие (старт < 1 ч) показывает relative-countdown suffix
+    /// ("in" + relative Text). Даты — относительные от Date(), не хардкод.
+    func testCountdownShownForUpcomingEvent() throws {
+        let fmt = ISO8601DateFormatter()
+        let start = Date().addingTimeInterval(25 * 60)
+        let view = CalendarEventRow(event: makeEvent(
+            startTime: fmt.string(from: start),
+            endTime: fmt.string(from: start.addingTimeInterval(1800))
+        ))
+        XCTAssertNoThrow(try view.inspect().find(text: "in"))
+    }
+
+    /// Не-upcoming (далёкое будущее из дефолтной фикстуры) и прошедшее
+    /// событие countdown не показывают.
+    func testCountdownHiddenWhenNotUpcoming() throws {
+        let farFuture = CalendarEventRow(event: makeEvent())
+        XCTAssertThrowsError(try farFuture.inspect().find(text: "in"))
+
+        let fmt = ISO8601DateFormatter()
+        let pastStart = Date().addingTimeInterval(-7200)
+        let past = CalendarEventRow(event: makeEvent(
+            startTime: fmt.string(from: pastStart),
+            endTime: fmt.string(from: pastStart.addingTimeInterval(1800))
+        ))
+        XCTAssertThrowsError(try past.inspect().find(text: "in"))
+    }
 }

@@ -118,8 +118,9 @@ extension ReplicaStore {
                 errorMessage: row["error_message"]
             ))
         }
+        let newBadIDs = badIDs
         let firstSeen = corruptPending.withLock { seen -> [String] in
-            badIDs.filter { seen.insert($0).inserted }
+            newBadIDs.filter { seen.insert($0).inserted }
         }
         for id in firstSeen {
             logger.warning("undecodable pending_actions row skipped: \(id, privacy: .public)")

@@ -114,11 +114,6 @@ func enrichSnippet(text string, database *db.DB) string {
 	return strings.TrimSpace(s)
 }
 
-// cleanSnippet strips Slack markup from message text for display (without DB access).
-func cleanSnippet(text string) string {
-	return enrichSnippet(text, nil)
-}
-
 // DefaultLookbackDays is the default lookback for first-time inbox detection.
 const DefaultLookbackDays = 7
 
@@ -259,9 +254,28 @@ func (p *Pipeline) runTriagePhase(ctx context.Context, currentUserID string, new
 	return outcome, err
 }
 
+// runComposePhase folds new material into dashboard situations when a
+// generator is configured. It mirrors runTriagePhase's nil-generator guard:
+// runCompose has no internal guard and would nil-deref on real input.
+// Compose failures are logged and swallowed — they never fail Run and never
+// touch the inbox watermark (compose owns its own watermark, DASH-02).
+func (p *Pipeline) runComposePhase(ctx context.Context, currentUserID string) (created, merged int) {
+	if p.generator == nil {
+		return 0, 0
+	}
+	stepStart := time.Now()
+	created, merged, err := p.runCompose(ctx, currentUserID)
+	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
+	if err != nil {
+		p.logger.Printf("inbox: compose error: %v", err)
+	}
+	return created, merged
+}
+
 // runArchiveAndUnsnooze runs phase 6: auto-archive expired ambient / stale
-// actionable items, then unsnooze anything whose snooze has expired. Returns
-// the total number of items archived.
+// actionable items and unsnooze anything whose snooze has expired, then runs
+// the dashboard situation lifecycle — unsnooze expired situations and mark
+// inactive open ones stale. Returns the total number of inbox items archived.
 func (p *Pipeline) runArchiveAndUnsnooze() int {
 	var archived int
 	if n, err := p.db.ArchiveExpiredAmbient(7 * 24 * time.Hour); err != nil {
@@ -276,6 +290,18 @@ func (p *Pipeline) runArchiveAndUnsnooze() int {
 	}
 	if _, err := p.db.UnsnoozeExpiredInboxItems(); err != nil {
 		p.logger.Printf("inbox: unsnooze error: %v", err)
+	}
+
+	// Dashboard situation lifecycle (DASH-02): non-fatal, never touches the
+	// inbox watermark.
+	if _, err := p.db.UnsnoozeExpiredSituations(); err != nil {
+		p.logger.Printf("inbox: unsnooze situations error: %v", err)
+	}
+	if p.cfg != nil && p.cfg.Dashboard.StaleAfterDays > 0 {
+		staleAfter := time.Duration(p.cfg.Dashboard.StaleAfterDays) * 24 * time.Hour
+		if _, err := p.db.MarkStaleSituations(staleAfter); err != nil {
+			p.logger.Printf("inbox: mark stale situations error: %v", err)
+		}
 	}
 	return archived
 }
@@ -309,8 +335,11 @@ func decideWatermark(lastTS float64, detectErr, triageErr error, outcome triageO
 }
 
 // Run executes the inbox pipeline: dedup, detect new items, triage (trigger
-// items plus a stream scan), learn, auto-resolve, prepare secretary cards,
-// auto-archive, then unsnooze. Returns (created count, resolved count, error).
+// items plus a stream scan), learn, auto-resolve, compose dashboard situations
+// from the new signals, prepare situation cards, auto-archive, then unsnooze.
+// Returns (created count, resolved count, error). Compose and situation-card
+// failures are logged but never fail Run and never affect the inbox watermark
+// (INBOX-09 stays keyed to detect/triage only; feed stability is DASH-02).
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
 	p.totalInputTokens = 0
@@ -341,8 +370,8 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// failure freezes/partially advances the watermark below so no window is skipped).
 	p.progress(1, totalSteps, "detecting")
 	stepStart := time.Now()
-	createdSlack, createdJira, createdCalendar, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
-	created := createdSlack + createdJira + createdCalendar + createdWatchtower
+	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
+	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap + createdWatchtower
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 2: Triage — the secretary reviews every new trigger item plus a
@@ -370,16 +399,21 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	resolved := p.autoResolveByRules(ctx, currentUserID)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
-	// Phase 5: Cards — secretary write-ups (why-it-matters / thread digest /
-	// draft reply) for items that need one. Per-item failures are recorded via
-	// MarkInboxCardFailed and retried next cycle; they never fail Run (INBOX-07).
-	p.progress(5, totalSteps, "preparing cards")
-	cardsGenerated, cardErr := p.runCards(ctx, currentUserID)
+	// Phase 5: Compose — fold new triaged signals, track events, and target
+	// updates into dashboard situations (create / merge / rerank), then write a
+	// secretary card (summary / why-it-matters / chronology) for each situation
+	// that needs one. Both stages are non-fatal: per-situation card failures are
+	// recorded and retried next cycle, and neither stage touches the inbox
+	// watermark (DASH-02). Situation cards share this progress slot with compose.
+	p.progress(5, totalSteps, "composing")
+	composeCreated, composeMerged := p.runComposePhase(ctx, currentUserID)
+	cardsGenerated, cardErr := p.runSituationCards(ctx, currentUserID)
 	if cardErr != nil {
-		p.logger.Printf("inbox: cards error: %v", cardErr)
+		p.logger.Printf("inbox: situation cards error: %v", cardErr)
 	}
 
-	// Phase 6: Auto-archive expired/stale items, then unsnooze expired snoozes.
+	// Phase 6: Auto-archive expired/stale items, unsnooze expired snoozes, and
+	// run the dashboard situation lifecycle (unsnooze / mark-stale).
 	p.progress(6, totalSteps, "archiving")
 	archived := p.runArchiveAndUnsnooze()
 
@@ -392,9 +426,9 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	p.progress(totalSteps, totalSteps, "done")
 
-	p.logger.Printf("inbox: +%d new (S%d J%d C%d I%d T%d), %d auto-resolved, %d cards, %d auto-archived, %d learned-rule-updates",
-		created, createdSlack, createdJira, createdCalendar, createdWatchtower, outcome.Created,
-		resolved, cardsGenerated, archived, learnedRuleUpdates)
+	p.logger.Printf("inbox: +%d new (S%d J%d C%d G%d M%d I%d T%d), %d auto-resolved, situations +%d/~%d, %d cards, %d auto-archived, %d learned-rule-updates",
+		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, outcome.Created,
+		resolved, composeCreated, composeMerged, cardsGenerated, archived, learnedRuleUpdates)
 
 	// detectErr is logged but non-fatal (existing behavior, guarded by
 	// TestInbox09_WatermarkFrozenOnDetectorError); triageErr is surfaced to
@@ -419,9 +453,9 @@ func (p *Pipeline) advanceWatermark(ts, lastTS float64) {
 
 // RunFastDetection runs a lightweight subset of the pipeline: dedup, Slack/Jira/
 // Calendar detection and rule-based auto-resolve. It skips the digest-dependent
-// decision_made/briefing_ready detector, the implicit learner, triage, cards,
-// archival, and the watermark advance — all of which the full Run still
-// performs afterwards. Fast-detected items surface as actionable/medium (the
+// decision_made/briefing_ready detector, the implicit learner, triage, compose
+// and situation cards, archival, and the watermark advance — all of which the
+// full Run still performs afterwards. Fast-detected items surface as actionable/medium (the
 // CreateInboxItem default) until the next full Run triages them.
 //
 // This lets the daemon surface DMs/mentions in the UI immediately after a Slack
@@ -446,13 +480,13 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 	// RunFastDetection never advances the watermark (the full Run owns that), so
 	// a detector error is already surfaced via the per-detector logs inside
 	// detectAll; no watermark gating is needed here.
-	createdSlack, createdJira, createdCalendar, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
-	created := createdSlack + createdJira + createdCalendar
+	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
+	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap
 
 	resolved := p.autoResolveByRules(ctx, currentUserID)
 
-	p.logger.Printf("inbox fast: +%d new (S%d J%d C%d), %d auto-resolved",
-		created, createdSlack, createdJira, createdCalendar, resolved)
+	p.logger.Printf("inbox fast: +%d new (S%d J%d C%d G%d M%d), %d auto-resolved",
+		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, resolved)
 
 	return nil
 }
@@ -463,7 +497,7 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 // used by RunFastDetection so it can run before the digest pipeline.
 // The returned error is non-nil if any detector failed; callers use it to gate
 // the watermark advance so a failed pass does not skip its message window.
-func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time, includeWatchtower bool) (slack, jira, cal, wt int, err error) {
+func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time, includeWatchtower bool) (slack, jira, cal, gmail, imapCount, wt int, err error) {
 	var errs []error
 	if n, e := p.detectSlackTriggers(ctx, currentUserID, lastTS); e != nil {
 		p.logger.Printf("inbox: slack detect error: %v", e)
@@ -483,6 +517,18 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 	} else {
 		cal = n
 	}
+	if n, e := DetectGmailAccounts(ctx, p.db, sinceTime); e != nil {
+		p.logger.Printf("inbox: gmail detect error: %v", e)
+		errs = append(errs, fmt.Errorf("gmail: %w", e))
+	} else {
+		gmail = n
+	}
+	if n, e := DetectImapAccounts(ctx, p.db, sinceTime); e != nil {
+		p.logger.Printf("inbox: imap detect error: %v", e)
+		errs = append(errs, fmt.Errorf("imap: %w", e))
+	} else {
+		imapCount = n
+	}
 	if includeWatchtower {
 		if n, e := DetectWatchtowerInternal(ctx, p.db, sinceTime); e != nil {
 			p.logger.Printf("inbox: watchtower detect error: %v", e)
@@ -490,8 +536,19 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 		} else {
 			wt = n
 		}
+		// Memory dispute reader ("the arguing secretary"): dispute_pending
+		// beliefs become ordinary decision_made items, gated dark by default.
+		// An error here freezes the watermark exactly like any other detector
+		// (INBOX-09) — it is joined into errs.
+		disputesEnabled := p.cfg != nil && p.cfg.Memory.Surfaces.Disputes
+		if n, e := detectMemoryDisputes(p.db, disputesEnabled); e != nil {
+			p.logger.Printf("inbox: memory dispute detect error: %v", e)
+			errs = append(errs, fmt.Errorf("memory-dispute: %w", e))
+		} else {
+			wt += n
+		}
 	}
-	return slack, jira, cal, wt, errors.Join(errs...)
+	return slack, jira, cal, gmail, imapCount, wt, errors.Join(errs...)
 }
 
 // detectSlackTriggers detects @mentions, DMs, thread replies and reactions from Slack messages.
@@ -631,7 +688,7 @@ func (p *Pipeline) loadContext(channelID, messageTS, threadTS string) string {
 		if name == "" {
 			name = m.UserID
 		}
-		line := cleanSnippet(m.Text)
+		line := enrichSnippet(m.Text, p.db)
 		if line == "" {
 			continue
 		}
@@ -724,6 +781,7 @@ func (p *Pipeline) autoResolveJira(_ context.Context) int {
 		p.logger.Printf("inbox: autoResolveJira: query: %v", err)
 		return 0
 	}
+	defer rows.Close()
 	type candidate struct {
 		id        int64
 		issueKey  string
@@ -733,13 +791,11 @@ func (p *Pipeline) autoResolveJira(_ context.Context) int {
 	for rows.Next() {
 		var c candidate
 		if err := rows.Scan(&c.id, &c.issueKey, &c.createdAt); err != nil {
-			rows.Close() //nolint:errcheck
 			p.logger.Printf("inbox: autoResolveJira: scan: %v", err)
 			return 0
 		}
 		candidates = append(candidates, c)
 	}
-	rows.Close() //nolint:errcheck
 
 	resolved := 0
 	for _, c := range candidates {
@@ -773,6 +829,7 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context) int {
 		p.logger.Printf("inbox: autoResolveCalendar: query: %v", err)
 		return 0
 	}
+	defer rows.Close()
 	type candidate struct {
 		id      int64
 		eventID string
@@ -781,13 +838,11 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context) int {
 	for rows.Next() {
 		var c candidate
 		if err := rows.Scan(&c.id, &c.eventID); err != nil {
-			rows.Close() //nolint:errcheck
 			p.logger.Printf("inbox: autoResolveCalendar: scan: %v", err)
 			return 0
 		}
 		candidates = append(candidates, c)
 	}
-	rows.Close() //nolint:errcheck
 
 	resolved := 0
 	for _, c := range candidates {

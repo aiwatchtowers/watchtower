@@ -6,7 +6,7 @@
 
 ## Problem
 
-Unread state is spread across five independent counters (digests, tracks, inbox, briefings, plus status-based targets) with no aggregated view and no bulk "mark read". Each area is cleared one item at a time, in its own screen. After a few days away the backlog becomes unmanageable ("дохуище непрочитанного"), and because clearing is manual and per-item, the operator either never catches up or clears blindly and misses genuinely new signals.
+Unread state is spread across five independent counters (digests, tracks, inbox, briefings, plus status-based targets) with no aggregated view and no bulk "mark read". Each area is cleared one item at a time, in its own screen. After a few days away the backlog becomes unmanageable ("a metric shit-ton of unread"), and because clearing is manual and per-item, the operator either never catches up or clears blindly and misses genuinely new signals.
 
 ### Current unread mechanisms (read-tracked areas only)
 
@@ -119,7 +119,7 @@ New package mirroring the `meeting` / `briefing` pipeline pattern.
 ## Section 4 — Edge cases
 
 - **Snapshot by ID** — mark-read affects only IDs captured in the rollup; items arriving after generation remain unread.
-- **Zero unread** — empty state ("Всё разгребено"), no AI call.
+- **Zero unread** — empty state ("All caught up"), no AI call.
 - **AI failure / timeout** — fall back to a rollup with `stories` empty and `sections` populated from `gather()` directly; clearing still works (don't block unloading on AI).
 - **Truncation** — surfaced per section and in `counts`.
 - **Idempotent marking** — already-read / newly-arrived-after-snapshot IDs are safely skipped.

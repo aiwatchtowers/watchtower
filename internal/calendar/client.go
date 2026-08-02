@@ -144,19 +144,33 @@ type googleEventsList struct {
 
 // googleEvent represents a Google Calendar event from the API.
 type googleEvent struct {
-	ID               string         `json:"id"`
-	Status           string         `json:"status"`
-	Summary          string         `json:"summary"`
-	Description      string         `json:"description"`
-	Location         string         `json:"location"`
-	HTMLLink         string         `json:"htmlLink"`
-	Start            *googleTime    `json:"start"`
-	End              *googleTime    `json:"end"`
-	Organizer        *googlePerson  `json:"organizer"`
-	Attendees        []googlePerson `json:"attendees"`
-	RecurringEventID string         `json:"recurringEventId"`
-	EventType        string         `json:"eventType"`
-	Updated          string         `json:"updated"`
+	ID               string                `json:"id"`
+	Status           string                `json:"status"`
+	Summary          string                `json:"summary"`
+	Description      string                `json:"description"`
+	Location         string                `json:"location"`
+	HTMLLink         string                `json:"htmlLink"`
+	HangoutLink      string                `json:"hangoutLink"`
+	ConferenceData   *googleConferenceData `json:"conferenceData"`
+	Start            *googleTime           `json:"start"`
+	End              *googleTime           `json:"end"`
+	Organizer        *googlePerson         `json:"organizer"`
+	Attendees        []googlePerson        `json:"attendees"`
+	RecurringEventID string                `json:"recurringEventId"`
+	EventType        string                `json:"eventType"`
+	Updated          string                `json:"updated"`
+	ICalUID          string                `json:"iCalUID"`
+}
+
+// googleConferenceData carries the event's conference solution; only the
+// entry points (join URLs) are needed here.
+type googleConferenceData struct {
+	EntryPoints []googleEntryPoint `json:"entryPoints"`
+}
+
+type googleEntryPoint struct {
+	EntryPointType string `json:"entryPointType"` // "video", "phone", "sip", "more"
+	URI            string `json:"uri"`
 }
 
 type googleTime struct {
@@ -251,15 +265,17 @@ func convertEvent(item googleEvent, calendarID string) CalendarEvent {
 		eventStatus = "confirmed"
 	}
 	event := CalendarEvent{
-		ID:          item.ID,
-		Title:       sanitizeTitle(item.Summary),
-		Description: item.Description,
-		Location:    item.Location,
-		CalendarID:  calendarID,
-		HTMLLink:    item.HTMLLink,
-		EventType:   item.EventType,
-		EventStatus: eventStatus,
-		UpdatedAt:   item.Updated,
+		ID:            item.ID,
+		Title:         sanitizeTitle(item.Summary),
+		Description:   item.Description,
+		Location:      item.Location,
+		CalendarID:    calendarID,
+		HTMLLink:      item.HTMLLink,
+		ConferenceURL: conferenceURL(item),
+		EventType:     item.EventType,
+		EventStatus:   eventStatus,
+		UpdatedAt:     item.Updated,
+		ICalUID:       item.ICalUID,
 	}
 
 	// Parse start/end times.
@@ -318,6 +334,24 @@ func convertEvent(item googleEvent, calendarID string) CalendarEvent {
 	}
 
 	return event
+}
+
+// conferenceURL resolves the event's meeting link with the priority:
+// hangoutLink (Meet's dedicated field) → first "video" conferenceData entry
+// point (Zoom/Teams/Webex add-ons) → regex fallback over location+description
+// (a link pasted by hand, incl. inside an HTML description).
+func conferenceURL(item googleEvent) string {
+	if item.HangoutLink != "" {
+		return item.HangoutLink
+	}
+	if item.ConferenceData != nil {
+		for _, ep := range item.ConferenceData.EntryPoints {
+			if ep.EntryPointType == "video" && ep.URI != "" {
+				return ep.URI
+			}
+		}
+	}
+	return ExtractConferenceURL(item.Location, item.Description)
 }
 
 // sanitizeTitle removes conference links and sensitive info from event title.

@@ -38,7 +38,7 @@ func TestDetectConflicts_FlipsFlag(t *testing.T) {
 	}))
 
 	// Calendar parent required by FK.
-	require.NoError(t, d.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "c1", Name: "Primary", IsPrimary: true,
 	}))
 
@@ -110,7 +110,7 @@ func TestDetectConflicts_AllDayEvent_NoFalseConflict(t *testing.T) {
 		},
 	}))
 
-	require.NoError(t, d.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "c1", Name: "Primary", IsPrimary: true,
 	}))
 

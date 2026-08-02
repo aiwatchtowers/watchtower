@@ -33,7 +33,7 @@ func openTestDB(t *testing.T) *db.DB {
 
 func seedTestEvent(t *testing.T, database *db.DB) {
 	t.Helper()
-	require.NoError(t, database.UpsertCalendar(db.CalendarCalendar{
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{
 		ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z",
 	}))
 	require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{

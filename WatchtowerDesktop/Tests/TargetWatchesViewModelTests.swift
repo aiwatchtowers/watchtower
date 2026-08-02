@@ -7,12 +7,13 @@ final class TargetWatchesViewModelTests: XCTestCase {
 
     // Mirrors the track_events DDL the CustomTrackTimeline tests use, so the
     // test DB has the table the app schema creates at runtime.
+    // linked_target_id is now part of the shared schema itself (Secretary
+    // Memory Slice C) — no longer patched here.
     static let trackEventsSQL = """
         ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto';
         ALTER TABLE tracks ADD COLUMN instruction TEXT NOT NULL DEFAULT '';
         ALTER TABLE tracks ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
         ALTER TABLE tracks ADD COLUMN last_run_at TEXT NOT NULL DEFAULT '';
-        ALTER TABLE tracks ADD COLUMN linked_target_id INTEGER;
         CREATE TABLE IF NOT EXISTS track_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,

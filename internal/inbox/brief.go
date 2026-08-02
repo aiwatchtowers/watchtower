@@ -23,11 +23,39 @@ func buildSecretaryBrief(database *db.DB, currentUserID string, now time.Time) s
 
 	writeProfileSection(&b, database)
 	writeRoleSection(&b, database, currentUserID)
+	writeOwnerEmailsSection(&b, database)
 	writeTracksSection(&b, database)
 	writeJiraSection(&b, database, currentUserID)
 	writeCalendarSection(&b, database, now)
 
 	return b.String()
+}
+
+// writeOwnerEmailsSection appends the owner's known email addresses (Gmail
+// accounts + connected IMAP/Outlook accounts), so the AI can recognize
+// messages addressed to any of them as involving the owner. Omitted
+// entirely when no address is known, keeping single/no-account output
+// byte-identical to before this section existed.
+func writeOwnerEmailsSection(b *strings.Builder, database *db.DB) {
+	var addrs []string
+	if accounts, err := database.ListGoogleAccounts(); err == nil {
+		for _, a := range accounts {
+			if a.Email != "" {
+				addrs = append(addrs, a.Email)
+			}
+		}
+	}
+	if accounts, err := database.ListEmailAccounts(); err == nil {
+		for _, a := range accounts {
+			if a.EmailAddress != "" {
+				addrs = append(addrs, a.EmailAddress)
+			}
+		}
+	}
+	if len(addrs) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "Owner email addresses: %s\n\n", strings.Join(addrs, ", "))
 }
 
 // writeProfileSection appends the user's own secretary instructions, if set.
@@ -57,7 +85,11 @@ func writeTracksSection(b *strings.Builder, database *db.DB) {
 			if i >= maxBriefTracks {
 				break
 			}
-			fmt.Fprintf(b, "- [%s] %s (ball on: %s)\n", tr.Priority, tr.Text, tr.BallOn)
+			// BallOn holds a raw user id; track text can carry <@U...> mentions.
+			// Resolve both — the AI treats whatever appears here as the person's
+			// name and copies it into situation titles verbatim.
+			ballOn, _ := database.UserNameByID(tr.BallOn)
+			fmt.Fprintf(b, "- [%s] %s (ball on: %s)\n", tr.Priority, enrichSnippet(tr.Text, database), ballOn)
 		}
 		b.WriteString("\n")
 	}

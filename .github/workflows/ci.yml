@@ -4,11 +4,46 @@ on:
   push:
     branches: [main, mobile-app, feature/*]
   pull_request:
-    branches: [main, mobile-app]
+  # Manual escape hatch: lets a maintainer force a real run (bypassing the
+  # `gate` job's push-vs-pull_request dedupe below, since its event_name
+  # isn't "push") when a PR's pull_request-triggered run never materializes.
+  workflow_dispatch:
+
+# One live run per branch and event: rapid successive pushes (or PR syncs)
+# cancel their stale predecessors. Cross-event dedupe (push vs pull_request
+# firing together on a PR branch) is handled by the `gate` job below —
+# skipping shows neutral in the PR, unlike a cancelled run's red X.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
+  # Skips the push-triggered run when the branch has an open PR — the
+  # pull_request-triggered run of the same commit does the work instead.
+  gate:
+    name: Dedupe gate
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_NAME}" != "main" ]; then
+            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${GITHUB_REF_NAME}" --state open --json number --jq length)
+            if [ "$open_prs" -gt 0 ]; then
+              echo "branch has an open PR — the pull_request run covers this commit"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
   go-lint:
     name: Go Lint
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +60,8 @@ jobs:
 
   go-test:
     name: Go Test
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,19 +70,28 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Test
-        # cmd takes ~8min under -race (login-shell/daemon process tests);
-        # the default 10m per-package timeout is too tight on shared runners.
-        run: go test ./... -race -count=1 -timeout 25m
-
       - name: Build
         run: go build ./...
 
-      - name: Coverage gate
+      # Runs the full suite with -cover and enforces coverage.thresholds —
+      # this IS the test run on feature branches and PRs.
+      - name: Test + coverage gate
         run: make test-cover
+
+      - name: Test (race, library packages)
+        # Race-instrumented pure-Go sqlite is ~10x slower (internal/db alone
+        # ~9min on shared runners), so the race pass runs only on pushes to
+        # main (i.e. per merged PR — a one-PR bisect window) and in the
+        # release workflow, keeping feature-branch CI fast. cmd stays out:
+        # it is CLI glue over file-backed SQLite fixtures whose concurrency
+        # all lives in internal/*, which is race-covered here.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
 
   swift-lint:
     name: Swift Lint
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: macos-15
     defaults:
       run:
@@ -61,12 +107,34 @@ jobs:
 
   swift-test:
     name: Swift Test
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: macos-15
     defaults:
       run:
         working-directory: WatchtowerDesktop
     steps:
       - uses: actions/checkout@v4
+
+      # The runner's default toolchain (Xcode 16.4) predates the macOS 26 SDK, so
+      # any reference to Speech's SpeechTranscriber/SpeechAnalyzer/AssetInventory/
+      # AnalyzerInput (AppleProvider.swift) fails to compile with "cannot find type
+      # in scope" rather than an availability diagnostic. Xcode 26.3 is installed on
+      # this image (non-default) and ships the macOS 26 SDK those declarations live
+      # in; selecting it lets the file weak-link as designed without needing a
+      # macOS-26 runner to execute the guarded code.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.3"
+
+      # GRDB alone is minutes of compile on a cold runner; reuse build
+      # products across runs until dependencies change.
+      - name: Cache SPM build
+        uses: actions/cache@v4
+        with:
+          path: WatchtowerDesktop/.build
+          key: ${{ runner.os }}-spm-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}
+          restore-keys: ${{ runner.os }}-spm-
 
       - name: Build
         run: swift build
@@ -147,6 +215,8 @@ jobs:
 
   sentrux-quality:
     name: Sentrux Quality Gate
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

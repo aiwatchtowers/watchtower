@@ -34,7 +34,7 @@ public struct ReplicaToolbox: Sendable {
     public init(
         store: ReplicaStore,
         outbox: ActionOutbox,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.store = store
         self.outbox = outbox

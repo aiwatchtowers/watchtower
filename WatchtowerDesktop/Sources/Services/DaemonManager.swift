@@ -97,6 +97,17 @@ final class DaemonManager {
         isDaemonRunning()
     }
 
+    /// Restart the detached daemon. Source syncers (Calendar, Gmail, Jira) are
+    /// wired only at daemon startup, and the daemon runs an immediate sync +
+    /// pipeline cycle on start — so a restart right after connecting a source
+    /// makes its data and AI products appear right away instead of waiting for
+    /// the next poll.
+    nonisolated static func restart() async {
+        guard let path = Constants.findCLIPath() else { return }
+        _ = try? await runProcess(path: path, arguments: ["sync", "stop"])
+        _ = try? await runProcess(path: path, arguments: ["sync", "--daemon", "--detach"])
+    }
+
     /// Synchronously stop the daemon via `watchtower sync stop`, with a 2s hard timeout.
     /// Safe to call from NSApplication.willTerminateNotification handler.
     nonisolated static func stopDaemonSync() {

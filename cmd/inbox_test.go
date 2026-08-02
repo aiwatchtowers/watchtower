@@ -23,7 +23,7 @@ func TestInboxCommandRegistered(t *testing.T) {
 }
 
 func TestInboxSubcommandsRegistered(t *testing.T) {
-	subs := map[string]bool{"show": false, "resolve": false, "dismiss": false, "snooze": false, "generate": false, "task": false}
+	subs := map[string]bool{"show": false, "resolve": false, "dismiss": false, "snooze": false, "generate": false, "task": false, "feedback": false, "style-sample": false}
 	for _, cmd := range inboxCmd.Commands() {
 		if _, ok := subs[cmd.Name()]; ok {
 			subs[cmd.Name()] = true
@@ -39,6 +39,8 @@ func TestInboxFlags(t *testing.T) {
 	assert.NotNil(t, inboxCmd.Flags().Lookup("type"))
 	assert.NotNil(t, inboxCmd.Flags().Lookup("all"))
 	assert.NotNil(t, inboxCmd.Flags().Lookup("json"))
+	assert.NotNil(t, inboxFeedbackCmd.Flags().Lookup("rating"), "inbox feedback --rating")
+	assert.NotNil(t, inboxFeedbackCmd.Flags().Lookup("comment"), "inbox feedback --comment")
 }
 
 func setupInboxTestEnv(t *testing.T) func() {

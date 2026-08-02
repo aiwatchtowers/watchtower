@@ -1,0 +1,525 @@
+import XCTest
+import GRDB
+@testable import WatchtowerDesktop
+
+// MARK: - DashboardViewModel Tests
+
+@MainActor
+final class DashboardViewModelTests: XCTestCase {
+    private var dbManager: DatabaseManager!
+    private var dbPath: String!
+
+    override func setUp() {
+        super.setUp()
+        do {
+            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        } catch {
+            XCTFail("setUp failed: \(error)")
+        }
+    }
+
+    override func tearDown() {
+        TestDatabase.cleanup(path: dbPath)
+        super.tearDown()
+    }
+
+    // MARK: - load()
+
+    func testLoadReturnsOpenSituationsRankedAndOpenCount() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertSituation(db, title: "Low rank", status: "open", rank: 1)
+            try TestDatabase.insertSituation(db, title: "High rank", status: "open", rank: 9)
+            try TestDatabase.insertSituation(db, title: "Done, excluded", status: "done", rank: 20)
+        }
+
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertEqual(vm.situations.map(\.title), ["High rank", "Low rank"])
+        XCTAssertEqual(vm.openCount, 2)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testLoadOnEmptyDBYieldsEmptyFeedAndZeroCount() throws {
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertTrue(vm.situations.isEmpty)
+        XCTAssertEqual(vm.openCount, 0)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    // MARK: - loadMore() pagination
+
+    func testLoadMoreAppendsNextPage() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertSituation(db, title: "A", rank: 3)
+            try TestDatabase.insertSituation(db, title: "B", rank: 2)
+            try TestDatabase.insertSituation(db, title: "C", rank: 1)
+        }
+
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.pageSize = 2
+        vm.load()
+        XCTAssertEqual(vm.situations.map(\.title), ["A", "B"])
+
+        vm.loadMore()
+        XCTAssertEqual(vm.situations.map(\.title), ["A", "B", "C"])
+    }
+
+    // MARK: - done / dismiss / snooze flip status and reload
+
+    func testDoneMarksSituationDoneAndRemovesItFromTheOpenFeed() throws {
+        let id = try dbManager.dbPool.write { try TestDatabase.insertSituation($0, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        vm.done(situation)
+
+        XCTAssertTrue(vm.situations.isEmpty)
+        XCTAssertEqual(vm.openCount, 0)
+        let status = try dbManager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM situations WHERE id = ?", arguments: [id])
+        }
+        XCTAssertEqual(status, "done")
+    }
+
+    func testDismissMarksSituationDismissedAndRemovesItFromTheOpenFeed() throws {
+        try dbManager.dbPool.write { try TestDatabase.insertSituation($0, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        vm.dismiss(situation)
+
+        XCTAssertTrue(vm.situations.isEmpty)
+        XCTAssertEqual(vm.openCount, 0)
+    }
+
+    func testSnoozeMarksSituationSnoozedAndRemovesItFromTheOpenFeed() throws {
+        try dbManager.dbPool.write { try TestDatabase.insertSituation($0, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        vm.snooze(situation, until: "2026-08-01T00:00:00Z")
+
+        XCTAssertTrue(vm.situations.isEmpty)
+        let (status, until) = try dbManager.dbPool.read { db -> (String, String) in
+            let row = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT status, snooze_until FROM situations WHERE id = ?", arguments: [situation.id]))
+            return (row["status"] as String, row["snooze_until"] as String)
+        }
+        XCTAssertEqual(status, "snoozed")
+        XCTAssertEqual(until, "2026-08-01T00:00:00Z")
+    }
+
+    // MARK: - keepOpen (DASH-07: clear the secretary's suggested-resolution mark)
+
+    func test_keepOpen_clearsSuggestionAndReloads() throws {
+        let id = try dbManager.dbPool.write { db in
+            try TestDatabase.insertSituation(db, status: "open", suggestedResolution: "answered in thread")
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+        XCTAssertTrue(situation.hasSuggestedResolution)
+
+        vm.keepOpen(situation)
+
+        XCTAssertFalse(vm.situations[0].hasSuggestedResolution)
+        let suggestedResolution = try dbManager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT suggested_resolution FROM situations WHERE id = ?", arguments: [id])
+        }
+        XCTAssertEqual(suggestedResolution, "")
+    }
+
+    // MARK: - feedback
+
+    func testSubmitFeedbackNegativeOneCreatesLearnedRuleAndReloads() async throws {
+        try await dbManager.dbPool.write { db in
+            let situationID = try TestDatabase.insertSituation(db, status: "open")
+            let item = try TestDatabase.insertInboxItem(db, channelID: "C-alpha")
+            try TestDatabase.linkSituationSignal(db, situationID: situationID, inboxItemID: item)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        await vm.submitFeedback(situation, rating: -1)
+
+        let ruleCount = try await dbManager.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = 'channel:C-alpha'") ?? 0
+        }
+        XCTAssertEqual(ruleCount, 1)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testSubmitFeedbackPersistsSituationRatingRow() async throws {
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        await vm.submitFeedback(situation, rating: 1)
+
+        let row = try await dbManager.dbPool.read { db -> Row? in
+            try Row.fetchOne(db, sql: "SELECT entity_type, entity_id, rating FROM feedback")
+        }
+        let unwrapped = try XCTUnwrap(row, "bare 👍 must persist a rating row so the control reflects it")
+        XCTAssertEqual(unwrapped["entity_type"] as String, "situation")
+        XCTAssertEqual(unwrapped["entity_id"] as String, String(situation.id))
+        XCTAssertEqual(unwrapped["rating"] as Int, 1)
+        XCTAssertEqual(vm.feedbackRating(for: situation.id), 1)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testFeedbackRatingReturnsLatestRating() async throws {
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+        XCTAssertNil(vm.feedbackRating(for: situation.id), "unrated situation has no rating")
+
+        await vm.submitFeedback(situation, rating: -1)
+        await vm.submitFeedback(situation, rating: 1)
+
+        XCTAssertEqual(vm.feedbackRating(for: situation.id), 1, "the newest rating wins")
+    }
+
+    // MARK: - submitFeedback comment routing
+
+    func testSubmitFeedbackWithoutCommentDoesNotInvokeCLI() async throws {
+        let runner = FakeCLIRunner(stdout: Data())
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db) }
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.load()
+
+        await vm.submitFeedback(vm.situations[0], rating: -1, comment: "   ")
+
+        XCTAssertTrue(runner.invocations.isEmpty, "rating-only feedback must stay on the direct-write fast path")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testSubmitFeedbackWithCommentInvokesCLIWithExpectedArgs() async throws {
+        let runner = FakeCLIRunner(stdout: Data())
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db) }
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.load()
+        let id = vm.situations[0].id
+
+        await vm.submitFeedback(vm.situations[0], rating: 1, comment: "always show me Jane")
+
+        XCTAssertEqual(runner.invocations, [[
+            "inbox", "feedback", String(id), "--rating", "up", "--comment", "always show me Jane"
+        ]])
+        let localRows = try await dbManager.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM feedback") ?? 0
+        }
+        XCTAssertEqual(localRows, 0, "comment feedback leaves the rating row to the CLI — a local write would duplicate it")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testSubmitFeedbackWithCommentSurfacesCLIFailure() async throws {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSituation(db) }
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.load()
+
+        await vm.submitFeedback(vm.situations[0], rating: -1, comment: "noise")
+
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    // MARK: - markConverted (DASH-03: conversion keeps the link)
+
+    func test_DASH_03_conversionRecordsLinks() throws {
+        let id = try dbManager.dbPool.write { try TestDatabase.insertSituation($0, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        vm.markConverted(situationID: situation.id, targetID: 99, trackID: nil)
+
+        XCTAssertTrue(vm.situations.isEmpty, "converted situations drop out of the open feed")
+        XCTAssertEqual(vm.openCount, 0)
+        let row = try dbManager.dbPool.read { db in
+            try XCTUnwrap(try Row.fetchOne(db, sql: """
+                SELECT status, converted_target_id, converted_track_id FROM situations WHERE id = ?
+                """, arguments: [id]))
+        }
+        XCTAssertEqual(row["status"] as String, "converted")
+        XCTAssertEqual(row["converted_target_id"] as Int, 99)
+        XCTAssertNil(row["converted_track_id"] as Int?)
+    }
+
+    func test_DASH_03_conversionRecordsTrackLink() throws {
+        _ = try dbManager.dbPool.write { try TestDatabase.insertSituation($0, status: "open") }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let situation = try XCTUnwrap(vm.situations.first)
+
+        vm.markConverted(situationID: situation.id, targetID: nil, trackID: 17)
+
+        let row = try dbManager.dbPool.read { db in
+            try XCTUnwrap(try Row.fetchOne(db, sql: """
+                SELECT converted_target_id, converted_track_id FROM situations WHERE id = ?
+                """, arguments: [situation.id]))
+        }
+        XCTAssertNil(row["converted_target_id"] as Int?)
+        XCTAssertEqual(row["converted_track_id"] as Int, 17)
+    }
+
+    // MARK: - loadMemberSignals
+
+    func testLoadMemberSignalsReturnsJoinedItemsOrderedByMessageTS() throws {
+        let situationID = try dbManager.dbPool.write { db -> Int64 in
+            let situationID = try TestDatabase.insertSituation(db)
+            let item2 = try TestDatabase.insertInboxItem(db, channelID: "C1", messageTS: "1700000200.000000", snippet: "second")
+            let item1 = try TestDatabase.insertInboxItem(db, channelID: "C1", messageTS: "1700000100.000000", snippet: "first")
+            try TestDatabase.linkSituationSignal(db, situationID: situationID, inboxItemID: item2)
+            try TestDatabase.linkSituationSignal(db, situationID: situationID, inboxItemID: item1)
+            return situationID
+        }
+
+        let vm = DashboardViewModel(dbManager: dbManager)
+        let members = vm.loadMemberSignals(Int(situationID))
+
+        XCTAssertEqual(members.map(\.snippet), ["first", "second"])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testLoadMemberSignalsEmptyWhenNoLinks() throws {
+        let situationID = try dbManager.dbPool.write { try TestDatabase.insertSituation($0) }
+        let vm = DashboardViewModel(dbManager: dbManager)
+
+        let members = vm.loadMemberSignals(Int(situationID))
+
+        XCTAssertTrue(members.isEmpty)
+    }
+
+    // MARK: - slackURL(for:) — deep links (mirrors the dead InboxViewModel.slackMessageURL)
+
+    private func fetchInboxItem(_ id: Int64) throws -> InboxItem {
+        try XCTUnwrap(try dbManager.dbPool.read { db in
+            try InboxItem.fetchOne(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [id])
+        })
+    }
+
+    func testSlackURLUsesTeamIDChannelAndMessageTSWhenWorkspaceKnown() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001", domain: "acme")
+        }
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(
+                db, channelID: "C001", messageTS: "1700000000.000100",
+                permalink: "https://acme.slack.com/archives/C001/p1700000000000100"
+            )
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let item = try fetchInboxItem(itemID)
+
+        let url = vm.slackURL(for: item)
+
+        XCTAssertEqual(url?.absoluteString, "slack://channel?team=T001&id=C001&message=1700000000.000100")
+    }
+
+    func testSlackURLPrefersThreadTSOverMessageTSWhenPresent() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001", domain: "acme")
+        }
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(
+                db, channelID: "C001", messageTS: "1700000100.000000", threadTS: "1700000000.000100"
+            )
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let item = try fetchInboxItem(itemID)
+
+        let url = vm.slackURL(for: item)
+
+        XCTAssertEqual(url?.absoluteString, "slack://channel?team=T001&id=C001&message=1700000000.000100")
+    }
+
+    func testSlackURLFallsBackToPermalinkWhenTeamIDUnavailable() throws {
+        // No workspace row at all — teamID stays nil.
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(db, permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let item = try fetchInboxItem(itemID)
+
+        let url = vm.slackURL(for: item)
+
+        XCTAssertEqual(url?.absoluteString, "https://acme.slack.com/archives/C001/p1700000000000100")
+    }
+
+    func testSlackURLNilWhenNeitherTeamIDNorPermalinkAvailable() throws {
+        let itemID = try dbManager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(db, permalink: "")
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let item = try fetchInboxItem(itemID)
+
+        XCTAssertNil(vm.slackURL(for: item))
+    }
+
+    // MARK: - generateNow() — "Generate" button
+
+    func testGenerateNowRunsPipelineReloadsFeedAndClearsIsGeneratingOnSuccess() async throws {
+        let runner = FakeCLIRunner(stdout: Data())
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        // Inserted after vm construction so `load()` inside generateNow() (not the
+        // absent startObserving()) is what picks it up — proves the reload really ran.
+        try await dbManager.dbPool.write { db in try TestDatabase.insertSituation(db, status: "open") }
+
+        await vm.generateNow()
+
+        XCTAssertEqual(runner.invocations, [["inbox", "generate"]])
+        XCTAssertFalse(vm.isGenerating)
+        XCTAssertEqual(vm.situations.count, 1, "generateNow must reload the feed after the pipeline finishes")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testGenerateNowSetsErrorMessageOnServiceFailureAndClearsIsGenerating() async throws {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+
+        await vm.generateNow()
+
+        XCTAssertFalse(vm.isGenerating)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(vm.errorMessage?.contains("boom") == true)
+    }
+
+    func testGenerateNowGuardsReentryWhileAlreadyGenerating() async throws {
+        let runner = FakeCLIRunner(stdout: Data())
+        let vm = DashboardViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.isGenerating = true
+
+        await vm.generateNow()
+
+        XCTAssertTrue(runner.invocations.isEmpty, "generateNow must no-op while a run is already in flight")
+        XCTAssertTrue(vm.isGenerating, "the guard must leave the in-flight flag untouched, not clear it")
+    }
+
+    // MARK: - selection (master-detail)
+
+    func testLoadSelectsFirstSituationWhenNothingSelected() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "Top", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "Second", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertEqual(vm.selectedSituation?.title, "Top")
+    }
+
+    func testLoadKeepsSelectionWhenStillOpen() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "Top", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "Second", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let secondID = vm.situations[1].id
+        vm.select(secondID)
+
+        vm.load()
+
+        XCTAssertEqual(vm.selectedSituationID, secondID)
+    }
+
+    func testDoneOnSelectedSelectsNextSituation() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "B", rank: 5)
+            _ = try TestDatabase.insertSituation(db, title: "C", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        vm.select(vm.situations[0].id)
+
+        vm.done(vm.situations[0])
+
+        XCTAssertEqual(vm.selectedSituation?.title, "B")
+    }
+
+    func testMarkConvertedOnSelectedSelectsNextSituation() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "B", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        let firstID = vm.situations[0].id
+        vm.select(firstID)
+
+        vm.markConverted(situationID: firstID, targetID: 42, trackID: nil)
+
+        XCTAssertEqual(vm.selectedSituation?.title, "B")
+    }
+
+    func testDismissOnLastSelectedSelectsPrevious() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "B", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        vm.select(vm.situations[1].id)
+
+        vm.dismiss(vm.situations[1])
+
+        XCTAssertEqual(vm.selectedSituation?.title, "A")
+    }
+
+    func testDoneOnOnlySituationClearsSelection() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "Solo", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        vm.select(vm.situations[0].id)
+
+        vm.done(vm.situations[0])
+
+        XCTAssertNil(vm.selectedSituationID)
+        XCTAssertNil(vm.selectedSituation)
+    }
+
+    func testDoneOnUnselectedRowLeavesSelectionAlone() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSituation(db, title: "A", rank: 9)
+            _ = try TestDatabase.insertSituation(db, title: "B", rank: 1)
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+        vm.select(vm.situations[0].id)
+
+        vm.done(vm.situations[1])
+
+        XCTAssertEqual(vm.selectedSituation?.title, "A")
+    }
+
+    func testSelectLazyLoadsMemberSignalsOnceAndCaches() throws {
+        let situationID = try dbManager.dbPool.write { db -> Int64 in
+            let sid = try TestDatabase.insertSituation(db)
+            let item = try TestDatabase.insertInboxItem(db, channelID: "C1", messageTS: "1700000100.000000", snippet: "hello")
+            try TestDatabase.linkSituationSignal(db, situationID: sid, inboxItemID: item)
+            return sid
+        }
+        let vm = DashboardViewModel(dbManager: dbManager)
+        vm.load()
+
+        vm.select(Int(situationID))
+
+        XCTAssertTrue(vm.memberSignalsLoaded(Int(situationID)))
+        XCTAssertEqual(vm.memberSignals(for: Int(situationID)).map(\.snippet), ["hello"])
+    }
+}

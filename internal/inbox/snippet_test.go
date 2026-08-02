@@ -1,8 +1,15 @@
 package inbox
 
-import "testing"
+import (
+	"testing"
 
-func TestCleanSnippet(t *testing.T) {
+	"watchtower/internal/db"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestEnrichSnippetWithoutDB(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -72,10 +79,19 @@ func TestCleanSnippet(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := cleanSnippet(tt.in)
+			got := enrichSnippet(tt.in, nil)
 			if got != tt.want {
-				t.Errorf("cleanSnippet(%q)\n  got:  %q\n  want: %q", tt.in, got, tt.want)
+				t.Errorf("enrichSnippet(%q, nil)\n  got:  %q\n  want: %q", tt.in, got, tt.want)
 			}
 		})
 	}
+}
+
+func TestEnrichSnippetResolvesRawMentionViaDB(t *testing.T) {
+	d := newTestDB(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
+
+	assert.Equal(t, "ping @Bob Brown please", enrichSnippet("ping <@U3> please", d))
+	assert.Equal(t, "ping please", enrichSnippet("ping <@U404NOPE> please", d),
+		"unknown raw mention is dropped, not left as an ID")
 }

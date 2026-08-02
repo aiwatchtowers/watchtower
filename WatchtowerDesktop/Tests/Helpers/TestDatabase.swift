@@ -181,6 +181,7 @@ enum TestDatabase {
                              styleDetails, recommendations, concerns, model])
     }
 
+    @discardableResult
     static func insertTrack(
         _ db: Database,
         text: String = "Fix the bug",
@@ -199,17 +200,24 @@ enum TestDatabase {
         decisionOptions: String = "[]",
         subItems: String = "[]",
         relatedDigestIDs: String = "[]",
-        model: String = "haiku"
-    ) throws {
+        model: String = "haiku",
+        assigneeUserID: String = "",
+        ownerUserID: String = "",
+        requesterUserID: String = "",
+        linkedTargetID: Int? = nil
+    ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO tracks (text, context, category, ownership, priority, tags,
                 channel_ids, source_refs, has_updates, participants, requester_name,
-                blocking, decision_summary, decision_options, sub_items, related_digest_ids, model)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                blocking, decision_summary, decision_options, sub_items, related_digest_ids, model,
+                assignee_user_id, owner_user_id, requester_user_id, linked_target_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [text, context, category, ownership, priority, tags,
                              channelIDs, sourceRefs, hasUpdates ? 1 : 0, participants,
                              requesterName, blocking, decisionSummary, decisionOptions,
-                             subItems, relatedDigestIDs, model])
+                             subItems, relatedDigestIDs, model,
+                             assigneeUserID, ownerUserID, requesterUserID, linkedTargetID])
+        return db.lastInsertedRowID
     }
 
     // MARK: - Schema
@@ -223,7 +231,10 @@ enum TestDatabase {
         search_last_date  TEXT NOT NULL DEFAULT '',
         current_user_id   TEXT NOT NULL DEFAULT '',
         inbox_last_processed_ts REAL NOT NULL DEFAULT 0,
-        secretary_profile TEXT NOT NULL DEFAULT ''
+        secretary_profile TEXT NOT NULL DEFAULT '',
+        style_profile TEXT NOT NULL DEFAULT '',
+        style_profile_updated_at TEXT NOT NULL DEFAULT '',
+        compose_last_run_ts REAL NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS users (
         id            TEXT PRIMARY KEY,
@@ -451,7 +462,8 @@ enum TestDatabase {
         cost_usd            REAL NOT NULL DEFAULT 0,
         prompt_version      INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        linked_target_id    INTEGER REFERENCES targets(id) ON DELETE SET NULL
     );
     CREATE TABLE IF NOT EXISTS track_states (
         id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -491,7 +503,8 @@ enum TestDatabase {
             'calendar_invite','calendar_time_change','calendar_cancelled',
             'decision_made','briefing_ready',
             'target_due',
-            'stream'
+            'stream',
+            'email_received','email_cc'
         )),
         snippet         TEXT NOT NULL DEFAULT '',
         context         TEXT NOT NULL DEFAULT '',
@@ -515,6 +528,7 @@ enum TestDatabase {
         draft_reply     TEXT NOT NULL DEFAULT '',
         card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
         card_generated_at TEXT,
+        composed_at     TEXT,
         UNIQUE(channel_id, message_ts)
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_items(status);
@@ -547,13 +561,29 @@ enum TestDatabase {
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_feedback_item ON inbox_feedback(inbox_item_id);
 
+    CREATE TABLE IF NOT EXISTS google_accounts (
+        id                             INTEGER PRIMARY KEY AUTOINCREMENT,
+        email                          TEXT NOT NULL DEFAULT '',
+        label                          TEXT NOT NULL DEFAULT '',
+        client_id                      TEXT NOT NULL DEFAULT '',
+        calendar_enabled               INTEGER NOT NULL DEFAULT 0,
+        gmail_enabled                  INTEGER NOT NULL DEFAULT 0,
+        status                         TEXT NOT NULL DEFAULT 'ok',
+        error                          TEXT NOT NULL DEFAULT '',
+        gmail_last_internal_date       REAL NOT NULL DEFAULT 0,
+        memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,
+        created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+
     CREATE TABLE IF NOT EXISTS calendar_calendars (
         id          TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
         is_primary  INTEGER NOT NULL DEFAULT 0,
         is_selected INTEGER NOT NULL DEFAULT 1,
         color       TEXT NOT NULL DEFAULT '',
-        synced_at   TEXT NOT NULL DEFAULT ''
+        synced_at   TEXT NOT NULL DEFAULT '',
+        account_id  INTEGER REFERENCES google_accounts(id)
     );
 
     CREATE TABLE IF NOT EXISTS calendar_events (
@@ -573,7 +603,9 @@ enum TestDatabase {
         html_link       TEXT NOT NULL DEFAULT '',
         raw_json        TEXT NOT NULL DEFAULT '{}',
         synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at      TEXT NOT NULL DEFAULT ''
+        updated_at      TEXT NOT NULL DEFAULT '',
+        ical_uid        TEXT NOT NULL DEFAULT '',
+        conference_url  TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);
@@ -585,10 +617,32 @@ enum TestDatabase {
         resolved_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
 
+    CREATE TABLE IF NOT EXISTS gmail_messages (
+        account_id     INTEGER NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
+        id             TEXT NOT NULL,
+        thread_id      TEXT NOT NULL DEFAULT '',
+        from_email     TEXT NOT NULL DEFAULT '',
+        from_name      TEXT NOT NULL DEFAULT '',
+        to_json        TEXT NOT NULL DEFAULT '[]',
+        cc_json        TEXT NOT NULL DEFAULT '[]',
+        subject        TEXT NOT NULL DEFAULT '',
+        snippet        TEXT NOT NULL DEFAULT '',
+        body_text      TEXT NOT NULL DEFAULT '',
+        internal_date  TEXT NOT NULL DEFAULT '',
+        labels_json    TEXT NOT NULL DEFAULT '[]',
+        is_unread      INTEGER NOT NULL DEFAULT 0,
+        permalink      TEXT NOT NULL DEFAULT '',
+        synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        PRIMARY KEY (account_id, id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
+    CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
+
     CREATE TABLE IF NOT EXISTS feedback (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         entity_type TEXT NOT NULL CHECK(entity_type IN
-            ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox', 'catchup_theme')),
+            ('digest', 'track', 'decision', 'user_analysis', 'briefing', 'task', 'inbox', 'catchup_theme', 'situation')),
         entity_id   TEXT NOT NULL,
         rating      INTEGER NOT NULL CHECK(rating IN (-1, 1)),
         comment     TEXT NOT NULL DEFAULT '',
@@ -934,6 +988,180 @@ enum TestDatabase {
         updated_at       TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_catchup_themes_session ON catchup_themes(session_id, order_idx);
+
+    CREATE TABLE IF NOT EXISTS situations (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        title           TEXT NOT NULL,
+        kind            TEXT NOT NULL DEFAULT 'external' CHECK(kind IN ('external','target_update','track_update','mixed')),
+        status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done','dismissed','converted','stale','snoozed')),
+        snooze_until    TEXT NOT NULL DEFAULT '',
+        priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+        rank            REAL NOT NULL DEFAULT 0,
+        ai_reason       TEXT NOT NULL DEFAULT '',
+        summary         TEXT NOT NULL DEFAULT '',
+        why_matters     TEXT NOT NULL DEFAULT '',
+        chronology      TEXT NOT NULL DEFAULT '',
+        card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
+        card_generated_at TEXT,
+        target_id       INTEGER,
+        track_id        INTEGER,
+        converted_target_id INTEGER,
+        converted_track_id  INTEGER,
+        last_signal_at  TEXT NOT NULL DEFAULT '',
+        resolved_reason TEXT NOT NULL DEFAULT '',
+        suggested_resolution TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_situations_status_rank ON situations(status, rank DESC);
+    CREATE INDEX IF NOT EXISTS idx_situations_updated ON situations(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS situation_signals (
+        situation_id   INTEGER NOT NULL REFERENCES situations(id) ON DELETE CASCADE,
+        inbox_item_id  INTEGER NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
+        UNIQUE(situation_id, inbox_item_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_situation_signals_item ON situation_signals(inbox_item_id);
+
+    CREATE TABLE IF NOT EXISTS meeting_prep_cache (
+        event_id      TEXT PRIMARY KEY,
+        result_json   TEXT NOT NULL DEFAULT '',
+        user_notes    TEXT NOT NULL DEFAULT '',
+        generated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS meeting_recaps (
+        event_id    TEXT PRIMARY KEY REFERENCES calendar_events(id) ON DELETE CASCADE,
+        source_text TEXT NOT NULL,
+        recap_json  TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    -- Meeting transcripts: locally-transcribed meeting audio (WhisperKit in the
+    -- Desktop app). One row per recording. event_id is NULL for ad-hoc recordings
+    -- and survives event deletion (SET NULL) — a transcript must outlive its
+    -- calendar event. audio_path is NULLed by the daemon retention phase once the
+    -- audio file is deleted; transcript_text is kept forever. summary_json holds
+    -- the recap for ad-hoc recordings only (event-linked recaps live in
+    -- meeting_recaps).
+    CREATE TABLE IF NOT EXISTS meeting_transcripts (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id        TEXT REFERENCES calendar_events(id) ON DELETE SET NULL,
+        title           TEXT NOT NULL,
+        audio_path      TEXT,
+        duration_sec    INTEGER NOT NULL DEFAULT 0,
+        lang_stats      TEXT NOT NULL DEFAULT '',
+        transcript_text TEXT NOT NULL,
+        summary_json    TEXT,
+        notes_md        TEXT,
+        segments_json   TEXT,
+        speakers_json   TEXT,
+        chapters_json   TEXT,
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
+    CREATE TABLE IF NOT EXISTS voice_prints (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_key   TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        embedding    BLOB NOT NULL,
+        sample_count INTEGER NOT NULL DEFAULT 1,
+        updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS feed_items (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_type   TEXT NOT NULL CHECK (item_type IN ('situation','meeting','briefing','meeting_recap','day_plan')),
+        source_id   TEXT NOT NULL,
+        event_ts    TEXT NOT NULL,
+        importance  INTEGER NOT NULL DEFAULT 50,
+        hidden_at   TEXT,
+        seen_at     TEXT,
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        UNIQUE(item_type, source_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_nodes (
+        id            TEXT PRIMARY KEY,
+        type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),
+        tier          TEXT NOT NULL DEFAULT 'long' CHECK (tier IN ('short','long')),
+        status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed','tombstone','shaken','retired')),
+        redirect_to   TEXT,
+        title         TEXT NOT NULL DEFAULT '',
+        path          TEXT NOT NULL DEFAULT '',
+        content_hash  TEXT NOT NULL DEFAULT '',
+        indexed_at    TEXT NOT NULL DEFAULT '',
+        subject       TEXT NOT NULL DEFAULT '',
+        confidence    REAL NOT NULL DEFAULT 0,
+        importance_score REAL NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS memory_aliases (
+        alias    TEXT PRIMARY KEY COLLATE NOCASE,
+        node_id  TEXT NOT NULL REFERENCES memory_nodes(id)
+    );
+    CREATE TABLE IF NOT EXISTS memory_provenance (
+        node_id     TEXT NOT NULL REFERENCES memory_nodes(id),
+        scheme      TEXT NOT NULL DEFAULT '',
+        channel_id  TEXT NOT NULL,
+        ts_raw      TEXT NOT NULL,
+        ts_unix     REAL NOT NULL,
+        sender_id   TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (node_id, channel_id, ts_raw)
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+        id UNINDEXED, title, body
+    );
+    CREATE TABLE IF NOT EXISTS memory_dispute_flags (
+        node_id     TEXT PRIMARY KEY REFERENCES memory_nodes(id),
+        flagged_at  TEXT NOT NULL,
+        reason      TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS email_accounts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider       TEXT NOT NULL CHECK(provider IN ('imap','outlook')),
+        email_address  TEXT NOT NULL DEFAULT '',
+        host           TEXT NOT NULL DEFAULT '',
+        port           INTEGER NOT NULL DEFAULT 0,
+        security       TEXT NOT NULL DEFAULT 'ssl' CHECK(security IN ('ssl','starttls','none')),
+        folder         TEXT NOT NULL DEFAULT 'INBOX',
+        label          TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'ok',
+        error          TEXT NOT NULL DEFAULT '',
+        last_uid       INTEGER NOT NULL DEFAULT 0,
+        uidvalidity    INTEGER NOT NULL DEFAULT 0,
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS calendar_accounts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider       TEXT NOT NULL CHECK(provider IN ('caldav','ics')),
+        username       TEXT NOT NULL DEFAULT '',
+        url            TEXT NOT NULL DEFAULT '',
+        label          TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'ok',
+        error          TEXT NOT NULL DEFAULT '',
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS imap_messages (
+        account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+        uid            INTEGER NOT NULL,
+        uidvalidity    INTEGER NOT NULL DEFAULT 0,
+        from_email     TEXT NOT NULL DEFAULT '',
+        from_name      TEXT NOT NULL DEFAULT '',
+        to_json        TEXT NOT NULL DEFAULT '[]',
+        cc_json        TEXT NOT NULL DEFAULT '[]',
+        subject        TEXT NOT NULL DEFAULT '',
+        snippet        TEXT NOT NULL DEFAULT '',
+        body_text      TEXT NOT NULL DEFAULT '',
+        internal_date  TEXT NOT NULL DEFAULT '',
+        is_unread      INTEGER NOT NULL DEFAULT 0,
+        permalink      TEXT NOT NULL DEFAULT '',
+        synced_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        PRIMARY KEY (account_id, uidvalidity, uid)
+    );
     """
 
     // MARK: - Briefing Fixtures
@@ -1154,6 +1382,7 @@ enum TestDatabase {
 
     // MARK: - Inbox Fixtures
 
+    @discardableResult
     static func insertInboxItem(
         _ db: Database,
         channelID: String = "C001",
@@ -1176,7 +1405,7 @@ enum TestDatabase {
         whyMatters: String = "",
         threadDigest: String = "",
         draftReply: String = ""
-    ) throws {
+    ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO inbox_items (channel_id, message_ts, thread_ts, sender_user_id,
                 trigger_type, snippet, permalink, status, priority, ai_reason,
@@ -1187,6 +1416,7 @@ enum TestDatabase {
                              triggerType, snippet, permalink, status, priority, aiReason,
                              resolvedReason, snoozeUntil, taskID, readAt, archivedAt,
                              itemClass, cardStatus, whyMatters, threadDigest, draftReply])
+        return db.lastInsertedRowID
     }
 
     // MARK: - Inbox Learned Rules Fixtures
@@ -1234,12 +1464,13 @@ enum TestDatabase {
         id: String = "primary",
         name: String = "Primary",
         isPrimary: Bool = true,
-        isSelected: Bool = true
+        isSelected: Bool = true,
+        accountID: Int64? = nil
     ) throws {
         try db.execute(sql: """
-            INSERT OR IGNORE INTO calendar_calendars (id, name, is_primary, is_selected)
-            VALUES (?, ?, ?, ?)
-            """, arguments: [id, name, isPrimary ? 1 : 0, isSelected ? 1 : 0])
+            INSERT OR IGNORE INTO calendar_calendars (id, name, is_primary, is_selected, account_id)
+            VALUES (?, ?, ?, ?, ?)
+            """, arguments: [id, name, isPrimary ? 1 : 0, isSelected ? 1 : 0, accountID])
     }
 
     static func insertCalendarEvent(
@@ -1327,6 +1558,266 @@ enum TestDatabase {
             """, arguments: [dayPlanID, kind, sourceType, sourceID, title,
                              description, rationale, startTime, endTime, durationMin,
                              priority, status, orderIndex, tags])
+        return db.lastInsertedRowID
+    }
+
+    // MARK: - Situation Fixtures
+
+    @discardableResult
+    static func insertSituation(
+        _ db: Database,
+        title: String = "Renewal deal stalling",
+        kind: String = "external",
+        status: String = "open",
+        snoozeUntil: String = "",
+        priority: String = "medium",
+        rank: Double = 0,
+        aiReason: String = "",
+        summary: String = "",
+        whyMatters: String = "",
+        chronology: String = "",
+        cardStatus: String = "none",
+        targetID: Int? = nil,
+        trackID: Int? = nil,
+        convertedTargetID: Int? = nil,
+        convertedTrackID: Int? = nil,
+        lastSignalAt: String = "",
+        resolvedReason: String = "",
+        suggestedResolution: String = "",
+        createdAt: String? = nil,
+        updatedAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO situations (title, kind, status, snooze_until, priority, rank,
+                ai_reason, summary, why_matters, chronology, card_status, target_id,
+                track_id, converted_target_id, converted_track_id, last_signal_at,
+                resolved_reason, suggested_resolution, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+            """, arguments: [title, kind, status, snoozeUntil, priority, rank,
+                             aiReason, summary, whyMatters, chronology, cardStatus, targetID,
+                             trackID, convertedTargetID, convertedTrackID, lastSignalAt,
+                             resolvedReason, suggestedResolution, createdAt, updatedAt])
+        return db.lastInsertedRowID
+    }
+
+    // MARK: - Feed Item Fixtures
+
+    @discardableResult
+    static func insertFeedItem(
+        _ db: Database,
+        itemType: String,
+        sourceID: String,
+        eventTs: String,
+        importance: Int = 50,
+        hiddenAt: String? = nil,
+        seenAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+            INSERT INTO feed_items (item_type, source_id, event_ts, importance, hidden_at, seen_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            arguments: [itemType, sourceID, eventTs, importance, hiddenAt, seenAt])
+        return db.lastInsertedRowID
+    }
+
+    static func insertMeetingRecap(
+        _ db: Database,
+        eventID: String,
+        recapJSON: String = #"{"summary":"Recap","key_decisions":[],"action_items":["ship it"],"open_questions":[]}"#,
+        createdAt: String = "2026-07-09T10:00:00Z"
+    ) throws {
+        try db.execute(
+            sql: "INSERT INTO meeting_recaps (event_id, source_text, recap_json, created_at, updated_at) VALUES (?, '', ?, ?, ?)",
+            arguments: [eventID, recapJSON, createdAt, createdAt])
+    }
+
+    static func insertMeetingTranscript(
+        _ db: Database,
+        id: Int64? = nil,
+        eventID: String? = nil,
+        title: String = "Rec",
+        audioPath: String? = nil,
+        durationSec: Int = 60,
+        transcriptText: String = "text",
+        summaryJSON: String? = nil,
+        notesMD: String? = nil,
+        segmentsJSON: String? = nil,
+        speakersJSON: String? = nil,
+        chaptersJSON: String? = nil
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO meeting_transcripts (id, event_id, title, audio_path,
+                duration_sec, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            arguments: [id, eventID, title, audioPath, durationSec,
+                        transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON])
+    }
+
+    static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {
+        try db.execute(
+            sql: "INSERT INTO meeting_prep_cache (event_id, result_json) VALUES (?, ?)",
+            arguments: [eventID, resultJSON])
+    }
+
+    static func linkSituationSignal(
+        _ db: Database,
+        situationID: Int64,
+        inboxItemID: Int64
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO situation_signals (situation_id, inbox_item_id)
+            VALUES (?, ?)
+            """, arguments: [situationID, inboxItemID])
+    }
+
+    // MARK: - Memory Fixtures
+
+    static func insertMemoryNode(
+        _ db: Database,
+        id: String,
+        type: String = "entity",
+        title: String = "",
+        subject: String = "",
+        confidence: Double = 0,
+        status: String = "active",
+        tier: String = "long",
+        path: String = "",
+        redirectTo: String? = nil,
+        indexedAt: String = "",
+        importanceScore: Double = 0
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_nodes (
+                id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence, importance_score
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
+            """, arguments: [id, type, tier, status, redirectTo, title, path, indexedAt, subject, confidence, importanceScore])
+    }
+
+    static func insertMemoryProvenance(
+        _ db: Database,
+        nodeID: String,
+        channelID: String,
+        tsRaw: String,
+        tsUnix: Double,
+        senderID: String,
+        scheme: String = ""
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_provenance (node_id, scheme, channel_id, ts_raw, ts_unix, sender_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, arguments: [nodeID, scheme, channelID, tsRaw, tsUnix, senderID])
+    }
+
+    static func insertMemoryAlias(
+        _ db: Database,
+        alias: String,
+        nodeID: String
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_aliases (alias, node_id) VALUES (?, ?)
+            """, arguments: [alias, nodeID])
+    }
+
+    static func insertMemoryFTS(
+        _ db: Database,
+        id: String,
+        title: String = "",
+        body: String = ""
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_fts (id, title, body) VALUES (?, ?, ?)
+            """, arguments: [id, title, body])
+    }
+
+    static func insertMemoryDispute(
+        _ db: Database,
+        nodeID: String,
+        reason: String = "contested"
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO memory_dispute_flags (node_id, flagged_at, reason)
+            VALUES (?, '2026-07-17T00:00:00Z', ?)
+            """, arguments: [nodeID, reason])
+    }
+
+    // MARK: - Email Account Fixtures
+
+    @discardableResult
+    static func insertEmailAccount(
+        _ db: Database,
+        provider: String = "imap",
+        emailAddress: String = "me@example.com",
+        host: String = "imap.example.com",
+        port: Int = 993,
+        security: String = "ssl",
+        folder: String = "INBOX",
+        label: String = "",
+        status: String = "ok",
+        error: String = "",
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO email_accounts
+                    (provider, email_address, host, port, security, folder, label, status, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [provider, emailAddress, host, port, security, folder, label, status, error, createdAt, createdAt]
+        )
+        return db.lastInsertedRowID
+    }
+
+    // MARK: - Calendar Account Fixtures
+
+    @discardableResult
+    static func insertCalendarAccount(
+        _ db: Database,
+        provider: String = "caldav",
+        username: String = "me@example.com",
+        url: String = "https://caldav.example.com",
+        label: String = "",
+        status: String = "ok",
+        error: String = "",
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO calendar_accounts
+                    (provider, username, url, label, status, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [provider, username, url, label, status, error, createdAt, createdAt]
+        )
+        return db.lastInsertedRowID
+    }
+
+    // MARK: - Google Account Fixtures
+
+    @discardableResult
+    static func insertGoogleAccount(
+        _ db: Database,
+        email: String = "",
+        label: String = "",
+        clientID: String = "",
+        calendarEnabled: Bool = false,
+        gmailEnabled: Bool = false,
+        status: String = "ok",
+        error: String = "",
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO google_accounts
+                    (email, label, client_id, calendar_enabled, gmail_enabled, status, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [email, label, clientID, calendarEnabled, gmailEnabled, status, error, createdAt, createdAt]
+        )
         return db.lastInsertedRowID
     }
 }

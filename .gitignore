@@ -63,3 +63,6 @@ mcp-needs-auth-cache.json
 
 # Stray Claude Code session data (transcripts/memory) accidentally created in-repo
 projects/-Users-user-PhpstormProjects-watchtower/
+
+# SDD progress ledger (scratch)
+.superpowers/

@@ -244,6 +244,7 @@ final class ActionOutboxTests: XCTestCase {
         XCTAssertEqual(try store.pendingActions().count, 2)
     }
 
+    @MainActor
     func testValueObservationOnPendingActionsFires() async throws {
         // The overlay is driven by ValueObservation in the app's view models;
         // the tracking closure uses the from-db overload (pool-reentrancy rule).

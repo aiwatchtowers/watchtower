@@ -34,13 +34,12 @@ for arg in "$@"; do
 done
 VERSION="${VERSION:-0.2.0}"
 
+# NOTARIZE_PROFILE is only read on the release path (dev mode exits before
+# notarization), so one unconditional default suffices.
+NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
 if $DEV_MODE; then
-    SIGN_IDENTITY="-"
-    NOTARIZE_PROFILE=""
-    echo "==> Building Watchtower v$VERSION (arm64) [DEV MODE — no signing/notarization]"
+    echo "==> Building Watchtower v$VERSION (arm64) [DEV MODE — no DMG/ZIP/notarization]"
 else
-    SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
-    NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
     echo "==> Building Watchtower v$VERSION (arm64)"
 fi
 echo ""
@@ -60,8 +59,9 @@ GOOGLE_ID="${WATCHTOWER_GOOGLE_CLIENT_ID:-}"
 GOOGLE_SECRET="${WATCHTOWER_GOOGLE_CLIENT_SECRET:-}"
 JIRA_ID="${WATCHTOWER_JIRA_CLIENT_ID:-}"
 JIRA_SECRET="${WATCHTOWER_JIRA_CLIENT_SECRET:-}"
+MS_ID="${WATCHTOWER_MICROSOFT_CLIENT_ID:-}"
 GOARCH=arm64 CGO_ENABLED=1 go build \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET}" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
     -o "$BUILD_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$BUILD_DIR/watchtower" | cut -f1))"
 
@@ -96,6 +96,31 @@ for bundle in "$RESOURCE_BUNDLE_DIR"/*.bundle; do
     fi
 done
 
+# Build MLX's Metal kernel library and ship it as the SwiftPM resource bundle
+# MLX searches at runtime (Contents/Resources/mlx-swift_Cmlx.bundle/default.metallib
+# — what an Xcode build would have produced). SwiftPM CLI builds cannot compile
+# Metal shaders (mlx-swift README), so without this any MLX inference (Qwen3
+# engine) aborts the app with "Failed to load the default metallib". A bare
+# metallib in Contents/MacOS is NOT an option: codesign --strict treats it as an
+# unsigned subcomponent and verification fails.
+echo "==> Building MLX metallib..."
+# BUILD_DIR here is scoped to the child script only (speech-swift's script reads it); the outer $BUILD_DIR is untouched.
+BUILD_DIR="$DESKTOP_DIR/.build" bash "$DESKTOP_DIR/.build/checkouts/speech-swift/scripts/build_mlx_metallib.sh" release
+MLX_BUNDLE="$APP_BUNDLE/Contents/Resources/mlx-swift_Cmlx.bundle"
+mkdir -p "$MLX_BUNDLE"
+cp "$DESKTOP_DIR/.build/release/mlx.metallib" "$MLX_BUNDLE/default.metallib"
+cat > "$MLX_BUNDLE/Info.plist" << 'MLXPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+</dict>
+</plist>
+MLXPLIST
+echo "    Bundled default.metallib ($(du -h "$MLX_BUNDLE/default.metallib" | cut -f1))"
+
 # Copy Go CLI into bundle
 cp "$BUILD_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
 
@@ -123,6 +148,10 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Watchtower records your side of meetings to transcribe them locally.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Watchtower records meeting audio (other participants) to transcribe it locally. Audio never leaves this Mac.</string>
     <key>LSUIElement</key>
     <false/>
     <key>NSAppTransportSecurity</key>
@@ -163,32 +192,100 @@ if [ -f "$DESKTOP_DIR/Resources/AppIcon.icns" ]; then
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
-# Code sign
-# Even in dev mode: do ad-hoc sign with entitlements so TCC can identify the bundle
-# by its signature. Without a signature, macOS Tahoe (26+) issues TCC prompts for
-# Downloads/Documents/Desktop on every launch via AppIntents/Spotlight preflight.
+# Code sign — one path for dev and release.
+# TCC pins permission grants (mic, system audio) to the app's code signature. An
+# ad-hoc signature has no designated requirement, so the grant keys off the
+# bundle's cdhash — which changes every build (the Go binary embeds
+# BuildDate/Commit via ldflags). New cdhash → "different app" → grant lost.
+# A stable identity keeps grants across rebuilds, so prefer one:
+#   1. explicit $CODESIGN_IDENTITY (on release builds a set-but-unusable
+#      identity is a hard error — never silently substituted),
+#   2. else a single auto-detected "Developer ID Application" identity,
+#   3. else ad-hoc (grants will NOT survive rebuilds) with a cause-accurate warning.
+# BEGIN signing-identity-selection (extracted verbatim by scripts/tests/test-build-app-signing.sh)
+SIGN_IDENTITY="-"
+ADHOC_REASON=""
+# Dev builds skip the trusted timestamp (--timestamp=none): Developer ID
+# signing requests a network timestamp by default, which would hard-fail an
+# offline `make app-dev`. Identity and designated requirement are unchanged,
+# so TCC grant stability is unaffected. Release builds keep the secure
+# timestamp (required for notarization).
+TIMESTAMP_FLAG=""
 if $DEV_MODE; then
-    echo "==> Ad-hoc code signing (dev mode)..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
-elif [ "$SIGN_IDENTITY" != "-" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
-    echo "==> Code signing with: $SIGN_IDENTITY (CloudKit + push entitlements)"
-    # Restricted entitlements only take effect with a provisioning profile that
-    # grants them (a Developer ID provisioning profile with the iCloud container,
-    # from developer.apple.com > Profiles). Point WATCHTOWER_PROVISION_PROFILE
-    # at the downloaded .provisionprofile to embed it.
+    TIMESTAMP_FLAG="--timestamp=none"
+fi
+# One `security` invocation serves both the explicit check and auto-detect.
+# Capture stdout+stderr and the exit code so a failed lookup (locked/broken
+# keychain) is distinguishable from "no certificate installed".
+FIND_IDENTITY_RC=0
+FIND_IDENTITY_OUTPUT=$(security find-identity -v -p codesigning 2>&1) || FIND_IDENTITY_RC=$?
+
+if [ "$FIND_IDENTITY_RC" -ne 0 ]; then
+    if [ -n "${CODESIGN_IDENTITY:-}" ] && ! $DEV_MODE; then
+        echo "ERROR: CODESIGN_IDENTITY '$CODESIGN_IDENTITY' is set but the keychain lookup failed (security find-identity exit $FIND_IDENTITY_RC):"
+        echo "$FIND_IDENTITY_OUTPUT"
+        exit 1
+    fi
+    ADHOC_REASON="keychain identity lookup failed (security find-identity exit $FIND_IDENTITY_RC — locked or broken keychain?): $FIND_IDENTITY_OUTPUT"
+elif [ -n "${CODESIGN_IDENTITY:-}" ] && printf '%s\n' "$FIND_IDENTITY_OUTPUT" | grep -qF "$CODESIGN_IDENTITY"; then
+    SIGN_IDENTITY="$CODESIGN_IDENTITY"
+else
+    # Reaching this branch with CODESIGN_IDENTITY set means the lookup
+    # succeeded but the explicit identity was NOT in it (re-tested above).
+    if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+        if ! $DEV_MODE; then
+            echo "ERROR: CODESIGN_IDENTITY '$CODESIGN_IDENTITY' not found in the keychain — refusing to substitute a different certificate on a release build."
+            exit 1
+        fi
+        echo "WARNING: CODESIGN_IDENTITY '$CODESIGN_IDENTITY' not found in keychain — trying auto-detect."
+    fi
+    # sort -u: the same certificate can appear in several keychains (login +
+    # System), producing identical output lines — those must count as ONE
+    # identity, not trip the exactly-one gate into ad-hoc.
+    DETECTED_IDENTITY=$(printf '%s\n' "$FIND_IDENTITY_OUTPUT" \
+        | grep "Developer ID Application" \
+        | sed -E 's/^.*"(.+)"[[:space:]]*$/\1/' \
+        | sort -u || true)
+    IDENTITY_COUNT=0
+    if [ -n "$DETECTED_IDENTITY" ]; then
+        IDENTITY_COUNT=$(printf '%s\n' "$DETECTED_IDENTITY" | wc -l | tr -d ' ')
+    fi
+    if [ "$IDENTITY_COUNT" -eq 1 ]; then
+        SIGN_IDENTITY="$DETECTED_IDENTITY"
+        echo "==> Auto-detected signing identity: $SIGN_IDENTITY"
+    elif [ "$IDENTITY_COUNT" -eq 0 ]; then
+        ADHOC_REASON="no \"Developer ID Application\" identity found in the keychain. Install a Developer ID Application certificate or set CODESIGN_IDENTITY for stable grants."
+    else
+        ADHOC_REASON="$IDENTITY_COUNT distinct \"Developer ID Application\" identities found in the keychain — ambiguous. Set CODESIGN_IDENTITY to choose one."
+    fi
+fi
+# END signing-identity-selection
+
+if [ "$SIGN_IDENTITY" != "-" ]; then
+    echo "==> Code signing with: $SIGN_IDENTITY"
+    # Restricted entitlements (CloudKit + push, Mobile Hub) only take effect with
+    # a provisioning profile that grants them (a Developer ID provisioning profile
+    # with the iCloud container, from developer.apple.com > Profiles). Point
+    # WATCHTOWER_PROVISION_PROFILE at the downloaded .provisionprofile to embed it;
+    # without one the bundle signs with the base entitlements so it still launches —
+    # mobile sync stays unavailable (the hub's availability probe reports why).
+    BUNDLE_ENTITLEMENTS="$ENTITLEMENTS"
     if [ -n "${WATCHTOWER_PROVISION_PROFILE:-}" ] && [ -f "$WATCHTOWER_PROVISION_PROFILE" ]; then
         cp "$WATCHTOWER_PROVISION_PROFILE" "$APP_BUNDLE/Contents/embedded.provisionprofile"
-        echo "    Embedded provisioning profile: $WATCHTOWER_PROVISION_PROFILE"
+        BUNDLE_ENTITLEMENTS="$ENTITLEMENTS_CLOUD"
+        echo "    Embedded provisioning profile: $WATCHTOWER_PROVISION_PROFILE (CloudKit + push entitlements)"
     else
-        echo "    WARNING: WATCHTOWER_PROVISION_PROFILE not set/found — without an embedded"
-        echo "    Developer ID provisioning profile the CloudKit/push entitlements will get"
-        echo "    the app killed at launch. Set it, or expect to strip the cloud entitlements."
+        echo "    NOTE: WATCHTOWER_PROVISION_PROFILE not set/found — signing with base"
+        echo "    entitlements (no CloudKit/push: mobile sync unavailable in this build)."
     fi
-    codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
-    codesign --force --options runtime --entitlements "$ENTITLEMENTS_CLOUD" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+    codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
+    codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --entitlements "$BUNDLE_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
     echo "==> Ad-hoc code signing..."
+    echo "    WARNING: $ADHOC_REASON"
+    echo "    Signing ad-hoc: TCC permission grants (microphone, system audio) will"
+    echo "    NOT survive rebuilds — the grant is pinned to the bundle's cdhash,"
+    echo "    which changes every build."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 fi

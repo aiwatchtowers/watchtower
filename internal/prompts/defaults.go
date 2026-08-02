@@ -6,33 +6,46 @@ package prompts
 // in digest, tracks, and analysis packages. They serve as the
 // initial seed and fallback when no DB version exists.
 var Defaults = map[string]string{
-	DigestChannel:        defaultDigestChannel,
-	DigestDaily:          defaultDigestDaily,
-	DigestWeekly:         defaultDigestWeekly,
-	DigestPeriod:         defaultDigestPeriod,
-	TracksExtract:        defaultTracksExtract,
-	TracksUpdate:         defaultTracksUpdate,
-	GuideUser:            defaultGuideUser,
-	GuidePeriod:          defaultGuidePeriod,
-	PeopleReduce:         defaultPeopleReduce,
-	PeopleTeam:           defaultPeopleTeam,
-	BriefingDaily:        defaultBriefingDaily,
-	InboxTriage:          defaultInboxTriage,
-	InboxCard:            defaultInboxCard,
-	DigestChannelBatch:   defaultDigestChannelBatch,
-	TracksExtractBatch:   defaultTracksExtractBatch,
-	PeopleBatch:          defaultPeopleBatch,
-	TasksGenerate:        defaultTasksGenerate,
-	TasksUpdate:          defaultTasksUpdate,
-	MeetingPrep:          defaultMeetingPrep,
-	MeetingExtractTopics: defaultMeetingExtractTopics,
-	MeetingRecap:         defaultMeetingRecap,
-	DayPlanGenerate:      defaultDayPlanGenerate,
-	TargetsExtract:       defaultTargetsExtract,
-	TargetsLink:          defaultTargetsLink,
-	TrackCompose:         defaultTrackCompose,
-	TrackRun:             defaultTrackRun,
-	TrackShortlist:       defaultTrackShortlist,
+	DigestChannel:              defaultDigestChannel,
+	DigestDaily:                defaultDigestDaily,
+	DigestWeekly:               defaultDigestWeekly,
+	DigestPeriod:               defaultDigestPeriod,
+	TracksExtract:              defaultTracksExtract,
+	TracksUpdate:               defaultTracksUpdate,
+	GuideUser:                  defaultGuideUser,
+	GuidePeriod:                defaultGuidePeriod,
+	PeopleReduce:               defaultPeopleReduce,
+	PeopleTeam:                 defaultPeopleTeam,
+	BriefingDaily:              defaultBriefingDaily,
+	InboxTriage:                defaultInboxTriage,
+	DigestChannelBatch:         defaultDigestChannelBatch,
+	TracksExtractBatch:         defaultTracksExtractBatch,
+	PeopleBatch:                defaultPeopleBatch,
+	TasksGenerate:              defaultTasksGenerate,
+	TasksUpdate:                defaultTasksUpdate,
+	MeetingPrep:                defaultMeetingPrep,
+	MeetingExtractTopics:       defaultMeetingExtractTopics,
+	MeetingRecap:               defaultMeetingRecap,
+	MeetingNotes:               defaultMeetingNotes,
+	MeetingChapters:            defaultMeetingChapters,
+	MeetingFollowup:            defaultMeetingFollowup,
+	MeetingSpeakerGuess:        defaultMeetingSpeakerGuess,
+	DayPlanGenerate:            defaultDayPlanGenerate,
+	TargetsExtract:             defaultTargetsExtract,
+	TargetsLink:                defaultTargetsLink,
+	TrackCompose:               defaultTrackCompose,
+	TrackRun:                   defaultTrackRun,
+	TrackShortlist:             defaultTrackShortlist,
+	InboxCompose:               defaultInboxCompose,
+	InboxSituationCard:         defaultInboxSituationCard,
+	MemoryExtractEpisodes:      defaultMemoryExtractEpisodes,
+	MemoryExtractEpisodesBatch: defaultMemoryExtractEpisodesBatch,
+	MemoryExtractEmailEpisodes: defaultMemoryExtractEmailEpisodes,
+	MemoryEntityRewrite:        defaultMemoryEntityRewrite,
+	MemoryReviseBeliefs:        defaultMemoryReviseBeliefs,
+	MemoryRenderMap:            defaultMemoryRenderMap,
+	MemoryReflect:              defaultMemoryReflect,
+	MemoryRenderChannelDigest:  defaultMemoryRenderChannelDigest,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -52,18 +65,31 @@ var AllIDs = []string{
 	PeopleBatch,
 	BriefingDaily,
 	InboxTriage,
-	InboxCard,
 	TasksGenerate,
 	TasksUpdate,
 	MeetingPrep,
 	MeetingExtractTopics,
 	MeetingRecap,
+	MeetingNotes,
+	MeetingChapters,
+	MeetingFollowup,
+	MeetingSpeakerGuess,
 	DayPlanGenerate,
 	TargetsExtract,
 	TargetsLink,
 	TrackCompose,
 	TrackRun,
 	TrackShortlist,
+	InboxCompose,
+	InboxSituationCard,
+	MemoryExtractEpisodes,
+	MemoryExtractEpisodesBatch,
+	MemoryExtractEmailEpisodes,
+	MemoryEntityRewrite,
+	MemoryReviseBeliefs,
+	MemoryRenderMap,
+	MemoryReflect,
+	MemoryRenderChannelDigest,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -71,32 +97,45 @@ var AllIDs = []string{
 // prompts in the DB whose version is lower than the default version, unless
 // the user has customized the prompt (detected by comparing template text).
 var DefaultVersions = map[string]int{
-	DigestChannel:      3, // v3: topics as structured objects (title, summary, decisions, etc.)
-	DigestDaily:        1,
-	DigestWeekly:       1,
-	DigestPeriod:       1,
-	TracksExtract:      1, // v1: per-channel extraction with cross-channel merge
-	TracksUpdate:       1, // v1: check tracks for updates from new messages
-	TracksExtractBatch: 2, // v2: digest-based input instead of raw messages
-	GuideUser:          1,
-	GuidePeriod:        1,
-	PeopleReduce:       1,
-	PeopleTeam:         1,
-	BriefingDaily:      5, // v5: jira integration
-	InboxTriage:        1, // v1: initial triage template
-	InboxCard:          1, // v1: initial card template
-	DigestChannelBatch: 2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
-	PeopleBatch:        1, // v1: batch people cards for low-data users
-	TasksGenerate:      1, // v1: AI task generation with checklist and due date
-	TasksUpdate:        1, // v1: AI task update from user instruction
-	MeetingPrep:        3, // v3: Jira context for attendees (workload, shared issues)
-	MeetingRecap:       1, // v1: initial meeting recap template
-	DayPlanGenerate:    2, // v2: mandatory language directive at top
-	TargetsExtract:     1, // v1: multi-target extraction with URL enrichments and active snapshot
-	TargetsLink:        1, // v1: single-target link proposal against active snapshot
-	TrackCompose:       1, // v1: draft custom-track title+instruction from a free-text request
-	TrackRun:           1, // v1: custom-track timeline events from recent cross-source activity
-	TrackShortlist:     1, // v1: cheap title-only relevance filter for custom-track backfill
+	DigestChannel:              3, // v3: topics as structured objects (title, summary, decisions, etc.)
+	DigestDaily:                1,
+	DigestWeekly:               1,
+	DigestPeriod:               1,
+	TracksExtract:              1, // v1: per-channel extraction with cross-channel merge
+	TracksUpdate:               1, // v1: check tracks for updates from new messages
+	TracksExtractBatch:         2, // v2: digest-based input instead of raw messages
+	GuideUser:                  1,
+	GuidePeriod:                1,
+	PeopleReduce:               1,
+	PeopleTeam:                 1,
+	BriefingDaily:              6, // v6: memory revisions journal section (Phase-4 surface, behind memory.surfaces.briefing)
+	InboxTriage:                1, // v1: initial triage template
+	DigestChannelBatch:         2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
+	PeopleBatch:                1, // v1: batch people cards for low-data users
+	TasksGenerate:              1, // v1: AI task generation with checklist and due date
+	TasksUpdate:                1, // v1: AI task update from user instruction
+	MeetingPrep:                4, // v4: attendee memory section (Phase-5 slice-4 surface, behind memory.surfaces.meeting_prep)
+	MeetingRecap:               1, // v1: initial meeting recap template
+	MeetingNotes:               1, // v1: publishable markdown meeting notes from a transcript
+	MeetingChapters:            1, // v1: chapterize a meeting from a timecoded per-utterance transcript
+	MeetingFollowup:            1, // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
+	MeetingSpeakerGuess:        1, // v1: content-clue name suggestions for unnamed speaker clusters
+	DayPlanGenerate:            3, // v3: memory open-loops section (Phase-5 slice-4 surface, behind memory.surfaces.day_plan)
+	TargetsExtract:             1, // v1: multi-target extraction with URL enrichments and active snapshot
+	TargetsLink:                1, // v1: single-target link proposal against active snapshot
+	TrackCompose:               1, // v1: draft custom-track title+instruction from a free-text request
+	TrackRun:                   1, // v1: custom-track timeline events from recent cross-source activity
+	TrackShortlist:             1, // v1: cheap title-only relevance filter for custom-track backfill
+	InboxCompose:               3, // v3: don't merge different matters just because the topic overlaps
+	InboxSituationCard:         1, // v1: context packet for one dashboard situation
+	MemoryExtractEpisodes:      1, // v1: raw-text episode extraction for the memory vault
+	MemoryExtractEpisodesBatch: 2, // v2: "===" block delimiter instead of "---" (a leading "--" broke claude CLI's argv flag parsing)
+	MemoryExtractEmailEpisodes: 1, // v1: Gmail thread → one-episode extraction (memory.sources.gmail)
+	MemoryEntityRewrite:        1, // v1: strong-tier entity page rewrite (What/Current/Facts + copied provenance markers)
+	MemoryReviseBeliefs:        1, // v1: strong-tier per-belief op proposals (confirm/weaken/shake/retire/propose-new)
+	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
+	MemoryReflect:              1, // v1: strong-tier weekly reflection over vault git history (Phase-4 surface, behind memory.surfaces.reflection)
+	MemoryRenderChannelDigest:  1, // v1: cheap-tier channel digest rendered from memory episodes (Phase-5 slice-3 dark compare-mode)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -105,33 +144,46 @@ func DefaultFor(key string) string { return Defaults[key] }
 
 // Descriptions maps prompt IDs to human-readable descriptions.
 var Descriptions = map[string]string{
-	DigestChannel:        "Channel digest — per-channel message analysis",
-	DigestDaily:          "Daily rollup — cross-channel daily summary",
-	DigestWeekly:         "Weekly trends — week-over-week analysis",
-	DigestPeriod:         "Period summary — comprehensive period overview",
-	TracksExtract:        "Track extraction — per-channel action item extraction with cross-channel merge",
-	TracksUpdate:         "Track update check — detect meaningful updates for existing tracks",
-	TracksExtractBatch:   "Batch track extraction — multi-channel extraction for low-activity channels",
-	GuideUser:            "Communication guide — personal coaching per user",
-	GuidePeriod:          "Team guide — cross-user communication tips",
-	PeopleReduce:         "People card — unified profile from signals",
-	PeopleTeam:           "Team summary — cross-user attention & tips",
-	BriefingDaily:        "Daily briefing — personalized morning summary",
-	InboxTriage:          "Inbox: triage scan of new activity",
-	InboxCard:            "Inbox: secretary card for a surfaced item",
-	DigestChannelBatch:   "Channel batch digest — multi-channel analysis for low-activity channels",
-	PeopleBatch:          "People batch cards — lightweight cards for low-data users in one AI call",
-	TasksGenerate:        "Task generation — AI-powered task breakdown with checklist, priority, and due date",
-	TasksUpdate:          "Task update — AI-powered task modification from user instruction",
-	MeetingPrep:          "Meeting prep — AI-powered meeting brief with attendee analysis, talking points, recommendations, and context gaps",
-	MeetingExtractTopics: "Meeting extract topics — split pasted text into atomic discussion topics for a meeting's Discussion Topics list",
-	MeetingRecap:         "Meeting recap — AI-structured post-meeting summary with decisions, action items, and open questions",
-	DayPlanGenerate:      "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
-	TargetsExtract:       "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
-	TargetsLink:          "Target linking — single-target parent and secondary link proposal against active snapshot",
-	TrackRun:             "Custom track run — timeline events from recent cross-source activity",
-	TrackCompose:         "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
-	TrackShortlist:       "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
+	DigestChannel:              "Channel digest — per-channel message analysis",
+	DigestDaily:                "Daily rollup — cross-channel daily summary",
+	DigestWeekly:               "Weekly trends — week-over-week analysis",
+	DigestPeriod:               "Period summary — comprehensive period overview",
+	TracksExtract:              "Track extraction — per-channel action item extraction with cross-channel merge",
+	TracksUpdate:               "Track update check — detect meaningful updates for existing tracks",
+	TracksExtractBatch:         "Batch track extraction — multi-channel extraction for low-activity channels",
+	GuideUser:                  "Communication guide — personal coaching per user",
+	GuidePeriod:                "Team guide — cross-user communication tips",
+	PeopleReduce:               "People card — unified profile from signals",
+	PeopleTeam:                 "Team summary — cross-user attention & tips",
+	BriefingDaily:              "Daily briefing — personalized morning summary",
+	InboxTriage:                "Inbox: triage scan of new activity",
+	DigestChannelBatch:         "Channel batch digest — multi-channel analysis for low-activity channels",
+	PeopleBatch:                "People batch cards — lightweight cards for low-data users in one AI call",
+	TasksGenerate:              "Task generation — AI-powered task breakdown with checklist, priority, and due date",
+	TasksUpdate:                "Task update — AI-powered task modification from user instruction",
+	MeetingPrep:                "Meeting prep — AI-powered meeting brief with attendee analysis, talking points, recommendations, and context gaps",
+	MeetingExtractTopics:       "Meeting extract topics — split pasted text into atomic discussion topics for a meeting's Discussion Topics list",
+	MeetingRecap:               "Meeting recap — AI-structured post-meeting summary with decisions, action items, and open questions",
+	MeetingNotes:               "Meeting notes — publishable markdown notes from transcript for people who weren't at the meeting",
+	MeetingChapters:            "Meeting chapters — segment a recording into chapters with per-chapter decisions, action items, and open questions",
+	MeetingFollowup:            "Meeting follow-up — draft a follow-up message in the owner's voice from a chapter's stated decisions and action items",
+	MeetingSpeakerGuess:        "Meeting speaker guess — suggest names for unnamed transcript speakers from content clues (confirm chips, never auto-applied)",
+	DayPlanGenerate:            "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
+	TargetsExtract:             "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
+	TargetsLink:                "Target linking — single-target parent and secondary link proposal against active snapshot",
+	TrackRun:                   "Custom track run — timeline events from recent cross-source activity",
+	TrackCompose:               "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
+	TrackShortlist:             "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
+	InboxCompose:               "Dashboard: fold new signals into situations",
+	InboxSituationCard:         "Dashboard: context packet for one situation",
+	MemoryExtractEpisodes:      "Memory: extract noteworthy episodes from one channel window of raw messages",
+	MemoryExtractEpisodesBatch: "Memory: extract noteworthy episodes from several low-activity channel windows in one call",
+	MemoryExtractEmailEpisodes: "Memory: extract one episode per Gmail thread (memory.sources.gmail)",
+	MemoryEntityRewrite:        "Memory: rewrite an entity page's What/Current/Facts from new episodes (strong tier)",
+	MemoryReviseBeliefs:        "Memory: propose per-belief revision ops from new episodes (strong tier; code disposes)",
+	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
+	MemoryReflect:              "Memory: weekly reflection over the vault's own git history — flag unstable beliefs/entities (strong tier; code disposes)",
+	MemoryRenderChannelDigest:  "Memory: render a channel digest from the window's memory episodes (cheap tier; dark compare-mode against the legacy digest)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -651,6 +703,7 @@ Rules:
   - In "team_pulse": mention team workload signals if sprint progress data is available.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
+- MEMORY REVISIONS: the MEMORY REVISIONS section lists belief revisions the secretary's memory made recently — notes derived from Slack/Jira, model-mediated, NOT the user's own words. Weave a revision into "attention" or "team_pulse" only when it genuinely bears on today's work; frame it as something the memory noticed, never as fact. If the section reads "(no notable revisions)", do NOT mention memory, beliefs, or revisions at all.
 - Be specific: name people, channels, decisions — not vague generalities.
 - If user has reports, prioritize their signals in team_pulse.
 - %s
@@ -684,6 +737,9 @@ Rules:
 %s
 
 === JIRA CONTEXT ===
+%s
+
+=== MEMORY REVISIONS ===
 %s`
 
 const defaultDigestChannelBatch = `You are analyzing Slack messages from multiple channels for the period %s to %s.
@@ -979,6 +1035,7 @@ Rules:
 - context_gaps: what's missing that would help prepare better (no agenda, unclear topic, unlinked attendees).
 - If no relevant data exists for a field, return an empty array — don't pad with loosely related filler.
 - If the meeting description/agenda is empty or vague, this is a HIGH priority context_gap and recommendation.
+- ATTENDEE MEMORY holds notes and beliefs the secretary derived from Slack/mail/calendar — model-mediated, NOT the attendees' own words. Treat it as soft context: it may sharpen people_notes and talking_points, but verify before relying on it and never quote it as fact. When it reads "(no memory context)", ignore attendee memory entirely.
 - %s
 - Return valid JSON only.
 
@@ -998,6 +1055,9 @@ Rules:
 %s
 
 === USER NOTES ===
+%s
+
+=== ATTENDEE MEMORY (secretary's own notes + beliefs — model-mediated, not the attendees' words) ===
 %s`
 
 const defaultMeetingExtractTopics = `You split a raw blob of meeting-prep text into atomic discussion topics.
@@ -1029,7 +1089,7 @@ Rules:
 - priority is optional. Use "" when unclear. Use "high" only for explicit blockers or urgency signals.
 - Return an empty topics array if the text has no actionable content.`
 
-const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted.
+const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted, or on an automatic single-track audio transcript (speakers are not labeled; the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions).
 
 === EVENT ===
 Title: %s
@@ -1064,6 +1124,123 @@ Rules:
 - Open questions: things flagged as unresolved or "to discuss later".
 - Use empty arrays if a category has nothing.
 - Strip markdown (**bold**, numbered lists, emojis) from output strings.`
+
+const defaultMeetingNotes = `You write publishable meeting notes from an automatic single-track audio transcript (speakers are not labeled; the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). The notes will be pasted into Slack or Confluence for people who were NOT at the meeting.
+
+=== EVENT ===
+Title: %s
+Time:  %s — %s
+Attendees: %s
+Description: %s
+
+=== EXISTING AI RECAP (may be empty) ===
+%s
+
+%s
+
+Return ONLY a markdown document (no code fences, no commentary before or after) with this structure:
+
+# <meeting title>
+
+**Date:** <date if known, else omit the line>
+**Participants:** <names if identifiable from the event attendees, else omit the line>
+
+## Summary
+1-3 sentences: what the meeting was about and its outcome.
+
+## Decisions
+- bullet per explicitly resolved item (omit the section if none)
+
+## Action items
+- bullet per commitment, imperative, with the owner when named (omit the section if none)
+
+## Next steps / open questions
+- bullet per unresolved item (omit the section if none)
+
+Rules:
+- Neutral, publication-ready tone; no first person, no meta-commentary.
+- Be faithful to the transcript; never invent facts, owners, or dates.
+- Merge near-duplicates; keep it scannable.`
+
+const defaultMeetingChapters = `You segment a meeting into chapters based on an automatic audio transcript with [m:ss] timecodes and speaker labels (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). Speakers are labeled "Я" (the recording owner) or "Speaker N" unless real names were assigned.
+
+=== EVENT ===
+Title: %s
+Time:  %s — %s
+Attendees: %s
+Description: %s
+
+%s
+
+Return ONLY a JSON object (no markdown fences, no commentary) matching:
+
+{
+  "overall_summary": "string (2-3 sentences: what the meeting was about and its outcome)",
+  "chapters": [
+    {
+      "title": "string (short, 3-8 words)",
+      "start_sec": 0,
+      "end_sec": 0,
+      "participants": ["speaker label or name", ...],
+      "summary": "string (1-3 sentences: what this chapter covered)",
+      "decisions": ["string", ...],
+      "action_items": ["string (imperative; include the owner when named)", ...],
+      "open_questions": ["string", ...]
+    }
+  ]
+}
+
+Rules:
+- 2-8 chapters for a typical meeting; a short recording may be a single chapter.
+- Chapters follow the meeting order and must not overlap; start_sec/end_sec come from the transcript timecodes (in seconds) and must stay within the recording.
+- participants: only the speaker labels that actually talk in the chapter.
+- Decisions: things explicitly resolved. Action items: only items with an implied owner or commitment. Open questions: things flagged as unresolved.
+- Use empty arrays when a category has nothing; never invent facts, owners, or times.
+- Strip markdown (**bold**, numbered lists, emojis) from output strings.`
+
+const defaultMeetingFollowup = `You draft a follow-up message after a meeting, written in the OWNER'S voice, ready to paste into Slack or email.
+
+INTENT-DRAFT CONTRACT (strict): render ONLY the stated content provided in the user message (decisions, action items, open questions) — add NO commitments, facts, or content that is not stated there. No meta-commentary, no "here's a draft:", no signatures or pleasantries the owner wouldn't type.
+
+=== MEETING ===
+Title: %s
+Date:  %s
+Participants: %s
+
+=== OWNER'S COMMUNICATION STYLE ===
+%s
+
+%s
+
+Return ONLY the message text (no code fences, no surrounding quotes). Keep it concise and scannable: a one-line opener naming the meeting, then decisions and action items as short bullets, open questions last (omit empty groups). Match the language of the stated content.`
+
+const defaultMeetingSpeakerGuess = `You identify unnamed speakers in a meeting transcript by their speech content. The transcript was auto-transcribed (it may mix ru/uk/en and contain recognition noise) and diarized into speaker clusters; some clusters are already named, the rest are labeled "Speaker N". Use content clues only: people addressing each other by name, self-introductions, role/domain knowledge, who answers questions directed at a name.
+
+=== EVENT ===
+Title: %s
+Time:  %s — %s
+Attendees (JSON): %s
+
+%s
+
+The user message carries the list of unnamed speakers, utterance samples per unnamed speaker, and a transcript excerpt.
+
+Return ONLY a JSON array (no markdown fences, no commentary) with at most one entry per unnamed speaker:
+
+[
+  {
+    "speaker": "Speaker 2",
+    "candidate": "string (the person's name — prefer an attendee's display name when one fits)",
+    "confidence": 0.0,
+    "evidence": "string (short quote or reasoning from the transcript)"
+  }
+]
+
+Rules:
+- "speaker" must be one of the unnamed speaker labels from the user message; never invent new ones.
+- Omit a speaker entirely when there is no real evidence — do not guess blindly.
+- confidence in [0,1]: someone addressing them by name = high; topic affinity alone = low.
+- Return [] when nothing can be inferred.`
 
 const defaultTargetsExtract = `You are a goal-extraction assistant. Given raw text (a Slack message, email paste, or form input), extract actionable targets (goals, tasks, deliverables) and return them as structured JSON.
 
@@ -1218,24 +1395,251 @@ Rules:
 Return ONLY a JSON object (no markdown fences):
 {"verdicts":[{"key":"item:12","tier":"action","priority":"high","reason":"..."}]}`
 
-const defaultInboxCard = `%s
+const defaultInboxCompose = `%s
 
-You are the user's chief-of-staff secretary preparing a briefing card for one
-inbox item they will act on.
+You are the user's chief-of-staff secretary maintaining their work dashboard.
+The dashboard shows SITUATIONS: each one is a SINGLE concrete story — one
+specific request, thread, or decision — not a topic category. Two signals
+belong together only if they are actually part of the SAME unfolding matter
+(same request/thread/decision, and check who is involved and where — a new
+sender or a different channel is a strong sign it's a different matter).
+Sharing a subject, system, or keyword ("access", "YubiKey", "the file") is
+NOT enough — different people asking different things that merely sound
+similar are DIFFERENT situations. Never invent a connecting narrative the
+messages don't actually support.
+Your job every cycle: fold new material into the dashboard so the user stays
+on top of everything — matched to their goals (their active targets and
+tracks, listed in the brief) AND anything important outside those goals.
+Nothing important may slip by; routine noise must not surface — but a wrong
+merge is worse than a missed one: when unsure whether two signals are the
+same matter, create a separate situation instead of merging.
 
 %s
 
-Using the item and conversation below, produce:
-- why_matters: 1-2 sentences — why this needs the user specifically, judged
-  against the brief (who is asking, which of the user's projects/people it
-  touches, what happens if ignored).
-- thread_digest: 3-5 sentences summarizing the whole conversation so the user
-  does not have to read it. Lead with the current state, not the history.
-- draft_reply: a ready-to-send reply in the user's voice: direct, short, no
-  corporate fluff. Match the language of the conversation. If the right action
-  is not a reply (e.g. RSVP, close a ticket), say what to do in one line instead.
+=== OPEN SITUATIONS (current dashboard state) ===
+%s
+
+Fold the new material below into the dashboard:
+- "merge": a new signal/event continues an existing open situation — the
+  SAME concrete matter, not just a similar topic → add it there. NEVER
+  create a duplicate situation for a matter already open, and NEVER merge a
+  signal into a situation over a different matter just because the subject
+  overlaps.
+- "create": a genuinely new matter worth the user's attention. kind:
+  "external" (not tied to their work items), "target_update" /
+  "track_update" (activity on an active target/track — set target_id or
+  track_id), "mixed".
+- "rerank": an open situation became more/less urgent.
+- "suggest_resolve": the new material shows an open situation concluded
+  WITHOUT the user needing to act — the question was answered and accepted,
+  the blocker lifted, the decision made elsewhere. Propose closing it;
+  reason: one sentence, what resolved it, in the user's language. The user
+  confirms — never suggest on weak or partial evidence, and never instead
+  of a needed merge (emit both).
+- Signals not worth the dashboard: simply do not reference them.
+- priority: high|medium|low. rank: 0.0-1.0 relative urgency for feed order.
+- reason: ONE sentence, user's point of view, in the user's language.
 
 %s
 
 Return ONLY a JSON object (no markdown fences):
-{"why_matters":"...","thread_digest":"...","draft_reply":"..."}`
+{"ops":[
+ {"op":"create","title":"...","kind":"external","priority":"high","rank":0.9,"reason":"...","signals":["sig:12","evt:3","tgt:7"],"target_id":null,"track_id":null},
+ {"op":"merge","situation_id":4,"signals":["sig:15"],"rerank":0.7,"reason":"..."},
+ {"op":"rerank","situation_id":2,"rank":0.3,"reason":"..."},
+ {"op":"suggest_resolve","situation_id":9,"reason":"..."}
+]}`
+
+const defaultInboxSituationCard = `%s
+
+You are the user's chief-of-staff secretary preparing the context packet for
+one situation on their work dashboard.
+
+%s
+
+Using the situation and its member signals below, produce:
+- summary: 2-4 sentences — what is happening, CURRENT STATE FIRST.
+- why_matters: 1-2 sentences judged against the brief (which of the user's
+  goals it touches, or why it matters even outside them).
+- chronology: one line per member signal, oldest first, format
+  "<who> — <one-line essence>". No timestamps, no markdown.
+
+%s
+
+Return ONLY a JSON object (no markdown fences):
+{"summary":"...","why_matters":"...","chronology":"..."}`
+
+// defaultMemoryExtractEpisodes is the raw-text episode extractor for the
+// secretary memory vault (cheap tier — see "memory.extract_episodes" in the
+// model routing). Args: language directive, max episodes per window.
+const defaultMemoryExtractEpisodes = `%s
+
+You are the memory consolidator of a workplace secretary. You read a window of raw Slack messages from one channel and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter.
+
+Respond with STRICT JSON only: an array of at most %d episodes, no prose, no markdown outside an optional single JSON code fence. Each episode is:
+{"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["user id"], "refs": [{"channel_id": "channel id", "ts": "message ts"}], "entity_hints": ["alias of a person/channel/project involved"]}
+
+Rules:
+- copy ts values EXACTLY from the input, never invent or adjust them; every ref must point at one of the messages shown to you.
+- most windows are routine chatter and contain no episodes: return [] for those.
+- entity_hints: participants and the channel are already linked automatically — use entity_hints ONLY for a named project, system, or recurring topic the episode is specifically about (e.g. "CEX-7457", "HSM", "the migration"), not for people or channels. Omit it (empty array) when nothing like that is named.`
+
+// defaultMemoryExtractEpisodesBatch is the multi-channel variant of
+// defaultMemoryExtractEpisodes: several low-activity channels' windows are
+// shown in one call (digest.channel_batch precedent — avoid one small AI
+// call per quiet channel/DM). Same JSON schema and refs contract; the only
+// difference is the input carries multiple "=== #channel (id) ===" blocks
+// and every ref must match the channel_id of the block it came from. Args:
+// language directive, max episodes for the whole call.
+const defaultMemoryExtractEpisodesBatch = `%s
+
+You are the memory consolidator of a workplace secretary. You read windows of raw Slack messages from SEVERAL channels, each shown in its own "=== #channel (channel_id) ===" block, and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter. Treat each block as its own conversation; do not mix participants or context across blocks.
+
+Respond with STRICT JSON only: an array of at most %d episodes total across all channels, no prose, no markdown outside an optional single JSON code fence. Each episode is:
+{"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["user id"], "refs": [{"channel_id": "channel id", "ts": "message ts"}], "entity_hints": ["alias of a person/channel/project involved"]}
+
+Rules:
+- copy ts values EXACTLY from the input, never invent or adjust them; every ref must point at one of the messages shown to you, under the channel_id of the block it came from.
+- an episode's refs must all belong to the SAME channel block — never combine messages from two different channels into one episode.
+- most windows are routine chatter and contain no episodes: return [] for those; a channel with nothing noteworthy simply contributes no episodes.
+- entity_hints: participants and the channel are already linked automatically — use entity_hints ONLY for a named project, system, or recurring topic the episode is specifically about (e.g. "CEX-7457", "HSM", "the migration"), not for people or channels. Omit it (empty array) when nothing like that is named.`
+
+// defaultMemoryExtractEmailEpisodes is the Gmail thread → episode extractor for
+// the secretary memory vault (cheap tier — see "memory.extract_email_episodes"
+// in the model routing). Unlike the Slack extractor, an email THREAD is one
+// story arc (a question, its discussion, its resolution), so each thread maps to
+// at most ONE episode. Each thread block shows its subject, participants, and
+// "[unix] name <email> (mail:<id>): body" lines; refs cite "mail:<message_id>"
+// with the shown unix ts. Args: language directive, max episodes (= thread
+// count in the call). The user message opens with a non-dash line (claude-CLI
+// argv gotcha).
+const defaultMemoryExtractEmailEpisodes = `%s
+
+You are the memory consolidator of a workplace secretary. You read Gmail threads, each shown in its own "=== Thread: subject ===" block, and extract at most one noteworthy episode PER THREAD — a self-contained story worth remembering (a decision, an agreement, an escalation, a commitment), not routine mail. A thread is one story arc; never merge two threads into one episode.
+
+Respond with STRICT JSON only: an array of at most %d episodes (one per thread at most), no prose, no markdown outside an optional single JSON code fence. Each episode is:
+{"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["name <email>"], "refs": [{"channel_id": "mail:<message_id>", "ts": "<unix seconds>"}], "entity_hints": ["email of a person involved"]}
+
+Rules:
+- copy each ref's channel_id ("mail:<message_id>") and ts EXACTLY from the message lines shown to you; never invent, adjust, or infer one.
+- an episode's refs must all belong to the SAME thread — never combine messages from two different threads into one episode.
+- most threads are routine and contain no episode: return [] for those; a thread with nothing noteworthy simply contributes no episode.`
+
+// defaultMemoryRenderChannelDigest renders a channel digest from the memory
+// episodes overlapping a time window (cheap tier — see
+// "memory.render_channel_digest" in the model routing; it consumes
+// already-distilled episodes, a lighter task than the legacy raw-message
+// digest, which also routes cheap). The output mirrors the legacy digest_topics
+// JSON shape EXACTLY (summary + topics[] with title/summary/decisions/
+// action_items/situations/key_messages) so the dark compare (Phase-5 slice-3)
+// is a field-by-field diff and a future switch is a drop-in. MEM-13: the model
+// may cite key_messages / decision message_ts ONLY by timestamps shown to it
+// (an episode's provenance ts or an uncovered gap message); code re-validates
+// every ref at write and drops any it did not show. Arg: the language
+// directive. The user message opens with a non-dash line (claude-CLI argv
+// gotcha).
+const defaultMemoryRenderChannelDigest = `%s
+
+You are the memory renderer of a workplace secretary. You are given the noteworthy EPISODES already distilled from ONE Slack channel over a time window — each with its Story, its Outcome, and the exact message timestamps it cites — and, when the episodes miss something, a few raw "uncovered" messages from the same window. Render a channel digest that summarizes what happened, grouped into topics.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"summary": "2-4 sentence channel-level summary, current state first", "topics": [{"title": "short headline", "summary": "2-4 sentences", "decisions": [{"text": "the decision", "by": "who decided", "message_ts": "the citing message ts", "importance": "high|medium|low"}], "action_items": [{"text": "the task", "assignee": "who", "status": "open|done"}], "situations": [], "key_messages": ["message ts"]}]}
+
+Rules:
+- summarize from the EPISODES; use the uncovered messages only to fill what the episodes miss.
+- cite key_messages and every decision message_ts ONLY by a timestamp shown to you (an episode's message timestamps, or an uncovered message's ts); copy it EXACTLY and never invent, adjust, or infer one.
+- leave "situations" as an empty array — situations are maintained elsewhere and anything you put there is ignored.
+- a quiet window may have nothing worth a topic: return an empty "topics" array.`
+
+// defaultMemoryEntityRewrite is the strong-tier entity-page rewrite for the
+// secretary memory vault (memory.entity_rewrite — routed to the default/strong
+// model by being ABSENT from the light-tier switch in internal/digest/models.go
+// and internal/codex/models.go). Arg: the language directive. The model
+// proposes new What/Current/Facts prose plus the provenance markers it cites;
+// code disposes — every marker is re-validated against the supplied episodes
+// (MEM-01 discipline), and ## Links / ## Open loops are maintained mechanically,
+// never by the model.
+const defaultMemoryEntityRewrite = `%s
+
+You are the memory consolidator of a workplace secretary. You maintain the durable page for ONE entity — a person, a channel, or a project. New episodes about it have been observed; rewrite its prose so the page reflects them while staying faithful to the evidence you were shown.
+
+You receive the entity's current page (its ## What, ## Current, ## Facts, ## Links, and ## Open loops sections), then the new episodes' ## Story and ## Outcome sections, then an optional one-line background. Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"what": "1-2 sentence description of who or what this entity is", "current": "2-4 sentence summary of the current state, most recent developments first", "facts": ["a durable fact worth keeping", "..."], "markers": [{"channel_id": "channel id", "ts": "message ts"}]}
+
+Rules:
+- markers: cite ONLY provenance refs (channel_id + ts) that appear verbatim in the episodes shown to you; copy them EXACTLY and never invent, adjust, or infer one. Any claim you cannot back with a supplied ref must not be stated as fact.
+- facts: keep every existing ## Facts bullet you cannot positively contradict, and add newly established durable facts; do NOT drop a fact merely because it is old.
+- leave ## Links and ## Open loops alone — they are maintained mechanically and anything you emit for them is ignored.
+- prefer specifics over routine chatter; keep every section tight.`
+
+// defaultMemoryReviseBeliefs is the strong-tier belief-revision proposer
+// (memory.revise_beliefs — strong route by absence from the light switch). The
+// model proposes one op per belief with cited evidence; Go's rank/hysteresis
+// math (MEM-08) decides whether each op is applied and computes the resulting
+// confidence/status. Arg: the language directive.
+const defaultMemoryReviseBeliefs = `%s
+
+You are the memory consolidator of a workplace secretary. You review the secretary's standing BELIEFS about people and projects against newly observed episodes and PROPOSE how each belief should change. You only propose; separate code decides whether a proposal is applied and recomputes confidence — never assume your proposal takes effect.
+
+You receive the existing beliefs (each with its statement, current confidence, and an evidence digest), the known subjects a new belief may be about, then the new episodes. Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"ops": [{"belief_id": "id of an existing belief, or empty for propose-new", "op": "confirm|weaken|shake|retire|propose-new", "statement": "the belief text (required only for propose-new)", "subject": "one of the Known subjects' ids, copied EXACTLY (propose-new only)", "evidence": [{"channel_id": "channel id", "ts": "message ts"}], "rationale": "one sentence tying the cited evidence to the op"}]}
+
+Ops:
+- confirm: the new evidence supports the belief as stated.
+- weaken: the evidence softens the belief without contradicting it.
+- shake: an episode outcome directly contradicts the belief statement.
+- retire: the belief is no longer true and should be closed.
+- propose-new: assert a new belief the episodes justify (it starts at low confidence until later runs confirm it).
+
+Rules:
+- evidence: cite ONLY refs (channel_id + ts) that appear verbatim in the episodes shown to you; copy them EXACTLY and never invent one. An op whose evidence cannot be found in the input is discarded by the code.
+- subject: copy an id EXACTLY from the Known subjects list; never invent one or write a readable name/slug instead of the given id. If the belief you want to assert is about someone/something not in that list, do not propose it this run.
+- propose at most ONE op per existing belief, and omit beliefs the new episodes say nothing about.
+- do NOT restate confidence numbers or statuses — the code computes them from your op and its own rank math.`
+
+// defaultMemoryRenderMap is the strong-tier hot world-map summary
+// (memory.render_map — strong route by absence from the light switch). Output
+// is compact markdown, not JSON; the ~2 KB budget is a hard CODE-side
+// truncation after render (the prompt cannot be trusted to obey a byte cap),
+// so the instruction only asks for brevity. Arg: the language directive.
+const defaultMemoryRenderMap = `%s
+
+You are the memory consolidator of a workplace secretary. You write the HOT world map — a tiny at-a-glance briefing the secretary reads first, pointing to the fuller index for anything not shown.
+
+You receive the top entities' ## Current excerpts (ordered by importance), the open episodes, and the active beliefs. Respond with a compact MARKDOWN hot summary (NOT JSON), structured as:
+- a short "# World map" heading line;
+- 5-8 area bullets, one line each: an entity or theme and its current state;
+- a short "Beliefs" list of the few most notable active beliefs, each with its confidence;
+- a final pointer line telling the reader to use recall or the full index for anything not shown here.
+
+Rules:
+- aim for WELL under 2 KB of text; be ruthlessly brief — one line per area, no paragraphs. A hard byte cap is enforced afterwards in code, so anything over budget is truncated and lost — stay small.
+- include only what is currently live; omit resolved or stale items.
+- do NOT invent entities, beliefs, or facts that are not in the input.
+- plain markdown only — no JSON, no code fences.`
+
+// defaultMemoryReflect is the strong-tier WEEKLY reflection pass over the
+// memory vault's own git history (memory.reflect — strong route by absence
+// from the light-tier switch in internal/digest/models.go and
+// internal/codex/models.go). The model reads a churn digest (how often each
+// belief/entity was revised in the last week, plus per-belief ## History
+// churn) and proposes at most three meta-observations naming the UNSTABLE
+// areas; code disposes — a dispute observation sets a dispute_pending flag on
+// the belief (surfaced by the inbox detector), an entity note is appended to
+// that page's ## Current section. Reflection NEVER mutates a belief's
+// confidence or status directly (MEM-11). Arg: the language directive.
+const defaultMemoryReflect = `%s
+
+You are the memory consolidator of a workplace secretary, doing a WEEKLY REFLECTION over the memory's own recent history. You are shown, for the last seven days, how often each belief and entity page was revised (commit churn) plus how many times each belief's ## History changed. Your only job is to spot the FEW AREAS THAT ARE UNSTABLE — a belief whose evidence keeps conflicting (it flapped between states this week) or an entity page that keeps churning — and note them. You do NOT change any belief; separate code disposes of your observations.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"observations": [{"kind": "dispute|note", "node_id": "the belief id (dispute) or entity id (note) exactly as shown in the input", "note": "one short observation for the entity page (note only; omit for dispute)", "rationale": "one sentence naming the instability you saw"}]}
+
+Kinds:
+- dispute: a BELIEF whose evidence keeps conflicting — flag it so the owner can settle it. Use the belief's id.
+- note: an ENTITY whose page churned enough to deserve a durable note about its current instability. Use the entity's id and supply the note text.
+
+Rules:
+- propose AT MOST three observations, and only for genuinely unstable areas — most weeks are calm and an empty {"observations": []} is the right and common answer.
+- node_id MUST be one of the belief/entity ids shown in the input; never invent one. An observation whose id is not in the input is discarded by the code.
+- do NOT restate confidence numbers or belief statuses — you only flag instability; the code decides what happens.`

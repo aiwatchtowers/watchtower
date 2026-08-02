@@ -21,14 +21,18 @@ func TestMcpWorkDir_CreatesConfig(t *testing.T) {
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "[mcp_servers.sqlite]") {
-		t.Error("config.toml should contain [mcp_servers.sqlite] section")
+	if !strings.Contains(content, "[mcp_servers.watchtower]") {
+		t.Error("config.toml should contain [mcp_servers.watchtower] section")
 	}
 	if !strings.Contains(content, "/tmp/test.db") {
 		t.Error("config.toml should contain database path")
 	}
-	if !strings.Contains(content, "@anthropic-ai/mcp-server-sqlite") {
-		t.Error("config.toml should contain MCP server package")
+	if !strings.Contains(content, `"mcp"`) || !strings.Contains(content, "--db-path") {
+		t.Error("config.toml should launch `watchtower mcp --db-path`")
+	}
+	// The nonexistent npx sqlite package must be gone.
+	if strings.Contains(content, "npx") || strings.Contains(content, "mcp-server-sqlite") {
+		t.Error("config.toml must not reference the npx sqlite MCP package")
 	}
 }
 

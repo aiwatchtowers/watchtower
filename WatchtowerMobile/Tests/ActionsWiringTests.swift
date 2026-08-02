@@ -69,52 +69,71 @@ final class ActionsWiringTests: XCTestCase {
 
     // MARK: - Enqueue through the VM (swipe path)
 
-    /// Inbox swipe "Resolve": pending overlay row + relay record carry the
-    /// right kind AND the right entityID for the row that was swiped —
+    /// Inbox swipe "Done": pending overlay row + relay record carry the
+    /// right kind AND the right entityID for the situation that was swiped —
     /// the typed-method pairing this VM exists to enforce.
-    func testInboxResolveEnqueuesPendingRowRelayRecordAndChip() async throws {
+    func testSituationDoneEnqueuesPendingRowRelayRecordAndChip() async throws {
         let fx = try await makeFixture()
         let vm = InboxViewModel()
         vm.start(store: fx.store, outbox: fx.outbox)
-        try await poll { vm.items.count == 2 }
-        let item = try XCTUnwrap(vm.items.first) // seeded id 1, high priority
+        try await poll { vm.situations.count == 2 }
+        let situation = try XCTUnwrap(vm.situations.first) // seeded id 1, rank 90
 
-        await vm.resolve(item)
+        await vm.done(situation)
 
         let rows = try fx.store.pendingActions()
         XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(rows.first?.action.kind, .inboxResolve)
-        XCTAssertEqual(rows.first?.entityRecordName, "inbox_item-1")
+        XCTAssertEqual(rows.first?.action.kind, .situationDone)
+        XCTAssertEqual(rows.first?.entityRecordName, "situation-1")
         XCTAssertEqual(rows.first?.state, .pending)
 
         let actions = try await relayActions(in: fx.transport)
         XCTAssertEqual(actions.count, 1)
-        XCTAssertEqual(actions.first?.kind, .inboxResolve)
+        XCTAssertEqual(actions.first?.kind, .situationDone)
         XCTAssertEqual(actions.first?.entityID, "1")
         XCTAssertEqual(actions.first?.status, .pending)
 
         // The overlay observation re-fires and the row now carries the chip
-        // (status is still "pending" ≠ "resolved", so no suppression).
-        try await poll { vm.chip(for: item) != nil }
-        XCTAssertEqual(vm.chip(for: item)?.action.kind, .inboxResolve)
+        // (status is still "open" ≠ "done", so no suppression).
+        try await poll { vm.chip(for: situation) != nil }
+        XCTAssertEqual(vm.chip(for: situation)?.action.kind, .situationDone)
     }
 
     /// Inbox swipe "Snooze": the wire `snooze_until` param is the plain UTC
     /// ISO8601 instant the desktop parser accepts, end-to-end from the VM.
-    func testInboxSnoozeSendsPlainISO8601SnoozeUntil() async throws {
+    func testSituationSnoozeSendsPlainISO8601SnoozeUntil() async throws {
         let fx = try await makeFixture()
         let vm = InboxViewModel()
         vm.start(store: fx.store, outbox: fx.outbox)
-        try await poll { vm.items.count == 2 }
-        let item = try XCTUnwrap(vm.items.first)
+        try await poll { vm.situations.count == 2 }
+        let situation = try XCTUnwrap(vm.situations.first)
 
         let now = Date(timeIntervalSince1970: 1_783_000_000)
-        await vm.snooze(item, option: .oneHour, now: now)
+        await vm.snooze(situation, option: .oneHour, now: now)
 
         let expected = ISO8601DateFormatter().string(from: now.addingTimeInterval(3600))
         let actions = try await relayActions(in: fx.transport)
-        XCTAssertEqual(actions.first?.kind, .inboxSnooze)
+        XCTAssertEqual(actions.first?.kind, .situationSnooze)
         XCTAssertEqual(actions.first?.params["snooze_until"], .string(expected))
+    }
+
+    /// "Keep open" (DASH-07): entity-carrying, param-less, and its chip is
+    /// NEVER suppressed by status (the action has no status-shaped outcome —
+    /// it only clears the secretary's mark on the desktop).
+    func testSituationKeepOpenEnqueuesParamlessAction() async throws {
+        let fx = try await makeFixture()
+        let vm = InboxViewModel()
+        vm.start(store: fx.store, outbox: fx.outbox)
+        try await poll { vm.situations.count == 2 }
+        // Seeded id 2 carries the suggested_resolution mark.
+        let situation = try XCTUnwrap(vm.situations.first { $0.hasSuggestedResolution })
+
+        await vm.keepOpen(situation)
+
+        let actions = try await relayActions(in: fx.transport)
+        XCTAssertEqual(actions.first?.kind, .situationKeepOpen)
+        XCTAssertEqual(actions.first?.entityID, "2")
+        XCTAssertTrue(actions.first?.params.isEmpty ?? false)
     }
 
     /// Create sheet → `task_create`: entity-less (nil recordName, nil wire
@@ -188,12 +207,12 @@ final class ActionsWiringTests: XCTestCase {
         let fx = try await makeFixture()
         let vm = InboxViewModel()
         vm.start(store: fx.store, outbox: fx.outbox)
-        try await poll { vm.items.count == 2 }
-        let item = try XCTUnwrap(vm.items.first)
+        try await poll { vm.situations.count == 2 }
+        let situation = try XCTUnwrap(vm.situations.first)
 
-        await vm.resolve(item)
+        await vm.done(situation)
         let firstID = try XCTUnwrap(fx.store.pendingActions().first?.id)
-        var echo = ActionRequestPayload(id: firstID, kind: .inboxResolve, entityID: "1", createdAt: Date())
+        var echo = ActionRequestPayload(id: firstID, kind: .situationDone, entityID: "1", createdAt: Date())
         echo.status = .failed
         echo.errorMessage = "no such row"
         try await fx.outbox.applyEcho(echo)
@@ -204,11 +223,11 @@ final class ActionsWiringTests: XCTestCase {
         try await poll { vm.failedActions.isEmpty && vm.pending.count == 1 }
         let retried = try XCTUnwrap(fx.store.pendingActions().first)
         XCTAssertEqual(retried.state, .pending)
-        XCTAssertEqual(retried.action.kind, .inboxResolve)
-        XCTAssertEqual(retried.entityRecordName, "inbox_item-1")
+        XCTAssertEqual(retried.action.kind, .situationDone)
+        XCTAssertEqual(retried.entityRecordName, "situation-1")
         XCTAssertNotEqual(retried.id, firstID, "retry must mint a fresh action id")
 
-        var secondEcho = ActionRequestPayload(id: retried.id, kind: .inboxResolve, entityID: "1", createdAt: Date())
+        var secondEcho = ActionRequestPayload(id: retried.id, kind: .situationDone, entityID: "1", createdAt: Date())
         secondEcho.status = .failed
         secondEcho.errorMessage = "still no"
         try await fx.outbox.applyEcho(secondEcho)

@@ -41,17 +41,14 @@ func TestBuildArgs(t *testing.T) {
 	assert.Contains(t, args, "text")
 	assert.Contains(t, args, "--model")
 	assert.Contains(t, args, "claude-sonnet-4-6")
-	// Read-only tool allowlist: SQLite query/introspection only. Prompt-injection
-	// from synced Slack/Jira content must not reach a shell or a DB write, so the
-	// args must NOT grant Bash access or wildcard/write SQLite tools.
-	assertFlagValue(t, args, "--allowedTools", "mcp__sqlite__read_query,mcp__sqlite__list_tables,mcp__sqlite__describe_table")
+	// Read-only tool allowlist: only the watchtower MCP server, which is
+	// read-only by construction (its stdio connection runs query_only, see
+	// cmd/mcp.go). Prompt-injection from synced Slack/Jira content must not
+	// reach a shell, so the allowlist must NOT grant Bash access.
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower")
 	allowed := allowedToolsValue(t, args)
 	assert.NotContains(t, allowed, "Bash(")
-	assert.NotContains(t, allowed, "mcp__sqlite__*")
-	assert.NotContains(t, allowed, "write_query")
-	assert.NotContains(t, allowed, "create_table")
-	assert.NotContains(t, allowed, "append_insight")
-	assert.Contains(t, allowed, "mcp__sqlite__read_query")
+	assert.Equal(t, "mcp__watchtower", allowed)
 	assert.Contains(t, args, "--disallowedTools")
 	assert.Contains(t, args, "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead")
 	// TCC isolation: every spawn must skip user-level ~/.claude/settings.json
@@ -94,14 +91,24 @@ func TestBuildArgs_WithDBPath(t *testing.T) {
 	args := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.Contains(t, args, "--mcp-config")
-	// Find the mcp-config value and verify it contains the DB path
+	// The MCP server is the watchtower binary itself running `mcp --db-path`,
+	// NOT a third-party npx package. Verify the config points at our binary and
+	// the given DB path.
+	found := false
 	for i, a := range args {
 		if a == "--mcp-config" && i+1 < len(args) {
-			assert.Contains(t, args[i+1], "/tmp/test.db")
-			assert.Contains(t, args[i+1], "mcpServers")
-			assert.Contains(t, args[i+1], "sqlite")
+			found = true
+			cfg := args[i+1]
+			assert.Contains(t, cfg, "/tmp/test.db")
+			assert.Contains(t, cfg, "mcpServers")
+			assert.Contains(t, cfg, "watchtower")
+			assert.Contains(t, cfg, "\"mcp\"")
+			assert.Contains(t, cfg, "--db-path")
+			assert.NotContains(t, cfg, "npx")
+			assert.NotContains(t, cfg, "mcp-server-sqlite")
 		}
 	}
+	assert.True(t, found, "--mcp-config must be present with a db path")
 }
 
 func TestBuildArgs_WithoutDBPath(t *testing.T) {
