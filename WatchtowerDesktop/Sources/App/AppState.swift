@@ -322,21 +322,7 @@ final class AppState {
                     try? await Task.sleep(for: .seconds(2) - elapsed)
                 }
                 isLoading = false
-                loadCustomEmoji(from: manager)
-                initCalendar(dbPool: manager.dbPool)
-                initDayPlan(dbPool: manager.dbPool)
-                initCatchUp(dbPool: manager.dbPool)
-                initMemory(dbPool: manager.dbPool)
-                initDashboard(dbManager: manager)
-                initSecretaryProfile(dbManager: manager)
-                initEmailAccounts(dbPool: manager.dbPool)
-                initCalendarAccounts(dbPool: manager.dbPool)
-                initGoogleAccounts(dbPool: manager.dbPool)
-                startDigestWatcher(dbPool: manager.dbPool)
-                startMeetingReminders(dbPool: manager.dbPool)
-                if UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey) {
-                    startMobileHub()
-                }
+                startServices(manager: manager)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
                     backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode)
@@ -359,6 +345,26 @@ final class AppState {
         // Check for updates in background (once per 24h)
         Task {
             await updateService.checkIfNeeded()
+        }
+    }
+
+    /// Per-feature service wiring that runs once the DB is open and the
+    /// splash is dismissed — split out of initialize() to keep it readable.
+    private func startServices(manager: DatabaseManager) {
+        loadCustomEmoji(from: manager)
+        initCalendar(dbPool: manager.dbPool)
+        initDayPlan(dbPool: manager.dbPool)
+        initCatchUp(dbPool: manager.dbPool)
+        initMemory(dbPool: manager.dbPool)
+        initDashboard(dbManager: manager)
+        initSecretaryProfile(dbManager: manager)
+        initEmailAccounts(dbPool: manager.dbPool)
+        initCalendarAccounts(dbPool: manager.dbPool)
+        initGoogleAccounts(dbPool: manager.dbPool)
+        startDigestWatcher(dbPool: manager.dbPool)
+        startMeetingReminders(dbPool: manager.dbPool)
+        if UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey) {
+            startMobileHub()
         }
     }
 
