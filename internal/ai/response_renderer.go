@@ -149,10 +149,28 @@ func (r *ResponseRenderer) resolveRefs(refs []messageRef) []messageRef {
 			continue
 		}
 
-		ref.permalink = slackutil.GenerateDeeplink(r.teamID, ch.ID, msg.TS)
+		teamID, rawChannelID := r.resolveLinkTarget(ch.ID)
+		ref.permalink = slackutil.GenerateDeeplink(teamID, rawChannelID, msg.TS)
 		resolved = append(resolved, ref)
 	}
 	return resolved
+}
+
+// resolveLinkTarget resolves the Slack team id and raw (un-namespaced) channel
+// id to use when building a deep link for a stored channel id. A namespaced id
+// ("<accountID>:<rawID>") resolves to its owning Slack account's team id; an
+// un-namespaced id falls back to the renderer's default team id (legacy
+// single-account behavior).
+func (r *ResponseRenderer) resolveLinkTarget(channelID string) (teamID, rawChannelID string) {
+	acctID, rawID, ok := slackutil.SplitAccountID(channelID)
+	if !ok {
+		return r.teamID, channelID
+	}
+	acct, err := r.db.GetSlackAccount(acctID)
+	if err != nil || acct.TeamID == "" {
+		return r.teamID, rawID
+	}
+	return acct.TeamID, rawID
 }
 
 // replaceRefs replaces raw message references with markdown links in the response text.

@@ -57,7 +57,8 @@ func TestDaemon_MemoryPhaseRunsBetweenInboxAndNextStep(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{
 		ID: "T024BE7LD", Name: "test-ws", Domain: "test-ws",
 	}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.EnsureChannel("C1", "general", "public", ""))
 	require.NoError(t, database.UpsertMessage(db.Message{
 		ChannelID: "C1", TS: "1700000000.000001", TSUnix: 1700000000.000001,
@@ -76,7 +77,7 @@ func TestDaemon_MemoryPhaseRunsBetweenInboxAndNextStep(t *testing.T) {
 	gen := &mockGenerator{}
 	l := log.New(os.Stderr, "[memory-phase-test] ", 0)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(l)
 	d.SetDB(database)
 	d.SetInboxPipeline(inbox.New(database, cfg, gen, l))
@@ -121,7 +122,7 @@ func TestDaemon_MemoryPhaseDisabledSkips(t *testing.T) {
 	memCfg.Enabled = false
 	cfg.Memory = memCfg
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[memory-disabled-test] ", 0))
 	d.SetDB(database)
 	d.SetMemoryPipeline(newTestMemoryPipeline(t, database, memCfg))
@@ -143,7 +144,7 @@ func TestDaemon_MemoryPhaseNilPipeline(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 	cfg.Memory = enabledMemoryConfig()
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[memory-nil-test] ", 0))
 
 	// Should not panic when no memory pipeline is installed.
@@ -165,7 +166,7 @@ func TestDaemon_MemoryPhaseLeavesInboxWatermark(t *testing.T) {
 	}))
 	require.NoError(t, database.SetInboxLastProcessedTS(1700000123.456))
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[memory-watermark-test] ", 0))
 	d.SetDB(database)
 	d.SetMemoryPipeline(newTestMemoryPipeline(t, database, cfg.Memory))
@@ -199,7 +200,7 @@ func TestDaemon_MemoryPhaseSkipsWhenLocked(t *testing.T) {
 	require.NoError(t, err)
 	defer unlock()
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[memory-locked-test] ", 0))
 	d.SetDB(database)
 	d.SetMemoryPipeline(memory.NewPipeline(database, vault, &mockGenerator{}, cfg.Memory, t.Logf))

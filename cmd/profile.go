@@ -44,18 +44,18 @@ func runProfile(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	// Get current user ID from workspace.
-	ws, err := database.GetWorkspace()
+	// Get current user ID from account #1.
+	userID, err := database.GetCurrentUserID()
 	if err != nil {
-		return fmt.Errorf("getting workspace: %w", err)
+		return fmt.Errorf("getting current user id: %w", err)
 	}
-	if ws == nil || ws.CurrentUserID == "" {
+	if userID == "" {
 		return fmt.Errorf("no workspace found — run 'watchtower sync' first")
 	}
 
 	out := cmd.OutOrStdout()
 
-	profile, err := database.GetUserProfile(ws.CurrentUserID)
+	profile, err := database.GetUserProfile(userID)
 	if err != nil {
 		return fmt.Errorf("getting profile: %w", err)
 	}

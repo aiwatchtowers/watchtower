@@ -193,6 +193,14 @@ func (p *Pipeline) resolveCurrentUserID() (string, error) {
 	return p.db.GetCurrentUserID()
 }
 
+// resolveOwnerSlackUserIDs returns every connected, enabled Slack account's
+// own user id, for excluding the owner's own messages from stream
+// candidates. Distinct from resolveCurrentUserID, which stays pinned to
+// account #1 for Jira/style/people-card purposes (Global Constraints #1).
+func (p *Pipeline) resolveOwnerSlackUserIDs() ([]string, error) {
+	return p.db.ListOwnerSlackUserIDs()
+}
+
 // resolveWatermarkWindow returns the last processed timestamp (falling back
 // to now-lookbackDays for a fresh install) and the equivalent time.Time.
 // logPrefix distinguishes Run's log lines from RunFastDetection's.

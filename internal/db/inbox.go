@@ -577,11 +577,25 @@ func (db *DB) FindReactionRequests(currentUserID string, sinceTS float64) ([]Inb
 
 // ListStreamCandidatesSince returns non-trigger messages newer than sinceTS
 // for the full-stream triage scan, oldest first, capped at limit. Excludes
-// deleted/subtyped messages, empty/self authors, DM channels (DMs are
-// trigger-detected separately), messages already in inbox_items, and
-// messages whose thread already has a pending inbox item.
-func (db *DB) ListStreamCandidatesSince(currentUserID string, sinceTS float64, limit int) ([]InboxCandidate, error) {
-	rows, err := db.Query(`
+// deleted/subtyped messages, empty authors, the owner's own messages across
+// every connected Slack account (ownerUserIDs — an empty slice excludes
+// none), DM channels (DMs are trigger-detected separately), messages already
+// in inbox_items, and messages whose thread already has a pending inbox item.
+func (db *DB) ListStreamCandidatesSince(ownerUserIDs []string, sinceTS float64, limit int) ([]InboxCandidate, error) {
+	placeholders := make([]string, len(ownerUserIDs))
+	args := []any{sinceTS}
+	for i, id := range ownerUserIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	// NOT IN () is invalid SQL, so the exclusion clause is omitted entirely
+	// when no owner ids are known — the degenerate case excludes nothing.
+	exclude := ""
+	if len(ownerUserIDs) > 0 {
+		exclude = "AND m.user_id NOT IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	args = append(args, limit)
+	query := fmt.Sprintf(`
 		SELECT m.channel_id, m.ts, COALESCE(m.thread_ts,''), m.user_id, m.text, COALESCE(m.permalink,''), m.ts_unix
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id
@@ -589,7 +603,7 @@ func (db *DB) ListStreamCandidatesSince(currentUserID string, sinceTS float64, l
 		  AND m.is_deleted = 0
 		  AND COALESCE(m.subtype,'') = ''
 		  AND m.user_id != ''
-		  AND m.user_id != ?
+		  %s
 		  AND c.type != 'dm'
 		  AND NOT EXISTS (
 		      SELECT 1 FROM inbox_items i
@@ -601,7 +615,8 @@ func (db *DB) ListStreamCandidatesSince(currentUserID string, sinceTS float64, l
 		        AND (i2.thread_ts = COALESCE(m.thread_ts,'') OR i2.thread_ts = m.ts)
 		        AND i2.status = 'pending')
 		ORDER BY m.ts_unix ASC
-		LIMIT ?`, sinceTS, currentUserID, limit)
+		LIMIT ?`, exclude)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing stream candidates: %w", err)
 	}

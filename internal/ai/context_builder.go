@@ -155,11 +155,6 @@ func (cb *ContextBuilder) BuildWorkspaceSummary() (string, error) {
 
 // buildWorkspaceSummary creates a brief overview of the workspace.
 func (cb *ContextBuilder) buildWorkspaceSummary(budget int, watchList []db.WatchItem) (string, error) {
-	ws, err := cb.db.GetWorkspace()
-	if err != nil {
-		return "", err
-	}
-
 	stats, err := cb.db.GetStats()
 	if err != nil {
 		return "", err
@@ -168,7 +163,11 @@ func (cb *ContextBuilder) buildWorkspaceSummary(budget int, watchList []db.Watch
 	var b strings.Builder
 	b.WriteString("=== Workspace Summary ===\n")
 
-	if ws != nil {
+	// List every connected Slack workspace. Falls back to the frozen legacy
+	// workspace singleton line when no slack_accounts rows exist yet.
+	if accounts, err := cb.db.ListSlackAccounts(); err == nil && len(accounts) > 0 {
+		b.WriteString(fmt.Sprintf("Connected Slack workspaces: %s\n", db.FormatConnectedWorkspaces(accounts)))
+	} else if ws, wErr := cb.db.GetWorkspace(); wErr == nil && ws != nil {
 		b.WriteString(fmt.Sprintf("Workspace: %s (domain: %s)\n", ws.Name, ws.Domain))
 	}
 	b.WriteString(fmt.Sprintf("Channels: %d | Users: %d | Messages: %d | Threads: %d\n",
@@ -684,13 +683,33 @@ func (cb *ContextBuilder) formatMessage(channelName string, msg db.Message) stri
 		text = string(runes[:497]) + "..."
 	}
 
+	teamID, rawChannelID := cb.resolveLinkTarget(msg.ChannelID)
 	line := fmt.Sprintf("#%s | %s | %s: %s", channelName, timeStr, userLabel, text)
 	if msg.Permalink != "" {
-		line += " [" + watchtowerslack.PermalinkToDeeplink(msg.Permalink, cb.teamID) + "]"
-	} else if cb.teamID != "" {
-		line += " [" + watchtowerslack.GenerateDeeplink(cb.teamID, msg.ChannelID, msg.TS) + "]"
+		line += " [" + watchtowerslack.PermalinkToDeeplink(msg.Permalink, teamID) + "]"
+	} else if teamID != "" {
+		line += " [" + watchtowerslack.GenerateDeeplink(teamID, rawChannelID, msg.TS) + "]"
 	}
 	return line + "\n"
+}
+
+// resolveLinkTarget resolves the Slack team id and raw (un-namespaced) channel
+// id to use when building a deep link for a stored channel id. A namespaced id
+// ("<accountID>:<rawID>") resolves to its owning Slack account's team id; an
+// un-namespaced id falls back to the builder's default team id (legacy
+// single-account behavior). The stored account's team domain isn't part of the
+// slack:// deep-link format (which keys on team id), so only team id + raw
+// channel id are resolved here.
+func (cb *ContextBuilder) resolveLinkTarget(channelID string) (teamID, rawChannelID string) {
+	acctID, rawID, ok := watchtowerslack.SplitAccountID(channelID)
+	if !ok {
+		return cb.teamID, channelID
+	}
+	acct, err := cb.db.GetSlackAccount(acctID)
+	if err != nil || acct.TeamID == "" {
+		return cb.teamID, rawID
+	}
+	return acct.TeamID, rawID
 }
 
 // formatThreadSummary adds a brief summary of thread replies.

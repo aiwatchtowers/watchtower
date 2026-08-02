@@ -58,10 +58,13 @@ func testConfig() *config.Config {
 	}
 }
 
-// seedWorkspaceAndUser inserts a workspace and sets the current user.
+// seedWorkspaceAndUser inserts a workspace and sets the current user (now
+// slack_accounts account #1's current_user_id — see internal/db/slack_accounts.go).
 func seedWorkspaceAndUser(t *testing.T, database *db.DB, userID string) {
 	t.Helper()
-	_, err := database.Exec(`INSERT INTO workspace (id, name, current_user_id) VALUES ('T1', 'Test', ?)`, userID)
+	_, err := database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`)
+	require.NoError(t, err)
+	_, err = database.CreateSlackAccount(db.SlackAccount{CurrentUserID: userID})
 	require.NoError(t, err)
 	_, err = database.Exec(`INSERT INTO users (id, name) VALUES (?, 'testuser')`, userID)
 	require.NoError(t, err)

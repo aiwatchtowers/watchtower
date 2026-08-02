@@ -24,6 +24,7 @@ func buildSecretaryBrief(database *db.DB, currentUserID string, now time.Time) s
 	writeProfileSection(&b, database)
 	writeRoleSection(&b, database, currentUserID)
 	writeOwnerEmailsSection(&b, database)
+	writeSlackWorkspacesSection(&b, database)
 	writeTracksSection(&b, database)
 	writeJiraSection(&b, database, currentUserID)
 	writeCalendarSection(&b, database, now)
@@ -56,6 +57,31 @@ func writeOwnerEmailsSection(b *strings.Builder, database *db.DB) {
 		return
 	}
 	fmt.Fprintf(b, "Owner email addresses: %s\n\n", strings.Join(addrs, ", "))
+}
+
+// writeSlackWorkspacesSection lists the connected Slack workspaces when more
+// than one is connected, so triage/composer prompts understand a message may
+// come from any of them (mirroring the Gmail owner-addresses line's purpose).
+// Omitted entirely for the single/no-account case, keeping that output
+// byte-identical to before this section existed.
+func writeSlackWorkspacesSection(b *strings.Builder, database *db.DB) {
+	accounts, err := database.ListSlackAccounts()
+	if err != nil || len(accounts) <= 1 {
+		return
+	}
+	parts := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		label := a.Label
+		if label == "" {
+			label = a.TeamName
+		}
+		if a.TeamName != "" && a.TeamName != label {
+			parts = append(parts, fmt.Sprintf("%s (%s)", label, a.TeamName))
+		} else {
+			parts = append(parts, label)
+		}
+	}
+	fmt.Fprintf(b, "Connected Slack workspaces: %s\n\n", strings.Join(parts, ", "))
 }
 
 // writeProfileSection appends the user's own secretary instructions, if set.

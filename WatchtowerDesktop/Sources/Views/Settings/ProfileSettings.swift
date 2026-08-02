@@ -204,8 +204,10 @@ struct ProfileSettings: View {
     }
 
     private func getCurrentUserID(db: DatabaseManager) -> String? {
+        // current_user_id moved from workspace to slack_accounts (migration
+        // 00048); pinned to account #1, mirroring Go's db.GetCurrentUserID.
         try? db.dbPool.read { dbConn in
-            try String.fetchOne(dbConn, sql: "SELECT current_user_id FROM workspace LIMIT 1")
+            try String.fetchOne(dbConn, sql: "SELECT current_user_id FROM slack_accounts WHERE id = 1")
         }
     }
 

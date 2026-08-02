@@ -25,23 +25,31 @@ type SyncOptions struct {
 	SkipDMs  bool     // Skip syncing DMs and group DMs
 }
 
-// Orchestrator coordinates the sync phases.
+// Orchestrator coordinates the sync phases for one connected Slack account.
+// Every channelID/userID string passed between its methods, stored on a
+// SyncTask, or written to the DB is namespaced ("<accountID>:<rawID>"); only
+// the literal Slack SDK calls need the raw id (stripped via
+// watchtowerslack.SplitAccountID immediately before the call).
 type Orchestrator struct {
 	db                   *db.DB
 	slackClient          *watchtowerslack.Client
 	config               *config.Config
+	accountID            int64
+	account              db.SlackAccount
 	logger               *log.Logger
 	progress             *Progress
-	channelNames         map[string]string // channel ID -> name, populated during message sync
-	discoveredChannelIDs map[string]bool   // channels found active by discovery phase
+	channelNames         map[string]string // namespaced channel ID -> name, populated during message sync
+	discoveredChannelIDs map[string]bool   // namespaced channel IDs found active by discovery phase
 }
 
-// NewOrchestrator creates a new sync orchestrator.
-func NewOrchestrator(database *db.DB, slackClient *watchtowerslack.Client, cfg *config.Config) *Orchestrator {
+// NewOrchestrator creates a new sync orchestrator scoped to one connected
+// Slack account (accountID, a slack_accounts.id).
+func NewOrchestrator(database *db.DB, slackClient *watchtowerslack.Client, cfg *config.Config, accountID int64) *Orchestrator {
 	return &Orchestrator{
 		db:          database,
 		slackClient: slackClient,
 		config:      cfg,
+		accountID:   accountID,
 		logger:      log.Default(),
 		progress:    NewProgress(),
 	}
@@ -88,22 +96,14 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	// Phase 1: workspace info
 	o.progress.SetPhase(PhaseMetadata)
 
-	// Ensure workspace record exists (team.info, cached after first call)
-	ws, err := o.db.GetWorkspace()
-	if err != nil {
-		return fmt.Errorf("checking workspace: %w", err)
+	// Ensure the connected account's team info is resolved (team.info, cached after first call)
+	if err := o.ensureWorkspace(ctx); err != nil {
+		return fmt.Errorf("workspace sync: %w", err)
 	}
-	if ws == nil {
-		if err := o.ensureWorkspace(ctx); err != nil {
-			return fmt.Errorf("workspace sync: %w", err)
-		}
-	} else {
-		o.logger.Printf("workspace: %s (%s) [cached]", ws.Name, ws.ID)
-		// Retry syncCurrentUser if it failed on a previous run (e.g. auth.test error).
-		// Required for action items pipeline which needs current_user_id.
-		if ws.CurrentUserID == "" {
-			o.syncCurrentUser(ctx)
-		}
+	// Retry syncCurrentUser if it failed on a previous run (e.g. auth.test error).
+	// Required for action items pipeline which needs current_user_id.
+	if o.account.CurrentUserID == "" {
+		o.syncCurrentUser(ctx)
 	}
 
 	// Sync custom emojis (fast, single API call)
@@ -227,7 +227,8 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 
 	var updated int
 	for _, chID := range channelIDs {
-		lastRead, err := o.slackClient.GetChannelReadCursor(ctx, chID)
+		_, rawID, _ := watchtowerslack.SplitAccountID(chID)
+		lastRead, err := o.slackClient.GetChannelReadCursor(ctx, rawID)
 		if err != nil {
 			o.logger.Printf("warning: failed to get read cursor for %s: %v", chID, err)
 			continue
@@ -273,7 +274,8 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 
 	var synced int
 	for _, t := range targets {
-		reactions, err := o.slackClient.GetMessageReactions(ctx, t.ch, t.ts)
+		_, rawCh, _ := watchtowerslack.SplitAccountID(t.ch)
+		reactions, err := o.slackClient.GetMessageReactions(ctx, rawCh, t.ts)
 		if err != nil {
 			// Non-fatal: channel might be archived, message deleted, etc.
 			if !isNonFatalError(err) {
@@ -293,7 +295,7 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 				dbReactions = append(dbReactions, db.Reaction{
 					ChannelID: t.ch,
 					MessageTS: t.ts,
-					UserID:    uid,
+					UserID:    watchtowerslack.Namespace(o.accountID, uid),
 					Emoji:     r.Name,
 				})
 			}
@@ -348,48 +350,47 @@ func (o *Orchestrator) finishSync() error {
 	return nil
 }
 
-// ensureWorkspace fetches and caches workspace info. Skips the API call if already in DB.
+// ensureWorkspace loads (and, on first run, resolves via team.info) the
+// connected account's team info. Skips the API call if already cached on
+// the slack_accounts row.
 func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
-	ws, err := o.db.GetWorkspace()
+	acct, err := o.db.GetSlackAccount(o.accountID)
 	if err != nil {
-		return fmt.Errorf("checking workspace: %w", err)
+		return fmt.Errorf("loading slack account %d: %w", o.accountID, err)
 	}
-	if ws != nil {
-		o.logger.Printf("workspace: %s (%s) [cached]", ws.Name, ws.ID)
+	if acct.TeamID != "" {
+		o.logger.Printf("workspace: %s (%s) [cached]", acct.TeamName, acct.TeamID)
+		o.account = acct
 		return nil
 	}
 
-	teamInfo, err := o.slackClient.GetTeamInfo(ctx)
+	info, err := o.slackClient.GetTeamInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("fetching team info: %w", err)
 	}
-	if err := o.db.UpsertWorkspace(db.Workspace{
-		ID:     teamInfo.ID,
-		Name:   teamInfo.Name,
-		Domain: teamInfo.Domain,
-	}); err != nil {
-		return fmt.Errorf("upserting workspace: %w", err)
+	if err := o.db.UpdateSlackAccountConnection(o.accountID, info.ID, info.Name, info.Domain, acct.CurrentUserID); err != nil {
+		return fmt.Errorf("updating slack account %d: %w", o.accountID, err)
 	}
-	o.logger.Printf("workspace: %s (%s)", teamInfo.Name, teamInfo.ID)
-
-	// Identify the current user via auth.test
-	o.syncCurrentUser(ctx)
-
+	acct.TeamID, acct.TeamName, acct.TeamDomain = info.ID, info.Name, info.Domain
+	o.account = acct
+	o.logger.Printf("workspace: %s (%s)", acct.TeamName, acct.TeamID)
 	return nil
 }
 
 // syncCurrentUser calls auth.test to identify the token owner and stores
-// the user_id in the workspace record. Errors are logged but non-fatal.
+// the namespaced user_id on slack_accounts. Errors are logged but non-fatal.
 func (o *Orchestrator) syncCurrentUser(ctx context.Context) {
 	authResp, err := o.slackClient.AuthTest(ctx)
 	if err != nil {
 		o.logger.Printf("warning: auth.test failed: %v", err)
 		return
 	}
-	if err := o.db.SetCurrentUserID(authResp.UserID); err != nil {
+	namespaced := watchtowerslack.Namespace(o.accountID, authResp.UserID)
+	if err := o.db.UpdateSlackAccountConnection(o.accountID, o.account.TeamID, o.account.TeamName, o.account.TeamDomain, namespaced); err != nil {
 		o.logger.Printf("warning: saving current user: %v", err)
 		return
 	}
+	o.account.CurrentUserID = namespaced
 	o.logger.Printf("current user: @%s (%s)", authResp.User, authResp.UserID)
 }
 
@@ -400,13 +401,10 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 	if err != nil {
 		return fmt.Errorf("fetching team info: %w", err)
 	}
-	if err := o.db.UpsertWorkspace(db.Workspace{
-		ID:     teamInfo.ID,
-		Name:   teamInfo.Name,
-		Domain: teamInfo.Domain,
-	}); err != nil {
-		return fmt.Errorf("upserting workspace: %w", err)
+	if err := o.db.UpdateSlackAccountConnection(o.accountID, teamInfo.ID, teamInfo.Name, teamInfo.Domain, o.account.CurrentUserID); err != nil {
+		return fmt.Errorf("updating slack account %d: %w", o.accountID, err)
 	}
+	o.account.TeamID, o.account.TeamName, o.account.TeamDomain = teamInfo.ID, teamInfo.Name, teamInfo.Domain
 	o.logger.Printf("workspace: %s (%s)", teamInfo.Name, teamInfo.ID)
 
 	// Identify the current user
@@ -448,7 +446,7 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 			profileJSON = []byte("{}")
 		}
 		if err := o.db.UpsertUser(db.User{
-			ID:          u.ID,
+			ID:          watchtowerslack.Namespace(o.accountID, u.ID),
 			Name:        u.Name,
 			DisplayName: u.Profile.DisplayName,
 			RealName:    u.RealName,
@@ -492,15 +490,19 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 			name = ch.ID
 		}
 		o.logger.Printf("  channel %d/%d: #%s [%s] %d members", i+1, len(channels), name, strings.Join(flags, ","), ch.NumMembers)
+		dmUserID := ch.User
+		if dmUserID != "" {
+			dmUserID = watchtowerslack.Namespace(o.accountID, dmUserID)
+		}
 		if err := o.db.UpsertChannel(db.Channel{
-			ID:         ch.ID,
+			ID:         watchtowerslack.Namespace(o.accountID, ch.ID),
 			Name:       ch.Name,
 			Type:       chType,
 			Topic:      ch.Topic.Value,
 			Purpose:    ch.Purpose.Value,
 			IsArchived: ch.IsArchived,
 			IsMember:   ch.IsMember,
-			DMUserID:   sql.NullString{String: ch.User, Valid: ch.User != ""},
+			DMUserID:   sql.NullString{String: dmUserID, Valid: dmUserID != ""},
 			NumMembers: ch.NumMembers,
 			LastRead:   ch.LastRead,
 		}); err != nil {

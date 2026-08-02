@@ -80,12 +80,12 @@ func TestSearchSync_PartialPaginationKeepsWatermark(t *testing.T) {
 
 	ts := newTestSetup(t, searchAuditMux(http.HandlerFunc(search)))
 	require.NoError(t, ts.db.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test", Domain: "test"}))
-	require.NoError(t, ts.db.SetSearchLastDate("2020-01-01"))
+	require.NoError(t, ts.db.SetSlackAccountSearchWatermark(ts.accountID, "2020-01-01"))
 
 	err := ts.orch.Run(context.Background(), SyncOptions{})
 	require.NoError(t, err)
 
-	got, err := ts.db.GetSearchLastDate()
+	got, err := ts.db.GetSlackAccountSearchWatermark(ts.accountID)
 	require.NoError(t, err)
 	assert.Equal(t, "2020-01-01", got,
 		"interrupted pagination must leave search_last_date untouched to avoid dropping unfetched pages")
@@ -127,7 +127,7 @@ func TestSearchSync_MissingScopeFallsBackToFullSync(t *testing.T) {
 	require.NoError(t, ts.db.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test", Domain: "test"}))
 	// A pre-existing channel means the "0 channels" fallback would NOT fire —
 	// so only the scope-error fallback can rescue this sync.
-	require.NoError(t, ts.db.UpsertChannel(db.Channel{ID: "C001", Name: "general", Type: "public", IsMember: true}))
+	require.NoError(t, ts.db.UpsertChannel(db.Channel{ID: ts.ns("C001"), Name: "general", Type: "public", IsMember: true}))
 
 	err := ts.orch.Run(context.Background(), SyncOptions{})
 	require.NoError(t, err)
