@@ -25,18 +25,22 @@ struct CalendarEventRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            // Relative countdown next to the absolute range for events
-            // starting soon; `.relative` keeps it ticking without a timer.
-            // The extra start > now gate keeps a just-started event from
-            // counting UP until the next observation tick re-evaluates
-            // `isUpcoming`.
-            if event.isUpcoming, event.startDate > Date() {
-                HStack(spacing: 3) {
-                    Text("in")
-                    Text(event.startDate, style: .relative)
+            // Relative countdown next to the absolute range for events starting
+            // soon; `.relative` keeps it ticking without a timer. The explicit
+            // TimelineView schedule re-evaluates the gate exactly at startDate, so
+            // the countdown disappears the moment the meeting begins instead of
+            // counting UP until the next external re-render.
+            if event.isUpcoming {
+                TimelineView(.explicit([event.startDate])) { context in
+                    if context.date < event.startDate {
+                        HStack(spacing: 3) {
+                            Text("in")
+                            Text(event.startDate, style: .relative)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                    }
                 }
-                .font(.caption2)
-                .foregroundStyle(.blue)
             }
         }
         .frame(width: 80, alignment: .trailing)
