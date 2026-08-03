@@ -210,7 +210,7 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 
 	// The row is saved — from here on a recap failure must NOT flip the exit
 	// code; it is reported inside the envelope instead.
-	recapErr, recapSkipped, chaptersOutcome := runSaveGenerations(
+	recapSkipped, chaptersOutcome, recapErr := runSaveGenerations(
 		cmd.Context(), database, cfg, id, text, tr.SegmentsJSON.Valid, cmd.ErrOrStderr())
 	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome, recapSkipped)
 }
@@ -219,7 +219,7 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 // transcript is under minRecapTranscriptChars — the too-short skip) and,
 // when segments were persisted and the recap wasn't skipped, the chapters
 // pass. Returned values feed printTranscriptEnvelope verbatim.
-func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config, id int64, text string, hasSegments bool, errOut io.Writer) (recapErr error, recapSkipped bool, chaptersOutcome *error) {
+func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config, id int64, text string, hasSegments bool, errOut io.Writer) (recapSkipped bool, chaptersOutcome *error, recapErr error) {
 	recapSkipped = utf8.RuneCountInString(text) < minRecapTranscriptChars
 	if recapSkipped {
 		recapErr = fmt.Errorf("transcript too short (<%d chars): recap skipped", minRecapTranscriptChars)
@@ -235,7 +235,7 @@ func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config
 		_, chaptersErr := generateAndStoreTranscriptChapters(ctx, database, cfg, id, errOut)
 		chaptersOutcome = &chaptersErr
 	}
-	return recapErr, recapSkipped, chaptersOutcome
+	return recapSkipped, chaptersOutcome, recapErr
 }
 
 // loadTranscriptSegments reads and validates the optional --segments-file for
