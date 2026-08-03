@@ -437,6 +437,128 @@ final class ReplicaToolboxTests: XCTestCase {
         XCTAssertEqual(unknown, "null")
     }
 
+    // MARK: - Account-namespaced Slack ids (get_person / list_digests channel)
+
+    /// Stored Slack ids are account-namespaced (`"1:U9"`). Both id lookups must
+    /// accept the canonical form other tools return AND a bare raw id, without
+    /// ever matching a different account's id or a prefix of one.
+    func testGetPersonAcceptsNamespacedAndBareUserID() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.personCard, "1", personRow(id: 1, userID: "1:U9", periodTo: 1_000, summary: "namespaced card"))
+        ])
+
+        // Round-trip: the id exactly as list_people/get_person hand it back.
+        let canonical = try objectResult(await execute(fixtures.toolbox, "get_person", #"{"query":"1:U9"}"#))
+        XCTAssertEqual(canonical["summary"] as? String, "namespaced card")
+        XCTAssertEqual(canonical["user_id"] as? String, "1:U9", "the namespaced id is returned verbatim, never stripped")
+
+        // Bare raw id: the form a model remembers from a Slack link or a human.
+        let bare = try objectResult(await execute(fixtures.toolbox, "get_person", #"{"query":"U9"}"#))
+        XCTAssertEqual(bare["summary"] as? String, "namespaced card")
+
+        // Another account's namespaced id is a MISS, not a raw-part match.
+        let otherAccount = await execute(fixtures.toolbox, "get_person", #"{"query":"2:U9"}"#)
+        XCTAssertEqual(otherAccount, "null")
+        // Neither the account prefix nor a prefix of the raw id may match.
+        let prefixOnly = await execute(fixtures.toolbox, "get_person", #"{"query":"1"}"#)
+        XCTAssertEqual(prefixOnly, "null")
+        let rawPrefix = await execute(fixtures.toolbox, "get_person", #"{"query":"U"}"#)
+        XCTAssertEqual(rawPrefix, "null")
+    }
+
+    /// A bare query is genuinely ambiguous once two accounts carry a card for
+    /// the same raw user id. Documented resolution: `personOrder` decides, so
+    /// the newest card across accounts wins — the same rule that already picks
+    /// between several cards of one user. A namespaced query still pins the account.
+    func testGetPersonBareQueryAcrossAccountsPicksNewestCard() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.personCard, "1", personRow(id: 1, userID: "1:U9", periodTo: 1_000, summary: "account one")),
+            (.personCard, "2", personRow(id: 2, userID: "2:U9", periodTo: 2_000, summary: "account two"))
+        ])
+
+        let ambiguous = try objectResult(await execute(fixtures.toolbox, "get_person", #"{"query":"U9"}"#))
+        XCTAssertEqual(ambiguous["summary"] as? String, "account two")
+        XCTAssertEqual(ambiguous["user_id"] as? String, "2:U9", "the reply names the account it resolved to")
+
+        let pinned = try objectResult(await execute(fixtures.toolbox, "get_person", #"{"query":"1:U9"}"#))
+        XCTAssertEqual(pinned["summary"] as? String, "account one")
+    }
+
+    func testListDigestsChannelFilterAcceptsNamespacedAndBareID() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.digest, "1", digestRow(id: 1, channelID: "1:C1", periodFrom: 1_000, periodTo: 2_000)),
+            (.digest, "2", digestRow(id: 2, channelID: "2:C1", periodFrom: 3_000, periodTo: 4_000)),
+            (.digest, "3", digestRow(id: 3, channelID: "1:C10", periodFrom: 5_000, periodTo: 6_000))
+        ])
+
+        let canonical = try ids(await execute(fixtures.toolbox, "list_digests", #"{"channel":"1:C1"}"#))
+        XCTAssertEqual(canonical, [1])
+
+        // Bare id: every account's channel with that raw id (list tool — no
+        // ambiguity to resolve), newest first.
+        let bare = try ids(await execute(fixtures.toolbox, "list_digests", #"{"channel":"C1"}"#))
+        XCTAssertEqual(bare, [2, 1])
+
+        // Still equality on the raw part — never a prefix match on "1:C10".
+        let bareLonger = try ids(await execute(fixtures.toolbox, "list_digests", #"{"channel":"C10"}"#))
+        XCTAssertEqual(bareLonger, [3])
+        let wrongAccount = try ids(await execute(fixtures.toolbox, "list_digests", #"{"channel":"2:C10"}"#))
+        XCTAssertEqual(wrongAccount, [])
+    }
+
+    /// The shared `matches` helper backs 8 non-id filters; loosening it for
+    /// everyone would make "1:high" a valid priority. Pinned: an id-shaped
+    /// value stays a plain mismatch on a non-id filter.
+    func testNonSlackIDFiltersKeepExactEquality() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.digest, "1", digestRow(id: 1, type: "channel", periodFrom: 1_000, periodTo: 2_000)),
+            (.target, "1", targetRow(id: 1, priority: "high"))
+        ])
+
+        let typed = await execute(fixtures.toolbox, "list_digests", #"{"type":"1:channel"}"#)
+        XCTAssertNotNil(try objectResult(typed)["error"], "an id-shaped type is invalid, never a namespaced match")
+        let priced = await execute(fixtures.toolbox, "list_targets", #"{"priority":"1:high"}"#)
+        XCTAssertNotNil(try objectResult(priced)["error"])
+    }
+
+    /// An empty query must stay a miss: `matchesSlackID`'s empty-means-no-filter
+    /// rule is list-tool semantics, and inheriting it here would hand the model
+    /// an arbitrary person's card for a blank lookup.
+    func testGetPersonEmptyQueryIsNullNotAnArbitraryCard() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.personCard, "1", personRow(id: 1, userID: "1:U9", periodTo: 1_000))
+        ])
+
+        let empty = await execute(fixtures.toolbox, "get_person", #"{"query":""}"#)
+        XCTAssertEqual(empty, "null")
+    }
+
+    /// The id-shape truth has to reach the model: descriptions that promise a
+    /// bare "U…" are what caused the always-null lookups in the first place.
+    func testIDToolDescriptionsDocumentNamespacedForm() throws {
+        let fixtures = try makeFixtures()
+        let tools = fixtures.toolbox.tools
+
+        let person = try XCTUnwrap(tools.first { $0.name == "get_person" })
+        XCTAssertTrue(person.description.contains("<account>:"), person.description)
+        let digests = try XCTUnwrap(tools.first { $0.name == "list_digests" })
+        guard case let .object(schema) = digests.inputSchema,
+              let propertiesValue = schema["properties"],
+              case let .object(properties) = propertiesValue,
+              let channelValue = properties["channel"],
+              case let .object(channel) = channelValue,
+              let docValue = channel["description"],
+              case let .string(channelDoc) = docValue else {
+            return XCTFail("list_digests channel property has no description")
+        }
+        XCTAssertTrue(channelDoc.contains("<account>:"), channelDoc)
+    }
+
     // MARK: - list_upcoming_events
 
     func testListUpcomingEventsWindowAcrossMidnightWithFrozenNow() async throws {

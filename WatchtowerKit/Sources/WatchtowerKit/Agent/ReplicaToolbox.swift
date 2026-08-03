@@ -225,7 +225,7 @@ public struct ReplicaToolbox: Sendable {
         let matches = try store.fetchAll(Digest.self, kind: .digest)
             .filter { digest in
                 Self.matches(digest.type, args.type)
-                    && Self.matches(digest.channelID, args.channel)
+                    && Self.matchesSlackID(digest.channelID, args.channel)
                     && (sinceUnix <= 0 || digest.periodFrom >= sinceUnix)
             }
             .sorted(by: Self.digestOrder)
@@ -352,12 +352,20 @@ public struct ReplicaToolbox: Sendable {
     }
 
     private func getPerson(args: GetPersonArgs) throws -> String {
-        // Exact Slack user-id match only. The Go tool falls back to
+        // An empty query is a miss, not `matchesSlackID`'s "no filter" — that
+        // is list-tool semantics and here it would hand back a random card.
+        guard !args.query.isEmpty else { return "null" }
+        // Slack user-id match only. The Go tool falls back to
         // SearchUsersByName, but the users table is not a replica slice —
         // name lookup is a documented phone-side gap, and an unmatched query
         // is null (MCP mirror rule), not an error.
+        //
+        // A bare raw id can match cards from several accounts; personOrder
+        // decides, so the newest card wins across accounts exactly as it does
+        // between several cards of one user. The reply carries the stored
+        // namespaced `user_id`, so the model can see which account it got.
         let card = try store.fetchAll(PeopleCard.self, kind: .personCard)
-            .filter { $0.userID == args.query }
+            .filter { Self.matchesSlackID($0.userID, args.query) }
             .min(by: Self.personOrder)
         guard let card else { return "null" }
         return Self.encode(Self.personDetail(card))
@@ -539,6 +547,17 @@ public struct ReplicaToolbox: Sendable {
         return value == filter
     }
 
+    /// `matches` for a stored account-namespaced Slack id (`"1:U0456"`). Two
+    /// query forms answer: the canonical namespaced id every tool returns, and
+    /// a bare raw id, which matches any account's id with that raw part. A
+    /// namespaced query is NEVER stripped — `"2:U0456"` must not reach account
+    /// 1's row — so widening only ever adds matches, never crosses accounts.
+    private static func matchesSlackID(_ value: String, _ filter: String?) -> Bool {
+        guard let filter, !filter.isEmpty else { return true }
+        if value == filter { return true }
+        return !SlackID.split(filter).isNamespaced && SlackID.raw(value) == filter
+    }
+
     /// Go `parseSince`: a date (YYYY-MM-DD, LOCAL midnight) or an RFC3339
     /// timestamp.
     private static func parseSince(_ raw: String) throws -> Date {
@@ -662,7 +681,10 @@ extension ReplicaToolbox {
             "type": "object",
             "properties": [
                 "type": ["type": "string", "description": "digest type: channel|daily|weekly"],
-                "channel": ["type": "string", "description": "channel id to filter by"],
+                "channel": [
+                    "type": "string",
+                    "description": "channel id: namespaced \"<account>:C…\" as returned, or a bare \"C…\" (matches every account)"
+                ],
                 "since": [
                     "type": "string",
                     "description": "only digests whose period starts on/after this date (YYYY-MM-DD or RFC3339)"
@@ -716,11 +738,15 @@ extension ReplicaToolbox {
 
     private static let getPersonTool = APITool(
         name: "get_person",
-        description: "Get the latest people card for a person by Slack user id (U…). "
-            + "Name search is not available on the phone — pass the exact user id.",
+        description: "Get the latest people card for a person by Slack user id, namespaced \"<account>:U…\" "
+            + "as other tools return it (a bare \"U…\" also matches, newest card across accounts). "
+            + "Name search is not available on the phone.",
         inputSchema: [
             "type": "object",
-            "properties": ["query": ["type": "string", "description": "Slack user id (U…)"]],
+            "properties": ["query": [
+                "type": "string",
+                "description": "Slack user id: \"<account>:U…\" (e.g. 1:U0456), or a bare \"U…\""
+            ]],
             "required": ["query"]
         ]
     )
