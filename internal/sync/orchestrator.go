@@ -111,9 +111,44 @@ func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
 		o.logger.Printf("slack: sync cancelled, leaving auth state untouched: %v", err)
 		return
 	}
-	if dbErr := o.db.SetSlackAccountAuthState(o.accountID, "error", err.Error()); dbErr != nil {
+	status := "error"
+	if isRevokedAuthError(err) {
+		status = "revoked"
+	}
+	if dbErr := o.db.SetSlackAccountAuthState(o.accountID, status, err.Error()); dbErr != nil {
 		o.logger.Printf("slack: failed to record auth state: %v", dbErr)
 	}
+}
+
+// revokedSlackErrors are the Slack API error codes that mean the token itself
+// is dead (revoked/deactivated), not a transient or narrowly-scoped failure —
+// slack_accounts.status="revoked" drives Desktop's more urgent red indicator
+// (SlackAccount.isRevoked) vs the softer "error" one.
+var revokedSlackErrors = map[string]bool{
+	"invalid_auth":     true,
+	"account_inactive": true,
+	"token_revoked":    true,
+	"not_authed":       true,
+}
+
+// isRevokedAuthError classifies a Run() error for recordAuthResult — the
+// isNonFatalError precedent's structured-then-string-match pattern, applied
+// to a different question (dead token vs a transient/scoped one).
+func isRevokedAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var slackErr slack.SlackErrorResponse
+	if errors.As(err, &slackErr) {
+		return revokedSlackErrors[slackErr.Err]
+	}
+	msg := err.Error()
+	for code := range revokedSlackErrors {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
 }
 
 // run is Run's actual pipeline. For incremental sync (default), it uses
@@ -295,11 +330,19 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 func (o *Orchestrator) filterOwnAccountIDs(ids []string) []string {
 	out := ids[:0:0]
 	for _, id := range ids {
-		if acctID, _, ok := watchtowerslack.SplitAccountID(id); ok && acctID == o.accountID {
+		if o.ownsID(id) {
 			out = append(out, id)
 		}
 	}
 	return out
+}
+
+// ownsID reports whether a namespaced id belongs to this orchestrator's own
+// account — the single check filterOwnAccountIDs and syncInboxReactions both
+// need before ever handing an id to this orchestrator's Slack client.
+func (o *Orchestrator) ownsID(id string) bool {
+	acctID, _, ok := watchtowerslack.SplitAccountID(id)
+	return ok && acctID == o.accountID
 }
 
 // syncInboxReactions fetches fresh reactions from Slack for pending inbox items.
@@ -327,8 +370,7 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 	seen := make(map[key]bool, len(pendingItems))
 	var targets []key
 	for _, item := range pendingItems {
-		acctID, _, ok := watchtowerslack.SplitAccountID(item.ChannelID)
-		if !ok || acctID != o.accountID {
+		if !o.ownsID(item.ChannelID) {
 			continue
 		}
 		k := key{item.ChannelID, item.MessageTS}
