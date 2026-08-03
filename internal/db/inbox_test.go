@@ -668,7 +668,7 @@ func TestListStreamCandidatesSince(t *testing.T) {
 	insertMessage(t, d, "D1", "100.3", "U2", "dm text")                  // dm → excluded
 	insertMessage(t, d, "C1", "99.0", "U2", "too old")                   // before watermark
 
-	got, err := d.ListStreamCandidatesSince("U1", 99.5, 100)
+	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 99.5, 100)
 	require.NoError(t, err)
 	if len(got) != 1 || got[0].MessageTS != "100.1" {
 		t.Fatalf("want exactly the C1/100.1 candidate, got %+v", got)
@@ -678,13 +678,52 @@ func TestListStreamCandidatesSince(t *testing.T) {
 	}
 }
 
+// TestListStreamCandidatesSince_MultipleOwners proves own-message exclusion
+// spans every connected Slack account's owner id, not just one — the
+// multi-account own-message-suppression contract (Task 7).
+func TestListStreamCandidatesSince_MultipleOwners(t *testing.T) {
+	d := openTestDB(t)
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "100.1", "U1", "owner msg from account 1") // owner id #1
+	insertMessage(t, d, "C1", "100.2", "U2", "owner msg from account 2") // owner id #2
+	insertMessage(t, d, "C1", "100.3", "U3", "a real other person")      // not an owner
+
+	// Both owner ids excluded → only the non-owner message survives.
+	got, err := d.ListStreamCandidatesSince([]string{"U1", "U2"}, 0, 100)
+	require.NoError(t, err)
+	if len(got) != 1 || got[0].MessageTS != "100.3" {
+		t.Fatalf("want only the non-owner C1/100.3 candidate, got %+v", got)
+	}
+
+	// Excluding only U2 leaves U1's message in — proves the clause targets the
+	// listed ids, not "exclude everything".
+	got, err = d.ListStreamCandidatesSince([]string{"U2"}, 0, 100)
+	require.NoError(t, err)
+	if len(got) != 2 {
+		t.Fatalf("want 2 candidates (U1 + U3) when only U2 excluded, got %+v", got)
+	}
+	for _, c := range got {
+		if c.SenderUserID == "U2" {
+			t.Fatalf("U2 must be excluded, got %+v", got)
+		}
+	}
+
+	// Empty owner slice excludes nothing (degenerate NOT IN () case): all three
+	// messages surface, and the query stays valid SQL.
+	got, err = d.ListStreamCandidatesSince(nil, 0, 100)
+	require.NoError(t, err)
+	if len(got) != 3 {
+		t.Fatalf("empty owner slice must exclude nothing, want 3, got %+v", got)
+	}
+}
+
 func TestListStreamCandidatesSince_SkipsAlreadyInboxed(t *testing.T) {
 	d := openTestDB(t)
 	insertChannel(t, d, "C1", "public")
 	insertMessage(t, d, "C1", "100.1", "U2", "hello")
 	mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "100.1", SenderUserID: "U2", TriggerType: "mention"})
 
-	got, err := d.ListStreamCandidatesSince("U1", 0, 100)
+	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 0, 100)
 	require.NoError(t, err)
 	if len(got) != 0 {
 		t.Fatalf("already-inboxed message must not be a candidate, got %+v", got)
@@ -702,7 +741,7 @@ func TestListStreamCandidatesSince_SkipsThreadWithPendingItem(t *testing.T) {
 	// (e.g. from mention detection on the reply).
 	mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "100.5", ThreadTS: "100.1", SenderUserID: "U2", TriggerType: "mention"})
 
-	got, err := d.ListStreamCandidatesSince("U1", 0, 100)
+	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 0, 100)
 	require.NoError(t, err)
 	// Neither the root (100.1, matched via its own ts as the thread key) nor
 	// the reply (100.5, matched via thread_ts) may surface as candidates.
@@ -719,7 +758,7 @@ func TestListStreamCandidatesSince_ExcludesDeletedAndSubtype(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, subtype) VALUES ('C1', '100.2', 'U2', 'joined the channel', 'channel_join')`)
 	require.NoError(t, err)
 
-	got, err := d.ListStreamCandidatesSince("U1", 0, 100)
+	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 0, 100)
 	require.NoError(t, err)
 	if len(got) != 0 {
 		t.Fatalf("deleted/subtyped messages must not be stream candidates, got %+v", got)
@@ -732,7 +771,7 @@ func TestListStreamCandidatesSince_CapAndOrder(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		insertMessage(t, d, "C1", fmt.Sprintf("10%d.0", i), "U2", "msg")
 	}
-	got, err := d.ListStreamCandidatesSince("U1", 0, 3)
+	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 0, 3)
 	require.NoError(t, err)
 	if len(got) != 3 || got[0].MessageTS != "101.0" || got[2].MessageTS != "103.0" {
 		t.Fatalf("want oldest-first capped at 3, got %+v", got)

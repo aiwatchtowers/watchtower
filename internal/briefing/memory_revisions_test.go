@@ -40,7 +40,8 @@ func setupBriefingWithVault(t *testing.T) (*db.DB, *config.Config, string) {
 
 	database := testDB(t)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
 
 	now := time.Now()

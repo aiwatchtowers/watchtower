@@ -13,8 +13,10 @@ final class SlackAuthService {
 
     // MARK: - Disconnect
 
-    /// Runs `auth logout`: removes the Slack token from config and purges all
-    /// Slack data (and the AI products built on it) from the database.
+    /// Runs `auth logout`: removes the Slack token (config + token file) and
+    /// marks account #1 removed/disabled so syncing stops. Non-destructive —
+    /// already-synced Slack data and the AI products built on it are KEPT
+    /// (mirrors the `slack remove` / `removeSlackAccount` semantics).
     func disconnect() async {
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"

@@ -267,7 +267,7 @@ func TestGetChannelValueSignals_Basic(t *testing.T) {
 
 	// Setup: channel + workspace
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public", IsMember: true}))
-	_, err := db.Exec(`INSERT INTO workspace (id, name, current_user_id) VALUES ('T1', 'test', 'U1')`)
+	_, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
 
 	// Decision: insert digest + digest_topic with non-empty decisions

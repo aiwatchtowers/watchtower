@@ -93,13 +93,13 @@ func TestSyncMessagesBasic(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify messages were stored
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 3)
 
 	// Verify content of first message (newest first in our query)
 	assert.Equal(t, "Hello world", msgs[0].Text)
-	assert.Equal(t, "U001", msgs[0].UserID)
+	assert.Equal(t, ts.ns("U001"), msgs[0].UserID)
 }
 
 func TestSyncMessagesPagination(t *testing.T) {
@@ -118,7 +118,7 @@ func TestSyncMessagesPagination(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 5)
 }
@@ -137,11 +137,11 @@ func TestSyncMessagesMultipleChannels(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	msgs1, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs1, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs1, 1)
 
-	msgs2, err := ts.db.GetMessagesByChannel("C002", 100)
+	msgs2, err := ts.db.GetMessagesByChannel(ts.ns("C002"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs2, 1)
 }
@@ -165,11 +165,11 @@ func TestSyncMessagesChannelFilter(t *testing.T) {
 	err = ts.orch.syncMessages(context.Background(), SyncOptions{Channels: []string{"general"}})
 	require.NoError(t, err)
 
-	msgs1, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs1, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs1, 1, "general channel should have messages")
 
-	msgs2, err := ts.db.GetMessagesByChannel("C002", 100)
+	msgs2, err := ts.db.GetMessagesByChannel(ts.ns("C002"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs2, 0, "engineering channel should not have been synced")
 }
@@ -207,7 +207,7 @@ func TestSyncMessagesIncrementalSync(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify sync state was created
-	state, err := ts.db.GetSyncState("C001")
+	state, err := ts.db.GetSyncState(ts.ns("C001"))
 	require.NoError(t, err)
 	require.NotNil(t, state)
 	assert.True(t, state.IsInitialSyncComplete)
@@ -233,7 +233,7 @@ func TestSyncMessagesFullMode(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set up existing sync state
-	err = ts.db.UpdateSyncState("C001", db.SyncState{
+	err = ts.db.UpdateSyncState(ts.ns("C001"), db.SyncState{
 		LastSyncedTS:          "1700000001.000000",
 		IsInitialSyncComplete: true,
 		MessagesSynced:        1,
@@ -244,7 +244,7 @@ func TestSyncMessagesFullMode(t *testing.T) {
 	err = ts.orch.syncMessages(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 }
@@ -265,7 +265,7 @@ func TestSyncMessagesSyncStateTracking(t *testing.T) {
 	err = ts.orch.syncMessages(context.Background(), SyncOptions{})
 	require.NoError(t, err)
 
-	state, err := ts.db.GetSyncState("C001")
+	state, err := ts.db.GetSyncState(ts.ns("C001"))
 	require.NoError(t, err)
 	require.NotNil(t, state)
 	assert.True(t, state.IsInitialSyncComplete)
@@ -291,12 +291,12 @@ func TestSyncMessagesWithThreadTS(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 2)
 
 	// Find the parent message (ts == thread_ts, so thread_ts should be NULL)
-	parent, err := ts.db.GetMessages(db.MessageOpts{ChannelID: "C001", Limit: 10})
+	parent, err := ts.db.GetMessages(db.MessageOpts{ChannelID: ts.ns("C001"), Limit: 10})
 	require.NoError(t, err)
 
 	foundParent := false
@@ -350,7 +350,7 @@ func TestSyncMessagesNonFatalErrorSkipsChannel(t *testing.T) {
 	require.NoError(t, err)
 
 	// C002 should still have messages
-	msgs, err := ts.db.GetMessagesByChannel("C002", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C002"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 }
@@ -382,11 +382,11 @@ func TestBuildChannelQueuePriority(t *testing.T) {
 	require.NoError(t, err)
 
 	// Add C001 (general) to watch list with high priority
-	err = ts.db.AddWatch("channel", "C001", "general", "high")
+	err = ts.db.AddWatch("channel", ts.ns("C001"), "general", "high")
 	require.NoError(t, err)
 
 	// Add C002 (engineering) to watch list with normal priority
-	err = ts.db.AddWatch("channel", "C002", "engineering", "normal")
+	err = ts.db.AddWatch("channel", ts.ns("C002"), "engineering", "normal")
 	require.NoError(t, err)
 
 	tasks, err := ts.orch.buildChannelQueue(SyncOptions{})
@@ -396,9 +396,9 @@ func TestBuildChannelQueuePriority(t *testing.T) {
 	assert.Len(t, tasks, 2)
 
 	// C001 should be first (watch high), C002 second (watch normal)
-	assert.Equal(t, "C001", tasks[0].ChannelID)
+	assert.Equal(t, ts.ns("C001"), tasks[0].ChannelID)
 	assert.Equal(t, PriorityWatchHigh, tasks[0].Priority)
-	assert.Equal(t, "C002", tasks[1].ChannelID)
+	assert.Equal(t, ts.ns("C002"), tasks[1].ChannelID)
 	assert.Equal(t, PriorityWatchNormal, tasks[1].Priority)
 }
 
@@ -412,7 +412,7 @@ func TestBuildChannelQueueSkipsArchived(t *testing.T) {
 
 	// C003 (old-project) is archived, should be excluded
 	for _, task := range tasks {
-		assert.NotEqual(t, "C003", task.ChannelID, "archived channel should be excluded")
+		assert.NotEqual(t, ts.ns("C003"), task.ChannelID, "archived channel should be excluded")
 	}
 }
 
@@ -425,7 +425,7 @@ func TestBuildChannelQueueWithFilter(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Len(t, tasks, 1)
-	assert.Equal(t, "C002", tasks[0].ChannelID)
+	assert.Equal(t, ts.ns("C002"), tasks[0].ChannelID)
 }
 
 func TestBuildChannelQueueFilterByID(t *testing.T) {
@@ -433,11 +433,11 @@ func TestBuildChannelQueueFilterByID(t *testing.T) {
 	err := ts.orch.syncMetadata(context.Background(), SyncOptions{})
 	require.NoError(t, err)
 
-	tasks, err := ts.orch.buildChannelQueue(SyncOptions{Channels: []string{"C001"}})
+	tasks, err := ts.orch.buildChannelQueue(SyncOptions{Channels: []string{ts.ns("C001")}})
 	require.NoError(t, err)
 
 	assert.Len(t, tasks, 1)
-	assert.Equal(t, "C001", tasks[0].ChannelID)
+	assert.Equal(t, ts.ns("C001"), tasks[0].ChannelID)
 }
 
 func TestBuildChannelQueueFilterIncludesArchived(t *testing.T) {
@@ -450,7 +450,7 @@ func TestBuildChannelQueueFilterIncludesArchived(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Len(t, tasks, 1)
-	assert.Equal(t, "C003", tasks[0].ChannelID)
+	assert.Equal(t, ts.ns("C003"), tasks[0].ChannelID)
 }
 
 func TestAssignChannelPriority(t *testing.T) {
@@ -533,7 +533,7 @@ func TestSyncMessagesErrorSavesState(t *testing.T) {
 
 	// Sync state should have error recorded for at least one channel
 	foundError := false
-	for _, chID := range []string{"C001", "C002"} {
+	for _, chID := range []string{ts.ns("C001"), ts.ns("C002")} {
 		state, stateErr := ts.db.GetSyncState(chID)
 		if stateErr == nil && state != nil && state.Error != "" {
 			foundError = true
@@ -557,7 +557,7 @@ func TestSyncMessagesWithSubtype(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 	assert.Equal(t, "channel_join", msgs[0].Subtype)
@@ -574,7 +574,7 @@ func TestSyncMessagesRawJSONStored(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 
@@ -594,7 +594,7 @@ func TestSyncMessagesEmptyChannel(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 0)
 }
@@ -620,7 +620,7 @@ func TestSyncMessagesUpsertDeduplication(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should still have only 1 message (upsert, not duplicate)
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 	assert.Equal(t, "Edited", msgs[0].Text)
@@ -640,7 +640,7 @@ func TestSyncMessagesEditedFlag(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	assert.True(t, msgs[0].IsEdited)
@@ -666,7 +666,7 @@ func TestSyncMessagesWorkerCount(t *testing.T) {
 	err = ts.orch.syncMessages(context.Background(), SyncOptions{Workers: 1, Full: true})
 	require.NoError(t, err)
 
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 }
@@ -706,7 +706,7 @@ func TestSyncMessagesCursorResume(t *testing.T) {
 	require.NoError(t, err)
 
 	// Set up a sync state with a cursor (simulating interrupted previous sync)
-	err = ts.db.UpdateSyncState("C001", db.SyncState{
+	err = ts.db.UpdateSyncState(ts.ns("C001"), db.SyncState{
 		LastSyncedTS:          "",
 		IsInitialSyncComplete: false,
 		Cursor:                "resume_cursor",
@@ -727,13 +727,13 @@ func TestSyncMessagesCursorResume(t *testing.T) {
 	assert.True(t, foundResumeCursor, "should have used the saved cursor: %v", requestedCursors)
 
 	// Verify message was stored
-	msgs, err := ts.db.GetMessagesByChannel("C001", 100)
+	msgs, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
 	assert.Equal(t, "Resumed msg", msgs[0].Text)
 
 	// Verify sync state was updated and cursor cleared
-	state, err := ts.db.GetSyncState("C001")
+	state, err := ts.db.GetSyncState(ts.ns("C001"))
 	require.NoError(t, err)
 	require.NotNil(t, state)
 	assert.True(t, state.IsInitialSyncComplete)
@@ -779,7 +779,7 @@ func TestSyncMessagesLargeVolume(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{Full: true})
 	require.NoError(t, err)
 
-	stored, err := ts.db.GetMessagesByChannel("C001", 100)
+	stored, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
 	require.NoError(t, err)
 	assert.Len(t, stored, 10)
 }

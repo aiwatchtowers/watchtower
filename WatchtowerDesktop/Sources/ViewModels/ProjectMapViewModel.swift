@@ -171,8 +171,10 @@ final class ProjectMapViewModel {
             // Load current user and reports for filtering
             let (uid, reports) = try await Task.detached { [dbManager] in
                 try dbManager.dbPool.read { db -> (String?, [String]) in
+                    // current_user_id moved from workspace to slack_accounts
+                    // (migration 00048); pinned to account #1.
                     let userID = try String.fetchOne(
-                        db, sql: "SELECT current_user_id FROM workspace LIMIT 1"
+                        db, sql: "SELECT current_user_id FROM slack_accounts WHERE id = 1"
                     )
                     var reps: [String] = []
                     if let uid = userID, !uid.isEmpty,

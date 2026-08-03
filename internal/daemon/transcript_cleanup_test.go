@@ -24,7 +24,7 @@ func newCleanupTestDaemon(t *testing.T) (*Daemon, *db.DB) {
 	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-transcript-cleanup] ", 0))
 	d.SetDB(database)
 	return d, database

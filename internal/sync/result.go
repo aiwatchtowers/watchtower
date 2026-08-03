@@ -30,6 +30,29 @@ func ResultFromSnapshot(snap Snapshot, syncErr error) SyncResult {
 	return r
 }
 
+// ResultFromSnapshots aggregates one SyncResult from several per-account
+// progress snapshots (one per connected Slack account). MessagesFetched is
+// summed; StartedAt is the earliest account start; DurationSecs spans from that
+// earliest start to now. syncErr carries the first account error, if any.
+// With a single snapshot it is equivalent to ResultFromSnapshot.
+func ResultFromSnapshots(snaps []Snapshot, syncErr error) SyncResult {
+	now := time.Now()
+	r := SyncResult{FinishedAt: now}
+	if syncErr != nil {
+		r.Error = syncErr.Error()
+	}
+	for _, snap := range snaps {
+		r.MessagesFetched += snap.MessagesFetched
+		if r.StartedAt.IsZero() || (!snap.StartTime.IsZero() && snap.StartTime.Before(r.StartedAt)) {
+			r.StartedAt = snap.StartTime
+		}
+	}
+	if !r.StartedAt.IsZero() {
+		r.DurationSecs = now.Sub(r.StartedAt).Seconds()
+	}
+	return r
+}
+
 // WriteSyncResult writes the result to a JSON file.
 func WriteSyncResult(path string, result SyncResult) error {
 	data, err := json.MarshalIndent(result, "", "  ")

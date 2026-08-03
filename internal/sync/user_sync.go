@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"watchtower/internal/db"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // usersBulkThreshold: if more unknown users than this, use users.list instead of individual fetches.
@@ -35,6 +36,7 @@ func (o *Orchestrator) syncUserProfiles(ctx context.Context) error {
 }
 
 // fetchUserProfilesIndividually fetches each user via users.info (Tier 4).
+// userIDs are namespaced; the raw id is used only for the users.info call.
 func (o *Orchestrator) fetchUserProfilesIndividually(ctx context.Context, userIDs []string) error {
 	for i, userID := range userIDs {
 		select {
@@ -43,7 +45,8 @@ func (o *Orchestrator) fetchUserProfilesIndividually(ctx context.Context, userID
 		default:
 		}
 
-		user, err := o.slackClient.GetUserInfo(ctx, userID)
+		_, rawID, _ := watchtowerslack.SplitAccountID(userID)
+		user, err := o.slackClient.GetUserInfo(ctx, rawID)
 		if err != nil {
 			if isNonFatalError(err) {
 				o.logger.Printf("user profiles: skipping %s: %v", userID, err)
@@ -59,7 +62,7 @@ func (o *Orchestrator) fetchUserProfilesIndividually(ctx context.Context, userID
 		}
 
 		if err := o.db.UpsertUser(db.User{
-			ID:          user.ID,
+			ID:          userID,
 			Name:        user.Name,
 			DisplayName: user.Profile.DisplayName,
 			RealName:    user.RealName,
@@ -101,7 +104,7 @@ func (o *Orchestrator) fetchAllUserProfiles(ctx context.Context) error {
 		}
 
 		if err := o.db.UpsertUser(db.User{
-			ID:          u.ID,
+			ID:          watchtowerslack.Namespace(o.accountID, u.ID),
 			Name:        u.Name,
 			DisplayName: u.Profile.DisplayName,
 			RealName:    u.RealName,

@@ -256,10 +256,7 @@ final class ChannelStatsTests: XCTestCase {
     func testFetchCurrentUserID() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try db.execute(sql: """
-                INSERT INTO workspace (id, name, domain, current_user_id)
-                VALUES ('T001', 'Test', 'test', 'U042')
-                """)
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "U042")
         }
         let uid = try db.read { try ChannelStatsQueries.fetchCurrentUserID($0) }
         XCTAssertEqual(uid, "U042")
