@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -503,10 +504,32 @@ func TestSyncTeamInfoError(t *testing.T) {
 
 	// Run must record the failure on the account row (recordAuthResult) — a
 	// revoked/broken token must surface in Desktop, not stay "ok" forever.
+	// invalid_auth is specifically a dead-token signal, so status="revoked"
+	// (Desktop's more urgent red indicator), not the softer "error".
 	acct, dbErr := ts.db.GetSlackAccount(ts.accountID)
 	require.NoError(t, dbErr)
-	assert.Equal(t, "error", acct.Status)
+	assert.Equal(t, "revoked", acct.Status)
 	assert.Contains(t, acct.Error, "workspace sync")
+}
+
+// TestSyncTeamInfoError_GenericErrorNotClassifiedAsRevoked proves
+// isRevokedAuthError actually discriminates: a non-auth failure (unlike
+// TestSyncTeamInfoError's invalid_auth) must record plain "error", not
+// "revoked" — a classifier that always says "revoked" would pass the other
+// test too, so this is the branch that actually pins the distinction.
+func TestSyncTeamInfoError_GenericErrorNotClassifiedAsRevoked(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/team.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "internal_error"})
+	})
+
+	ts := newTestSetup(t, mux)
+	require.Error(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	acct, err := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "error", acct.Status, "a non-auth Slack error must not be classified as revoked")
 }
 
 // TestRunRecordsAuthStateRecoversOnSuccess: after a failed Run flips the
@@ -522,7 +545,7 @@ func TestRunRecordsAuthStateRecoversOnSuccess(t *testing.T) {
 	require.Error(t, ts.orch.Run(context.Background(), SyncOptions{}))
 	acct, err := ts.db.GetSlackAccount(ts.accountID)
 	require.NoError(t, err)
-	require.Equal(t, "error", acct.Status)
+	require.Equal(t, "revoked", acct.Status) // invalid_auth classifies as revoked
 
 	// Re-point the client at a healthy server (same orchestrator, same
 	// account row) and re-run — status must clear.
@@ -536,6 +559,33 @@ func TestRunRecordsAuthStateRecoversOnSuccess(t *testing.T) {
 	acct, err = ts.db.GetSlackAccount(ts.accountID)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", acct.Status)
+	assert.Empty(t, acct.Error)
+}
+
+// TestRecordAuthResultSkipsCancelledContext is calendar.Syncer's
+// TestRecordAuthResultSkipsCancelledContext precedent applied to Orchestrator:
+// a cancelled ctx means daemon shutdown, not an auth problem, so a real error
+// that happens to coincide with shutdown must not flip the account's status
+// (a regression that made this guard fire unconditionally, masking a genuine
+// auth failure, would pass every other auth-state test in this file — none
+// of them cancel the context before calling recordAuthResult).
+func TestRecordAuthResultSkipsCancelledContext(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+	accountID, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+
+	orch := NewOrchestrator(database, nil, &config.Config{}, accountID)
+	orch.logger = log.New(os.Stderr, "[test] ", 0) // avoid SetLogger's nil slackClient touch
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	orch.recordAuthResult(ctx, errors.New("sync: terminated signal received"))
+
+	acct, err := database.GetSlackAccount(accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acct.Status, "cancelled ctx must not flip auth state")
 	assert.Empty(t, acct.Error)
 }
 

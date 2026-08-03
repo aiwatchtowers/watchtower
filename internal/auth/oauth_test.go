@@ -159,11 +159,11 @@ func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
 	defer func() { exchangeToken = oldExchange }()
 
 	cfg := OAuthConfig{ClientID: "test-client-id", ClientSecret: "test-client-secret"}
-	var out bytes.Buffer
+	out := &syncBuffer{}
 
 	resultCh := make(chan error, 1)
 	go func() {
-		_, err := Login(context.Background(), cfg, &out, LoginOptions{SkipBrowserOpen: true, AppReturn: true})
+		_, err := Login(context.Background(), cfg, out, LoginOptions{SkipBrowserOpen: true, AppReturn: true})
 		resultCh <- err
 	}()
 

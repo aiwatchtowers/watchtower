@@ -421,7 +421,11 @@ func TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling(t *testing.T) {
 	require.NoError(t, dbErr)
 	assert.Equal(t, "ok", healthyAcct.Status, "healthy account's own status must not be affected by the sibling's failure")
 
-	// The broken account's OWN row is flagged — not the healthy one's.
+	// The broken account's OWN row is flagged — not the healthy one's. The
+	// helper pre-seeds a workspace, so ensureWorkspace treats team.info as
+	// cached and the actual failure surfaces later from search.messages
+	// hitting failMux's unregistered path — a generic error, not an
+	// invalid_auth-shaped one, so this classifies as plain "error".
 	failAcct, dbErr := failDB.GetSlackAccount(1)
 	require.NoError(t, dbErr)
 	assert.Equal(t, "error", failAcct.Status)
