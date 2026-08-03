@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -141,6 +142,76 @@ func TestLogin_HappyPath(t *testing.T) {
 	}
 
 	assert.Contains(t, out.String(), "Opening browser")
+}
+
+// TestLogin_AppReturn_SuccessPageRedirects is gmail.TestLogin_AppReturn_SuccessPageRedirects'
+// Slack analog: with LoginOptions.AppReturn set, the success page served on
+// the OAuth callback must contain the watchtower-auth:// redirect, not just
+// the plain self-closing page.
+func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+	oldExchange := exchangeToken
+	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
+		return &slack.OAuthV2Response{
+			AuthedUser: slack.OAuthV2ResponseAuthedUser{ID: "U12345", AccessToken: "xoxp-test-token"},
+			Team:       slack.OAuthV2ResponseTeam{ID: "T12345", Name: "Test Team"},
+		}, nil
+	}
+	defer func() { exchangeToken = oldExchange }()
+
+	cfg := OAuthConfig{ClientID: "test-client-id", ClientSecret: "test-client-secret"}
+	var out bytes.Buffer
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := Login(context.Background(), cfg, &out, LoginOptions{SkipBrowserOpen: true, AppReturn: true})
+		resultCh <- err
+	}()
+
+	var authorizeURL string
+	require.Eventually(t, func() bool {
+		s := out.String()
+		idx := strings.Index(s, "https://")
+		if idx == -1 {
+			return false
+		}
+		end := strings.IndexAny(s[idx:], "\n ")
+		if end == -1 {
+			end = len(s) - idx
+		}
+		authorizeURL = s[idx : idx+end]
+		return authorizeURL != ""
+	}, 3*time.Second, 10*time.Millisecond)
+
+	parsed, err := url.Parse(authorizeURL)
+	require.NoError(t, err)
+	state := parsed.Query().Get("state")
+	redirectURI := parsed.Query().Get("redirect_uri")
+	require.NotEmpty(t, state)
+	require.NotEmpty(t, redirectURI)
+
+	cbURL, err := url.Parse(redirectURI)
+	require.NoError(t, err)
+	q := cbURL.Query()
+	q.Set("code", "test-auth-code")
+	q.Set("state", state)
+	cbURL.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cbURL.String(), nil)
+	require.NoError(t, err)
+	resp, err := insecureClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	// The success page must send the browser back to the app.
+	assert.Contains(t, string(body), "watchtower-auth://connected")
+
+	select {
+	case err := <-resultCh:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Login did not complete in time")
+	}
 }
 
 func TestLogin_StateMismatch(t *testing.T) {
