@@ -12,6 +12,11 @@ import AppKit
 struct RecordingRecapTab: View {
     let transcript: MeetingTranscript
     let recapContent: MeetingRecap.Content?
+    /// True when `recapContent` is the event's recap and it was generated
+    /// from a different recording's transcript (or another source) than this
+    /// one. Only the legacy flat-recap path renders the note — chapters are
+    /// always generated from this transcript's own segments.
+    let recapFromOtherSource: Bool
     let chapters: MeetingChapters?
     let hasSegments: Bool
     let onRetryRecap: () -> Void
@@ -205,6 +210,13 @@ struct RecordingRecapTab: View {
     @ViewBuilder
     private var legacyRecap: some View {
         if let content = recapContent {
+            if recapFromOtherSource {
+                Label(
+                    "Event recap — generated from a different recording or source of this meeting, not from this recording.",
+                    systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if !content.summary.isEmpty {
                 Text(content.summary)
                     .font(.callout)

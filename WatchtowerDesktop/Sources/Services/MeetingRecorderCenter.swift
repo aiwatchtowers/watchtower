@@ -577,7 +577,13 @@ final class MeetingRecorderCenter {
             // Recap/roles failures are non-fatal — the transcript row is saved;
             // flag them in the notification rather than reporting a failure.
             if !result.recapOK {
-                notifier.sendTranscriptReadyNotification(title: "\(title) — transcript saved, recap needs retry")
+                if result.recapSkipped {
+                    notifier.sendTranscriptReadyNotification(
+                        title: "\(title) — transcript saved (too short for recap)")
+                } else {
+                    notifier.sendTranscriptReadyNotification(
+                        title: "\(title) — transcript saved, recap needs retry")
+                }
             } else if result.chapters == .failed {
                 // Auto-chapters failed after save (envelope-only signal, like
                 // the recap sibling) — retry via the in-UI "Generate

@@ -34,6 +34,11 @@ struct RecordingDetailView: View {
     @State private var attendees: [EventAttendee] = []
     @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
+    /// True when `recapContent` came from the event's `meeting_recaps` row and
+    /// that row was generated from a different recording's transcript (or
+    /// another source) than this one — the Recap tab needs a provenance note
+    /// so it doesn't read like AI hallucination.
+    @State private var recapFromOtherSource = false
     @State private var chapters: MeetingChapters?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
@@ -141,6 +146,7 @@ struct RecordingDetailView: View {
             RecordingRecapTab(
                 transcript: transcript,
                 recapContent: recapContent,
+                recapFromOtherSource: recapFromOtherSource,
                 chapters: chapters,
                 hasSegments: utterances != nil,
                 onRetryRecap: retryRecap,
@@ -284,6 +290,12 @@ struct RecordingDetailView: View {
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
             recapContent = loaded.recap?.parsed ?? loaded.row?.parsedSummary
+            // An exact source-text match means the event recap WAS generated
+            // from this recording's own transcript; anything else (including
+            // no event recap at all) is either this recording's own summary
+            // or none, so no note is needed.
+            recapFromOtherSource = loaded.recap != nil
+                && loaded.recap?.sourceText != loaded.row?.transcriptText
         } catch {
             errorMessage = error.localizedDescription
         }
