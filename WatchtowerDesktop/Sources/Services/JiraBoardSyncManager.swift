@@ -63,7 +63,7 @@ final class JiraBoardSyncManager {
         proc.executableURL = URL(fileURLWithPath: cliPath)
         proc.arguments = [
             "jira", "--account", String(accountID),
-            "sync", "--board", String(boardID), "--progress-json",
+            "sync", "--board", String(boardID), "--progress-json"
         ]
         proc.environment = Constants.resolvedEnvironment()
         proc.currentDirectoryURL = Constants.processWorkingDirectory()
