@@ -23,9 +23,16 @@ func GmailChannelID(accountID int64, threadID string) string {
 
 // ClearGmailData removes the Gmail data synced for one account on the user's
 // request: its gmail_messages rows, the inbox items its detector minted (their
-// inbox_feedback and situation_signals rows cascade via FK), and the
-// situations and feed rows those signals leave orphaned. Every other account's
-// rows are untouched, and so is the rest of the inbox.
+// inbox_feedback and situation_signals rows cascade via FK), the situations and
+// feed rows those signals leave orphaned, and the learned rules scoped to its
+// channel ids. Every other account's rows are untouched, and so is the rest of
+// the inbox.
+//
+// Only "channel:gmail:<id>:<thread>" learned rules go — they name one thread of
+// one account and can never match again once that account's items are gone,
+// mirroring how ClearSlackData drops channel-scoped rules on disconnect.
+// "sender:<email>" rules stay: a sender is an identity, not an account, and the
+// same correspondent may well be writing to another connected mailbox.
 //
 // Watermarks are deliberately preserved — none of google_accounts'
 // gmail_last_internal_date / memory_gmail_last_extracted_ts nor workspace's
@@ -69,6 +76,11 @@ func (db *DB) ClearGmailData(accountID int64) error {
 	// rows cascade via FK.
 	if _, err := tx.Exec(`DELETE FROM inbox_items WHERE channel_id LIKE ? || ':%'`, prefix); err != nil {
 		return fmt.Errorf("gmail purge: deleting inbox items: %w", err)
+	}
+	// Learned rules keyed to this account's Gmail channel ids.
+	if _, err := tx.Exec(`DELETE FROM inbox_learned_rules
+		WHERE scope_key LIKE 'channel:' || ? || ':%'`, prefix); err != nil {
+		return fmt.Errorf("gmail purge: deleting learned rules: %w", err)
 	}
 
 	// Touched situations left with no signals at all, then the feed rows whose

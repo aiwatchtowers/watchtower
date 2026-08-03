@@ -127,6 +127,17 @@ func gmailPurgeFixture(t *testing.T, d *DB) (acctA, acctB int64) {
 		VALUES (3, 'C1', '1.1', 'U1', 'mention')`)
 	exec(`INSERT INTO inbox_feedback (inbox_item_id, rating, created_at) VALUES (1, 1, ?)`, eventTS)
 
+	// Learned rules: one per account's Gmail channel, one keyed to a Slack
+	// channel and one keyed to a sender identity.
+	exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', ?, -1.0, 'user_rule', ?)`, "channel:"+GmailChannelID(acctA, "ta1"), eventTS)
+	exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', ?, -1.0, 'user_rule', ?)`, "channel:"+GmailChannelID(acctB, "tb1"), eventTS)
+	exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', 'channel:C1', -1.0, 'user_rule', ?)`, eventTS)
+	exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', 'sender:sender@example.com', -1.0, 'user_rule', ?)`, eventTS)
+
 	// Situation 10: only account A's mail. 11: only account B's. 12: A's mail
 	// plus a Slack signal, so it survives A's purge. 13: no signals at all —
 	// a target_update situation composed from "tgt:" material.
@@ -201,6 +212,25 @@ func TestClearGmailData_IsolatedToOneAccount(t *testing.T) {
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_items WHERE channel_id = 'C1'`))
 }
 
+// TestClearGmailData_LearnedRules: a rule scoped to the purged account's own
+// Gmail channel goes with it — it names one thread of one account and can
+// never match again. Rules scoped to another account's channel, to a Slack
+// channel, or to a sender identity all survive.
+func TestClearGmailData_LearnedRules(t *testing.T) {
+	d := openTestDB(t)
+	acctA, acctB := gmailPurgeFixture(t, d)
+
+	require.NoError(t, d.ClearGmailData(acctA))
+
+	assert.Zero(t, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = ?`,
+		"channel:"+GmailChannelID(acctA, "ta1")))
+	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = ?`,
+		"channel:"+GmailChannelID(acctB, "tb1")))
+	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = 'channel:C1'`))
+	assert.Equal(t, 1, gmailPurgeCount(t, d,
+		`SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = 'sender:sender@example.com'`))
+}
+
 // TestClearGmailData_OrphanedSituations: a situation left with no signals is
 // swept together with its feed row, but one still holding a non-Gmail signal
 // survives — and so does a signal-less situation the purge never touched,
@@ -259,12 +289,16 @@ func TestClearGmailData_AccountIDIsNotAPrefixMatch(t *testing.T) {
 		VALUES (?, 'm1', 's@x.com', 'email_received')`, GmailChannelID(1, "t1"))
 	exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type)
 		VALUES (?, 'm11', 's@x.com', 'email_received')`, GmailChannelID(11, "t11"))
+	exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', ?, -1.0, 'user_rule', datetime('now'))`, "channel:"+GmailChannelID(11, "t11"))
 
 	require.NoError(t, d.ClearGmailData(1))
 
 	assert.Zero(t, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_items WHERE channel_id = ?`, GmailChannelID(1, "t1")))
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_items WHERE channel_id = ?`, GmailChannelID(11, "t11")))
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM gmail_messages WHERE account_id = 11`))
+	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = ?`,
+		"channel:"+GmailChannelID(11, "t11")))
 }
 
 // TestClearGmailData_Degenerate: purging an account that has no Gmail rows is
