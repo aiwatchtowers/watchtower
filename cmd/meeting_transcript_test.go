@@ -575,6 +575,49 @@ func TestTranscriptSaveShortTranscriptSkipsRecap(t *testing.T) {
 	assert.False(t, tr.SummaryJSON.Valid)
 }
 
+// A short transcript with a valid, matching segments file must still persist
+// segments (segments processing is independent of the recap-length gate),
+// while both recap AND chapters stay unattempted — chapters require
+// `!recapSkipped`, so the short-transcript gate cascades to them even though
+// segments are present and valid (cmd/meeting_transcript.go's
+// `!recapSkipped && tr.SegmentsJSON.Valid` guard).
+func TestTranscriptSaveShortTranscriptWithSegmentsSkipsRecapButKeepsSegments(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: transcriptMockRecapJSON}
+	stubTranscriptGenerator(t, mock)
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagTitle = "Short with segments"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+	assert.Equal(t, 0, mock.calls, "the generator must never be invoked for a too-short transcript, even with valid segments")
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.SegmentsOK, "a valid segments file must still report segments_ok=true")
+	assert.Equal(t, "", env.SegmentsError)
+	assert.True(t, env.RecapSkipped)
+
+	raw := rawEnvelope(t, buf.Bytes())
+	assert.NotContains(t, raw, "chapters_ok", "chapters must not be attempted when recap is skipped")
+	assert.NotContains(t, raw, "chapters_error", "chapters must not be attempted when recap is skipped")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.True(t, tr.SegmentsJSON.Valid, "segments_json must be persisted despite the recap skip")
+	assert.False(t, tr.ChaptersJSON.Valid, "chapters must stay NULL when never attempted")
+}
+
 // The gate is `<`, not `<=`: a transcript of exactly minRecapTranscriptChars
 // runes must still generate a recap. strings.Repeat on a 2-byte-in-UTF-8
 // Cyrillic rune pins that the comparison counts runes, not bytes (200 runes
