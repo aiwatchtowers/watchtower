@@ -1,5 +1,6 @@
-/// Plain import (no @testable): the app target reads these ids, so the
-/// helper must be public — this file would stop compiling if it were not.
+/// Plain import (no @testable): these are the public helper's own semantics,
+/// exercised the way `DemoSeed` (app target) calls it. The public surface
+/// itself is pinned by `PublicAPISurfaceTests`.
 import WatchtowerKit
 import XCTest
 
@@ -70,10 +71,5 @@ final class SlackIDTests: XCTestCase {
         XCTAssertEqual(accountID, 7)
         XCTAssertEqual(rawID, "U9")
         XCTAssertTrue(isNamespaced)
-    }
-
-    func testRawStripsAccountPrefix() {
-        XCTAssertEqual(SlackID.raw("3:C0123"), "C0123")
-        XCTAssertEqual(SlackID.raw("C0123"), "C0123")
     }
 }

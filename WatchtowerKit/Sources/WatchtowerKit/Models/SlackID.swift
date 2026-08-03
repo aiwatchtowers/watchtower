@@ -17,8 +17,4 @@ public enum SlackID {
         }
         return (accountID, String(id[id.index(after: colon)...]), true)
     }
-
-    public static func raw(_ id: String) -> String {
-        split(id).rawID
-    }
 }

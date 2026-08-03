@@ -21,9 +21,7 @@ enum DemoSeed {
         // MARK: Briefing (Today headline)
         records.append(try record(.briefing, "1", now, [
             "id": 1,
-            // Slack ids are account-namespaced ("<accountID>:<rawID>", see
-            // WatchtowerKit's SlackID) — the demo path must look like real data.
-            "user_id": "1:U_DEMO",
+            "user_id": SlackID.namespaced(accountID: 1, rawID: "U_DEMO"),
             "date": today,
             "role": "Middle Management",
             "attention": #"[{"text":"Q3 launch risk needs a decision","priority":"high","reason":"Deadline Friday"}]"#,
@@ -64,9 +62,9 @@ enum DemoSeed {
         // MARK: Inbox items
         records.append(try record(.inboxItem, "1", now, [
             "id": 1,
-            "channel_id": "1:C_DEMO",
+            "channel_id": SlackID.namespaced(accountID: 1, rawID: "C_DEMO"),
             "message_ts": String(now.timeIntervalSince1970),
-            "sender_user_id": "1:U_ALICE",
+            "sender_user_id": SlackID.namespaced(accountID: 1, rawID: "U_ALICE"),
             "trigger_type": "mention",
             "snippet": "Can you review the launch checklist before Friday?",
             "status": "pending",
@@ -76,9 +74,9 @@ enum DemoSeed {
         ]))
         records.append(try record(.inboxItem, "2", now, [
             "id": 2,
-            "channel_id": "1:D_DEMO",
+            "channel_id": SlackID.namespaced(accountID: 1, rawID: "D_DEMO"),
             "message_ts": String(now.timeIntervalSince1970 - 300),
-            "sender_user_id": "1:U_BOB",
+            "sender_user_id": SlackID.namespaced(accountID: 1, rawID: "U_BOB"),
             "trigger_type": "dm",
             "snippet": "Thanks for the update — I'll take it from here.",
             "status": "pending",

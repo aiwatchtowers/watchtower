@@ -17,6 +17,9 @@ import Foundation
 ///   dumps — the replica rows carry sync metadata the model has no use for.
 /// - `get_person` matches by Slack user id ONLY: the Go fallback name search
 ///   reads the `users` table, which is not a replica slice. Documented gap.
+/// - Slack-id filters also accept a BARE raw id (`"U0456"` for a stored
+///   `"1:U0456"`), which Go does not — the model rarely knows the account
+///   prefix; a namespaced query still pins one account.
 /// - Two write tools (`create_task`, `snooze_item`) extend the read-only MCP
 ///   set; they enqueue through `ActionOutbox` and land in the pending overlay
 ///   like any swipe action.
@@ -360,10 +363,7 @@ public struct ReplicaToolbox: Sendable {
         // name lookup is a documented phone-side gap, and an unmatched query
         // is null (MCP mirror rule), not an error.
         //
-        // A bare raw id can match cards from several accounts; personOrder
-        // decides, so the newest card wins across accounts exactly as it does
-        // between several cards of one user. The reply carries the stored
-        // namespaced `user_id`, so the model can see which account it got.
+        // A bare raw id can match cards from several accounts; the newest wins.
         let card = try store.fetchAll(PeopleCard.self, kind: .personCard)
             .filter { Self.matchesSlackID($0.userID, args.query) }
             .min(by: Self.personOrder)
@@ -547,15 +547,18 @@ public struct ReplicaToolbox: Sendable {
         return value == filter
     }
 
-    /// `matches` for a stored account-namespaced Slack id (`"1:U0456"`). Two
-    /// query forms answer: the canonical namespaced id every tool returns, and
-    /// a bare raw id, which matches any account's id with that raw part. A
-    /// namespaced query is NEVER stripped — `"2:U0456"` must not reach account
-    /// 1's row — so widening only ever adds matches, never crosses accounts.
+    /// `matches` for a stored account-namespaced Slack id (`"1:U0456"`), which
+    /// also answers a bare raw query. A namespaced query is NEVER stripped —
+    /// `"2:U0456"` must not reach account 1's row — so widening only ever adds
+    /// matches, never crosses accounts. Precondition: the column holds Slack
+    /// ids only; `inbox_items.channel_id` is heterogeneous (Jira keys,
+    /// calendar event ids, the literal `"briefing"`, `gmail:`/`imap:`
+    /// prefixes), so extending this helper there is a deliberate decision, not
+    /// an assumption.
     private static func matchesSlackID(_ value: String, _ filter: String?) -> Bool {
         guard let filter, !filter.isEmpty else { return true }
         if value == filter { return true }
-        return !SlackID.split(filter).isNamespaced && SlackID.raw(value) == filter
+        return !SlackID.split(filter).isNamespaced && SlackID.split(value).rawID == filter
     }
 
     /// Go `parseSince`: a date (YYYY-MM-DD, LOCAL midnight) or an RFC3339

@@ -509,6 +509,35 @@ final class ReplicaToolboxTests: XCTestCase {
         XCTAssertEqual(wrongAccount, [])
     }
 
+    /// The asymmetry is deliberate: the QUERY is never stripped, so a replica
+    /// still carrying pre-migration BARE rows answers a namespaced query with
+    /// nothing rather than guessing which account the row belongs to.
+    func testNamespacedQueryMissesBareStoredID() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.digest, "1", digestRow(id: 1, channelID: "C1", periodFrom: 1_000, periodTo: 2_000))
+        ])
+
+        let namespaced = try ids(await execute(fixtures.toolbox, "list_digests", #"{"channel":"1:C1"}"#))
+        XCTAssertEqual(namespaced, [])
+        // The same row still answers its own bare form.
+        let bare = try ids(await execute(fixtures.toolbox, "list_digests", #"{"channel":"C1"}"#))
+        XCTAssertEqual(bare, [1])
+    }
+
+    /// An explicitly empty channel is "no filter" on the list side — the
+    /// opposite of `get_person`'s empty query, which is a miss.
+    func testListDigestsEmptyChannelFilterReturnsEverything() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.digest, "1", digestRow(id: 1, channelID: "1:C1", periodFrom: 1_000, periodTo: 2_000)),
+            (.digest, "2", digestRow(id: 2, channelID: "2:C2", periodFrom: 3_000, periodTo: 4_000))
+        ])
+
+        let empty = try ids(await execute(fixtures.toolbox, "list_digests", #"{"channel":""}"#))
+        XCTAssertEqual(empty, [2, 1])
+    }
+
     /// The shared `matches` helper backs 8 non-id filters; loosening it for
     /// everyone would make "1:high" a valid priority. Pinned: an id-shaped
     /// value stays a plain mismatch on a non-id filter.

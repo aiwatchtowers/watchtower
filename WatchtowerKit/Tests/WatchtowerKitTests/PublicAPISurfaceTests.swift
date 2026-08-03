@@ -160,6 +160,15 @@ final class PublicAPISurfaceTests: XCTestCase {
         _ = keyPath1; _ = keyPath2; _ = keyPath3
     }
 
+    // MARK: - SlackID (account-namespaced ids)
+
+    func testSlackIDPublicHelpers() {
+        // DemoSeed builds the app's seeded Slack ids through `namespaced`, so
+        // both halves of the helper must stay public for the app to build.
+        XCTAssertEqual(SlackID.namespaced(accountID: 1, rawID: "U_DEMO"), "1:U_DEMO")
+        XCTAssertEqual(SlackID.split("1:U_DEMO").rawID, "U_DEMO")
+    }
+
     // MARK: - CloudKit entitlement probe (the AppEnvironment transport swap)
 
     func testEntitlementProbeIsPublicAndFalseInUnsignedHost() {
