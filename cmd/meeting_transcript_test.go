@@ -27,9 +27,11 @@ type transcriptMockGen struct {
 	responses       []string
 	err             error
 	lastUserMessage string
+	calls           int
 }
 
 func (m *transcriptMockGen) Generate(_ context.Context, _, userMessage, _ string) (string, *digest.Usage, string, error) {
+	m.calls++
 	m.lastUserMessage = userMessage
 	if m.err != nil {
 		return "", nil, "", m.err
@@ -96,10 +98,20 @@ type transcriptEnvelope struct {
 	Title         string `json:"title"`
 	RecapOK       bool   `json:"recap_ok"`
 	RecapError    string `json:"recap_error"`
+	RecapSkipped  bool   `json:"recap_skipped"`
 	SegmentsOK    bool   `json:"segments_ok"`
 	SegmentsError string `json:"segments_error"`
 	SpeakersOK    bool   `json:"speakers_ok"`
 	SpeakersError string `json:"speakers_error"`
+}
+
+// rawEnvelope decodes into a generic map so tests can assert a key's absence
+// (json.Unmarshal into a struct can't distinguish "absent" from "zero value").
+func rawEnvelope(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data, &m))
+	return m
 }
 
 func findPipelineRun(t *testing.T, database *db.DB, pipeline string) *db.PipelineRun {
@@ -149,7 +161,7 @@ func TestTranscriptSaveAdHocPersistsAndRecaps(t *testing.T) {
 	resetTranscriptFlags(t)
 	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
 
-	transcriptSaveFlagFile = writeTranscriptFile(t, "we agreed to ship v2 on friday")
+	transcriptSaveFlagFile = writeTranscriptFile(t, "we agreed to ship v2 on friday, once QA signs off on the release candidate and the migration playbook has been reviewed by the on-call team for next week's rollout across every affected region and every downstream service owner has confirmed readiness")
 	transcriptSaveFlagTitle = "Ad hoc"
 	transcriptSaveFlagDuration = 60
 	transcriptSaveFlagLangStats = `{"en":60}`
@@ -204,7 +216,7 @@ func TestTranscriptSaveEventLinkedWritesMeetingRecaps(t *testing.T) {
 	}))
 	database.Close()
 
-	transcriptText := "discussed roadmap; alice owns rollout"
+	transcriptText := "discussed roadmap; alice owns rollout, bob owns the migration scripts, and the whole team agreed to revisit the timeline once the staging environment reflects this week's schema changes across every affected service"
 	transcriptSaveFlagFile = writeTranscriptFile(t, transcriptText)
 	transcriptSaveFlagEventID = "evt-1"
 
@@ -257,7 +269,7 @@ func TestTranscriptSaveEventWithExistingRecapKeepsIt(t *testing.T) {
 	require.NoError(t, database.UpsertMeetingRecap("evt-recap", existingSourceText, existingRecapJSON))
 	database.Close()
 
-	transcriptSaveFlagFile = writeTranscriptFile(t, "transcript recorded after the pasted recap")
+	transcriptSaveFlagFile = writeTranscriptFile(t, "transcript recorded after the pasted recap, covering the planning discussion in full so the automatic recap generator has enough material to work with this time instead of falling back to the calendar event's description")
 	transcriptSaveFlagEventID = "evt-recap"
 
 	var buf bytes.Buffer
@@ -300,6 +312,19 @@ const segmentsFixtureJSON = `[
 
 const segmentsFixtureText = "[Я] привет\n[Speaker 1] ответ"
 
+// longSegmentsFixtureText/longSegmentsFixtureJSON are the segments-save
+// fixtures for tests that need the recap/chapters generator actually
+// invoked: segmentsFixtureText sits well under minRecapTranscriptChars, so
+// tests exercising real recap/chapters generation need a longer transcript
+// to clear the short-transcript skip gate. Same invariant as
+// segmentsFixtureText: transcript_text = render(segments).
+const longSegmentsFixtureText = "[Я] Привет, коллеги! Сегодня у нас важная встреча: обсудим дорожную карту продукта, распределим задачи между командами и подведём итоги прошлого спринта, чтобы точно понимать текущий статус проекта.\n[Speaker 1] Отлично, давайте начнём с обзора открытых вопросов и договоримся, кто берёт на себя следующие шаги."
+
+const longSegmentsFixtureJSON = `[
+	{"idx":0,"start_sec":0,"end_sec":8,"speaker":"Я","text":"Привет, коллеги! Сегодня у нас важная встреча: обсудим дорожную карту продукта, распределим задачи между командами и подведём итоги прошлого спринта, чтобы точно понимать текущий статус проекта.","deleted":false},
+	{"idx":1,"start_sec":8,"end_sec":14,"speaker":"Speaker 1","text":"Отлично, давайте начнём с обзора открытых вопросов и договоримся, кто берёт на себя следующие шаги.","deleted":false}
+]`
+
 // writeSegmentsFile writes content into a temp segments file and returns its path.
 func writeSegmentsFile(t *testing.T, content string) string {
 	t.Helper()
@@ -314,8 +339,8 @@ func TestTranscriptSaveWithSegmentsPersistsColumn(t *testing.T) {
 	resetTranscriptFlags(t)
 	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
 
-	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
-	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagFile = writeTranscriptFile(t, longSegmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, longSegmentsFixtureJSON)
 	transcriptSaveFlagTitle = "With segments"
 
 	var buf bytes.Buffer
@@ -447,7 +472,7 @@ func TestTranscriptSaveRecapFailureStillPersists(t *testing.T) {
 	resetTranscriptFlags(t)
 	stubTranscriptGenerator(t, &transcriptMockGen{err: errors.New("boom")})
 
-	transcriptSaveFlagFile = writeTranscriptFile(t, "some transcript text")
+	transcriptSaveFlagFile = writeTranscriptFile(t, "some transcript text that is long enough to clear the short-transcript skip gate so the recap generator actually gets invoked and can fail as this test expects it to, exercising the recap failure path end to end")
 	transcriptSaveFlagTitle = "Failing recap"
 
 	var buf bytes.Buffer
@@ -510,6 +535,107 @@ func TestTranscriptRecapRetry(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 	assert.True(t, tr.SummaryJSON.Valid, "retry must fill the missing summary")
+}
+
+// A near-empty transcript (Whisper hallucinating on near-silent audio) must
+// not spend a strong-tier recap call — and must not fold the calendar
+// event's description into a fabricated "recap" of nothing.
+func TestTranscriptSaveShortTranscriptSkipsRecap(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: transcriptMockRecapJSON}
+	stubTranscriptGenerator(t, mock)
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "Продолжение следует...")
+	transcriptSaveFlagTitle = "Too short"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+	assert.Equal(t, 0, mock.calls, "the generator must never be invoked for a too-short transcript")
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.Greater(t, env.TranscriptID, int64(0))
+	assert.False(t, env.RecapOK)
+	assert.Contains(t, env.RecapError, "too short")
+	assert.True(t, env.RecapSkipped)
+
+	raw := rawEnvelope(t, buf.Bytes())
+	assert.Nil(t, raw["chapters_ok"], "no segments and a skipped recap → chapters never attempted")
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr, "the transcript row must still persist")
+	assert.False(t, tr.SummaryJSON.Valid)
+}
+
+// The gate is `<`, not `<=`: a transcript of exactly minRecapTranscriptChars
+// runes must still generate a recap. strings.Repeat on a 2-byte-in-UTF-8
+// Cyrillic rune pins that the comparison counts runes, not bytes (200 runes
+// here is 400 bytes).
+func TestTranscriptSaveExactlyMinCharsGeneratesRecap(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: transcriptMockRecapJSON}
+	stubTranscriptGenerator(t, mock)
+
+	text := strings.Repeat("п", minRecapTranscriptChars)
+	require.Equal(t, minRecapTranscriptChars, len([]rune(text)))
+	transcriptSaveFlagFile = writeTranscriptFile(t, text)
+	transcriptSaveFlagTitle = "Exactly at the boundary"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+	assert.Equal(t, 1, mock.calls, "a transcript of exactly minRecapTranscriptChars runes must generate a recap")
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.RecapOK)
+	assert.Equal(t, "", env.RecapError)
+	assert.False(t, env.RecapSkipped)
+}
+
+// The explicit `transcript recap <id>` retry is never gated — an explicit
+// user request always generates, and it must never claim recap_skipped.
+func TestTranscriptRecapRetryOnShortTranscriptIsNotGated(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	mock := &transcriptMockGen{response: transcriptMockRecapJSON}
+	stubTranscriptGenerator(t, mock)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title:          "Short retry",
+		TranscriptText: "Продолжение следует...",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	var buf bytes.Buffer
+	transcriptRecapCmd.SetOut(&buf)
+
+	require.NoError(t, transcriptRecapCmd.RunE(transcriptRecapCmd, []string{fmt.Sprint(id)}))
+	assert.Equal(t, 1, mock.calls, "the explicit recap retry must generate even for a short transcript")
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.RecapOK)
+	assert.False(t, env.RecapSkipped)
+
+	raw := rawEnvelope(t, buf.Bytes())
+	_, hasKey := raw["recap_skipped"]
+	assert.False(t, hasKey, "the recap retry command must never emit recap_skipped")
 }
 
 func TestTranscriptListAndShow(t *testing.T) {
@@ -924,8 +1050,8 @@ func TestTranscriptSaveWithSegmentsAutoGeneratesChapters(t *testing.T) {
 	// Save makes two AI calls in order: recap, then chapters.
 	stubTranscriptGenerator(t, &transcriptMockGen{responses: []string{transcriptMockRecapJSON, transcriptMockChaptersJSON}})
 
-	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
-	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagFile = writeTranscriptFile(t, longSegmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, longSegmentsFixtureJSON)
 	transcriptSaveFlagTitle = "Auto chapters"
 	transcriptSaveFlagDuration = 5
 
@@ -989,8 +1115,8 @@ func TestTranscriptSaveChaptersFailureKeepsExitZero(t *testing.T) {
 	// but the envelope semantics stay exit-0 (the transcript row persisted).
 	stubTranscriptGenerator(t, &transcriptMockGen{responses: []string{transcriptMockRecapJSON, `not json`}})
 
-	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
-	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagFile = writeTranscriptFile(t, longSegmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, longSegmentsFixtureJSON)
 	transcriptSaveFlagTitle = "Chapters fail"
 
 	var buf bytes.Buffer
@@ -1023,8 +1149,8 @@ func TestTranscriptSaveRecapFailsChaptersSucceed(t *testing.T) {
 	// cannot short-circuit auto-chapters (no early return between them).
 	stubTranscriptGenerator(t, &transcriptMockGen{responses: []string{`not json`, transcriptMockChaptersJSON}})
 
-	transcriptSaveFlagFile = writeTranscriptFile(t, segmentsFixtureText)
-	transcriptSaveFlagSegments = writeSegmentsFile(t, segmentsFixtureJSON)
+	transcriptSaveFlagFile = writeTranscriptFile(t, longSegmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, longSegmentsFixtureJSON)
 	transcriptSaveFlagTitle = "Recap fails, chapters fine"
 	transcriptSaveFlagDuration = 5
 
