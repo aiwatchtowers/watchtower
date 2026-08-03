@@ -107,7 +107,7 @@ final class MeetingRecorderCenter {
 
     private let recorderFactory: () -> AudioRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
-    private let diarizerFactory: () async throws -> SpeakerDiarizing
+    private let diarizerFactory: (TranscriptionConfig) async throws -> SpeakerDiarizing
     private let decode: (URL) throws -> [Float]
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let notifier: MeetingTranscriptNotifying
@@ -128,7 +128,7 @@ final class MeetingRecorderCenter {
     init(
         recorderFactory: @escaping () -> AudioRecording = { SystemAudioRecorder() },
         engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber = MeetingRecorderCenter.defaultEngineFactory,
-        diarizerFactory: @escaping () async throws -> SpeakerDiarizing = { try await FluidAudioDiarizer.load() },
+        diarizerFactory: @escaping (TranscriptionConfig) async throws -> SpeakerDiarizing = { try await FluidAudioDiarizer.load(clusteringThreshold: $0.diarizationThreshold) },
         decode: @escaping (URL) throws -> [Float] = AudioFileDecoder.decodePCM16k(url:),
         runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
         notifier: MeetingTranscriptNotifying = NotificationService.shared,
@@ -189,7 +189,7 @@ final class MeetingRecorderCenter {
                 let decode = self.decode
                 pcm = try await Task.detached { try decode(audioURL) }.value
             }
-            let diarizer = try await diarizerFactory()
+            let diarizer = try await diarizerFactory(config)
             let speakers = try await diarizer.diarize(pcm)
             // The sidecar parse is a full-file read (~36k lines per hour) —
             // off-main like the decode above.
@@ -202,7 +202,12 @@ final class MeetingRecorderCenter {
                     clusterEmbeddings[s.speakerID] = embedding
                 }
             }
-            let voiceNames = await matchVoiceNames(clusterEmbeddings: clusterEmbeddings)
+            // One dict for both RoleAssigner calls below, so the mega-cluster
+            // suppression cannot apply to the transcript labels but not to the
+            // embedding keys (or vice versa).
+            let voiceNames = Self.filterMegaClusters(
+                voiceNames: await matchVoiceNames(clusterEmbeddings: clusterEmbeddings),
+                speakers: speakers)
             if let utterances = RoleAssigner.assign(
                 segments: output.segments, speakers: speakers,
                 activity: activity, voiceNames: voiceNames
@@ -254,6 +259,46 @@ final class MeetingRecorderCenter {
             }
         }
         return names
+    }
+
+    /// Share of total diarized speech above which a cluster is read as a
+    /// diarization under-split (several people merged into one cluster) rather
+    /// than a genuinely dominant speaker.
+    private static let megaClusterShareThreshold: Double = 0.4
+    /// How many distinct clusters must be detected before the mega-cluster
+    /// guard may fire. In a 1:1 the counterparty legitimately owns ~half the
+    /// speech, so the guard must not fire there; with 4+ detected clusters a
+    /// 40%+ cluster is far likelier an under-split than a real dominant
+    /// speaker, and a wrong person-name on a merged cluster is worse than an
+    /// anonymous "Speaker N".
+    private static let megaClusterMinClusters = 4
+
+    /// Strips voice-print names from suspiciously dominant clusters, so a
+    /// cluster the diarizer merged several people into is never renamed to one
+    /// of them — it falls back to a plain "Speaker N" label instead. Fires only
+    /// in multi-speaker meetings; see `megaClusterShareThreshold` /
+    /// `megaClusterMinClusters`. Pure (internal, not private, so it is testable
+    /// without driving the whole Center).
+    static func filterMegaClusters(voiceNames: [String: String],
+                                   speakers: [SpeakerSegment]) -> [String: String] {
+        var speech: [String: Double] = [:]
+        for s in speakers {
+            speech[s.speakerID, default: 0] += max(0, s.endSec - s.startSec)
+        }
+        let total = speech.values.reduce(0, +)
+        guard speech.count >= megaClusterMinClusters, total > 0 else { return voiceNames }
+        var filtered = voiceNames
+        for (cluster, duration) in speech.sorted(by: { $0.key < $1.key }) {
+            let share = duration / total
+            guard share > megaClusterShareThreshold, let name = filtered[cluster] else { continue }
+            // Silent suppression would look like voice matching randomly
+            // stopped working.
+            print("[MeetingRecorder] cluster \(cluster) holds \(Int((share * 100).rounded()))% "
+                  + "of speech across \(speech.count) clusters — suppressing voice match "
+                  + "\"\(name)\" (likely diarization under-split)")
+            filtered[cluster] = nil
+        }
+        return filtered
     }
 
     // MARK: Recording

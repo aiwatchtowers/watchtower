@@ -1257,7 +1257,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет", "ответ"])) },
-            diarizerFactory: { diarizer },
+            diarizerFactory: { _ in diarizer },
             decode: stubDecode(sampleCount: 4800), // 3 windows of 0.1 s
             runnerResolver: { runner },
             notifier: notifier,
@@ -1452,6 +1452,60 @@ final class MeetingRecorderCenterTests: XCTestCase {
                      "no embeddings → no --speakers-file, the column stays NULL")
     }
 
+    // MARK: - Mega-cluster guard (voice-print suppression)
+
+    /// Even shares totalling one meeting, so a test only states the share it
+    /// cares about: one 0.1 s segment per cluster, plus extra segments on
+    /// `dominant` until it owns `share` of the total speech.
+    private func megaClusterSegments(clusters: Int, dominant: String, share: Double) -> [SpeakerSegment] {
+        let names = (0..<clusters).map { String(UnicodeScalar(UInt8(65 + $0))) }
+        var segments = names.map { SpeakerSegment(speakerID: $0, startSec: 0, endSec: 0.1) }
+        // others = clusters - 1 tenths; dominant needs d with d/(d+others) = share.
+        let others = Double(clusters - 1) * 0.1
+        let dominantTotal = others * share / (1 - share)
+        segments.append(SpeakerSegment(speakerID: dominant, startSec: 1, endSec: 1 + dominantTotal - 0.1))
+        return segments
+    }
+
+    /// A 19-attendee meeting the diarizer under-split: one cluster hoovers up
+    /// half the speech, so its voice match is dropped (it renders as a plain
+    /// "Speaker N") while the honest clusters keep their names.
+    func testMegaClusterLosesItsVoiceName() throws {
+        let segments = megaClusterSegments(clusters: 5, dominant: "C", share: 0.5)
+        let names = ["A": "Аня", "B": "Борис", "C": "Саша", "D": "Даша", "E": "Егор"]
+
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments)
+
+        XCTAssertNil(filtered["C"], "a cluster holding 50% of speech in a 5-cluster meeting must lose its voice name")
+        XCTAssertEqual(filtered, ["A": "Аня", "B": "Борис", "D": "Даша", "E": "Егор"],
+                       "only the dominant cluster is suppressed")
+    }
+
+    /// The 1:1 case: the counterparty legitimately owns most of the speech, so
+    /// the guard must not fire below `megaClusterMinClusters`.
+    func testDominantClusterInOneOnOneKeepsItsVoiceName() throws {
+        let segments = megaClusterSegments(clusters: 2, dominant: "B", share: 0.6)
+        let names = ["A": "Я", "B": "Саша"]
+
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments)
+
+        XCTAssertEqual(filtered, names, "two clusters are below the min-clusters gate — a 60% counterparty is normal")
+    }
+
+    /// Enough clusters to arm the guard, but nobody dominates — every match
+    /// survives.
+    func testEvenlySplitClustersKeepAllVoiceNames() throws {
+        let segments = (0..<4).map {
+            SpeakerSegment(speakerID: String(UnicodeScalar(UInt8(65 + $0))), startSec: Double($0) * 0.1,
+                           endSec: Double($0) * 0.1 + 0.1)
+        }
+        let names = ["A": "Аня", "B": "Борис", "C": "Саша", "D": "Даша"]
+
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments)
+
+        XCTAssertEqual(filtered, names, "four clusters at ~25% each are a plausible real split")
+    }
+
     func testDiarizerFailureSavesPlainTranscript() async throws {
         let audio = try makeDummyAudioFile()
         defer {
@@ -1489,7 +1543,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["live text"])) },
-            diarizerFactory: { diarizer },
+            diarizerFactory: { _ in diarizer },
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 4800) },
             runnerResolver: { runner },
             notifier: FakeNotifier(),
@@ -1534,7 +1588,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет"])) },
-            diarizerFactory: { diarizer },
+            diarizerFactory: { _ in diarizer },
             decode: stubDecode(sampleCount: 4800),
             runnerResolver: { runner },
             notifier: notifier,
@@ -1599,7 +1653,7 @@ final class MeetingRecorderCenterTests: XCTestCase {
                 engineLoads += 1
                 return TestTranscriber(ScriptedEngine(texts: ["привет", "ответ"]))
             },
-            diarizerFactory: { diarizer },
+            diarizerFactory: { _ in diarizer },
             decode: stubDecode(sampleCount: 4800),
             runnerResolver: { runner },
             notifier: FakeNotifier(),
