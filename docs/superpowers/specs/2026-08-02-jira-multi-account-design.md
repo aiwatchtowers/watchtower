@@ -107,19 +107,24 @@ connect — matching Google/Slack, where auth state is likewise only ever
 recorded at wiring/connect time. Pinned by
 `TestPhaseJiraSyncNeverPaintsAccountGreen`.
 
-**Known limitation (pre-existing, not introduced here):** a per-project sync
-failure is *only* logged. `Syncer.Sync` sets `LastError`/`LastErrorAt` on its
-in-memory `JiraSyncState`, but `UpdateJiraSyncState` writes only
-`last_synced_at`/`issues_synced` — the two error columns are never persisted,
-on this branch or before it. Consequence: a genuinely revoked grant whose token
-file still exists produces per-project 401s that reach no durable surface, so
-the account keeps `status='ok'` and shows green while syncing nothing.
-`wireJiraSyncers` still catches a *missing* token, and Re-login is reachable
-unconditionally from the Settings row, so the account is never unrecoverable.
-Closing this properly means persisting the error columns and teaching
-`phaseJiraSync` to distinguish an auth failure from a transient one — a
-self-contained follow-up, deliberately out of scope for the account-scoping
-change.
+**`jira.ErrAuthRevoked` is what makes the per-account status surface real.**
+Review surfaced that without it the feature was near-inert: `Sync`'s only
+non-nil return was a failing `GetJiraSelectedBoards`, so a genuinely revoked
+grant produced per-project 401s that were swallowed, the account kept
+`status='ok'`, and Settings showed it green while it synced nothing. Jira
+simply never got the sentinel its two siblings already had
+(`gmail.ErrAuthRevoked`, `calendar.ErrAuthRevoked`), so it is added here on the
+same shape: `isInvalidGrant` on the token-endpoint body, plus a 401 that
+survives a successful token refresh. `Syncer.Sync` aborts the account's pass on
+it — every remaining project would fail identically — and `phaseJiraSync`
+records it on the `jira_accounts` row, which is what surfaces the Re-login
+button. Ordinary per-project failures are still logged and skipped.
+
+*Still true, and pre-existing:* `Syncer.Sync` sets `LastError`/`LastErrorAt` on
+its in-memory `JiraSyncState`, but `UpdateJiraSyncState` writes only
+`last_synced_at`/`issues_synced`, so those two columns are never persisted —
+unchanged from before this branch. That now costs only per-project error
+*detail*; the account-level auth signal no longer depends on it.
 
 ### CLI
 

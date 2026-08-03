@@ -822,6 +822,114 @@ func TestSyncJiraTargetStatuses_MissingIssue(t *testing.T) {
 	assert.Equal(t, 0, synced)
 }
 
+// A bare issue key that exists on TWO connected sites must leave the target
+// alone. `targets.source_id` has no account dimension, so reads may resolve an
+// ambiguous key to an arbitrary site (the documented v1 ambiguity) — but this
+// is a write path that flips user-authored state, and guessing here would mark
+// the owner's target done from the wrong site's issue.
+//
+// Fails on the pre-fix code: with the plain GetJiraIssueByKey lookup this
+// returns synced=1 and the target flips to "done".
+func TestSyncJiraTargetStatuses_AmbiguousKeyLeavesTargetUntouched(t *testing.T) {
+	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
+	second, err := db.CreateJiraAccount(JiraAccount{CloudID: "cloud-2"})
+	require.NoError(t, err)
+
+	// The SAME key on both sites: done on one, still open on the other.
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		AccountID: 1,
+		Key:       "OPS-42", ProjectKey: "OPS", Summary: "Done on site 1",
+		Status: "Done", StatusCategory: "done",
+		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		AccountID: second,
+		Key:       "OPS-42", ProjectKey: "OPS", Summary: "Open on site 2",
+		Status: "Open", StatusCategory: "todo",
+		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+
+	target, err := db.CreateTargetFromJiraIssue(JiraIssue{
+		AccountID: 1, Key: "OPS-42", Summary: "Ambiguous", Priority: "Medium",
+	})
+	require.NoError(t, err)
+
+	synced, err := db.SyncJiraTargetStatuses()
+	require.NoError(t, err)
+	assert.Equal(t, 0, synced, "an ambiguous key must not resolve to an arbitrary site")
+
+	got, err := db.GetTargetByID(target.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "todo", got.Status, "the owner's target must not be flipped from a guessed site")
+}
+
+// The converse guard: once the key is unambiguous again — the same key on one
+// site only — the sync resumes normally. Without this, "leave it alone" could
+// be satisfied by never syncing anything at all.
+func TestSyncJiraTargetStatuses_UnambiguousKeyStillSyncs(t *testing.T) {
+	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
+	second, err := db.CreateJiraAccount(JiraAccount{CloudID: "cloud-2"})
+	require.NoError(t, err)
+
+	// Two sites connected, but only one carries this key.
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		AccountID: second,
+		Key:       "OPS-99", ProjectKey: "OPS", Summary: "Done on site 2 only",
+		Status: "Done", StatusCategory: "done",
+		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+
+	target, err := db.CreateTargetFromJiraIssue(JiraIssue{
+		AccountID: second, Key: "OPS-99", Summary: "Unambiguous", Priority: "Medium",
+	})
+	require.NoError(t, err)
+
+	synced, err := db.SyncJiraTargetStatuses()
+	require.NoError(t, err)
+	assert.Equal(t, 1, synced)
+
+	got, err := db.GetTargetByID(target.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "done", got.Status)
+}
+
+// A soft-deleted twin does not make a key ambiguous — resolveUnambiguousJiraIssue
+// filters is_deleted, so the one live issue still wins.
+func TestSyncJiraTargetStatuses_DeletedTwinIsNotAmbiguous(t *testing.T) {
+	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
+	second, err := db.CreateJiraAccount(JiraAccount{CloudID: "cloud-2"})
+	require.NoError(t, err)
+
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		AccountID: 1,
+		Key:       "OPS-7", ProjectKey: "OPS", Summary: "Live and done",
+		Status: "Done", StatusCategory: "done",
+		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+	require.NoError(t, db.UpsertJiraIssue(JiraIssue{
+		AccountID: second,
+		Key:       "OPS-7", ProjectKey: "OPS", Summary: "Deleted twin",
+		Status: "Open", StatusCategory: "todo", IsDeleted: true,
+		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+
+	target, err := db.CreateTargetFromJiraIssue(JiraIssue{
+		AccountID: 1, Key: "OPS-7", Summary: "Live twin", Priority: "Medium",
+	})
+	require.NoError(t, err)
+
+	synced, err := db.SyncJiraTargetStatuses()
+	require.NoError(t, err)
+	assert.Equal(t, 1, synced, "a deleted twin must not block the live issue")
+
+	got, err := db.GetTargetByID(target.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "done", got.Status)
+}
+
 func TestGetJiraTeamWorkload(t *testing.T) {
 	db := openTestDB(t)
 	SeedTestJiraAccount(t, db)

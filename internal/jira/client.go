@@ -74,8 +74,15 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*
 			return nil, fmt.Errorf("request %s %s: %w", method, path, err)
 		}
 
-		if resp.StatusCode == http.StatusUnauthorized && attempt < 3 {
+		if resp.StatusCode == http.StatusUnauthorized {
 			resp.Body.Close()
+			if attempt == 3 {
+				// Still unauthorized after a successful refresh — the grant
+				// itself is gone, not a stale access token. Surfacing this
+				// distinctly is what lets Sync abort and the daemon mark the
+				// account for re-login instead of silently syncing nothing.
+				return nil, fmt.Errorf("%w: %s %s returned 401 after token refresh", ErrAuthRevoked, method, path)
+			}
 			if refreshErr := c.refreshAccessToken(ctx); refreshErr != nil {
 				return nil, fmt.Errorf("refreshing token after 401: %w", refreshErr)
 			}

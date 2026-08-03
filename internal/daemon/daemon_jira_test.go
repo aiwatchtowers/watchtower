@@ -139,3 +139,62 @@ func TestPhaseJiraSyncRespectsInterval(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, state, "a throttled pass must not run the syncers again")
 }
+
+// TestPhaseJiraSyncCancelledContextLeavesAuthStateUntouched pins the shutdown
+// guard: a cancelled context means the daemon is stopping, not that the grant
+// went bad. Persisting "context canceled" as the account's auth error would
+// strand a red badge in Settings that nothing but a re-login could clear.
+//
+// Fails on the pre-fix code: without the ctx.Err() branch the account is
+// stamped status='error' with a context-cancellation message.
+func TestPhaseJiraSyncCancelledContextLeavesAuthStateUntouched(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+
+	acct := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	require.NoError(t, database.SetJiraAccountAuthState(acct, "ok", ""))
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+
+	// Shutdown shape: the context is cancelled AND Sync fails, because the DB
+	// is going away underneath it. Sync swallows per-project API errors, so a
+	// failing boards read is what actually reaches the error branch — and
+	// "sql: no such table" is exactly the kind of shutdown noise that must not
+	// be persisted as this account's auth error.
+	_, err := database.Exec(`DROP TABLE jira_boards`)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseJiraSync(ctx)
+
+	got, err := database.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Status, "a daemon shutdown must not be recorded as an auth failure")
+	assert.Empty(t, got.Error, "no cancellation message may leak into the account's auth error")
+}
+
+// The converse guard: a real, non-cancelled sync failure IS recorded on the
+// account row, so the cancel branch above cannot be satisfied by an
+// implementation that silently never records anything.
+//
+// The failure is forced by dropping jira_boards, which makes Sync's
+// GetJiraSelectedBoards read fail — a deterministic, offline way to get a
+// non-nil error out of Sync. (The auth-revoked path that matters in production
+// needs a live 401 from Atlassian; jira.ErrAuthRevoked propagation is covered
+// in internal/jira.)
+func TestPhaseJiraSyncRecordsRealFailure(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+
+	acct := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	require.NoError(t, database.SetJiraAccountAuthState(acct, "ok", ""))
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+
+	_, err := database.Exec(`DROP TABLE jira_boards`)
+	require.NoError(t, err)
+
+	d.phaseJiraSync(context.Background())
+
+	got, err := database.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Equal(t, "error", got.Status, "a genuine sync failure must reach the account row")
+	assert.NotEmpty(t, got.Error)
+}

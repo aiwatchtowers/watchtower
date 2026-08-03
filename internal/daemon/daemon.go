@@ -451,20 +451,19 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 // jira_accounts row only — it never blocks the other accounts (the
 // phaseCalendarSync/phaseGmailSync fan-out pattern).
 //
-// A pass records FAILURES only; it never writes a blanket "ok" back. Syncer.Sync
-// deliberately keeps going across projects, swallowing a per-project failure
-// (it lands in that project's jira_sync_state row) and still returning nil, so
-// a nil error is not proof the account is healthy — flipping the row to "ok" on
-// it would paint a revoked account green in Settings and hide its Re-login
-// button. Only the OAuth connect (connectJiraAccount), which has just proven
-// access, clears the state back to "ok".
+// A pass records FAILURES only; it never writes a blanket "ok" back.
+// Syncer.Sync deliberately keeps going across ordinary per-project failures
+// (those are logged and skipped), so a nil error is not proof the account is
+// healthy — flipping the row to "ok" on it would paint a half-broken account
+// green in Settings and hide its Re-login button. Only the OAuth connect
+// (connectJiraAccount), which has just proven access, clears the state to "ok".
 //
-// Unlike Gmail/Calendar this is deliberately NOT symmetric with their syncers,
-// which do write "ok" on every successful sync — they can, because their
-// clients surface a distinguishable auth failure (ErrAuthRevoked) and ours does
-// not yet (see the spec's known-limitation note). The one guard we do borrow
-// from them: a cancelled context means daemon shutdown, not an auth problem, so
-// it must never be persisted as the account's auth error.
+// The failure that DOES reach here is the one that matters: jira.ErrAuthRevoked
+// aborts Sync outright, so a revoked grant lands on the account row and the
+// Settings Re-login button appears. Two guards on top of that: a cancelled
+// context means daemon shutdown rather than an auth problem and must never be
+// persisted as the account's auth error, and an already-failing account is not
+// re-stamped, so its status never churns.
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if len(d.jiraSyncers) == 0 {
 		return

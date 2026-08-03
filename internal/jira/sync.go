@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -114,6 +115,14 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 
 		n, err := s.syncWithJQL(ctx, jql, board.ID)
 		if err != nil {
+			if errors.Is(err, ErrAuthRevoked) {
+				// The account's grant is gone — every remaining project would
+				// fail the same way. Abort so the caller records it on the
+				// account row rather than swallowing it per project (the
+				// gmail/calendar precedent).
+				s.logger.Printf("auth revoked, aborting sync: %v", err)
+				return total, err
+			}
 			s.logger.Printf("sync error for project %s: %v", projectKey, err)
 			if syncState == nil {
 				syncState = &db.JiraSyncState{AccountID: s.accountID, ProjectKey: projectKey}

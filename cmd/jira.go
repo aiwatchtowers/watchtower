@@ -368,10 +368,16 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 	if _, err := fmt.Fscan(cmd.InOrStdin(), &choice); err != nil {
 		// No usable stdin — the Desktop "Add Jira Site" sheet spawns this
 		// without a terminal, so an unattended run must say what to do next
-		// instead of dying on "invalid selection".
+		// instead of dying on "invalid selection". The site names are inlined
+		// rather than pointed at: the sheet surfaces only stderr, so "see the
+		// list above" would name a list the user cannot see.
+		names := make([]string, len(resources))
+		for i, r := range resources {
+			names[i] = r.URL
+		}
 		return jira.CloudResource{}, fmt.Errorf(
-			"this Atlassian grant reaches %d sites and no site was chosen; re-run with --site <url-or-name> (see the list above)",
-			len(resources))
+			"this Atlassian grant reaches %d sites and no site was chosen; re-run with --site set to one of: %s",
+			len(resources), strings.Join(names, ", "))
 	}
 	if choice < 1 || choice > len(resources) {
 		return jira.CloudResource{}, fmt.Errorf("invalid selection %d: choose 1-%d", choice, len(resources))

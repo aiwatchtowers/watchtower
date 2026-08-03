@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,7 +156,30 @@ func TestRefreshToken_Success(t *testing.T) {
 	assert.NotEmpty(t, tok.Expiry)
 }
 
+// A non-200 that is NOT a revoked grant stays a generic failure — the caller
+// must not be told to re-consent over a transient server error.
 func TestRefreshToken_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"server_error"}`))
+	}))
+	defer srv.Close()
+
+	prev := jiraTokenEndpoint
+	jiraTokenEndpoint = srv.URL
+	defer func() { jiraTokenEndpoint = prev }()
+
+	_, err := RefreshToken(context.Background(), JiraOAuthConfig{}, "rt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refresh token failed")
+	assert.False(t, errors.Is(err, ErrAuthRevoked), "a server error must not read as a revoked grant")
+}
+
+// A revoked or expired refresh token reports invalid_grant, which must surface
+// as ErrAuthRevoked: that is what makes Syncer.Sync abort the account's pass
+// and phaseJiraSync mark the row for re-login instead of syncing nothing
+// behind a green badge.
+func TestRefreshToken_InvalidGrantIsAuthRevoked(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
@@ -168,7 +192,7 @@ func TestRefreshToken_HTTPError(t *testing.T) {
 
 	_, err := RefreshToken(context.Background(), JiraOAuthConfig{}, "rt")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "refresh token failed")
+	assert.True(t, errors.Is(err, ErrAuthRevoked))
 }
 
 func TestRefreshToken_BadJSON(t *testing.T) {
