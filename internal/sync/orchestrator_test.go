@@ -500,6 +500,43 @@ func TestSyncTeamInfoError(t *testing.T) {
 	err := ts.orch.Run(context.Background(), SyncOptions{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "workspace sync")
+
+	// Run must record the failure on the account row (recordAuthResult) — a
+	// revoked/broken token must surface in Desktop, not stay "ok" forever.
+	acct, dbErr := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, dbErr)
+	assert.Equal(t, "error", acct.Status)
+	assert.Contains(t, acct.Error, "workspace sync")
+}
+
+// TestRunRecordsAuthStateRecoversOnSuccess: after a failed Run flips the
+// account's status to "error", a subsequent successful Run must clear it back
+// to "ok" — mirroring calendar.Syncer/gmail.Syncer's recordAuthResult.
+func TestRunRecordsAuthStateRecoversOnSuccess(t *testing.T) {
+	errorMux := http.NewServeMux()
+	errorMux.HandleFunc("/team.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+	})
+	ts := newTestSetup(t, errorMux)
+	require.Error(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	acct, err := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	require.Equal(t, "error", acct.Status)
+
+	// Re-point the client at a healthy server (same orchestrator, same
+	// account row) and re-run — status must clear.
+	healthySrv := httptest.NewServer(defaultMux())
+	t.Cleanup(healthySrv.Close)
+	healthyAPI := goslack.New("xoxp-test-token", goslack.OptionAPIURL(healthySrv.URL+"/"))
+	ts.orch.slackClient = watchtowerslack.NewClientWithAPIUnlimited(healthyAPI)
+	ts.orch.slackClient.SetLogger(ts.orch.logger)
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	acct, err = ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acct.Status)
+	assert.Empty(t, acct.Error)
 }
 
 func TestSyncOptionsDefaults(t *testing.T) {
@@ -939,4 +976,96 @@ func TestSyncChannelUsesRawIDForSlackAPI(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, ts.ns("U001"), msgs[0].UserID)
+}
+
+// TestSyncInboxReactionsScopedToOwnAccount reproduces the exact collision
+// syncInboxReactions must not touch: two connected accounts share a colliding
+// raw channel id ("C001"), each with its own pending inbox item. Before the
+// account-scoping fix, account 1's orchestrator would strip the namespace off
+// EVERY pending item — including account 2's — and call reactions.get on its
+// own (account 1) Slack client using account 2's raw id. This asserts account
+// 1's orchestrator only ever requests its own message, never account 2's.
+func TestSyncInboxReactionsScopedToOwnAccount(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	account1ID, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	account2ID, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+
+	// Both accounts have a pending inbox item on the same colliding raw
+	// channel id "C001", at different message timestamps.
+	_, err = database.CreateInboxItem(db.InboxItem{
+		ChannelID: watchtowerslack.Namespace(account1ID, "C001"), MessageTS: "1700000001.000000",
+		SenderUserID: watchtowerslack.Namespace(account1ID, "U001"), TriggerType: "mention",
+	})
+	require.NoError(t, err)
+	_, err = database.CreateInboxItem(db.InboxItem{
+		ChannelID: watchtowerslack.Namespace(account2ID, "C001"), MessageTS: "1700000002.000000",
+		SenderUserID: watchtowerslack.Namespace(account2ID, "U001"), TriggerType: "mention",
+	})
+	require.NoError(t, err)
+
+	var gotRequests []string
+	mux := baseMux()
+	mux.HandleFunc("/reactions.get", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotRequests = append(gotRequests, r.Form.Get("channel")+":"+r.Form.Get("timestamp"))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "type": "message", "message": map[string]any{"type": "message"}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	api := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv.URL+"/"))
+	orch1 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), &config.Config{}, account1ID)
+	orch1.SetLogger(log.New(os.Stderr, "[test-1] ", 0))
+
+	orch1.syncInboxReactions(context.Background())
+
+	require.Len(t, gotRequests, 1, "account 1's orchestrator must only query its own pending item, never account 2's")
+	assert.Equal(t, "C001:1700000001.000000", gotRequests[0])
+}
+
+// TestSyncChannelReadStateScopedToOwnAccount is syncChannelReadState's analog
+// of TestSyncInboxReactionsScopedToOwnAccount: two accounts share a colliding
+// raw channel id, both lacking a last_read cursor. Account 1's orchestrator
+// must only ever call conversations.info for its own channel.
+func TestSyncChannelReadStateScopedToOwnAccount(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	account1ID, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	account2ID, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+
+	for _, acctID := range []int64{account1ID, account2ID} {
+		require.NoError(t, database.UpsertChannel(db.Channel{
+			ID: watchtowerslack.Namespace(acctID, "C001"), Name: "general", Type: "public", IsMember: true,
+		}))
+	}
+
+	var gotChannels []string
+	mux := baseMux()
+	mux.HandleFunc("/conversations.info", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotChannels = append(gotChannels, r.Form.Get("channel"))
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": map[string]any{"id": "C001", "last_read": "1700000001.000000"}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	api := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv.URL+"/"))
+	orch1 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), &config.Config{}, account1ID)
+	orch1.SetLogger(log.New(os.Stderr, "[test-1] ", 0))
+
+	orch1.syncChannelReadState(context.Background())
+
+	require.Len(t, gotChannels, 1, "account 1's orchestrator must only query its own channel, never account 2's")
+	assert.Equal(t, "C001", gotChannels[0])
 }

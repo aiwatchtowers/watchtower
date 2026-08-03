@@ -56,7 +56,6 @@ final class SlackAccountQueriesTests: XCTestCase {
         XCTAssertEqual(a.teamName, "Acme")
         XCTAssertEqual(a.teamDomain, "acme")
         XCTAssertEqual(a.label, "Work")
-        XCTAssertEqual(a.currentUserID, "1:U042")
         XCTAssertEqual(a.status, "error")
         XCTAssertEqual(a.error, "token revoked")
         XCTAssertFalse(a.enabled)

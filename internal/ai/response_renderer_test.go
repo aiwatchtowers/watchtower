@@ -155,6 +155,44 @@ func TestResolveRefs_Found(t *testing.T) {
 	assert.Contains(t, resolved[0].permalink, "slack://channel?team=T001&id=C001&message=")
 }
 
+// TestResolveRefs_PermalinkPerAccount is resolveRefs' analog of
+// context_builder_test.go's TestFormatMessage_PermalinkPerAccount — the
+// resolveLinkTarget call sites in ContextBuilder and ResponseRenderer were
+// verbatim-duplicated code with only one of the two under test; this closes
+// the gap for ResponseRenderer's copy (now the shared resolveSlackLinkTarget
+// helper).
+func TestResolveRefs_PermalinkPerAccount(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-corp", Domain: "test-corp"}))
+	_, err = database.CreateSlackAccount(db.SlackAccount{TeamID: "T001", TeamName: "Acme Inc", TeamDomain: "acme-corp"})
+	require.NoError(t, err)
+	_, err = database.CreateSlackAccount(db.SlackAccount{TeamID: "T002", TeamName: "Beta LLC", TeamDomain: "beta-corp"})
+	require.NoError(t, err)
+
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "2:C001", Name: "engineering", Type: "public"}))
+	refTime := time.Date(2025, 2, 26, 14, 30, 0, 0, time.UTC)
+	require.NoError(t, database.UpsertMessage(db.Message{
+		ChannelID: "2:C001", TS: "1740580200.000100", UserID: "U001",
+		Text: "deploy to prod", TSUnix: float64(refTime.Unix()),
+	}))
+
+	rr := NewResponseRenderer(database, "acme-corp", "T001")
+	refs := []messageRef{{
+		fullMatch: "#engineering 2025-02-26 14:30", channelName: "engineering", timestamp: refTime,
+	}}
+
+	resolved := rr.resolveRefs(refs)
+	require.Len(t, resolved, 1)
+	// The permalink resolves to account #2's team, not the renderer default (T001).
+	assert.Contains(t, resolved[0].permalink, "team=T002")
+	assert.NotContains(t, resolved[0].permalink, "team=T001")
+	// The namespaced prefix is stripped from the deep-link channel id.
+	assert.Contains(t, resolved[0].permalink, "id=C001")
+}
+
 func TestResolveRefs_ChannelNotFound(t *testing.T) {
 	database, _ := setupRendererDB(t)
 	rr := NewResponseRenderer(database, "test-corp", "T001")
