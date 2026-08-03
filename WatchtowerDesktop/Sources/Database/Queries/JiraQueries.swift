@@ -138,11 +138,19 @@ enum JiraQueries {
             .fetchAll(db)
     }
 
+    /// Fetches a board by its raw Jira id. Since 00049 the primary key is
+    /// composite (`account_id`, `id`), so a single-value key lookup no longer
+    /// addresses a row — this queries the bare id and takes the first match,
+    /// the same "bare-key readers keep working" rule the Go side follows for
+    /// issue keys (cross-site id collision is a documented v1 ambiguity).
     static func fetchBoard(
         _ db: Database,
         id: Int
     ) throws -> JiraBoard? {
-        try JiraBoard.fetchOne(db, key: id)
+        try JiraBoard
+            .filter(Column("id") == id)
+            .order(Column("account_id"))
+            .fetchOne(db)
     }
 
     // MARK: - Sync State

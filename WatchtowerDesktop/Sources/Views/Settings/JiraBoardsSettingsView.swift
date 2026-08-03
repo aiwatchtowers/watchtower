@@ -21,7 +21,9 @@ struct JiraBoardsSettingsView: View {
                 Text("No boards synced yet")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(boards, id: \.id) { board in
+                // Keyed on rowID, not id: raw board ids collide across
+                // connected sites (migration 00049).
+                ForEach(boards, id: \.rowID) { board in
                     boardRow(board)
                 }
             }
@@ -217,7 +219,8 @@ struct JiraBoardsSettingsView: View {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cliPath)
             process.arguments = [
-                "jira", "boards", "analyze", "--force",
+                "jira", "--account", String(board.accountID),
+                "boards", "analyze", "--force",
                 String(board.id),
             ]
             process.environment = Constants.resolvedEnvironment()
@@ -296,7 +299,8 @@ struct JiraBoardsSettingsView: View {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cliPath)
             process.arguments = [
-                "jira", "boards", action, String(board.id)
+                "jira", "--account", String(board.accountID),
+                "boards", action, String(board.id)
             ]
             process.environment = Constants.resolvedEnvironment()
             process.currentDirectoryURL =
@@ -337,7 +341,7 @@ struct JiraBoardsSettingsView: View {
             } else if selected {
                 // Board was enabled — trigger initial sync.
                 await MainActor.run {
-                    syncManager.startSync(boardID: board.id)
+                    syncManager.startSync(accountID: board.accountID, boardID: board.id)
                 }
             }
         }

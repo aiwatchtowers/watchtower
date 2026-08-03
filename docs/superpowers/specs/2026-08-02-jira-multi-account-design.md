@@ -150,10 +150,11 @@ now reads the **first enabled account's** `site_url` from `jira_accounts`
    mirrors the Gmail `mail:` decision.
 2. **Desktop browse links resolve against the primary site** (first enabled
    account) — per-issue site resolution via the row's `account_id` is a later
-   slice. Likewise the Desktop board-sync button (`JiraBoardSyncManager` →
-   `jira sync --board N` without `--account`) relies on the CLI's
-   single-enabled-account default; with several enabled sites it errors
-   politely and the account list in Settings is the workaround.
+   slice. Per-*board* actions are not affected: the Swift `JiraBoard` model
+   carries `accountID`, so the boards screen passes `--account` explicitly on
+   sync / select / analyze, and lists key on `rowID` (`account:id`) since raw
+   board ids collide across sites. `JiraQueries.fetchBoard` likewise queries
+   the bare id rather than the (now composite) primary key.
 3. **Concurrent OAuth flows** (loopback ports 18511-18520 are shared;
    sequential logins only).
 4. **Per-account sync schedules** — one `jira.sync_interval_mins` for all.
