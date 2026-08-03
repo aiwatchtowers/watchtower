@@ -210,24 +210,32 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 
 	// The row is saved — from here on a recap failure must NOT flip the exit
 	// code; it is reported inside the envelope instead.
-	var recapErr error
-	recapSkipped := utf8.RuneCountInString(text) < minRecapTranscriptChars
+	recapErr, recapSkipped, chaptersOutcome := runSaveGenerations(
+		cmd.Context(), database, cfg, id, text, tr.SegmentsJSON.Valid, cmd.ErrOrStderr())
+	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome, recapSkipped)
+}
+
+// runSaveGenerations runs save's post-insert AI steps: the recap (unless the
+// transcript is under minRecapTranscriptChars — the too-short skip) and,
+// when segments were persisted and the recap wasn't skipped, the chapters
+// pass. Returned values feed printTranscriptEnvelope verbatim.
+func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config, id int64, text string, hasSegments bool, errOut io.Writer) (recapErr error, recapSkipped bool, chaptersOutcome *error) {
+	recapSkipped = utf8.RuneCountInString(text) < minRecapTranscriptChars
 	if recapSkipped {
 		recapErr = fmt.Errorf("transcript too short (<%d chars): recap skipped", minRecapTranscriptChars)
 	} else {
-		recapErr = generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
+		recapErr = generateAndStoreTranscriptRecap(ctx, database, cfg, id, errOut)
 	}
 	// Chapters are generated automatically only when segments exist (they
 	// carry the timecodes the chapterizer needs) and the recap wasn't
 	// skipped for being too short (the same near-empty transcript has no
 	// chapters worth extracting either). A failure leaves chapters_json
 	// NULL; retry via `transcript chapters <id>`.
-	var chaptersOutcome *error
-	if !recapSkipped && tr.SegmentsJSON.Valid {
-		_, chaptersErr := generateAndStoreTranscriptChapters(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
+	if !recapSkipped && hasSegments {
+		_, chaptersErr := generateAndStoreTranscriptChapters(ctx, database, cfg, id, errOut)
 		chaptersOutcome = &chaptersErr
 	}
-	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome, recapSkipped)
+	return recapErr, recapSkipped, chaptersOutcome
 }
 
 // loadTranscriptSegments reads and validates the optional --segments-file for
