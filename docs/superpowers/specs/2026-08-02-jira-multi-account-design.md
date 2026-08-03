@@ -92,10 +92,20 @@ an account with no token or no cloud_id records only *its* `status`/`error`
 (only flipping a currently-`ok` account, so status never churns) and never
 blocks the others. The daemon holds `jiraSyncers []*jira.Syncer`
 (`SetJiraSyncers`, replacing the singleton `SetJiraSyncer`); `phaseJiraSync`
-loops accounts, records per-account auth state, aggregates board-analyzer LLM
-usage into one `jira-boards` pipeline run, and runs `SyncJiraTargetStatuses`
-once after a fully clean pass. The global `cfg.Jira.Enabled` stays the daemon
-phase switch (the `cfg.Calendar.Enabled` precedent).
+loops accounts, aggregates board-analyzer LLM usage into one `jira-boards`
+pipeline run, and runs `SyncJiraTargetStatuses` once after a fully clean pass.
+The global `cfg.Jira.Enabled` stays the daemon phase switch (the
+`cfg.Calendar.Enabled` precedent).
+
+**A sync pass records failures only — never a blanket "ok".** `Syncer.Sync`
+deliberately keeps going across projects: a per-project failure is swallowed
+(it lands in that project's `jira_sync_state` row) and `Sync` still returns
+nil, so a nil error is *not* proof the account is healthy. Writing "ok" back on
+it would paint a revoked account green in Settings and hide its Re-login
+button. Clearing the state therefore stays with the flows that genuinely prove
+access — `wireJiraSyncers` and the OAuth connect — matching Google/Slack, where
+auth state is likewise only ever recorded at wiring/connect time. Pinned by
+`TestPhaseJiraSyncNeverPaintsAccountGreen`.
 
 ### CLI
 

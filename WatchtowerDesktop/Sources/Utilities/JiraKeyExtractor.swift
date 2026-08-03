@@ -137,10 +137,13 @@ enum JiraConfigHelper {
     /// site), falling back to the legacy config key for a pre-multi-account
     /// install that hasn't migrated yet.
     static func readSiteURL() -> String? {
-        if let pool = dbPool,
-           let url = try? pool.read({ db in try JiraAccountQueries.primarySiteURL(db) }),
-           let url, !url.isEmpty {
-            return url
+        if let pool = dbPool {
+            // `try?` flattens the query's own String? result, so this binds a
+            // plain String.
+            let stored = try? pool.read { db in try JiraAccountQueries.primarySiteURL(db) }
+            if let stored, !stored.isEmpty {
+                return stored
+            }
         }
         let configPath = Constants.configPath
         guard let data = FileManager.default.contents(atPath: configPath),

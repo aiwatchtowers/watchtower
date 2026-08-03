@@ -450,6 +450,15 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 // target statuses. One account's sync error is logged and recorded on its
 // jira_accounts row only — it never blocks the other accounts (the
 // phaseCalendarSync/phaseGmailSync fan-out pattern).
+//
+// A pass records FAILURES only; it never writes a blanket "ok" back. Syncer.Sync
+// deliberately keeps going across projects, swallowing a per-project failure
+// (it lands in that project's jira_sync_state row) and still returning nil, so
+// a nil error is not proof the account is healthy — flipping the row to "ok" on
+// it would paint a revoked account green in Settings and hide its Re-login
+// button. Clearing the state stays with the flows that genuinely prove access:
+// wireJiraSyncers and the OAuth connect (the Google/Slack precedent, where
+// auth state is likewise only ever recorded at wiring/connect time).
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if len(d.jiraSyncers) == 0 {
 		return
@@ -480,11 +489,6 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		}
 		if n > 0 {
 			d.logger.Printf("jira: account %d: %d issues synced", s.AccountID(), n)
-		}
-		if d.db != nil {
-			if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "ok", ""); dbErr != nil {
-				d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
-			}
 		}
 	}
 
