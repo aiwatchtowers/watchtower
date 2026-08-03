@@ -509,10 +509,28 @@ func truncate(s string, maxLen int) string {
 }
 
 // cleanJSON strips markdown fences from AI response if present.
+// cleanJSON extracts the JSON payload from a model response. When the
+// response contains a ```-fenced block, the FIRST fenced block wins and
+// anything around it (a chatty preamble, prose after the closing fence) is
+// dropped — trimming only the edges misses trailing chatter and the parser
+// then chokes on the closing fence (the tracks-package cleanJSON precedent).
 func cleanJSON(s string) string {
 	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
+	// Bare JSON (possibly with a stray trailing fence): leave the body
+	// untouched so a ``` inside a string value survives.
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+		return strings.TrimSpace(strings.TrimSuffix(s, "```"))
+	}
+	// Fenced block: the FIRST block wins, chatter around it is dropped.
+	if idx := strings.Index(s, "```json"); idx >= 0 {
+		s = s[idx+len("```json"):]
+	} else if idx := strings.Index(s, "```"); idx >= 0 {
+		s = s[idx+len("```"):]
+	} else {
+		return s
+	}
+	if end := strings.Index(s, "```"); end >= 0 {
+		s = s[:end]
+	}
 	return strings.TrimSpace(s)
 }

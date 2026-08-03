@@ -132,6 +132,11 @@ func TestCleanJSON(t *testing.T) {
 		{"```json\n{\"key\": \"val\"}\n```", `{"key": "val"}`},
 		{"```\n{\"key\": \"val\"}\n```", `{"key": "val"}`},
 		{"  {\"key\": \"val\"}  ", `{"key": "val"}`},
+		// Chatty model: prose after the closing fence must not survive
+		// (the Suggest-speaker-names failure of 2026-08-03).
+		{"```json\n[{\"speaker\": \"Speaker 1\"}]\n```\nThese are my guesses.", `[{"speaker": "Speaker 1"}]`},
+		{"Here you go:\n```json\n{\"key\": \"val\"}\n```\nLet me know!", `{"key": "val"}`},
+		{"[1, 2]\n```", `[1, 2]`},
 	}
 
 	for _, tt := range tests {
