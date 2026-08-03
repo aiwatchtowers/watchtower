@@ -4,7 +4,7 @@ import SwiftUI
 /// function rather than a method, so `RecordingJobPill` renders the same capsule
 /// without going through `RecordingIndicatorView`.
 @ViewBuilder
-fileprivate func indicatorCapsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+private func indicatorCapsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
     HStack(spacing: 10) { content() }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -319,7 +319,7 @@ struct RecordingIndicatorView: View {
     static func actionableFailureID(_ jobs: [MeetingRecorderCenter.ProcessingJob],
                                     isBusy: Bool) -> MeetingRecorderCenter.ProcessingJob.ID? {
         guard !isBusy else { return nil }
-        return jobs.last(where: { $0.phase.isFailed })?.id
+        return jobs.last { $0.phase.isFailed }?.id
     }
 
     private static func elapsed(from start: Date, to now: Date) -> String {

@@ -1003,7 +1003,8 @@ struct GeneralSettings: View {
                         .frame(width: 70)
                         .multilineTextAlignment(.trailing)
                 }
-                .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. Try lowering when different people get merged into one Speaker N.")
+                .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. "
+                    + "Try lowering when different people get merged into one Speaker N.")
                 TextField(
                     "Force language",
                     text: $transcriptionForceLang,

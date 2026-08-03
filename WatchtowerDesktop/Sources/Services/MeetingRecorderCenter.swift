@@ -271,7 +271,9 @@ final class MeetingRecorderCenter {
     init(
         recorderFactory: @escaping () -> AudioRecording = { SystemAudioRecorder() },
         engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber = MeetingRecorderCenter.defaultEngineFactory,
-        diarizerFactory: @escaping (TranscriptionConfig) async throws -> SpeakerDiarizing = { try await FluidAudioDiarizer.load(clusteringThreshold: $0.diarizationThreshold) },
+        diarizerFactory: @escaping (TranscriptionConfig) async throws -> SpeakerDiarizing = {
+            try await FluidAudioDiarizer.load(clusteringThreshold: $0.diarizationThreshold)
+        },
         decode: @escaping (URL) throws -> [Float] = AudioFileDecoder.decodePCM16k(url:),
         runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
         notifier: MeetingTranscriptNotifying = NotificationService.shared,
@@ -760,7 +762,7 @@ final class MeetingRecorderCenter {
         defaults.removeObject(forKey: Self.pendingTitleKey)
         guard FileManager.default.fileExists(atPath: path) else { return }
         addRecoverable(RecoverableRecording(audioURL: URL(fileURLWithPath: path),
-                                           eventID: eventID, title: title))
+                                            eventID: eventID, title: title))
     }
 
     private func addRecoverable(_ entry: RecoverableRecording, atHead: Bool = false) {
