@@ -267,11 +267,38 @@ func TestRunJiraLogout_RemovesTokenKeepsData(t *testing.T) {
 	var buf bytes.Buffer
 	c.SetOut(&buf)
 
+	// Seed a synced issue: the headline of this change is that logout stops
+	// wiping jira_* (ClearJiraData is deleted), so the test must actually
+	// prove the data survives — otherwise reinstating the wipe passes.
+	database, err := db.Open(filepath.Join(wsDir, "watchtower.db"))
+	require.NoError(t, err)
+	acctID := db.SeedTestJiraAccount(t, database)
+	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: acctID, Key: "OPS-1", ProjectKey: "OPS", Summary: "keep me",
+		Status: "Open", StatusCategory: "todo",
+		CreatedAt: "2026-01-01", UpdatedAt: "2026-01-01", SyncedAt: "2026-01-01",
+	}))
+	require.NoError(t, database.Close())
+
 	require.NoError(t, runJiraLogout(c, nil))
 	assert.Contains(t, buf.String(), "disconnected")
 
-	_, err := os.Stat(tokenPath)
+	_, err = os.Stat(tokenPath)
 	assert.True(t, os.IsNotExist(err), "token file should be removed")
+
+	reopened, err := db.Open(filepath.Join(wsDir, "watchtower.db"))
+	require.NoError(t, err)
+	defer reopened.Close()
+
+	issue, err := reopened.GetJiraIssueByKey("OPS-1")
+	require.NoError(t, err)
+	require.NotNil(t, issue, "logout must keep synced issues (it is no longer a purge)")
+	assert.Equal(t, "keep me", issue.Summary)
+
+	acct, err := reopened.GetJiraAccount(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, "removed", acct.Status)
+	assert.False(t, acct.Enabled)
 }
 
 func TestRunDigestResetContext_AllChannels(t *testing.T) {

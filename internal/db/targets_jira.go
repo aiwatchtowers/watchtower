@@ -72,6 +72,43 @@ func jiraPriorityToTargetPriority(jiraPriority string) string {
 	}
 }
 
+// resolveUnambiguousJiraIssue returns the non-deleted issue carrying key only
+// when EXACTLY ONE connected site has it, and nil when several do.
+//
+// `targets.source_id` holds a bare issue key with no account dimension, so two
+// connected sites that both use, say, OPS-42 make the key ambiguous. Reads may
+// resolve such a key to an arbitrary site's row (the documented v1 ambiguity),
+// but this is a WRITE path — it flips a user-authored target to done — and
+// guessing there would silently mutate the owner's state from the wrong site's
+// issue. Ambiguity therefore means "leave the target alone", not "pick one".
+func (db *DB) resolveUnambiguousJiraIssue(key string) (*JiraIssue, error) {
+	rows, err := db.Query(`SELECT `+jiraIssueColumns+`
+		FROM jira_issues WHERE key = ? AND is_deleted = 0`, key)
+	if err != nil {
+		return nil, fmt.Errorf("querying jira issue %s: %w", key, err)
+	}
+	defer rows.Close()
+
+	var found []JiraIssue
+	for rows.Next() {
+		issue, err := scanJiraIssue(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning jira issue %s: %w", key, err)
+		}
+		found = append(found, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(found) != 1 {
+		if len(found) > 1 {
+			log.Printf("jira-targets: issue key %s exists on %d connected sites, leaving target untouched", key, len(found))
+		}
+		return nil, nil
+	}
+	return &found[0], nil
+}
+
 // SyncJiraTargetStatuses synchronizes target statuses from linked Jira issues.
 func (db *DB) SyncJiraTargetStatuses() (int, error) {
 	rows, err := db.Query(`SELECT ` + targetSelectCols + ` FROM targets WHERE source_type = 'jira' AND status NOT IN ('done', 'dismissed')`)
@@ -94,7 +131,7 @@ func (db *DB) SyncJiraTargetStatuses() (int, error) {
 
 	synced := 0
 	for _, t := range targets {
-		issue, err := db.GetJiraIssueByKey(t.SourceID)
+		issue, err := db.resolveUnambiguousJiraIssue(t.SourceID)
 		if err != nil {
 			log.Printf("jira-targets: error fetching issue %s: %v", t.SourceID, err)
 			continue

@@ -1017,6 +1017,9 @@ CREATE INDEX IF NOT EXISTS idx_jira_slack_links_digest ON jira_slack_links(diges
 
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_slack ON jira_issues(assignee_slack_id);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_status ON jira_issues(assignee_slack_id, status_category);
+-- Bare-key lookups: the composite PK leads with account_id, so this index is
+-- what keeps `WHERE key = ?` off a full scan (see 00049)
+CREATE INDEX IF NOT EXISTS idx_jira_issues_key ON jira_issues(key);
 
 -- Jira sync state
 CREATE TABLE IF NOT EXISTS jira_sync_state (

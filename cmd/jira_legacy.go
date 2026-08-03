@@ -44,6 +44,9 @@ func ensureLegacyJiraAccount(cfg *config.Config, database *db.DB, logger *log.Lo
 	var acctID int64
 	if len(accounts) == 0 {
 		// Token-only install: the migration had no synced data to seed from.
+		// `jira.user_display_name` is a historical misnomer — the legacy login
+		// wrote the SITE name into it (`v.Set("jira.user_display_name",
+		// site.Name)`), so it is the right source for site_name.
 		acctID, err = database.CreateJiraAccount(db.JiraAccount{
 			CloudID:  cfg.Jira.CloudID,
 			SiteURL:  cfg.Jira.SiteURL,
@@ -63,8 +66,16 @@ func ensureLegacyJiraAccount(cfg *config.Config, database *db.DB, logger *log.Lo
 		}
 	}
 
-	newPath := jira.NewTokenStore(cfg.WorkspaceDir(), acctID).Path()
-	if err := os.Rename(legacyPath, newPath); err != nil {
+	// Never clobber a per-account token that already exists: a workspace dir
+	// restored from backup (or a hand-copied token) can carry both files, and
+	// the live grant must win over the legacy leftover (the google_legacy
+	// precedent guards the same way).
+	newStore := jira.NewTokenStore(cfg.WorkspaceDir(), acctID)
+	if newStore.Exists() {
+		logger.Printf("jira: account %d already has a token; leaving legacy jira_token.json in place", acctID)
+		return acctID, nil
+	}
+	if err := os.Rename(legacyPath, newStore.Path()); err != nil {
 		return 0, fmt.Errorf("moving legacy jira token: %w", err)
 	}
 	logger.Printf("jira: migrated legacy single-account install to jira_accounts row %d", acctID)

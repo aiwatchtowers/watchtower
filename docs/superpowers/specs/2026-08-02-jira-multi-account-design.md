@@ -98,14 +98,28 @@ The global `cfg.Jira.Enabled` stays the daemon phase switch (the
 `cfg.Calendar.Enabled` precedent).
 
 **A sync pass records failures only — never a blanket "ok".** `Syncer.Sync`
-deliberately keeps going across projects: a per-project failure is swallowed
-(it lands in that project's `jira_sync_state` row) and `Sync` still returns
-nil, so a nil error is *not* proof the account is healthy. Writing "ok" back on
-it would paint a revoked account green in Settings and hide its Re-login
-button. Clearing the state therefore stays with the flows that genuinely prove
-access — `wireJiraSyncers` and the OAuth connect — matching Google/Slack, where
-auth state is likewise only ever recorded at wiring/connect time. Pinned by
+deliberately keeps going across projects: a per-project failure is logged and
+skipped, and `Sync` still returns nil, so a nil error is *not* proof the
+account is healthy. Writing "ok" back on it would paint a revoked account green
+in Settings and hide its Re-login button. Clearing the state therefore stays
+with the flows that genuinely prove access — `wireJiraSyncers` and the OAuth
+connect — matching Google/Slack, where auth state is likewise only ever
+recorded at wiring/connect time. Pinned by
 `TestPhaseJiraSyncNeverPaintsAccountGreen`.
+
+**Known limitation (pre-existing, not introduced here):** a per-project sync
+failure is *only* logged. `Syncer.Sync` sets `LastError`/`LastErrorAt` on its
+in-memory `JiraSyncState`, but `UpdateJiraSyncState` writes only
+`last_synced_at`/`issues_synced` — the two error columns are never persisted,
+on this branch or before it. Consequence: a genuinely revoked grant whose token
+file still exists produces per-project 401s that reach no durable surface, so
+the account keeps `status='ok'` and shows green while syncing nothing.
+`wireJiraSyncers` still catches a *missing* token, and Re-login is reachable
+unconditionally from the Settings row, so the account is never unrecoverable.
+Closing this properly means persisting the error columns and teaching
+`phaseJiraSync` to distinguish an auth failure from a transient one — a
+self-contained follow-up, deliberately out of scope for the account-scoping
+change.
 
 ### CLI
 
@@ -139,8 +153,12 @@ Settings → Jira becomes an account list (`JiraAccount` model +
 resolution moves off the frozen config keys: `JiraConfigHelper.readSiteURL()`
 now reads the **first enabled account's** `site_url` from `jira_accounts`
 (pool wired in `AppState.initJiraAccounts`), yaml as pre-migration fallback.
-`JiraQueries.isConnected()` / `JiraAuthService.checkStatus()` accept any
-`jira_token*.json`.
+`JiraQueries.isConnected()` accepts any `jira_token*.json`. The old
+single-connection `JiraAuthService` is deleted: the rewritten Settings block
+left it with one consumer that only wanted `siteURL` (now
+`JiraConfigHelper.readSiteURL()`), while its unreachable `disconnect()` still
+shelled out to `jira logout` — whose meaning changed here to "remove account
+#1".
 
 ## Non-goals (v1, documented deviations)
 

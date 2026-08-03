@@ -29,11 +29,22 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
 -- 2. Seed account #1 when legacy Jira data exists (cloud_id/site_url live in
 --    config.yaml, which SQL can't see — ensureLegacyJiraAccount fills them in
 --    Go, and also handles token-only installs with no synced data).
+--    The condition must cover EVERY table steps 3-10 re-parent to
+--    account_id = 1: those copies are unconditional, so a narrower seed (say,
+--    boards/issues only) would leave rows pointing at an account that does not
+--    exist — and the next `jira add` would mint id 1 and silently adopt another
+--    site's custom fields / releases.
 INSERT INTO jira_accounts (cloud_id, site_url, site_name, memory_jira_last_extracted_ts)
 SELECT '', '', '',
        COALESCE((SELECT memory_jira_last_extracted_ts FROM workspace LIMIT 1), 0)
 WHERE EXISTS (SELECT 1 FROM jira_boards)
    OR EXISTS (SELECT 1 FROM jira_issues)
+   OR EXISTS (SELECT 1 FROM jira_sprints)
+   OR EXISTS (SELECT 1 FROM jira_issue_links)
+   OR EXISTS (SELECT 1 FROM jira_custom_fields)
+   OR EXISTS (SELECT 1 FROM jira_board_field_map)
+   OR EXISTS (SELECT 1 FROM jira_sync_state)
+   OR EXISTS (SELECT 1 FROM jira_releases)
    OR COALESCE((SELECT memory_jira_last_extracted_ts FROM workspace LIMIT 1), 0) > 0;
 
 -- 3. jira_boards: PK becomes (account_id, id) — raw board ids are small
@@ -140,6 +151,12 @@ CREATE INDEX IF NOT EXISTS idx_jira_issues_due ON jira_issues(due_date);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_board ON jira_issues(board_id);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_slack ON jira_issues(assignee_slack_id);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_status ON jira_issues(assignee_slack_id, status_category);
+-- The pre-00049 PK was `key` alone, so bare-key lookups rode its implicit
+-- unique index. Under the composite PK that index leads with account_id, so
+-- `WHERE key = ?` degrades to a full scan — and bare-key readers are exactly
+-- what this migration preserves (GetJiraIssueByKey, JiraIssueExists,
+-- SyncJiraTargetStatuses, the MCP get_jira_issue tool). Restore the index.
+CREATE INDEX IF NOT EXISTS idx_jira_issues_key ON jira_issues(key);
 
 -- 7. jira_sprints: PK becomes (account_id, id).
 CREATE TABLE jira_sprints_new (
@@ -213,6 +230,14 @@ ALTER TABLE workspace DROP COLUMN memory_jira_last_extracted_ts;
 PRAGMA foreign_keys = ON;
 
 -- +goose Down
+--
+-- LOSSY BY CONSTRUCTION for a genuinely multi-account install: the pre-00049
+-- tables have no account dimension, so every step below keeps only
+-- account_id = 1 and DROPS the other sites' boards, issues, sprints, links,
+-- sync state, fields and releases. Nothing can preserve them — the target
+-- schema cannot represent two sites. Down is an escape hatch for a workspace
+-- that has not yet connected a second site; anyone else must re-sync after
+-- rolling back. Pinned by TestMigration00049DownDropsOtherAccounts.
 PRAGMA foreign_keys = OFF;
 ALTER TABLE workspace ADD COLUMN memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0;
 UPDATE workspace SET memory_jira_last_extracted_ts =

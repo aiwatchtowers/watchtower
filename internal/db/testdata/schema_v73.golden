@@ -131,6 +131,9 @@ CREATE INDEX idx_jira_issues_due ON jira_issues(due_date)
 index	idx_jira_issues_epic
 CREATE INDEX idx_jira_issues_epic ON jira_issues(epic_key)
 
+index	idx_jira_issues_key
+CREATE INDEX idx_jira_issues_key ON jira_issues(key)
+
 index	idx_jira_issues_project
 CREATE INDEX idx_jira_issues_project ON jira_issues(project_key)
 

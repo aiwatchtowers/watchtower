@@ -1,8 +1,25 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 )
+
+// JiraAccount is one connected Atlassian site (jira_accounts, migration
+// 00049). Site-scoped jira_* rows reference it via account_id.
+type JiraAccount struct {
+	ID                        int64
+	CloudID                   string
+	SiteURL                   string
+	SiteName                  string
+	Label                     string
+	Status                    string
+	Error                     string
+	Enabled                   bool
+	MemoryJiraLastExtractedTS float64
+	CreatedAt                 string
+}
 
 // CreateJiraAccount inserts a new connected Jira account and returns its ID.
 func (db *DB) CreateJiraAccount(a JiraAccount) (int64, error) {
@@ -71,6 +88,10 @@ func (db *DB) GetJiraAccount(id int64) (JiraAccount, error) {
         FROM jira_accounts WHERE id = ?`, id).
 		Scan(&a.ID, &a.CloudID, &a.SiteURL, &a.SiteName, &a.Label,
 			&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTS, &a.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A mistyped --account must not surface the stdlib sentinel.
+		return JiraAccount{}, fmt.Errorf("jira account %d not found (see 'watchtower jira accounts')", id)
+	}
 	if err != nil {
 		return JiraAccount{}, fmt.Errorf("getting jira account %d: %w", id, err)
 	}

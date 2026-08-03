@@ -403,7 +403,7 @@ func (db *DB) UpsertJiraRelease(r JiraRelease) error {
 
 // GetJiraReleases returns all releases for a project, sorted by release_date.
 func (db *DB) GetJiraReleases(projectKey string) ([]JiraRelease, error) {
-	rows, err := db.Query(`SELECT id, project_key, name, description, release_date, released, archived, synced_at
+	rows, err := db.Query(`SELECT account_id, id, project_key, name, description, release_date, released, archived, synced_at
 		FROM jira_releases WHERE project_key = ? ORDER BY release_date, name`, projectKey)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira releases for %s: %w", projectKey, err)
@@ -413,7 +413,7 @@ func (db *DB) GetJiraReleases(projectKey string) ([]JiraRelease, error) {
 	var releases []JiraRelease
 	for rows.Next() {
 		var r JiraRelease
-		if err := rows.Scan(&r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira release: %w", err)
 		}
 		releases = append(releases, r)
@@ -423,7 +423,7 @@ func (db *DB) GetJiraReleases(projectKey string) ([]JiraRelease, error) {
 
 // GetJiraReleasesByName returns releases matching a name across all projects.
 func (db *DB) GetJiraReleasesByName(name string) ([]JiraRelease, error) {
-	rows, err := db.Query(`SELECT id, project_key, name, description, release_date, released, archived, synced_at
+	rows, err := db.Query(`SELECT account_id, id, project_key, name, description, release_date, released, archived, synced_at
 		FROM jira_releases WHERE name = ? ORDER BY project_key`, name)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira releases by name %s: %w", name, err)
@@ -433,7 +433,7 @@ func (db *DB) GetJiraReleasesByName(name string) ([]JiraRelease, error) {
 	var releases []JiraRelease
 	for rows.Next() {
 		var r JiraRelease
-		if err := rows.Scan(&r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira release by name: %w", err)
 		}
 		releases = append(releases, r)
@@ -443,7 +443,7 @@ func (db *DB) GetJiraReleasesByName(name string) ([]JiraRelease, error) {
 
 // GetAllJiraReleases returns all releases across all projects, sorted by release_date.
 func (db *DB) GetAllJiraReleases() ([]JiraRelease, error) {
-	rows, err := db.Query(`SELECT id, project_key, name, description, release_date, released, archived, synced_at
+	rows, err := db.Query(`SELECT account_id, id, project_key, name, description, release_date, released, archived, synced_at
 		FROM jira_releases ORDER BY release_date, name`)
 	if err != nil {
 		return nil, fmt.Errorf("querying all jira releases: %w", err)
@@ -453,7 +453,7 @@ func (db *DB) GetAllJiraReleases() ([]JiraRelease, error) {
 	var releases []JiraRelease
 	for rows.Next() {
 		var r JiraRelease
-		if err := rows.Scan(&r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira release: %w", err)
 		}
 		releases = append(releases, r)

@@ -14,6 +14,11 @@ struct AddJiraAccountView: View {
     private var vm: JiraAccountsViewModel? { appState.jiraAccountsViewModel }
 
     @State private var label = ""
+    /// Optional site hint passed through as `--site`. The CLI's site picker is
+    /// an interactive stdin prompt, and the Process this sheet spawns has no
+    /// stdin wired — so when a grant reaches several Atlassian sites, naming
+    /// one here is the only way the add can complete.
+    @State private var site = ""
     /// Set when Cancel is tapped so the awaited `addAccount` (which returns
     /// with a cleared error after the SIGTERM) does NOT auto-dismiss — Cancel
     /// means "let me adjust the form", matching AddSlackAccountView's behavior.
@@ -33,7 +38,10 @@ struct AddJiraAccountView: View {
             TextField("Label (optional)", text: $label, prompt: Text("e.g. Work, Client"))
                 .textFieldStyle(.roundedBorder)
 
-            Text("Opens Atlassian's authorization page in your browser. After you approve, the site is added and syncing starts.")
+            TextField("Site (optional)", text: $site, prompt: Text("e.g. acme.atlassian.net"))
+                .textFieldStyle(.roundedBorder)
+
+            Text("Opens Atlassian's authorization page in your browser. After you approve, the site is added and syncing starts. Leave Site empty unless your Atlassian account reaches several sites.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -67,15 +75,16 @@ struct AddJiraAccountView: View {
             }
         }
         .padding(20)
-        .frame(width: 360, height: 200)
+        .frame(width: 360, height: 250)
     }
 
     private func connect() {
         guard let vm else { return }
         cancelled = false
         let trimmed = label.trimmingCharacters(in: .whitespaces)
+        let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
-            await vm.addAccount(label: trimmed)
+            await vm.addAccount(label: trimmed, site: trimmedSite)
             // addAccount is awaited: on success `error` is nil. A user Cancel
             // also clears error (SIGTERM/SIGKILL branch), so gate the dismiss
             // on `cancelled` to keep the sheet open when the flow was

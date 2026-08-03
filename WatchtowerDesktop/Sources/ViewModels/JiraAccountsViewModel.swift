@@ -47,13 +47,21 @@ final class JiraAccountsViewModel {
 
     // MARK: - Add
 
-    /// Builds the `jira add` args with an optional `--label`. Pure and
-    /// side-effect-free so the flag assembly is directly testable without
-    /// shelling out to a real process.
-    static func addArgs(label: String) -> [String] {
+    /// Builds the `jira add` args with an optional `--label` and `--site`.
+    /// Pure and side-effect-free so the flag assembly is directly testable
+    /// without shelling out to a real process.
+    ///
+    /// `--site` matters because the CLI's site picker is an interactive stdin
+    /// prompt: a grant that reaches several Atlassian sites cannot be resolved
+    /// from a spawned process, so the sheet lets the user name the site up
+    /// front.
+    static func addArgs(label: String, site: String = "") -> [String] {
         var args = ["jira", "add"]
         if !label.isEmpty {
             args.append(contentsOf: ["--label", label])
+        }
+        if !site.isEmpty {
+            args.append(contentsOf: ["--site", site])
         }
         return args
     }
@@ -61,8 +69,8 @@ final class JiraAccountsViewModel {
     /// Connects a new Atlassian site via `watchtower jira add`. The OAuth
     /// consent happens in the loopback browser; the detached Process is held in
     /// `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(label: String) async {
-        await runAuthFlow(args: Self.addArgs(label: label), failurePrefix: "Connect failed")
+    func addAccount(label: String, site: String = "") async {
+        await runAuthFlow(args: Self.addArgs(label: label, site: site), failurePrefix: "Connect failed")
     }
 
     // MARK: - Re-login

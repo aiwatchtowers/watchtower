@@ -664,21 +664,6 @@ type MeetingPrepCache struct {
 	GeneratedAt string
 }
 
-// JiraAccount is one connected Atlassian site (jira_accounts, migration
-// 00049). Site-scoped jira_* rows reference it via account_id.
-type JiraAccount struct {
-	ID                        int64
-	CloudID                   string
-	SiteURL                   string
-	SiteName                  string
-	Label                     string
-	Status                    string
-	Error                     string
-	Enabled                   bool
-	MemoryJiraLastExtractedTS float64
-	CreatedAt                 string
-}
-
 // JiraBoard represents a Jira agile board stored locally.
 type JiraBoard struct {
 	AccountID          int64

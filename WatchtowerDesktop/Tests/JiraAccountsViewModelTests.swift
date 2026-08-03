@@ -52,6 +52,23 @@ final class JiraAccountsViewModelTests: XCTestCase {
         XCTAssertFalse(args.contains("--label"))
     }
 
+    // A grant reaching several Atlassian sites can only be resolved by naming
+    // one: the CLI's picker reads stdin, which the spawned Process never wires.
+    func testAddArgsWithSite() {
+        let args = JiraAccountsViewModel.addArgs(label: "Client", site: "acme.atlassian.net")
+        XCTAssertEqual(args, ["jira", "add", "--label", "Client", "--site", "acme.atlassian.net"])
+    }
+
+    func testAddArgsWithSiteOnly() {
+        let args = JiraAccountsViewModel.addArgs(label: "", site: "acme.atlassian.net")
+        XCTAssertEqual(args, ["jira", "add", "--site", "acme.atlassian.net"])
+    }
+
+    func testAddArgsWithoutSiteOmitsFlag() {
+        let args = JiraAccountsViewModel.addArgs(label: "Client")
+        XCTAssertFalse(args.contains("--site"))
+    }
+
     // MARK: - removeArgs (pure)
 
     func testRemoveArgs() {

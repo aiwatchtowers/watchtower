@@ -45,7 +45,7 @@ const jiraDescriptionCapBytes = 1500
 // watermark). One account's failure is recorded on its own step row and the
 // loop moves on. Returns the number of step rows recorded.
 func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (int, error) {
-	accounts, err := p.db.ListJiraAccounts()
+	accounts, err := p.db.ListEnabledJiraAccounts()
 	if err != nil {
 		return 0, err
 	}
@@ -60,9 +60,6 @@ func (p *Pipeline) runJiraIngest(runID int64, stepOffset int, stats *RunStats) (
 
 	recorded := 0
 	for _, acct := range accounts {
-		if !acct.Enabled || acct.Status == "removed" {
-			continue
-		}
 		n, aerr := p.runJiraIngestAccount(runID, stepOffset+recorded, jiraReg, acct.ID, stats)
 		if aerr != nil {
 			p.logf("memory: jira ingest account %d: %v", acct.ID, aerr)

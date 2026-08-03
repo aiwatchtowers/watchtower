@@ -225,3 +225,108 @@ func TestMigration00049DownUpCycle(t *testing.T) {
 		t.Errorf("jira_issues.account_id after re-up = %d, want 1", acct)
 	}
 }
+
+// TestMigration00049DownDropsOtherAccounts pins the Down block's documented
+// data loss: the pre-00049 schema has no account dimension, so rolling back a
+// genuinely multi-account install can only keep account #1 and MUST drop the
+// rest rather than silently merging two sites' issues under one bare key.
+func TestMigration00049DownDropsOtherAccounts(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpTo(raw, "migrations", 49); err != nil {
+		t.Fatalf("migrate to v49: %v", err)
+	}
+
+	for _, cloud := range []string{"c1", "c2"} {
+		if _, err := raw.Exec(`INSERT INTO jira_accounts (cloud_id) VALUES (?)`, cloud); err != nil {
+			t.Fatalf("seed account %s: %v", cloud, err)
+		}
+	}
+	// Both sites carry the SAME issue key — exactly the shape the single-PK
+	// schema cannot represent.
+	for _, acct := range []int{1, 2} {
+		if _, err := raw.Exec(`INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at)
+			VALUES (?, 'OPS-1', 'OPS', ?, 'Open', 'To Do', '2026-01-01', '2026-01-01', '2026-01-01')`,
+			acct, "site "+string(rune('0'+acct))); err != nil {
+			t.Fatalf("seed issue for account %d: %v", acct, err)
+		}
+	}
+
+	if err := goose.DownTo(raw, "migrations", 48); err != nil {
+		t.Fatalf("goose down to 48: %v", err)
+	}
+
+	var count int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM jira_issues`).Scan(&count); err != nil {
+		t.Fatalf("count issues after down: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("jira_issues count after down = %d, want 1 (only account #1 survives)", count)
+	}
+	var summary string
+	if err := raw.QueryRow(`SELECT summary FROM jira_issues WHERE key = 'OPS-1'`).Scan(&summary); err != nil {
+		t.Fatalf("read surviving issue: %v", err)
+	}
+	if summary != "site 1" {
+		t.Errorf("surviving issue = %q, want account #1's row (%q)", summary, "site 1")
+	}
+}
+
+// TestMigration00049_SeedsAccountForNonIssueJiraData guards the seed
+// condition: steps 3-10 re-parent EVERY site-scoped table to account_id = 1
+// unconditionally, so a workspace whose only Jira data is e.g. discovered
+// custom fields (no boards, no issues, no watermark) must still get account
+// #1 — otherwise those rows dangle and the next `jira add` mints id 1 and
+// silently adopts another site's fields.
+func TestMigration00049_SeedsAccountForNonIssueJiraData(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+		t.Fatalf("migrate to v48: %v", err)
+	}
+
+	// Only custom fields + a release: no boards, no issues, no watermark.
+	if _, err := raw.Exec(`INSERT INTO jira_custom_fields (id, name, field_type)
+		VALUES ('customfield_10001', 'Story Points', 'number')`); err != nil {
+		t.Fatalf("seed jira_custom_fields: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO jira_releases (id, project_key, name) VALUES (5, 'OPS', 'v1')`); err != nil {
+		t.Fatalf("seed jira_releases: %v", err)
+	}
+
+	if err := goose.UpTo(raw, "migrations", 49); err != nil {
+		t.Fatalf("apply 00049: %v", err)
+	}
+
+	var accountCount int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM jira_accounts`).Scan(&accountCount); err != nil {
+		t.Fatalf("count jira_accounts: %v", err)
+	}
+	if accountCount != 1 {
+		t.Fatalf("jira_accounts count = %d, want 1 — re-parented rows must have a parent", accountCount)
+	}
+
+	// The re-parented rows resolve against a real account.
+	var orphans int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM jira_custom_fields f
+		LEFT JOIN jira_accounts a ON a.id = f.account_id WHERE a.id IS NULL`).Scan(&orphans); err != nil {
+		t.Fatalf("count orphan custom fields: %v", err)
+	}
+	if orphans != 0 {
+		t.Errorf("orphan jira_custom_fields rows = %d, want 0", orphans)
+	}
+}

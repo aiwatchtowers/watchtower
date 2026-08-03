@@ -456,9 +456,15 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 // (it lands in that project's jira_sync_state row) and still returning nil, so
 // a nil error is not proof the account is healthy — flipping the row to "ok" on
 // it would paint a revoked account green in Settings and hide its Re-login
-// button. Clearing the state stays with the flows that genuinely prove access:
-// wireJiraSyncers and the OAuth connect (the Google/Slack precedent, where
-// auth state is likewise only ever recorded at wiring/connect time).
+// button. Only the OAuth connect (connectJiraAccount), which has just proven
+// access, clears the state back to "ok".
+//
+// Unlike Gmail/Calendar this is deliberately NOT symmetric with their syncers,
+// which do write "ok" on every successful sync — they can, because their
+// clients surface a distinguishable auth failure (ErrAuthRevoked) and ours does
+// not yet (see the spec's known-limitation note). The one guard we do borrow
+// from them: a cancelled context means daemon shutdown, not an auth problem, so
+// it must never be persisted as the account's auth error.
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if len(d.jiraSyncers) == 0 {
 		return
@@ -477,6 +483,16 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		n, err := s.Sync(ctx)
 		if err != nil {
 			d.logger.Printf("jira: account %d: sync error: %v", s.AccountID(), err)
+			if ctx.Err() != nil {
+				// Shutdown, not an auth problem — leave the account's state
+				// alone rather than stamping "context canceled" on it, which
+				// nothing but a re-login could clear.
+				d.logger.Printf("jira: account %d: sync cancelled, leaving auth state untouched", s.AccountID())
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
 			if d.db != nil {
 				if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "error", err.Error()); dbErr != nil {
 					d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
@@ -502,9 +518,8 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			totalAPI += api
 		}
 		if inTok > 0 || outTok > 0 {
-			err := firstErr
 			d.trackedPipelineRun("jira-boards", func() pipelineRunStats {
-				return pipelineRunStats{inTok: inTok, outTok: outTok, totalAPI: totalAPI, err: err}
+				return pipelineRunStats{inTok: inTok, outTok: outTok, totalAPI: totalAPI, err: firstErr}
 			})
 		}
 	}
