@@ -10,6 +10,13 @@ enum RoleAssigner {
     /// Minimum share of a cluster's speech bins with mic dominance for the
     /// cluster to be labelled as the owner.
     private static let selfShareThreshold = 0.6
+    /// Consecutive same-cluster segments merge into one utterance only up to
+    /// this span; beyond it a new utterance with the same speaker label is
+    /// started. Without the cap a diarization under-split (several people
+    /// collapsed into one cluster) cements hundreds of seconds into a single
+    /// unreadable block and takes the per-utterance actions (soft delete,
+    /// speaker rename review) down with it.
+    private static let maxMergedUtteranceSec: Double = 120
 
     /// nil when roles cannot be derived (no segments / no speakers) — the
     /// caller then keeps the plain transcript text. The joined string is
@@ -117,6 +124,10 @@ enum RoleAssigner {
             if cluster != currentCluster {
                 flush()
                 currentCluster = cluster
+                currentTexts = []
+                currentStart = segment.startSec
+            } else if !currentTexts.isEmpty, segment.endSec - currentStart > maxMergedUtteranceSec {
+                flush()
                 currentTexts = []
                 currentStart = segment.startSec
             }

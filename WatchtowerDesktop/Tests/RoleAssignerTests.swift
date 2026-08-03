@@ -111,6 +111,41 @@ final class RoleAssignerTests: XCTestCase {
         }
     }
 
+    /// A diarization under-split (one cluster covering many people) must not
+    /// cement into one monolithic utterance: the merge breaks every 120 s,
+    /// keeping the same speaker label.
+    func testLongSameClusterRunSplitsAtDurationCap() throws {
+        let texts = (0..<30).map { "фраза \($0)" }
+        let segments = texts.enumerated().map { i, t in seg(t, Double(i) * 10, Double(i + 1) * 10) }
+        let utterances = try XCTUnwrap(RoleAssigner.assign(
+            segments: segments,
+            speakers: [spk("A", 0, 300)],
+            activity: nil
+        ))
+        XCTAssertGreaterThan(utterances.count, 1)
+        for u in utterances {
+            XCTAssertLessThanOrEqual(u.endSec - u.startSec, 120)
+        }
+        XCTAssertEqual(utterances.map(\.speaker), Array(repeating: "Speaker 1", count: utterances.count))
+        XCTAssertEqual(utterances.map(\.idx), Array(0..<utterances.count))
+        XCTAssertEqual(utterances.map(\.text).joined(separator: " "), texts.joined(separator: " "))
+        XCTAssertEqual(utterances.first?.startSec, 0)
+        XCTAssertEqual(utterances.last?.endSec, 300)
+    }
+
+    /// Boundary: a run spanning exactly the cap stays one utterance, so an
+    /// ordinary meeting sees no behavior change.
+    func testRunExactlyAtCapStaysOneUtterance() throws {
+        let utterances = try XCTUnwrap(RoleAssigner.assign(
+            segments: [seg("начало", 0, 60), seg("конец", 60, 120)],
+            speakers: [spk("A", 0, 120)],
+            activity: nil
+        ))
+        XCTAssertEqual(utterances, [
+            TranscriptUtterance(idx: 0, startSec: 0, endSec: 120, speaker: "Speaker 1", text: "начало конец")
+        ])
+    }
+
     func testAssignEmptyInputsGiveNil() {
         XCTAssertNil(RoleAssigner.assign(segments: [], speakers: [spk("A", 0, 1)], activity: nil))
         XCTAssertNil(RoleAssigner.assign(segments: [seg("а", 0, 1)], speakers: [], activity: nil))
