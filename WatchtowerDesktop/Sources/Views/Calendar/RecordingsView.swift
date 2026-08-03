@@ -45,9 +45,11 @@ struct RecordingsView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: selectedID.wrappedValue)
         .onAppear(perform: loadItems)
-        .onChange(of: appState.meetingRecorderCenter.phase) { _, phase in
-            if case .idle = phase { loadItems() }
-        }
+        // Keyed on the save counter, not on the recorder settling: with capture
+        // decoupled from the queue, a transcript can land while another job is
+        // still queued or a failed one lingers — `phase` never reaches `.idle`
+        // then, and the new row would never appear.
+        .onChange(of: appState.meetingRecorderCenter.savedTick) { _, _ in loadItems() }
     }
 
     private func loadItems() {

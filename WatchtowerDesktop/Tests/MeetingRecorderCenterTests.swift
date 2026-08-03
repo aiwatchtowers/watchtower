@@ -618,8 +618,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
 
         center.restorePendingOnLaunch()
         XCTAssertEqual(center.pendingAudioURL, audio)
-        XCTAssertEqual(center.currentEventID, "evt-42", "the event link must survive relaunch")
-        XCTAssertEqual(center.currentTitle, "Weekly sync", "the title must survive relaunch")
+        XCTAssertEqual(center.recoverable.first?.eventID, "evt-42", "the event link must survive relaunch")
+        XCTAssertEqual(center.recoverable.first?.title, "Weekly sync", "the title must survive relaunch")
 
         // The recovered transcript saves event-linked, not as ad-hoc.
         await center.retryTranscription(config: singleWindowConfig())

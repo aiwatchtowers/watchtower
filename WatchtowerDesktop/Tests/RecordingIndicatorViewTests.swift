@@ -24,6 +24,10 @@ final class RecordingIndicatorViewTests: XCTestCase {
                        "Transcribing 3/12")
         XCTAssertEqual(RecordingIndicatorView.jobPhaseLabel(.diarizing), "Identifying speakers…")
         XCTAssertEqual(RecordingIndicatorView.jobPhaseLabel(.summarizing), "Summarizing…")
+        // The failed pill renders its heading through the same function, so this
+        // case is reachable copy rather than a placeholder.
+        XCTAssertEqual(RecordingIndicatorView.jobPhaseLabel(.failed("decode blew up")),
+                       "Transcription failed")
     }
 
     func test_phaseLabelHidesUnknownWindowCount() {
@@ -55,6 +59,47 @@ final class RecordingIndicatorViewTests: XCTestCase {
         let split = RecordingIndicatorView.visibleJobs([])
         XCTAssertTrue(split.visible.isEmpty)
         XCTAssertEqual(split.overflow, 0)
+    }
+
+    /// The case the cap must not lose: stale failures pile up at the head of the
+    /// queue (they stay until the user acts), so plain FIFO truncation would hide
+    /// the job actually being worked.
+    func test_runningJobStaysVisibleBehindStaleFailures() {
+        let stale = (0..<RecordingIndicatorView.maxVisibleJobPills).map { i in
+            makeJob(title: "Stale \(i)", phase: .failed("boom"))
+        }
+        let running = makeJob(title: "Running", phase: .transcribing(done: 1, total: 4))
+        let split = RecordingIndicatorView.visibleJobs(stale + [running])
+
+        XCTAssertEqual(split.visible.first?.id, running.id, "the running job leads the visible pills")
+        XCTAssertEqual(split.visible.count, RecordingIndicatorView.maxVisibleJobPills)
+        XCTAssertEqual(split.visible.dropFirst().map(\.id), stale.prefix(2).map(\.id),
+                       "the queue fills the remaining slots in order")
+        XCTAssertEqual(split.overflow, 1)
+    }
+
+    /// Every non-failed phase the queue can be working counts as running, so a
+    /// job in the diarize/summarize tail is not pushed out either.
+    func test_runningJobStaysVisibleInEveryWorkingPhase() {
+        let phases: [MeetingRecorderCenter.ProcessingJob.Phase] = [
+            .transcribing(done: 0, total: 0), .diarizing, .summarizing
+        ]
+        for phase in phases {
+            let stale = (0..<3).map { i in makeJob(title: "Stale \(i)", phase: .failed("boom")) }
+            let running = makeJob(title: "Running", phase: phase)
+            let split = RecordingIndicatorView.visibleJobs(stale + [running])
+            XCTAssertEqual(split.visible.first?.id, running.id, "\(phase) must stay visible")
+        }
+    }
+
+    /// A queued job is NOT promoted: nothing is being worked yet, so FIFO order
+    /// is the honest reading of the queue.
+    func test_queuedJobIsNotPromotedOverTheQueueHead() {
+        let jobs = (0..<3).map { i in makeJob(title: "Stale \(i)", phase: .failed("boom")) }
+            + [makeJob(title: "Queued", phase: .queued)]
+        let split = RecordingIndicatorView.visibleJobs(jobs)
+        XCTAssertEqual(split.visible.map(\.id), jobs.prefix(3).map(\.id))
+        XCTAssertEqual(split.overflow, 1)
     }
 
     // MARK: - Recovered copy
@@ -120,27 +165,7 @@ final class RecordingIndicatorViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(ViewType.Button.self))
     }
 
-    // MARK: - Retry/dismiss eligibility
-
-    func test_onlyNewestFailureIsActionable() {
-        let older = makeJob(title: "Older", phase: .failed("boom"))
-        let running = makeJob(title: "Running", phase: .transcribing(done: 1, total: 4))
-        let newer = makeJob(title: "Newer", phase: .failed("boom"))
-        let actionable = RecordingIndicatorView.actionableFailureID(
-            [older, running, newer], isBusy: false)
-        XCTAssertEqual(actionable, newer.id)
-    }
-
-    func test_noFailureIsActionableWhileTheQueueIsBusy() {
-        // Both Center calls guard on `isBusy`, so an enabled button there would
-        // do nothing at all.
-        let failed = makeJob(phase: .failed("boom"))
-        XCTAssertNil(RecordingIndicatorView.actionableFailureID([failed], isBusy: true))
-    }
-
-    func test_nothingActionableWithoutAFailure() {
-        let running = makeJob(phase: .transcribing(done: 1, total: 4))
-        XCTAssertNil(RecordingIndicatorView.actionableFailureID([running], isBusy: false))
-        XCTAssertNil(RecordingIndicatorView.actionableFailureID([], isBusy: false))
-    }
+    // Retry/dismiss eligibility now lives on the Center
+    // (`retriableFailureID`/`dismissableFailureID`, so the buttons can never
+    // disagree with what the Center would do); see MeetingRecorderQueueTests.
 }

@@ -40,14 +40,14 @@ struct TranscriptSectionView: View {
             }
         }
         .onAppear(perform: load)
-        .onChange(of: appState.meetingRecorderCenter.phase) { _, phase in
-            // A just-finished transcription lands as a new row once idle — and
-            // its save may have generated the event's recap, so the host must
-            // refetch too (record → recap appears without reopening the event).
-            if case .idle = phase {
-                load()
-                onChanged()
-            }
+        .onChange(of: appState.meetingRecorderCenter.savedTick) { _, _ in
+            // A just-saved transcription lands as a new row — and its save may
+            // have generated the event's recap, so the host must refetch too
+            // (record → recap appears without reopening the event). Keyed on the
+            // save counter rather than the recorder settling: `phase` stays
+            // non-idle while the rest of the queue drains.
+            load()
+            onChanged()
         }
     }
 

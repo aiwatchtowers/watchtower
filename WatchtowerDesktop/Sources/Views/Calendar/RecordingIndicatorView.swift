@@ -21,7 +21,8 @@ private func indicatorCapsule<Content: View>(@ViewBuilder _ content: () -> Conte
 /// Capture and post-processing are decoupled in the Center, so the stack renders
 /// `captureState` and the `jobs` queue side by side (a recording capsule plus one
 /// pill per queued/running/failed job) instead of the old single-slot `phase`
-/// projection — which stays for the `onChange` consumers elsewhere.
+/// projection — which stays for the surfaces that genuinely show one thing at a
+/// time (the "is THIS event recording" check, the stop reminder).
 struct RecordingIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var expanded = false
@@ -59,21 +60,21 @@ struct RecordingIndicatorView: View {
         }
     }
 
-    /// The post-processing queue, oldest job first — so the running head is
-    /// always among the visible pills.
+    /// The post-processing queue, oldest job first, with the running job always
+    /// among the visible pills. Which failure the action buttons may act on is
+    /// the Center's own answer (`retriableFailureID`/`dismissableFailureID`), so
+    /// an enabled button always does something.
     @ViewBuilder
     private func jobQueue(_ center: MeetingRecorderCenter) -> some View {
         let split = Self.visibleJobs(center.jobs)
-        let actionable = Self.actionableFailureID(center.jobs, isBusy: center.isBusy)
+        let retriable = center.retriableFailureID
+        let dismissable = center.dismissableFailureID
         ForEach(split.visible) { job in
             RecordingJobPill(
                 title: job.title ?? "Recording",
                 phase: job.phase,
-                // `retryTranscription` takes a recovered recording ahead of any
-                // job, and `dismissFailure` clears a capture error first — so
-                // neither reaches the job while those stand.
-                canRetry: job.id == actionable && center.recoverable.isEmpty,
-                canDismiss: job.id == actionable && center.captureError == nil,
+                canRetry: job.id == retriable,
+                canDismiss: job.id == dismissable,
                 retry: { retry(center) },
                 dismiss: { center.dismissFailure() })
         }
@@ -291,9 +292,20 @@ struct RecordingIndicatorView: View {
     /// keeps a pathological backlog from covering the window.
     static let maxVisibleJobPills = 3
 
+    /// The job actually being worked comes first, then the queue fills the
+    /// remaining slots in order. Plain FIFO order would be enough if failures
+    /// left the queue, but they stay for retry — three stale failures at the
+    /// head would push the running job out of sight, which is exactly when the
+    /// user wants to see it.
     static func visibleJobs(_ jobs: [MeetingRecorderCenter.ProcessingJob])
         -> (visible: [MeetingRecorderCenter.ProcessingJob], overflow: Int) {
-        (Array(jobs.prefix(maxVisibleJobPills)), max(0, jobs.count - maxVisibleJobPills))
+        guard jobs.count > maxVisibleJobPills else { return (jobs, 0) }
+        let running = jobs.first { $0.phase.isRunning }
+        var visible = running.map { [$0] } ?? []
+        for job in jobs where visible.count < maxVisibleJobPills {
+            if job.id != running?.id { visible.append(job) }
+        }
+        return (visible, jobs.count - visible.count)
     }
 
     static func jobPhaseLabel(_ phase: MeetingRecorderCenter.ProcessingJob.Phase) -> String {
@@ -309,17 +321,6 @@ struct RecordingIndicatorView: View {
 
     static func recoveredLabel(count: Int) -> String {
         count > 1 ? "Transcribe \(count) recovered recordings" : "Transcribe recovered recording"
-    }
-
-    /// Job the Center's single-slot `retryTranscription`/`dismissFailure` pair
-    /// would act on: the newest failure, and only while nothing is in flight
-    /// (both no-op otherwise). Every other failed pill renders its buttons
-    /// disabled rather than silently doing nothing — dismiss the newest failure
-    /// and the one behind it becomes actionable in turn.
-    static func actionableFailureID(_ jobs: [MeetingRecorderCenter.ProcessingJob],
-                                    isBusy: Bool) -> MeetingRecorderCenter.ProcessingJob.ID? {
-        guard !isBusy else { return nil }
-        return jobs.last { $0.phase.isFailed }?.id
     }
 
     private static func elapsed(from start: Date, to now: Date) -> String {
@@ -347,7 +348,7 @@ struct RecordingJobPill: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Transcription failed").font(.callout.weight(.medium))
+                    Text(RecordingIndicatorView.jobPhaseLabel(phase)).font(.callout.weight(.medium))
                     titleText
                     Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
@@ -356,13 +357,13 @@ struct RecordingJobPill: View {
                     .disabled(!canRetry)
                     .help(canRetry
                           ? "Run this recording through transcription again"
-                          : "Retry takes the newest failure first, and only while nothing is in flight")
+                          : "Recovered recordings take precedence; one failure at a time, newest first")
                 Button("Dismiss") { dismiss() }
                     .controlSize(.small)
                     .disabled(!canDismiss)
                     .help(canDismiss
                           ? "Keep the audio and stop showing this failure"
-                          : "Dismiss takes the newest failure first, and only while nothing is in flight")
+                          : "Capture errors take precedence; one failure at a time, newest first")
             case .queued:
                 Image(systemName: "clock").foregroundStyle(.secondary)
                 titleText

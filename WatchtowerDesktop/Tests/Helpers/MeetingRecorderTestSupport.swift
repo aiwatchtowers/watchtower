@@ -184,6 +184,7 @@ final class FakeDiarizer: SpeakerDiarizing, @unchecked Sendable {
 final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let stdoutData: Data
     var shouldThrow: Error?
+    private(set) var invocations: [[String]] = []
     private(set) var savedTranscripts: [String] = []
     private(set) var savedSegments: [String?] = []
     private(set) var savedSpeakers: [String?] = []
@@ -191,6 +192,7 @@ final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
     init(stdout: Data) { self.stdoutData = stdout }
 
     func run(args: [String]) async throws -> Data {
+        invocations.append(args)
         if let idx = args.firstIndex(of: "--transcript-file"), idx + 1 < args.count,
            let text = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
             savedTranscripts.append(text)
@@ -285,6 +287,14 @@ class MeetingRecorderTestCase: XCTestCase {
         audio.deletingPathExtension().appendingPathExtension("meta")
     }
 
+    /// The value of `flag` in one `meeting-prep transcript save` invocation, or
+    /// nil when the flag was not passed at all (an ad-hoc save omits
+    /// `--event-id` entirely rather than passing an empty string).
+    func savedFlag(_ invocation: [String], _ flag: String) -> String? {
+        guard let idx = invocation.firstIndex(of: flag), idx + 1 < invocation.count else { return nil }
+        return invocation[idx + 1]
+    }
+
     /// The one recording the Center started this test (its `.caf` in the
     /// injected recordings directory). The fake recorder never writes audio, so
     /// only the `.meta` sidecar the Center itself wrote is on disk.
@@ -293,6 +303,20 @@ class MeetingRecorderTestCase: XCTestCase {
         return recordingsDir.appendingPathComponent(
             try XCTUnwrap(names.first { $0.hasSuffix(".meta") },
                           "the Center must write a rec_*.meta sidecar at record start"))
+    }
+
+    /// Yields the main actor until `condition` holds. Bounded, so a regression
+    /// that parks the queue forever fails an assertion instead of hanging the
+    /// suite — callers must not `await` a Task that only completes on success
+    /// unless this returned true.
+    @discardableResult
+    func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async -> Bool {
+        for _ in 0..<400 {
+            if condition() { return true }
+            await Task.yield()
+        }
+        XCTFail("timed out waiting for \(what)")
+        return false
     }
 
     /// Diarization is off in the shared configs: a test whose output has

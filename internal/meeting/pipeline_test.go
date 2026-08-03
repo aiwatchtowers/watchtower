@@ -137,6 +137,18 @@ func TestCleanJSON(t *testing.T) {
 		{"```json\n[{\"speaker\": \"Speaker 1\"}]\n```\nThese are my guesses.", `[{"speaker": "Speaker 1"}]`},
 		{"Here you go:\n```json\n{\"key\": \"val\"}\n```\nLet me know!", `{"key": "val"}`},
 		{"[1, 2]\n```", `[1, 2]`},
+		// Unfenced response with trailing prose: the value ends the payload.
+		{"{\"key\": \"val\"}\nHope that helps.", `{"key": "val"}`},
+		{"[{\"speaker\": \"Speaker 1\", \"name\": \"Ann\"}]\nThese are my guesses.", `[{"speaker": "Speaker 1", "name": "Ann"}]`},
+		// A ``` inside a string value is part of the JSON, not a fence.
+		{"{\"key\": \"a ``` b\"}\nDone.", "{\"key\": \"a ``` b\"}"},
+		// Missing closing fence: the single JSON value is still extracted.
+		{"```json\n{\"key\": \"val\"}", `{"key": "val"}`},
+		{"```json\n[{\"speaker\": \"Speaker 1\"}]\nThese are my guesses.", `[{"speaker": "Speaker 1"}]`},
+		// First fence wins even when a ```json block follows a plain one.
+		{"```\n{\"first\": true}\n```\n```json\n{\"second\": true}\n```", `{"first": true}`},
+		// Undecodable payload is returned unchanged — callers report it raw.
+		{"no json here", "no json here"},
 	}
 
 	for _, tt := range tests {

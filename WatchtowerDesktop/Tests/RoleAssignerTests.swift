@@ -146,6 +146,22 @@ final class RoleAssignerTests: XCTestCase {
         ])
     }
 
+    /// The cap splits BETWEEN segments, never inside one: a single segment
+    /// longer than 120 s has no cut point the transcriber offered, so it stays
+    /// one utterance (the `!currentTexts.isEmpty` guard in `assign`). Splitting
+    /// it would invent timings the engine never reported.
+    func testSingleSegmentLongerThanTheCapIsNotSplit() throws {
+        let utterances = try XCTUnwrap(RoleAssigner.assign(
+            segments: [seg("один очень длинный монолог", 0, 400)],
+            speakers: [spk("A", 0, 400)],
+            activity: nil
+        ))
+        XCTAssertEqual(utterances, [
+            TranscriptUtterance(idx: 0, startSec: 0, endSec: 400,
+                                speaker: "Speaker 1", text: "один очень длинный монолог")
+        ])
+    }
+
     func testAssignEmptyInputsGiveNil() {
         XCTAssertNil(RoleAssigner.assign(segments: [], speakers: [spk("A", 0, 1)], activity: nil))
         XCTAssertNil(RoleAssigner.assign(segments: [seg("а", 0, 1)], speakers: [], activity: nil))

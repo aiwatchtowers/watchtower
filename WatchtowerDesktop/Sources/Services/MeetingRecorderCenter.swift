@@ -130,11 +130,18 @@ final class MeetingRecorderCenter {
     private(set) var liveEngineState: LiveEngineState = .off
     private(set) var liveChunks: [LiveChunk] = []
 
+    /// Monotonic counter bumped once per transcript that lands in the database.
+    /// Views that must refetch after a save observe THIS, never `phase`: with
+    /// capture decoupled from the queue, `phase` never dips to `.idle` while
+    /// another job is still queued or a failed one lingers, so a reload keyed
+    /// on it silently misses the new row.
+    private(set) var savedTick = 0
+
     // MARK: - Legacy single-slot projection
 
-    /// Single-slot view of the state above, kept so the existing recorder UI
-    /// (capsule, recovered pill, "reload when the recorder settles" hooks) keeps
-    /// working until the queue UI lands: capture wins, then the job the queue is
+    /// Single-slot view of the state above, kept so the recorder UI that still
+    /// renders one thing at a time (the recovered pill, the re-transcribe
+    /// affordance) keeps working: capture wins, then the job the queue is
     /// working, then whatever is waiting for the user.
     enum Phase: Equatable {
         case idle
@@ -183,10 +190,30 @@ final class MeetingRecorderCenter {
         return false
     }
 
-    /// Anything at all in flight: capture, or a job the queue is working. Only
-    /// the re-transcribe affordance still needs this — it drives the legacy
-    /// `prepareRetry`/`retryTranscription` pair, which has one slot.
-    var isBusy: Bool { isCapturing || activeJobID != nil }
+    /// Anything at all in flight: capture, or a job the queue is working or
+    /// still holds. A queued job counts — it will run without further input, so
+    /// the single-slot `prepareRetry`/`retryTranscription` pair (and the
+    /// affordances that drive it) must stay parked until the queue drains. A
+    /// failed job does not: it needs the user, which is the whole point of
+    /// retry.
+    var isBusy: Bool { isCapturing || jobs.contains { !$0.phase.isFailed } }
+
+    /// The failed job `retryTranscription` would actually re-run, or nil when
+    /// it would do something else (a recovered recording takes precedence) or
+    /// nothing at all (busy, no failure). Lets a pill disable a button rather
+    /// than offer one that silently no-ops.
+    var retriableFailureID: ProcessingJob.ID? {
+        guard !isBusy, recoverable.isEmpty else { return nil }
+        return jobs.last { $0.phase.isFailed }?.id
+    }
+
+    /// The failed job `dismissFailure` would actually drop. It needs the
+    /// single-slot `phase` to read `.failed` (so nothing may be running) and
+    /// clears a capture error ahead of any job.
+    var dismissableFailureID: ProcessingJob.ID? {
+        guard case .failed = phase, captureError == nil else { return nil }
+        return jobs.last { $0.phase.isFailed }?.id
+    }
 
     /// `UserDefaults` keys of the pre-queue single-slot pointer. Read (and
     /// cleared) exactly once, by `restorePendingOnLaunch`, so a recording
@@ -467,7 +494,7 @@ final class MeetingRecorderCenter {
             // A job parked on the engine slot must be woken once the start
             // resolves; a successful start keeps the slot and releases it in
             // `stopAndProcess` instead.
-            if !isCapturing { releaseEngineSlot() }
+            if !isCapturing { wakeEngineSlotWaiters() }
         }
 
         currentEventID = eventID
@@ -475,7 +502,7 @@ final class MeetingRecorderCenter {
 
         let recorder = recorderFactory()
         self.recorder = recorder
-        let url = recordingsDirectory.appendingPathComponent("rec_\(Self.timestampComponent()).caf")
+        let url = Self.uniqueRecordingURL(in: recordingsDirectory)
 
         do {
             try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
@@ -588,17 +615,26 @@ final class MeetingRecorderCenter {
             // recording starts next instead of contaminating it.
             captureState = .idle
             captureAudioURL = nil
-            // See `ownsLivePass` on the success path below: a recording still
-            // `.waiting` for the slot must not cancel the previous recording's
-            // in-flight live pass.
-            let ownsLivePass = pendingLiveStart == nil
-            pendingLiveStart = nil
             liveEngineState = .off
-            if ownsLivePass {
+            if consumeLivePassOwnership() {
                 liveTask?.cancel()
-                releaseLiveEngineSlot()
+                let orphan = liveTask
+                liveTask = nil
+                loadedTranscriber = nil
+                liveGeneration += 1
+                // Cancellation cannot interrupt an in-progress
+                // `transcribeWindow`, so the engine the orphan is still
+                // decoding through is not free yet: hand the slot on only once
+                // it has actually exited, or a parked job would load a second
+                // engine alongside it. The failure surfaces immediately either
+                // way — only the handoff waits.
+                Task { @MainActor [weak self] in
+                    _ = await orphan?.value
+                    self?.startPendingLivePass()
+                    self?.wakeEngineSlotWaiters()
+                }
             } else {
-                releaseEngineSlot()
+                wakeEngineSlotWaiters()
             }
             // The audio captured so far stays on disk with its sidecar: surface
             // it as a failed job so Retry re-runs the batch path from the file.
@@ -613,12 +649,7 @@ final class MeetingRecorderCenter {
 
         captureState = .idle
         captureAudioURL = nil
-        // Only a recording whose live pass actually STARTED can feed its job.
-        // One that was still `.waiting` for the engine slot has no live output,
-        // and the `liveTask` standing here belongs to the previous recording,
-        // whose own Stop owns it — never this job.
-        let ownsLivePass = pendingLiveStart == nil
-        pendingLiveStart = nil // this recorder is finished either way
+        let ownsLivePass = consumeLivePassOwnership()
         liveEngineState = .off
 
         // Enqueued — and given its place in the chain — before the live tail is
@@ -646,10 +677,21 @@ final class MeetingRecorderCenter {
         } else {
             // Capture ended, but the previous recording's tail still holds the
             // engine; wake the queue anyway so it re-checks.
-            releaseEngineSlot()
+            wakeEngineSlotWaiters()
         }
 
         await task.value
+    }
+
+    /// Whether the recording being stopped is the one that actually holds the
+    /// live pass, clearing the parked start either way (this recorder is
+    /// finished). One still `.waiting` for the engine slot has no live output,
+    /// and the `liveTask` standing at that point belongs to the PREVIOUS
+    /// recording, whose own Stop owns it — never this job.
+    private func consumeLivePassOwnership() -> Bool {
+        let owns = pendingLiveStart == nil
+        pendingLiveStart = nil
+        return owns
     }
 
     /// Releases the engine slot a finished capture's live pass held and hands it
@@ -662,7 +704,7 @@ final class MeetingRecorderCenter {
         loadedTranscriber = nil
         liveGeneration += 1
         startPendingLivePass()
-        releaseEngineSlot()
+        wakeEngineSlotWaiters()
     }
 
     // MARK: - Retry / recovery
@@ -698,8 +740,6 @@ final class MeetingRecorderCenter {
     func prepareRetry(audioURL: URL, eventID: String?, title: String?) {
         guard !isBusy else { return }
         Self.removePersistedTranscript(audioURL: audioURL)
-        currentEventID = eventID
-        currentTitle = title
         addRecoverable(RecoverableRecording(audioURL: audioURL, eventID: eventID, title: title), atHead: true)
     }
 
@@ -740,12 +780,6 @@ final class MeetingRecorderCenter {
         migrateLegacyPendingDefaults()
         for entry in Self.scanRecoverable(in: recordingsDirectory) {
             addRecoverable(entry)
-        }
-        // The legacy pill acts on the oldest entry; keep the event link/title it
-        // would save under in step with it.
-        if let first = recoverable.first {
-            currentEventID = first.eventID
-            currentTitle = first.title
         }
     }
 
@@ -801,7 +835,10 @@ final class MeetingRecorderCenter {
         activeJobID = jobID
     }
 
-    private func releaseEngineSlot() {
+    /// Resumes every job parked in `acquireEngineSlot` so it re-checks the slot.
+    /// It releases nothing itself — the slot is owned by `isCapturing`/`liveTask`,
+    /// and a woken job that still finds one of them set parks again.
+    private func wakeEngineSlotWaiters() {
         let waiters = engineSlotWaiters
         engineSlotWaiters = []
         for waiter in waiters { waiter.resume() }
@@ -901,6 +938,12 @@ final class MeetingRecorderCenter {
             failJob(jobID, "No speech recognized")
             return
         }
+        // The transcription is done, so the handed-over live engine has served
+        // its purpose — drop it before the (slow) role rendering rather than
+        // pinning a whole model in memory for the rest of the job's life. The
+        // batch path already consumed it in `transcribeAndSave`; this is the
+        // live path's release.
+        updateJob(jobID) { $0.transcriber = nil }
         let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
                                          samples: samples, config: config)
         // Persist the (role-tagged) transcript next to the audio so a failed
@@ -942,8 +985,12 @@ final class MeetingRecorderCenter {
             let rolesError = self.job(jobID)?.rolesError
             Self.removePersistedTranscript(audioURL: job.audioURL)
             Self.removeMetaSidecar(for: job.audioURL)
-            jobs.removeAll { $0.id == jobID }
+            // A failed job pointing at the SAME audio goes with it: this
+            // recording is persisted now, so retrying that one would save a
+            // duplicate transcript of it.
+            jobs.removeAll { $0.id == jobID || ($0.phase.isFailed && $0.audioURL == job.audioURL) }
             recoverable.removeAll { $0.audioURL == job.audioURL }
+            savedTick += 1
             if !result.segmentsOK {
                 // The CLI dropped the segments file (render mismatch = Go↔Swift
                 // renderer drift, or a malformed payload). The transcript row is
@@ -1009,9 +1056,14 @@ final class MeetingRecorderCenter {
 
     /// Fails a job and fires the failure notification. The job stays in the
     /// queue (retriable, and never blocking what is behind it) and its audio
-    /// file is intentionally left untouched.
+    /// file is intentionally left untouched. Any engine the job still carried is
+    /// dropped: a failed job can sit here indefinitely, and its retry loads a
+    /// fresh one anyway.
     private func failJob(_ id: ProcessingJob.ID, _ message: String) {
-        updateJob(id) { $0.phase = .failed(message) }
+        updateJob(id) {
+            $0.phase = .failed(message)
+            $0.transcriber = nil
+        }
         notifier.sendTranscriptFailedNotification(reason: message)
     }
 
@@ -1032,29 +1084,63 @@ final class MeetingRecorderCenter {
         audioURL.deletingPathExtension().appendingPathExtension("meta")
     }
 
-    /// Best-effort: losing the sidecar only costs the event link of a recording
-    /// that crashed mid-capture, never the audio.
+    /// Best-effort, but the cost is not only the event link: the recovery scan
+    /// keys on the sidecar's presence, so a recording whose sidecar never landed
+    /// is read as "already saved" and is NOT offered for recovery after a crash.
+    /// The audio file itself always survives (the Go orphan sweep reclaims it).
+    /// Hence the logging — this failure must not be invisible.
     private static func writeMetaSidecar(eventID: String?, title: String?, for audioURL: URL) {
-        guard let data = try? JSONEncoder().encode(MetaSidecar(eventID: eventID, title: title)) else { return }
-        try? data.write(to: metaURL(for: audioURL), options: .atomic)
+        let url = metaURL(for: audioURL)
+        do {
+            let data = try JSONEncoder().encode(MetaSidecar(eventID: eventID, title: title))
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("[MeetingRecorder] failed to write recovery sidecar \(url.lastPathComponent): "
+                  + "\(error.localizedDescription) — this recording will not be offered for recovery")
+        }
     }
 
+    /// A sidecar left behind makes a saved recording look unsaved, so the
+    /// failure is logged. A sidecar that was never there is not a failure.
     private static func removeMetaSidecar(for audioURL: URL) {
-        try? FileManager.default.removeItem(at: metaURL(for: audioURL))
+        let url = metaURL(for: audioURL)
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch CocoaError.fileNoSuchFile {
+        } catch {
+            print("[MeetingRecorder] failed to remove recovery sidecar \(url.lastPathComponent): "
+                  + "\(error.localizedDescription)")
+        }
     }
 
     /// `rec_*.caf` files that still carry a `.meta` sidecar, oldest first (the
-    /// names are timestamps, so lexicographic order is chronological).
+    /// names are timestamps, so lexicographic order is chronological). A sidecar
+    /// that is present but unreadable still proves the recording was never
+    /// saved, so it comes back without its event link rather than being lost.
     private static func scanRecoverable(in directory: URL) -> [RecoverableRecording] {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return [] }
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        } catch {
+            print("[MeetingRecorder] cannot scan \(directory.path) for recoverable recordings: "
+                  + "\(error.localizedDescription)")
+            return []
+        }
         return names
             .filter { $0.hasPrefix("rec_") && $0.hasSuffix(".caf") }
             .sorted()
             .compactMap { name -> RecoverableRecording? in
                 let audioURL = directory.appendingPathComponent(name)
-                guard let data = try? Data(contentsOf: metaURL(for: audioURL)),
-                      let meta = try? JSONDecoder().decode(MetaSidecar.self, from: data) else { return nil }
-                return RecoverableRecording(audioURL: audioURL, eventID: meta.eventID, title: meta.title)
+                let meta = metaURL(for: audioURL)
+                // No sidecar at all == saved (the save removes it) — leave it be.
+                guard FileManager.default.fileExists(atPath: meta.path) else { return nil }
+                guard let data = try? Data(contentsOf: meta),
+                      let decoded = try? JSONDecoder().decode(MetaSidecar.self, from: data) else {
+                    print("[MeetingRecorder] unreadable recovery sidecar \(meta.lastPathComponent) — "
+                          + "recovering \(name) without its event link")
+                    return RecoverableRecording(audioURL: audioURL, eventID: nil, title: nil)
+                }
+                return RecoverableRecording(audioURL: audioURL, eventID: decoded.eventID, title: decoded.title)
             }
     }
 
@@ -1148,10 +1234,39 @@ final class MeetingRecorderCenter {
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         return formatter.string(from: date)
     }
+
+    /// `rec_<timestamp>.caf`, disambiguated with a `-N` suffix while either the
+    /// audio file or its `.meta` sidecar already exists. The timestamp has
+    /// one-second resolution, so two recordings started inside the same second
+    /// would otherwise share a path — the second overwriting the first's audio
+    /// and stealing its recovery sidecar. The `rec_` prefix and the timestamp
+    /// stay: the Go orphan sweep matches on the family, and the name is what
+    /// makes a recovered recording identifiable. Internal (not private) so the
+    /// disambiguation is testable without racing the wall clock.
+    static func uniqueRecordingURL(in directory: URL, date: Date = Date()) -> URL {
+        let base = "rec_\(timestampComponent(date))"
+        var candidate = directory.appendingPathComponent("\(base).caf")
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path)
+                || FileManager.default.fileExists(atPath: metaURL(for: candidate).path) {
+            candidate = directory.appendingPathComponent("\(base)-\(suffix).caf")
+            suffix += 1
+        }
+        return candidate
+    }
 }
 
 extension MeetingRecorderCenter.ProcessingJob.Phase {
     var isFailed: Bool { failureMessage != nil }
+
+    /// The queue is actively working this job, as opposed to it waiting its turn
+    /// or sitting parked on a failure.
+    var isRunning: Bool {
+        switch self {
+        case .transcribing, .diarizing, .summarizing: return true
+        case .queued, .failed: return false
+        }
+    }
 
     var failureMessage: String? {
         if case let .failed(message) = self { return message }

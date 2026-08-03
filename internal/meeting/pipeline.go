@@ -508,29 +508,42 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// cleanJSON strips markdown fences from AI response if present.
 // cleanJSON extracts the JSON payload from a model response. When the
 // response contains a ```-fenced block, the FIRST fenced block wins and
 // anything around it (a chatty preamble, prose after the closing fence) is
 // dropped — trimming only the edges misses trailing chatter and the parser
 // then chokes on the closing fence (the tracks-package cleanJSON precedent).
+// Both paths end at firstJSONValue, so trailing prose never reaches the
+// caller's json.Unmarshal even when the model forgot the closing fence or
+// kept chatting inside the block.
 func cleanJSON(s string) string {
 	s = strings.TrimSpace(s)
-	// Bare JSON (possibly with a stray trailing fence): leave the body
-	// untouched so a ``` inside a string value survives.
+	// Bare JSON (chatter or a stray trailing fence may follow the value).
 	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
-		return strings.TrimSpace(strings.TrimSuffix(s, "```"))
+		return firstJSONValue(s)
 	}
-	// Fenced block: the FIRST block wins, chatter around it is dropped.
-	if idx := strings.Index(s, "```json"); idx >= 0 {
-		s = s[idx+len("```json"):]
-	} else if idx := strings.Index(s, "```"); idx >= 0 {
-		s = s[idx+len("```"):]
-	} else {
+	// Fenced block: the FIRST block wins, whether or not it is tagged `json`.
+	idx := strings.Index(s, "```")
+	if idx < 0 {
 		return s
 	}
+	s = strings.TrimPrefix(s[idx+len("```"):], "json")
 	if end := strings.Index(s, "```"); end >= 0 {
 		s = s[:end]
 	}
-	return strings.TrimSpace(s)
+	return firstJSONValue(strings.TrimSpace(s))
+}
+
+// firstJSONValue cuts s at the end of the first complete JSON value it holds,
+// dropping whatever the model appended after it. Structural decoding (rather
+// than suffix trimming) means a ``` inside a string value survives. A payload
+// that does not start with a decodable value is returned unchanged — callers
+// report the raw response, so nothing is masked here.
+func firstJSONValue(s string) string {
+	dec := json.NewDecoder(strings.NewReader(s))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return s
+	}
+	return strings.TrimSpace(s[:dec.InputOffset()])
 }
