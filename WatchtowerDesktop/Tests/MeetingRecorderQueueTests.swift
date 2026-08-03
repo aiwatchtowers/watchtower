@@ -355,6 +355,37 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         XCTAssertEqual(center.pendingAudioURL, older)
     }
 
+    /// Two recordings started inside the same second differ only by the `-N`
+    /// collision suffix, and `-` sorts before `.` — so plain lexicographic order
+    /// hands the pill the NEWEST of them, and `-10` before `-2`. The pill acts on
+    /// `recoverable.first`, so the order is the behavior.
+    func testRecoveryScanOrdersSameSecondRecordingsOldestFirst() throws {
+        let first = recordingsDir.appendingPathComponent("rec_20260803_100000.caf")
+        let second = recordingsDir.appendingPathComponent("rec_20260803_100000-2.caf")
+        let tenth = recordingsDir.appendingPathComponent("rec_20260803_100000-10.caf")
+        let nextSecond = recordingsDir.appendingPathComponent("rec_20260803_100001.caf")
+        for audio in [first, second, tenth, nextSecond] {
+            try Data([0x00]).write(to: audio)
+            try Data("{}".utf8).write(to: metaSidecar(audio))
+        }
+
+        let center = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        center.restorePendingOnLaunch()
+
+        XCTAssertEqual(center.recoverable.map(\.audioURL), [first, second, tenth, nextSecond],
+                       "the suffix orders numerically, after the timestamp")
+        XCTAssertEqual(center.pendingAudioURL, first, "the pill acts on the oldest recording")
+    }
+
     /// A recording captured by a pre-queue build lives in three `UserDefaults`
     /// keys. They are read once, converted to a recoverable recording, and
     /// cleared — so a second launch neither re-reads nor duplicates them.
@@ -553,6 +584,45 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         XCTAssertTrue(job.phase.isFailed, "the save failed, so the job stays for retry")
         XCTAssertNil(job.transcriber,
                      "the engine the live pass handed over must not be pinned by a parked failure")
+    }
+
+    /// The other release of the handed-over engine, on the one path that returns
+    /// before `renderAndSave` reaches its own: the live pass produced nothing, so
+    /// the batch pass reuses its engine and finds only silence. The engine must
+    /// be released by the failure itself, not left pinned on a job that can sit
+    /// in the queue indefinitely.
+    func testEmptyTranscriptFailureReleasesTheLiveHandedEngine() async throws {
+        let recorder = FakeRecorder()
+        var engineLoads = 0
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let notifier = FakeNotifier()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: [])) // silence, every window
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: notifier,
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = singleWindowConfig()
+
+        // No live samples emitted → no live output → the batch path runs with the
+        // engine the live pass loaded and hands nothing but silence back.
+        await center.startRecording(eventID: nil, title: "Silent", config: config)
+        recorder.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder.lastStartURL), durationSec: 1)
+        await center.stopAndProcess(config: config)
+
+        let job = try XCTUnwrap(center.jobs.first)
+        XCTAssertEqual(job.phase, .failed("No speech recognized"))
+        XCTAssertNil(job.transcriber,
+                     "an empty transcript must release the engine, not pin it on the parked failure")
+        XCTAssertEqual(engineLoads, 1, "the batch pass reused the engine the live pass loaded")
+        XCTAssertEqual(runner.savedTranscripts, [], "an empty transcript is never saved")
+        XCTAssertEqual(notifier.failedReasons, ["No speech recognized"])
     }
 
     // MARK: - Failure dismissal
@@ -896,10 +966,11 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         XCTAssertEqual(engineLoads, 2, "job A reuses the engine handed to it, never a third")
     }
 
-    /// A slow engine load orphaned by a stop-time error resolves long after a new
-    /// recording took the live slot over. Its late writes must be fenced: neither
-    /// `liveEngineState` nor the engine the new recording's job will reuse may be
-    /// clobbered by it.
+    /// A slow engine load orphaned by a stop-time error is still resident, so a
+    /// recording that starts while it hangs parks instead of loading a second
+    /// engine — and when the orphan finally resolves, its late writes are fenced:
+    /// neither `liveEngineState` nor the engine the new recording's job will
+    /// reuse may be clobbered by it.
     func testOrphanedEngineLoadCannotClobberTheNewLivePass() async throws {
         let recorder1 = FakeRecorder()
         let recorder2 = FakeRecorder()
@@ -934,22 +1005,233 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             return XCTFail("expected .failed after a stop() error, got \(center.phase)")
         }
 
-        // Recording 2 takes the live slot over with a batch-only engine.
+        // Recording 2 starts while the orphan is still inside the engine
+        // factory: the slot is not free, so its live pass parks.
         await center.startRecording(eventID: nil, title: "Second", config: config)
         recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
-        await waitUntil("recording 2's live state to settle") { center.liveEngineState == .unavailable }
+        XCTAssertEqual(center.liveEngineState, .waiting,
+                       "the orphaned load still owns the engine slot")
+        XCTAssertEqual(engineLoads, 1, "no second engine may load beside the resident orphan")
 
-        // The orphaned load finally resolves — every write it makes is stale.
+        // The orphaned load finally resolves and hands the slot on. Every write
+        // it makes on the way out is stale: the state the user sees is recording
+        // 2's own (batch-only) engine's.
         loadGate.release()
-        for _ in 0..<20 { await Task.yield() }
-        XCTAssertEqual(center.liveEngineState, .unavailable,
-                       "the orphaned load must not describe the recording that took over")
+        let handedOn = await waitUntil("the parked live pass to take the slot over") {
+            center.liveEngineState == .unavailable
+        }
+        guard handedOn else { return }
+        XCTAssertEqual(engineLoads, 2,
+                       "the orphan's exit hands the slot to the parked pass — one more engine, not two at once")
 
         await center.stopAndProcess(config: config)
 
         XCTAssertEqual(runner.savedTranscripts, ["second"],
                        "recording 2's job must reuse ITS engine, not the orphan's")
         XCTAssertTrue(center.liveChunks.isEmpty)
+    }
+
+    /// The same residency rule seen from the capture side: a whole NEW recording
+    /// started while a cancelled-but-resident live pass is still decoding must
+    /// park its live pass rather than load a second model beside the orphan.
+    func testNewRecordingParksWhileAStopErrorOrphanIsStillResident() async throws {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        let liveGate = GateEngine(texts: ["orphaned"])
+        var engineLoads = 0
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(engineLoads == 1 ? liveGate : ScriptedEngine(texts: ["second"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = threeWindowConfig()
+
+        // Recording 1's live pass is inside the engine when its stop errors, so
+        // cancelling it cannot evict the model it is decoding through. Two
+        // windows, so the pass has a decidable cut and parks in the engine while
+        // the recording is still running (one window only cuts at stream end).
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        recorder1.emitLive([Float](repeating: 0, count: 3200))
+        var entered = liveGate.enteredStream.makeAsyncIterator()
+        _ = await entered.next()
+        recorder1.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        await center.stopAndProcess(config: config)
+        XCTAssertEqual(center.jobs.count, 1, "the partial recording is kept as a failed job")
+
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        XCTAssertEqual(center.liveEngineState, .waiting,
+                       "the cancelled-but-resident pass still owns the engine slot")
+        XCTAssertEqual(engineLoads, 1, "two engines must never be resident at once")
+
+        liveGate.release()
+        let started = await waitUntil("the parked live pass to load its engine") { engineLoads == 2 }
+        guard started else { return }
+        XCTAssertNotEqual(center.liveEngineState, .waiting,
+                          "the orphan's exit is what hands the slot on")
+
+        await center.stopAndProcess(config: config)
+        XCTAssertEqual(runner.savedTranscripts, ["second"])
+    }
+
+    /// The Retry door is open the moment a stop fails (nothing is capturing, no
+    /// job is queued), so the retried job is the other way into the engine slot
+    /// the orphan still holds — it must park there too.
+    func testRetryAfterAStopErrorParksUntilTheOrphanExits() async throws {
+        let recorder = FakeRecorder()
+        let liveGate = GateEngine(texts: ["orphaned"])
+        var engineLoads = 0
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(engineLoads == 1 ? liveGate : ScriptedEngine(texts: ["retried"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = threeWindowConfig()
+
+        // Two windows, so the live pass parks in the engine while the recording
+        // is still running (one window only cuts once the stream ends).
+        await center.startRecording(eventID: nil, title: "Only", config: config)
+        recorder.emitLive([Float](repeating: 0, count: 3200))
+        var entered = liveGate.enteredStream.makeAsyncIterator()
+        _ = await entered.next()
+        recorder.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        await center.stopAndProcess(config: config)
+
+        XCTAssertNotNil(center.retriableFailureID, "the failure is retriable straight away")
+        let retry = Task { await center.retryTranscription(config: config) }
+        let parked = await waitUntil("the retried job to be re-enqueued") {
+            center.jobs.first?.phase == .queued
+        }
+        guard parked else { return }
+        XCTAssertEqual(engineLoads, 1, "the retry must not load a second engine beside the orphan")
+        XCTAssertEqual(runner.savedTranscripts, [])
+
+        liveGate.release()
+        let ran = await waitUntil("the retried job to run once the orphan exited") {
+            runner.savedTranscripts.count == 1
+        }
+        guard ran else { return }
+        await retry.value
+        XCTAssertEqual(runner.savedTranscripts, ["retried"])
+        XCTAssertEqual(engineLoads, 2, "the retry loads its own engine, once the slot is free")
+    }
+
+    // MARK: - Capture-error dismissal
+
+    /// The capture-error capsule has exactly one action, and `dismissFailure`
+    /// clears that error ahead of any job — so a job merely sitting in the queue
+    /// must not disable it. Only a job the queue is actively working can (it owns
+    /// `phase`, which is what `dismissFailure` guards on).
+    func testCaptureErrorIsDismissableWhileAJobIsMerelyQueued() async throws {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        recorder2.startError = AudioRecordingError.microphonePermissionDenied
+        var recorderCalls = 0
+        let liveGate = GateEngine(texts: ["queued job"])
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in TestTranscriber(liveGate) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = threeWindowConfig()
+
+        // Recording 1's live tail parks mid-window, so its job sits `.queued`:
+        // the Center is busy, but nothing is running.
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
+        recorder1.emitLive([Float](repeating: 0, count: 1600))
+        let stopFirst = Task { await center.stopAndProcess(config: config) }
+        var entered = liveGate.enteredStream.makeAsyncIterator()
+        _ = await entered.next()
+        let queued = await waitUntil("job 1 to be queued") { center.jobs.first?.phase == .queued }
+        guard queued else { return }
+
+        await center.startRecording(eventID: nil, title: "Denied", config: config)
+        XCTAssertNotNil(center.captureError)
+        XCTAssertTrue(center.isBusy, "the queued job keeps the Center busy")
+        XCTAssertTrue(center.captureErrorDismissable,
+                      "a queued job must not disable the capture error's only action")
+
+        center.dismissFailure()
+        XCTAssertNil(center.captureError, "Dismiss actually clears it")
+        XCTAssertEqual(center.jobs.count, 1, "the queued job is untouched")
+
+        liveGate.release()
+        await stopFirst.value
+        XCTAssertEqual(runner.savedTranscripts, ["queued job"])
+    }
+
+    /// While the queue is actively working a job, `phase` describes that job
+    /// rather than the failure behind it, so `dismissFailure` would no-op — an
+    /// enabled Dismiss button would be lying.
+    func testNothingIsDismissableWhileAJobIsActivelyRunning() async throws {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        var firstAudio: URL?
+        let gate = GateEngine(texts: ["job two"])
+        var engineLoads = 0
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(engineLoads == 1 ? ScriptedEngine(texts: []) : gate)
+            },
+            decode: { url in
+                if url == firstAudio { throw AudioFileDecoderError.unsupportedFormat }
+                return [Float](repeating: 0, count: 1600)
+            },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = singleWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "Failed", config: config)
+        firstAudio = try XCTUnwrap(recorder1.lastStartURL)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(firstAudio), durationSec: 1)
+        await center.stopAndProcess(config: config)
+        XCTAssertTrue(try XCTUnwrap(center.jobs.first).phase.isFailed)
+
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        let stopSecond = Task { await center.stopAndProcess(config: config) }
+        var entered = gate.enteredStream.makeAsyncIterator()
+        _ = await entered.next() // job 2 is inside the engine — genuinely running
+
+        XCTAssertEqual(center.phase, .transcribing(done: 0, total: 0),
+                       "the running job owns `phase`, hiding the failure behind it")
+        XCTAssertNil(center.dismissableFailureID,
+                     "dismissFailure would no-op here, so no pill may offer Dismiss")
+        XCTAssertNil(center.retriableFailureID)
+
+        gate.release()
+        await stopSecond.value
+        XCTAssertEqual(runner.savedTranscripts, ["job two"])
     }
 
     // MARK: - Diarizer configuration

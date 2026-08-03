@@ -164,11 +164,15 @@ final class MeetingRecorderCenter {
             }
         }
         if let captureError { return .failed(captureError) }
-        if let message = jobs.last(where: { $0.phase.isFailed })?.phase.failureMessage {
-            return .failed(message)
-        }
+        if let message = newestFailedJob?.phase.failureMessage { return .failed(message) }
         if !jobs.isEmpty { return .transcribing(done: 0, total: 0) }
         return .idle
+    }
+
+    /// The failure the single-slot retry/dismiss pair works from: the newest
+    /// one, so the user clears backwards from what just broke.
+    private var newestFailedJob: ProcessingJob? {
+        jobs.last { $0.phase.isFailed }
     }
 
     /// Legacy pointer at "the recording the retry/recovered pill acts on": the
@@ -177,7 +181,7 @@ final class MeetingRecorderCenter {
     var pendingAudioURL: URL? {
         if case .recording = captureState { return captureAudioURL }
         if let entry = recoverable.first { return entry.audioURL }
-        if let failed = jobs.last(where: { $0.phase.isFailed }) { return failed.audioURL }
+        if let failed = newestFailedJob { return failed.audioURL }
         return jobs.first?.audioURL
     }
 
@@ -204,7 +208,7 @@ final class MeetingRecorderCenter {
     /// than offer one that silently no-ops.
     var retriableFailureID: ProcessingJob.ID? {
         guard !isBusy, recoverable.isEmpty else { return nil }
-        return jobs.last { $0.phase.isFailed }?.id
+        return newestFailedJob?.id
     }
 
     /// The failed job `dismissFailure` would actually drop. It needs the
@@ -212,7 +216,18 @@ final class MeetingRecorderCenter {
     /// clears a capture error ahead of any job.
     var dismissableFailureID: ProcessingJob.ID? {
         guard case .failed = phase, captureError == nil else { return nil }
-        return jobs.last { $0.phase.isFailed }?.id
+        return newestFailedJob?.id
+    }
+
+    /// Whether `dismissFailure` would actually clear the `captureError` the
+    /// capsule is showing. Mirrors that method's own guard — the capture-error
+    /// branch is taken ahead of any failed job, so the only thing that can
+    /// block it is a job the queue is actively working (which owns `phase`).
+    /// Deliberately NOT `isBusy`: a merely queued job leaves the message's one
+    /// action available.
+    var captureErrorDismissable: Bool {
+        guard captureError != nil, case .failed = phase else { return false }
+        return true
     }
 
     /// `UserDefaults` keys of the pre-queue single-slot pointer. Read (and
@@ -253,7 +268,11 @@ final class MeetingRecorderCenter {
     private var pendingLiveStart: PendingLiveStart?
 
     /// The job the queue is currently working; nil when the queue is parked.
-    private var activeJobID: ProcessingJob.ID?
+    /// Readable so the indicator stack can promote the pill of the job that is
+    /// genuinely being worked, rather than guessing from a phase (with
+    /// diarization off a job can be active while its phase still reads
+    /// `.queued`).
+    private(set) var activeJobID: ProcessingJob.ID?
     /// Task of the most recently enqueued job. A new job's task awaits it first,
     /// which is what makes the queue FIFO and strictly serial.
     private var lastJobTask: Task<Void, Never>?
@@ -619,19 +638,25 @@ final class MeetingRecorderCenter {
             if consumeLivePassOwnership() {
                 liveTask?.cancel()
                 let orphan = liveTask
-                liveTask = nil
-                loadedTranscriber = nil
                 liveGeneration += 1
                 // Cancellation cannot interrupt an in-progress
                 // `transcribeWindow`, so the engine the orphan is still
-                // decoding through is not free yet: hand the slot on only once
-                // it has actually exited, or a parked job would load a second
-                // engine alongside it. The failure surfaces immediately either
-                // way — only the handoff waits.
+                // decoding through is not free yet. `liveTask` therefore stays
+                // set until it has actually exited — it IS the engine-slot
+                // claim both residency gates read (`acquireEngineSlot` and
+                // `startRecording`'s live-pass branch), so keeping it means a
+                // parked job and a NEW recording alike wait rather than loading
+                // a second engine alongside the orphan. Clearing it (and the
+                // transcriber it loaded, which belongs to nobody now) plus the
+                // handoff all happen once the await returns. The failure itself
+                // surfaces immediately either way — only the slot waits.
                 Task { @MainActor [weak self] in
                     _ = await orphan?.value
-                    self?.startPendingLivePass()
-                    self?.wakeEngineSlotWaiters()
+                    guard let self else { return }
+                    self.liveTask = nil
+                    self.loadedTranscriber = nil
+                    self.startPendingLivePass()
+                    self.wakeEngineSlotWaiters()
                 }
             } else {
                 wakeEngineSlotWaiters()
@@ -723,7 +748,7 @@ final class MeetingRecorderCenter {
             await startJobTask(jobID: job.id, config: config).value
             return
         }
-        guard let failed = jobs.last(where: { $0.phase.isFailed }) else { return }
+        guard let failed = newestFailedJob else { return }
         // Re-enqueues the SAME job, so its latched `rolesError` still describes
         // the persisted transcript a short-circuiting retry re-sends.
         updateJob(failed.id) { $0.phase = .queued }
@@ -1113,10 +1138,23 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// `rec_*.caf` files that still carry a `.meta` sidecar, oldest first (the
-    /// names are timestamps, so lexicographic order is chronological). A sidecar
-    /// that is present but unreadable still proves the recording was never
-    /// saved, so it comes back without its event link rather than being lost.
+    /// Chronological sort key for a `rec_<timestamp>[-N].caf` name: the
+    /// timestamp, then the collision suffix as a number (absent = the first
+    /// recording of that second). Plain lexicographic order gets a same-second
+    /// pair backwards twice over — `-` sorts before `.`, so `rec_X-2.caf` would
+    /// lead `rec_X.caf`, and `-10` would lead `-2` — which matters because the
+    /// recovered pill acts on `recoverable.first`.
+    private static func recoverySortKey(_ name: String) -> (String, Int) {
+        let base = String(name.dropLast(".caf".count))
+        guard let dash = base.lastIndex(of: "-"),
+              let suffix = Int(base[base.index(after: dash)...]) else { return (base, 1) }
+        return (String(base[..<dash]), suffix)
+    }
+
+    /// `rec_*.caf` files that still carry a `.meta` sidecar, oldest first. A
+    /// sidecar that is present but unreadable still proves the recording was
+    /// never saved, so it comes back without its event link rather than being
+    /// lost.
     private static func scanRecoverable(in directory: URL) -> [RecoverableRecording] {
         let names: [String]
         do {
@@ -1128,7 +1166,7 @@ final class MeetingRecorderCenter {
         }
         return names
             .filter { $0.hasPrefix("rec_") && $0.hasSuffix(".caf") }
-            .sorted()
+            .sorted { recoverySortKey($0) < recoverySortKey($1) }
             .compactMap { name -> RecoverableRecording? in
                 let audioURL = directory.appendingPathComponent(name)
                 let meta = metaURL(for: audioURL)
@@ -1258,15 +1296,6 @@ final class MeetingRecorderCenter {
 
 extension MeetingRecorderCenter.ProcessingJob.Phase {
     var isFailed: Bool { failureMessage != nil }
-
-    /// The queue is actively working this job, as opposed to it waiting its turn
-    /// or sitting parked on a failure.
-    var isRunning: Bool {
-        switch self {
-        case .transcribing, .diarizing, .summarizing: return true
-        case .queued, .failed: return false
-        }
-    }
 
     var failureMessage: String? {
         if case let .failed(message) = self { return message }

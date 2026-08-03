@@ -41,14 +41,14 @@ final class RecordingIndicatorViewTests: XCTestCase {
 
     func test_allJobsVisibleUpToTheCap() {
         let jobs = (0..<RecordingIndicatorView.maxVisibleJobPills).map { _ in makeJob() }
-        let split = RecordingIndicatorView.visibleJobs(jobs)
+        let split = RecordingIndicatorView.visibleJobs(jobs, activeID: jobs.first?.id)
         XCTAssertEqual(split.visible.count, jobs.count)
         XCTAssertEqual(split.overflow, 0)
     }
 
     func test_queueTailCollapsesIntoOverflowCount() {
         let jobs = (0..<(RecordingIndicatorView.maxVisibleJobPills + 2)).map { _ in makeJob() }
-        let split = RecordingIndicatorView.visibleJobs(jobs)
+        let split = RecordingIndicatorView.visibleJobs(jobs, activeID: jobs.first?.id)
         XCTAssertEqual(split.visible.count, RecordingIndicatorView.maxVisibleJobPills)
         XCTAssertEqual(split.overflow, 2)
         // The running head is always in the visible set (queue order is FIFO).
@@ -56,7 +56,7 @@ final class RecordingIndicatorViewTests: XCTestCase {
     }
 
     func test_emptyQueueRendersNothing() {
-        let split = RecordingIndicatorView.visibleJobs([])
+        let split = RecordingIndicatorView.visibleJobs([], activeID: nil)
         XCTAssertTrue(split.visible.isEmpty)
         XCTAssertEqual(split.overflow, 0)
     }
@@ -69,7 +69,7 @@ final class RecordingIndicatorViewTests: XCTestCase {
             makeJob(title: "Stale \(i)", phase: .failed("boom"))
         }
         let running = makeJob(title: "Running", phase: .transcribing(done: 1, total: 4))
-        let split = RecordingIndicatorView.visibleJobs(stale + [running])
+        let split = RecordingIndicatorView.visibleJobs(stale + [running], activeID: running.id)
 
         XCTAssertEqual(split.visible.first?.id, running.id, "the running job leads the visible pills")
         XCTAssertEqual(split.visible.count, RecordingIndicatorView.maxVisibleJobPills)
@@ -87,19 +87,52 @@ final class RecordingIndicatorViewTests: XCTestCase {
         for phase in phases {
             let stale = (0..<3).map { i in makeJob(title: "Stale \(i)", phase: .failed("boom")) }
             let running = makeJob(title: "Running", phase: phase)
-            let split = RecordingIndicatorView.visibleJobs(stale + [running])
+            let split = RecordingIndicatorView.visibleJobs(stale + [running], activeID: running.id)
             XCTAssertEqual(split.visible.first?.id, running.id, "\(phase) must stay visible")
         }
     }
 
-    /// A queued job is NOT promoted: nothing is being worked yet, so FIFO order
-    /// is the honest reading of the queue.
-    func test_queuedJobIsNotPromotedOverTheQueueHead() {
-        let jobs = (0..<3).map { i in makeJob(title: "Stale \(i)", phase: .failed("boom")) }
-            + [makeJob(title: "Queued", phase: .queued)]
-        let split = RecordingIndicatorView.visibleJobs(jobs)
-        XCTAssertEqual(split.visible.map(\.id), jobs.prefix(3).map(\.id))
+    /// Promotion keys on the Center's `activeJobID`, never on the phase: the
+    /// queue claims a job before its first phase update, and with diarization
+    /// off it can be working one that still reads `.queued`. Reading the phase
+    /// would leave three stale failures covering it.
+    func test_activeJobIsPromotedWhileItsPhaseStillReadsQueued() {
+        let stale = (0..<3).map { i in makeJob(title: "Stale \(i)", phase: .failed("boom")) }
+        let active = makeJob(title: "Active", phase: .queued)
+        let split = RecordingIndicatorView.visibleJobs(stale + [active], activeID: active.id)
+        XCTAssertEqual(split.visible.first?.id, active.id, "the job the Center is working leads")
+        XCTAssertEqual(split.visible.dropFirst().map(\.id), stale.prefix(2).map(\.id))
         XCTAssertEqual(split.overflow, 1)
+    }
+
+    /// With nothing active yet, the job the queue will pick up next leads — a
+    /// stale failure at the head is the one thing the user cannot act on by
+    /// waiting.
+    func test_queueHeadNonFailedJobLeadsWhenNothingIsActive() {
+        let stale = (0..<3).map { i in makeJob(title: "Stale \(i)", phase: .failed("boom")) }
+        let queued = makeJob(title: "Queued", phase: .queued)
+        let split = RecordingIndicatorView.visibleJobs(stale + [queued], activeID: nil)
+        XCTAssertEqual(split.visible.first?.id, queued.id)
+        XCTAssertEqual(split.visible.dropFirst().map(\.id), stale.prefix(2).map(\.id))
+        XCTAssertEqual(split.overflow, 1)
+    }
+
+    /// Promotion is unconditional, so the pills already on screen keep their
+    /// order when the queue grows past the cap — the stack must not reshuffle
+    /// under the user's cursor as one more recording is stopped.
+    func test_promotionOrderIsStableAcrossTheVisibleCap() {
+        let stale = (0..<2).map { i in makeJob(title: "Stale \(i)", phase: .failed("boom")) }
+        let active = makeJob(title: "Active", phase: .transcribing(done: 1, total: 4))
+        let atCap = RecordingIndicatorView.visibleJobs(stale + [active], activeID: active.id)
+        XCTAssertEqual(atCap.visible.map(\.id), [active.id] + stale.map(\.id),
+                       "the active job leads below the cap too")
+        XCTAssertEqual(atCap.overflow, 0)
+
+        let overCap = RecordingIndicatorView.visibleJobs(
+            stale + [active, makeJob(title: "Queued", phase: .queued)], activeID: active.id)
+        XCTAssertEqual(overCap.visible.map(\.id), atCap.visible.map(\.id),
+                       "crossing the cap must not reorder the visible pills")
+        XCTAssertEqual(overCap.overflow, 1)
     }
 
     // MARK: - Recovered copy

@@ -66,7 +66,7 @@ struct RecordingIndicatorView: View {
     /// an enabled button always does something.
     @ViewBuilder
     private func jobQueue(_ center: MeetingRecorderCenter) -> some View {
-        let split = Self.visibleJobs(center.jobs)
+        let split = Self.visibleJobs(center.jobs, activeID: center.activeJobID)
         let retriable = center.retriableFailureID
         let dismissable = center.dismissableFailureID
         ForEach(split.visible) { job in
@@ -240,10 +240,10 @@ struct RecordingIndicatorView: View {
             }
             Button("Dismiss") { center.dismissFailure() }
                 .controlSize(.small)
-                .disabled(center.isBusy)
-                .help(center.isBusy
-                      ? "Dismissable once the current recording and queue settle"
-                      : "Clear this message")
+                .disabled(!center.captureErrorDismissable)
+                .help(center.captureErrorDismissable
+                      ? "Clear this message"
+                      : "Available once the running transcription finishes")
         }
         .frame(maxWidth: 380)
     }
@@ -297,13 +297,20 @@ struct RecordingIndicatorView: View {
     /// left the queue, but they stay for retry — three stale failures at the
     /// head would push the running job out of sight, which is exactly when the
     /// user wants to see it.
-    static func visibleJobs(_ jobs: [MeetingRecorderCenter.ProcessingJob])
+    ///
+    /// Which job that is comes from the Center (`activeJobID`), not from a
+    /// phase: the queue claims a job before its first phase update, and with
+    /// diarization off it can stay `.queued`-looking throughout. With nothing
+    /// active yet, the job the queue will work next — the first non-failed one —
+    /// leads instead. The promotion is unconditional, so crossing the visible
+    /// cap never reshuffles the pills already on screen.
+    static func visibleJobs(_ jobs: [MeetingRecorderCenter.ProcessingJob],
+                            activeID: MeetingRecorderCenter.ProcessingJob.ID?)
         -> (visible: [MeetingRecorderCenter.ProcessingJob], overflow: Int) {
-        guard jobs.count > maxVisibleJobPills else { return (jobs, 0) }
-        let running = jobs.first { $0.phase.isRunning }
-        var visible = running.map { [$0] } ?? []
+        let promoted = jobs.first { $0.id == activeID } ?? jobs.first { !$0.phase.isFailed }
+        var visible = promoted.map { [$0] } ?? []
         for job in jobs where visible.count < maxVisibleJobPills {
-            if job.id != running?.id { visible.append(job) }
+            if job.id != promoted?.id { visible.append(job) }
         }
         return (visible, jobs.count - visible.count)
     }
@@ -357,13 +364,15 @@ struct RecordingJobPill: View {
                     .disabled(!canRetry)
                     .help(canRetry
                           ? "Run this recording through transcription again"
-                          : "Recovered recordings take precedence; one failure at a time, newest first")
+                          : "Available once the queue settles; recovered recordings take "
+                            + "precedence; newest failure first")
                 Button("Dismiss") { dismiss() }
                     .controlSize(.small)
                     .disabled(!canDismiss)
                     .help(canDismiss
                           ? "Keep the audio and stop showing this failure"
-                          : "Capture errors take precedence; one failure at a time, newest first")
+                          : "Available once the queue settles; capture errors take "
+                            + "precedence; newest failure first")
             case .queued:
                 Image(systemName: "clock").foregroundStyle(.secondary)
                 titleText

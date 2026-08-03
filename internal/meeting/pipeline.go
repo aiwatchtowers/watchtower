@@ -508,28 +508,27 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// cleanJSON extracts the JSON payload from a model response. When the
-// response contains a ```-fenced block, the FIRST fenced block wins and
-// anything around it (a chatty preamble, prose after the closing fence) is
-// dropped — trimming only the edges misses trailing chatter and the parser
-// then chokes on the closing fence (the tracks-package cleanJSON precedent).
-// Both paths end at firstJSONValue, so trailing prose never reaches the
-// caller's json.Unmarshal even when the model forgot the closing fence or
-// kept chatting inside the block.
+// cleanJSON extracts the JSON payload from a model response. A response that
+// already starts with a JSON value is taken as is; otherwise a ```json-tagged
+// fence wins wherever it sits (a model may fence a transcript excerpt in a
+// plain block before answering), and only if there is none does the first bare
+// ``` fence win — the tracks-package cleanJSON precedence. Every path ends at
+// firstJSONValue, which closes the value structurally, so a chatty preamble,
+// prose after the closing fence, a missing closing fence and a ``` inside a
+// string value are all handled. An undecodable payload is returned unchanged
+// so callers can report the raw response.
 func cleanJSON(s string) string {
 	s = strings.TrimSpace(s)
 	// Bare JSON (chatter or a stray trailing fence may follow the value).
 	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
 		return firstJSONValue(s)
 	}
-	// Fenced block: the FIRST block wins, whether or not it is tagged `json`.
-	idx := strings.Index(s, "```")
-	if idx < 0 {
+	if idx := strings.Index(s, "```json"); idx >= 0 {
+		s = s[idx+len("```json"):]
+	} else if idx := strings.Index(s, "```"); idx >= 0 {
+		s = s[idx+len("```"):]
+	} else {
 		return s
-	}
-	s = strings.TrimPrefix(s[idx+len("```"):], "json")
-	if end := strings.Index(s, "```"); end >= 0 {
-		s = s[:end]
 	}
 	return firstJSONValue(strings.TrimSpace(s))
 }
