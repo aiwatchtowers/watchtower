@@ -41,7 +41,11 @@ struct AddJiraAccountView: View {
             TextField("Site (optional)", text: $site, prompt: Text("e.g. acme.atlassian.net"))
                 .textFieldStyle(.roundedBorder)
 
-            Text("Opens Atlassian's authorization page in your browser. After you approve, the site is added and syncing starts. Leave Site empty unless your Atlassian account reaches several sites.")
+            Text("""
+                Opens Atlassian's authorization page in your browser. After you approve, \
+                the site is added and syncing starts. Leave Site empty unless your \
+                Atlassian account reaches several sites.
+                """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
