@@ -77,7 +77,7 @@ func detectGmailAccount(database *db.DB, acct db.GoogleAccount, sinceISO string)
 			continue // message doesn't involve this account's own address
 		}
 
-		channelID := fmt.Sprintf("gmail:%d:%s", acct.ID, m.ThreadID)
+		channelID := db.GmailChannelID(acct.ID, m.ThreadID)
 		exists, err := gmailInboxExists(database, channelID, m.ID, trig)
 		if err != nil {
 			return created, fmt.Errorf("dedup check: %w", err)

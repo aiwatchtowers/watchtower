@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"strings"
 
 	"watchtower/internal/calendar"
 	"watchtower/internal/config"
@@ -42,15 +45,32 @@ var gmailStatusCmd = &cobra.Command{
 	RunE:  runGmailStatus,
 }
 
+var gmailPurgeCmd = &cobra.Command{
+	Use:   "purge",
+	Short: "Delete one account's synced Gmail data",
+	Long: "Deletes the mail Watchtower synced for one Google account and the inbox\n" +
+		"items it produced, together with the situations and feed rows left orphaned.\n" +
+		"Other accounts and the rest of the inbox are untouched.\n\n" +
+		"This is irreversible, but not a disconnect: the account stays connected and\n" +
+		"the sync watermark is preserved, so a later sync resumes from where it left\n" +
+		"off rather than re-downloading the deleted mail. Run 'watchtower gmail\n" +
+		"logout' first to stop syncing. Knowledge already derived into the memory\n" +
+		"vault is preserved — removing that is a separate, explicit choice.",
+	RunE: runGmailPurge,
+}
+
 func init() {
 	gmailLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
 	gmailLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	gmailSyncCmd.Flags().Int64Var(&gmailSyncFlagAccount, "account", 0, "sync only this account id")
+	gmailPurgeCmd.Flags().Int64("account", 0, "account id whose Gmail data to delete (required)")
+	gmailPurgeCmd.Flags().Bool("yes", false, "skip the confirmation prompt")
 
 	gmailCmd.AddCommand(gmailLoginCmd)
 	gmailCmd.AddCommand(gmailLogoutCmd)
 	gmailCmd.AddCommand(gmailSyncCmd)
 	gmailCmd.AddCommand(gmailStatusCmd)
+	gmailCmd.AddCommand(gmailPurgeCmd)
 
 	rootCmd.AddCommand(gmailCmd)
 }
@@ -173,6 +193,70 @@ func runGmailSync(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	fmt.Fprintf(out, "Synced %d gmail messages across %d account(s).\n", total, synced)
+	return nil
+}
+
+// runGmailPurge deletes one account's synced Gmail data. The account is never
+// implicit — multi-account installs are live, so --account is required rather
+// than defaulting to account #1 the way the login aliases do.
+func runGmailPurge(cmd *cobra.Command, _ []string) error {
+	accountID, _ := cmd.Flags().GetInt64("account")
+	if accountID == 0 {
+		return fmt.Errorf("--account <id> is required; run 'watchtower google accounts' to list them")
+	}
+	assumeYes, _ := cmd.Flags().GetBool("yes")
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return err
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	acct, err := database.GetGoogleAccount(accountID)
+	if err != nil {
+		return fmt.Errorf("account %d not found: %w", accountID, err)
+	}
+
+	var messages, items int
+	if err := database.QueryRow(
+		`SELECT (SELECT COUNT(*) FROM gmail_messages WHERE account_id = ?),
+		        (SELECT COUNT(*) FROM inbox_items WHERE channel_id LIKE ? || ':%')`,
+		accountID, db.GmailChannelPrefix(accountID)).Scan(&messages, &items); err != nil {
+		return fmt.Errorf("counting gmail data: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	if !assumeYes {
+		fmt.Fprintf(out, "Delete %d gmail message(s) and %d inbox item(s) for account #%d (%s)? This cannot be undone. [y/N]: ",
+			messages, items, acct.ID, googleAccountDisplayName(acct))
+		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if readErr != nil && readErr != io.EOF {
+			return fmt.Errorf("reading confirmation: %w", readErr)
+		}
+		if answer := strings.TrimSpace(strings.ToLower(line)); answer != "y" && answer != "yes" {
+			fmt.Fprintln(out, "Aborted.")
+			return nil
+		}
+	}
+
+	if err := database.ClearGmailData(accountID); err != nil {
+		return fmt.Errorf("purging gmail data: %w", err)
+	}
+
+	fmt.Fprintf(out, "Gmail data removed for account #%d (%s): %d message(s), %d inbox item(s).\n",
+		acct.ID, googleAccountDisplayName(acct), messages, items)
+	fmt.Fprintln(out, "The account stays connected and its sync watermark is preserved; run 'watchtower gmail logout' to stop syncing.")
 	return nil
 }
 
