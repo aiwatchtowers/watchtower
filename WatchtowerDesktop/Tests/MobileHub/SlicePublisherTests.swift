@@ -372,4 +372,116 @@ final class SlicePublisherTests: XCTestCase {
         let batch = try await transport.changes(in: .data, since: nil)
         XCTAssertTrue(batch.deletedRecordNames.contains("situation-1"))
     }
+
+    // MARK: - Meeting-transcript slice (the one PROJECTION)
+
+    private func publishedRow(named name: String) async throws -> Row {
+        let record = try await publishedRecord(named: name)
+        let unwrapped = try XCTUnwrap(record, "no published record named \(name)")
+        return try RowPayloadCoder.row(from: unwrapped.payload)
+    }
+
+    /// The heavy and Mac-only columns must never reach the wire: a one-hour
+    /// meeting's `transcript_text`/`segments_json` would dominate the record,
+    /// `audio_path` is a path on this Mac, and `speakers_json` is 256-float
+    /// voice embeddings per cluster — only the labels go out.
+    func testMeetingTranscriptSlicePublishesProjectionNotTheRow() async throws {
+        let longText = String(repeating: "ab", count: 500)  // 1000 chars
+        try await dbPool.write { db in
+            try TestDatabase.insertMeetingTranscript(
+                db, id: 1, title: "Weekly sync",
+                audioPath: "/Users/someone/Library/.../rec_1.caf",
+                transcriptText: longText,
+                notesMD: "# Notes",
+                segmentsJSON: #"[{"idx":0,"start_sec":0,"end_sec":1,"speaker":"Я","text":"hi","deleted":false}]"#,
+                speakersJSON: #"[{"speaker":"Я","embedding":[0.1,0.2]},{"speaker":"Speaker 2","embedding":[0.3]}]"#,
+                chaptersJSON: #"{"overall_summary":"one topic","chapters":[]}"#)
+        }
+
+        _ = try await publisher.publishOnce()
+        let row = try await publishedRow(named: "meeting_transcript-1")
+
+        for excluded in ["transcript_text", "segments_json", "audio_path", "speakers_json", "summary_json"] {
+            XCTAssertFalse(row.hasColumn(excluded), "\(excluded) must not be published")
+        }
+        XCTAssertEqual(row["snippet"] as String?, String(longText.prefix(200)))
+        XCTAssertEqual(row["title"] as String?, "Weekly sync")
+        XCTAssertEqual(row["duration_sec"] as Int?, 60)
+        XCTAssertEqual(row["notes_md"] as String?, "# Notes")
+        XCTAssertEqual(row["lang_stats"] as String?, "")
+        XCTAssertEqual(row["chapters_json"] as String?, #"{"overall_summary":"one topic","chapters":[]}"#)
+        // The roster, not the embeddings.
+        XCTAssertEqual(row["speakers"] as String?, #"["Я","Speaker 2"]"#)
+        // Ad-hoc recording: no event to join.
+        XCTAssertTrue((row["event_id"] as DatabaseValue?)?.isNull ?? false)
+        XCTAssertTrue((row["event_title"] as DatabaseValue?)?.isNull ?? false)
+    }
+
+    /// An un-diarized recording (speakers_json NULL) publishes an empty roster
+    /// rather than failing the whole cycle on `json_each(NULL)`.
+    func testMeetingTranscriptWithoutSpeakersPublishesEmptyRoster() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertMeetingTranscript(db, id: 1, speakersJSON: nil)
+        }
+        _ = try await publisher.publishOnce()
+        let row = try await publishedRow(named: "meeting_transcript-1")
+        XCTAssertEqual(row["speakers"] as String?, "[]")
+    }
+
+    /// The desktop's recap rule (RecordingDetailView.load: the event's
+    /// meeting_recaps row wins, the recording's own summary_json is the
+    /// fallback) is resolved in SQL so the phone never has to re-derive it.
+    func testMeetingTranscriptRecapResolutionMirrorsTheDesktopRule() async throws {
+        let eventRecap = #"{"summary":"from the event","key_decisions":[],"action_items":[],"open_questions":[]}"#
+        let ownRecap = #"{"summary":"from the recording","key_decisions":[],"action_items":[],"open_questions":[]}"#
+        try await dbPool.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1", title: "Design review")
+            try TestDatabase.insertMeetingRecap(db, eventID: "evt-1", recapJSON: eventRecap)
+            // 1: both exist — the event's recap wins (the collision guard puts
+            // the recording's own recap in summary_json in exactly this case).
+            try TestDatabase.insertMeetingTranscript(db, id: 1, eventID: "evt-1", summaryJSON: ownRecap)
+            // 2: ad-hoc — only its own recap exists.
+            try TestDatabase.insertMeetingTranscript(db, id: 2, summaryJSON: ownRecap)
+            // 3: event-linked but that event has no recap row — own recap again.
+            try TestDatabase.insertCalendarEvent(db, id: "evt-2", title: "Retro")
+            try TestDatabase.insertMeetingTranscript(db, id: 3, eventID: "evt-2", summaryJSON: ownRecap)
+            // 4: no recap at all.
+            try TestDatabase.insertMeetingTranscript(db, id: 4)
+        }
+
+        _ = try await publisher.publishOnce()
+
+        let both = try await publishedRow(named: "meeting_transcript-1")
+        XCTAssertEqual(both["recap_json"] as String?, eventRecap)
+        XCTAssertEqual(both["event_title"] as String?, "Design review", "the linked event's title joins in")
+        let adHoc = try await publishedRow(named: "meeting_transcript-2")
+        XCTAssertEqual(adHoc["recap_json"] as String?, ownRecap)
+        let eventWithoutRecap = try await publishedRow(named: "meeting_transcript-3")
+        XCTAssertEqual(eventWithoutRecap["recap_json"] as String?, ownRecap)
+        let none = try await publishedRow(named: "meeting_transcript-4")
+        XCTAssertTrue((none["recap_json"] as DatabaseValue?)?.isNull ?? false)
+    }
+
+    /// Deleting a recording is a hard DELETE (MeetingTranscriptQueries.delete),
+    /// so there is no soft-delete filter in the window: the row simply leaves
+    /// the slice and the diff removes it from the phone.
+    func testDeletedRecordingIsDeletedFromSlice() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertMeetingTranscript(db, id: 1)
+        }
+        _ = try await publisher.publishOnce()
+
+        // Plain SQL, not MeetingTranscriptQueries.delete: that path also clears
+        // the recording's meeting chat, and `chat_conversations` is one of the
+        // tables TestDatabase's schema does not carry. What the publisher sees
+        // either way is a row that left the window.
+        try await dbPool.write { db in
+            try db.execute(sql: "DELETE FROM meeting_transcripts WHERE id = 1")
+        }
+        let second = try await publisher.publishOnce()
+
+        XCTAssertEqual(second.deleted, 1)
+        let batch = try await transport.changes(in: .data, since: nil)
+        XCTAssertTrue(batch.deletedRecordNames.contains("meeting_transcript-1"))
+    }
 }

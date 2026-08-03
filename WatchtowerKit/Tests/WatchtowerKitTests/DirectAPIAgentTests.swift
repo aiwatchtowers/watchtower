@@ -212,12 +212,12 @@ final class DirectAPIAgentTests: XCTestCase {
         // (seq 0, 1) plus the final done chunk (seq 2).
         XCTAssertEqual(reply.lastSeq, 2)
 
-        // Request shape: chosen model, static system prompt, the 12 replica
+        // Request shape: chosen model, static system prompt, the 14 replica
         // tools, and the single user turn as history.
         let request = try XCTUnwrap(f.client.requests.first)
         XCTAssertEqual(request.model, AgentModel.haiku45.rawValue)
         XCTAssertEqual(request.system, MobileSystemPrompt.build())
-        XCTAssertEqual(request.tools.count, 12)
+        XCTAssertEqual(request.tools.count, 14)
         XCTAssertEqual(request.messages, [APIMessage(role: .user, content: [.text("greet me")])])
         XCTAssertEqual(f.factoryKeys.withLock { $0 }, [Self.testKey])
     }
@@ -298,7 +298,7 @@ final class DirectAPIAgentTests: XCTestCase {
         ])
         // The tool round still ships the tool set (only the post-cap final
         // call goes tool-less).
-        XCTAssertEqual(requests[1].tools.count, 12)
+        XCTAssertEqual(requests[1].tools.count, 14)
     }
 
     func testWriteToolLandsPendingAction() async throws {

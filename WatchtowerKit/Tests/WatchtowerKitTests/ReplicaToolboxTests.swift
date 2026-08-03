@@ -165,6 +165,30 @@ final class ReplicaToolboxTests: XCTestCase {
         ])
     }
 
+    /// The PROJECTION the publisher ships for a recording — no transcript_text,
+    /// no segments_json, no audio_path, with the recap already resolved and the
+    /// speaker roster already flattened to labels.
+    private func transcriptRow(
+        id: Int,
+        title: String = "Weekly sync",
+        eventID: String? = nil,
+        eventTitle: String? = nil,
+        createdAt: String = "2026-07-04T09:00:00Z",
+        recapJSON: String = #"{"summary":"we shipped","key_decisions":["go"],"action_items":["ship"],"open_questions":["when"]}"#,
+        notesMD: String = "# Notes",
+        chaptersJSON: String = "",
+        speakers: String = #"["Я","Speaker 2"]"#
+    ) -> Row {
+        Row([
+            "id": id, "event_id": eventID, "event_title": eventTitle, "title": title,
+            "duration_sec": 1_800, "lang_stats": #"{"ru":0.8,"en":0.2}"#,
+            "notes_md": notesMD, "chapters_json": chaptersJSON,
+            "recap_json": recapJSON, "speakers": speakers,
+            "snippet": "so this is where we left off",
+            "created_at": createdAt, "updated_at": "2026-07-04T10:00:00Z"
+        ])
+    }
+
     // MARK: - Tool definitions
 
     func testToolDefinitionsCoverContract() throws {
@@ -177,6 +201,7 @@ final class ReplicaToolboxTests: XCTestCase {
             "list_tracks", "get_track",
             "list_people", "get_person",
             "list_upcoming_events",
+            "list_transcripts", "get_transcript",
             "create_task", "snooze_item"
         ])
         for tool in tools {
@@ -198,11 +223,12 @@ final class ReplicaToolboxTests: XCTestCase {
     func testEmptyReplicaReturnsEmptyArraysAndNulls() async throws {
         let fixtures = try makeFixtures()
 
-        for name in ["list_targets", "list_digests", "list_tracks", "list_people", "list_upcoming_events"] {
+        for name in ["list_targets", "list_digests", "list_tracks", "list_people",
+                     "list_upcoming_events", "list_transcripts"] {
             let out = await execute(fixtures.toolbox, name)
             XCTAssertEqual(out, "[]", name)
         }
-        for name in ["get_target", "get_digest", "get_track"] {
+        for name in ["get_target", "get_digest", "get_track", "get_transcript"] {
             let out = await execute(fixtures.toolbox, name, #"{"id":1}"#)
             XCTAssertEqual(out, "null", name)
         }
@@ -644,6 +670,157 @@ final class ReplicaToolboxTests: XCTestCase {
         XCTAssertEqual(attendees.first?["display_name"] as? String, "Aly")
         XCTAssertEqual(attendees.first?["response_status"] as? String, "accepted")
         XCTAssertNil(event["raw_json"], "raw_json must not be dumped to the model")
+    }
+
+    // MARK: - list_transcripts / get_transcript
+
+    func testListTranscriptsOrdersNewestFirstAndFiltersByEvent() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.meetingTranscript, "1", transcriptRow(id: 1, title: "older", createdAt: "2026-07-01T09:00:00Z")),
+            (.meetingTranscript, "2", transcriptRow(
+                id: 2, title: "linked", eventID: "evt-9", eventTitle: "Design review",
+                createdAt: "2026-07-03T09:00:00Z")),
+            (.meetingTranscript, "3", transcriptRow(id: 3, title: "newest", createdAt: "2026-07-05T09:00:00Z"))
+        ])
+
+        // Go ListMeetingTranscripts ORDER BY created_at DESC, id DESC.
+        let order = try ids(await execute(fixtures.toolbox, "list_transcripts"))
+        XCTAssertEqual(order, [3, 2, 1])
+
+        // event_id is an exact match; an ad-hoc recording (event_id NULL) can
+        // never satisfy it, exactly as the Go SQL's `event_id = ?` cannot.
+        let byEvent = try arrayResult(await execute(fixtures.toolbox, "list_transcripts", #"{"event_id":"evt-9"}"#))
+        XCTAssertEqual(byEvent.map { $0["id"] as? Int }, [2])
+        XCTAssertEqual(byEvent.first?["event_title"] as? String, "Design review")
+        let byMissingEvent = try ids(await execute(fixtures.toolbox, "list_transcripts", #"{"event_id":"evt-none"}"#))
+        XCTAssertEqual(byMissingEvent, [])
+    }
+
+    func testListTranscriptsDateBoundsAndInvalidDates() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.meetingTranscript, "1", transcriptRow(id: 1, createdAt: "2026-07-01T09:00:00Z")),
+            (.meetingTranscript, "2", transcriptRow(id: 2, createdAt: "2026-07-03T23:30:00Z")),
+            (.meetingTranscript, "3", transcriptRow(id: 3, createdAt: "2026-07-05T09:00:00Z"))
+        ])
+
+        // Go dateBound: `from` widens to T00:00:00Z, `to` to T23:59:59Z — so a
+        // recording made late on the `to` day is still inside the window.
+        let oneDay = try ids(await execute(
+            fixtures.toolbox, "list_transcripts", #"{"from":"2026-07-03","to":"2026-07-03"}"#))
+        XCTAssertEqual(oneDay, [2])
+        let fromOnly = try ids(await execute(fixtures.toolbox, "list_transcripts", #"{"from":"2026-07-03"}"#))
+        XCTAssertEqual(fromOnly, [3, 2])
+
+        // Invalid bounds are input errors with Go's message; `from` is reported
+        // first (firstError's order).
+        let badFrom = await execute(fixtures.toolbox, "list_transcripts", #"{"from":"07/03/2026","to":"nope"}"#)
+        XCTAssertEqual(
+            try objectResult(badFrom)["error"] as? String,
+            #"invalid from date "07/03/2026": must be YYYY-MM-DD"#
+        )
+        let badTo = await execute(fixtures.toolbox, "list_transcripts", #"{"to":"nope"}"#)
+        XCTAssertEqual(
+            try objectResult(badTo)["error"] as? String,
+            #"invalid to date "nope": must be YYYY-MM-DD"#
+        )
+        // A well-shaped but impossible date is rejected too (Go's time.Parse
+        // rejects month 13; a lenient parser would roll it into 2027).
+        let rolled = await execute(fixtures.toolbox, "list_transcripts", #"{"from":"2026-13-01"}"#)
+        XCTAssertEqual(
+            try objectResult(rolled)["error"] as? String,
+            #"invalid from date "2026-13-01": must be YYYY-MM-DD"#
+        )
+    }
+
+    /// The slice has no transcript text by construction, so the detail hands
+    /// back what the phone does hold — recap fields, chapters, notes, speakers,
+    /// snippet — and never a `transcript_text` key that would read as empty.
+    func testGetTranscriptReturnsRecapNotesAndSnippetButNoText() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.meetingTranscript, "7", transcriptRow(
+                id: 7, title: "Weekly sync", eventID: "evt-1", eventTitle: "Weekly sync (cal)",
+                chaptersJSON: #"{"overall_summary":"two topics","chapters":[{"title":"Intro"}]}"#))
+        ])
+
+        let detail = try objectResult(await execute(fixtures.toolbox, "get_transcript", #"{"id":7}"#))
+        XCTAssertEqual(detail["id"] as? Int, 7)
+        XCTAssertEqual(detail["event_id"] as? String, "evt-1")
+        XCTAssertEqual(detail["event_title"] as? String, "Weekly sync (cal)")
+        XCTAssertEqual(detail["duration_sec"] as? Int, 1_800)
+        XCTAssertEqual(detail["summary"] as? String, "we shipped")
+        XCTAssertEqual(detail["key_decisions"] as? [String], ["go"])
+        XCTAssertEqual(detail["action_items"] as? [String], ["ship"])
+        XCTAssertEqual(detail["open_questions"] as? [String], ["when"])
+        XCTAssertEqual(detail["notes_md"] as? String, "# Notes")
+        XCTAssertEqual(detail["speakers"] as? [String], ["Я", "Speaker 2"])
+        XCTAssertEqual(detail["snippet"] as? String, "so this is where we left off")
+        let chapters = try XCTUnwrap(detail["chapters"] as? [String: Any])
+        XCTAssertEqual(chapters["overall_summary"] as? String, "two topics")
+        XCTAssertNil(detail["transcript_text"], "the full text is not synced — the key must be absent")
+        XCTAssertNil(detail["segments_json"])
+        XCTAssertNil(detail["audio_path"])
+    }
+
+    /// A recording with no recap and no chapters is still a valid answer: empty
+    /// recap fields, `chapters` null (an object column, so NOT `[]`), and an
+    /// ad-hoc recording's absent event reads as null, not "".
+    ///
+    /// The nullable columns are seeded as SQL NULL, which is what the publisher
+    /// actually emits for a fresh recording — the model's `?? ""` defaulting is
+    /// the thing under test here.
+    func testGetTranscriptWithoutRecapOrChaptersIsStillUsable() async throws {
+        let fixtures = try makeFixtures()
+        let nulls = Row([
+            "id": 1, "event_id": nil, "event_title": nil, "title": "Ad-hoc note to self",
+            "duration_sec": 90, "lang_stats": "", "notes_md": nil, "chapters_json": nil,
+            "recap_json": nil, "speakers": "[]", "snippet": "just me talking",
+            "created_at": "2026-07-04T09:00:00Z", "updated_at": "2026-07-04T09:00:00Z"
+        ])
+        try seed(fixtures.store, [(.meetingTranscript, "1", nulls)])
+
+        let detail = try objectResult(await execute(fixtures.toolbox, "get_transcript", #"{"id":1}"#))
+        XCTAssertEqual(detail["title"] as? String, "Ad-hoc note to self")
+        XCTAssertEqual(detail["duration_sec"] as? Int, 90)
+        XCTAssertEqual(detail["summary"] as? String, "")
+        XCTAssertEqual(detail["notes_md"] as? String, "")
+        XCTAssertEqual(detail["key_decisions"] as? [String], [])
+        XCTAssertEqual(detail["speakers"] as? [String], [])
+        XCTAssertTrue(detail["chapters"] is NSNull, "an absent object column must be null, not []")
+        XCTAssertTrue(detail["event_id"] is NSNull, "an ad-hoc recording has no event")
+        XCTAssertTrue(detail["event_title"] is NSNull)
+    }
+
+    /// A partial recap (Go's json.Unmarshal tolerates missing keys) must still
+    /// yield its summary instead of decoding to nothing.
+    func testPartialRecapJSONStillYieldsSummary() async throws {
+        let fixtures = try makeFixtures()
+        try seed(fixtures.store, [
+            (.meetingTranscript, "1", transcriptRow(id: 1, recapJSON: #"{"summary":"only a summary"}"#)),
+            (.meetingTranscript, "2", transcriptRow(id: 2, recapJSON: "{not json"))
+        ])
+
+        let rows = try arrayResult(await execute(fixtures.toolbox, "list_transcripts"))
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0["id"] as? Int ?? -1, $0) })
+        XCTAssertEqual(byID[1]?["summary"] as? String, "only a summary")
+        XCTAssertEqual(byID[2]?["summary"] as? String, "", "an unreadable recap must not hide the recording")
+        XCTAssertEqual(byID[2]?["title"] as? String, "Weekly sync")
+    }
+
+    /// Both descriptions must tell the model the full text is NOT on the phone —
+    /// otherwise it invents quotes instead of routing the ask to the Mac (the
+    /// MobileSystemPrompt honesty rule for raw Slack messages, applied here).
+    func testTranscriptToolDescriptionsDisclaimTheMissingFullText() throws {
+        let fixtures = try makeFixtures()
+        for name in ["list_transcripts", "get_transcript"] {
+            let tool = try XCTUnwrap(fixtures.toolbox.tools.first { $0.name == name })
+            XCTAssertTrue(tool.description.contains("full transcript text is NOT on the phone")
+                          || tool.description.contains("FULL transcript text is not synced"),
+                          "\(name): \(tool.description)")
+            XCTAssertTrue(tool.description.contains("Mac"), name)
+        }
     }
 
     // MARK: - create_task

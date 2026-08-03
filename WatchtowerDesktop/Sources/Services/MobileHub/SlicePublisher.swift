@@ -27,6 +27,8 @@ final class SlicePublisher: Sendable {
     /// - tracks has `dismissed_at` ('' = active), not a `dismissed` flag.
     /// - calendar_events.start_time is ISO8601 with 'T'/'Z'; wrap in datetime()
     ///   so comparison against datetime('now', …) output is well-defined.
+    /// - meeting_transcripts is the one kind published as a PROJECTION rather
+    ///   than SELECT * — see the note on its entry.
     static let sliceSQL: [SliceKind: String] = [
         .briefing: "SELECT * FROM briefings ORDER BY id DESC LIMIT 30",
         .inboxItem: "SELECT * FROM inbox_items WHERE archived_at IS NULL ORDER BY id DESC LIMIT 200",
@@ -56,6 +58,43 @@ final class SlicePublisher: Sendable {
             FROM situations
             WHERE status = 'open'
             ORDER BY id DESC LIMIT 100
+            """,
+        // The ONE slice that is a projection instead of SELECT * — the row
+        // holds columns that are either unbounded or meaningless on the phone:
+        // transcript_text (tens of KB per hour of meeting), segments_json
+        // (per-utterance timings, larger still) and audio_path (a path on THIS
+        // Mac). `snippet` is the same 200-char projection the desktop's own
+        // recordings list takes for the same perf reason
+        // (MeetingTranscriptQueries.fetchRecordingList); full text stays a
+        // desktop-only read.
+        //
+        // Two columns are resolved here so the phone never has to:
+        // - recap_json: the desktop's rule (RecordingDetailView.load) is that
+        //   the linked event's meeting_recaps row wins and the recording's own
+        //   summary_json is the fallback — that IS what COALESCE does, and for
+        //   an ad-hoc recording (event_id NULL) the join never matches, so the
+        //   fallback applies.
+        // - speakers: the cluster ROSTER only. speakers_json holds 256-float
+        //   voice embeddings per speaker (~3 KB each) that no phone consumer
+        //   can use, so the labels are extracted and the biometrics stay here.
+        //
+        // Deletion is a hard DELETE (MeetingTranscriptQueries.delete), so there
+        // is no soft-delete filter: a deleted recording simply falls out of the
+        // window and the diff removes it from the phone.
+        .meetingTranscript: """
+            SELECT t.id, t.event_id, e.title AS event_title,
+                   t.title, t.duration_sec, t.lang_stats, t.notes_md,
+                   t.chapters_json, t.created_at, t.updated_at,
+                   substr(t.transcript_text, 1, 200) AS snippet,
+                   COALESCE(r.recap_json, t.summary_json) AS recap_json,
+                   (SELECT json_group_array(json_extract(value, '$.speaker'))
+                      FROM json_each(CASE WHEN json_valid(t.speakers_json)
+                                          THEN t.speakers_json ELSE '[]' END)) AS speakers
+            FROM meeting_transcripts t
+            LEFT JOIN calendar_events e ON e.id = t.event_id
+            LEFT JOIN meeting_recaps r ON r.event_id = t.event_id
+            ORDER BY t.created_at DESC, t.id DESC
+            LIMIT 50
             """
     ]
 

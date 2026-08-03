@@ -160,6 +160,19 @@ final class PublicAPISurfaceTests: XCTestCase {
         _ = keyPath1; _ = keyPath2; _ = keyPath3
     }
 
+    // MARK: - MeetingTranscript model fields (recordings list + detail)
+
+    func testMeetingTranscriptPublicFields() {
+        let keyPath1: KeyPath<MeetingTranscript, String> = \.title
+        let keyPath2: KeyPath<MeetingTranscript, String?> = \.eventTitle
+        let keyPath3: KeyPath<MeetingTranscript, String> = \.snippet
+        let keyPath4: KeyPath<MeetingTranscript, MeetingTranscript.Recap?> = \.recap
+        let keyPath5: KeyPath<MeetingTranscript, [String]> = \.decodedSpeakers
+        // The recap's own fields are read by the transcript tools.
+        let keyPath6: KeyPath<MeetingTranscript.Recap, [String]> = \.actionItems
+        _ = keyPath1; _ = keyPath2; _ = keyPath3; _ = keyPath4; _ = keyPath5; _ = keyPath6
+    }
+
     // MARK: - SlackID (account-namespaced ids)
 
     func testSlackIDPublicHelpers() {
@@ -460,7 +473,7 @@ final class PublicAPISurfaceTests: XCTestCase {
         let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store)
         let toolbox = ReplicaToolbox(store: store, outbox: outbox)
 
-        XCTAssertEqual(toolbox.tools.count, 12)
+        XCTAssertEqual(toolbox.tools.count, 14)
         let tool: APITool? = toolbox.tools.first
         XCTAssertEqual(tool?.name, "list_targets")
 
