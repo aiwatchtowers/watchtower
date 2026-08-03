@@ -174,6 +174,9 @@ type callbackResult struct {
 type LoginOptions struct {
 	// SkipBrowserOpen disables automatic browser launch; the authorize URL is still printed.
 	SkipBrowserOpen bool
+	// AppReturn makes the success page redirect the browser to the
+	// watchtower-auth:// scheme — see gmail.LoginOptions.AppReturn.
+	AppReturn bool
 }
 
 // Login performs the Slack OAuth V2 flow:
@@ -186,7 +189,6 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
-	_ = opt // used below
 	// Use persistent TLS cert (generated once, can be trusted via `auth trust-cert`)
 	tlsCert, err := EnsureCert()
 	if err != nil {
@@ -221,6 +223,18 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 
 	resultCh := make(chan callbackResult, 1)
 
+	// With app-return the page first sits for 3s (so the confirmation is
+	// readable and the redirect doesn't race page load), then navigates to
+	// the app scheme; the tab tries to close itself only after that. Without
+	// app-return it just self-closes (gmail.Login precedent).
+	returnBlock, closeMS := "", "2000"
+	if opt.AppReturn {
+		returnBlock = appReturnBlock
+		closeMS = "4500"
+	}
+	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
+		Replace(callbackSuccessPage)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -235,7 +249,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 			state: q.Get("state"),
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, callbackSuccessPage)
+		fmt.Fprint(w, successPage)
 	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -336,11 +350,20 @@ const callbackSuccessPage = `<!DOCTYPE html>
 <h1>Authorization Successful</h1>
 <p>Watchtower has been connected to your Slack workspace.</p>
 <div class="hint">You can close this tab and return to Watchtower.</div>
+<!--RETURN-->
 </div>
 <script>
-setTimeout(function(){try{window.close()}catch(e){}},2000);
+setTimeout(function(){try{window.close()}catch(e){}},{{CLOSE_MS}});
 </script>
 </body></html>`
+
+// appReturnBlock is injected into the success page when LoginOptions.AppReturn
+// is set — mirrors gmail.LoginOptions.AppReturn's appReturnBlock. The button
+// is the reliable path back to the app — browsers block scripted navigation
+// to custom schemes without a user gesture, so the delayed auto-redirect
+// below is best-effort only.
+const appReturnBlock = `<a class="btn" href="watchtower-auth://connected">Open Watchtower</a>
+<script>setTimeout(function(){location.href="watchtower-auth://connected";},3000);</script>`
 
 const callbackErrorPage = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

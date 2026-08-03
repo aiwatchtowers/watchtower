@@ -388,6 +388,81 @@ func TestPhaseSlackSyncEmptySlice(t *testing.T) {
 	assert.NoError(t, d.phaseSlackSync(context.Background()))
 }
 
+// TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling proves the headline
+// isolation contract with an ACTUALLY failing account (TestPhaseSlackSyncAggregatesAcrossAccounts
+// only ever exercises the both-succeed case): a broken account's error must
+// not stop the healthy sibling's run, and each account's own status must
+// reflect only its own outcome (Orchestrator.recordAuthResult).
+func TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling(t *testing.T) {
+	// Healthy account.
+	var healthyCount atomic.Int32
+	healthyOrch, healthyDB := newStatusTrackingOrchestrator(t, testMux(), &healthyCount)
+
+	// Broken account: team.info returns invalid_auth.
+	failMux := http.NewServeMux()
+	failMux.HandleFunc("/team.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+	})
+	var failCount atomic.Int32
+	failOrch, failDB := newStatusTrackingOrchestrator(t, failMux, &failCount)
+
+	cfg := &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}}
+	d := New(cfg)
+	d.SetOrchestrators([]*sync.Orchestrator{healthyOrch, failOrch})
+	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
+
+	err := d.phaseSlackSync(context.Background())
+	require.Error(t, err, "phaseSlackSync surfaces the first account error")
+
+	// The healthy sibling still ran, unaffected by the other's failure.
+	assert.GreaterOrEqual(t, healthyCount.Load(), int32(1), "healthy account orchestrator did not run")
+	healthyAcct, dbErr := healthyDB.GetSlackAccount(1)
+	require.NoError(t, dbErr)
+	assert.Equal(t, "ok", healthyAcct.Status, "healthy account's own status must not be affected by the sibling's failure")
+
+	// The broken account's OWN row is flagged — not the healthy one's.
+	failAcct, dbErr := failDB.GetSlackAccount(1)
+	require.NoError(t, dbErr)
+	assert.Equal(t, "error", failAcct.Status)
+	assert.NotEmpty(t, failAcct.Error)
+}
+
+// newStatusTrackingOrchestrator is newTestOrchestrator plus a returned *db.DB
+// handle, so a test can assert on the resulting slack_accounts row.
+func newStatusTrackingOrchestrator(t *testing.T, mux *http.ServeMux, syncCount *atomic.Int32) (*sync.Orchestrator, *db.DB) {
+	t.Helper()
+
+	countingMux := http.NewServeMux()
+	countingMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search.messages" {
+			syncCount.Add(1)
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "test-workspace", Domain: "test-workspace"}))
+	_, err = database.CreateSlackAccount(db.SlackAccount{TeamID: "T024BE7LD", TeamName: "test-workspace", TeamDomain: "test-workspace"})
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(countingMux)
+	t.Cleanup(srv.Close)
+
+	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
+	slackClient := watchtowerslack.NewClientWithAPIUnlimited(api)
+
+	orch := sync.NewOrchestrator(database, slackClient, &config.Config{
+		Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1, SyncThreads: false},
+	}, 1)
+	orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
+
+	return orch, database
+}
+
 func TestDaemon_SaveLoadPeopleTime(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 

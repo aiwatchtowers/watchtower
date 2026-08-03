@@ -165,6 +165,114 @@ func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
 	}
 }
 
+// TestMigration00048_PreservesSearchOverExistingMessages replays goose up to
+// 00043, inserts a message (populating messages_fts via the messages_ai
+// trigger, which only fires on INSERT/text-or-is_deleted-UPDATE — never on
+// the id-only rewrite migration 00048 performs), then applies through 00048
+// and asserts the search join (messages.channel_id = messages_fts.channel_id)
+// still matches. Without 00048 also rewriting messages_fts directly, this
+// join silently returns zero rows for every message synced before the
+// upgrade — full-text search over all pre-migration history breaks.
+func TestMigration00048_PreservesSearchOverExistingMessages(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpTo(raw, "migrations", 43); err != nil {
+		t.Fatalf("migrate to v43: %v", err)
+	}
+
+	if _, err := raw.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`); err != nil {
+		t.Fatalf("seed channels: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO users (id, name) VALUES ('U1', 'Alice')`); err != nil {
+		t.Fatalf("seed users: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1.0', 'U1', 'searchable content')`); err != nil {
+		t.Fatalf("seed messages (fires messages_ai trigger): %v", err)
+	}
+
+	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+		t.Fatalf("apply through 00048: %v", err)
+	}
+
+	var text string
+	err = raw.QueryRow(`
+		SELECT m.text FROM messages_fts fts
+		JOIN messages m ON m.channel_id = fts.channel_id AND m.ts = fts.ts
+		WHERE messages_fts MATCH 'searchable'`).Scan(&text)
+	if err != nil {
+		t.Fatalf("search join found no match after migration (messages_fts left stale): %v", err)
+	}
+	if text != "searchable content" {
+		t.Errorf("matched text = %q, want %q", text, "searchable content")
+	}
+}
+
+// TestMigration00048_PreservesGmailJiraSenderLearnedRules replays goose up to
+// 00043, seeds bare (un-namespaced) sender: scope_key rules sourced from
+// Gmail (a raw email address) and Jira (a bare issue key) alongside a real
+// Slack sender: rule, then applies through 00048 and asserts only the Slack
+// rule gets the "1:" prefix — the Gmail/Jira rules must stay exactly as they
+// were, or a previously-taught mute/boost preference silently stops matching.
+func TestMigration00048_PreservesGmailJiraSenderLearnedRules(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpTo(raw, "migrations", 43); err != nil {
+		t.Fatalf("migrate to v43: %v", err)
+	}
+
+	seed := func(scopeKey string) {
+		if _, err := raw.Exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+			VALUES ('source_mute', ?, -1.0, 'user_rule', '2026-07-30T00:00:00Z')`, scopeKey); err != nil {
+			t.Fatalf("seed inbox_learned_rules %q: %v", scopeKey, err)
+		}
+	}
+	seed("sender:U1")                  // Slack — must get namespaced
+	seed("sender:someone@example.com") // Gmail — must NOT get namespaced
+	seed("sender:PROJ-123")            // Jira — must NOT get namespaced
+	seed("sender:watchtower")          // watchtower detector — must NOT get namespaced
+
+	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+		t.Fatalf("apply through 00048: %v", err)
+	}
+
+	rows, err := raw.Query(`SELECT scope_key FROM inbox_learned_rules WHERE rule_type = 'source_mute' ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query scope_keys: %v", err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var scopeKey string
+		if err := rows.Scan(&scopeKey); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, scopeKey)
+	}
+	want := []string{"sender:1:U1", "sender:someone@example.com", "sender:PROJ-123", "sender:watchtower"}
+	if len(got) != len(want) {
+		t.Fatalf("scope_keys = %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("scope_keys[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
 // TestMigration00048DownUpCycle replays goose up to 00043 on a raw
 // connection, seeds bare (pre-namespacing) inbox_learned_rules scope_key
 // rows, applies through 00048 (asserting the namespaced form), then applies 00048's

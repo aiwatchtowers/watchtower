@@ -27,6 +27,7 @@ type ContextBuilder struct {
 	// Lookup caches to avoid repeated DB queries for the same entity
 	channelNameCache map[string]string
 	userCache        map[string]*db.User
+	slackAcctCache   slackAccountCache
 }
 
 // NewContextBuilder creates a ContextBuilder.
@@ -42,6 +43,7 @@ func NewContextBuilder(database *db.DB, contextBudget int, domain, teamID string
 		now:              time.Now(),
 		channelNameCache: make(map[string]string),
 		userCache:        make(map[string]*db.User),
+		slackAcctCache:   make(slackAccountCache),
 	}
 }
 
@@ -694,22 +696,12 @@ func (cb *ContextBuilder) formatMessage(channelName string, msg db.Message) stri
 }
 
 // resolveLinkTarget resolves the Slack team id and raw (un-namespaced) channel
-// id to use when building a deep link for a stored channel id. A namespaced id
-// ("<accountID>:<rawID>") resolves to its owning Slack account's team id; an
-// un-namespaced id falls back to the builder's default team id (legacy
-// single-account behavior). The stored account's team domain isn't part of the
-// slack:// deep-link format (which keys on team id), so only team id + raw
-// channel id are resolved here.
+// id to use when building a deep link for a stored channel id. The stored
+// account's team domain isn't part of the slack:// deep-link format (which
+// keys on team id), so only team id + raw channel id are resolved here. See
+// resolveSlackLinkTarget for the namespace/cache/fallback mechanics.
 func (cb *ContextBuilder) resolveLinkTarget(channelID string) (teamID, rawChannelID string) {
-	acctID, rawID, ok := watchtowerslack.SplitAccountID(channelID)
-	if !ok {
-		return cb.teamID, channelID
-	}
-	acct, err := cb.db.GetSlackAccount(acctID)
-	if err != nil || acct.TeamID == "" {
-		return cb.teamID, rawID
-	}
-	return acct.TeamID, rawID
+	return resolveSlackLinkTarget(cb.db, cb.slackAcctCache, cb.teamID, channelID)
 }
 
 // formatThreadSummary adds a brief summary of thread replies.

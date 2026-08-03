@@ -462,10 +462,12 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		token, err := store.Load()
 		if err != nil {
 			logger.Printf("slack: account %d: failed to load token: %v", acct.ID, err)
+			recordSlackWireError(database, logger, acct.ID, acct.Status, err)
 			continue
 		}
 		if token == nil {
 			logger.Printf("slack: account %d: no token file, skipping", acct.ID)
+			recordSlackWireError(database, logger, acct.ID, acct.Status, fmt.Errorf("no token file — re-login required"))
 			continue
 		}
 		client := watchtowerslack.NewClient(token.AccessToken)
@@ -475,6 +477,22 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		orchestrators = append(orchestrators, orch)
 	}
 	return orchestrators
+}
+
+// recordSlackWireError records a per-account wiring failure (missing/unreadable
+// token — before an Orchestrator ever exists to self-report via
+// Orchestrator.recordAuthResult) so the Desktop UI shows the account needs
+// re-login instead of staying silently "ok" forever. Only flips a currently-
+// "ok" account to "error" — one already flagged error/revoked stays as-is,
+// so this doesn't churn the status/updated_at on every daemon cycle (the
+// wireGoogleSyncers precedent).
+func recordSlackWireError(database *db.DB, logger *log.Logger, accountID int64, currentStatus string, err error) {
+	if currentStatus != "ok" {
+		return
+	}
+	if dbErr := database.SetSlackAccountAuthState(accountID, "error", err.Error()); dbErr != nil {
+		logger.Printf("slack: account %d: record auth state: %v", accountID, dbErr)
+	}
 }
 
 // wireJiraSyncer wires the Jira syncer onto the daemon if Jira is configured

@@ -224,3 +224,83 @@ func TestRunSlackAccounts_ZeroAccountsPrintsHelpfulLine(t *testing.T) {
 	require.NoError(t, err, "listing zero accounts must not be an error")
 	assert.Contains(t, out.String(), "No Slack accounts connected")
 }
+
+// TestWireSlackSyncers_MissingTokenRecordsAuthState: an account with no token
+// file (revoked/never-connected) must flip to status="error" so Desktop shows
+// it needs re-login — before this fix it was silently skipped and logged only,
+// with no orchestrator ever created to self-report (Orchestrator.recordAuthResult
+// only runs once Run() executes, and a missing-token account never gets that far).
+func TestWireSlackSyncers_MissingTokenRecordsAuthState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &config.Config{ActiveWorkspace: "test", Workspaces: map[string]*config.WorkspaceConfig{"test": {}}}
+	database := db.OpenTestDB(t)
+
+	id, err := database.CreateSlackAccount(db.SlackAccount{Label: "No Token"})
+	require.NoError(t, err)
+	// No token file written for this account — the store.Load() nil-token branch.
+
+	orchs := wireSlackSyncers(database, cfg, quietTestLogger())
+	assert.Empty(t, orchs, "an account with no token must not get an orchestrator")
+
+	acct, err := database.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "error", acct.Status)
+	assert.Contains(t, acct.Error, "no token file")
+}
+
+// TestWireSlackSyncers_AlreadyErrorDoesNotChurn: an account already flagged
+// error/revoked must not have its updated_at/error message churned every
+// daemon cycle by the wiring step re-flagging the same missing token.
+func TestWireSlackSyncers_AlreadyErrorDoesNotChurn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &config.Config{ActiveWorkspace: "test", Workspaces: map[string]*config.WorkspaceConfig{"test": {}}}
+	database := db.OpenTestDB(t)
+
+	id, err := database.CreateSlackAccount(db.SlackAccount{Label: "Revoked"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetSlackAccountAuthState(id, "revoked", "user revoked access"))
+
+	wireSlackSyncers(database, cfg, quietTestLogger())
+
+	acct, err := database.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", acct.Status, "wiring must not overwrite an existing non-ok status")
+	assert.Equal(t, "user revoked access", acct.Error)
+}
+
+// TestSlackEnable_RemovedAccountRejected: "slack enable" on a removed account
+// must fail loudly instead of silently flipping enabled=1 on a row
+// ListEnabledSlackAccounts still excludes (status != 'removed') — before this
+// guard, the CLI printed "Account N enabled" while sync stayed off, and
+// Desktop showed a confusing enabled-toggle next to a removed/red status.
+func TestSlackEnable_RemovedAccountRejected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeLegacyConfig(t, "")
+
+	dbPath := filepath.Join(home, ".local", "share", "watchtower", "test", "watchtower.db")
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	id, err := database.CreateSlackAccount(db.SlackAccount{Label: "Removed Org"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetSlackAccountAuthState(id, "removed", ""))
+	require.NoError(t, database.SetSlackAccountEnabled(id, false))
+	require.NoError(t, database.Close())
+
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = setSlackAccountEnabled(cmd, "1", true)
+	require.Error(t, err, "enabling a removed account must fail, not silently succeed")
+	assert.Contains(t, err.Error(), "removed")
+
+	database2, err := db.Open(dbPath)
+	require.NoError(t, err)
+	defer database2.Close()
+	acct, err := database2.GetSlackAccount(1)
+	require.NoError(t, err)
+	assert.False(t, acct.Enabled, "the rejected enable must not have flipped the row")
+}

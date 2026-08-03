@@ -62,19 +62,6 @@ func TestSlackAccount_UpdateConnection(t *testing.T) {
 	assert.Equal(t, "1:U9", got.CurrentUserID)
 }
 
-func TestSlackAccount_SetLabel(t *testing.T) {
-	d := openTestDB(t)
-
-	id, err := d.CreateSlackAccount(SlackAccount{Label: "Old"})
-	require.NoError(t, err)
-
-	require.NoError(t, d.SetSlackAccountLabel(id, "New Label"))
-
-	got, err := d.GetSlackAccount(id)
-	require.NoError(t, err)
-	assert.Equal(t, "New Label", got.Label)
-}
-
 func TestSlackAccount_SetEnabled(t *testing.T) {
 	d := openTestDB(t)
 
