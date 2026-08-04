@@ -48,21 +48,27 @@ final class ChatWiringTests: XCTestCase {
     /// returns canned ids without touching anything.
     private final class RecordingBackend: MobileAgentBackend, @unchecked Sendable {
         private let lock = NSLock()
-        private var recorded: [(text: String, sessionID: String?)] = []
+        private var recorded: [(text: String, sessionID: String?, context: ChatContext?)] = []
         private let assembler: ChatAssembler?
 
         init(assembler: ChatAssembler? = nil) {
             self.assembler = assembler
         }
 
-        var calls: [(text: String, sessionID: String?)] {
+        var calls: [(text: String, sessionID: String?, context: ChatContext?)] {
             lock.withLock { recorded }
         }
 
-        func sendTurn(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String) {
-            lock.withLock { recorded.append((text, sessionID)) }
+        func sendTurn(
+            text: String,
+            sessionID: String?,
+            context: ChatContext?
+        ) async throws -> (sessionID: String, messageID: String) {
+            lock.withLock { recorded.append((text, sessionID, context)) }
             if let assembler {
-                return try await assembler.send(text: text, sessionID: sessionID, route: .localOnly)
+                return try await assembler.send(
+                    text: text, sessionID: sessionID, route: .localOnly, context: context
+                )
             }
             return (sessionID ?? "minted-session", "minted-message")
         }
@@ -78,7 +84,8 @@ final class ChatWiringTests: XCTestCase {
         reachable: Bool = true,
         hasKey: Bool = false,
         direct: (any MobileAgentBackend)? = nil,
-        relay: (any MobileAgentBackend)? = nil
+        relay: (any MobileAgentBackend)? = nil,
+        context: ChatContext? = nil
     ) -> ChatThreadViewModel {
         let vm = ChatThreadViewModel()
         vm.start(
@@ -87,7 +94,8 @@ final class ChatWiringTests: XCTestCase {
             relay: relay ?? RelayAgentBackend(assembler: fx.assembler),
             hasKey: { hasKey },
             isReachable: { _ in reachable },
-            sessionID: sessionID
+            sessionID: sessionID,
+            context: context
         )
         return vm
     }
@@ -452,7 +460,11 @@ final class ChatWiringTests: XCTestCase {
     /// "sendTurn throws → existing error banner, draft kept" contract.
     func testBackendThrowSurfacesErrorBannerAndKeepsDraft() async throws {
         final class ThrowingBackend: MobileAgentBackend, @unchecked Sendable {
-            func sendTurn(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String) {
+            func sendTurn(
+                text: String,
+                sessionID: String?,
+                context: ChatContext?
+            ) async throws -> (sessionID: String, messageID: String) {
                 throw DirectAPIAgentError.missingKey
             }
         }
@@ -628,6 +640,61 @@ final class ChatWiringTests: XCTestCase {
         await keylessVM.send()
         XCTAssertNil(keylessVM.directOfferContext)
         XCTAssertEqual(keylessRelay.calls.count, 1)
+    }
+
+    // MARK: - Entity-bound threads (situation Discuss)
+
+    /// Opening a situation's Discuss twice must land in the SAME thread: the
+    /// VM resolves the context to this device's existing session instead of
+    /// minting a second one.
+    func testBoundThreadResumesTheDeviceSessionForThatSituation() async throws {
+        let fx = try makeFixture()
+        let first = makeThreadVM(fx, context: .situation(42))
+        first.draft = "what do I answer?"
+        await first.send()
+        let sessionID = try XCTUnwrap(first.sessionID)
+
+        // A fresh VM for the same situation — the navigation case where no
+        // session id is passed in.
+        let second = makeThreadVM(fx, context: .situation(42))
+
+        XCTAssertEqual(second.sessionID, sessionID)
+        XCTAssertTrue(second.isContextBound)
+        try await poll { second.messages.count == 2 }
+
+        // A different situation must not adopt it.
+        let other = makeThreadVM(fx, context: .situation(7))
+        XCTAssertNil(other.sessionID)
+    }
+
+    func testBoundThreadSendCarriesTheContext() async throws {
+        let fx = try makeFixture()
+        let relay = RecordingBackend(assembler: fx.assembler)
+        let vm = makeThreadVM(fx, relay: relay, context: .situation(42))
+
+        vm.draft = "tell them we roll back"
+        await vm.send()
+
+        XCTAssertEqual(relay.calls.first?.context, ChatContext(type: "situation", id: "42"))
+    }
+
+    /// The direct-mode offer never fires for a bound thread even under its
+    /// exact preconditions (new chat + key + unreachable Mac): the phone
+    /// cannot answer one, so the send goes straight to the relay.
+    func testBoundThreadNeverOffersDirectMode() async throws {
+        let fx = try makeFixture()
+        let direct = RecordingBackend()
+        let relay = RecordingBackend(assembler: fx.assembler)
+        let vm = makeThreadVM(
+            fx, reachable: false, hasKey: true, direct: direct, relay: relay, context: .situation(42)
+        )
+
+        vm.draft = "what do I answer?"
+        await vm.send()
+
+        XCTAssertNil(vm.directOfferContext, "a bound thread must never present the opt-in dialog")
+        XCTAssertEqual(relay.calls.count, 1)
+        XCTAssertTrue(direct.calls.isEmpty)
     }
 
     // MARK: - AppEnvironment wiring (feed → assembler)

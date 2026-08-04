@@ -9,7 +9,24 @@ public protocol MobileAgentBackend: Sendable {
     /// answer comes from the Mac over the relay or from the on-device agent
     /// is the conforming backend's business; either way it streams into the
     /// same chat replica rows.
-    func sendTurn(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String)
+    ///
+    /// `context` marks an entity-bound thread (a situation's Discuss chat).
+    /// Not every backend can answer one — the on-device agent has neither the
+    /// owner's style profile nor the raw messages a situation draft is built
+    /// from — so a backend that cannot MUST throw rather than answer without
+    /// the context.
+    func sendTurn(
+        text: String,
+        sessionID: String?,
+        context: ChatContext?
+    ) async throws -> (sessionID: String, messageID: String)
+}
+
+extension MobileAgentBackend {
+    /// The generic secretary chat's call shape.
+    public func sendTurn(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String) {
+        try await sendTurn(text: text, sessionID: sessionID, context: nil)
+    }
 }
 
 /// Today's default path: the turn ships into the relay zone and the DESKTOP
@@ -23,7 +40,11 @@ public struct RelayAgentBackend: MobileAgentBackend {
         self.assembler = assembler
     }
 
-    public func sendTurn(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String) {
-        try await assembler.send(text: text, sessionID: sessionID, route: .relay)
+    public func sendTurn(
+        text: String,
+        sessionID: String?,
+        context: ChatContext?
+    ) async throws -> (sessionID: String, messageID: String) {
+        try await assembler.send(text: text, sessionID: sessionID, route: .relay, context: context)
     }
 }

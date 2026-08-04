@@ -57,28 +57,57 @@ extension ReplicaStore {
         }
     }
 
+    /// The thread bound to one entity (a situation's Discuss chat), or nil
+    /// when this device has not opened one yet — the phone's "does this
+    /// situation already have a thread here" lookup.
+    ///
+    /// Bound threads are unique per (type, id) BY CONSTRUCTION, not by a
+    /// UNIQUE index: the UI resolves the context to an existing session
+    /// before sending, so a second one is never minted. Most recent first
+    /// regardless, so a duplicate born of a race would be self-healing rather
+    /// than an error.
+    public func chatSession(contextType: String, contextID: String) throws -> ChatSession? {
+        try writer.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT * FROM chat_sessions
+                    WHERE context_type = ? AND context_id = ?
+                    ORDER BY updated_at DESC, session_id
+                    LIMIT 1
+                    """,
+                arguments: [contextType, contextID]
+            ).map(ChatSession.init(row:))
+        }
+    }
+
     /// ChatAssembler.send's local persistence (internal: the app sends
     /// through the assembler). One transaction: session upsert (the FIRST
     /// turn sets the title, later turns only bump updated_at), the user turn
     /// (born complete), and the empty assistant placeholder that chunks
     /// keyed by `assistantMessageID` will fill.
+    ///
+    /// `context` is written on the INSERT only — a thread's binding is set
+    /// when it is minted and never rewritten, so a later context-less send
+    /// into the same session cannot unbind it.
     func insertChatTurn(
         sessionID: String,
         title: String,
         userMessageID: String,
         assistantMessageID: String,
         text: String,
-        createdAt: Date
+        createdAt: Date,
+        context: ChatContext? = nil
     ) throws {
         try writer.write { db in
             let timestamp = createdAt.timeIntervalSince1970
             try db.execute(
                 sql: """
-                    INSERT INTO chat_sessions (session_id, title, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO chat_sessions (session_id, title, created_at, updated_at, context_type, context_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET updated_at = excluded.updated_at
                     """,
-                arguments: [sessionID, title, timestamp, timestamp]
+                arguments: [sessionID, title, timestamp, timestamp, context?.type, context?.id]
             )
             try db.execute(
                 sql: """
@@ -178,6 +207,10 @@ public struct ChatSession: Equatable, Identifiable {
     /// relay. Defaults to false — relay — and flips ONLY via
     /// `setDirectMode(sessionID:enabled:)` on an explicit user choice.
     public let directMode: Bool
+    /// What this thread is bound to (a situation's Discuss chat), or nil for
+    /// the generic secretary chat. Set when the thread is minted, never
+    /// rewritten.
+    public let context: ChatContext?
 
     init(row: Row) {
         id = row["session_id"]
@@ -185,6 +218,14 @@ public struct ChatSession: Equatable, Identifiable {
         createdAt = Date(timeIntervalSince1970: row["created_at"])
         updatedAt = Date(timeIntervalSince1970: row["updated_at"])
         directMode = row["direct_mode"]
+        // Both columns are written together by insertChatTurn, so a row with
+        // one but not the other cannot occur; requiring both keeps a
+        // hand-edited replica from producing a half-bound context.
+        if let type: String = row["context_type"], let contextID: String = row["context_id"] {
+            context = ChatContext(type: type, id: contextID)
+        } else {
+            context = nil
+        }
     }
 }
 

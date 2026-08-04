@@ -1,28 +1,73 @@
 import Foundation
 
+/// What a chat thread is ABOUT, when it is bound to one entity rather than
+/// being the generic secretary chat: the mobile mirror of the desktop's
+/// `chat_conversations.context_type`/`context_id` pair.
+///
+/// A bound thread and its desktop counterpart are ONE conversation — the relay
+/// resolves this context to the desktop's existing row, reuses its CLI session,
+/// and writes both sides' turns into it.
+public struct ChatContext: Codable, Equatable, Sendable {
+    /// `chat_conversations.context_type`. Today the phone only ever sends
+    /// "situation"; the field is the type, not an enum, so a desktop that
+    /// learns new context kinds needs no wire change here.
+    public let type: String
+    /// `chat_conversations.context_id` — the entity id as a string.
+    public let id: String
+
+    public static func situation(_ situationID: Int) -> ChatContext {
+        ChatContext(type: "situation", id: String(situationID))
+    }
+
+    public init(type: String, id: String) {
+        self.type = type
+        self.id = id
+    }
+}
+
 /// One user turn sent from mobile to the desktop agent.
 public struct ChatMessagePayload: Codable, Equatable {
     public let id: String
     public let sessionID: String
     public let text: String
     public let createdAt: Date
+    /// Set when the turn belongs to an entity-bound thread (a situation's
+    /// Discuss chat); nil for the generic secretary chat.
+    ///
+    /// Optional for the same reason as `ChatChunkPayload.isError`: nil encodes
+    /// to an absent key (synthesized encodeIfPresent) and pre-context records
+    /// decode to nil, so old and new desktops/phones interoperate without a
+    /// wire change — a context-less payload takes the desktop's generic path
+    /// exactly as before.
+    public let context: ChatContext?
 
     public var recordName: String { "chatmsg-\(id)" }
 
     // convertFromSnakeCase maps "session_id" -> "sessionId" (lowercase d),
     // so the CodingKey stringValue must be "sessionId" to round-trip correctly.
+    // "context" is a single lowercase word — its default stringValue survives
+    // both key strategies untouched, and ChatContext's own keys ("type"/"id")
+    // are likewise single words.
     enum CodingKeys: String, CodingKey {
         case id
         case sessionID = "sessionId"
         case text
         case createdAt
+        case context
     }
 
-    public init(id: String, sessionID: String, text: String, createdAt: Date) {
+    public init(
+        id: String,
+        sessionID: String,
+        text: String,
+        createdAt: Date,
+        context: ChatContext? = nil
+    ) {
         self.id = id
         self.sessionID = sessionID
         self.text = text
         self.createdAt = createdAt
+        self.context = context
     }
 }
 

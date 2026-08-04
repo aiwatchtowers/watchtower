@@ -94,6 +94,55 @@ final class ChatAssemblerTests: XCTestCase {
         XCTAssertEqual(payload.text, "Summarize my inbox for today please and thanks")
     }
 
+    // MARK: - Entity-bound threads (situation Discuss)
+
+    func testSendWithContextStampsSessionAndPayload() async throws {
+        let f = try makeFixtures()
+
+        let (sessionID, _) = try await f.assembler.send(
+            text: "tell them we roll back tomorrow",
+            sessionID: nil,
+            context: .situation(42)
+        )
+
+        let session = try XCTUnwrap(f.store.chatSessions().first)
+        XCTAssertEqual(session.context, ChatContext(type: "situation", id: "42"))
+        // The context rides the wire so the desktop answers into the
+        // situation's own conversation.
+        let batch = try await f.transport.changes(in: .relay, since: nil)
+        let payload = try RelayCoder.makeDecoder().decode(
+            ChatMessagePayload.self, from: try XCTUnwrap(batch.changed.first).payload
+        )
+        XCTAssertEqual(payload.context, ChatContext(type: "situation", id: "42"))
+        XCTAssertEqual(try f.store.chatSession(contextType: "situation", contextID: "42")?.id, sessionID)
+    }
+
+    func testContextLookupIgnoresUnboundAndOtherEntities() async throws {
+        let f = try makeFixtures()
+        _ = try await f.assembler.send(text: "generic question", sessionID: nil)
+        _ = try await f.assembler.send(text: "about seven", sessionID: nil, context: .situation(7))
+
+        XCTAssertNil(try f.store.chatSession(contextType: "situation", contextID: "42"))
+        XCTAssertNil(try f.store.chatSessions().first { $0.context == nil }?.context)
+        XCTAssertNotNil(try f.store.chatSession(contextType: "situation", contextID: "7"))
+    }
+
+    /// A thread's binding is set when it is minted and never rewritten — a
+    /// later send that forgot to pass the context must not unbind it.
+    func testFollowUpWithoutContextKeepsTheBinding() async throws {
+        let f = try makeFixtures()
+        let (sessionID, _) = try await f.assembler.send(
+            text: "first", sessionID: nil, context: .situation(42)
+        )
+
+        _ = try await f.assembler.send(text: "second", sessionID: sessionID)
+
+        XCTAssertEqual(
+            try f.store.chatSessions().first?.context,
+            ChatContext(type: "situation", id: "42")
+        )
+    }
+
     func testSendShortMessageTitleIsWholeText() async throws {
         let f = try makeFixtures()
 

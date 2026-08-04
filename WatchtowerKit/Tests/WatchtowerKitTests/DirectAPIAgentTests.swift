@@ -192,6 +192,23 @@ final class DirectAPIAgentTests: XCTestCase {
         }
     }
 
+    // MARK: - Entity-bound threads are the Mac's alone
+
+    /// A situation's Discuss chat needs the owner's style profile, people
+    /// cards and raw messages — none of which the phone has. Answering it here
+    /// would silently produce a context-free reply, so the backend refuses
+    /// before any row or client exists.
+    func testBoundContextThrowsBeforeAnyRows() async throws {
+        let f = try makeFixtures(key: Self.testKey, scripts: [])
+        do {
+            _ = try await f.agent.sendTurn(text: "what do I answer?", sessionID: nil, context: .situation(42))
+            XCTFail("expected contextUnsupported")
+        } catch DirectAPIAgentError.contextUnsupported {}
+
+        XCTAssertTrue(try f.store.chatSessions().isEmpty)
+        XCTAssertTrue(f.factoryKeys.withLock { $0 }.isEmpty)
+    }
+
     // MARK: - Happy path
 
     func testHappyPathStreamsChunksIntoThread() async throws {

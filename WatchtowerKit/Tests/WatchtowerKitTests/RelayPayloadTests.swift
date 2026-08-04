@@ -44,6 +44,44 @@ final class RelayPayloadTests: XCTestCase {
         XCTAssertEqual(message.recordName, "chatmsg-M9")
     }
 
+    /// A context-less turn must encode EXACTLY as it did before entity-bound
+    /// threads existed (the `isError` discipline): an absent key, so an older
+    /// desktop decodes the record unchanged.
+    func testChatMessageWithoutContextOmitsTheKey() throws {
+        let message = ChatMessagePayload(
+            id: "M9", sessionID: "S1", text: "hi", createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(message), encoding: .utf8))
+        XCTAssertEqual(json, #"{"created_at":1700000000,"id":"M9","session_id":"S1","text":"hi"}"#)
+    }
+
+    func testChatMessageWithContextRoundTrips() throws {
+        let message = ChatMessagePayload(
+            id: "M10",
+            sessionID: "S2",
+            text: "what should I answer?",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_001),
+            context: .situation(42)
+        )
+        let data = try RelayCoder.makeEncoder().encode(message)
+        XCTAssertEqual(
+            String(data: data, encoding: .utf8),
+            // swiftlint:disable:next line_length
+            #"{"context":{"id":"42","type":"situation"},"created_at":1700000001,"id":"M10","session_id":"S2","text":"what should I answer?"}"#
+        )
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(ChatMessagePayload.self, from: data), message)
+    }
+
+    /// A record written by a pre-context phone decodes with no context and
+    /// takes the desktop's generic path.
+    func testPreContextChatMessageDecodesAsUnbound() throws {
+        let json = #"{"created_at":1700000000,"id":"M1","session_id":"S1","text":"hi"}"#
+        let decoded = try RelayCoder.makeDecoder().decode(
+            ChatMessagePayload.self, from: Data(json.utf8)
+        )
+        XCTAssertNil(decoded.context)
+    }
+
     func testHeartbeatRoundTrip() throws {
         let beat = HeartbeatPayload(updatedAt: Date(timeIntervalSince1970: 1_700_000_002), appVersion: "1.0")
         let data = try RelayCoder.makeEncoder().encode(beat)

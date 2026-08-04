@@ -113,10 +113,18 @@ public actor ChatAssembler: ChatChunkAssembling {
     /// `.localOnly` has no wire leg, so none of that ordering applies: the
     /// single `insertChatTurn` call is the only failure point, and it
     /// throws atomically (all three rows or none).
+    ///
+    /// `context` binds the thread to one entity (a situation's Discuss chat):
+    /// it rides the relay payload so the desktop answers into that entity's
+    /// existing conversation, and it is stamped on the session row this send
+    /// mints. Pass it on EVERY send of a bound thread — the desktop resolves
+    /// the conversation per turn and does not remember the binding between
+    /// them.
     public func send(
         text: String,
         sessionID: String?,
-        route: SendRoute = .relay
+        route: SendRoute = .relay,
+        context: ChatContext? = nil
     ) async throws -> (sessionID: String, messageID: String) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ChatSendError.emptyText
@@ -127,7 +135,8 @@ public actor ChatAssembler: ChatChunkAssembling {
             id: UUID().uuidString,
             sessionID: session,
             text: text,
-            createdAt: createdAt
+            createdAt: createdAt,
+            context: context
         )
         if route == .relay {
             try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: createdAt)])
@@ -138,7 +147,8 @@ public actor ChatAssembler: ChatChunkAssembling {
             userMessageID: "user-\(payload.id)",
             assistantMessageID: payload.id,
             text: text,
-            createdAt: createdAt
+            createdAt: createdAt,
+            context: context
         )
         return (sessionID: session, messageID: payload.id)
     }

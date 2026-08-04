@@ -235,16 +235,18 @@ final class RelayProcessor: Sendable {
         guard try !sidecar.isRelayProcessed(record.recordName) else { return }
         lastActivity.withLock { $0 = now() }
 
-        // First turn of a mobile session has no CLI session yet and needs the
-        // full system prompt; resumed sessions carry their context in the CLI.
-        let cliSessionID = try sidecar.cliSessionID(forMobileSession: message.sessionID)
-        let systemPrompt: String? = cliSessionID == nil ? ChatViewModel.buildSystemPrompt(dbPool: dbPool) : nil
-
         // Shared with the consumer child task; the group awaits that child
         // before returning, so the error path below never races it.
         let seq = OSAllocatedUnfairLock(initialState: 0)
         do {
-            try await streamTurn(for: message, cliSessionID: cliSessionID, systemPrompt: systemPrompt, seq: seq)
+            switch message.context?.type {
+            case nil:
+                try await streamGenericTurn(for: message, seq: seq)
+            case "situation":
+                try await streamSituationTurn(for: message, situationID: message.context?.id, seq: seq)
+            case .some(let unknown):
+                throw SituationChatRelayError.unsupportedContext(unknown)
+            }
         } catch {
             logger.warning("""
                 chat message \(record.recordName, privacy: .public) stream failed: \
@@ -260,22 +262,84 @@ final class RelayProcessor: Sendable {
         lastActivity.withLock { $0 = now() }
     }
 
+    /// The generic secretary chat: no entity context, the CLI session lives in
+    /// the sidecar's mobile-session map, and the answer is not persisted
+    /// anywhere on the desktop (the phone's replica is the only record) —
+    /// today's path, unchanged.
+    private func streamGenericTurn(
+        for message: ChatMessagePayload,
+        seq: OSAllocatedUnfairLock<Int>
+    ) async throws {
+        // First turn of a mobile session has no CLI session yet and needs the
+        // full system prompt; resumed sessions carry their context in the CLI.
+        let cliSessionID = try sidecar.cliSessionID(forMobileSession: message.sessionID)
+        let systemPrompt: String? = cliSessionID == nil ? ChatViewModel.buildSystemPrompt(dbPool: dbPool) : nil
+        _ = try await streamTurn(
+            for: message,
+            promptText: message.text,
+            cliSessionID: cliSessionID,
+            systemPrompt: systemPrompt,
+            seq: seq
+        ) { [sidecar] id in
+            // Persist immediately: a crash mid-stream must not orphan the session.
+            try sidecar.setCLISessionID(id, forMobileSession: message.sessionID)
+        }
+    }
+
+    /// A situation's Discuss chat: the turn joins the DESKTOP's conversation
+    /// for that situation (see `SituationChatRelay`) — same prompt, same CLI
+    /// session, both turns persisted into `chat_messages`.
+    private func streamSituationTurn(
+        for message: ChatMessagePayload,
+        situationID rawID: String?,
+        seq: OSAllocatedUnfairLock<Int>
+    ) async throws {
+        guard let rawID, let situationID = Int(rawID) else {
+            throw SituationChatRelayError.situationNotFound(-1)
+        }
+        let turn = try SituationChatRelay.prepareTurn(
+            dbPool: dbPool, situationID: situationID, text: message.text
+        )
+        let answer = try await streamTurn(
+            for: message,
+            promptText: turn.promptText,
+            cliSessionID: turn.cliSessionID,
+            systemPrompt: turn.systemPrompt,
+            seq: seq
+        ) { [dbPool] id in
+            try SituationChatRelay.persistSessionID(
+                dbPool: dbPool, conversationID: turn.conversationID, sessionID: id
+            )
+        }
+        try SituationChatRelay.persistAnswer(
+            dbPool: dbPool, conversationID: turn.conversationID, text: answer
+        )
+    }
+
     /// Consumes one AI stream, racing it against an inactivity watchdog: if
     /// no stream event arrives within `streamTimeout` the group throws
     /// `RelayChatError.streamTimeout`, cancelling the stream task (the
     /// caller then emits the error-path final chunk). Whichever child loses
     /// is cancelled and awaited before the group returns.
+    ///
+    /// Returns the full answer text for callers that persist it (the
+    /// situation path). A throw returns nothing: a partial answer is not an
+    /// answer, and the caller's error chunk is what the phone sees.
+    @discardableResult
     private func streamTurn(
         for message: ChatMessagePayload,
+        promptText: String,
         cliSessionID: String?,
         systemPrompt: String?,
-        seq: OSAllocatedUnfairLock<Int>
-    ) async throws {
+        seq: OSAllocatedUnfairLock<Int>,
+        onSessionID: @escaping @Sendable (String) throws -> Void
+    ) async throws -> String {
         let lastEvent = OSAllocatedUnfairLock(initialState: ContinuousClock.now)
+        let answer = OSAllocatedUnfairLock(initialState: "")
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask { [self] in
                 let stream = aiService.stream(
-                    prompt: message.text,
+                    prompt: promptText,
                     systemPrompt: systemPrompt,
                     sessionID: cliSessionID,
                     dbPath: dbPath
@@ -288,14 +352,14 @@ final class RelayProcessor: Sendable {
                     switch event {
                     case .text(let delta):
                         pending += delta
+                        answer.withLock { $0 += delta }
                         if lastFlush.duration(to: clock.now) >= chunkInterval, !pending.isEmpty {
                             try await saveChunk(for: message, seq: seq, text: pending, done: false)
                             pending = ""
                             lastFlush = clock.now
                         }
                     case .sessionID(let id):
-                        // Persist immediately: a crash mid-stream must not orphan the session.
-                        try sidecar.setCLISessionID(id, forMobileSession: message.sessionID)
+                        try onSessionID(id)
                     case .turnComplete, .done:
                         // .turnComplete duplicates the accumulated .text deltas for
                         // WatchtowerAIService — revisit if a provider ever emits only
@@ -327,6 +391,7 @@ final class RelayProcessor: Sendable {
             // seq-after-save ordering is load-bearing for gap-free delivery.
             try await group.next()
         }
+        return answer.withLock { $0 }
     }
 
     /// Saves one chunk record. `seq` advances only after a successful save,
