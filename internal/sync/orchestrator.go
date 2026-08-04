@@ -86,6 +86,12 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // account row (recordAuthResult) — the calendar.Syncer/gmail.Syncer precedent,
 // so a revoked/broken token surfaces in Desktop instead of staying silently
 // "ok" forever while the daemon log fills with the same error every cycle.
+// Coverage caveat: only an error that propagates all the way to run's own
+// return value is classified here — a per-channel/per-item failure that a
+// deeper phase catches and logs but doesn't return (e.g. message_sync.go's
+// per-page swallow) never reaches this point, so a token that dies mid-run
+// after an earlier phase already succeeded may still record "ok" until a
+// later cycle's failure surfaces at the top level.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)

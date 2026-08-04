@@ -432,6 +432,43 @@ func TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling(t *testing.T) {
 	assert.NotEmpty(t, failAcct.Error)
 }
 
+// TestPhaseSlackSyncRevokedTokenClassification proves the "revoked" status
+// classification (isRevokedAuthError) actually survives phaseSlackSync's
+// daemon-level fan-out, not just the orchestrator-level unit tests — an
+// account with NO team_id yet seeded means ensureWorkspace genuinely calls
+// team.info (unlike TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling's
+// pre-seeded helper, where team.info is cached and never called).
+func TestPhaseSlackSyncRevokedTokenClassification(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/team.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+	})
+
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+	_, err = database.CreateSlackAccount(db.SlackAccount{}) // no team_id -> team.info is really called
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
+	orch := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api),
+		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 1)
+	orch.SetLogger(log.New(os.Stderr, "[test-revoked] ", 0))
+
+	d := New(&config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetOrchestrators([]*sync.Orchestrator{orch})
+	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
+
+	require.Error(t, d.phaseSlackSync(context.Background()))
+
+	acct, err := database.GetSlackAccount(1)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", acct.Status, "invalid_auth from team.info must classify as revoked through the daemon fan-out, not just at the orchestrator layer")
+}
+
 // newStatusTrackingOrchestrator is newTestOrchestrator plus a returned *db.DB
 // handle, so a test can assert on the resulting slack_accounts row.
 func newStatusTrackingOrchestrator(t *testing.T, mux *http.ServeMux, syncCount *atomic.Int32) (*sync.Orchestrator, *db.DB) {
