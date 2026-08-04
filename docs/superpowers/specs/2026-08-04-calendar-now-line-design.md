@@ -25,7 +25,9 @@ Google/Apple Calendar convention.
   `startDate > now`. Currently-running meetings (started before now, still
   ongoing) stay **above** the line; if every event has started, the line goes
   after the last row. All-day chips are unaffected (line always renders below
-  the chip, inside the timed list).
+  the chip, inside the timed list). A Today section containing only all-day
+  events still renders the marker (with its time label) below the all-day chip
+  — intended, it keeps the "you are here" mark visible on such days.
 - **Ticking:** the Today section body is wrapped in
   `TimelineView(.everyMinute)`, so both the time label and the line position
   recompute once a minute with no manual timers.

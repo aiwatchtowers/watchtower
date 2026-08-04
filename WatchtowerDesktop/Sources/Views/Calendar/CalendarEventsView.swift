@@ -14,7 +14,7 @@ enum CalendarMode: String, CaseIterable {
 /// Frame of the now-line marker row in the events scroll view's named
 /// coordinate space; nil when no marker is rendered.
 private struct NowLineFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect?
+    static let defaultValue: CGRect? = nil
     static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
         value = value ?? nextValue()
     }
@@ -39,10 +39,12 @@ struct CalendarEventsView: View {
     @State private var scrollTargetEventID: String?
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
-    /// Now-line marker frame in the scroll view's named coordinate space, nil
-    /// while no marker is rendered (no Today section). Drives the floating
-    /// "Now" button.
-    @State private var nowLineFrame: CGRect?
+    /// Derived tri-state position of the now-line marker relative to the
+    /// viewport (nil while no marker is rendered — no Today section). Storing
+    /// the derived state instead of the raw frame means scroll ticks don't
+    /// invalidate the whole non-lazy list — only actual visibility
+    /// transitions do. Drives the floating "Now" button.
+    @State private var nowLineVisibility: NowLine.Visibility?
 
     /// True once ANY calendar source is connected — Google OAuth OR at least
     /// one healthy CalDAV/ICS account — so connecting only e.g. an iCloud
@@ -154,10 +156,13 @@ struct CalendarEventsView: View {
                 }
                 .coordinateSpace(name: Self.eventsScrollSpace)
                 .onPreferenceChange(NowLineFramePreferenceKey.self) { frame in
-                    nowLineFrame = frame
+                    let v = NowLine.visibility(frame: frame, viewportHeight: viewport.size.height)
+                    if v != nowLineVisibility {
+                        nowLineVisibility = v
+                    }
                 }
                 .overlay(alignment: .bottom) {
-                    jumpToNowButton(proxy: proxy, viewportHeight: viewport.size.height)
+                    jumpToNowButton(proxy: proxy)
                 }
                 // Deep-link scroll wins when a target is set (before the mode
                 // switch); otherwise land on "Today" past the history days.
@@ -304,19 +309,17 @@ struct CalendarEventsView: View {
 
     /// Today's timed events with the red now-line marker inserted at
     /// `NowLine.nowLineIndex` — before the first not-yet-started event, or
-    /// after the last row when everything has started.
-    @ViewBuilder
+    /// after the last row when everything has started. Rendered from
+    /// `NowLine.rows`, the single insertion site.
     private func timedRowsWithNowLine(_ timed: [CalendarEvent], now: Date) -> some View {
-        let lineIndex = NowLine.nowLineIndex(events: timed, now: now)
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(timed.enumerated()), id: \.element.id) { index, event in
-                if index == lineIndex {
+            ForEach(NowLine.rows(events: timed, now: now)) { row in
+                switch row {
+                case .event(let event):
+                    eventRow(event)
+                case .nowLine:
                     nowLineRow(now: now)
                 }
-                eventRow(event)
-            }
-            if lineIndex == timed.count {
-                nowLineRow(now: now)
             }
         }
     }
@@ -345,34 +348,32 @@ struct CalendarEventsView: View {
                 )
             }
         )
-        .id("now-line")
+        .id(NowLine.nowLineID)
     }
 
     /// Floating jump-to-now capsule, shown only while the marker exists and
     /// sits outside the viewport.
     @ViewBuilder
-    private func jumpToNowButton(proxy: ScrollViewProxy, viewportHeight: CGFloat) -> some View {
-        if let frame = nowLineFrame, viewportHeight > 0 {
-            let isAbove = frame.maxY <= 0
-            let isBelow = frame.minY >= viewportHeight
-            if isAbove || isBelow {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        proxy.scrollTo("now-line", anchor: .center)
-                    }
-                } label: {
-                    Label("Now", systemImage: isAbove ? "arrow.up" : "arrow.down")
-                        .font(.caption)
-                        .fontWeight(.medium)
+    private func jumpToNowButton(proxy: ScrollViewProxy) -> some View {
+        if nowLineVisibility == .above || nowLineVisibility == .below {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(NowLine.nowLineID, anchor: .center)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(.red, in: Capsule())
-                .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
-                .padding(.bottom, 12)
+            } label: {
+                // Styling lives on the Label (the allDayChip pattern) so the
+                // whole painted capsule is clickable with .buttonStyle(.plain).
+                Label("Now", systemImage: nowLineVisibility == .above ? "arrow.up" : "arrow.down")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.red, in: Capsule())
             }
+            .buttonStyle(.plain)
+            .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+            .padding(.bottom, 12)
         }
     }
 
