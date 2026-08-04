@@ -1,7 +1,10 @@
 package calendar
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,11 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/auth"
 )
 
 func TestTokenStore_RoundTrip(t *testing.T) {
@@ -69,7 +75,7 @@ func TestTokenStore_LoadMissing(t *testing.T) {
 
 func TestBuildAuthURL(t *testing.T) {
 	cfg := GoogleOAuthConfig{ClientID: "client.apps", ClientSecret: "shh"}
-	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "state-abc", []string{ScopeCalendarReadonly})
+	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "state-abc", []string{ScopeCalendarReadonly}, "chal-abc")
 
 	u, err := url.Parse(got)
 	require.NoError(t, err)
@@ -83,12 +89,14 @@ func TestBuildAuthURL(t *testing.T) {
 	assert.Equal(t, "offline", q.Get("access_type"))
 	assert.Equal(t, "consent", q.Get("prompt"))
 	assert.Equal(t, ScopeCalendarReadonly, q.Get("scope"))
+	assert.Equal(t, "chal-abc", q.Get("code_challenge"))
+	assert.Equal(t, "S256", q.Get("code_challenge_method"))
 }
 
 func TestBuildAuthURL_MultipleScopes(t *testing.T) {
 	cfg := GoogleOAuthConfig{ClientID: "client.apps"}
 	gmailScope := "https://www.googleapis.com/auth/gmail.readonly"
-	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "s", []string{ScopeCalendarReadonly, gmailScope})
+	got := buildAuthURL(cfg, "http://127.0.0.1:18501/callback", "s", []string{ScopeCalendarReadonly, gmailScope}, "chal")
 
 	u, err := url.Parse(got)
 	require.NoError(t, err)
@@ -124,6 +132,45 @@ func TestPrepare_GeneratesUniqueState(t *testing.T) {
 	assert.NotEqual(t, r1.State, r2.State, "state must be unique per call")
 }
 
+// s256 is the RFC 7636 code_challenge transform, recomputed here independently
+// of the production helper so the assertions below actually pin the transform.
+func s256(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// TestPrepare_ChallengeIsS256OfVerifier pins the transform, not just its
+// presence: sending the verifier itself (RFC 7636's "plain" method) would
+// leave the loopback callback exactly as interceptable as it was without
+// PKCE, so this fails if anyone "simplifies" S256 away.
+func TestPrepare_ChallengeIsS256OfVerifier(t *testing.T) {
+	res, err := Prepare(GoogleOAuthConfig{ClientID: "cid"}, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, res.CodeVerifier)
+
+	u, err := url.Parse(res.AuthorizeURL)
+	require.NoError(t, err)
+	q := u.Query()
+
+	assert.Equal(t, "S256", q.Get("code_challenge_method"))
+	assert.Equal(t, s256(res.CodeVerifier), q.Get("code_challenge"))
+	assert.NotEqual(t, res.CodeVerifier, q.Get("code_challenge"), "the verifier must never travel in the authorization URL")
+}
+
+func TestPrepare_GeneratesUniqueVerifier(t *testing.T) {
+	r1, err := Prepare(GoogleOAuthConfig{ClientID: "x"}, "")
+	require.NoError(t, err)
+	r2, err := Prepare(GoogleOAuthConfig{ClientID: "x"}, "")
+	require.NoError(t, err)
+
+	assert.NotEqual(t, r1.CodeVerifier, r2.CodeVerifier, "verifier must be per-login")
+	assert.GreaterOrEqual(t, len(r1.CodeVerifier), 43, "RFC 7636 requires 43-128 chars")
+	assert.LessOrEqual(t, len(r1.CodeVerifier), 128)
+	for _, r := range r1.CodeVerifier {
+		assert.Contains(t, auth.PKCEVerifierCharset, string(r), "verifier has a non-unreserved char")
+	}
+}
+
 func TestExchangeCode_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
@@ -131,7 +178,10 @@ func TestExchangeCode_Success(t *testing.T) {
 		assert.Equal(t, "code-123", r.PostForm.Get("code"))
 		assert.Equal(t, "http://localhost/cb", r.PostForm.Get("redirect_uri"))
 		assert.Equal(t, "cid", r.PostForm.Get("client_id"))
+		// The client secret stays: Google's installed-app clients still
+		// expect it, PKCE is additive here rather than a replacement.
 		assert.Equal(t, "secret", r.PostForm.Get("client_secret"))
+		assert.Equal(t, "verifier-abc", r.PostForm.Get("code_verifier"))
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","token_type":"Bearer"}`))
@@ -142,10 +192,59 @@ func TestExchangeCode_Success(t *testing.T) {
 	googleTokenEndpoint = srv.URL
 	defer func() { googleTokenEndpoint = prev }()
 
-	tok, err := exchangeCode(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, "code-123", "http://localhost/cb")
+	tok, err := exchangeCode(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, "code-123", "http://localhost/cb", "verifier-abc")
 	require.NoError(t, err)
 	assert.Equal(t, "at", tok.AccessToken)
 	assert.Equal(t, "rt", tok.RefreshToken)
+}
+
+// TestExchangeCode_RejectsMissingVerifier is the anti-fallback guard: with no
+// verifier the exchange must fail outright, never quietly downgrade to a
+// non-PKCE request — the server is asserted to be never reached.
+func TestExchangeCode_RejectsMissingVerifier(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"at"}`))
+	}))
+	defer srv.Close()
+
+	prev := googleTokenEndpoint
+	googleTokenEndpoint = srv.URL
+	defer func() { googleTokenEndpoint = prev }()
+
+	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, "code-123", "http://localhost/cb", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing PKCE code verifier")
+	assert.Zero(t, hits, "a verifier-less exchange must never reach the token endpoint")
+}
+
+// TestExchangeCode_MismatchedVerifierIsRejected covers the other half: a
+// verifier that does not match the challenge is refused by Google, and that
+// refusal must surface as an error rather than a retry without PKCE.
+func TestExchangeCode_MismatchedVerifierIsRejected(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		require.NoError(t, r.ParseForm())
+		if r.PostForm.Get("code_verifier") != "the-right-one" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"code_verifier mismatch"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"at"}`))
+	}))
+	defer srv.Close()
+
+	prev := googleTokenEndpoint
+	googleTokenEndpoint = srv.URL
+	defer func() { googleTokenEndpoint = prev }()
+
+	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{ClientID: "cid"}, "code-123", "http://localhost/cb", "the-wrong-one")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "token exchange failed")
+	assert.Equal(t, 1, requests, "a rejected exchange must not be retried without PKCE")
 }
 
 func TestExchangeCode_HTTPError(t *testing.T) {
@@ -158,7 +257,7 @@ func TestExchangeCode_HTTPError(t *testing.T) {
 	googleTokenEndpoint = srv.URL
 	defer func() { googleTokenEndpoint = prev }()
 
-	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{}, "x", "http://localhost/cb")
+	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{}, "x", "http://localhost/cb", "v")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "token exchange failed")
 }
@@ -173,7 +272,7 @@ func TestExchangeCode_BadJSON(t *testing.T) {
 	googleTokenEndpoint = srv.URL
 	defer func() { googleTokenEndpoint = prev }()
 
-	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{}, "x", "http://localhost/cb")
+	_, err := exchangeCode(context.Background(), GoogleOAuthConfig{}, "x", "http://localhost/cb", "v")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decoding token response")
 }
@@ -253,9 +352,118 @@ func TestRevoke_HTTPError(t *testing.T) {
 }
 
 func TestComplete_RejectsEmptyCode(t *testing.T) {
-	_, err := Complete(context.Background(), GoogleOAuthConfig{}, "", "http://x")
+	_, err := Complete(context.Background(), GoogleOAuthConfig{}, "", "http://x", "v")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no authorization code")
+}
+
+// TestComplete_RejectsMissingVerifier covers the Prepare/Complete split: the
+// verifier travels in PrepareResult, and a caller that loses it must get an
+// error instead of a silently non-PKCE exchange.
+func TestComplete_RejectsMissingVerifier(t *testing.T) {
+	_, err := Complete(context.Background(), GoogleOAuthConfig{}, "code-1", "http://x", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing PKCE code verifier")
+}
+
+// syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes the
+// authorize URL while the test polls for it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestLogin_ExchangeSendsVerifierMatchingChallenge is the end-to-end pin for
+// the flow `google login` actually runs: whatever code_challenge the browser
+// was sent, the token exchange must present its S256 preimage.
+func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
+	gotVerifier := make(chan string, 1)
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		gotVerifier <- r.PostForm.Get("code_verifier")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","token_type":"Bearer","scope":"` + ScopeCalendarReadonly + `"}`))
+	}))
+	defer tokenSrv.Close()
+
+	prev := googleTokenEndpoint
+	googleTokenEndpoint = tokenSrv.URL
+	defer func() { googleTokenEndpoint = prev }()
+
+	resCh := make(chan *OAuthToken, 1)
+	errCh := make(chan error, 1)
+	out := &syncBuffer{}
+	go func() {
+		tok, err := Login(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, out,
+			LoginOptions{SkipBrowserOpen: true})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- tok
+	}()
+
+	// Poll the output buffer for the printed authorize URL, then hit its callback.
+	var authorizeURL string
+	require.Eventually(t, func() bool {
+		s := out.String()
+		idx := strings.Index(s, "http")
+		if idx == -1 {
+			return false
+		}
+		end := strings.IndexAny(s[idx:], "\n ")
+		if end == -1 {
+			end = len(s) - idx
+		}
+		authorizeURL = s[idx : idx+end]
+		return authorizeURL != ""
+	}, 2*time.Second, 10*time.Millisecond)
+
+	u, err := url.Parse(authorizeURL)
+	require.NoError(t, err)
+	challenge := u.Query().Get("code_challenge")
+	require.NotEmpty(t, challenge)
+	assert.Equal(t, "S256", u.Query().Get("code_challenge_method"))
+
+	cbURL, err := url.Parse(u.Query().Get("redirect_uri"))
+	require.NoError(t, err)
+	q := cbURL.Query()
+	q.Set("code", "auth-code")
+	q.Set("state", u.Query().Get("state"))
+	cbURL.RawQuery = q.Encode()
+
+	resp, err := http.Get(cbURL.String())
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	select {
+	case tok := <-resCh:
+		assert.Equal(t, "at", tok.AccessToken)
+	case err := <-errCh:
+		t.Fatalf("Login returned error: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Login to complete")
+	}
+
+	select {
+	case v := <-gotVerifier:
+		require.NotEmpty(t, v, "exchange must send a code_verifier")
+		assert.Equal(t, challenge, s256(v), "the exchanged verifier must be the S256 preimage of the challenge shown to the browser")
+	default:
+		t.Fatal("token endpoint was never called")
+	}
 }
 
 func TestNewClient_RefreshOK(t *testing.T) {

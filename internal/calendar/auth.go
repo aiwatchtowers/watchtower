@@ -144,6 +144,12 @@ type PrepareResult struct {
 	AuthorizeURL string `json:"authorize_url"`
 	RedirectURI  string `json:"redirect_uri"`
 	State        string `json:"state"`
+	// CodeVerifier is the per-login PKCE secret behind the code_challenge in
+	// AuthorizeURL. Prepare and Complete are separate calls, so the caller has
+	// to carry it between them and pass it back to Complete — the exchange
+	// fails without it rather than falling back to a non-PKCE exchange. Keep
+	// it in memory for the life of the login; never log or persist it.
+	CodeVerifier string `json:"code_verifier"`
 }
 
 // Prepare generates an OAuth authorization URL for the desktop app flow.
@@ -152,43 +158,57 @@ func Prepare(cfg GoogleOAuthConfig, customRedirectURI string) (*PrepareResult, e
 	if err != nil {
 		return nil, fmt.Errorf("generating state: %w", err)
 	}
+	pkce, err := auth.NewPKCEPair()
+	if err != nil {
+		return nil, err
+	}
 
 	redirectURI := customRedirectURI
 	if redirectURI == "" {
 		redirectURI = fmt.Sprintf("http://127.0.0.1:%d%s", defaultRedirectPort, callbackPath)
 	}
 
-	authorizeURL := buildAuthURL(cfg, redirectURI, state, []string{ScopeCalendarReadonly})
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, []string{ScopeCalendarReadonly}, pkce.Challenge)
 
 	return &PrepareResult{
 		AuthorizeURL: authorizeURL,
 		RedirectURI:  redirectURI,
 		State:        state,
+		CodeVerifier: pkce.Verifier,
 	}, nil
 }
 
 // buildAuthURL constructs the Google OAuth2 authorization URL.
-func buildAuthURL(cfg GoogleOAuthConfig, redirectURI, state string, scopes []string) string {
+func buildAuthURL(cfg GoogleOAuthConfig, redirectURI, state string, scopes []string, codeChallenge string) string {
 	params := url.Values{
-		"client_id":     {cfg.ClientID},
-		"redirect_uri":  {redirectURI},
-		"response_type": {"code"},
-		"scope":         {strings.Join(scopes, " ")},
-		"state":         {state},
-		"access_type":   {"offline"},
-		"prompt":        {"consent"},
+		"client_id":             {cfg.ClientID},
+		"redirect_uri":          {redirectURI},
+		"response_type":         {"code"},
+		"scope":                 {strings.Join(scopes, " ")},
+		"state":                 {state},
+		"access_type":           {"offline"},
+		"prompt":                {"consent"},
+		"code_challenge":        {codeChallenge},
+		"code_challenge_method": {"S256"},
 	}
 	return googleAuthEndpoint + "?" + params.Encode()
 }
 
 // exchangeCode exchanges an authorization code for tokens via raw HTTP POST.
-func exchangeCode(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI string) (*OAuthToken, error) {
+// The client secret is still sent alongside the PKCE verifier: Google's
+// installed-app clients expect it, so PKCE is additive here, not a
+// replacement.
+func exchangeCode(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI, codeVerifier string) (*OAuthToken, error) {
+	if codeVerifier == "" {
+		return nil, fmt.Errorf("missing PKCE code verifier: the authorization request was bound to a code_challenge, so the exchange cannot proceed without its verifier")
+	}
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
 		"client_id":     {cfg.ClientID},
 		"client_secret": {cfg.ClientSecret},
+		"code_verifier": {codeVerifier},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, googleTokenEndpoint, strings.NewReader(data.Encode()))
@@ -242,12 +262,15 @@ func validateGrantedScopes(token *OAuthToken, requested []string) error {
 	return fmt.Errorf("google did not grant any of the requested access (granted: %q) — run login again and approve access on the consent screen", token.Scope)
 }
 
-// Complete exchanges an authorization code for tokens.
-func Complete(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI string) (*OAuthToken, error) {
+// Complete exchanges an authorization code for tokens. codeVerifier is the
+// PrepareResult.CodeVerifier of the same login; a missing or mismatched one
+// is a hard failure (locally an empty-string check, at Google a rejected
+// exchange) — there is no non-PKCE fallback.
+func Complete(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI, codeVerifier string) (*OAuthToken, error) {
 	if code == "" {
 		return nil, fmt.Errorf("no authorization code provided")
 	}
-	return exchangeCode(ctx, cfg, code, redirectURI)
+	return exchangeCode(ctx, cfg, code, redirectURI, codeVerifier)
 }
 
 // Revoke tells Google to revoke the grant behind the given token (refresh or
@@ -331,12 +354,16 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 	if err != nil {
 		return nil, fmt.Errorf("generating state: %w", err)
 	}
+	pkce, err := auth.NewPKCEPair()
+	if err != nil {
+		return nil, err
+	}
 
 	scopes := opt.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{ScopeCalendarReadonly}
 	}
-	authorizeURL := buildAuthURL(cfg, redirectURI, state, scopes)
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, scopes, pkce.Challenge)
 
 	resultCh := make(chan callbackResult, 1)
 
@@ -407,7 +434,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 		return nil, fmt.Errorf("no authorization code received")
 	}
 
-	token, err := exchangeCode(ctx, cfg, cb.code, redirectURI)
+	token, err := exchangeCode(ctx, cfg, cb.code, redirectURI, pkce.Verifier)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging code for token: %w", err)
 	}
