@@ -96,14 +96,10 @@ final class NowLineTests: XCTestCase {
             ([], [NowLine.nowLineID])
         ]
 
+        // Each expected sequence contains nowLineID exactly once, so the
+        // exact-order assertion also pins the exactly-one-marker property.
         for (events, expectedIDs) in cases {
-            let rows = NowLine.rows(events: events, now: now)
-            XCTAssertEqual(rowIDs(rows), expectedIDs)
-            let markerCount = rows.filter { row in
-                if case .nowLine = row { return true }
-                return false
-            }.count
-            XCTAssertEqual(markerCount, 1, "exactly one marker expected in \(expectedIDs)")
+            XCTAssertEqual(rowIDs(NowLine.rows(events: events, now: now)), expectedIDs)
         }
     }
 
@@ -148,6 +144,12 @@ final class NowLineTests: XCTestCase {
         // Boundary: minY exactly at viewportHeight still counts as below.
         let atBottom = CGRect(x: 0, y: 500, width: 300, height: 20)
         XCTAssertEqual(NowLine.visibility(frame: atBottom, viewportHeight: 500), .below)
+    }
+
+    func testJumpArrowSymbolMatchesDirection() {
+        XCTAssertEqual(NowLine.Visibility.above.jumpArrowSymbol, "arrow.up")
+        XCTAssertEqual(NowLine.Visibility.below.jumpArrowSymbol, "arrow.down")
+        XCTAssertNil(NowLine.Visibility.visible.jumpArrowSymbol)
     }
 
     func testVisibilityOnScreenFrames() {

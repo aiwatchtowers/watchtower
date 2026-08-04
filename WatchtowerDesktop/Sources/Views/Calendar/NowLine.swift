@@ -24,6 +24,16 @@ enum NowLine {
     /// from the marker row's published frame.
     enum Visibility: Equatable {
         case visible, above, below
+
+        /// SF Symbol for the jump-to-now button; nil while the marker is on
+        /// screen (no button rendered).
+        var jumpArrowSymbol: String? {
+            switch self {
+            case .above: return "arrow.up"
+            case .below: return "arrow.down"
+            case .visible: return nil
+            }
+        }
     }
 
     /// Index in `events` (the day's timed events, sorted by start) where the
@@ -32,8 +42,10 @@ enum NowLine {
     /// counts as started (ongoing meetings stay above the line); if every
     /// event has started, returns `events.count`.
     /// Note: `CalendarEvent.startDate` falls back to `Date.distantPast` on an
-    /// unparseable `start_time`, so a malformed event counts as started and
-    /// stays above the line.
+    /// unparseable `start_time`, so a malformed event compares as already
+    /// started and never itself becomes the insertion point — but its list
+    /// position still follows the DB's lexical `start_time` sort, so it may
+    /// render below the line if it sorts after a future event.
     static func nowLineIndex(events: [CalendarEvent], now: Date) -> Int {
         events.firstIndex { $0.startDate > now } ?? events.count
     }

@@ -20,6 +20,12 @@ private struct NowLineFramePreferenceKey: PreferenceKey {
     }
 }
 
+/// Reference box for the marker's last published frame — mutating it does not
+/// invalidate the view, unlike a plain `@State CGRect?`.
+private final class NowLineFrameBox {
+    var value: CGRect?
+}
+
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
@@ -45,6 +51,10 @@ struct CalendarEventsView: View {
     /// invalidate the whole non-lazy list — only actual visibility
     /// transitions do. Drives the floating "Now" button.
     @State private var nowLineVisibility: NowLine.Visibility?
+    /// Last frame published by the marker row, boxed in a reference type so
+    /// updating it never invalidates the view tree — it only feeds
+    /// `updateNowLineVisibility` when either geometry input changes.
+    @State private var lastNowLineFrame = NowLineFrameBox()
 
     /// True once ANY calendar source is connected — Google OAuth OR at least
     /// one healthy CalDAV/ICS account — so connecting only e.g. an iCloud
@@ -156,10 +166,14 @@ struct CalendarEventsView: View {
                 }
                 .coordinateSpace(name: Self.eventsScrollSpace)
                 .onPreferenceChange(NowLineFramePreferenceKey.self) { frame in
-                    let v = NowLine.visibility(frame: frame, viewportHeight: viewport.size.height)
-                    if v != nowLineVisibility {
-                        nowLineVisibility = v
-                    }
+                    lastNowLineFrame.value = frame
+                    updateNowLineVisibility(viewportHeight: viewport.size.height)
+                }
+                // The classification depends on TWO inputs; a height-only
+                // resize keeps the marker frame byte-identical in the scroll
+                // space, so the preference alone would go stale.
+                .onChange(of: viewport.size.height) { _, height in
+                    updateNowLineVisibility(viewportHeight: height)
                 }
                 .overlay(alignment: .bottom) {
                     jumpToNowButton(proxy: proxy)
@@ -351,11 +365,20 @@ struct CalendarEventsView: View {
         .id(NowLine.nowLineID)
     }
 
+    private func updateNowLineVisibility(viewportHeight: CGFloat) {
+        let visibility = NowLine.visibility(
+            frame: lastNowLineFrame.value, viewportHeight: viewportHeight
+        )
+        if visibility != nowLineVisibility {
+            nowLineVisibility = visibility
+        }
+    }
+
     /// Floating jump-to-now capsule, shown only while the marker exists and
     /// sits outside the viewport.
     @ViewBuilder
     private func jumpToNowButton(proxy: ScrollViewProxy) -> some View {
-        if nowLineVisibility == .above || nowLineVisibility == .below {
+        if let arrow = nowLineVisibility?.jumpArrowSymbol {
             Button {
                 withAnimation(.easeInOut(duration: 0.25)) {
                     proxy.scrollTo(NowLine.nowLineID, anchor: .center)
@@ -363,7 +386,7 @@ struct CalendarEventsView: View {
             } label: {
                 // Styling lives on the Label (the allDayChip pattern) so the
                 // whole painted capsule is clickable with .buttonStyle(.plain).
-                Label("Now", systemImage: nowLineVisibility == .above ? "arrow.up" : "arrow.down")
+                Label("Now", systemImage: arrow)
                     .font(.caption)
                     .fontWeight(.medium)
                     .foregroundStyle(.white)
