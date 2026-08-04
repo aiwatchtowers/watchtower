@@ -20,10 +20,9 @@ struct EventRecordingsSection: View {
         .onAppear(perform: load)
         // The record button lives in the SAME expanded row, so a run started
         // and stopped here must surface without collapse/re-expand — reload
-        // when the recorder settles (mirrors RecordingsView).
-        .onChange(of: appState.meetingRecorderCenter.phase) { _, phase in
-            if case .idle = phase { load() }
-        }
+        // per saved transcript (mirrors RecordingsView; `phase` would stay
+        // non-idle while the rest of the queue drains).
+        .onChange(of: appState.meetingRecorderCenter.savedTick) { _, _ in load() }
     }
 
     private func load() {

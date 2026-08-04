@@ -48,6 +48,28 @@ struct TranscriptionSettingsTests {
         #expect(config.forcedLanguage == nil)
     }
 
+    @Test("Absent diarization threshold keeps the default")
+    func diarizationThresholdDefault() throws {
+        let config = TranscriptionConfig.fromDefaults(try makeSuite())
+        #expect(config.diarizationThreshold == 0.6)
+    }
+
+    @Test("Reads the diarization threshold override")
+    func diarizationThresholdOverride() throws {
+        let defaults = try makeSuite()
+        defaults.set(0.55, forKey: "transcription.diarizationThreshold")
+        let config = TranscriptionConfig.fromDefaults(defaults)
+        #expect(config.diarizationThreshold == 0.55)
+    }
+
+    @Test("Out-of-range diarization threshold falls back to the default")
+    func diarizationThresholdOutOfRange() throws {
+        let defaults = try makeSuite()
+        defaults.set(1.5, forKey: "transcription.diarizationThreshold")
+        let config = TranscriptionConfig.fromDefaults(defaults)
+        #expect(config.diarizationThreshold == 0.6)
+    }
+
     @Test("Empty langset falls back to default")
     func emptyLangsetFallsBack() throws {
         let defaults = try makeSuite()

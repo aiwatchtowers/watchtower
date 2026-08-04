@@ -182,7 +182,9 @@ struct CalendarEventsView: View {
 
     /// Record/Stop control for a calendar event (or ad-hoc when `eventID` is nil).
     /// Shows "Stop" only while THIS target is the one being recorded; disabled
-    /// when another run is in flight or system-audio capture is unsupported.
+    /// when another recording is capturing or system-audio capture is
+    /// unsupported. A previous recording still being transcribed does NOT
+    /// disable it — post-processing is queued, not exclusive.
     @ViewBuilder
     private func recordButton(eventID: String?, title: String?) -> some View {
         let center = appState.meetingRecorderCenter
@@ -204,7 +206,7 @@ struct CalendarEventsView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .tint(isRecordingThis ? .red : nil)
-        .disabled((center.isBusy && !isRecordingThis) || !SystemAudioRecorder.isSupported)
+        .disabled((center.isCapturing && !isRecordingThis) || !SystemAudioRecorder.isSupported)
         .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
     }
 
